@@ -1,9 +1,16 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Cable, Copy, ExternalLink, Shield, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { useBackendHealth } from "@/lib/backend";
+import {
+  getBridgeStatus,
+  listBridgeRequests,
+  useBackendHealth,
+  type BridgeRequest,
+  type BridgeStatus,
+} from "@/lib/backend";
 
 export const Route = createFileRoute("/_app/bridge")({
   head: () => ({ meta: [{ title: "Bridge" }] }),
@@ -12,6 +19,38 @@ export const Route = createFileRoute("/_app/bridge")({
 
 function BridgeView() {
   const backend = useBackendHealth();
+  const [status, setStatus] = useState<BridgeStatus | null>(null);
+  const [requests, setRequests] = useState<BridgeRequest[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadBridgeState() {
+      if (backend.status !== "online") return;
+      try {
+        const [nextStatus, nextRequests] = await Promise.all([
+          getBridgeStatus(),
+          listBridgeRequests(),
+        ]);
+        if (!cancelled) {
+          setStatus(nextStatus);
+          setRequests(nextRequests);
+        }
+      } catch {
+        if (!cancelled) {
+          setStatus(null);
+          setRequests([]);
+        }
+      }
+    }
+
+    loadBridgeState();
+    const id = window.setInterval(loadBridgeState, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [backend.status]);
 
   return (
     <div className="h-full overflow-y-auto">
@@ -33,8 +72,12 @@ function BridgeView() {
             <div className="flex items-center gap-3">
               <Switch disabled />
               <div>
-                <div className="text-sm font-medium">Bridge off</div>
-                <div className="text-xs text-muted-foreground">Setup starts after backend wiring.</div>
+                <div className="text-sm font-medium">
+                  {status?.enabled ? "Bridge running" : "Bridge off"}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  HTTP API {status?.http_api ?? "checking"}
+                </div>
               </div>
             </div>
           </div>
@@ -91,14 +134,23 @@ function BridgeView() {
 
         <section className="mt-4 rounded-md border border-border bg-card p-4">
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-            Next implementation steps
+            Recent context requests
           </div>
-          <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
-            <li>Add backend bridge endpoints.</li>
-            <li>Add MCP server command registration.</li>
-            <li>Add per-cluster bridge permissions.</li>
-            <li>Add recent external request log.</li>
-          </ul>
+          {requests.length > 0 ? (
+            <div className="mt-3 divide-y divide-border text-sm">
+              {requests.slice(0, 5).map((request) => (
+                <div key={request.id} className="grid grid-cols-[120px_1fr_90px] gap-3 py-2">
+                  <span className="truncate text-muted-foreground">{request.client_name}</span>
+                  <span className="truncate">{request.query}</span>
+                  <span className="text-right text-xs text-muted-foreground">{request.mode}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-muted-foreground">
+              No external context requests yet.
+            </p>
+          )}
           <div className="mt-4 flex gap-2">
             <Button variant="outline" disabled>
               Copy MCP config

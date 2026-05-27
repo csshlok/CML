@@ -1,9 +1,29 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { useStore, sourceStateLabel, Source } from "@/lib/mockStore";
+import { useEffect, useMemo, useState } from "react";
+import {
+  useStore,
+  sourceStateLabel,
+  type Cluster,
+  type ClusterTint,
+  type ExpertStatus,
+  type Source,
+  type SourceState,
+  type SourceType,
+} from "@/lib/mockStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ClusterDot } from "@/components/ClusterChip";
+import {
+  createSource as createBackendSource,
+  deleteSource as deleteBackendSource,
+  listClusters,
+  listSources,
+  listVaults,
+  updateSource as updateBackendSource,
+  type ClusterRecord,
+  type SourceRecord,
+  type VaultRecord,
+} from "@/lib/backend";
 import {
   Sheet,
   SheetContent,
@@ -25,13 +45,93 @@ const typeIcon = {
 };
 
 function SourcesView() {
-  const { sources, clusters, addSource, reindexSource, removeSource } = useStore();
+  const {
+    sources: mockSources,
+    clusters: mockClusters,
+    addSource,
+    reindexSource,
+    removeSource,
+    setVault: setStoreVault,
+  } = useStore();
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<Source | null>(null);
+  const [vault, setActiveVault] = useState<VaultRecord | null>(null);
+  const [backendSources, setBackendSources] = useState<Source[]>([]);
+  const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const filtered = sources.filter((s) =>
+  async function refreshBackendSources() {
+    setLoading(true);
+    setError(null);
+    try {
+      const vaults = await listVaults();
+      const activeVault = vaults[0] ?? null;
+      setActiveVault(activeVault);
+      if (!activeVault) {
+        setBackendSources([]);
+        setBackendClusters([]);
+        return;
+      }
+      setStoreVault(activeVault.path);
+      const [sourceRows, clusterRows] = await Promise.all([
+        listSources(activeVault.id),
+        listClusters(activeVault.id),
+      ]);
+      setBackendSources(sourceRows.map(sourceFromRecord));
+      setBackendClusters(clusterRows.map(clusterFromRecord));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load backend sources.");
+      setActiveVault(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshBackendSources();
+  }, []);
+
+  const usingBackend = Boolean(vault);
+  const sources = usingBackend ? backendSources : mockSources;
+  const clusters = usingBackend ? backendClusters : mockClusters;
+
+  const filtered = useMemo(() => sources.filter((s) =>
     s.title.toLowerCase().includes(q.toLowerCase()),
-  );
+  ), [q, sources]);
+
+  async function handleAddSource() {
+    if (!vault) {
+      addSource({ title: "Untitled note", type: "note", state: "waiting" });
+      return;
+    }
+    await createBackendSource({
+      vault_id: vault.id,
+      title: "Untitled note",
+      source_type: "note",
+      raw_text: "",
+    });
+    await refreshBackendSources();
+  }
+
+  async function handleReindexSource(source: Source) {
+    if (!usingBackend) {
+      reindexSource(source.id);
+      return;
+    }
+    await updateBackendSource(source.id, { state: "extracting" });
+    await refreshBackendSources();
+  }
+
+  async function handleRemoveSource(source: Source) {
+    if (!usingBackend) {
+      removeSource(source.id);
+      return;
+    }
+    await deleteBackendSource(source.id);
+    if (selected?.id === source.id) setSelected(null);
+    await refreshBackendSources();
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -47,18 +147,25 @@ function SourcesView() {
           size="sm"
           variant="outline"
           className="ml-auto"
-          onClick={() =>
-            addSource({ title: "Untitled note", type: "note", state: "waiting" })
-          }
+          onClick={() => void handleAddSource()}
         >
           <Plus className="mr-1.5 h-4 w-4" /> Add source
         </Button>
       </header>
 
       <div className="flex-1 overflow-y-auto">
-        {filtered.length === 0 ? (
+        {error && (
+          <div className="border-b border-border bg-destructive/5 px-6 py-2 text-xs text-destructive">
+            Using local mock data because the backend could not be reached: {error}
+          </div>
+        )}
+        {loading ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            Drop files, links, screenshots, or notes to begin.
+            Loading sources...
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+            {vault ? "Drop files, links, screenshots, or notes to begin." : "Create a vault in Settings to store real sources."}
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -106,7 +213,7 @@ function SourcesView() {
                         className="h-7 w-7"
                         onClick={(e) => {
                           e.stopPropagation();
-                          reindexSource(s.id);
+                          void handleReindexSource(s);
                         }}
                       >
                         <RefreshCw className="h-3.5 w-3.5" />
@@ -117,7 +224,7 @@ function SourcesView() {
                         className="h-7 w-7"
                         onClick={(e) => {
                           e.stopPropagation();
-                          removeSource(s.id);
+                          void handleRemoveSource(s);
                         }}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -165,10 +272,10 @@ function SourcesView() {
                       We couldn't read this source. Try reindexing or open the file to check it.
                     </p>
                     <div className="mt-2 flex gap-2">
-                      <Button size="sm" variant="outline" onClick={() => reindexSource(selected.id)}>
+                      <Button size="sm" variant="outline" onClick={() => void handleReindexSource(selected)}>
                         Retry
                       </Button>
-                      <Button size="sm" variant="ghost" onClick={() => { removeSource(selected.id); setSelected(null); }}>
+                      <Button size="sm" variant="ghost" onClick={() => void handleRemoveSource(selected)}>
                         Remove
                       </Button>
                     </div>
@@ -181,6 +288,74 @@ function SourcesView() {
       </Sheet>
     </div>
   );
+}
+
+function sourceFromRecord(record: SourceRecord): Source {
+  return {
+    id: record.id,
+    title: record.title,
+    type: normalizeSourceType(record.source_type),
+    clusterId: record.cluster_id,
+    state: normalizeSourceState(record.state),
+    updatedAt: record.updated_at,
+    preview: record.extracted_text || record.raw_text,
+    summary: record.summary,
+    tags: [],
+    vaultPath: record.original_path ?? undefined,
+    localPath: record.original_path ?? undefined,
+    url: record.url ?? undefined,
+  };
+}
+
+function clusterFromRecord(record: ClusterRecord): Cluster {
+  return {
+    id: record.id,
+    name: record.name,
+    tint: normalizeTint(record.color),
+    description: record.description,
+    expert: normalizeExpertStatus(record.expert_status),
+    lastActive: record.updated_at,
+    summary: record.description,
+    styleProfile: "Style profile pending",
+  };
+}
+
+function normalizeSourceType(value: string): SourceType {
+  return value === "file" || value === "link" || value === "note" || value === "image"
+    ? value
+    : "file";
+}
+
+function normalizeSourceState(value: string): SourceState {
+  return value === "waiting" ||
+    value === "extracting" ||
+    value === "indexed" ||
+    value === "needs-review" ||
+    value === "failed"
+    ? value
+    : "waiting";
+}
+
+function normalizeTint(value: string): ClusterTint {
+  return value === "sage" ||
+    value === "sand" ||
+    value === "sky" ||
+    value === "blush" ||
+    value === "lavender" ||
+    value === "terracotta"
+    ? value
+    : "sage";
+}
+
+function normalizeExpertStatus(value: string): ExpertStatus {
+  return value === "setting-up" ||
+    value === "learning" ||
+    value === "ready" ||
+    value === "needs-update" ||
+    value === "paused" ||
+    value === "issue"
+    ? value
+    : "setting-up";
 }
 
 function StateChip({ state }: { state: Source["state"] }) {

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const path = require("node:path");
 
 const isDev = !app.isPackaged;
@@ -39,6 +39,18 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  ipcMain.handle("cml:open-path", async (_event, targetPath) => {
+    if (typeof targetPath !== "string" || targetPath.length === 0) return false;
+    const error = await shell.openPath(targetPath);
+    return error.length === 0;
+  });
+
+  ipcMain.handle("cml:show-item-in-folder", async (_event, targetPath) => {
+    if (typeof targetPath !== "string" || targetPath.length === 0) return false;
+    shell.showItemInFolder(targetPath);
+    return true;
+  });
+
   createWindow();
 
   app.on("activate", () => {

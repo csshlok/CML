@@ -34,6 +34,9 @@ export interface Source {
   preview: string;
   summary: string;
   tags: string[];
+  vaultPath?: string;
+  localPath?: string;
+  url?: string;
 }
 
 export interface Cluster {
@@ -156,6 +159,12 @@ const seedSources: Source[] = [
     "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vivamus luctus urna sed urna ultricies ac tempor dui sagittis…",
   summary: "A short auto-generated summary of this source.",
   tags: [],
+  vaultPath: `/Sources/${title as string}`,
+  localPath:
+    type === "link"
+      ? undefined
+      : `C:\\Users\\csshl\\Documents\\CML Vault\\Sources\\${title as string}`,
+  url: type === "link" ? `https://${title as string}` : undefined,
 }));
 
 const seedChats: Chat[] = [

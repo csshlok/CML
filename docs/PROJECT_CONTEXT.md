@@ -43,14 +43,14 @@ Progress bar legend:
 | Phase | Status | Progress | Notes |
 | --- | --- | --- | --- |
 | Product definition | In progress | `[#####-----] 50%` | Product PRD, UI PRD, project context, and architecture doc created. Needs technical spike details. |
-| UI prototype cleanup | In progress | `[##--------] 20%` | V0 reviewed. Cross-platform shortcut labels and handlers started. Needs visual/product polish. |
-| Desktop app foundation | In progress | `[####------] 40%` | Electron workspace created at `apps/desktop`; frontend build passes; Vite dev server verified. Needs Electron window verification and packaging. |
-| Local backend foundation | In progress | `[##--------] 20%` | FastAPI skeleton added, venv installed, `/health` verified, and UI health status wired. Needs storage and app APIs. |
-| Vault ingestion | Not started | `[----------] 0%` | Need file/link/text ingestion and extraction pipeline. |
+| UI prototype cleanup | In progress | `[######----] 60%` | V0 reviewed. Cross-platform shortcuts fixed. Map moved to a minimal cartographic atlas with in-tab cluster detail and hover previews. Needs broader chat/source/settings polish. |
+| Desktop app foundation | In progress | `[######----] 60%` | Electron workspace created, frontend build passes, Vite dev server verified, file-opening IPC primitives added, and UI routes can call backend APIs. Needs Electron window verification and packaging. |
+| Local backend foundation | In progress | `[######----] 60%` | SQLite config/storage foundation and CRUD route groups are working, with frontend API helpers now wired. Needs app-level services and tests. |
+| Vault ingestion | In progress | `[##--------] 20%` | Source metadata/text records can be created and viewed from the Sources UI. Needs real file/link extraction pipeline. |
 | Embeddings and clustering | Not started | `[----------] 0%` | Need local embedding model, chunking, vector store, cluster suggestions. |
 | Chat and context routing | Not started | `[----------] 0%` | Need router, retrieval, context packet builder, citations. |
 | Compulsory cluster experts | Not started | `[----------] 0%` | Need expert lifecycle, training queue, local fine-tuning spike. |
-| Context Bridge | In progress | `[#---------] 10%` | Bridge UI route added. Needs backend endpoints, MCP server, CLI, and permissions. |
+| Context Bridge | In progress | `[####------] 40%` | Bridge UI route now reads backend status and request history. Needs MCP server, CLI, permissions, and semantic retrieval. |
 | Packaging and installer | Not started | `[----------] 0%` | Need local downloadable build for Windows first, then macOS/Linux. |
 | QA and hardening | Not started | `[----------] 0%` | Need tests, reliability checks, failure states, performance review. |
 
@@ -275,14 +275,57 @@ Exit criteria:
 - Started backend at `http://127.0.0.1:7342` and verified `/health`.
 - Verified `/bridge` in browser with Playwright; page loads and shows `Backend online`.
 - Added ignore rules for Playwright verification artifacts and Python editable-install metadata.
+- Added backend settings via `CML_` environment prefix.
+- Added SQLite initialization for vaults, clusters, sources, and bridge request logs.
+- Added `/api/v1/vaults` list/create/get routes.
+- Added `/api/v1/clusters` list/create routes.
+- Added `/api/v1/sources` list/create routes.
+- Added `/api/v1/bridge/status` and `/api/v1/bridge/context` routes.
+- Restarted the backend cleanly after route changes.
+- Ran backend compile check with `.venv\Scripts\python -m compileall backend\app`.
+- Smoke-tested API flow: create vault, create cluster, create source, request bridge context.
+- Replaced the juvenile force-directed map with a calmer deterministic context landscape.
+- Added crisp cluster nodes, source pills, subtle SVG relationship lines, soft grid, and a cluster health rail.
+- Verified the redesigned `/map` route in browser with Playwright and confirmed no console errors.
+- Reworked the map again into a cleaner cartographic atlas: proportional cluster anchors, small data points, and fine source/similarity lines.
+- Removed permanent source labels from the map to reduce clutter; source names are available on hover.
+- Fixed the map hydration mismatch by rendering the measured SVG layer after mount.
+- Added typed frontend bridge API helpers for status and request history.
+- Wired the Bridge page to real backend bridge status and recent context requests.
+- Rebuilt the desktop app successfully after map and Bridge changes.
+- Updated the map so only main cluster anchors show names on the overview.
+- Added hover previews for data points with file name, type/state, text preview, and vault/explorer actions.
+- Changed cluster clicks to open an in-map cluster detail panel instead of navigating away.
+- Added in-map cluster detail with connected data, adapter status, learning activity, and disabled future retrain/settings actions.
+- Added Electron IPC primitives for opening a path and revealing a file in the OS file explorer.
+- Added desktop preload typings for future vault/source file opening.
+- Rebuilt successfully after the map interaction and Electron IPC changes.
+- Added optional source location metadata to the frontend source model for vault/local file actions.
+- Wired map hover preview actions to Electron open/reveal IPC when running inside the desktop shell.
+- Verified `/map` after the latest interaction changes; browser console has no errors.
+- Rebuilt successfully after adding desktop-aware map preview actions.
+- Added PATCH and DELETE routes for vaults, clusters, and sources.
+- Added GET routes for individual clusters and sources.
+- Added `/api/v1/bridge/requests` for recent external context request history.
+- Restarted backend and smoke-tested vault update, cluster update, source update, bridge context, and bridge request history.
+- Added typed frontend API helpers for vaults, clusters, and sources.
+- Wired Settings to load, create, and update the first backend vault.
+- Wired Sources to load backend vault sources and clusters, with fallback to mock data when no backend vault is available.
+- Wired Sources add/reindex/remove actions to backend source create/update/delete routes.
+- Synced the active backend vault into the shared UI shell state.
+- Verified the Sources page in browser: backend rows render, Add source creates a real backend row, footer shows active vault, and console errors are clear.
+- Verified backend source/vault state through direct API calls.
 
 ## Current Open Work
 
 - Verify Electron dev launch visually.
 - Decide first supported OS for downloadable app.
 - Decide backend service packaging approach.
-- Add backend storage/config foundation.
-- Add backend API route groups for vaults, sources, clusters, and bridge.
+- Persist real source paths from ingestion so the map preview Vault/Explorer actions work on user-added files.
+- Add backend service layer around raw route/database operations.
+- Add file/link extraction pipeline.
+- Connect frontend cluster/map/chat screens to backend APIs.
+- Continue UI polish for chat, sources, settings, and onboarding.
 - Clean up V0 visual language.
 - Add real local backend.
 - Add vault ingestion.
