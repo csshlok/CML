@@ -59,6 +59,12 @@ class SourceCreate(BaseModel):
     raw_text: str = ""
 
 
+class SourcePathCreate(BaseModel):
+    vault_id: str
+    cluster_id: str | None = None
+    path: str = Field(min_length=1)
+
+
 class SourceUpdate(BaseModel):
     cluster_id: str | None = None
     title: str | None = Field(default=None, min_length=1, max_length=240)

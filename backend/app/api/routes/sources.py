@@ -3,7 +3,8 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.schemas import SourceCreate, SourceRead, SourceUpdate
+from backend.app.core.extraction import ExtractionError, extract_text_from_path
+from backend.app.schemas import SourceCreate, SourcePathCreate, SourceRead, SourceUpdate
 
 router = APIRouter(prefix="/sources", tags=["sources"])
 
@@ -71,6 +72,25 @@ def create_source(payload: SourceCreate) -> dict:
             source,
         )
     return source
+
+
+@router.post("/from-path", response_model=SourceRead)
+def create_source_from_path(payload: SourcePathCreate) -> dict:
+    try:
+        title, text = extract_text_from_path(payload.path)
+    except ExtractionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return create_source(
+        SourceCreate(
+            vault_id=payload.vault_id,
+            cluster_id=payload.cluster_id,
+            title=title,
+            source_type="note" if title.lower().endswith((".md", ".markdown")) else "file",
+            original_path=payload.path,
+            raw_text=text,
+        )
+    )
 
 
 @router.get("/{source_id}", response_model=SourceRead)

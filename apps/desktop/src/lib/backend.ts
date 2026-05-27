@@ -137,6 +137,17 @@ export async function createSource(payload: {
   });
 }
 
+export async function createSourceFromPath(payload: {
+  vault_id: string;
+  cluster_id?: string | null;
+  path: string;
+}) {
+  return request<SourceRecord>("/api/v1/sources/from-path", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function updateSource(
   id: string,
   payload: Partial<Pick<SourceRecord, "cluster_id" | "title" | "state" | "raw_text" | "extracted_text" | "summary">>,

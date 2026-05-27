@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const path = require("node:path");
 
 const isDev = !app.isPackaged;
@@ -49,6 +49,19 @@ app.whenReady().then(() => {
     if (typeof targetPath !== "string" || targetPath.length === 0) return false;
     shell.showItemInFolder(targetPath);
     return true;
+  });
+
+  ipcMain.handle("cml:select-source-files", async () => {
+    const result = await dialog.showOpenDialog({
+      title: "Add sources",
+      properties: ["openFile", "multiSelections"],
+      filters: [
+        { name: "Text and Markdown", extensions: ["txt", "md", "markdown"] },
+        { name: "All files", extensions: ["*"] },
+      ],
+    });
+    if (result.canceled) return [];
+    return result.filePaths;
   });
 
   createWindow();

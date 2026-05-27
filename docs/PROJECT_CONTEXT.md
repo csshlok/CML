@@ -46,7 +46,7 @@ Progress bar legend:
 | UI prototype cleanup | In progress | `[######----] 60%` | V0 reviewed. Cross-platform shortcuts fixed. Map moved to a minimal cartographic atlas with in-tab cluster detail and hover previews. Needs broader chat/source/settings polish. |
 | Desktop app foundation | In progress | `[######----] 60%` | Electron workspace created, frontend build passes, Vite dev server verified, file-opening IPC primitives added, and UI routes can call backend APIs. Needs Electron window verification and packaging. |
 | Local backend foundation | In progress | `[######----] 60%` | SQLite config/storage foundation and CRUD route groups are working, with frontend API helpers now wired. Needs app-level services and tests. |
-| Vault ingestion | In progress | `[##--------] 20%` | Source metadata/text records can be created and viewed from the Sources UI. Needs real file/link extraction pipeline. |
+| Vault ingestion | In progress | `[###-------] 30%` | Source metadata/text records can be created and viewed from the Sources UI. TXT/Markdown path ingestion works. Needs PDF/DOCX/link/OCR extraction. |
 | Embeddings and clustering | Not started | `[----------] 0%` | Need local embedding model, chunking, vector store, cluster suggestions. |
 | Chat and context routing | Not started | `[----------] 0%` | Need router, retrieval, context packet builder, citations. |
 | Compulsory cluster experts | Not started | `[----------] 0%` | Need expert lifecycle, training queue, local fine-tuning spike. |
@@ -315,6 +315,13 @@ Exit criteria:
 - Synced the active backend vault into the shared UI shell state.
 - Verified the Sources page in browser: backend rows render, Add source creates a real backend row, footer shows active vault, and console errors are clear.
 - Verified backend source/vault state through direct API calls.
+- Rewrote [ReadME.md](../ReadME.md) in the same practical repo-operator style as the referenced `csshlok/4994-Research-Project` README.
+- Added backend text extraction foundation for `.txt`, `.md`, and `.markdown` files.
+- Added `/api/v1/sources/from-path` to create an indexed source from a local file path.
+- Added Electron file picker IPC and preload bridge for selecting source files.
+- Added a Sources `Add files` action that uses the desktop file picker and imports selected TXT/Markdown files into the active vault.
+- Smoke-tested path ingestion by importing `ReadME.md`; it created an indexed backend source with extracted text.
+- Verified the Sources page shows the imported source and the new `Add files` action with no browser console errors.
 
 ## Current Open Work
 
@@ -323,7 +330,7 @@ Exit criteria:
 - Decide backend service packaging approach.
 - Persist real source paths from ingestion so the map preview Vault/Explorer actions work on user-added files.
 - Add backend service layer around raw route/database operations.
-- Add file/link extraction pipeline.
+- Extend extraction beyond TXT/Markdown to PDF, DOCX, links, screenshots, and OCR.
 - Connect frontend cluster/map/chat screens to backend APIs.
 - Continue UI polish for chat, sources, settings, and onboarding.
 - Clean up V0 visual language.

@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { ClusterDot } from "@/components/ClusterChip";
 import {
   createSource as createBackendSource,
+  createSourceFromPath,
   deleteSource as deleteBackendSource,
   listClusters,
   listSources,
@@ -30,7 +31,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { File, Link2, FileText, Image, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { File, FilePlus2, Link2, FileText, Image, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 export const Route = createFileRoute("/_app/sources")({
   head: () => ({ meta: [{ title: "Sources" }] }),
@@ -60,6 +61,7 @@ function SourcesView() {
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [ingestMessage, setIngestMessage] = useState<string | null>(null);
 
   async function refreshBackendSources() {
     setLoading(true);
@@ -114,6 +116,23 @@ function SourcesView() {
     await refreshBackendSources();
   }
 
+  async function handleAddFiles() {
+    if (!vault || !window.cmlDesktop?.selectSourceFiles) {
+      setIngestMessage("File picking is available in the desktop app after a vault is created.");
+      return;
+    }
+    const paths = await window.cmlDesktop.selectSourceFiles();
+    if (paths.length === 0) return;
+    setIngestMessage(`Importing ${paths.length} file${paths.length === 1 ? "" : "s"}...`);
+    let imported = 0;
+    for (const path of paths) {
+      await createSourceFromPath({ vault_id: vault.id, path });
+      imported += 1;
+    }
+    await refreshBackendSources();
+    setIngestMessage(`Imported ${imported} text/markdown file${imported === 1 ? "" : "s"}.`);
+  }
+
   async function handleReindexSource(source: Source) {
     if (!usingBackend) {
       reindexSource(source.id);
@@ -147,6 +166,15 @@ function SourcesView() {
           size="sm"
           variant="outline"
           className="ml-auto"
+          onClick={() => void handleAddFiles()}
+          disabled={!vault}
+          title="Imports TXT and Markdown files in this build."
+        >
+          <FilePlus2 className="mr-1.5 h-4 w-4" /> Add files
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
           onClick={() => void handleAddSource()}
         >
           <Plus className="mr-1.5 h-4 w-4" /> Add source
@@ -157,6 +185,11 @@ function SourcesView() {
         {error && (
           <div className="border-b border-border bg-destructive/5 px-6 py-2 text-xs text-destructive">
             Using local mock data because the backend could not be reached: {error}
+          </div>
+        )}
+        {ingestMessage && (
+          <div className="border-b border-border bg-card px-6 py-2 text-xs text-muted-foreground">
+            {ingestMessage}
           </div>
         )}
         {loading ? (
