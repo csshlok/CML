@@ -5,6 +5,7 @@ import {
   Files,
   Globe2,
   Search,
+  Cable,
   Settings as SettingsIcon,
   Plus,
   FolderOpen,
@@ -14,6 +15,7 @@ import { useStore } from "@/lib/mockStore";
 import { CommandPalette, useCommandPalette } from "@/components/CommandPalette";
 import { Button } from "@/components/ui/button";
 import { useEffect } from "react";
+import { useBackendHealth } from "@/lib/backend";
 
 const nav = [
   { to: "/chat", label: "Chat", icon: MessageSquare },
@@ -21,6 +23,7 @@ const nav = [
   { to: "/sources", label: "Sources", icon: Files },
   { to: "/map", label: "Map", icon: Globe2 },
   { to: "/search", label: "Search", icon: Search },
+  { to: "/bridge", label: "Bridge", icon: Cable },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const;
 
@@ -29,6 +32,7 @@ export function AppShell() {
   const navigate = useNavigate();
   const { vaultPath, chats, isIndexing, indexingProgress, createChat, addCluster } = useStore();
   const { open: openPalette, setOpen } = useCommandPalette();
+  const backend = useBackendHealth();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -153,6 +157,19 @@ export function AppShell() {
           <span>Idle</span>
         )}
         <span className="ml-auto opacity-60">Ctrl/Cmd K commands · Ctrl/Cmd N new chat</span>
+        <span
+          className={
+            "rounded-full px-2 py-0.5 " +
+            (backend.status === "online"
+              ? "bg-[var(--status-ready)]/15 text-foreground"
+              : backend.status === "checking"
+                ? "bg-muted text-muted-foreground"
+                : "bg-[var(--status-issue)]/15 text-foreground")
+          }
+          title={backend.url}
+        >
+          Backend {backend.status}
+        </span>
       </footer>
 
       <CommandPalette open={openPalette} onOpenChange={setOpen} />

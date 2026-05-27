@@ -18,6 +18,7 @@ import { Route as AppSearchRouteImport } from './routes/_app.search'
 import { Route as AppMapRouteImport } from './routes/_app.map'
 import { Route as AppClustersRouteImport } from './routes/_app.clusters'
 import { Route as AppChatRouteImport } from './routes/_app.chat'
+import { Route as AppBridgeRouteImport } from './routes/_app.bridge'
 import { Route as AppClustersClusterIdRouteImport } from './routes/_app.clusters.$clusterId'
 import { Route as AppChatChatIdRouteImport } from './routes/_app.chat.$chatId'
 
@@ -65,6 +66,11 @@ const AppChatRoute = AppChatRouteImport.update({
   path: '/chat',
   getParentRoute: () => AppRoute,
 } as any)
+const AppBridgeRoute = AppBridgeRouteImport.update({
+  id: '/bridge',
+  path: '/bridge',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppClustersClusterIdRoute = AppClustersClusterIdRouteImport.update({
   id: '/$clusterId',
   path: '/$clusterId',
@@ -79,6 +85,7 @@ const AppChatChatIdRoute = AppChatChatIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
+  '/bridge': typeof AppBridgeRoute
   '/chat': typeof AppChatRouteWithChildren
   '/clusters': typeof AppClustersRouteWithChildren
   '/map': typeof AppMapRoute
@@ -91,6 +98,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
+  '/bridge': typeof AppBridgeRoute
   '/chat': typeof AppChatRouteWithChildren
   '/clusters': typeof AppClustersRouteWithChildren
   '/map': typeof AppMapRoute
@@ -105,6 +113,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_app': typeof AppRouteWithChildren
   '/onboarding': typeof OnboardingRoute
+  '/_app/bridge': typeof AppBridgeRoute
   '/_app/chat': typeof AppChatRouteWithChildren
   '/_app/clusters': typeof AppClustersRouteWithChildren
   '/_app/map': typeof AppMapRoute
@@ -119,6 +128,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/onboarding'
+    | '/bridge'
     | '/chat'
     | '/clusters'
     | '/map'
@@ -131,6 +141,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/onboarding'
+    | '/bridge'
     | '/chat'
     | '/clusters'
     | '/map'
@@ -144,6 +155,7 @@ export interface FileRouteTypes {
     | '/'
     | '/_app'
     | '/onboarding'
+    | '/_app/bridge'
     | '/_app/chat'
     | '/_app/clusters'
     | '/_app/map'
@@ -225,6 +237,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppChatRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/bridge': {
+      id: '/_app/bridge'
+      path: '/bridge'
+      fullPath: '/bridge'
+      preLoaderRoute: typeof AppBridgeRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/clusters/$clusterId': {
       id: '/_app/clusters/$clusterId'
       path: '/$clusterId'
@@ -266,6 +285,7 @@ const AppClustersRouteWithChildren = AppClustersRoute._addFileChildren(
 )
 
 interface AppRouteChildren {
+  AppBridgeRoute: typeof AppBridgeRoute
   AppChatRoute: typeof AppChatRouteWithChildren
   AppClustersRoute: typeof AppClustersRouteWithChildren
   AppMapRoute: typeof AppMapRoute
@@ -275,6 +295,7 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppBridgeRoute: AppBridgeRoute,
   AppChatRoute: AppChatRouteWithChildren,
   AppClustersRoute: AppClustersRouteWithChildren,
   AppMapRoute: AppMapRoute,

@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/command";
 import { useNavigate } from "@tanstack/react-router";
 import { useStore } from "@/lib/mockStore";
-import { MessageSquare, Layers, Files, Globe2, Settings, Plus, Link2, FolderOpen } from "lucide-react";
+import { MessageSquare, Layers, Files, Globe2, Settings, Plus, Link2, FolderOpen, Cable } from "lucide-react";
 
 interface PaletteState {
   open: boolean;
@@ -77,6 +77,9 @@ export function CommandPalette({
           </CommandItem>
           <CommandItem onSelect={() => go(() => navigate({ to: "/map" }))}>
             <Globe2 className="mr-2 h-4 w-4" /> Map
+          </CommandItem>
+          <CommandItem onSelect={() => go(() => navigate({ to: "/bridge" }))}>
+            <Cable className="mr-2 h-4 w-4" /> Bridge
           </CommandItem>
           <CommandItem onSelect={() => go(() => navigate({ to: "/settings" }))}>
             <Settings className="mr-2 h-4 w-4" /> Settings

@@ -13,6 +13,8 @@ out/
 .vinxi/
 .tanstack/
 .nitro/
+*.egg-info/
+**/*.egg-info/
 
 # Runtime app data
 data/
@@ -26,6 +28,8 @@ logs/
 .env.*
 !.env.example
 *.local
+.playwright-mcp/
+**/.playwright-mcp/
 
 # OS/editor
 .DS_Store

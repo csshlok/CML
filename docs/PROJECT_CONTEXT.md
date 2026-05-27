@@ -44,13 +44,13 @@ Progress bar legend:
 | --- | --- | --- | --- |
 | Product definition | In progress | `[#####-----] 50%` | Product PRD, UI PRD, project context, and architecture doc created. Needs technical spike details. |
 | UI prototype cleanup | In progress | `[##--------] 20%` | V0 reviewed. Cross-platform shortcut labels and handlers started. Needs visual/product polish. |
-| Desktop app foundation | In progress | `[###-------] 30%` | Electron workspace created at `apps/desktop`; frontend build passes; Vite dev server verified. Needs Electron window verification and packaging. |
-| Local backend foundation | In progress | `[#---------] 10%` | FastAPI skeleton added. Needs dependency environment, storage, and health wiring into UI. |
+| Desktop app foundation | In progress | `[####------] 40%` | Electron workspace created at `apps/desktop`; frontend build passes; Vite dev server verified. Needs Electron window verification and packaging. |
+| Local backend foundation | In progress | `[##--------] 20%` | FastAPI skeleton added, venv installed, `/health` verified, and UI health status wired. Needs storage and app APIs. |
 | Vault ingestion | Not started | `[----------] 0%` | Need file/link/text ingestion and extraction pipeline. |
 | Embeddings and clustering | Not started | `[----------] 0%` | Need local embedding model, chunking, vector store, cluster suggestions. |
 | Chat and context routing | Not started | `[----------] 0%` | Need router, retrieval, context packet builder, citations. |
 | Compulsory cluster experts | Not started | `[----------] 0%` | Need expert lifecycle, training queue, local fine-tuning spike. |
-| Context Bridge | Not started | `[----------] 0%` | Need MCP server, CLI, local API, permissions. |
+| Context Bridge | In progress | `[#---------] 10%` | Bridge UI route added. Needs backend endpoints, MCP server, CLI, and permissions. |
 | Packaging and installer | Not started | `[----------] 0%` | Need local downloadable build for Windows first, then macOS/Linux. |
 | QA and hardening | Not started | `[----------] 0%` | Need tests, reliability checks, failure states, performance review. |
 
@@ -265,16 +265,25 @@ Exit criteria:
 - Started and verified the desktop UI dev server at `http://127.0.0.1:5173`.
 - Verified backend Python syntax with `python -m compileall backend`.
 - Added root `.gitignore` patterns for Lovable-generated metadata and folders.
+- Added backend health hook in the desktop UI.
+- Added Bridge navigation and command palette entry.
+- Added first Bridge page with MCP, CLI, copy-context, privacy, and backend status sections.
+- Removed obvious Lovable-generated root page metadata from the copied app.
+- Added local SVG favicon and verified browser console errors are clear.
+- Created `.venv` and installed backend dependencies.
+- Updated `npm run backend` to use the local virtual environment.
+- Started backend at `http://127.0.0.1:7342` and verified `/health`.
+- Verified `/bridge` in browser with Playwright; page loads and shows `Backend online`.
+- Added ignore rules for Playwright verification artifacts and Python editable-install metadata.
 
 ## Current Open Work
 
 - Verify Electron dev launch visually.
 - Decide first supported OS for downloadable app.
 - Decide backend service packaging approach.
-- Install backend dependencies in a dedicated Python environment.
-- Connect UI to backend health endpoint.
+- Add backend storage/config foundation.
+- Add backend API route groups for vaults, sources, clusters, and bridge.
 - Clean up V0 visual language.
-- Add Bridge page to V0 UI.
 - Add real local backend.
 - Add vault ingestion.
 - Add clustering and retrieval.
