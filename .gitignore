@@ -1,2 +1,44 @@
-docs
-UI-CML-V0
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Build outputs
+dist/
+dist-ssr/
+release/
+out/
+.output/
+.vinxi/
+.tanstack/
+.nitro/
+
+# Runtime app data
+data/
+*.sqlite
+*.sqlite3
+
+# Logs and local env
+logs/
+*.log
+.env
+.env.*
+!.env.example
+*.local
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Lovable-generated metadata/reference files
+.lovable/
+**/.lovable/
+lovable/
+**/lovable/
+*.lovable
+
+# Keep docs and V0 reference tracked
