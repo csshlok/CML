@@ -1,8 +1,30 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useStore } from "@/lib/mockStore";
+import { useEffect, useMemo, useState } from "react";
+import { Check, Plus, RefreshCw } from "lucide-react";
 import { ClusterDot, ExpertBadge } from "@/components/ClusterChip";
 import { Button } from "@/components/ui/button";
-import { Plus } from "lucide-react";
+import {
+  createCluster,
+  listClusterSuggestions,
+  listClusters,
+  listSources,
+  listVaults,
+  reindexVaultSearch,
+  updateSource,
+  type ClusterRecord,
+  type ClusterSuggestionRecord,
+  type SourceRecord,
+  type VaultRecord,
+} from "@/lib/backend";
+import {
+  useStore,
+  type Cluster,
+  type ClusterTint,
+  type ExpertStatus,
+  type Source,
+  type SourceState,
+  type SourceType,
+} from "@/lib/mockStore";
 
 export const Route = createFileRoute("/_app/clusters")({
   head: () => ({ meta: [{ title: "Clusters" }] }),
@@ -10,42 +32,148 @@ export const Route = createFileRoute("/_app/clusters")({
 });
 
 function ClustersList() {
-  const { clusters, sources, addCluster } = useStore();
+  const { clusters: mockClusters, sources: mockSources, addCluster, setVault } = useStore();
+  const [vault, setBackendVault] = useState<VaultRecord | null>(null);
+  const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
+  const [backendSources, setBackendSources] = useState<Source[]>([]);
+  const [suggestions, setSuggestions] = useState<ClusterSuggestionRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function loadData() {
+    setLoading(true);
+    try {
+      const vaults = await listVaults();
+      const activeVault = vaults[0] ?? null;
+      setBackendVault(activeVault);
+      if (!activeVault) return;
+      setVault(activeVault.path);
+      await reindexVaultSearch(activeVault.id).catch(() => undefined);
+      const [clusterRows, sourceRows, suggestionRows] = await Promise.all([
+        listClusters(activeVault.id),
+        listSources(activeVault.id),
+        listClusterSuggestions(activeVault.id),
+      ]);
+      setBackendClusters(clusterRows.map(clusterFromRecord));
+      setBackendSources(sourceRows.map(sourceFromRecord));
+      setSuggestions(suggestionRows);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadData();
+  }, []);
+
+  const clusters = vault ? backendClusters : mockClusters;
+  const sources = vault ? backendSources : mockSources;
+  const sourceCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const source of sources) {
+      if (source.clusterId) counts.set(source.clusterId, (counts.get(source.clusterId) ?? 0) + 1);
+    }
+    return counts;
+  }, [sources]);
+
+  async function handleNewCluster() {
+    if (!vault) {
+      addCluster({ name: "New cluster" });
+      return;
+    }
+    await createCluster({
+      vault_id: vault.id,
+      name: "New cluster",
+      description: "",
+      color: nextTint(backendClusters.length),
+    });
+    await loadData();
+  }
+
+  async function acceptSuggestion(suggestion: ClusterSuggestionRecord) {
+    await updateSource(suggestion.source_id, { cluster_id: suggestion.suggested_cluster_id });
+    setMessage(`Moved "${suggestion.source_title}" to ${suggestion.suggested_cluster_name}.`);
+    await loadData();
+  }
+
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-8 py-10">
-        <div className="flex items-end justify-between">
+      <div className="mx-auto max-w-6xl px-8 py-8">
+        <div className="flex items-start justify-between gap-6">
           <div>
-            <h1 className="font-serif text-3xl">Clusters</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Clusters</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Spaces of context that inform your chats.
+              Review context spaces and apply suggested source moves.
             </p>
           </div>
-          <Button onClick={() => addCluster({ name: "New cluster" })}>
-            <Plus className="mr-1.5 h-4 w-4" /> New cluster
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => void loadData()} disabled={loading}>
+              <RefreshCw className="mr-1.5 h-4 w-4" /> Refresh
+            </Button>
+            <Button onClick={() => void handleNewCluster()}>
+              <Plus className="mr-1.5 h-4 w-4" /> New cluster
+            </Button>
+          </div>
         </div>
 
-        <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {clusters.map((c) => {
-            const count = sources.filter((s) => s.clusterId === c.id).length;
+        {message && (
+          <div className="mt-5 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
+            {message}
+          </div>
+        )}
+
+        {vault && (
+          <section className="mt-6 rounded-md border border-border bg-card">
+            <div className="border-b border-border px-4 py-3">
+              <h2 className="text-sm font-semibold">Suggested moves</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                These are review-only. Nothing changes until you accept a suggestion.
+              </p>
+            </div>
+            <div className="divide-y divide-border">
+              {suggestions.length === 0 ? (
+                <div className="px-4 py-4 text-sm text-muted-foreground">
+                  No cluster moves suggested right now.
+                </div>
+              ) : (
+                suggestions.map((suggestion) => (
+                  <div key={`${suggestion.source_id}-${suggestion.suggested_cluster_id}`} className="flex items-center gap-4 px-4 py-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium">{suggestion.source_title}</div>
+                      <div className="mt-1 text-sm text-muted-foreground">
+                        Suggested: {suggestion.suggested_cluster_name} / {(suggestion.confidence * 100).toFixed(0)}% confidence
+                      </div>
+                    </div>
+                    <Button size="sm" variant="outline" onClick={() => void acceptSuggestion(suggestion)}>
+                      <Check className="mr-1.5 h-4 w-4" /> Accept
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        )}
+
+        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {clusters.map((cluster) => {
+            const count = sourceCounts.get(cluster.id) ?? 0;
             return (
               <Link
-                key={c.id}
+                key={cluster.id}
                 to="/clusters/$clusterId"
-                params={{ clusterId: c.id }}
+                params={{ clusterId: cluster.id }}
                 className="group rounded-md border border-border bg-card p-4 transition-colors hover:bg-accent"
               >
                 <div className="flex items-center gap-2">
-                  <ClusterDot tint={c.tint} />
-                  <span className="font-medium">{c.name}</span>
+                  <ClusterDot tint={cluster.tint} />
+                  <span className="truncate font-medium">{cluster.name}</span>
                 </div>
                 <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">
-                  {c.summary || c.description}
+                  {cluster.summary || cluster.description || "No summary yet."}
                 </p>
                 <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
                   <span>{count} sources</span>
-                  <ExpertBadge status={c.expert} />
+                  <ExpertBadge status={cluster.expert} />
                 </div>
               </Link>
             );
@@ -54,4 +182,62 @@ function ClustersList() {
       </div>
     </div>
   );
+}
+
+function sourceFromRecord(record: SourceRecord): Source {
+  return {
+    id: record.id,
+    title: record.title,
+    type: normalizeSourceType(record.source_type),
+    clusterId: record.cluster_id,
+    state: normalizeSourceState(record.state),
+    updatedAt: record.updated_at,
+    preview: record.extracted_text || record.raw_text,
+    summary: record.summary,
+    tags: record.tags ?? [],
+    coverImageUrl: record.cover_image_url ?? undefined,
+    vaultPath: record.original_path ?? undefined,
+    localPath: record.original_path ?? undefined,
+    url: record.url ?? undefined,
+  };
+}
+
+function clusterFromRecord(record: ClusterRecord): Cluster {
+  return {
+    id: record.id,
+    name: record.name,
+    tint: normalizeTint(record.color),
+    description: record.description,
+    expert: normalizeExpertStatus(record.expert_status),
+    lastActive: record.updated_at,
+    summary: record.description,
+    styleProfile: "Style profile pending",
+  };
+}
+
+function nextTint(index: number) {
+  const tints: ClusterTint[] = ["sage", "sand", "sky", "blush", "lavender", "terracotta"];
+  return tints[index % tints.length];
+}
+
+function normalizeSourceType(value: string): SourceType {
+  return value === "file" || value === "link" || value === "note" || value === "image" ? value : "file";
+}
+
+function normalizeSourceState(value: string): SourceState {
+  return value === "waiting" || value === "extracting" || value === "indexed" || value === "needs-review" || value === "failed"
+    ? value
+    : "waiting";
+}
+
+function normalizeTint(value: string): ClusterTint {
+  return value === "sage" || value === "sand" || value === "sky" || value === "blush" || value === "lavender" || value === "terracotta"
+    ? value
+    : "sage";
+}
+
+function normalizeExpertStatus(value: string): ExpertStatus {
+  return value === "setting-up" || value === "learning" || value === "ready" || value === "needs-update" || value === "paused" || value === "issue"
+    ? value
+    : "setting-up";
 }

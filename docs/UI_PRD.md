@@ -2,7 +2,7 @@
 
 ## 1. UI Vision
 
-The app should feel like a welcoming AI workspace for personal context. Chat is the center of the experience. The surrounding UI helps the user see, shape, and trust the context clusters that inform the AI.
+The app should feel like a welcoming AI workspace for personal context. The first surface is a CML memory workspace where the user searches, inspects, and routes saved data. Chat remains a core workspace, but it should not be the first tab.
 
 The visual language should combine:
 
@@ -17,21 +17,21 @@ The user should never feel like they are managing models. They are managing spac
 The app has four persistent regions:
 
 - **Left sidebar**: vault, clusters, sources, saved chats.
-- **Center**: chat workspace.
+- **Center**: memory board, map, chat, or selected workspace.
 - **Right panel**: selected cluster/source/context inspector.
 - **Map layer**: visual cluster graph/globe that can be opened as a main view or compact side view.
 
-The first screen after onboarding should be the chat workspace, not a marketing-style landing page.
+The first screen after onboarding should be the Mind workspace, not chat and not a marketing-style landing page.
 
 ## 3. Navigation
 
 Primary navigation items:
 
-- Chat
-- Clusters
+- Mind
 - Sources
 - Map
-- Search
+- Clusters
+- Chat
 - Bridge
 - Settings
 
@@ -57,7 +57,7 @@ Required onboarding steps:
 3. Show indexing progress.
 4. Show suggested clusters.
 5. Let user confirm or rename clusters.
-6. Open chat with the new clusters available.
+6. Open the memory board with the new sources and clusters available.
 
 Onboarding should avoid technical language like embeddings, LoRA, vector index, or fine-tuning unless the user opens advanced details.
 
@@ -71,7 +71,7 @@ Preferred user-facing terms:
 
 ## 5. Chat Experience
 
-Chat is the main product surface.
+Chat is a core product surface, but the app should land on the memory board. Chat should be easy to reach from a selected source, cluster, or map detail.
 
 Required chat features:
 
@@ -196,12 +196,14 @@ V1 may use a 2D graph first if faster to build. The long-term target is an Obsid
 
 Map requirements:
 
-- Cluster nodes.
+- Cluster blobs on the overview, without visible lines between clusters by default.
 - Source nodes optionally visible.
-- Edge strength based on similarity.
-- Node size based on source count or activity.
-- Node glow/ring when local expert is learning.
-- Click node to inspect cluster.
+- Source/data point names hidden on the overview unless shown in a hover preview.
+- Similarity lines and source spokes may appear inside a selected cluster detail view.
+- Blob size based on source count or activity.
+- Blob glow/ring when local expert is learning.
+- Double-click cluster blob to open its connected data inside the map tab.
+- Hover source/data point to preview file name, text snippet, and open/reveal actions.
 - Drag/pan/zoom.
 - Search and focus node.
 - Filter by source type, recency, or expert status.
@@ -212,7 +214,7 @@ The map must not be decorative only. It should support navigation and cluster co
 
 The interface should be:
 
-- Warm.
+- Soft and refined.
 - Calm.
 - Spacious but not empty.
 - Easy for non-technical users.
@@ -228,9 +230,9 @@ Avoid:
 
 Recommended palette direction:
 
-- Neutral base.
+- Warm neutral base.
 - Soft accent colors per cluster.
-- Clear status colors.
+- Clear restrained status colors.
 - High contrast text.
 - Light and dark modes.
 
@@ -368,6 +370,8 @@ V1 UI is successful when:
 - User can see which cluster and sources informed an answer.
 - User can see local expert status for every cluster.
 - User can open a map view and use it to navigate clusters.
+- User lands on the memory board after onboarding.
+- User can search, filter, sort, add content, and open source detail from the Mind workspace.
 - User can enable/disable the Context Bridge.
 - User can copy MCP or CLI setup instructions.
 - User can see recent external context requests.

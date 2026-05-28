@@ -34,6 +34,7 @@ export interface Source {
   preview: string;
   summary: string;
   tags: string[];
+  coverImageUrl?: string;
   vaultPath?: string;
   localPath?: string;
   url?: string;
@@ -159,6 +160,10 @@ const seedSources: Source[] = [
     "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vivamus luctus urna sed urna ultricies ac tempor dui sagittis…",
   summary: "A short auto-generated summary of this source.",
   tags: [],
+  coverImageUrl:
+    type === "image"
+      ? "https://images.unsplash.com/photo-1497032628192-86f99bcd76bc?auto=format&fit=crop&w=900&q=80"
+      : undefined,
   vaultPath: `/Sources/${title as string}`,
   localPath:
     type === "link"

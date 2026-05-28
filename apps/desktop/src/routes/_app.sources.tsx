@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type DragEvent } from "react";
 import {
   useStore,
   sourceStateLabel,
@@ -12,10 +12,12 @@ import {
 } from "@/lib/mockStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { ClusterDot } from "@/components/ClusterChip";
 import {
-  createSource as createBackendSource,
   createSourceFromPath,
+  createSourceFromText,
+  createSourceFromUrl,
   deleteSource as deleteBackendSource,
   listClusters,
   listSources,
@@ -26,12 +28,31 @@ import {
   type VaultRecord,
 } from "@/lib/backend";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { File, FilePlus2, Link2, FileText, Image, Plus, RefreshCw, Trash2 } from "lucide-react";
+import {
+  ClipboardPaste,
+  File,
+  FilePlus2,
+  FolderPlus,
+  Link2,
+  FileText,
+  Image,
+  Plus,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 
 export const Route = createFileRoute("/_app/sources")({
   head: () => ({ meta: [{ title: "Sources" }] }),
@@ -62,6 +83,13 @@ function SourcesView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [ingestMessage, setIngestMessage] = useState<string | null>(null);
+  const [textDialogOpen, setTextDialogOpen] = useState(false);
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [textTitle, setTextTitle] = useState("Pasted note");
+  const [textBody, setTextBody] = useState("");
+  const [linkUrl, setLinkUrl] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
 
   async function refreshBackendSources() {
     setLoading(true);
@@ -102,18 +130,56 @@ function SourcesView() {
     s.title.toLowerCase().includes(q.toLowerCase()),
   ), [q, sources]);
 
-  async function handleAddSource() {
+  async function handleAddText() {
+    const text = textBody.trim();
+    const title = textTitle.trim() || "Pasted note";
+    if (!text) return;
+    setSubmitting(true);
     if (!vault) {
-      addSource({ title: "Untitled note", type: "note", state: "waiting" });
+      addSource({ title, type: "note", state: "indexed", preview: text });
+      setTextDialogOpen(false);
+      setSubmitting(false);
       return;
     }
-    await createBackendSource({
-      vault_id: vault.id,
-      title: "Untitled note",
-      source_type: "note",
-      raw_text: "",
-    });
-    await refreshBackendSources();
+    try {
+      await createSourceFromText({
+        vault_id: vault.id,
+        title,
+        text,
+      });
+      await refreshBackendSources();
+      setTextBody("");
+      setTextTitle("Pasted note");
+      setTextDialogOpen(false);
+      setIngestMessage(`Added "${title}" as a text source.`);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleAddLink() {
+    const url = linkUrl.trim();
+    if (!url) return;
+    setSubmitting(true);
+    if (!vault) {
+      addSource({ title: url, type: "link", state: "waiting", url });
+      setLinkDialogOpen(false);
+      setSubmitting(false);
+      return;
+    }
+    try {
+      setIngestMessage("Fetching link text...");
+      await createSourceFromUrl({
+        vault_id: vault.id,
+        url,
+      });
+      await refreshBackendSources();
+      setLinkUrl("");
+      setLinkDialogOpen(false);
+      setIngestMessage("Imported link text.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function handleAddFiles() {
@@ -122,15 +188,61 @@ function SourcesView() {
       return;
     }
     const paths = await window.cmlDesktop.selectSourceFiles();
-    if (paths.length === 0) return;
+    await importFilePaths(paths);
+  }
+
+  async function handleAddFolder() {
+    if (!vault || !window.cmlDesktop?.selectSourceFolders || !window.cmlDesktop?.listSupportedFiles) {
+      setIngestMessage("Folder import is available in the desktop app after a vault is created.");
+      return;
+    }
+    const folders = await window.cmlDesktop.selectSourceFolders();
+    const paths = await window.cmlDesktop.listSupportedFiles(folders);
+    await importFilePaths(paths);
+  }
+
+  async function importFilePaths(paths: string[]) {
+    if (!vault || paths.length === 0) return;
     setIngestMessage(`Importing ${paths.length} file${paths.length === 1 ? "" : "s"}...`);
+    const failures: string[] = [];
     let imported = 0;
     for (const path of paths) {
-      await createSourceFromPath({ vault_id: vault.id, path });
-      imported += 1;
+      try {
+        await createSourceFromPath({ vault_id: vault.id, path });
+        imported += 1;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "Import failed";
+        failures.push(`${fileNameFromPath(path)}: ${reason}`);
+      }
     }
     await refreshBackendSources();
-    setIngestMessage(`Imported ${imported} text/markdown file${imported === 1 ? "" : "s"}.`);
+    setIngestMessage(formatImportResult(imported, failures));
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    if (!vault || event.dataTransfer.types.includes("Files") === false) return;
+    event.preventDefault();
+    setDragActive(true);
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setDragActive(false);
+  }
+
+  async function handleDrop(event: DragEvent<HTMLDivElement>) {
+    if (!vault) return;
+    event.preventDefault();
+    setDragActive(false);
+    const droppedPaths = window.cmlDesktop?.getDroppedFilePaths?.(event.dataTransfer.files) ?? [];
+    const paths = window.cmlDesktop?.listSupportedFiles
+      ? await window.cmlDesktop.listSupportedFiles(droppedPaths)
+      : droppedPaths;
+    if (paths.length === 0) {
+      setIngestMessage("Drop import is available in the desktop app.");
+      return;
+    }
+    await importFilePaths(paths);
   }
 
   async function handleReindexSource(source: Source) {
@@ -153,7 +265,17 @@ function SourcesView() {
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div
+      className="relative flex h-full flex-col"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={(event) => void handleDrop(event)}
+    >
+      {dragActive && (
+        <div className="pointer-events-none absolute inset-3 z-30 flex items-center justify-center rounded-md border border-dashed border-primary bg-background/85 text-sm font-medium text-foreground">
+          Drop documents to import them
+        </div>
+      )}
       <header className="flex items-center gap-3 border-b border-border px-6 py-4">
         <h1 className="font-serif text-2xl">Sources</h1>
         <Input
@@ -168,16 +290,32 @@ function SourcesView() {
           className="ml-auto"
           onClick={() => void handleAddFiles()}
           disabled={!vault}
-          title="Imports TXT and Markdown files in this build."
+          title="Imports TXT, Markdown, DOCX, and PDF files in this build."
         >
           <FilePlus2 className="mr-1.5 h-4 w-4" /> Add files
         </Button>
         <Button
           size="sm"
           variant="outline"
-          onClick={() => void handleAddSource()}
+          onClick={() => void handleAddFolder()}
+          disabled={!vault}
+          title="Imports supported documents from synced folders like Drive, Dropbox, OneDrive, or iCloud."
         >
-          <Plus className="mr-1.5 h-4 w-4" /> Add source
+          <FolderPlus className="mr-1.5 h-4 w-4" /> Add folder
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setTextDialogOpen(true)}
+        >
+          <ClipboardPaste className="mr-1.5 h-4 w-4" /> Paste text
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setLinkDialogOpen(true)}
+        >
+          <Plus className="mr-1.5 h-4 w-4" /> Add link
         </Button>
       </header>
 
@@ -286,6 +424,25 @@ function SourcesView() {
                 </div>
                 <div>
                   <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                    Tags
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1.5">
+                    {selected.tags.length > 0 ? (
+                      selected.tags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="rounded-full border border-border bg-card px-2 py-0.5 text-[11px] text-muted-foreground"
+                        >
+                          {tag}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-muted-foreground">No tags yet.</span>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
                     Summary
                   </div>
                   <p className="mt-1">{selected.summary || "—"}</p>
@@ -319,6 +476,62 @@ function SourcesView() {
           )}
         </SheetContent>
       </Sheet>
+
+      <Dialog open={textDialogOpen} onOpenChange={setTextDialogOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Add Text</DialogTitle>
+            <DialogDescription>
+              Save pasted notes, chat excerpts, drafts, or copied text as a memory card.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Input
+              value={textTitle}
+              onChange={(event) => setTextTitle(event.target.value)}
+              placeholder="Source name"
+            />
+            <Textarea
+              value={textBody}
+              onChange={(event) => setTextBody(event.target.value)}
+              placeholder="Paste text here"
+              className="min-h-56 resize-none"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTextDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void handleAddText()} disabled={submitting || !textBody.trim()}>
+              Save text
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add Link</DialogTitle>
+            <DialogDescription>
+              Fetch readable text from a web page and store it as a link memory card.
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            value={linkUrl}
+            onChange={(event) => setLinkUrl(event.target.value)}
+            placeholder="https://example.com/article"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLinkDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void handleAddLink()} disabled={submitting || !linkUrl.trim()}>
+              Import link
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -333,7 +546,8 @@ function sourceFromRecord(record: SourceRecord): Source {
     updatedAt: record.updated_at,
     preview: record.extracted_text || record.raw_text,
     summary: record.summary,
-    tags: [],
+    tags: record.tags ?? [],
+    coverImageUrl: record.cover_image_url ?? undefined,
     vaultPath: record.original_path ?? undefined,
     localPath: record.original_path ?? undefined,
     url: record.url ?? undefined,
@@ -404,4 +618,16 @@ function StateChip({ state }: { state: Source["state"] }) {
       {sourceStateLabel[state]}
     </span>
   );
+}
+
+function fileNameFromPath(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+function formatImportResult(imported: number, failures: string[]) {
+  const importedLabel = `Imported ${imported} document${imported === 1 ? "" : "s"}`;
+  if (failures.length === 0) return `${importedLabel}.`;
+  const firstFailure = failures[0];
+  const more = failures.length > 1 ? ` and ${failures.length - 1} more` : "";
+  return `${importedLabel}. Failed ${failures.length}: ${firstFailure}${more}.`;
 }

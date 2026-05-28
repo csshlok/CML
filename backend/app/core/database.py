@@ -58,6 +58,8 @@ def init_db() -> None:
                 raw_text TEXT NOT NULL DEFAULT '',
                 extracted_text TEXT NOT NULL DEFAULT '',
                 summary TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '[]',
+                cover_image_url TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
@@ -71,8 +73,63 @@ def init_db() -> None:
                 mode TEXT NOT NULL DEFAULT 'context',
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS source_chunks (
+                id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                vault_id TEXT NOT NULL,
+                cluster_id TEXT,
+                chunk_index INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                embedding TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                scope_cluster_id TEXT,
+                saved INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (scope_cluster_id) REFERENCES clusters(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                clusters_used TEXT NOT NULL DEFAULT '[]',
+                citations TEXT NOT NULL DEFAULT '[]',
+                warnings TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_source_chunks_vault_id ON source_chunks(vault_id);
+            CREATE INDEX IF NOT EXISTS idx_source_chunks_cluster_id ON source_chunks(cluster_id);
+            CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id ON source_chunks(source_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_sessions_vault_id ON chat_sessions(vault_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);
             """
         )
+        _add_column_if_missing(conn, "sources", "tags", "TEXT NOT NULL DEFAULT '[]'")
+        _add_column_if_missing(conn, "sources", "cover_image_url", "TEXT")
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 @contextmanager

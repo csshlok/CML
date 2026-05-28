@@ -70,7 +70,6 @@
   --card-foreground: oklch(0.22 0.02 60);
   --popover: oklch(0.995 0.004 80);
   --popover-foreground: oklch(0.22 0.02 60);
-  /* muted clay primary */
   --primary: oklch(0.48 0.06 50);
   --primary-foreground: oklch(0.985 0.005 80);
   --secondary: oklch(0.955 0.012 80);
@@ -162,5 +161,25 @@
   .font-serif {
     font-family: "Instrument Serif", ui-serif, Georgia, serif;
     letter-spacing: -0.01em;
+  }
+
+  @keyframes cml-float {
+    0%, 100% {
+      transform: translate3d(-50%, -50%, 0);
+    }
+    50% {
+      transform: translate3d(-50%, calc(-50% - 10px), 0);
+    }
+  }
+
+  @keyframes cml-pulse-glow {
+    0%, 100% {
+      opacity: 0.72;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.08);
+    }
   }
 }

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.api.routes import bridge, clusters, sources, vaults
+from backend.app.api.routes import bridge, chat, clusters, search, sources, vaults
 from backend.app.core.config import get_settings
 from backend.app.core.database import init_db
 from backend.app.schemas import HealthResponse
@@ -32,4 +32,6 @@ def health() -> dict[str, str]:
 app.include_router(vaults.router, prefix=settings.api_prefix)
 app.include_router(clusters.router, prefix=settings.api_prefix)
 app.include_router(sources.router, prefix=settings.api_prefix)
+app.include_router(search.router, prefix=settings.api_prefix)
+app.include_router(chat.router, prefix=settings.api_prefix)
 app.include_router(bridge.router, prefix=settings.api_prefix)

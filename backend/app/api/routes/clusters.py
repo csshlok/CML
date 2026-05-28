@@ -2,8 +2,9 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 
+from backend.app.core.cluster_suggestions import suggest_source_cluster_moves
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.schemas import ClusterCreate, ClusterRead, ClusterUpdate
+from backend.app.schemas import ClusterCreate, ClusterRead, ClusterSuggestionRead, ClusterUpdate
 
 router = APIRouter(prefix="/clusters", tags=["clusters"])
 
@@ -50,6 +51,15 @@ def create_cluster(payload: ClusterCreate) -> dict:
             cluster,
         )
     return cluster
+
+
+@router.get("/suggestions", response_model=list[ClusterSuggestionRead])
+def list_cluster_suggestions(vault_id: str, limit: int = 12) -> list[dict]:
+    with connect() as conn:
+        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+        if vault is None:
+            raise HTTPException(status_code=404, detail="Vault not found")
+        return suggest_source_cluster_moves(conn, vault_id, limit=max(1, min(limit, 30)))
 
 
 @router.get("/{cluster_id}", response_model=ClusterRead)

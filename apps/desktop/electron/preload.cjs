@@ -1,8 +1,15 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("cmlDesktop", {
   platform: process.platform,
   openPath: (targetPath) => ipcRenderer.invoke("cml:open-path", targetPath),
   selectSourceFiles: () => ipcRenderer.invoke("cml:select-source-files"),
+  selectSourceFolders: () => ipcRenderer.invoke("cml:select-source-folders"),
+  selectCoverImage: () => ipcRenderer.invoke("cml:select-cover-image"),
+  listSupportedFiles: (targetPaths) => ipcRenderer.invoke("cml:list-supported-files", targetPaths),
+  getDroppedFilePaths: (files) =>
+    Array.from(files)
+      .map((file) => webUtils.getPathForFile(file))
+      .filter(Boolean),
   showItemInFolder: (targetPath) => ipcRenderer.invoke("cml:show-item-in-folder", targetPath),
 });

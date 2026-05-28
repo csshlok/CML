@@ -26,16 +26,16 @@ The core product contract is:
 
 ## Current state
 
-Stage 1 is in progress. The repo currently has a working Electron/Vite desktop workspace, a local FastAPI backend, SQLite-backed CRUD routes for vaults/clusters/sources, a bridge status/request API, backend-aware Settings and Sources screens, and a redesigned map prototype with cluster anchors, unlabeled data points, hover previews, and in-map cluster detail.
+Stage 1 is in progress. The repo currently has a working Electron/Vite desktop workspace, a local FastAPI backend, SQLite-backed CRUD routes for vaults/clusters/sources, TXT/Markdown/DOCX/PDF/pasted-text/link ingestion, drag-and-drop document import in the desktop shell, local synced-folder import for Drive/Dropbox/OneDrive/iCloud-style folders, per-file batch import failure reporting, generated source summaries/tags, link title/image metadata, local chunk/embedding storage, semantic search, vector-based cluster move suggestions, retrieval-grounded chat context routing with citations, a bridge status/request API, backend-aware Settings/Sources/Clusters/Chat screens, and a redesigned map prototype with cluster anchors, unlabeled data points, hover previews, and in-map cluster detail.
 
-The next major build target is real ingestion: file picker/drop path -> backend source record -> text extraction for `.txt` and `.md` first, then PDF/DOCX and OCR.
+The next major build target is improving chat synthesis and wiring Context Bridge to semantic retrieval.
 
 ## Prerequisites
 
 - Node.js 18+.
 - Python 3.11+ recommended for future ML libraries. The current environment is using Python 3.14 for the lightweight backend.
 - Windows is the first development target.
-- Optional later dependencies: local model runtime, embedding model, PDF/DOCX/OCR libraries.
+- Optional later dependencies: local model runtime, embedding model, and OCR libraries.
 
 Recommended Python virtual environment:
 
@@ -102,9 +102,16 @@ The Electron shell opens the same local UI through `npm run dev`.
 - `DELETE /api/v1/clusters/{cluster_id}` - remove a cluster.
 - `GET /api/v1/sources` - list sources, optionally by `vault_id` or `cluster_id`.
 - `POST /api/v1/sources` - create a source record.
+- `POST /api/v1/sources/from-path` - import a local TXT/Markdown/DOCX/PDF file path.
+- `POST /api/v1/sources/from-text` - import pasted text.
+- `POST /api/v1/sources/from-url` - fetch and import readable link text.
 - `GET /api/v1/sources/{source_id}` - fetch one source.
 - `PATCH /api/v1/sources/{source_id}` - update source assignment, text, state, or summary.
 - `DELETE /api/v1/sources/{source_id}` - remove a source.
+- `POST /api/v1/search/semantic` - search indexed source chunks by local semantic similarity.
+- `POST /api/v1/search/reindex/{vault_id}` - rebuild local search chunks for indexed sources.
+- `GET /api/v1/clusters/suggestions` - review vector-based source-to-cluster move suggestions.
+- `POST /api/v1/chat/context` - build a retrieval-grounded chat draft with clusters used and citations.
 - `GET /api/v1/bridge/status` - Context Bridge status.
 - `POST /api/v1/bridge/context` - request selected context for an external local client.
 - `GET /api/v1/bridge/requests` - recent bridge request history.

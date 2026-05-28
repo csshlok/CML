@@ -1,7 +1,32 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { useStore, streamMockReply, newId, Cluster } from "@/lib/mockStore";
+import {
+  useStore,
+  streamMockReply,
+  newId,
+  type Cluster,
+  type ClusterTint,
+  type ExpertStatus,
+  type Source,
+  type SourceState,
+  type SourceType,
+} from "@/lib/mockStore";
+import {
+  buildChatContext,
+  getChatSession,
+  listClusters,
+  listSources,
+  listVaults,
+  reindexVaultSearch,
+  updateChatSession,
+  type ClusterRecord,
+  type ChatMessageRecord,
+  type ChatSessionRecord,
+  type SourceRecord,
+  type VaultRecord,
+} from "@/lib/backend";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -47,13 +72,68 @@ function ChatView() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState("");
+  const [vault, setVaultRecord] = useState<VaultRecord | null>(null);
+  const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
+  const [backendSources, setBackendSources] = useState<Source[]>([]);
+  const [backendReady, setBackendReady] = useState(false);
+  const [backendSessionId, setBackendSessionId] = useState<string | null>(null);
+  const [backendSession, setBackendSession] = useState<ChatSessionRecord | null>(null);
+  const [backendMessages, setBackendMessages] = useState<import("@/lib/mockStore").ChatMessage[]>([]);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [loadingSession, setLoadingSession] = useState(true);
   const endRef = useRef<HTMLDivElement>(null);
+
+  async function loadBackendContext() {
+    try {
+      const vaults = await listVaults();
+      const activeVault = vaults[0] ?? null;
+      setVaultRecord(activeVault);
+      if (!activeVault) return;
+      await reindexVaultSearch(activeVault.id).catch(() => undefined);
+      const [clusterRows, sourceRows] = await Promise.all([
+        listClusters(activeVault.id),
+        listSources(activeVault.id),
+      ]);
+      setBackendClusters(clusterRows.map(clusterFromRecord));
+      setBackendSources(sourceRows.map(sourceFromRecord));
+      try {
+        const session = await getChatSession(chatId);
+        setBackendSession(session);
+        setBackendSessionId(session.id);
+        setBackendMessages(session.messages.map(messageFromRecord));
+      } catch {
+        setBackendSession(null);
+        setBackendMessages([]);
+      }
+      setBackendReady(true);
+    } catch {
+      setBackendReady(false);
+    } finally {
+      setLoadingSession(false);
+    }
+  }
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chat?.messages.length, streamText]);
+  }, [chat?.messages.length, backendMessages.length, streamText]);
 
-  if (!chat) {
+  useEffect(() => {
+    void loadBackendContext();
+  }, []);
+
+  useEffect(() => {
+    setTitleDraft(backendSession?.title ?? chat?.title ?? "New chat");
+  }, [backendSession?.title, chat?.title]);
+
+  if (loadingSession && !chat && !backendSession) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        Loading chat...
+      </div>
+    );
+  }
+
+  if (!chat && !backendSession) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
         Chat not found.
@@ -61,24 +141,130 @@ function ChatView() {
     );
   }
 
-  const scope = chat.scopeClusterId
-    ? clusters.find((c) => c.id === chat.scopeClusterId) ?? null
+  const activeClusters = backendReady ? backendClusters : clusters;
+  const activeSources = backendReady ? backendSources : sources;
+  const messages = backendSession ? backendMessages : chat?.messages ?? [];
+  const scopeClusterId = backendSession?.scope_cluster_id ?? chat?.scopeClusterId ?? null;
+  const saved = backendSession?.saved ?? chat?.saved ?? false;
+
+  const scope = scopeClusterId
+    ? activeClusters.find((c) => c.id === scopeClusterId) ?? null
     : null;
 
-  const setScope = (val: string) => {
-    // recreate chat with new scope (simple mock)
+  const setScope = async (val: string) => {
+    const nextScope = val === "global" ? null : val;
+    if (backendSession) {
+      try {
+        const updated = await updateChatSession(backendSession.id, {
+          scope_cluster_id: nextScope,
+        });
+        setBackendSession(updated);
+      } catch {
+        // Keep the current scope visible if the backend update fails.
+      }
+      return;
+    }
     const c = createChat(val === "global" ? null : val);
     navigate({ to: "/chat/$chatId", params: { chatId: c.id } });
+  };
+
+  const toggleSaved = async () => {
+    if (backendSession) {
+      try {
+        const updated = await updateChatSession(backendSession.id, { saved: !backendSession.saved });
+        setBackendSession(updated);
+      } catch {
+        // Preserve the current saved state if the backend update fails.
+      }
+      return;
+    }
+    if (chat) saveChat(chat.id, !chat.saved);
+  };
+
+  const commitTitle = async () => {
+    const nextTitle = titleDraft.trim();
+    if (!backendSession || !nextTitle || nextTitle === backendSession.title) return;
+    try {
+      const updated = await updateChatSession(backendSession.id, { title: nextTitle });
+      setBackendSession(updated);
+    } catch {
+      setTitleDraft(backendSession.title);
+    }
   };
 
   const send = async () => {
     if (!input.trim()) return;
     const userMsg = { id: newId(), role: "user" as const, content: input.trim() };
-    appendMessage(chat.id, userMsg);
+    if (backendSession) {
+      setBackendMessages((current) => [...current, userMsg]);
+    } else if (chat) {
+      appendMessage(chat.id, userMsg);
+    }
     const prompt = input.trim();
     setInput("");
     setStreaming(true);
     setStreamText("");
+    if (backendReady && vault) {
+      try {
+        const response = await buildChatContext({
+          vault_id: vault.id,
+          prompt,
+          cluster_id: scope?.id ?? null,
+          session_id: backendSessionId,
+          persist: true,
+          limit: 6,
+        });
+        setBackendSessionId(response.session_id);
+        setStreamText(response.answer);
+        const assistantMessage = {
+          id: newId(),
+          role: "assistant",
+          content: response.answer,
+          clustersUsed: response.clusters_used.map((cluster) => ({
+            clusterId: cluster.cluster_id,
+            reason: cluster.reason,
+          })),
+          citations: response.citations.map((citation) => ({
+            sourceId: citation.source_id,
+            snippet: citation.snippet,
+          })),
+          useful: null,
+        } satisfies import("@/lib/mockStore").ChatMessage;
+        if (backendSession) {
+          setBackendMessages((current) => [...current, assistantMessage]);
+          if (response.session_id) {
+            try {
+              const refreshed = await getChatSession(response.session_id);
+              setBackendSession(refreshed);
+              setBackendMessages(refreshed.messages.map(messageFromRecord));
+            } catch {
+              // Optimistic messages above remain usable until the next refresh.
+            }
+          }
+        } else if (chat) {
+          appendMessage(chat.id, assistantMessage);
+        }
+      } catch (error) {
+        const errorMessage = {
+          id: newId(),
+          role: "assistant",
+          content:
+            error instanceof Error
+              ? `I could not retrieve local context: ${error.message}`
+              : "I could not retrieve local context.",
+          useful: null,
+        } satisfies import("@/lib/mockStore").ChatMessage;
+        if (backendSession) {
+          setBackendMessages((current) => [...current, errorMessage]);
+        } else if (chat) {
+          appendMessage(chat.id, errorMessage);
+        }
+      } finally {
+        setStreaming(false);
+        setStreamText("");
+      }
+      return;
+    }
     let full = "";
     for await (const chunk of streamMockReply(prompt, scope)) {
       full += chunk;
@@ -87,11 +273,11 @@ function ChatView() {
     // pick clusters used
     const usedClusters = scope
       ? [{ clusterId: scope.id, reason: "selected scope" }]
-      : clusters.slice(0, 2).map((c, i) => ({
+      : activeClusters.slice(0, 2).map((c, i) => ({
           clusterId: c.id,
           reason: i === 0 ? "style" : "facts",
         }));
-    const usedSources = sources
+    const usedSources = activeSources
       .filter((s) =>
         usedClusters.some((u) => u.clusterId === s.clusterId) && s.state === "indexed",
       )
@@ -100,7 +286,7 @@ function ChatView() {
         sourceId: s.id,
         snippet: s.preview.slice(0, 80) + "…",
       }));
-    appendMessage(chat.id, {
+    if (chat) appendMessage(chat.id, {
       id: newId(),
       role: "assistant",
       content: full.trim(),
@@ -115,9 +301,22 @@ function ChatView() {
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-3 border-b border-border bg-card/40 px-6 py-3">
-        <div className="text-xs uppercase tracking-wider text-muted-foreground">Scope</div>
+        <Input
+          value={titleDraft}
+          onChange={(event) => setTitleDraft(event.target.value)}
+          onBlur={commitTitle}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.currentTarget.blur();
+            }
+          }}
+          disabled={!backendSession}
+          aria-label="Chat title"
+          className="h-8 w-56 border-transparent bg-transparent px-2 text-sm font-medium disabled:opacity-100"
+        />
+        <div className="text-xs text-muted-foreground">Scope</div>
         <Select
-          value={chat.scopeClusterId ?? "global"}
+          value={scopeClusterId ?? "global"}
           onValueChange={setScope}
         >
           <SelectTrigger className="h-8 w-56">
@@ -125,7 +324,7 @@ function ChatView() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="global">Global — all clusters</SelectItem>
-            {clusters.map((c) => (
+            {activeClusters.map((c) => (
               <SelectItem key={c.id} value={c.id}>
                 {c.name}
               </SelectItem>
@@ -136,22 +335,22 @@ function ChatView() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => saveChat(chat.id, !chat.saved)}
+            onClick={toggleSaved}
           >
-            <Bookmark className={"h-4 w-4 " + (chat.saved ? "fill-current" : "")} />
-            {chat.saved ? "Saved" : "Save"}
+            <Bookmark className={"h-4 w-4 " + (saved ? "fill-current" : "")} />
+            {saved ? "Saved" : "Save"}
           </Button>
           <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-            Local only
+            {backendReady ? "Semantic context" : "Mock context"}
           </span>
         </div>
       </header>
 
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-2xl px-6 py-8">
-          {chat.messages.length === 0 && !streaming && (
+          {messages.length === 0 && !streaming && (
             <div className="text-center text-muted-foreground">
-              <p className="font-serif text-2xl text-foreground">
+              <p className="text-lg font-medium text-foreground">
                 Ask anything across your context.
               </p>
               <p className="mt-2 text-sm">
@@ -162,13 +361,15 @@ function ChatView() {
             </div>
           )}
           <div className="space-y-6">
-            {chat.messages.map((m) => (
+            {messages.map((m) => (
               <Message
                 key={m.id}
                 msg={m}
-                clusters={clusters}
-                sources={sources}
-                onUseful={(v) => setMessageUseful(chat.id, m.id, v)}
+                clusters={activeClusters}
+                sources={activeSources}
+                onUseful={(v) => {
+                  if (chat) setMessageUseful(chat.id, m.id, v);
+                }}
               />
             ))}
             {streaming && (
@@ -212,6 +413,23 @@ function ChatView() {
       </div>
     </div>
   );
+}
+
+function messageFromRecord(record: ChatMessageRecord): import("@/lib/mockStore").ChatMessage {
+  return {
+    id: record.id,
+    role: record.role,
+    content: record.content,
+    clustersUsed: record.clusters_used.map((cluster) => ({
+      clusterId: cluster.cluster_id,
+      reason: cluster.reason,
+    })),
+    citations: record.citations.map((citation) => ({
+      sourceId: citation.source_id,
+      snippet: citation.snippet,
+    })),
+    useful: null,
+  };
 }
 
 function Message({
@@ -297,4 +515,57 @@ function Message({
       </div>
     </div>
   );
+}
+
+function sourceFromRecord(record: SourceRecord): Source {
+  return {
+    id: record.id,
+    title: record.title,
+    type: normalizeSourceType(record.source_type),
+    clusterId: record.cluster_id,
+    state: normalizeSourceState(record.state),
+    updatedAt: record.updated_at,
+    preview: record.extracted_text || record.raw_text,
+    summary: record.summary,
+    tags: record.tags ?? [],
+    coverImageUrl: record.cover_image_url ?? undefined,
+    vaultPath: record.original_path ?? undefined,
+    localPath: record.original_path ?? undefined,
+    url: record.url ?? undefined,
+  };
+}
+
+function clusterFromRecord(record: ClusterRecord): Cluster {
+  return {
+    id: record.id,
+    name: record.name,
+    tint: normalizeTint(record.color),
+    description: record.description,
+    expert: normalizeExpertStatus(record.expert_status),
+    lastActive: record.updated_at,
+    summary: record.description,
+    styleProfile: "Style profile pending",
+  };
+}
+
+function normalizeSourceType(value: string): SourceType {
+  return value === "file" || value === "link" || value === "note" || value === "image" ? value : "file";
+}
+
+function normalizeSourceState(value: string): SourceState {
+  return value === "waiting" || value === "extracting" || value === "indexed" || value === "needs-review" || value === "failed"
+    ? value
+    : "waiting";
+}
+
+function normalizeTint(value: string): ClusterTint {
+  return value === "sage" || value === "sand" || value === "sky" || value === "blush" || value === "lavender" || value === "terracotta"
+    ? value
+    : "sage";
+}
+
+function normalizeExpertStatus(value: string): ExpertStatus {
+  return value === "setting-up" || value === "learning" || value === "ready" || value === "needs-update" || value === "paused" || value === "issue"
+    ? value
+    : "setting-up";
 }

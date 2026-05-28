@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import {
   ArrowLeft,
   ExternalLink,
   FolderOpen,
+  Minus,
+  Plus,
   RotateCcw,
   Settings2,
   Zap,
@@ -13,20 +15,6 @@ import { expertLabel, useStore, type Cluster, type Source } from "@/lib/mockStor
 
 type Point = { x: number; y: number };
 
-type ClusterPoint = {
-  cluster: Cluster;
-  count: number;
-  point: Point;
-  radius: number;
-};
-
-type DataPoint = {
-  source: Source;
-  clusterId: string;
-  point: Point;
-  radius: number;
-};
-
 const tintHex: Record<Cluster["tint"], string> = {
   sage: "#7f9f79",
   sand: "#b8a86f",
@@ -36,30 +24,39 @@ const tintHex: Record<Cluster["tint"], string> = {
   terracotta: "#b17758",
 };
 
-const positions = [
-  { x: 0.5, y: 0.28 },
-  { x: 0.72, y: 0.62 },
-  { x: 0.28, y: 0.62 },
-  { x: 0.22, y: 0.34 },
-  { x: 0.78, y: 0.34 },
-  { x: 0.5, y: 0.76 },
+const layoutSeeds = [
+  { x: 0.46, y: 0.45 },
+  { x: 0.62, y: 0.5 },
+  { x: 0.34, y: 0.55 },
+  { x: 0.53, y: 0.28 },
+  { x: 0.73, y: 0.34 },
+  { x: 0.27, y: 0.33 },
+  { x: 0.42, y: 0.72 },
+  { x: 0.68, y: 0.72 },
 ] as const;
 
 export function ClusterMap({
   showSources = true,
   focusClusterId,
+  clusters: providedClusters,
+  sources: providedSources,
 }: {
   showSources?: boolean;
   focusClusterId?: string;
+  clusters?: Cluster[];
+  sources?: Source[];
 }) {
-  const { clusters, sources } = useStore();
+  const store = useStore();
+  const clusters = providedClusters ?? store.clusters;
+  const sources = providedSources ?? store.sources;
   const containerRef = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState({ w: 900, h: 600 });
-  const [mounted, setMounted] = useState(false);
+  const dragRef = useRef<{ id: string; dx: number; dy: number } | null>(null);
+  const [size, setSize] = useState({ w: 900, h: 620 });
+  const [zoom, setZoom] = useState(1);
+  const [manualPositions, setManualPositions] = useState<Record<string, Point>>({});
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(focusClusterId ?? null);
 
   useEffect(() => {
-    setMounted(true);
     if (!containerRef.current) return;
     const ro = new ResizeObserver(([entry]) => {
       if (entry) setSize({ w: entry.contentRect.width, h: entry.contentRect.height });
@@ -68,238 +65,278 @@ export function ClusterMap({
     return () => ro.disconnect();
   }, []);
 
-  const layout = useMemo(() => {
-    const visibleClusters = selectedClusterId
-      ? clusters.filter((cluster) => cluster.id === selectedClusterId)
-      : clusters;
+  const clusterPoints = useMemo(() => {
+    const marginX = Math.max(86, size.w * 0.09);
+    const marginY = Math.max(76, size.h * 0.12);
+    const usableW = Math.max(360, size.w - marginX * 2);
+    const usableH = Math.max(320, size.h - marginY * 2);
 
-    const marginX = Math.max(96, size.w * 0.1);
-    const marginY = Math.max(82, size.h * 0.12);
-    const usableW = Math.max(320, size.w - marginX * 2);
-    const usableH = Math.max(260, size.h - marginY * 2);
-
-    const clusterPoints: ClusterPoint[] = visibleClusters.map((cluster, index) => {
+    return clusters.map((cluster, index) => {
+      const seed = layoutSeeds[index % layoutSeeds.length];
       const count = sources.filter((source) => source.clusterId === cluster.id).length;
-      const pos = visibleClusters.length === 1 ? { x: 0.5, y: 0.5 } : positions[index % positions.length];
+      const basePoint = {
+        x: marginX + seed.x * usableW,
+        y: marginY + seed.y * usableH,
+      };
       return {
         cluster,
         count,
-        point: {
-          x: marginX + pos.x * usableW,
-          y: marginY + pos.y * usableH,
-        },
-        radius: 8 + Math.min(16, Math.sqrt(Math.max(1, count)) * 5),
+        point: manualPositions[cluster.id] ?? basePoint,
+        radius: 34 + Math.min(44, Math.sqrt(Math.max(1, count)) * 14),
       };
     });
+  }, [clusters, manualPositions, size.h, size.w, sources]);
 
-    const dataPoints: DataPoint[] = [];
-    if (showSources) {
-      for (const clusterPoint of clusterPoints) {
-        const clusterSources = sources
-          .filter((source) => source.clusterId === clusterPoint.cluster.id)
-          .slice(0, 12);
-        const feedDistance = 54 + clusterPoint.radius * 1.2;
-        const arcStart = clusterPoint.point.x < size.w / 2 ? -0.55 : Math.PI - 0.55;
-        const spread = Math.min(Math.PI * 1.2, 0.42 * Math.max(2, clusterSources.length));
-
-        clusterSources.forEach((source, index) => {
-          const centeredIndex = index - (clusterSources.length - 1) / 2;
-          const angle = arcStart + centeredIndex * (spread / Math.max(1, clusterSources.length - 1));
-          const stagger = 1 + (index % 3) * 0.16;
-          dataPoints.push({
-            source,
-            clusterId: clusterPoint.cluster.id,
-            radius: source.state === "indexed" ? 4 : 3,
-            point: {
-              x: clusterPoint.point.x + Math.cos(angle) * feedDistance * stagger,
-              y: clusterPoint.point.y + Math.sin(angle) * feedDistance * 0.82 * stagger,
-            },
-          });
-        });
-      }
-    }
-
-    return { clusterPoints, dataPoints };
-  }, [clusters, selectedClusterId, showSources, size.h, size.w, sources]);
-
-  const selectedCluster = selectedClusterId
-    ? clusters.find((cluster) => cluster.id === selectedClusterId) ?? null
-    : null;
+  const selectedCluster =
+    selectedClusterId ? clusters.find((cluster) => cluster.id === selectedClusterId) ?? null : null;
   const selectedSources = selectedCluster
     ? sources.filter((source) => source.clusterId === selectedCluster.id)
     : [];
+  const looseSources = sources.filter((source) => !source.clusterId);
+
+  const sourcePoints = useMemo(() => {
+    if (!selectedCluster) return [];
+    const center = { x: size.w * 0.45, y: size.h * 0.5 };
+    const radius = Math.min(290, Math.max(165, selectedSources.length * 18));
+    return selectedSources.slice(0, 18).map((source, index) => {
+      const angle = -Math.PI * 0.9 + index * ((Math.PI * 1.8) / Math.max(1, selectedSources.length - 1));
+      return {
+        source,
+        point: {
+          x: center.x + Math.cos(angle) * radius,
+          y: center.y + Math.sin(angle) * radius * 0.72,
+        },
+      };
+    });
+  }, [selectedCluster, selectedSources, size.h, size.w]);
+
+  function handlePointerDown(event: PointerEvent<HTMLButtonElement>, clusterId: string) {
+    const point = clusterPoints.find((item) => item.cluster.id === clusterId)?.point;
+    if (!point) return;
+    dragRef.current = {
+      id: clusterId,
+      dx: event.clientX / zoom - point.x,
+      dy: event.clientY / zoom - point.y,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (!dragRef.current || selectedCluster) return;
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const next = {
+      x: (event.clientX - rect.left) / zoom - dragRef.current.dx,
+      y: (event.clientY - rect.top) / zoom - dragRef.current.dy,
+    };
+    setManualPositions((current) => ({ ...current, [dragRef.current!.id]: next }));
+  }
+
+  function stopDrag() {
+    dragRef.current = null;
+  }
 
   return (
-    <div ref={containerRef} className="relative h-full w-full overflow-hidden bg-[#fbfaf7]">
-      {!mounted ? null : (
-        <>
-      <svg className="absolute inset-0 h-full w-full" role="presentation">
-        <defs>
-          <pattern id="atlas-grid" width="32" height="32" patternUnits="userSpaceOnUse">
-            <path d="M32 0H0V32" fill="none" stroke="rgba(74,66,56,0.045)" />
-          </pattern>
-          <radialGradient id="cluster-halo">
-            <stop offset="0%" stopColor="rgba(255,255,255,0.92)" />
-            <stop offset="100%" stopColor="rgba(255,255,255,0)" />
-          </radialGradient>
-        </defs>
-
-        <rect width="100%" height="100%" fill="url(#atlas-grid)" />
-        <g opacity="0.42">
-          {layout.clusterPoints.map((a, index) =>
-            layout.clusterPoints.slice(index + 1).map((b) => {
-              const strength = similarityStrength(a, b);
-              return (
-                <path
-                  key={`${a.cluster.id}-${b.cluster.id}`}
-                  d={arcPath(a.point, b.point)}
-                  fill="none"
-                  stroke="rgba(67,59,50,0.42)"
-                  strokeDasharray={strength > 0.7 ? "none" : "4 7"}
-                  strokeLinecap="round"
-                  strokeWidth={0.65 + strength * 1.2}
-                />
-              );
-            }),
-          )}
-        </g>
-
-        {layout.dataPoints.map((dataPoint) => {
-          const clusterPoint = layout.clusterPoints.find(
-            (point) => point.cluster.id === dataPoint.clusterId,
-          );
-          if (!clusterPoint) return null;
-          return (
-            <line
-              key={`${dataPoint.clusterId}-${dataPoint.source.id}`}
-              x1={dataPoint.point.x}
-              y1={dataPoint.point.y}
-              x2={clusterPoint.point.x}
-              y2={clusterPoint.point.y}
-              stroke="rgba(67,59,50,0.18)"
-              strokeWidth="0.8"
-            />
-          );
-        })}
-
-        {layout.clusterPoints.map((point) => (
-          <circle
-            key={`${point.cluster.id}-halo`}
-            cx={point.point.x}
-            cy={point.point.y}
-            r={point.radius + 34}
-            fill="url(#cluster-halo)"
-          />
-        ))}
-      </svg>
-
-      {layout.dataPoints.map((dataPoint) => {
-        const clusterPoint = layout.clusterPoints.find(
-          (point) => point.cluster.id === dataPoint.clusterId,
-        );
-        return (
-          <div
-            key={dataPoint.source.id}
-            className="group absolute z-[5] -translate-x-1/2 -translate-y-1/2"
-            style={{
-              left: dataPoint.point.x,
-              top: dataPoint.point.y,
-            }}
-          >
-            <button
-              className="rounded-full border border-background shadow-[0_3px_10px_rgba(45,39,33,0.16)] transition group-hover:scale-150"
-              style={{
-              width: dataPoint.radius * 2 + 3,
-              height: dataPoint.radius * 2 + 3,
-              background: clusterPoint ? tintHex[clusterPoint.cluster.tint] : "#9a9288",
-            }}
-              aria-label={dataPoint.source.title}
-            />
-            <SourcePreview source={dataPoint.source} />
-          </div>
-        );
-      })}
-
-      {layout.clusterPoints.map((clusterPoint) => (
-        <button
-          key={clusterPoint.cluster.id}
-          className="absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/90 bg-background text-left shadow-[0_10px_30px_rgba(45,39,33,0.16)] transition hover:scale-[1.04]"
-          style={{
-            left: clusterPoint.point.x,
-            top: clusterPoint.point.y,
-            width: clusterPoint.radius * 2,
-            height: clusterPoint.radius * 2,
-            background: tintHex[clusterPoint.cluster.tint],
-            boxShadow:
-              clusterPoint.cluster.expert === "learning"
-                ? `0 0 0 8px color-mix(in oklab, ${tintHex[clusterPoint.cluster.tint]} 22%, transparent), 0 14px 34px rgba(45,39,33,0.16)`
-                : undefined,
-          }}
-          onClick={() => setSelectedClusterId(clusterPoint.cluster.id)}
-          aria-label={`Open ${clusterPoint.cluster.name}`}
-        />
-      ))}
-
-      {layout.clusterPoints.map((clusterPoint) => (
-        <div
-          key={`${clusterPoint.cluster.id}-label`}
-          className="pointer-events-none absolute z-10 -translate-x-1/2"
-          style={{
-            left: clusterPoint.point.x,
-            top: clusterPoint.point.y + clusterPoint.radius + 10,
-            width: 180,
-          }}
-        >
-          <div className="truncate text-center text-sm font-medium text-foreground">
-            {clusterPoint.cluster.name}
-          </div>
-          <div className="mt-0.5 text-center text-[11px] text-muted-foreground">
-            {clusterPoint.count} sources
-          </div>
-        </div>
-      ))}
-
-      <div className="pointer-events-none absolute left-5 top-5 max-w-72 rounded-md border border-border/70 bg-background/75 px-3 py-2 text-xs text-muted-foreground shadow-sm backdrop-blur">
+    <div
+      ref={containerRef}
+      className="relative h-full w-full overflow-hidden bg-background"
+      onPointerMove={handlePointerMove}
+      onPointerUp={stopDrag}
+      onPointerCancel={stopDrag}
+    >
+      <div
+        className="absolute inset-0"
+        style={{
+          transform: `scale(${zoom})`,
+          transformOrigin: "center center",
+        }}
+      >
         {selectedCluster ? (
-          <>
-            <div className="font-medium text-foreground">{selectedCluster.name}</div>
-            <div className="mt-0.5">
-              Cluster detail view. Connected data points and adapter state are shown here.
-            </div>
-          </>
+          <ClusterDetailMap
+            cluster={selectedCluster}
+            sources={sourcePoints}
+            center={{ x: size.w * 0.45, y: size.h * 0.5 }}
+          />
         ) : (
           <>
-            <div className="font-medium text-foreground">Context atlas</div>
-            <div className="mt-0.5">
-              Larger anchors hold more material. Fine lines show data feeding each cluster and
-              similarity between clusters.
-            </div>
+            {clusterPoints.map(({ cluster, count, point, radius }) => (
+              <div
+                key={cluster.id}
+                className="absolute z-10 -translate-x-1/2 -translate-y-1/2 text-center"
+                style={{ left: point.x, top: point.y }}
+              >
+                <button
+                  className="relative rounded-full text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  style={{
+                    width: radius * 2,
+                    height: radius * 2,
+                  }}
+                  onDoubleClick={() => setSelectedClusterId(cluster.id)}
+                  onPointerDown={(event) => handlePointerDown(event, cluster.id)}
+                  aria-label={`Open ${cluster.name}`}
+                  type="button"
+                >
+                  <span
+                    className="absolute inset-0 rounded-full blur-lg"
+                    style={{
+                      background: `radial-gradient(circle, ${tintHex[cluster.tint]} 0%, color-mix(in oklab, ${tintHex[cluster.tint]} 42%, white) 42%, transparent 74%)`,
+                      animation:
+                        cluster.expert === "learning" ? "cml-pulse-glow 3.2s ease-in-out infinite" : undefined,
+                    }}
+                  />
+                  <span
+                    className="absolute inset-[26%] rounded-full"
+                    style={{ background: tintHex[cluster.tint], opacity: 0.72 }}
+                  />
+                  <span className="sr-only">{count} sources</span>
+                </button>
+                <div className="mt-2 max-w-36 text-sm font-medium leading-tight text-foreground">
+                  {cluster.name}
+                </div>
+                <div className="mt-0.5 text-xs text-muted-foreground">{count} sources</div>
+              </div>
+            ))}
+
+            {showSources &&
+              looseSources.slice(0, 24).map((source, index) => {
+                const seed = layoutSeeds[(index + 3) % layoutSeeds.length];
+                const x = size.w * (0.12 + seed.x * 0.76) + Math.sin(index * 1.7) * 42;
+                const y = size.h * (0.16 + seed.y * 0.7) + Math.cos(index * 1.3) * 34;
+                return (
+                  <div
+                    key={source.id}
+                    className="group absolute z-[6] -translate-x-1/2 -translate-y-1/2"
+                    style={{ left: x, top: y }}
+                  >
+                    <button
+                      className="h-5 w-5 rounded-full border border-white/80 bg-white/80 shadow-[0_0_22px_rgba(255,255,255,0.88)] transition group-hover:scale-125"
+                      aria-label={source.title}
+                      type="button"
+                    />
+                    <SourcePreview source={source} />
+                  </div>
+                );
+              })}
           </>
         )}
       </div>
-      {selectedCluster && (
-        <ClusterDetailOverlay
-          cluster={selectedCluster}
-          sources={selectedSources}
-          onBack={() => setSelectedClusterId(null)}
-        />
-      )}
-        </>
-      )}
+
+      <div className="absolute left-6 top-6 z-30">
+        {selectedCluster ? (
+          <Button variant="secondary" className="gap-2 rounded-full shadow-sm" onClick={() => setSelectedClusterId(null)}>
+            <ArrowLeft className="h-4 w-4" />
+            Visual map
+          </Button>
+        ) : (
+          <div className="rounded-md border border-border bg-card px-4 py-3 text-xs text-muted-foreground shadow-sm">
+            <div className="font-medium text-foreground">Tips</div>
+            <div className="mt-1">Drag clusters, zoom the space, double-click a cluster to open its memory.</div>
+          </div>
+        )}
+      </div>
+
+      <div className="absolute bottom-6 right-6 z-30 flex items-center gap-2 rounded-md border border-border bg-card p-2 shadow-sm">
+        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => setZoom((value) => Math.max(0.65, value - 0.1))}>
+          <Minus className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => setZoom(1)}>
+          <RotateCcw className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => setZoom((value) => Math.min(1.55, value + 0.1))}>
+          <Plus className="h-4 w-4" />
+        </Button>
+      </div>
+
+      {selectedCluster && <ClusterDetailPanel cluster={selectedCluster} sources={selectedSources} />}
     </div>
   );
 }
 
+function ClusterDetailMap({
+  cluster,
+  sources,
+  center,
+}: {
+  cluster: Cluster;
+  sources: { source: Source; point: Point }[];
+  center: Point;
+}) {
+  return (
+    <>
+      <svg className="absolute inset-0 h-full w-full" role="presentation">
+        {sources.map(({ source, point }) => (
+          <line
+            key={source.id}
+            x1={center.x}
+            y1={center.y}
+            x2={point.x}
+            y2={point.y}
+            stroke="rgba(93,143,255,0.22)"
+            strokeWidth="1.2"
+          />
+        ))}
+      </svg>
+      <div
+        className="absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-full"
+        style={{
+          left: center.x,
+          top: center.y,
+          width: 150,
+          height: 150,
+          background: `radial-gradient(circle, ${tintHex[cluster.tint]} 0%, color-mix(in oklab, ${tintHex[cluster.tint]} 55%, white) 45%, transparent 74%)`,
+        }}
+      />
+      <div
+        className="absolute z-20 -translate-x-1/2 text-center"
+        style={{ left: center.x, top: center.y + 82, width: 180 }}
+      >
+        <div className="text-sm font-semibold">{cluster.name}</div>
+        <div className="mt-0.5 text-xs text-muted-foreground">{sources.length} connected sources</div>
+      </div>
+      <div
+        className="absolute z-20 -translate-x-1/2 -translate-y-1/2 rounded-full"
+        style={{ left: center.x, top: center.y, width: 150, height: 150 }}
+      />
+      {sources.map(({ source, point }, index) => (
+        <div
+          key={source.id}
+          className="group absolute z-20 -translate-x-1/2 -translate-y-1/2 text-center"
+          style={{ left: point.x, top: point.y }}
+        >
+          <button
+            className="h-12 w-12 rounded-full border border-white/80 shadow-[0_0_28px_rgba(255,255,255,0.95)] transition group-hover:scale-110"
+            style={{
+              background:
+                source.type === "link"
+                  ? "#65d3ec"
+                  : source.type === "image"
+                    ? "#ff886d"
+                    : index % 2
+                      ? "#f2f5ff"
+                      : "#ff8068",
+            }}
+            aria-label={source.title}
+            type="button"
+          />
+          <div className="mt-2 max-w-36 text-xs font-medium leading-tight">{source.title}</div>
+          <SourcePreview source={source} />
+        </div>
+      ))}
+    </>
+  );
+}
+
 function SourcePreview({ source }: { source: Source }) {
+  const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
   const canOpenLink = Boolean(source.url);
-  const canOpenLocalPath = Boolean(source.localPath && window.cmlDesktop?.openPath);
-  const canRevealLocalPath = Boolean(source.localPath && window.cmlDesktop?.showItemInFolder);
+  const canOpenLocalPath = Boolean(source.localPath && desktop?.openPath);
+  const canRevealLocalPath = Boolean(source.localPath && desktop?.showItemInFolder);
 
   return (
-    <div className="pointer-events-auto absolute left-4 top-4 z-30 hidden w-72 rounded-md border border-border bg-background/95 p-3 text-left shadow-[0_18px_55px_rgba(45,39,33,0.18)] backdrop-blur group-hover:block">
+    <div className="pointer-events-auto absolute left-6 top-6 z-40 hidden w-72 rounded-md border border-border bg-white/95 p-3 text-left shadow-[0_18px_55px_rgba(46,56,85,0.18)] backdrop-blur group-hover:block">
       <div className="truncate text-sm font-medium text-foreground">{source.title}</div>
       <div className="mt-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-        {source.type} · {source.state}
+        {source.type} / {source.state}
       </div>
       <p className="mt-2 line-clamp-4 text-xs leading-5 text-muted-foreground">
         {source.preview || source.summary || "Preview will appear after extraction."}
@@ -310,13 +347,8 @@ function SourcePreview({ source }: { source: Source }) {
           disabled={!canOpenLocalPath}
           onClick={(event) => {
             event.stopPropagation();
-            if (source.localPath) void window.cmlDesktop?.openPath(source.localPath);
+            if (source.localPath) void desktop?.openPath(source.localPath);
           }}
-          title={
-            canOpenLocalPath
-              ? source.vaultPath ?? "Open source from the vault."
-              : "Available in the desktop app after this source has a vault file path."
-          }
           type="button"
         >
           <FolderOpen className="h-3 w-3" />
@@ -331,15 +363,8 @@ function SourcePreview({ source }: { source: Source }) {
               window.open(source.url, "_blank", "noopener,noreferrer");
               return;
             }
-            if (source.localPath) void window.cmlDesktop?.showItemInFolder(source.localPath);
+            if (source.localPath) void desktop?.showItemInFolder(source.localPath);
           }}
-          title={
-            canOpenLink
-              ? "Open source link."
-              : canRevealLocalPath
-                ? "Reveal this source in Explorer."
-                : "Available in the desktop app after this source has a local file path."
-          }
           type="button"
         >
           <ExternalLink className="h-3 w-3" />
@@ -350,106 +375,52 @@ function SourcePreview({ source }: { source: Source }) {
   );
 }
 
-function ClusterDetailOverlay({
-  cluster,
-  sources,
-  onBack,
-}: {
-  cluster: Cluster;
-  sources: Source[];
-  onBack: () => void;
-}) {
+function ClusterDetailPanel({ cluster, sources }: { cluster: Cluster; sources: Source[] }) {
   const indexedCount = sources.filter((source) => source.state === "indexed").length;
   const adapterEvents = [
-    "Created cluster expert record",
-    "Built initial style profile",
-    indexedCount > 0 ? `Indexed ${indexedCount} sources for retrieval` : "Waiting for indexed sources",
-    cluster.expert === "learning" ? "Adapter learning pass in progress" : "Adapter ready for next update",
+    "Built retrieval memory for this cluster",
+    "Generated first-pass summary and tags",
+    indexedCount > 0 ? `Indexed ${indexedCount} connected sources` : "Waiting for indexed sources",
+    cluster.expert === "learning" ? "Local expert learning pass in progress" : "Local expert ready for next update",
   ];
 
   return (
-    <aside className="absolute bottom-5 right-5 top-5 z-30 w-[360px] overflow-hidden rounded-md border border-border bg-background/95 shadow-[0_24px_80px_rgba(45,39,33,0.2)] backdrop-blur">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4" />
-        </Button>
-        <div className="min-w-0">
-          <div className="truncate text-sm font-semibold">{cluster.name}</div>
-          <div className="text-xs text-muted-foreground">{sources.length} connected data points</div>
+    <aside className="absolute bottom-6 right-6 top-24 z-30 hidden w-[340px] overflow-hidden rounded-md border border-border bg-card shadow-sm xl:block">
+      <div className="border-b border-border px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold">{cluster.name}</div>
+            <div className="text-xs text-muted-foreground">{sources.length} connected data points</div>
+          </div>
+          <ExpertBadge status={cluster.expert} />
         </div>
       </div>
-
       <div className="h-[calc(100%-57px)] overflow-y-auto p-4">
-        <section>
-          <div className="flex items-center justify-between">
-            <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-              Adapter
-            </div>
-            <ExpertBadge status={cluster.expert} />
+        <section className="rounded-md border border-border bg-card p-3">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Zap className="h-4 w-4 text-muted-foreground" />
+            {expertLabel[cluster.expert]}
           </div>
-          <div className="mt-3 rounded-md border border-border bg-card p-3">
-            <div className="flex items-center gap-2 text-sm font-medium">
-              <Zap className="h-4 w-4 text-muted-foreground" />
-              {expertLabel[cluster.expert]}
-            </div>
-            <p className="mt-2 text-xs leading-5 text-muted-foreground">
-              The local expert is using this cluster's style profile, indexed source memory,
-              and accepted interactions. Fine-tuning artifacts will appear here once training is
-              wired.
-            </p>
-          </div>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+            This cluster can already retrieve context. The local expert will use accepted sources,
+            summaries, tags, style profile, and useful chat feedback as its learning set.
+          </p>
         </section>
 
         <section className="mt-5">
-          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-            Learning activity
-          </div>
+          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Learning activity</div>
           <div className="mt-3 space-y-2">
-            {adapterEvents.map((event, index) => (
+            {adapterEvents.map((event) => (
               <div key={event} className="flex gap-2 text-xs text-muted-foreground">
-                <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-foreground/35" />
+                <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary/55" />
                 <span>{event}</span>
-                {index === adapterEvents.length - 1 && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wider">latest</span>
-                )}
               </div>
             ))}
           </div>
         </section>
 
         <section className="mt-5">
-          <div className="flex items-center justify-between">
-            <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-              Connected data
-            </div>
-            <span className="text-xs text-muted-foreground">{indexedCount} indexed</span>
-          </div>
-          <div className="mt-3 space-y-2">
-            {sources.map((source) => (
-              <div key={source.id} className="rounded-md border border-border bg-card p-3">
-                <div className="truncate text-sm font-medium">{source.title}</div>
-                <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
-                  {source.preview || source.summary || "Preview pending."}
-                </p>
-                <div className="mt-2 flex gap-2">
-                  <Button variant="outline" size="sm" className="h-7 gap-1 px-2 text-xs" disabled>
-                    <FolderOpen className="h-3 w-3" />
-                    Vault
-                  </Button>
-                  <Button variant="outline" size="sm" className="h-7 gap-1 px-2 text-xs" disabled>
-                    <ExternalLink className="h-3 w-3" />
-                    Explorer
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="mt-5">
-          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-            Actions
-          </div>
+          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Actions</div>
           <div className="mt-3 flex gap-2">
             <Button variant="outline" size="sm" className="gap-1" disabled>
               <RotateCcw className="h-3.5 w-3.5" />
@@ -464,31 +435,4 @@ function ClusterDetailOverlay({
       </div>
     </aside>
   );
-}
-
-function similarityStrength(a: ClusterPoint, b: ClusterPoint) {
-  const sharedWords = new Set(
-    `${a.cluster.name} ${a.cluster.description} ${a.cluster.summary}`
-      .toLowerCase()
-      .split(/\W+/)
-      .filter(Boolean),
-  );
-  const bWords = `${b.cluster.name} ${b.cluster.description} ${b.cluster.summary}`
-    .toLowerCase()
-    .split(/\W+/)
-    .filter(Boolean);
-  const overlap = bWords.filter((word) => sharedWords.has(word)).length;
-  const sizeSimilarity = 1 - Math.min(1, Math.abs(a.count - b.count) / Math.max(1, a.count + b.count));
-  return Math.min(1, 0.25 + overlap * 0.14 + sizeSimilarity * 0.35);
-}
-
-function arcPath(a: Point, b: Point) {
-  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const control = {
-    x: mid.x - dy * 0.08,
-    y: mid.y + dx * 0.08,
-  };
-  return `M ${a.x} ${a.y} Q ${control.x} ${control.y} ${b.x} ${b.y}`;
 }

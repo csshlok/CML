@@ -46,3 +46,4 @@ lovable/
 *.lovable
 
 # Keep docs and V0 reference tracked
+.agents/

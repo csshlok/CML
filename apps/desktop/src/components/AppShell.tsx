@@ -18,11 +18,11 @@ import { useEffect } from "react";
 import { useBackendHealth } from "@/lib/backend";
 
 const nav = [
-  { to: "/chat", label: "Chat", icon: MessageSquare },
-  { to: "/clusters", label: "Clusters", icon: Layers },
+  { to: "/search", label: "Mind", icon: Search },
   { to: "/sources", label: "Sources", icon: Files },
   { to: "/map", label: "Map", icon: Globe2 },
-  { to: "/search", label: "Search", icon: Search },
+  { to: "/clusters", label: "Clusters", icon: Layers },
+  { to: "/chat", label: "Chat", icon: MessageSquare },
   { to: "/bridge", label: "Bridge", icon: Cable },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const;
