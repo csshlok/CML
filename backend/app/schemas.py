@@ -237,3 +237,46 @@ class ChatSessionRead(BaseModel):
     created_at: str
     updated_at: str
     messages: list[ChatMessageRead] = []
+
+
+class ModelDownloadState(BaseModel):
+    model_id: str
+    status: str
+    bytes_downloaded: int | None = None
+    total_bytes: int | None = None
+    file_name: str | None = None
+    local_path: str | None = None
+    error: str | None = None
+
+
+class ModelRead(BaseModel):
+    id: str
+    name: str
+    role: str
+    hf_repo: str
+    quantization: str
+    approximate_download_gb: float
+    recommended_ram_gb: str
+    notes: str
+    llama_cpp_ref: str
+    installed: bool = False
+    local_path: str | None = None
+    download: ModelDownloadState | None = None
+
+
+class ModelDownloadStart(BaseModel):
+    model_id: str
+    status: str
+    bytes_downloaded: int | None = None
+    total_bytes: int | None = None
+    file_name: str | None = None
+    local_path: str | None = None
+    error: str | None = None
+
+
+class ModelRuntimeStatus(BaseModel):
+    provider: str
+    base_url: str
+    model: str
+    available: bool
+    detail: str

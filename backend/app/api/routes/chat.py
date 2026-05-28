@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.api.routes.search import semantic_search
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.llm_runtime import LLMRuntimeError, generate_grounded_answer
+from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
     ChatContextRequest,
     ChatContextResponse,
@@ -94,7 +96,10 @@ def update_chat_session(session_id: str, payload: ChatSessionUpdate) -> dict:
             raise HTTPException(status_code=404, detail="Chat session not found")
         if updates.get("scope_cluster_id"):
             _ensure_cluster(conn, updates["scope_cluster_id"], existing["vault_id"])
-        assignments = ", ".join(f"{key} = :{key}" for key in updates)
+        assignments = build_update_assignments(
+            updates,
+            {"title", "scope_cluster_id", "saved", "updated_at"},
+        )
         conn.execute(
             f"UPDATE chat_sessions SET {assignments} WHERE id = :id",
             {"id": session_id, **updates},
@@ -175,8 +180,17 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
         )
         warnings.append("No semantic citations were found.")
     else:
-        answer = _build_extract_answer(payload.prompt, citations)
-        warnings.append("This is a retrieval-grounded draft. Local model synthesis is not wired yet.")
+        try:
+            result = generate_grounded_answer(
+                prompt=payload.prompt,
+                citations=citations,
+                clusters_used=clusters_used,
+            )
+            answer = result.text
+            warnings.append(f"Answered by local model runtime: {result.provider} / {result.model}.")
+        except LLMRuntimeError as exc:
+            answer = _build_extract_answer(payload.prompt, citations)
+            warnings.append(f"Using retrieval draft fallback because local synthesis is unavailable: {exc}")
 
     session_id = payload.session_id
     user_message_id = None

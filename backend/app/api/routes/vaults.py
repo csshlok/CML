@@ -3,6 +3,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import VaultCreate, VaultRead, VaultUpdate
 
 router = APIRouter(prefix="/vaults", tags=["vaults"])
@@ -52,7 +53,7 @@ def update_vault(vault_id: str, payload: VaultUpdate) -> dict:
         return get_vault(vault_id)
 
     updates["updated_at"] = utc_now()
-    assignments = ", ".join(f"{key} = :{key}" for key in updates)
+    assignments = build_update_assignments(updates, {"name", "path", "updated_at"})
     params = {"id": vault_id, **updates}
     with connect() as conn:
         existing = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()

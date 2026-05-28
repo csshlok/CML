@@ -74,11 +74,11 @@ const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
         __html: Object.entries(THEMES)
           .map(
             ([theme, prefix]) => `
-${prefix} [data-chart=${id}] {
+${prefix} [data-chart=${cssIdentifier(id)}] {
 ${colorConfig
   .map(([key, itemConfig]) => {
     const color = itemConfig.theme?.[theme as keyof typeof itemConfig.theme] || itemConfig.color;
-    return color ? `  --color-${key}: ${color};` : null;
+    return color && isSafeCssColor(color) ? `  --color-${cssIdentifier(key)}: ${color};` : null;
   })
   .join("\n")}
 }
@@ -89,6 +89,14 @@ ${colorConfig
     />
   );
 };
+
+function cssIdentifier(value: string) {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "");
+}
+
+function isSafeCssColor(value: string) {
+  return /^(#[0-9a-fA-F]{3,8}|hsl\([0-9%.,\s-]+\)|hsla\([0-9%.,\s-]+\)|rgb\([0-9%.,\s-]+\)|rgba\([0-9%.,\s-]+\)|var\(--[a-zA-Z0-9_-]+\))$/.test(value);
+}
 
 const ChartTooltip = RechartsPrimitive.Tooltip;
 

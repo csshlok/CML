@@ -1,4 +1,5 @@
 import sqlite3
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -7,6 +8,7 @@ from typing import Any
 
 from backend.app.core.config import get_settings
 
+IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
@@ -124,6 +126,8 @@ def init_db() -> None:
 
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    if not IDENTIFIER_RE.fullmatch(table) or not IDENTIFIER_RE.fullmatch(column):
+        raise ValueError("Unsafe database identifier")
     columns = {
         row["name"]
         for row in conn.execute(f"PRAGMA table_info({table})").fetchall()

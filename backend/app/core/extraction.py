@@ -1,11 +1,16 @@
 from pathlib import Path
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+from backend.app.core.network_security import NetworkSecurityError, validate_public_http_url
 
 
 SUPPORTED_TEXT_EXTENSIONS = {".md", ".markdown", ".txt"}
 SUPPORTED_DOCUMENT_EXTENSIONS = SUPPORTED_TEXT_EXTENSIONS | {".docx", ".pdf"}
+MAX_LOCAL_FILE_BYTES = 50 * 1024 * 1024
+MAX_LINK_BYTES = 2_000_000
+MAX_REDIRECTS = 5
 
 
 class ExtractionError(Exception):
@@ -16,6 +21,11 @@ def extract_text_from_path(path: str) -> tuple[str, str]:
     source_path = Path(path).expanduser()
     if not source_path.exists() or not source_path.is_file():
         raise ExtractionError("File does not exist or is not readable")
+    try:
+        if source_path.stat().st_size > MAX_LOCAL_FILE_BYTES:
+            raise ExtractionError("File is too large to ingest safely")
+    except OSError as exc:
+        raise ExtractionError("File does not exist or is not readable") from exc
 
     suffix = source_path.suffix.lower()
     if suffix in SUPPORTED_TEXT_EXTENSIONS:
@@ -128,9 +138,10 @@ class _TextHTMLParser(HTMLParser):
 
 
 def extract_text_from_url(url: str) -> tuple[str, str, str | None]:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"}:
-        raise ExtractionError("Only HTTP and HTTPS links are supported")
+    try:
+        validate_public_http_url(url)
+    except NetworkSecurityError as exc:
+        raise ExtractionError(str(exc)) from exc
 
     request = Request(
         url,
@@ -141,12 +152,16 @@ def extract_text_from_url(url: str) -> tuple[str, str, str | None]:
     )
 
     try:
-        with urlopen(request, timeout=12) as response:
+        response, final_url = _safe_open(request, timeout=12)
+        with response:
             content_type = response.headers.get("content-type", "")
-            body = response.read(2_000_000)
+            body = response.read(MAX_LINK_BYTES + 1)
     except OSError as exc:
         raise ExtractionError(str(exc)) from exc
+    if len(body) > MAX_LINK_BYTES:
+        raise ExtractionError("Link response is too large to ingest safely")
 
+    parsed = urlparse(final_url)
     try:
         decoded = body.decode("utf-8")
     except UnicodeDecodeError:
@@ -168,3 +183,33 @@ def extract_text_from_url(url: str) -> tuple[str, str, str | None]:
 
     fallback_title = (parsed.netloc + parsed.path).rstrip("/") or url
     return title or fallback_title, text, cover_image_url
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _safe_open(request: Request, timeout: int):
+    opener = build_opener(_NoRedirectHandler)
+    current = request
+    for _ in range(MAX_REDIRECTS + 1):
+        try:
+            response = opener.open(current, timeout=timeout)
+            validate_public_http_url(response.geturl())
+            return response, response.geturl()
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            headers = getattr(exc, "headers", {})
+            if code not in {301, 302, 303, 307, 308}:
+                raise
+            location = headers.get("Location")
+            if not location:
+                raise ExtractionError("Link redirect did not include a target") from exc
+            next_url = urljoin(current.full_url, location)
+            try:
+                validate_public_http_url(next_url)
+            except NetworkSecurityError as validation_exc:
+                raise ExtractionError(str(validation_exc)) from validation_exc
+            current = Request(next_url, headers=dict(current.header_items()))
+    raise ExtractionError("Too many redirects while fetching link")

@@ -45,17 +45,17 @@ Progress bar legend:
 
 | Phase | Status | Progress | Notes |
 | --- | --- | --- | --- |
-| Product definition | In progress | `[######----] 60%` | Product PRD, UI PRD, project context, architecture doc, and first local model ladder are documented. Needs runtime spike details. |
+| Product definition | In progress | `[#######---] 70%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, and runtime boundary are documented. Needs packaging/runtime UX details. |
 | UI prototype cleanup | In progress | `[########--] 80%` | V0 reviewed. Cross-platform shortcuts fixed. CML Mind workspace, clickable source cards, and cleaned-up blob map are in place. Needs broader chat/settings/onboarding polish. |
 | Desktop app foundation | In progress | `[#######---] 70%` | Electron workspace created, frontend build passes, Vite dev server verified, file-opening IPC/file picker primitives added, and UI routes can call backend APIs. Needs Electron window verification and packaging. |
 | Local backend foundation | In progress | `[#######---] 70%` | SQLite config/storage foundation, CRUD route groups, ingestion endpoints, and first-pass clustering service are working. Needs app-level services and tests. |
 | Vault ingestion | In progress | `[#########-] 90%` | Source metadata/text records can be created and viewed from the Sources UI. TXT/Markdown/DOCX/PDF, pasted text, static link ingestion, desktop drag/drop import, local synced-folder import, per-file batch import failure reporting, link title/image metadata, generated summaries/tags, and in-app capture dialogs work. Needs screenshots/OCR extraction and dynamic-page parsing. |
 | Embeddings and clustering | In progress | `[#####-----] 50%` | First-pass keyword auto-clustering, local chunking, deterministic local embeddings, SQLite vector storage, semantic search API, semantic Mind search, and reviewable cluster move suggestions are working. Need stronger embedding model and richer split/merge suggestions. |
-| Chat and context routing | In progress | `[####------] 40%` | Retrieval-grounded chat context, persisted backend chat sessions/messages, backend chat sidebar loading, saved state, title rename, cluster usage, warnings, and citations are working. Needs real synthesis model, streaming, and manual routing polish. |
+| Chat and context routing | In progress | `[#####-----] 50%` | Retrieval-grounded chat context, persisted backend chat sessions/messages, backend chat sidebar loading, local model runtime adapter, fallback drafts, cluster usage, warnings, and citations are working. Needs streaming and manual routing polish. |
 | Compulsory cluster experts | Not started | `[----------] 0%` | Need expert lifecycle, training queue, local fine-tuning spike. |
 | Context Bridge | In progress | `[####------] 40%` | Bridge UI route now reads backend status and request history. Needs MCP server, CLI, permissions, and semantic retrieval. |
 | Packaging and installer | Not started | `[----------] 0%` | Need local downloadable build for Windows first, then macOS/Linux. |
-| QA and hardening | Not started | `[----------] 0%` | Need tests, reliability checks, failure states, performance review. |
+| QA and hardening | In progress | `[##--------] 20%` | Security pass completed across backend, Electron shell, frontend dynamic CSS, and dependency audit. Needs Python CVE audit, broader tests, reliability checks, failure states, and performance review. |
 
 ## Week-By-Week Goals
 
@@ -488,6 +488,36 @@ Exit criteria:
 - Added frontend helper for deleting backend chat sessions for later UI use.
 - Smoke-tested backend chat create, rename, save, list, and load on an isolated database.
 - Verified production build with `npm run build` after persisted Chat UI wiring.
+- Added backend local model registry for Qwen3-4B, Phi-4-mini-instruct, Qwen3-8B, Gemma 3 4B, and Gemma 3 12B Q4_K_M choices.
+- Added model storage convention under `data/models`.
+- Added `/api/v1/models` for model registry/status.
+- Added `/api/v1/models/runtime` for local runtime connection status.
+- Added `/api/v1/models/{model_id}` for per-model install/download status.
+- Added `/api/v1/models/{model_id}/download` to start a controlled GGUF download into local app data.
+- Added Hugging Face model-file resolution so downloads find the matching Q4_K_M GGUF filename from the model repo metadata instead of hard-coding filenames.
+- Added backend LLM runtime config: `CML_LLM_PROVIDER`, `CML_LLM_BASE_URL`, `CML_LLM_MODEL`, and `CML_LLM_TIMEOUT_SECONDS`.
+- Added root `.env` for local machine config and `.env.example` as the committed template.
+- Updated backend settings to read from the root `.env` explicitly instead of depending on the shell working directory.
+- Added OpenAI-compatible local runtime adapter for llama.cpp `llama-server`, Ollama-compatible OpenAI endpoints, or any compatible local server.
+- Wired chat context generation to try local synthesis first when a runtime is configured and reachable.
+- Kept retrieval-grounded extractive drafts as fallback when the local model runtime is disabled or unavailable.
+- Smoke-tested model registry, runtime status, default model status, and chat fallback behavior on an isolated database.
+- Verified backend syntax with `.venv\Scripts\python.exe -m compileall backend\app` after model runtime wiring.
+- Updated [ReadME.md](../ReadME.md) with the model registry/runtime endpoints, current model ladder, and local runtime environment variables.
+- Updated [ReadME.md](../ReadME.md) to point developers to `.env` and `.env.example`.
+- Ran a security pass across backend routes, ingestion, model downloads, Electron shell access, frontend dynamic CSS, and package audits.
+- Added public URL validation for link ingestion to block localhost, private IP ranges, loopback, link-local, multicast, reserved, and unspecified addresses.
+- Added safe redirect handling for link ingestion so redirected URLs are revalidated before content is fetched.
+- Added local file and link response size caps to reduce denial-of-service risk during ingestion.
+- Hardened model downloads by validating Hugging Face URLs, requiring HTTPS `huggingface.co`, encoding resolved filenames, and blocking path traversal or non-GGUF model filenames.
+- Hardened Electron external URL and local path opening so only expected external protocols and supported local document/image files can be opened from the app.
+- Updated Electron folder scanning to skip symlinks during recursive synced-folder imports.
+- Disabled credentialed wildcard CORS behavior on the local backend.
+- Added explicit SQL update allowlists for vault, cluster, source, and chat session PATCH routes.
+- Added identifier validation to the internal SQLite migration helper.
+- Sanitized chart dynamic CSS identifiers and color values before injecting style rules.
+- Verified `npm audit` and `npm audit --omit=dev` both report zero vulnerabilities.
+- Verified security smoke checks for SSRF blocking, model filename traversal blocking, and allowlisted update routes.
 
 ## Current Open Work
 
@@ -507,8 +537,10 @@ Exit criteria:
 - Finish vault ingestion edge cases: screenshots/OCR, dynamic links, and watched folder refresh.
 - Add clustering and retrieval.
 - Expand embedding-based suggestions to include split/merge workflows and batch review.
-- Improve chat synthesis with a local model/runtime, streaming responses, and manual cluster override polish against backend state.
+- Add UI controls for model download/runtime setup, streaming responses, and manual cluster override polish against backend state.
 - Add cluster expert training lifecycle.
+- Add Python dependency CVE auditing to the toolchain, such as `pip-audit`, and run it in QA.
+- Add local backend access hardening before exposing it beyond trusted loopback desktop use.
 
 ## Running Notes
 
@@ -528,6 +560,10 @@ Exit criteria:
 - Cluster suggestions are intentionally review-only. User confirmation should remain the default until confidence, undo, and source provenance are stronger.
 - Chat persistence now stores retrieval metadata first. This gives the later local model/runtime a durable place to attach model choice, token usage, streaming chunks, and answer feedback without changing the whole chat API.
 - Expected model download sizes: Phi-4-mini-instruct Q4_K_M about 2.5 GB, Qwen3-4B Q4_K_M about 2.3-2.5 GB, Qwen3-8B Q4_K_M about 4.8 GB download / about 5.3 GB loaded weights, Gemma 3 4B Q4_K_M about 2.3-2.5 GB, and Gemma 3 12B Q4_K_M about 6.8-6.9 GB.
+- Local model downloads are explicit. The backend exposes a download endpoint, but the app should not automatically pull multi-GB weights without a clear user action.
+- Local synthesis currently expects an OpenAI-compatible endpoint. For llama.cpp this means running `llama-server` with the selected GGUF; for Ollama this means using its compatible local API surface when available.
+- The local backend still assumes trusted loopback desktop use. Before any wider network exposure, add an app token, stricter origin checks, and per-vault permission boundaries.
+- Python dependency CVE auditing was not completed because `pip-audit` is not installed in the current environment.
 
 ## Update Protocol
 

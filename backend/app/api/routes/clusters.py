@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.core.cluster_suggestions import suggest_source_cluster_moves
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import ClusterCreate, ClusterRead, ClusterSuggestionRead, ClusterUpdate
 
 router = APIRouter(prefix="/clusters", tags=["clusters"])
@@ -78,7 +79,10 @@ def update_cluster(cluster_id: str, payload: ClusterUpdate) -> dict:
         return get_cluster(cluster_id)
 
     updates["updated_at"] = utc_now()
-    assignments = ", ".join(f"{key} = :{key}" for key in updates)
+    assignments = build_update_assignments(
+        updates,
+        {"name", "description", "color", "expert_status", "updated_at"},
+    )
     params = {"id": cluster_id, **updates}
     with connect() as conn:
         existing = conn.execute("SELECT id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()

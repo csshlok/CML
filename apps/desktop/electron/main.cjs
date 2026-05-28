@@ -5,6 +5,7 @@ const path = require("node:path");
 const isDev = !app.isPackaged;
 const devUrl = process.env.CML_DESKTOP_DEV_URL || "http://127.0.0.1:5173";
 const supportedSourceExtensions = new Set([".txt", ".md", ".markdown", ".docx", ".pdf"]);
+const supportedOpenExtensions = new Set([...supportedSourceExtensions, ".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const skippedFolderNames = new Set([".git", "node_modules", ".venv", "dist", "build"]);
 
 function createWindow() {
@@ -29,7 +30,9 @@ function createWindow() {
   });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (isAllowedExternalUrl(url)) {
+      shell.openExternal(url);
+    }
     return { action: "deny" };
   });
 
@@ -43,13 +46,13 @@ function createWindow() {
 
 app.whenReady().then(() => {
   ipcMain.handle("cml:open-path", async (_event, targetPath) => {
-    if (typeof targetPath !== "string" || targetPath.length === 0) return false;
+    if (!(await isSafeOpenPath(targetPath))) return false;
     const error = await shell.openPath(targetPath);
     return error.length === 0;
   });
 
   ipcMain.handle("cml:show-item-in-folder", async (_event, targetPath) => {
-    if (typeof targetPath !== "string" || targetPath.length === 0) return false;
+    if (!(await isExistingLocalPath(targetPath))) return false;
     shell.showItemInFolder(targetPath);
     return true;
   });
@@ -112,10 +115,11 @@ app.whenReady().then(() => {
 async function collectSupportedFiles(targetPath, files) {
   let stat;
   try {
-    stat = await fs.stat(targetPath);
+    stat = await fs.lstat(targetPath);
   } catch {
     return;
   }
+  if (stat.isSymbolicLink()) return;
 
   if (stat.isFile()) {
     if (supportedSourceExtensions.has(path.extname(targetPath).toLowerCase())) {
@@ -140,6 +144,35 @@ async function collectSupportedFiles(targetPath, files) {
     if (entry.name.startsWith(".") && entry.name !== ".obsidian") continue;
     await collectSupportedFiles(path.join(targetPath, entry.name), files);
   }
+}
+
+function isAllowedExternalUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" || parsed.protocol === "mailto:";
+  } catch {
+    return false;
+  }
+}
+
+async function isExistingLocalPath(targetPath) {
+  if (typeof targetPath !== "string" || targetPath.length === 0 || targetPath.length > 4096) {
+    return false;
+  }
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(targetPath) && !/^[a-zA-Z]:[\\/]/.test(targetPath)) {
+    return false;
+  }
+  try {
+    await fs.lstat(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isSafeOpenPath(targetPath) {
+  if (!(await isExistingLocalPath(targetPath))) return false;
+  return supportedOpenExtensions.has(path.extname(targetPath).toLowerCase());
 }
 
 app.on("window-all-closed", () => {

@@ -8,6 +8,7 @@ from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.embeddings import reindex_source_chunks
 from backend.app.core.extraction import ExtractionError, extract_text_from_path, extract_text_from_url
 from backend.app.core.memory_card import generate_tags, summarize_text
+from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
     SourceCreate,
     SourcePathCreate,
@@ -179,7 +180,20 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
         return get_source(source_id)
 
     updates["updated_at"] = utc_now()
-    assignments = ", ".join(f"{key} = :{key}" for key in updates)
+    assignments = build_update_assignments(
+        updates,
+        {
+            "cluster_id",
+            "title",
+            "state",
+            "raw_text",
+            "extracted_text",
+            "summary",
+            "tags",
+            "cover_image_url",
+            "updated_at",
+        },
+    )
     params = {"id": source_id, **updates}
     with connect() as conn:
         existing = conn.execute("SELECT id FROM sources WHERE id = ?", (source_id,)).fetchone()
