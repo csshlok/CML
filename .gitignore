@@ -47,3 +47,4 @@ lovable/
 
 # Keep docs and V0 reference tracked
 .agents/
+skills-lock.json
