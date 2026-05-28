@@ -518,6 +518,8 @@ Exit criteria:
 - Sanitized chart dynamic CSS identifiers and color values before injecting style rules.
 - Verified `npm audit` and `npm audit --omit=dev` both report zero vulnerabilities.
 - Verified security smoke checks for SSRF blocking, model filename traversal blocking, and allowlisted update routes.
+- Verified `docs/` is not ignored by root `.gitignore` or local Git exclude rules.
+- Verified all current docs are already tracked by Git and pushed the current `main` branch to GitHub.
 
 ## Current Open Work
 
