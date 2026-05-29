@@ -26,7 +26,7 @@ The core product contract is:
 
 ## Current state
 
-Stage 1 is in progress. The repo currently has a working Electron/Vite desktop workspace, a local FastAPI backend, SQLite-backed CRUD routes for vaults/clusters/sources, TXT/Markdown/DOCX/PDF/pasted-text/link ingestion, drag-and-drop document import in the desktop shell, local synced-folder import for Drive/Dropbox/OneDrive/iCloud-style folders, per-file batch import failure reporting, generated source summaries/tags, link title/image metadata, local chunk/embedding storage, semantic search, vector-based cluster move suggestions, retrieval-grounded chat context routing with citations, a bridge status/request API, backend-aware Settings/Sources/Clusters/Chat screens, and a redesigned map prototype with cluster anchors, unlabeled data points, hover previews, and in-map cluster detail.
+Stage 1 is in progress. The repo currently has a working Electron/Vite desktop workspace, a local FastAPI backend, SQLite-backed CRUD routes for vaults/clusters/sources, TXT/Markdown/DOCX/PDF/pasted-text/link ingestion, drag-and-drop document import in the desktop shell, local synced-folder import for Drive/Dropbox/OneDrive/iCloud-style folders, per-file batch import failure reporting, generated source summaries/tags, link title/image metadata, local chunk/embedding storage, semantic search, vector-based cluster move suggestions, retrieval-grounded chat context routing with citations, persisted chat sessions, local model registry/runtime endpoints, a bridge status/request API, backend-aware Settings/Sources/Clusters/Chat screens, and a redesigned map prototype with cluster anchors, unlabeled data points, hover previews, and in-map cluster detail.
 
 The next major build target is improving chat synthesis and wiring Context Bridge to semantic retrieval.
 
@@ -55,6 +55,8 @@ Install backend dependencies if the virtual environment is new:
 ```bash
 pip install fastapi uvicorn pydantic pydantic-settings
 ```
+
+The backend reads local settings from the root `.env` file. Use `.env.example` as the committed template and keep machine-specific values in `.env`.
 
 ## Quick start: local development
 
@@ -112,6 +114,10 @@ The Electron shell opens the same local UI through `npm run dev`.
 - `POST /api/v1/search/reindex/{vault_id}` - rebuild local search chunks for indexed sources.
 - `GET /api/v1/clusters/suggestions` - review vector-based source-to-cluster move suggestions.
 - `POST /api/v1/chat/context` - build a retrieval-grounded chat draft with clusters used and citations.
+- `GET /api/v1/models` - list recommended local model options and install status.
+- `GET /api/v1/models/runtime` - check whether a local OpenAI-compatible model runtime is reachable.
+- `GET /api/v1/models/{model_id}` - inspect one model option.
+- `POST /api/v1/models/{model_id}/download` - start an explicit GGUF model download into local app data.
 - `GET /api/v1/bridge/status` - Context Bridge status.
 - `POST /api/v1/bridge/context` - request selected context for an external local client.
 - `GET /api/v1/bridge/requests` - recent bridge request history.
@@ -146,6 +152,41 @@ Planned bridge surfaces:
 V1 bridge work currently has status and request logging. Semantic retrieval, permissions, and the MCP server are still open.
 
 ## Local expert model plan
+
+Current synthesis model ladder:
+
+- Qwen3-4B Q4_K_M as the default local synthesis model.
+- Phi-4-mini-instruct Q4_K_M as the low-spec fallback.
+- Qwen3-8B Q4_K_M as the higher-quality option.
+- Gemma 3 4B/12B Q4_K_M as optional later candidates.
+
+The app should not bundle model weights in the first installer. Model downloads are explicit and stored under local app data. Chat can call a local OpenAI-compatible endpoint when configured in `.env`:
+
+```bash
+CML_LLM_PROVIDER=openai-compatible
+CML_LLM_BASE_URL=http://127.0.0.1:8084/v1
+CML_LLM_MODEL=cml-local
+```
+
+If no local model runtime is configured or reachable, chat keeps using the retrieval-grounded extractive draft fallback.
+
+For local Windows GGUF testing:
+
+```powershell
+.\scripts\llm\download-llama-cpp.ps1
+.\scripts\llm\start-llama-server.ps1 -ModelId qwen3-4b-q4_k_m
+.\scripts\llm\test-local-model.ps1
+```
+
+For NVIDIA CUDA testing on Windows:
+
+```powershell
+.\scripts\llm\download-llama-cpp.ps1 -Runtime cuda -CudaVersion 12.4
+.\scripts\llm\start-llama-server.ps1 -Runtime cuda -ModelId qwen3-4b-q4_k_m
+.\scripts\llm\benchmark-local-models.ps1 -Runtime cuda
+```
+
+The current local test machine stores downloaded GGUFs under `T:\LLM` via `CML_MODELS_DIR`. Use `.\scripts\llm\benchmark-local-models.ps1` to compare the downloaded model ladder through llama.cpp.
 
 Every cluster must have a local expert lifecycle. For V1, the practical approach is:
 
