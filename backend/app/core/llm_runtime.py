@@ -79,6 +79,39 @@ def generate_grounded_answer(
     return LLMResult(text=text, provider=settings.llm_provider, model=settings.llm_model)
 
 
+def stream_grounded_answer(
+    *,
+    prompt: str,
+    citations: list[dict],
+    clusters_used: list[dict],
+):
+    settings = get_settings()
+    if settings.llm_provider == "none":
+        raise LLMRuntimeError("No local model runtime configured.")
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are CML's local synthesis model. Answer only from the supplied local "
+                "context. If the context is insufficient, say what is missing. Keep citations "
+                "implicit by referring to source titles; do not invent facts."
+            ),
+        },
+        {
+            "role": "user",
+            "content": _build_context_prompt(prompt, citations, clusters_used),
+        },
+    ]
+    payload = {
+        "model": settings.llm_model,
+        "messages": messages,
+        "temperature": 0.2,
+        "stream": True,
+    }
+    yield from _openai_stream("/chat/completions", payload, timeout=settings.llm_timeout_seconds)
+
+
 def _build_context_prompt(prompt: str, citations: list[dict], clusters_used: list[dict]) -> str:
     cluster_text = "\n".join(
         f"- {cluster['cluster_name']}: {cluster['reason']}" for cluster in clusters_used
@@ -127,3 +160,34 @@ def _openai_post(path: str, payload: dict[str, Any], timeout: float) -> dict[str
         raise LLMRuntimeError(f"Local model runtime is not reachable at {url}") from exc
     except json.JSONDecodeError as exc:
         raise LLMRuntimeError("Local model returned invalid JSON.") from exc
+
+
+def _openai_stream(path: str, payload: dict[str, Any], timeout: float):
+    settings = get_settings()
+    url = settings.llm_base_url.rstrip("/") + path
+    data = json.dumps(payload).encode("utf-8")
+    request = Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                data_line = line[5:].strip()
+                if data_line == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_line)
+                except json.JSONDecodeError:
+                    continue
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                text = delta.get("content")
+                if text:
+                    yield text
+    except URLError as exc:
+        raise LLMRuntimeError(f"Local model runtime is not reachable at {url}") from exc

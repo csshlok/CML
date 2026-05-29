@@ -4,8 +4,15 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.core.cluster_suggestions import suggest_source_cluster_moves
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.expert_lifecycle import create_expert_job, latest_expert_jobs
 from backend.app.core.sql import build_update_assignments
-from backend.app.schemas import ClusterCreate, ClusterRead, ClusterSuggestionRead, ClusterUpdate
+from backend.app.schemas import (
+    ClusterCreate,
+    ClusterExpertJobRead,
+    ClusterRead,
+    ClusterSuggestionRead,
+    ClusterUpdate,
+)
 
 router = APIRouter(prefix="/clusters", tags=["clusters"])
 
@@ -91,6 +98,47 @@ def update_cluster(cluster_id: str, payload: ClusterUpdate) -> dict:
         conn.execute(f"UPDATE clusters SET {assignments} WHERE id = :id", params)
         row = conn.execute("SELECT * FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
     return dict_from_row(row)
+
+
+@router.get("/{cluster_id}/expert/jobs", response_model=list[ClusterExpertJobRead])
+def list_expert_jobs(cluster_id: str) -> list[dict]:
+    with connect() as conn:
+        existing = conn.execute("SELECT id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        return latest_expert_jobs(conn, cluster_id)
+
+
+@router.post("/{cluster_id}/expert/retrain", response_model=ClusterExpertJobRead)
+def queue_expert_retrain(cluster_id: str) -> dict:
+    with connect() as conn:
+        cluster = conn.execute("SELECT id, vault_id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        conn.execute(
+            "UPDATE clusters SET expert_status = 'learning', updated_at = ? WHERE id = ?",
+            (utc_now(), cluster_id),
+        )
+        return create_expert_job(
+            conn,
+            cluster_id=cluster_id,
+            vault_id=cluster["vault_id"],
+            action="retrain",
+            detail="Manual local expert learning pass queued.",
+        )
+
+
+@router.post("/{cluster_id}/expert/pause", response_model=ClusterRead)
+def pause_expert(cluster_id: str) -> dict:
+    with connect() as conn:
+        cluster = conn.execute("SELECT id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        conn.execute(
+            "UPDATE clusters SET expert_status = 'paused', updated_at = ? WHERE id = ?",
+            (utc_now(), cluster_id),
+        )
+    return get_cluster(cluster_id)
 
 
 @router.delete("/{cluster_id}", status_code=204)

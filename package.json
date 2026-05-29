@@ -10,6 +10,7 @@
     "dev": "npm run dev --workspace @cml/desktop",
     "dev:desktop": "npm run dev --workspace @cml/desktop",
     "build": "npm run build --workspace @cml/desktop",
+    "package:win": "powershell -ExecutionPolicy Bypass -File scripts/packaging/package-windows.ps1",
     "lint": "npm run lint --workspace @cml/desktop",
     "backend": ".venv\\Scripts\\python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 7343",
     "backend:system": "python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 7343",

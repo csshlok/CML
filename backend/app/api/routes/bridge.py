@@ -1,7 +1,8 @@
 import json
+import secrets
 from uuid import uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header
 
 from backend.app.api.routes.search import semantic_search
 from backend.app.api.routes.sources import source_from_row
@@ -34,6 +35,8 @@ def update_bridge_settings(payload: BridgeSettingsUpdate) -> dict:
     updates = payload.model_dump(exclude_unset=True)
     settings = _get_bridge_settings()
     next_settings = {**settings, **updates}
+    if updates.get("rotate_token") or not next_settings.get("bridge_token"):
+        next_settings["bridge_token"] = secrets.token_urlsafe(24)
     now = utc_now()
     with connect() as conn:
         _ensure_bridge_settings(conn)
@@ -46,6 +49,7 @@ def update_bridge_settings(payload: BridgeSettingsUpdate) -> dict:
                 allow_raw_snippets = ?,
                 allow_style_profile = ?,
                 allow_expert_calls = ?,
+                bridge_token = ?,
                 updated_at = ?
             WHERE id = 'default'
             """,
@@ -56,6 +60,7 @@ def update_bridge_settings(payload: BridgeSettingsUpdate) -> dict:
                 1 if next_settings["allow_raw_snippets"] else 0,
                 1 if next_settings["allow_style_profile"] else 0,
                 1 if next_settings["allow_expert_calls"] else 0,
+                next_settings["bridge_token"],
                 now,
             ),
         )
@@ -63,7 +68,7 @@ def update_bridge_settings(payload: BridgeSettingsUpdate) -> dict:
 
 
 @router.post("/context", response_model=BridgeContextResponse)
-def build_context(payload: BridgeContextRequest) -> dict:
+def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None = Header(default=None)) -> dict:
     settings = _get_bridge_settings()
     if not settings["enabled"]:
         return {
@@ -71,6 +76,13 @@ def build_context(payload: BridgeContextRequest) -> dict:
             "selected_clusters": [],
             "source_snippets": [],
             "warnings": ["Bridge is off. Enable it before external clients can request context."],
+        }
+    if not settings["bridge_token"] or x_cml_bridge_token != settings["bridge_token"]:
+        return {
+            "query": payload.query,
+            "selected_clusters": [],
+            "source_snippets": [],
+            "warnings": ["Bridge blocked this request because the client token is missing or invalid."],
         }
 
     with connect() as conn:
@@ -225,11 +237,11 @@ def _ensure_bridge_settings(conn) -> None:
         """
         INSERT INTO bridge_settings (
             id, enabled, allowed_vault_ids, allowed_cluster_ids, allow_raw_snippets,
-            allow_style_profile, allow_expert_calls, created_at, updated_at
+            allow_style_profile, allow_expert_calls, bridge_token, created_at, updated_at
         )
-        VALUES ('default', 0, '[]', '[]', 0, 0, 0, ?, ?)
+        VALUES ('default', 0, '[]', '[]', 0, 0, 0, ?, ?, ?)
         """,
-        (now, now),
+        (secrets.token_urlsafe(24), now, now),
     )
 
 
@@ -246,6 +258,7 @@ def _get_bridge_settings() -> dict:
         "allow_raw_snippets": bool(row["allow_raw_snippets"]),
         "allow_style_profile": bool(row["allow_style_profile"]),
         "allow_expert_calls": bool(row["allow_expert_calls"]),
+        "bridge_token": row["bridge_token"] or "",
     }
 
 

@@ -5,11 +5,13 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
   createVault,
+  getEmbeddingRuntimeStatus,
   getModelRuntimeStatus,
   listLocalModels,
   listVaults,
   startModelDownload,
   updateVault,
+  type EmbeddingRuntimeStatus,
   type LocalModelRecord,
   type ModelRuntimeStatus,
   type VaultRecord,
@@ -28,6 +30,7 @@ function SettingsView() {
   const [error, setError] = useState<string | null>(null);
   const [models, setModels] = useState<LocalModelRecord[]>([]);
   const [runtime, setRuntime] = useState<ModelRuntimeStatus | null>(null);
+  const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
@@ -57,13 +60,15 @@ function SettingsView() {
 
     async function loadModels() {
       try {
-        const [modelRows, runtimeStatus] = await Promise.all([
+        const [modelRows, runtimeStatus, embeddingStatus] = await Promise.all([
           listLocalModels(),
           getModelRuntimeStatus(),
+          getEmbeddingRuntimeStatus(),
         ]);
         if (cancelled) return;
         setModels(modelRows);
         setRuntime(runtimeStatus);
+        setEmbeddingRuntime(embeddingStatus);
         setModelError(null);
       } catch (err) {
         if (!cancelled) {
@@ -137,6 +142,33 @@ function SettingsView() {
                 : "Your vault stays on this device. Move it any time."}
         </p>
         {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+      </section>
+
+      <section className="mt-6 rounded-md border border-border bg-card p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium">Embeddings</div>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              Search, clustering, Bridge, and chat retrieval use this local embedding backend.
+            </p>
+          </div>
+          <div className="rounded-md border border-border px-3 py-2 text-xs">
+            <div className="font-medium">
+              {embeddingRuntime?.available ? "Embeddings ready" : "Embeddings unavailable"}
+            </div>
+            <div className="mt-1 max-w-72 truncate text-muted-foreground">
+              {embeddingRuntime?.detail ?? "Checking embedding backend..."}
+            </div>
+          </div>
+        </div>
+        <dl className="mt-4 grid gap-y-1 text-sm md:grid-cols-[140px_1fr]">
+          <dt className="text-muted-foreground">Provider</dt>
+          <dd>{embeddingRuntime?.provider ?? "checking"}</dd>
+          <dt className="text-muted-foreground">Model</dt>
+          <dd className="truncate">{embeddingRuntime?.model ?? "checking"}</dd>
+          <dt className="text-muted-foreground">Dimensions</dt>
+          <dd>{embeddingRuntime?.dimensions ?? "-"}</dd>
+        </dl>
       </section>
 
       <section className="mt-6 rounded-md border border-border bg-card p-4">

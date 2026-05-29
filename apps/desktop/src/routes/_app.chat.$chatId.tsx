@@ -8,15 +8,16 @@ import {
   type Source,
 } from "@/lib/mockStore";
 import {
-  buildChatContext,
   deleteChatSession,
   getChatSession,
   listClusters,
   listSources,
   listVaults,
   reindexVaultSearch,
+  streamChatContext,
   updateChatMessage,
   updateChatSession,
+  type ChatContextResponse,
   type ChatMessageRecord,
   type ChatSessionRecord,
   type VaultRecord,
@@ -214,17 +215,41 @@ function ChatView() {
     if (backendSession) setMemoryState("indexing");
     if (backendReady && vault) {
       try {
-        const response = await buildChatContext({
+        let streamedAnswer = "";
+        let streamedMeta: Pick<ChatContextResponse, "clusters_used" | "citations" | "warnings"> = {
+          clusters_used: [],
+          citations: [],
+          warnings: [],
+        };
+        let streamedDone: Partial<ChatContextResponse> = {};
+        await streamChatContext({
           vault_id: vault.id,
           prompt,
           cluster_id: scope?.id ?? null,
           session_id: backendSessionId,
           persist: true,
           limit: 6,
+        }, {
+          onMeta: (meta) => {
+            streamedMeta = meta;
+          },
+          onToken: (text) => {
+            streamedAnswer += text;
+            setStreamText(streamedAnswer);
+          },
+          onDone: (done) => {
+            streamedDone = done;
+          },
         });
+        const response = {
+          session_id: streamedDone.session_id ?? backendSessionId ?? null,
+          answer: streamedDone.answer ?? streamedAnswer,
+          clusters_used: streamedMeta.clusters_used,
+          citations: streamedMeta.citations,
+          memory_status: streamedDone.memory_status ?? "indexed",
+        };
         setBackendSessionId(response.session_id);
         setMemoryState(response.memory_status ?? "indexed");
-        await revealAnswer(response.answer);
         const assistantMessage = {
           id: newId(),
           role: "assistant",
@@ -338,18 +363,6 @@ function ChatView() {
       .reverse()
       .find((message) => message.role === "user");
     if (priorUser) void send(priorUser.content);
-  };
-
-  const revealAnswer = async (text: string) => {
-    const words = text.split(/(\s+)/);
-    let rendered = "";
-    for (const word of words) {
-      rendered += word;
-      setStreamText(rendered);
-      if (word.trim()) {
-        await new Promise((resolve) => window.setTimeout(resolve, 12));
-      }
-    }
   };
 
   return (

@@ -1,14 +1,20 @@
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
+const http = require("node:http");
+const net = require("node:net");
 const path = require("node:path");
 
 const isDev = !app.isPackaged;
 const devUrl = process.env.CML_DESKTOP_DEV_URL || "http://127.0.0.1:5173";
+let backendProcess = null;
+let backendUrl = process.env.VITE_CML_BACKEND_URL || process.env.CML_BACKEND_URL || null;
 const supportedSourceExtensions = new Set([".txt", ".md", ".markdown", ".docx", ".pdf"]);
 const supportedOpenExtensions = new Set([...supportedSourceExtensions, ".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const skippedFolderNames = new Set([".git", "node_modules", ".venv", "dist", "build"]);
 
-function createWindow() {
+async function createWindow() {
+  backendUrl = await ensureBackend();
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -37,7 +43,9 @@ function createWindow() {
   });
 
   if (isDev) {
-    window.loadURL(devUrl);
+    const url = new URL(devUrl);
+    if (backendUrl) url.searchParams.set("backendUrl", backendUrl);
+    window.loadURL(url.toString());
     window.webContents.openDevTools({ mode: "detach" });
   } else {
     window.loadFile(path.join(__dirname, "../dist/client/index.html"));
@@ -112,14 +120,130 @@ app.whenReady().then(() => {
     return result.filePaths[0];
   });
 
-  createWindow();
+  ipcMain.handle("cml:get-backend-url", async () => backendUrl);
+
+  void createWindow();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      void createWindow();
     }
   });
 });
+
+async function ensureBackend() {
+  const existing = await findExistingCurrentBackend();
+  if (existing) return existing;
+
+  const port = await findOpenPort(7343, 7355);
+  const rootDir = isDev ? path.resolve(__dirname, "../../..") : process.resourcesPath;
+  const pythonPath = isDev
+    ? path.join(rootDir, ".venv", "Scripts", "python.exe")
+    : path.join(process.resourcesPath, "python-runtime", "Scripts", "python.exe");
+  const pythonCommand = await pathExists(pythonPath) ? pythonPath : "python";
+  backendProcess = spawn(
+    pythonCommand,
+    ["-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", String(port)],
+    {
+      cwd: rootDir,
+      env: {
+        ...process.env,
+        CML_API_PREFIX: process.env.CML_API_PREFIX || "/api/v1",
+      },
+      windowsHide: true,
+      stdio: "ignore",
+    },
+  );
+  backendProcess.unref();
+  const startedUrl = `http://127.0.0.1:${port}`;
+  await waitForBackend(startedUrl, 12000);
+  return startedUrl;
+}
+
+async function findExistingCurrentBackend() {
+  const candidates = [
+    process.env.VITE_CML_BACKEND_URL,
+    process.env.CML_BACKEND_URL,
+    "http://127.0.0.1:7343",
+    "http://127.0.0.1:7342",
+  ].filter(Boolean);
+  for (const candidate of [...new Set(candidates)]) {
+    if (await isCurrentBackend(candidate)) return candidate;
+  }
+  return null;
+}
+
+function isCurrentBackend(url) {
+  return httpJson(`${url}/openapi.json`, 1200)
+    .then((spec) => {
+      const paths = spec && spec.paths ? spec.paths : {};
+      return Boolean(paths["/api/v1/chat/context/stream"] && paths["/api/v1/bridge/settings"]);
+    })
+    .catch(() => false);
+}
+
+async function waitForBackend(url, timeoutMs) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (await isCurrentBackend(url)) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Backend did not start at ${url}`);
+}
+
+function httpJson(url, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, { timeout: timeoutMs }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+      response.on("end", () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`HTTP ${response.statusCode}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.on("timeout", () => {
+      request.destroy(new Error("Timed out"));
+    });
+    request.on("error", reject);
+  });
+}
+
+async function findOpenPort(start, end) {
+  for (let port = start; port <= end; port += 1) {
+    if (await isPortOpen(port)) return port;
+  }
+  throw new Error(`No open backend port between ${start} and ${end}`);
+}
+
+function isPortOpen(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.once("listening", () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function collectSupportedFiles(targetPath, files) {
   let stat;
@@ -187,5 +311,11 @@ async function isSafeOpenPath(targetPath) {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
+  }
+});
+
+app.on("before-quit", () => {
+  if (backendProcess && !backendProcess.killed) {
+    backendProcess.kill();
   }
 });

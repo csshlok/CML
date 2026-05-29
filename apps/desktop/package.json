@@ -4,10 +4,47 @@
   "sideEffects": false,
   "type": "module",
   "main": "electron/main.cjs",
+  "build": {
+    "appId": "local.cml.desktop",
+    "productName": "CML",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "packaging/backend",
+        "to": "backend",
+        "filter": [
+          "app/**/*",
+          "pyproject.toml"
+        ]
+      },
+      {
+        "from": "packaging/python-runtime",
+        "to": "python-runtime",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
   "scripts": {
     "dev": "concurrently -k \"vite dev --host 127.0.0.1 --port 5173\" \"wait-on tcp:5173 && electron .\"",
     "dev:web": "vite dev --host 127.0.0.1 --port 5173",
     "build": "vite build",
+    "package:win": "npm run build && electron-builder --win --x64",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "lint": "eslint .",
@@ -79,6 +116,7 @@
     "@vitejs/plugin-react": "^5.0.4",
     "concurrently": "^9.2.1",
     "electron": "^39.2.7",
+    "electron-builder": "^26.0.12",
     "eslint": "^9.32.0",
     "eslint-config-prettier": "^10.1.1",
     "eslint-plugin-prettier": "^5.2.6",

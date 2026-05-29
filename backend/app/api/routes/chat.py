@@ -3,10 +3,13 @@ import json
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from backend.app.api.routes.search import semantic_search
+from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.llm_runtime import LLMRuntimeError, generate_grounded_answer
+from backend.app.core.expert_lifecycle import mark_cluster_needs_update
+from backend.app.core.llm_runtime import LLMRuntimeError, generate_grounded_answer, stream_grounded_answer
 from backend.app.core.memory_card import summarize_text
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
@@ -158,6 +161,102 @@ def update_chat_message(message_id: str, payload: ChatMessageUpdate) -> dict:
 
 @router.post("/context", response_model=ChatContextResponse)
 def build_chat_context(payload: ChatContextRequest) -> dict:
+    context = _build_retrieval_context(payload)
+    citations = context["citations"]
+    clusters_used = context["clusters_used"]
+    warnings = context["warnings"]
+    answer = context["answer"]
+
+    session_id = payload.session_id
+    user_message_id = None
+    assistant_message_id = None
+    if payload.persist:
+        session_id, user_message_id, assistant_message_id = _persist_chat_turn(
+            vault_id=payload.vault_id,
+            session_id=session_id,
+            cluster_id=payload.cluster_id,
+            prompt=payload.prompt,
+            answer=answer,
+            clusters_used=clusters_used,
+            citations=citations,
+            warnings=warnings,
+        )
+
+    return {
+        "session_id": session_id,
+        "user_message_id": user_message_id,
+        "assistant_message_id": assistant_message_id,
+        "prompt": payload.prompt,
+        "answer": answer,
+        "clusters_used": clusters_used,
+        "citations": citations,
+        "warnings": warnings,
+        "memory_status": "indexing" if payload.persist else None,
+    }
+
+
+@router.post("/context/stream")
+def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
+    def events():
+        context = _build_retrieval_context(payload, synthesize=False)
+        answer_parts: list[str] = []
+        warnings = list(context["warnings"])
+        citations = context["citations"]
+        clusters_used = context["clusters_used"]
+        yield _sse("meta", {
+            "clusters_used": clusters_used,
+            "citations": citations,
+            "warnings": warnings,
+        })
+        if not citations:
+            for chunk in _chunk_text(context["answer"]):
+                answer_parts.append(chunk)
+                yield _sse("token", {"text": chunk})
+        else:
+            try:
+                for chunk in stream_grounded_answer(
+                    prompt=payload.prompt,
+                    citations=citations,
+                    clusters_used=clusters_used,
+                ):
+                    answer_parts.append(chunk)
+                    yield _sse("token", {"text": chunk})
+                warnings.append("Answered by streaming local model runtime.")
+            except LLMRuntimeError as exc:
+                fallback = _build_extract_answer(payload.prompt, citations)
+                warnings.append(f"Using retrieval draft fallback because local streaming is unavailable: {exc}")
+                for chunk in _chunk_text(fallback):
+                    answer_parts.append(chunk)
+                    yield _sse("token", {"text": chunk})
+
+        answer = "".join(answer_parts).strip()
+        session_id = payload.session_id
+        user_message_id = None
+        assistant_message_id = None
+        if payload.persist:
+            session_id, user_message_id, assistant_message_id = _persist_chat_turn(
+                vault_id=payload.vault_id,
+                session_id=session_id,
+                cluster_id=payload.cluster_id,
+                prompt=payload.prompt,
+                answer=answer,
+                clusters_used=clusters_used,
+                citations=citations,
+                warnings=warnings,
+            )
+        yield _sse("done", {
+            "session_id": session_id,
+            "user_message_id": user_message_id,
+            "assistant_message_id": assistant_message_id,
+            "answer": answer,
+            "warnings": warnings,
+            "memory_status": "indexing" if payload.persist else None,
+        })
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = True) -> dict:
     with connect() as conn:
         _ensure_vault(conn, payload.vault_id)
         if payload.cluster_id:
@@ -220,7 +319,7 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
             "Try adding sources, reindexing the vault, or asking with more specific terms."
         )
         warnings.append("No semantic citations were found.")
-    else:
+    elif synthesize:
         try:
             result = generate_grounded_answer(
                 prompt=payload.prompt,
@@ -232,33 +331,33 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
         except LLMRuntimeError as exc:
             answer = _build_extract_answer(payload.prompt, citations)
             warnings.append(f"Using retrieval draft fallback because local synthesis is unavailable: {exc}")
-
-    session_id = payload.session_id
-    user_message_id = None
-    assistant_message_id = None
-    if payload.persist:
-        session_id, user_message_id, assistant_message_id = _persist_chat_turn(
-            vault_id=payload.vault_id,
-            session_id=session_id,
-            cluster_id=payload.cluster_id,
-            prompt=payload.prompt,
-            answer=answer,
-            clusters_used=clusters_used,
-            citations=citations,
-            warnings=warnings,
-        )
+    else:
+        answer = _build_extract_answer(payload.prompt, citations)
 
     return {
-        "session_id": session_id,
-        "user_message_id": user_message_id,
-        "assistant_message_id": assistant_message_id,
-        "prompt": payload.prompt,
         "answer": answer,
         "clusters_used": clusters_used,
         "citations": citations,
         "warnings": warnings,
-        "memory_status": "indexed" if payload.persist else None,
     }
+
+
+def _sse(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
+
+def _chunk_text(text: str, size: int = 18):
+    words = text.split(" ")
+    chunk = ""
+    for word in words:
+        next_chunk = f"{chunk} {word}".strip()
+        if len(next_chunk) >= size:
+            yield next_chunk + " "
+            chunk = ""
+        else:
+            chunk = next_chunk
+    if chunk:
+        yield chunk
 
 
 def _trim_snippet(text: str, limit: int = 420) -> str:
@@ -351,10 +450,11 @@ def _persist_chat_turn(
             "UPDATE chat_sessions SET memory_status = 'indexing', memory_updated_at = ? WHERE id = ?",
             (now, session_id),
         )
-        _upsert_chat_transcript_sources(conn, vault_id=vault_id, session_id=session_id)
-        conn.execute(
-            "UPDATE chat_sessions SET memory_status = 'indexed', memory_updated_at = ? WHERE id = ?",
-            (utc_now(), session_id),
+        enqueue_job(
+            conn,
+            job_type="chat_transcript_memory",
+            payload={"vault_id": vault_id, "session_id": session_id},
+            dedupe_key=f"chat-memory:{session_id}",
         )
 
     return session_id, user_message_id, assistant_message_id
@@ -427,6 +527,7 @@ def _upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> 
             from backend.app.core.embeddings import reindex_source_chunks
 
             reindex_source_chunks(conn, dict_from_row(row))
+            mark_cluster_needs_update(conn, cluster["id"], "Chat transcript memory was indexed.")
 
 
 def _transcript_target_clusters(conn, *, vault_id: str, session, messages) -> list[dict]:

@@ -4,9 +4,10 @@ import math
 import re
 from uuid import uuid4
 
+from backend.app.core.config import get_settings
 from backend.app.core.database import utc_now
 
-EMBEDDING_DIMENSIONS = 128
+HASH_EMBEDDING_DIMENSIONS = 128
 CHUNK_SIZE_WORDS = 180
 CHUNK_OVERLAP_WORDS = 40
 
@@ -18,10 +19,36 @@ def tokenize(text: str) -> list[str]:
 
 
 def embed_text(text: str) -> list[float]:
-    vector = [0.0] * EMBEDDING_DIMENSIONS
+    settings = get_settings()
+    if settings.embedding_provider == "sentence-transformers":
+        return _embed_with_sentence_transformers(text, settings.embedding_model)
+    return _embed_with_hash(text)
+
+
+def embedding_status() -> dict:
+    settings = get_settings()
+    status = {
+        "provider": settings.embedding_provider,
+        "model": settings.embedding_model if settings.embedding_provider != "hash" else "hash",
+        "dimensions": settings.embedding_dimensions if settings.embedding_provider != "hash" else HASH_EMBEDDING_DIMENSIONS,
+        "available": True,
+        "detail": "Using deterministic hash embeddings.",
+    }
+    if settings.embedding_provider == "sentence-transformers":
+        try:
+            _get_sentence_transformer(settings.embedding_model, settings.embedding_cache_dir)
+            status["detail"] = "SentenceTransformers embedding model is available."
+        except Exception as exc:
+            status["available"] = False
+            status["detail"] = f"SentenceTransformers is not available: {exc}"
+    return status
+
+
+def _embed_with_hash(text: str) -> list[float]:
+    vector = [0.0] * HASH_EMBEDDING_DIMENSIONS
     for token in tokenize(text):
         digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
-        bucket = int.from_bytes(digest[:4], "big") % EMBEDDING_DIMENSIONS
+        bucket = int.from_bytes(digest[:4], "big") % HASH_EMBEDDING_DIMENSIONS
         sign = 1.0 if digest[4] % 2 == 0 else -1.0
         vector[bucket] += sign
 
@@ -29,6 +56,40 @@ def embed_text(text: str) -> list[float]:
     if magnitude == 0:
         return vector
     return [value / magnitude for value in vector]
+
+
+_SENTENCE_TRANSFORMER_MODEL = None
+_SENTENCE_TRANSFORMER_MODEL_NAME = None
+_SENTENCE_TRANSFORMER_CACHE_DIR = None
+
+
+def _get_sentence_transformer(model_name: str, cache_dir=None):
+    global _SENTENCE_TRANSFORMER_MODEL
+    global _SENTENCE_TRANSFORMER_MODEL_NAME
+    global _SENTENCE_TRANSFORMER_CACHE_DIR
+    cache_key = str(cache_dir) if cache_dir else ""
+    if (
+        _SENTENCE_TRANSFORMER_MODEL is not None
+        and _SENTENCE_TRANSFORMER_MODEL_NAME == model_name
+        and _SENTENCE_TRANSFORMER_CACHE_DIR == cache_key
+    ):
+        return _SENTENCE_TRANSFORMER_MODEL
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise RuntimeError("install sentence-transformers to use real local embeddings") from exc
+    kwargs = {"cache_folder": str(cache_dir)} if cache_dir else {}
+    _SENTENCE_TRANSFORMER_MODEL = SentenceTransformer(model_name, **kwargs)
+    _SENTENCE_TRANSFORMER_MODEL_NAME = model_name
+    _SENTENCE_TRANSFORMER_CACHE_DIR = cache_key
+    return _SENTENCE_TRANSFORMER_MODEL
+
+
+def _embed_with_sentence_transformers(text: str, model_name: str) -> list[float]:
+    settings = get_settings()
+    model = _get_sentence_transformer(model_name, settings.embedding_cache_dir)
+    vector = model.encode(text or "", normalize_embeddings=True)
+    return [float(value) for value in vector.tolist()]
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:

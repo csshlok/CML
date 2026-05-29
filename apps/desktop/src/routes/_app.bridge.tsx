@@ -258,12 +258,28 @@ function BridgeView() {
               size="sm"
               onClick={() => {
                 void navigator.clipboard.writeText(
-                  `POST ${backend.url}/api/v1/bridge/context\n{\"query\":\"...\",\"vault_id\":\"${status?.allowed_vault_ids[0] ?? ""}\",\"client_name\":\"local-client\"}`,
+                  `POST ${backend.url}/api/v1/bridge/context\nx-cml-bridge-token: ${status?.bridge_token ?? ""}\n{\"query\":\"...\",\"vault_id\":\"${status?.allowed_vault_ids[0] ?? ""}\",\"client_name\":\"local-client\"}`,
                 );
               }}
             >
               <Copy className="h-3.5 w-3.5" />
               Copy HTTP example
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!status}
+              onClick={() => void navigator.clipboard.writeText(status?.bridge_token ?? "")}
+            >
+              Copy token
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!status || saving}
+              onClick={() => void patchSettings({ rotate_token: true })}
+            >
+              Rotate token
             </Button>
           </div>
         </section>

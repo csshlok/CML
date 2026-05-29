@@ -7,6 +7,17 @@ const BACKEND_CANDIDATES = Array.from(
 );
 let resolvedBackendUrl: string | null = null;
 
+if (typeof window !== "undefined") {
+  const queryBackendUrl = new URLSearchParams(window.location.search).get("backendUrl");
+  if (queryBackendUrl) {
+    resolvedBackendUrl = queryBackendUrl;
+  } else {
+    void window.cmlDesktop?.getBackendUrl?.().then((url) => {
+      if (url) resolvedBackendUrl = url;
+    });
+  }
+}
+
 export type BackendHealthStatus = "checking" | "online" | "degraded" | "offline";
 
 export function useBackendHealth() {
@@ -97,6 +108,7 @@ export type BridgeStatus = {
   allow_raw_snippets: boolean;
   allow_style_profile: boolean;
   allow_expert_calls: boolean;
+  bridge_token: string;
 };
 
 export type BridgeRequest = {
@@ -134,6 +146,17 @@ export type ClusterSuggestionRecord = {
   suggested_cluster_name: string;
   confidence: number;
   reason: string;
+};
+
+export type ClusterExpertJobRecord = {
+  id: string;
+  cluster_id: string;
+  vault_id: string;
+  action: string;
+  status: string;
+  detail: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type SourceRecord = {
@@ -250,6 +273,14 @@ export type ModelRuntimeStatus = {
   detail: string;
 };
 
+export type EmbeddingRuntimeStatus = {
+  provider: string;
+  model: string;
+  dimensions: number;
+  available: boolean;
+  detail: string;
+};
+
 export async function getBridgeStatus() {
   return request<BridgeStatus>("/api/v1/bridge/status");
 }
@@ -268,8 +299,9 @@ export async function updateBridgeSettings(
       | "allow_raw_snippets"
       | "allow_style_profile"
       | "allow_expert_calls"
+      | "bridge_token"
     >
-  >,
+  > & { rotate_token?: boolean },
 ) {
   return request<BridgeStatus>("/api/v1/bridge/settings", {
     method: "PATCH",
@@ -324,6 +356,26 @@ export async function updateCluster(
     method: "PATCH",
     body: JSON.stringify(payload),
   });
+}
+
+export async function listClusterExpertJobs(clusterId: string) {
+  return request<ClusterExpertJobRecord[]>(
+    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/jobs`,
+  );
+}
+
+export async function retrainClusterExpert(clusterId: string) {
+  return request<ClusterExpertJobRecord>(
+    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/retrain`,
+    { method: "POST" },
+  );
+}
+
+export async function pauseClusterExpert(clusterId: string) {
+  return request<ClusterRecord>(
+    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/pause`,
+    { method: "POST" },
+  );
 }
 
 export async function listClusterSuggestions(vaultId: string, limit = 12) {
@@ -434,6 +486,63 @@ export async function buildChatContext(payload: {
   });
 }
 
+export async function streamChatContext(
+  payload: {
+    vault_id: string;
+    prompt: string;
+    cluster_id?: string | null;
+    session_id?: string | null;
+    persist?: boolean;
+    limit?: number;
+  },
+  handlers: {
+    onMeta?: (payload: Pick<ChatContextResponse, "clusters_used" | "citations" | "warnings">) => void;
+    onToken: (text: string) => void;
+    onDone?: (payload: Partial<ChatContextResponse>) => void;
+  },
+) {
+  const backendUrl = await getBackendUrl();
+  const response = await fetch(`${backendUrl}/api/v1/chat/context/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`Backend stream failed: ${response.status}`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+    for (const eventBlock of events) {
+      const event = parseSseEvent(eventBlock);
+      if (!event) continue;
+      if (event.event === "meta") handlers.onMeta?.(event.data);
+      if (event.event === "token" && typeof event.data.text === "string") handlers.onToken(event.data.text);
+      if (event.event === "done") handlers.onDone?.(event.data);
+    }
+  }
+}
+
+function parseSseEvent(block: string): { event: string; data: any } | null {
+  const eventLine = block.split("\n").find((line) => line.startsWith("event:"));
+  const dataLine = block.split("\n").find((line) => line.startsWith("data:"));
+  if (!eventLine || !dataLine) return null;
+  try {
+    return {
+      event: eventLine.slice(6).trim(),
+      data: JSON.parse(dataLine.slice(5).trim()),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function listChatSessions(vaultId?: string) {
   const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
   return request<ChatSessionRecord[]>(`/api/v1/chat/sessions${query}`);
@@ -484,6 +593,10 @@ export async function listLocalModels() {
 
 export async function getModelRuntimeStatus() {
   return request<ModelRuntimeStatus>("/api/v1/models/runtime");
+}
+
+export async function getEmbeddingRuntimeStatus() {
+  return request<EmbeddingRuntimeStatus>("/api/v1/models/embeddings");
 }
 
 export async function startModelDownload(modelId: string) {

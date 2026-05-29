@@ -9,10 +9,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClusterMap } from "@/components/ClusterMap";
 import {
   createChatSession,
+  createCluster,
   getCluster,
+  listClusterExpertJobs,
   listChatSessions,
   listSources,
+  pauseClusterExpert,
+  retrainClusterExpert,
+  updateSource,
   updateCluster,
+  type ClusterExpertJobRecord,
   type ChatSessionRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
@@ -30,6 +36,8 @@ function ClusterDetail() {
   const [backendVaultId, setBackendVaultId] = useState<string | null>(null);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
+  const [expertJobs, setExpertJobs] = useState<ClusterExpertJobRecord[]>([]);
+  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [nameDraft, setNameDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -45,14 +53,16 @@ function ClusterDetail() {
       const clusterRow = await getCluster(clusterId);
       const nextCluster = clusterFromRecord(clusterRow);
       setBackendVaultId(clusterRow.vault_id);
-      const [sourceRows, chatRows] = await Promise.all([
+      const [sourceRows, chatRows, jobRows] = await Promise.all([
         listSources(clusterRow.vault_id),
         listChatSessions(clusterRow.vault_id),
+        listClusterExpertJobs(clusterRow.id).catch(() => []),
       ]);
       setBackendCluster(nextCluster);
       setNameDraft(nextCluster.name);
       setBackendSources(sourceRows.map(sourceFromRecord));
       setBackendChats(chatRows.filter((chat) => chat.scope_cluster_id === clusterRow.id));
+      setExpertJobs(jobRows);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load this cluster from the backend.");
       setBackendCluster(null);
@@ -89,6 +99,7 @@ function ClusterDetail() {
 
   const activeSources = usingBackend ? backendSources : sources;
   const clusterSources = activeSources.filter((source) => source.clusterId === cluster.id);
+  const availableSources = activeSources.filter((source) => source.clusterId !== cluster.id);
   const clusterChats = usingBackend
     ? backendChats
     : chats.filter((chat) => chat.scopeClusterId === cluster.id);
@@ -126,6 +137,38 @@ function ClusterDetail() {
     }
     const chat = createChat(cluster.id);
     navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
+  }
+
+  async function moveSource(sourceId: string, nextClusterId: string | null) {
+    if (!usingBackend) return;
+    await updateSource(sourceId, { cluster_id: nextClusterId });
+    await loadBackendCluster();
+  }
+
+  async function createClusterFromSelected() {
+    if (!backendVaultId || selectedSourceIds.length === 0) return;
+    const created = await createCluster({
+      vault_id: backendVaultId,
+      name: `${cluster.name} selection`,
+      description: `Created from ${selectedSourceIds.length} selected source(s).`,
+      color: cluster.tint,
+    });
+    await Promise.all(selectedSourceIds.map((sourceId) => updateSource(sourceId, { cluster_id: created.id })));
+    setSelectedSourceIds([]);
+    navigate({ to: "/clusters/$clusterId", params: { clusterId: created.id } });
+  }
+
+  async function queueExpertLearning() {
+    if (!usingBackend) return;
+    await retrainClusterExpert(cluster.id);
+    await loadBackendCluster();
+  }
+
+  async function pauseExpertLearning() {
+    if (!usingBackend) return;
+    const updated = clusterFromRecord(await pauseClusterExpert(cluster.id));
+    setBackendCluster(updated);
+    setNameDraft(updated.name);
   }
 
   return (
@@ -184,16 +227,53 @@ function ClusterDetail() {
           </TabsContent>
 
           <TabsContent value="sources" className="mt-6">
+            {usingBackend && (
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="text-sm text-muted-foreground">
+                  {selectedSourceIds.length} selected
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={selectedSourceIds.length === 0}
+                  onClick={() => void createClusterFromSelected()}
+                >
+                  New cluster from selected
+                </Button>
+              </div>
+            )}
             <div className="rounded-md border border-border">
               {clusterSources.map((source) => (
                 <div
                   key={source.id}
                   className="flex items-center justify-between gap-4 border-b border-border px-4 py-2.5 text-sm last:border-b-0"
                 >
-                  <span className="truncate">{source.title}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {sourceStateLabel[source.state]}
-                  </span>
+                  <label className="flex min-w-0 flex-1 items-center gap-2">
+                    {usingBackend && (
+                      <input
+                        type="checkbox"
+                        checked={selectedSourceIds.includes(source.id)}
+                        onChange={(event) => {
+                          setSelectedSourceIds((current) =>
+                            event.target.checked
+                              ? [...current, source.id]
+                              : current.filter((id) => id !== source.id),
+                          );
+                        }}
+                      />
+                    )}
+                    <span className="truncate">{source.title}</span>
+                  </label>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-xs text-muted-foreground">
+                      {sourceStateLabel[source.state]}
+                    </span>
+                    {usingBackend && (
+                      <Button variant="ghost" size="sm" onClick={() => void moveSource(source.id, null)}>
+                        Remove
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))}
               {clusterSources.length === 0 && (
@@ -202,9 +282,26 @@ function ClusterDetail() {
                 </div>
               )}
             </div>
-            <div className="mt-3 rounded-md border border-dashed border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
-              Source picker for this cluster is pending. Add files in Mind or Sources, then accept suggested moves.
-            </div>
+            {usingBackend && (
+              <div className="mt-4 rounded-md border border-border">
+                <div className="border-b border-border px-4 py-2 text-sm font-medium">
+                  Add from vault
+                </div>
+                {availableSources.slice(0, 8).map((source) => (
+                  <div key={source.id} className="flex items-center justify-between gap-3 border-b border-border px-4 py-2 text-sm last:border-b-0">
+                    <span className="truncate text-muted-foreground">{source.title}</span>
+                    <Button variant="outline" size="sm" onClick={() => void moveSource(source.id, cluster.id)}>
+                      Add
+                    </Button>
+                  </div>
+                ))}
+                {availableSources.length === 0 && (
+                  <div className="px-4 py-4 text-sm text-muted-foreground">
+                    No other vault sources available.
+                  </div>
+                )}
+              </div>
+            )}
           </TabsContent>
 
           <TabsContent value="chats" className="mt-6 space-y-1">
@@ -236,8 +333,13 @@ function ClusterDetail() {
               <p className="mt-3 text-sm text-muted-foreground">
                 {expertStatusCopy(cluster)}
               </p>
-              <div className="mt-4 rounded-md border border-dashed border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
-                Training controls appear after the local expert queue is implemented.
+              <div className="mt-4 flex gap-2">
+                <Button variant="outline" size="sm" disabled={!usingBackend} onClick={() => void queueExpertLearning()}>
+                  Queue learning
+                </Button>
+                <Button variant="ghost" size="sm" disabled={!usingBackend} onClick={() => void pauseExpertLearning()}>
+                  Pause
+                </Button>
               </div>
             </Card>
             <details className="rounded-md border border-border bg-card px-4 py-3 text-sm">
@@ -255,6 +357,19 @@ function ClusterDetail() {
                 <dd className="truncate">{cluster.id}</dd>
               </dl>
             </details>
+            <Card title="Recent expert jobs">
+              <div className="space-y-2">
+                {expertJobs.slice(0, 5).map((job) => (
+                  <div key={job.id} className="flex items-center justify-between gap-3 text-xs">
+                    <span className="truncate">{job.action}</span>
+                    <span className="text-muted-foreground">{job.status}</span>
+                  </div>
+                ))}
+                {expertJobs.length === 0 && (
+                  <div className="text-sm text-muted-foreground">No expert jobs yet.</div>
+                )}
+              </div>
+            </Card>
           </TabsContent>
 
           <TabsContent value="map" className="mt-6">

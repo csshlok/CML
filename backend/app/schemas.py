@@ -59,6 +59,17 @@ class ClusterSuggestionRead(BaseModel):
     reason: str
 
 
+class ClusterExpertJobRead(BaseModel):
+    id: str
+    cluster_id: str
+    vault_id: str
+    action: str
+    status: str
+    detail: str
+    created_at: str
+    updated_at: str
+
+
 class SourceCreate(BaseModel):
     vault_id: str
     cluster_id: str | None = None
@@ -153,6 +164,7 @@ class BridgeStatus(BaseModel):
     allow_raw_snippets: bool = False
     allow_style_profile: bool = False
     allow_expert_calls: bool = False
+    bridge_token: str = ""
 
 
 class BridgeSettingsUpdate(BaseModel):
@@ -162,6 +174,7 @@ class BridgeSettingsUpdate(BaseModel):
     allow_raw_snippets: bool | None = None
     allow_style_profile: bool | None = None
     allow_expert_calls: bool | None = None
+    rotate_token: bool | None = None
 
 
 class BridgeContextRequest(BaseModel):
@@ -306,3 +319,32 @@ class ModelRuntimeStatus(BaseModel):
     model: str
     available: bool
     detail: str
+
+
+class EmbeddingRuntimeStatus(BaseModel):
+    provider: str
+    model: str
+    dimensions: int
+    available: bool
+    detail: str
+
+
+class AppJobRead(BaseModel):
+    id: str
+    job_type: str
+    status: str
+    payload: str
+    dedupe_key: str | None = None
+    attempts: int
+    max_attempts: int
+    last_error: str
+    created_at: str
+    updated_at: str
+
+
+class JobQueueStatus(BaseModel):
+    queued: int
+    running: int
+    succeeded: int
+    failed: int
+    latest: list[AppJobRead]

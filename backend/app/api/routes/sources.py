@@ -4,8 +4,9 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.clustering import assign_or_create_cluster
+from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.embeddings import reindex_source_chunks
+from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_text_from_path, extract_text_from_url
 from backend.app.core.memory_card import generate_tags, summarize_text
 from backend.app.core.sql import build_update_assignments
@@ -102,7 +103,12 @@ def create_source(payload: SourceCreate) -> dict:
         )
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source["id"],)).fetchone()
         if row is not None and source["state"] == "indexed":
-            reindex_source_chunks(conn, dict_from_row(row))
+            enqueue_job(
+                conn,
+                job_type="reindex_source",
+                payload={"source_id": source["id"]},
+                dedupe_key=f"reindex-source:{source['id']}",
+            )
     return source_from_row(row)
 
 
@@ -196,7 +202,7 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
     )
     params = {"id": source_id, **updates}
     with connect() as conn:
-        existing = conn.execute("SELECT id FROM sources WHERE id = ?", (source_id,)).fetchone()
+        existing = conn.execute("SELECT id, cluster_id FROM sources WHERE id = ?", (source_id,)).fetchone()
         if existing is None:
             raise HTTPException(status_code=404, detail="Source not found")
         if updates.get("cluster_id"):
@@ -211,9 +217,16 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
         if row is not None and any(key in updates for key in {"cluster_id", "raw_text", "extracted_text", "state"}):
             source = dict_from_row(row)
             if source["state"] == "indexed":
-                reindex_source_chunks(conn, source)
+                enqueue_job(
+                    conn,
+                    job_type="reindex_source",
+                    payload={"source_id": source_id},
+                    dedupe_key=f"reindex-source:{source_id}",
+                )
             else:
                 conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
+            mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
+            mark_cluster_needs_update(conn, source["cluster_id"], "Source changed or moved.")
     return source_from_row(row)
 
 

@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException
 
+from backend.app.core.embeddings import embedding_status
 from backend.app.core.llm_runtime import runtime_status
 from backend.app.core.model_registry import list_models, model_status, start_model_download
-from backend.app.schemas import ModelDownloadStart, ModelRead, ModelRuntimeStatus
+from backend.app.schemas import EmbeddingRuntimeStatus, ModelDownloadStart, ModelRead, ModelRuntimeStatus
 
 router = APIRouter(prefix="/models", tags=["models"])
 
@@ -15,6 +16,11 @@ def list_local_models() -> list[dict]:
 @router.get("/runtime", response_model=ModelRuntimeStatus)
 def get_runtime_status() -> dict:
     return runtime_status()
+
+
+@router.get("/embeddings", response_model=EmbeddingRuntimeStatus)
+def get_embedding_status() -> dict:
+    return embedding_status()
 
 
 @router.get("/{model_id}", response_model=ModelRead)

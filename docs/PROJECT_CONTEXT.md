@@ -65,17 +65,17 @@ Progress bar legend:
 
 | Phase | Status | Progress | Notes |
 | --- | --- | --- | --- |
-| Product definition | In progress | `[########--] 80%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, runtime boundary, and model storage decision are documented. Needs packaging/runtime launch UX details. |
-| UI prototype cleanup | In progress | `[#########-] 97%` | V0 reviewed. Cross-platform shortcuts fixed. CML Mind workspace, clickable source cards, setup flow, cleaned-up blob map, UI audit cleanup, misleading-control pass, backend-backed cluster detail, persisted chat actions, and Bridge permission controls are in place. Needs visual QA and final shared toolbar polish. |
-| Desktop app foundation | In progress | `[########--] 82%` | Electron workspace created, frontend build passes, Vite dev server verified, file-opening IPC/file picker primitives added, UI routes can call configurable backend APIs, and Settings can read model/runtime status. Needs Electron window verification and packaging. |
-| Local backend foundation | In progress | `[########--] 78%` | SQLite config/storage foundation, CRUD route groups, ingestion endpoints, Bridge settings, chat transcript memory status, and first-pass clustering service are working. Needs app-level services and tests. |
-| Vault ingestion | In progress | `[#########-] 90%` | Source metadata/text records can be created and viewed from the Sources UI. TXT/Markdown/DOCX/PDF, pasted text, static link ingestion, setup import, desktop drag/drop import, local synced-folder import, per-file batch import failure reporting, link title/image metadata, generated summaries/tags, and in-app capture dialogs work. Needs screenshots/OCR extraction and dynamic-page parsing. |
-| Embeddings and clustering | In progress | `[#####-----] 50%` | First-pass keyword auto-clustering, local chunking, deterministic local embeddings, SQLite vector storage, semantic search API, semantic Mind search, and reviewable cluster move suggestions are working. Need stronger embedding model and richer split/merge suggestions. |
-| Chat and context routing | In progress | `[########--] 84%` | Retrieval-grounded chat context, persisted backend chat sessions/messages, backend chat sidebar loading/deletion, answer feedback/save actions, transcript memory status, progressive answer rendering, local model runtime adapter, model setup UI, llama.cpp runtime helper scripts, fallback drafts, cluster usage, warnings, and citations are working. Needs true token streaming and manual routing polish. |
-| Compulsory cluster experts | Not started | `[----------] 0%` | Need expert lifecycle, training queue, local fine-tuning spike. |
-| Context Bridge | In progress | `[######----] 65%` | Bridge UI route reads backend status/history and can update local permission settings. HTTP bridge context now enforces enabled state, vault/cluster allowlists, raw-text redaction, semantic retrieval, and request logging. Needs MCP server, CLI, app-token auth, and per-client setup. |
-| Packaging and installer | In progress | `[#---------] 10%` | Windows llama.cpp runtime download/start scripts exist for local testing. Need app packaging, bundled service process management, and installer flow. |
-| QA and hardening | In progress | `[##--------] 20%` | Security pass completed across backend, Electron shell, frontend dynamic CSS, and dependency audit. Needs Python CVE audit, broader tests, reliability checks, failure states, and performance review. |
+| Product definition | In progress | `[########--] 82%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, runtime boundary, model storage decision, and first packaging/runtime launch direction are documented. Needs production installer specifics. |
+| UI prototype cleanup | In progress | `[#########-] 98%` | V0 reviewed. Cross-platform shortcuts fixed. CML Mind workspace, clickable source cards, setup flow, cleaned-up blob map, UI audit cleanup, misleading-control pass, backend-backed cluster detail, persisted chat actions, Bridge permission controls, cluster source controls, and expert controls are in place. Needs visual QA and final shared toolbar polish. |
+| Desktop app foundation | In progress | `[#########-] 88%` | Electron workspace created, frontend build passes, Vite dev server verified, file-opening IPC/file picker primitives added, UI routes can call configurable backend APIs, Settings can read model/runtime status, and Electron can manage a local backend process. Needs packaged-app verification. |
+| Local backend foundation | In progress | `[#########-] 87%` | SQLite config/storage foundation, CRUD route groups, ingestion endpoints, Bridge settings/token auth, chat streaming/memory status, background app job queue, expert job queue scaffold, embedding runtime status, and first-pass clustering service are working. Needs service-layer cleanup and tests. |
+| Vault ingestion | In progress | `[#########-] 91%` | Source metadata/text records can be created and viewed from the Sources UI. TXT/Markdown/DOCX/PDF, pasted text, static link ingestion, setup import, desktop drag/drop import, local synced-folder import, per-file batch import failure reporting, link title/image metadata, generated summaries/tags, in-app capture dialogs, and queued source reindexing work. Needs screenshots/OCR extraction and dynamic-page parsing. |
+| Embeddings and clustering | In progress | `[######----] 62%` | First-pass keyword auto-clustering, local chunking, deterministic local embeddings, optional SentenceTransformers runtime path/cache setting, SQLite vector storage, semantic search API, semantic Mind search, and reviewable cluster move suggestions are working. Need installed model validation and richer split/merge suggestions. |
+| Chat and context routing | In progress | `[#########-] 92%` | Retrieval-grounded chat context, persisted backend chat sessions/messages, backend chat sidebar loading/deletion, answer feedback/save actions, background transcript memory indexing, SSE answer streaming, local model runtime adapter, model setup UI, llama.cpp runtime helper scripts, fallback drafts, cluster usage, warnings, and citations are working. Needs manual routing polish and richer stream error states. |
+| Compulsory cluster experts | In progress | `[##--------] 20%` | Expert lifecycle states, expert job queue table, retrain/pause routes, cluster detail controls, and source/chat-memory change triggers are scaffolded. Need real local training implementation, adapter files, evaluation, and rollback. |
+| Context Bridge | In progress | `[#######---] 72%` | Bridge UI route reads backend status/history and can update local permission settings. HTTP bridge context now enforces enabled state, app token, vault/cluster allowlists, raw-text redaction, semantic retrieval, and request logging. Needs MCP server, CLI, and per-client setup. |
+| Packaging and installer | In progress | `[####------] 35%` | Windows llama.cpp runtime download/start scripts, Electron backend process management, electron-builder packaging scaffold, and packaged Python runtime staging exist. Need real installer build/launch verification. |
+| QA and hardening | In progress | `[##--------] 22%` | Security pass completed across backend, Electron shell, frontend dynamic CSS, and dependency audit. Backend compile/build/smoke checks now cover queued jobs. Needs Python CVE audit, broader tests, reliability checks, failure states, and performance review. |
 
 ## Week-By-Week Goals
 
@@ -660,12 +660,87 @@ Exit criteria:
 - Smoke-tested chat memory status against the live backend: a persisted chat turn returned `memory_status=indexed` and stored `memory_updated_at`.
 - Verified backend syntax with `.venv\Scripts\python.exe -m compileall backend\app`.
 - Verified production desktop build with `npm run build`.
+- Added true chat streaming path:
+  - added OpenAI-compatible SSE parsing in the local LLM runtime adapter
+  - added `POST /api/v1/chat/context/stream`
+  - stream endpoint emits `meta`, `token`, and `done` events
+  - fallback retrieval drafts stream as chunks when the local model runtime is unavailable
+  - Chat UI now consumes the streaming endpoint instead of revealing a fully completed answer after the fact
+- Added Bridge client token auth:
+  - added `bridge_token` to Bridge settings
+  - Bridge context now requires `x-cml-bridge-token` when Bridge is enabled
+  - Bridge UI can copy and rotate the local Bridge token
+  - copied HTTP examples now include the token header
+- Added real cluster source management:
+  - cluster detail can remove a source from a cluster
+  - cluster detail can add another vault source to the current cluster
+  - selected cluster sources can be moved into a newly created cluster
+  - source changes mark affected local experts as needing an update through the expert lifecycle scaffold
+- Added compulsory expert lifecycle scaffold:
+  - added `cluster_expert_jobs` table
+  - added expert lifecycle helpers for refresh-needed and queued jobs
+  - added `GET /api/v1/clusters/{cluster_id}/expert/jobs`
+  - added `POST /api/v1/clusters/{cluster_id}/expert/retrain`
+  - added `POST /api/v1/clusters/{cluster_id}/expert/pause`
+  - cluster detail Expert tab can queue learning, pause learning, and show recent expert jobs
+  - new indexed sources, source moves/changes, and chat transcript memory now create expert refresh-needed jobs
+- Restarted the current-code backend on `http://127.0.0.1:7343`.
+- Smoke-tested all four new areas against the live backend:
+  - source move/remove
+  - expert retrain/pause/jobs
+  - Bridge token blocking and token-authorized semantic retrieval with raw text redaction
+  - chat stream `token`/`done` events and persisted memory status
+- Verified backend syntax with `.venv\Scripts\python.exe -m compileall backend\app`.
+- Verified production desktop build with `npm run build`.
+- Added Electron backend service management:
+  - Electron checks for an existing current backend before spawning a new one
+  - if needed, Electron starts FastAPI on an open loopback port in the `7343-7355` range
+  - the selected backend URL is passed to the renderer through query params and IPC
+  - spawned backend processes are stopped when the Electron app quits
+- Added frontend backend URL handoff so the desktop app can use the Electron-managed backend while still falling back to configured/probed local URLs.
+- Added configurable embedding runtime support:
+  - default remains deterministic hash embeddings for dependency-light local runs
+  - optional `sentence-transformers` provider can be enabled through `CML_EMBEDDING_PROVIDER=sentence-transformers`
+  - added `CML_EMBEDDING_MODEL` and `CML_EMBEDDING_DIMENSIONS`
+  - added `GET /api/v1/models/embeddings`
+  - Settings now shows embedding provider, model, dimensions, and availability
+- Added first Windows packaging scaffold:
+  - electron-builder config in the desktop package
+  - root `npm run package:win`
+  - `scripts/packaging/package-windows.ps1`
+  - backend source staging into the desktop package resources
+- Updated `.env.example` with embedding provider settings.
+- Updated `package-lock.json` after adding packaging dependencies.
+- Verified the latest desktop/service/embedding pass with backend compile, Electron syntax checks, desktop production build, and backend smoke checks for `/health`, `/openapi.json`, and `/api/v1/models/embeddings`.
+- Added a SQLite-backed background job queue:
+  - new `app_jobs` table with queued/running/succeeded/failed states
+  - backend startup starts a lightweight daemon worker
+  - added `GET /api/v1/jobs/status`
+  - added `POST /api/v1/jobs/run-once` for deterministic local testing
+- Moved source chunk reindexing into queued background jobs.
+- Moved chat transcript memory indexing into queued background jobs:
+  - persisted chat turns now return `memory_status = indexing`
+  - the worker creates/updates transcript source records
+  - the worker marks the chat session `indexed` after transcript chunks are stored
+- Added shared `backend/app/core/chat_memory.py` so transcript memory is handled outside the chat route.
+- Strengthened the Windows packaging scaffold:
+  - packaged Electron now expects the backend Python runtime under `resources/python-runtime`
+  - packaging script creates a Windows venv runtime and installs backend dependencies into it
+  - electron-builder now includes both backend source and the staged Python runtime
+- Added `CML_EMBEDDING_CACHE_DIR`.
+- Added `scripts/llm/install-embedding-model.ps1` to install/download `sentence-transformers/all-MiniLM-L6-v2` into `T:\LLM\embeddings` or a chosen target folder.
+- Restarted the current backend on `http://127.0.0.1:7343`.
+- Smoke-tested queued source indexing: created a source, saw a queued job, ran jobs once, and semantic search returned the indexed chunk.
+- Smoke-tested queued chat memory: persisted a chat turn, received `memory_status = indexing`, ran jobs once, and confirmed the session moved to `indexed`.
+- Verified this pass with backend compile, Electron syntax checks, desktop production build, PowerShell script syntax checks, `git diff --check`, and embedding status smoke test.
 
 ## Current Open Work
 
-- Verify Electron dev launch visually.
 - Decide first supported OS for downloadable app.
-- Decide backend service packaging approach.
+- Run and verify the real Windows installer build with `npm run package:win`, including packaged backend launch.
+- Decide whether packaged Python runtime should include optional embedding dependencies or download them during setup.
+- Install and test optional `sentence-transformers` in a Python 3.11/3.12-compatible environment before switching the default embedding provider.
+- Add job retry/backoff policy, cancellation, and UI-facing job failure states.
 - Persist synced-folder import history and optionally add watched folder refresh.
 - Persist real source paths from ingestion so the map preview Vault/Explorer actions work on user-added files.
 - Add backend service layer around raw route/database operations.
@@ -673,18 +748,16 @@ Exit criteria:
 - Add task/list item ingestion as a first-class source type.
 - Connect frontend cluster/chat screens more deeply to backend APIs.
 - Continue UI polish for chat, sources, settings, and onboarding.
-- Continue applying remaining UI audit recommendations: shared page header/toolbar patterns and real cluster source-picker/move controls from the detail view.
+- Continue applying remaining UI audit recommendations: shared page header/toolbar patterns and visual QA on the new cluster/Bridge controls.
 - Continue replacing remaining V0 visual language in chat, settings, onboarding, and footer copy.
 - Replace remaining copied/inspired-too-literally UI surfaces with CML-specific workflows.
-- Add real local backend.
 - Finish vault ingestion edge cases: screenshots/OCR, dynamic links, and watched folder refresh.
-- Add clustering and retrieval.
 - Expand embedding-based suggestions to include split/merge workflows and batch review.
 - Do a qualitative answer comparison across the downloaded GGUF models using representative CML prompts and local context.
-- Add true token streaming from the local model runtime instead of progressive rendering after answer generation.
 - Add manual cluster override polish against backend state.
+- Add richer stream error/stop states in the Chat UI.
 - Decide whether multi-cluster chat transcripts should also create a separate linked chat-memory cluster later.
-- Add cluster expert training lifecycle.
+- Replace expert lifecycle scaffold with real local training, adapter storage, evaluation, and rollback.
 - Add a real backend profile/settings record for setup fields like user name and default vault instead of keeping them only in local storage.
 - Add Python dependency CVE auditing to the toolchain, such as `pip-audit`, and run it in QA.
 - Add local backend access hardening before exposing it beyond trusted loopback desktop use.
@@ -714,16 +787,20 @@ Exit criteria:
 - Early CPU speed result: Phi-4 Mini and Qwen3 4B are the fastest usable V1 candidates on this machine; Qwen3 8B is slower but plausible for quality mode; Gemma 12B is likely too slow for default local chat without GPU/offload.
 - Early CUDA speed result on the RTX 3060 Laptop GPU: Gemma 3 4B, Qwen3 4B, and Phi-4 Mini are all fast enough for interactive local chat; Qwen3 8B is usable as quality mode; Gemma 12B performs poorly with full offload on this 6 GB GPU and should not be a default.
 - Setup now creates a real backend vault and can seed it with real sources. User profile details are still local UI metadata until a backend profile/settings table is added.
-- The local backend still assumes trusted loopback desktop use. Before any wider network exposure, add an app token and stricter origin checks. Bridge now has local enabled/allowlist/redaction permissions, but no client authentication yet.
+- The local backend still assumes trusted loopback desktop use. Before any wider network exposure, add stricter origin checks and per-client Bridge identities. Bridge now has local enabled state, token auth, allowlists, and redaction permissions.
 - Python dependency CVE auditing was not completed because `pip-audit` is not installed in the current environment.
 - Electron launch note: if the window does not open but Vite is reachable, check `ELECTRON_RUN_AS_NODE`. It must be unset for the Electron shell process.
 - UI audit risk reduced: Bridge controls, chat attachment/save/regenerate actions, cluster expert controls, cluster source-picker actions, and command palette new chat are no longer misleading production-looking dead controls. Cluster detail now uses backend data. Chat answer feedback/save/delete/regenerate controls now have backend behavior. Remaining risk is backend completeness, especially Bridge permissions, MCP/CLI setup, and direct source move controls inside cluster detail.
-- Chat transcript memory currently indexes immediately after each persisted turn, which satisfies the "store and index after the user leaves" intent more aggressively. Later we can add a debounced/background job so long chats do not reindex on every turn.
-- Context Bridge HTTP retrieval is now semantic, local, and permission-gated by enabled state, vault/cluster allowlists, and raw-text redaction. Before exposing it to external clients beyond trusted local testing, add app-token auth and per-client permissions.
+- Chat transcript memory now uses the background job queue. Persisted chat turns are stored immediately, then transcript sources/chunks are indexed by the worker and the session moves from `indexing` to `indexed`.
+- Context Bridge HTTP retrieval is now semantic, local, and permission-gated by enabled state, token auth, vault/cluster allowlists, and raw-text redaction. Before exposing it to external clients beyond trusted local testing, add per-client permissions and token rotation history.
 - Current-code backend is running on `http://127.0.0.1:7343` because `7342` is occupied by stale Windows listeners with non-existent PIDs. The `7343` backend exposes the new chat session/message routes, Bridge settings route, and semantic Bridge routes.
-- Chat answer rendering is progressive in the UI, but true token streaming from llama.cpp/OpenAI-compatible runtimes is still pending.
+- Chat streaming now uses `/api/v1/chat/context/stream`. When a local OpenAI-compatible runtime is available, CML parses runtime SSE chunks; otherwise retrieval fallback text is streamed in local chunks.
+- Expert lifecycle is scaffolded but not training yet. The app can mark clusters `needs-update`, queue learning jobs, and show/pause expert status, but no LoRA/adapters are produced yet.
 - Diagnosed the `{"detail":"Not Found"}` UI issue: `7342` is an older stale backend that lacks `/api/v1/chat/messages/{message_id}` and `/api/v1/bridge/settings`, while `7343` has the current routes. The desktop API client now probes configured URL, `7343`, then `7342`, and only uses a backend with the current chat routes. Also set local `.env` `VITE_CML_BACKEND_URL=http://127.0.0.1:7343`.
 - Restarted the desktop dev stack after unsetting `ELECTRON_RUN_AS_NODE`; Vite is reachable at `http://127.0.0.1:5173/` and the current backend routes are reachable on `7343`.
+- Electron now has a backend process manager for dev and packaged mode. Packaged mode now expects staged backend source plus a staged Python venv runtime under app resources.
+- Embeddings remain hash-based by default until the optional SentenceTransformers dependency and model are installed and tested in a compatible Python environment. The intended V1 embedding model is `sentence-transformers/all-MiniLM-L6-v2`, cached locally through `CML_EMBEDDING_CACHE_DIR`.
+- The Windows packaging scaffold now stages a Python runtime, but the actual installer has not yet been built or verified end to end.
 
 ## Update Protocol
 
