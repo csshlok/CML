@@ -66,7 +66,7 @@ Progress bar legend:
 | Phase | Status | Progress | Notes |
 | --- | --- | --- | --- |
 | Product definition | In progress | `[########--] 80%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, runtime boundary, and model storage decision are documented. Needs packaging/runtime launch UX details. |
-| UI prototype cleanup | In progress | `[#########-] 90%` | V0 reviewed. Cross-platform shortcuts fixed. CML Mind workspace, clickable source cards, setup flow, and cleaned-up blob map are in place. Needs broader chat/settings polish. |
+| UI prototype cleanup | In progress | `[#########-] 92%` | V0 reviewed. Cross-platform shortcuts fixed. CML Mind workspace, clickable source cards, setup flow, cleaned-up blob map, UI audit cleanup, and misleading-control pass are in place. Needs final backend-backed detail views and visual QA. |
 | Desktop app foundation | In progress | `[########--] 80%` | Electron workspace created, frontend build passes, Vite dev server verified, file-opening IPC/file picker primitives added, UI routes can call backend APIs, and Settings can read model/runtime status. Needs Electron window verification and packaging. |
 | Local backend foundation | In progress | `[#######---] 70%` | SQLite config/storage foundation, CRUD route groups, ingestion endpoints, and first-pass clustering service are working. Needs app-level services and tests. |
 | Vault ingestion | In progress | `[#########-] 90%` | Source metadata/text records can be created and viewed from the Sources UI. TXT/Markdown/DOCX/PDF, pasted text, static link ingestion, setup import, desktop drag/drop import, local synced-folder import, per-file batch import failure reporting, link title/image metadata, generated summaries/tags, and in-app capture dialogs work. Needs screenshots/OCR extraction and dynamic-page parsing. |
@@ -598,6 +598,20 @@ Exit criteria:
 - Confirmed the cloned skills repo currently exposes a `frontend-design` skill at `C:\Users\csshl\.agents\skills\codex-skills\skills\frontend-design\SKILL.md`.
 - Used the `frontend-design` skill to run a deep UI/interaction audit across the desktop app shell, Mind/search, Sources, Clusters, Map, Chat, Bridge, Settings, onboarding, shared components, and global styling.
 - Identified the main UI cleanup themes: remove remaining mojibake text, unify page headers/toolbars, replace disabled/inert controls with working or clearly staged states, connect mock-backed commands/details to backend data, improve map accessibility and interaction clarity, and reduce inconsistent typography.
+- Fixed the first UI audit cleanup pass:
+  - removed remaining mojibake/oversized serif UI copy from active desktop routes
+  - centralized backend record-to-UI mapping in `apps/desktop/src/lib/recordAdapters.ts`
+  - made command palette new-chat creation backend-aware with a mock fallback
+  - changed app-shell shortcuts so they route to backend-aware screens instead of silently creating mock-only records
+  - improved map cluster opening from hidden double-click to click/keyboard activation while preserving drag behavior
+  - made map source previews focusable and reduced decorative glow styling
+  - added accessible labels to key icon controls
+  - converted nonfunctional Bridge, cluster expert, attachment, save/regenerate, and cluster source-picker controls into explicit pending/setup states
+  - stopped Settings from saving vault path on input blur
+  - fixed the onboarding Windows path placeholder
+  - verified the desktop production build with `npm run build`
+- Activated the local development stack after the UI audit pass: backend health is responding at `http://127.0.0.1:7342/health` and the desktop UI dev server is responding at `http://127.0.0.1:5173/`.
+- Fixed the local Electron launch issue for this session by starting Electron with `ELECTRON_RUN_AS_NODE` removed; the inherited environment had `ELECTRON_RUN_AS_NODE=1`, which made Electron behave like Node and crash before opening a window.
 
 ## Current Open Work
 
@@ -611,7 +625,7 @@ Exit criteria:
 - Add task/list item ingestion as a first-class source type.
 - Connect frontend cluster/chat screens more deeply to backend APIs.
 - Continue UI polish for chat, sources, settings, and onboarding.
-- Apply the UI audit recommendations: shared page header/toolbar patterns, consistent user-facing status labels, backend-aware command palette actions, map selection/accessibility fixes, and cleanup of disabled placeholder controls.
+- Continue applying remaining UI audit recommendations: shared page header/toolbar patterns, backend-backed cluster detail actions, fully persisted chat answer actions, and Bridge permission/setup flows.
 - Continue replacing remaining V0 visual language in chat, settings, onboarding, and footer copy.
 - Replace remaining copied/inspired-too-literally UI surfaces with CML-specific workflows.
 - Add real local backend.
@@ -652,7 +666,8 @@ Exit criteria:
 - Setup now creates a real backend vault and can seed it with real sources. User profile details are still local UI metadata until a backend profile/settings table is added.
 - The local backend still assumes trusted loopback desktop use. Before any wider network exposure, add an app token, stricter origin checks, and per-vault permission boundaries.
 - Python dependency CVE auditing was not completed because `pip-audit` is not installed in the current environment.
-- UI audit risk: several visible actions still look production-ready but are not wired yet, especially Bridge controls, chat attachments/save/regenerate actions, cluster expert controls, and some command palette actions. These should either become functional or be presented as setup/preview states before user testing.
+- Electron launch note: if the window does not open but Vite is reachable, check `ELECTRON_RUN_AS_NODE`. It must be unset for the Electron shell process.
+- UI audit risk reduced: Bridge controls, chat attachment/save/regenerate actions, cluster expert controls, cluster source-picker actions, and command palette new chat are no longer misleading production-looking dead controls. Remaining risk is backend completeness, especially cluster detail persistence, Bridge permissions, and persisted chat answer feedback/actions.
 
 ## Update Protocol
 

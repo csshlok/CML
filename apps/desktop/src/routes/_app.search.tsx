@@ -25,10 +25,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   useStore,
   type Cluster,
-  type ClusterTint,
-  type ExpertStatus,
   type Source,
-  type SourceState,
   type SourceType,
 } from "@/lib/mockStore";
 import {
@@ -41,10 +38,9 @@ import {
   reindexVaultSearch,
   semanticSearch,
   updateSource,
-  type ClusterRecord,
-  type SourceRecord,
   type VaultRecord,
 } from "@/lib/backend";
+import { clusterFromRecord, sourceFromRecord, sourceStateText } from "@/lib/recordAdapters";
 
 type FilterType = "all" | "note" | "link" | "file" | "image" | "unclustered";
 type SortMode = "newest" | "oldest" | "alphabetical";
@@ -301,6 +297,7 @@ function MindView() {
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 autoFocus
+                aria-label="Search sources, tags, and summaries"
                 placeholder="Search sources, tags, summaries..."
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
@@ -493,7 +490,7 @@ function MemoryCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-3">
             <h2 className="truncate text-sm font-semibold">{source.title}</h2>
-            <span className="shrink-0 text-xs text-muted-foreground">{source.state}</span>
+            <span className="shrink-0 text-xs text-muted-foreground">{sourceStateText(source.state)}</span>
           </div>
           <p className="mt-2 line-clamp-3 text-sm leading-6 text-muted-foreground">
             {source.summary || source.preview || "Preview will appear after extraction."}
@@ -581,7 +578,7 @@ function SourceDetailDialog({
           <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
             <span>{source.type}</span>
             <span>/</span>
-            <span>{source.state}</span>
+            <span>{sourceStateText(source.state)}</span>
             {cluster && (
               <>
                 <span>/</span>
@@ -645,24 +642,6 @@ const sourceIcon: Record<SourceType, ComponentType<{ className?: string }>> = {
   image: Image,
 };
 
-function sourceFromRecord(record: SourceRecord): Source {
-  return {
-    id: record.id,
-    title: record.title,
-    type: normalizeSourceType(record.source_type),
-    clusterId: record.cluster_id,
-    state: normalizeSourceState(record.state),
-    updatedAt: record.updated_at,
-    preview: record.extracted_text || record.raw_text,
-    summary: record.summary,
-    tags: record.tags ?? [],
-    coverImageUrl: record.cover_image_url ?? undefined,
-    vaultPath: record.original_path ?? undefined,
-    localPath: record.original_path ?? undefined,
-    url: record.url ?? undefined,
-  };
-}
-
 function imageSrc(value?: string) {
   if (!value) return undefined;
   if (/^https?:\/\//i.test(value) || value.startsWith("data:") || value.startsWith("file://")) {
@@ -681,39 +660,4 @@ function formatImportResult(imported: number, failures: string[]) {
   const firstFailure = failures[0];
   const more = failures.length > 1 ? ` and ${failures.length - 1} more` : "";
   return `${importedLabel}. Failed ${failures.length}: ${firstFailure}${more}.`;
-}
-
-function clusterFromRecord(record: ClusterRecord): Cluster {
-  return {
-    id: record.id,
-    name: record.name,
-    tint: normalizeTint(record.color),
-    description: record.description,
-    expert: normalizeExpertStatus(record.expert_status),
-    lastActive: record.updated_at,
-    summary: record.description,
-    styleProfile: "Style profile pending",
-  };
-}
-
-function normalizeSourceType(value: string): SourceType {
-  return value === "file" || value === "link" || value === "note" || value === "image" ? value : "file";
-}
-
-function normalizeSourceState(value: string): SourceState {
-  return value === "waiting" || value === "extracting" || value === "indexed" || value === "needs-review" || value === "failed"
-    ? value
-    : "waiting";
-}
-
-function normalizeTint(value: string): ClusterTint {
-  return value === "sage" || value === "sand" || value === "sky" || value === "blush" || value === "lavender" || value === "terracotta"
-    ? value
-    : "sage";
-}
-
-function normalizeExpertStatus(value: string): ExpertStatus {
-  return value === "setting-up" || value === "learning" || value === "ready" || value === "needs-update" || value === "paused" || value === "issue"
-    ? value
-    : "setting-up";
 }

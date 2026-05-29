@@ -209,7 +209,7 @@ function Onboarding() {
                 <Input
                   value={vaultPath}
                   onChange={(event) => setVaultPath(event.target.value)}
-                  placeholder="C:\Users\You\Documents\CML Vault"
+                  placeholder="C:\\Users\\You\\Documents\\CML Vault"
                 />
                 <Button variant="outline" onClick={chooseVaultFolder} disabled={!desktop?.selectVaultFolder}>
                   <FolderOpen className="mr-1.5 h-4 w-4" />

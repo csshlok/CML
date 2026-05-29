@@ -9,7 +9,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
-import { MessageSquare, Plus, RefreshCw, Download } from "lucide-react";
+import { MessageSquare } from "lucide-react";
 import { ClusterMap } from "@/components/ClusterMap";
 
 export const Route = createFileRoute("/_app/clusters/$clusterId")({
@@ -40,7 +40,7 @@ function ClusterDetail() {
           <Input
             defaultValue={cluster.name}
             onBlur={(e) => renameCluster(cluster.id, e.target.value)}
-            className="h-9 max-w-sm border-transparent bg-transparent px-1 font-serif text-2xl shadow-none focus-visible:bg-card"
+            className="h-9 max-w-sm border-transparent bg-transparent px-1 text-2xl font-semibold tracking-tight shadow-none focus-visible:bg-card"
           />
           <div className="ml-auto flex items-center gap-2">
             <ExpertBadge status={cluster.expert} />
@@ -72,7 +72,7 @@ function ClusterDetail() {
             <Card title="Recent activity">
               <ul className="space-y-1.5 text-sm">
                 {clusterChats.slice(0, 4).map((c) => (
-                  <li key={c.id} className="text-muted-foreground">— {c.title}</li>
+                  <li key={c.id} className="text-muted-foreground">- {c.title}</li>
                 ))}
                 {clusterChats.length === 0 && (
                   <li className="text-muted-foreground">No chats yet.</li>
@@ -100,9 +100,9 @@ function ClusterDetail() {
                 </div>
               )}
             </div>
-            <Button variant="outline" size="sm" className="mt-3">
-              <Plus className="mr-1.5 h-4 w-4" /> Add sources
-            </Button>
+            <div className="mt-3 rounded-md border border-dashed border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+              Source picker for this cluster is pending. Add files in Mind or Sources, then accept suggested moves.
+            </div>
           </TabsContent>
 
           <TabsContent value="chats" className="mt-6 space-y-1">
@@ -135,13 +135,9 @@ function ClusterDetail() {
                   : "This local expert is being set up."}
               </p>
               <div className="mt-4 flex gap-2">
-                <Button variant="outline" size="sm">
-                  <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Retrain
-                </Button>
-                <Button variant="ghost" size="sm">Pause</Button>
-                <Button variant="ghost" size="sm" className="ml-auto">
-                  <Download className="mr-1.5 h-3.5 w-3.5" /> Export
-                </Button>
+                <div className="rounded-md border border-dashed border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+                  Training controls appear after the local expert queue is implemented.
+                </div>
               </div>
             </Card>
             <details className="rounded-md border border-border bg-card px-4 py-3 text-sm">
@@ -175,7 +171,7 @@ function ClusterDetail() {
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="rounded-md border border-border bg-card p-4">
-      <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+      <div className="text-xs font-medium text-muted-foreground">
         {title}
       </div>
       <div className="mt-2 text-sm">{children}</div>

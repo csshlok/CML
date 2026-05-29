@@ -30,7 +30,7 @@ const nav = [
 export function AppShell() {
   const pathname = useRouterState({ select: (r) => r.location.pathname });
   const navigate = useNavigate();
-  const { vaultPath, chats, isIndexing, indexingProgress, createChat, addCluster } = useStore();
+  const { vaultPath, chats, isIndexing, indexingProgress } = useStore();
   const { open: openPalette, setOpen } = useCommandPalette();
   const backend = useBackendHealth();
 
@@ -44,11 +44,9 @@ export function AppShell() {
       if (mod && e.key.toLowerCase() === "n") {
         e.preventDefault();
         if (e.shiftKey) {
-          const cluster = addCluster({ name: "New cluster" });
-          navigate({ to: "/clusters/$clusterId", params: { clusterId: cluster.id } });
+          navigate({ to: "/clusters" });
         } else {
-          const chat = createChat(null);
-          navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
+          navigate({ to: "/chat" });
         }
       }
       if (mod && e.key.toLowerCase() === "l") {
@@ -62,7 +60,7 @@ export function AppShell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [addCluster, createChat, navigate, setOpen]);
+  }, [navigate, setOpen]);
 
   const savedChats = chats.filter((c) => c.saved).slice(0, 6);
 
@@ -150,13 +148,13 @@ export function AppShell() {
 
       <footer className="flex h-7 items-center gap-4 border-t border-border bg-card px-3 text-[11px] text-muted-foreground">
         <span>{vaultPath ?? "No vault"}</span>
-        <span className="opacity-50">·</span>
+        <span className="opacity-50">/</span>
         {isIndexing ? (
-          <span>Indexing… {Math.round(indexingProgress * 100)}%</span>
+          <span>Indexing... {Math.round(indexingProgress * 100)}%</span>
         ) : (
           <span>Idle</span>
         )}
-        <span className="ml-auto opacity-60">Ctrl/Cmd K commands · Ctrl/Cmd N new chat</span>
+        <span className="ml-auto opacity-60">Ctrl/Cmd K commands / Ctrl/Cmd N new chat</span>
         <span
           className={
             "rounded-full px-2 py-0.5 " +

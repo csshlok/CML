@@ -4,11 +4,7 @@ import {
   useStore,
   sourceStateLabel,
   type Cluster,
-  type ClusterTint,
-  type ExpertStatus,
   type Source,
-  type SourceState,
-  type SourceType,
 } from "@/lib/mockStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,10 +19,9 @@ import {
   listSources,
   listVaults,
   updateSource as updateBackendSource,
-  type ClusterRecord,
-  type SourceRecord,
   type VaultRecord,
 } from "@/lib/backend";
+import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 import {
   Dialog,
   DialogContent,
@@ -126,9 +121,15 @@ function SourcesView() {
   const sources = usingBackend ? backendSources : mockSources;
   const clusters = usingBackend ? backendClusters : mockClusters;
 
-  const filtered = useMemo(() => sources.filter((s) =>
-    s.title.toLowerCase().includes(q.toLowerCase()),
-  ), [q, sources]);
+  const filtered = useMemo(() => {
+    const query = q.trim().toLowerCase();
+    if (!query) return sources;
+    return sources.filter((source) =>
+      `${source.title} ${source.summary} ${source.preview} ${source.tags.join(" ")}`
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [q, sources]);
 
   async function handleAddText() {
     const text = textBody.trim();
@@ -277,9 +278,10 @@ function SourcesView() {
         </div>
       )}
       <header className="flex items-center gap-3 border-b border-border px-6 py-4">
-        <h1 className="font-serif text-2xl">Sources</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Sources</h1>
         <Input
-          placeholder="Search sources…"
+          aria-label="Search sources"
+          placeholder="Search sources..."
           value={q}
           onChange={(e) => setQ(e.target.value)}
           className="ml-4 h-8 max-w-xs"
@@ -290,7 +292,7 @@ function SourcesView() {
           className="ml-auto"
           onClick={() => void handleAddFiles()}
           disabled={!vault}
-          title="Imports TXT, Markdown, DOCX, and PDF files in this build."
+          aria-label="Add files"
         >
           <FilePlus2 className="mr-1.5 h-4 w-4" /> Add files
         </Button>
@@ -299,7 +301,7 @@ function SourcesView() {
           variant="outline"
           onClick={() => void handleAddFolder()}
           disabled={!vault}
-          title="Imports supported documents from synced folders like Drive, Dropbox, OneDrive, or iCloud."
+          aria-label="Add folder"
         >
           <FolderPlus className="mr-1.5 h-4 w-4" /> Add folder
         </Button>
@@ -371,7 +373,7 @@ function SourcesView() {
                           <span className="text-muted-foreground">{cluster.name}</span>
                         </span>
                       ) : (
-                        <span className="text-muted-foreground">—</span>
+                        <span className="text-muted-foreground">-</span>
                       )}
                     </td>
                     <td className="px-3 py-2.5">
@@ -382,6 +384,7 @@ function SourcesView() {
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7"
+                        aria-label={`Reindex ${s.title}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           void handleReindexSource(s);
@@ -393,6 +396,7 @@ function SourcesView() {
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7"
+                        aria-label={`Remove ${s.title}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           void handleRemoveSource(s);
@@ -414,7 +418,7 @@ function SourcesView() {
           {selected && (
             <>
               <SheetHeader>
-                <SheetTitle className="font-serif">{selected.title}</SheetTitle>
+                <SheetTitle>{selected.title}</SheetTitle>
               </SheetHeader>
               <div className="mt-4 space-y-4 text-sm">
                 <div className="flex gap-3 text-xs text-muted-foreground">
@@ -445,7 +449,7 @@ function SourcesView() {
                   <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
                     Summary
                   </div>
-                  <p className="mt-1">{selected.summary || "—"}</p>
+                  <p className="mt-1">{selected.summary || "-"}</p>
                 </div>
                 <div>
                   <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -534,75 +538,6 @@ function SourcesView() {
       </Dialog>
     </div>
   );
-}
-
-function sourceFromRecord(record: SourceRecord): Source {
-  return {
-    id: record.id,
-    title: record.title,
-    type: normalizeSourceType(record.source_type),
-    clusterId: record.cluster_id,
-    state: normalizeSourceState(record.state),
-    updatedAt: record.updated_at,
-    preview: record.extracted_text || record.raw_text,
-    summary: record.summary,
-    tags: record.tags ?? [],
-    coverImageUrl: record.cover_image_url ?? undefined,
-    vaultPath: record.original_path ?? undefined,
-    localPath: record.original_path ?? undefined,
-    url: record.url ?? undefined,
-  };
-}
-
-function clusterFromRecord(record: ClusterRecord): Cluster {
-  return {
-    id: record.id,
-    name: record.name,
-    tint: normalizeTint(record.color),
-    description: record.description,
-    expert: normalizeExpertStatus(record.expert_status),
-    lastActive: record.updated_at,
-    summary: record.description,
-    styleProfile: "Style profile pending",
-  };
-}
-
-function normalizeSourceType(value: string): SourceType {
-  return value === "file" || value === "link" || value === "note" || value === "image"
-    ? value
-    : "file";
-}
-
-function normalizeSourceState(value: string): SourceState {
-  return value === "waiting" ||
-    value === "extracting" ||
-    value === "indexed" ||
-    value === "needs-review" ||
-    value === "failed"
-    ? value
-    : "waiting";
-}
-
-function normalizeTint(value: string): ClusterTint {
-  return value === "sage" ||
-    value === "sand" ||
-    value === "sky" ||
-    value === "blush" ||
-    value === "lavender" ||
-    value === "terracotta"
-    ? value
-    : "sage";
-}
-
-function normalizeExpertStatus(value: string): ExpertStatus {
-  return value === "setting-up" ||
-    value === "learning" ||
-    value === "ready" ||
-    value === "needs-update" ||
-    value === "paused" ||
-    value === "issue"
-    ? value
-    : "setting-up";
 }
 
 function StateChip({ state }: { state: Source["state"] }) {

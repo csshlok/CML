@@ -11,20 +11,16 @@ import {
   listVaults,
   reindexVaultSearch,
   updateSource,
-  type ClusterRecord,
   type ClusterSuggestionRecord,
-  type SourceRecord,
   type VaultRecord,
 } from "@/lib/backend";
 import {
   useStore,
   type Cluster,
   type ClusterTint,
-  type ExpertStatus,
   type Source,
-  type SourceState,
-  type SourceType,
 } from "@/lib/mockStore";
+import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 
 export const Route = createFileRoute("/_app/clusters")({
   head: () => ({ meta: [{ title: "Clusters" }] }),
@@ -184,60 +180,7 @@ function ClustersList() {
   );
 }
 
-function sourceFromRecord(record: SourceRecord): Source {
-  return {
-    id: record.id,
-    title: record.title,
-    type: normalizeSourceType(record.source_type),
-    clusterId: record.cluster_id,
-    state: normalizeSourceState(record.state),
-    updatedAt: record.updated_at,
-    preview: record.extracted_text || record.raw_text,
-    summary: record.summary,
-    tags: record.tags ?? [],
-    coverImageUrl: record.cover_image_url ?? undefined,
-    vaultPath: record.original_path ?? undefined,
-    localPath: record.original_path ?? undefined,
-    url: record.url ?? undefined,
-  };
-}
-
-function clusterFromRecord(record: ClusterRecord): Cluster {
-  return {
-    id: record.id,
-    name: record.name,
-    tint: normalizeTint(record.color),
-    description: record.description,
-    expert: normalizeExpertStatus(record.expert_status),
-    lastActive: record.updated_at,
-    summary: record.description,
-    styleProfile: "Style profile pending",
-  };
-}
-
 function nextTint(index: number) {
   const tints: ClusterTint[] = ["sage", "sand", "sky", "blush", "lavender", "terracotta"];
   return tints[index % tints.length];
-}
-
-function normalizeSourceType(value: string): SourceType {
-  return value === "file" || value === "link" || value === "note" || value === "image" ? value : "file";
-}
-
-function normalizeSourceState(value: string): SourceState {
-  return value === "waiting" || value === "extracting" || value === "indexed" || value === "needs-review" || value === "failed"
-    ? value
-    : "waiting";
-}
-
-function normalizeTint(value: string): ClusterTint {
-  return value === "sage" || value === "sand" || value === "sky" || value === "blush" || value === "lavender" || value === "terracotta"
-    ? value
-    : "sage";
-}
-
-function normalizeExpertStatus(value: string): ExpertStatus {
-  return value === "setting-up" || value === "learning" || value === "ready" || value === "needs-update" || value === "paused" || value === "issue"
-    ? value
-    : "setting-up";
 }

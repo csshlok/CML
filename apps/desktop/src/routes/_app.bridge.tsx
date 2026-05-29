@@ -61,10 +61,11 @@ function BridgeView() {
               <Cable className="h-4 w-4" />
               Context Bridge
             </div>
-            <h1 className="mt-2 font-serif text-3xl">Let other AI apps ask your local memory.</h1>
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Context Bridge</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Bridge exposes selected clusters, style profiles, and expert context to local tools
-              like Claude terminal, MCP clients, IDE agents, and scripts.
+              Bridge will expose selected clusters, style profiles, and expert context to local tools
+              like Claude terminal, MCP clients, IDE agents, and scripts. The backend status is visible now;
+              permissions and client setup are the next implementation step.
             </p>
           </div>
 
@@ -73,7 +74,7 @@ function BridgeView() {
               <Switch disabled />
               <div>
                 <div className="text-sm font-medium">
-                  {status?.enabled ? "Bridge running" : "Bridge off"}
+                  {status?.enabled ? "Bridge running" : "Setup pending"}
                 </div>
                 <div className="text-xs text-muted-foreground">
                   HTTP API {status?.http_api ?? "checking"}
@@ -152,12 +153,9 @@ function BridgeView() {
             </p>
           )}
           <div className="mt-4 flex gap-2">
-            <Button variant="outline" disabled>
-              Copy MCP config
-            </Button>
-            <Button variant="outline" disabled>
-              Copy CLI example
-            </Button>
+            <div className="rounded-md border border-dashed border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+              MCP config and CLI examples will appear here after bridge permissions are implemented.
+            </div>
           </div>
         </section>
       </div>

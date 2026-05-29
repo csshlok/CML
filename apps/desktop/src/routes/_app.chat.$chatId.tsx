@@ -5,11 +5,7 @@ import {
   streamMockReply,
   newId,
   type Cluster,
-  type ClusterTint,
-  type ExpertStatus,
   type Source,
-  type SourceState,
-  type SourceType,
 } from "@/lib/mockStore";
 import {
   buildChatContext,
@@ -19,12 +15,11 @@ import {
   listVaults,
   reindexVaultSearch,
   updateChatSession,
-  type ClusterRecord,
   type ChatMessageRecord,
   type ChatSessionRecord,
-  type SourceRecord,
   type VaultRecord,
 } from "@/lib/backend";
+import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -46,7 +41,6 @@ import {
   Bookmark,
   ThumbsUp,
   ThumbsDown,
-  RefreshCw,
   Paperclip,
   Quote,
 } from "lucide-react";
@@ -284,7 +278,7 @@ function ChatView() {
       .slice(0, 3)
       .map((s) => ({
         sourceId: s.id,
-        snippet: s.preview.slice(0, 80) + "…",
+        snippet: s.preview.slice(0, 80) + "...",
       }));
     if (chat) appendMessage(chat.id, {
       id: newId(),
@@ -323,7 +317,7 @@ function ChatView() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="global">Global — all clusters</SelectItem>
+            <SelectItem value="global">Global - all clusters</SelectItem>
             {activeClusters.map((c) => (
               <SelectItem key={c.id} value={c.id}>
                 {c.name}
@@ -341,7 +335,7 @@ function ChatView() {
             {saved ? "Saved" : "Save"}
           </Button>
           <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-            {backendReady ? "Semantic context" : "Mock context"}
+            {backendReady ? "Semantic context" : "Local fallback context"}
           </span>
         </div>
       </header>
@@ -387,13 +381,20 @@ function ChatView() {
 
       <div className="border-t border-border bg-card/40 p-4">
         <div className="mx-auto flex max-w-2xl items-end gap-2">
-          <Button variant="ghost" size="icon" className="shrink-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="shrink-0"
+            disabled
+            aria-label="Attachments are not available yet"
+            title="Attachments are not available yet"
+          >
             <Paperclip className="h-4 w-4" />
           </Button>
           <Textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={scope ? `Ask ${scope.name}…` : "Ask your vault…"}
+            placeholder={scope ? `Ask ${scope.name}...` : "Ask your vault..."}
             rows={2}
             className="resize-none"
             onKeyDown={(e) => {
@@ -490,9 +491,9 @@ function Message({
         </div>
       )}
       <div className="mt-3 flex items-center gap-1 border-t border-border pt-2 text-xs text-muted-foreground">
-        <Button variant="ghost" size="sm" className="h-7 px-2">
-          <Bookmark className="mr-1 h-3.5 w-3.5" /> Save
-        </Button>
+        <span className="px-2 text-[11px] text-muted-foreground">
+          Save/regenerate arrives with persisted answer actions.
+        </span>
         <Button
           variant="ghost"
           size="sm"
@@ -509,63 +510,7 @@ function Message({
         >
           <ThumbsDown className="h-3.5 w-3.5" />
         </Button>
-        <Button variant="ghost" size="sm" className="h-7 px-2">
-          <RefreshCw className="mr-1 h-3.5 w-3.5" /> Regenerate
-        </Button>
       </div>
     </div>
   );
-}
-
-function sourceFromRecord(record: SourceRecord): Source {
-  return {
-    id: record.id,
-    title: record.title,
-    type: normalizeSourceType(record.source_type),
-    clusterId: record.cluster_id,
-    state: normalizeSourceState(record.state),
-    updatedAt: record.updated_at,
-    preview: record.extracted_text || record.raw_text,
-    summary: record.summary,
-    tags: record.tags ?? [],
-    coverImageUrl: record.cover_image_url ?? undefined,
-    vaultPath: record.original_path ?? undefined,
-    localPath: record.original_path ?? undefined,
-    url: record.url ?? undefined,
-  };
-}
-
-function clusterFromRecord(record: ClusterRecord): Cluster {
-  return {
-    id: record.id,
-    name: record.name,
-    tint: normalizeTint(record.color),
-    description: record.description,
-    expert: normalizeExpertStatus(record.expert_status),
-    lastActive: record.updated_at,
-    summary: record.description,
-    styleProfile: "Style profile pending",
-  };
-}
-
-function normalizeSourceType(value: string): SourceType {
-  return value === "file" || value === "link" || value === "note" || value === "image" ? value : "file";
-}
-
-function normalizeSourceState(value: string): SourceState {
-  return value === "waiting" || value === "extracting" || value === "indexed" || value === "needs-review" || value === "failed"
-    ? value
-    : "waiting";
-}
-
-function normalizeTint(value: string): ClusterTint {
-  return value === "sage" || value === "sand" || value === "sky" || value === "blush" || value === "lavender" || value === "terracotta"
-    ? value
-    : "sage";
-}
-
-function normalizeExpertStatus(value: string): ExpertStatus {
-  return value === "setting-up" || value === "learning" || value === "ready" || value === "needs-update" || value === "paused" || value === "issue"
-    ? value
-    : "setting-up";
 }

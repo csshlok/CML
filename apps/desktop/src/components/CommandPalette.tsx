@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/command";
 import { useNavigate } from "@tanstack/react-router";
 import { useStore } from "@/lib/mockStore";
+import { createChatSession, listVaults } from "@/lib/backend";
 import { MessageSquare, Layers, Files, Globe2, Settings, Plus, Link2, FolderOpen, Cable } from "lucide-react";
 
 interface PaletteState {
@@ -33,22 +34,32 @@ export function CommandPalette({
   const navigate = useNavigate();
   const { clusters, sources, createChat } = useStore();
 
-  const go = (fn: () => void) => {
-    fn();
+  const go = (fn: () => void | Promise<void>) => {
+    void fn();
     onOpenChange(false);
   };
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
-      <CommandInput placeholder="Type a command or search…" />
+      <CommandInput placeholder="Type a command or search..." />
       <CommandList>
         <CommandEmpty>No results.</CommandEmpty>
         <CommandGroup heading="Actions">
           <CommandItem
             onSelect={() =>
-              go(() => {
-                const c = createChat(null);
-                navigate({ to: "/chat/$chatId", params: { chatId: c.id } });
+              go(async () => {
+                try {
+                  const vault = (await listVaults())[0];
+                  if (vault) {
+                    const session = await createChatSession({ vault_id: vault.id, title: "New chat" });
+                    navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
+                    return;
+                  }
+                } catch {
+                  // Keep the command useful while the backend is unavailable.
+                }
+                const chat = createChat(null);
+                navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
               })
             }
           >

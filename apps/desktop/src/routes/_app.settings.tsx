@@ -121,7 +121,6 @@ function SettingsView() {
           <Input
             value={pathDraft}
             onChange={(e) => setPathDraft(e.target.value)}
-            onBlur={() => void saveVaultPath()}
             placeholder="Choose a local folder for your memory"
           />
           <Button variant="outline" onClick={() => void saveVaultPath()} disabled={status === "saving"}>

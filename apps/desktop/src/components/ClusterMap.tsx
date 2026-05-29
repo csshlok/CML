@@ -6,7 +6,6 @@ import {
   Minus,
   Plus,
   RotateCcw,
-  Settings2,
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -50,7 +49,8 @@ export function ClusterMap({
   const clusters = providedClusters ?? store.clusters;
   const sources = providedSources ?? store.sources;
   const containerRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ id: string; dx: number; dy: number } | null>(null);
+  const dragRef = useRef<{ id: string; dx: number; dy: number; startX: number; startY: number; moved: boolean } | null>(null);
+  const suppressClickRef = useRef(false);
   const [size, setSize] = useState({ w: 900, h: 620 });
   const [zoom, setZoom] = useState(1);
   const [manualPositions, setManualPositions] = useState<Record<string, Point>>({});
@@ -117,6 +117,9 @@ export function ClusterMap({
       id: clusterId,
       dx: event.clientX / zoom - point.x,
       dy: event.clientY / zoom - point.y,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -125,6 +128,8 @@ export function ClusterMap({
     if (!dragRef.current || selectedCluster) return;
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
+    const moved = Math.hypot(event.clientX - dragRef.current.startX, event.clientY - dragRef.current.startY) > 4;
+    dragRef.current.moved = dragRef.current.moved || moved;
     const next = {
       x: (event.clientX - rect.left) / zoom - dragRef.current.dx,
       y: (event.clientY - rect.top) / zoom - dragRef.current.dy,
@@ -133,7 +138,16 @@ export function ClusterMap({
   }
 
   function stopDrag() {
+    suppressClickRef.current = Boolean(dragRef.current?.moved);
     dragRef.current = null;
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 0);
+  }
+
+  function openCluster(clusterId: string) {
+    if (suppressClickRef.current) return;
+    setSelectedClusterId(clusterId);
   }
 
   return (
@@ -171,7 +185,13 @@ export function ClusterMap({
                     width: radius * 2,
                     height: radius * 2,
                   }}
-                  onDoubleClick={() => setSelectedClusterId(cluster.id)}
+                  onClick={() => openCluster(cluster.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openCluster(cluster.id);
+                    }
+                  }}
                   onPointerDown={(event) => handlePointerDown(event, cluster.id)}
                   aria-label={`Open ${cluster.name}`}
                   type="button"
@@ -209,7 +229,7 @@ export function ClusterMap({
                     style={{ left: x, top: y }}
                   >
                     <button
-                      className="h-5 w-5 rounded-full border border-white/80 bg-white/80 shadow-[0_0_22px_rgba(255,255,255,0.88)] transition group-hover:scale-125"
+                      className="peer h-5 w-5 rounded-full border border-border bg-card shadow-sm transition-colors hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       aria-label={source.title}
                       type="button"
                     />
@@ -230,19 +250,19 @@ export function ClusterMap({
         ) : (
           <div className="rounded-md border border-border bg-card px-4 py-3 text-xs text-muted-foreground shadow-sm">
             <div className="font-medium text-foreground">Tips</div>
-            <div className="mt-1">Drag clusters, zoom the space, double-click a cluster to open its memory.</div>
+            <div className="mt-1">Drag clusters, zoom the space, or click a cluster to open its memory.</div>
           </div>
         )}
       </div>
 
       <div className="absolute bottom-6 right-6 z-30 flex items-center gap-2 rounded-md border border-border bg-card p-2 shadow-sm">
-        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => setZoom((value) => Math.max(0.65, value - 0.1))}>
+        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setZoom((value) => Math.max(0.65, value - 0.1))} aria-label="Zoom out">
           <Minus className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => setZoom(1)}>
+        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setZoom(1)} aria-label="Reset zoom">
           <RotateCcw className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => setZoom((value) => Math.min(1.55, value + 0.1))}>
+        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setZoom((value) => Math.min(1.55, value + 0.1))} aria-label="Zoom in">
           <Plus className="h-4 w-4" />
         </Button>
       </div>
@@ -304,7 +324,7 @@ function ClusterDetailMap({
           style={{ left: point.x, top: point.y }}
         >
           <button
-            className="h-12 w-12 rounded-full border border-white/80 shadow-[0_0_28px_rgba(255,255,255,0.95)] transition group-hover:scale-110"
+            className="peer h-12 w-12 rounded-full border border-border shadow-sm transition-colors hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             style={{
               background:
                 source.type === "link"
@@ -333,9 +353,9 @@ function SourcePreview({ source }: { source: Source }) {
   const canRevealLocalPath = Boolean(source.localPath && desktop?.showItemInFolder);
 
   return (
-    <div className="pointer-events-auto absolute left-6 top-6 z-40 hidden w-72 rounded-md border border-border bg-white/95 p-3 text-left shadow-[0_18px_55px_rgba(46,56,85,0.18)] backdrop-blur group-hover:block">
+    <div className="pointer-events-auto absolute left-6 top-6 z-40 hidden w-72 rounded-md border border-border bg-card p-3 text-left shadow-sm group-hover:block group-focus-within:block peer-focus:block">
       <div className="truncate text-sm font-medium text-foreground">{source.title}</div>
-      <div className="mt-1 text-[11px] uppercase tracking-wider text-muted-foreground">
+      <div className="mt-1 text-xs text-muted-foreground">
         {source.type} / {source.state}
       </div>
       <p className="mt-2 line-clamp-4 text-xs leading-5 text-muted-foreground">
@@ -345,6 +365,7 @@ function SourcePreview({ source }: { source: Source }) {
         <button
           className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground disabled:opacity-45"
           disabled={!canOpenLocalPath}
+          title={canOpenLocalPath ? "Open the source file" : "No local file path saved for this source"}
           onClick={(event) => {
             event.stopPropagation();
             if (source.localPath) void desktop?.openPath(source.localPath);
@@ -357,6 +378,7 @@ function SourcePreview({ source }: { source: Source }) {
         <button
           className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground disabled:opacity-45"
           disabled={!canOpenLink && !canRevealLocalPath}
+          title={canOpenLink || canRevealLocalPath ? "Open the source location" : "No source location saved"}
           onClick={(event) => {
             event.stopPropagation();
             if (canOpenLink && source.url) {
@@ -408,7 +430,7 @@ function ClusterDetailPanel({ cluster, sources }: { cluster: Cluster; sources: S
         </section>
 
         <section className="mt-5">
-          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Learning activity</div>
+          <div className="text-xs font-medium text-muted-foreground">Learning activity</div>
           <div className="mt-3 space-y-2">
             {adapterEvents.map((event) => (
               <div key={event} className="flex gap-2 text-xs text-muted-foreground">
@@ -420,16 +442,9 @@ function ClusterDetailPanel({ cluster, sources }: { cluster: Cluster; sources: S
         </section>
 
         <section className="mt-5">
-          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Actions</div>
-          <div className="mt-3 flex gap-2">
-            <Button variant="outline" size="sm" className="gap-1" disabled>
-              <RotateCcw className="h-3.5 w-3.5" />
-              Retrain
-            </Button>
-            <Button variant="outline" size="sm" className="gap-1" disabled>
-              <Settings2 className="h-3.5 w-3.5" />
-              Expert settings
-            </Button>
+          <div className="text-xs font-medium text-muted-foreground">Expert controls</div>
+          <div className="mt-3 rounded-md border border-dashed border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+            Retrain, pause, rollback, and expert settings appear here after the training queue is implemented.
           </div>
         </section>
       </div>
