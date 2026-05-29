@@ -1,7 +1,13 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { MessageSquare } from "lucide-react";
-import { useStore, expertLabel, sourceStateLabel, type Cluster, type Source } from "@/lib/mockStore";
+import {
+  useStore,
+  expertLabel,
+  sourceStateLabel,
+  type Cluster,
+  type Source,
+} from "@/lib/mockStore";
 import { ClusterDot, ExpertBadge } from "@/components/ClusterChip";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,7 +19,9 @@ import {
   getCluster,
   listClusterExpertJobs,
   listChatSessions,
+  listClusters,
   listSources,
+  mergeClusterInto,
   pauseClusterExpert,
   retrainClusterExpert,
   updateSource,
@@ -36,8 +44,10 @@ function ClusterDetail() {
   const [backendVaultId, setBackendVaultId] = useState<string | null>(null);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
+  const [allBackendClusters, setAllBackendClusters] = useState<Cluster[]>([]);
   const [expertJobs, setExpertJobs] = useState<ClusterExpertJobRecord[]>([]);
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+  const [mergeTargetId, setMergeTargetId] = useState("");
   const [nameDraft, setNameDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -53,18 +63,22 @@ function ClusterDetail() {
       const clusterRow = await getCluster(clusterId);
       const nextCluster = clusterFromRecord(clusterRow);
       setBackendVaultId(clusterRow.vault_id);
-      const [sourceRows, chatRows, jobRows] = await Promise.all([
+      const [sourceRows, chatRows, clusterRows, jobRows] = await Promise.all([
         listSources(clusterRow.vault_id),
         listChatSessions(clusterRow.vault_id),
+        listClusters(clusterRow.vault_id),
         listClusterExpertJobs(clusterRow.id).catch(() => []),
       ]);
       setBackendCluster(nextCluster);
       setNameDraft(nextCluster.name);
       setBackendSources(sourceRows.map(sourceFromRecord));
       setBackendChats(chatRows.filter((chat) => chat.scope_cluster_id === clusterRow.id));
+      setAllBackendClusters(clusterRows.map(clusterFromRecord));
       setExpertJobs(jobRows);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load this cluster from the backend.");
+      setError(
+        err instanceof Error ? err.message : "Could not load this cluster from the backend.",
+      );
       setBackendCluster(null);
       setBackendVaultId(null);
       if (mockCluster) setNameDraft(mockCluster.name);
@@ -153,7 +167,9 @@ function ClusterDetail() {
       description: `Created from ${selectedSourceIds.length} selected source(s).`,
       color: cluster.tint,
     });
-    await Promise.all(selectedSourceIds.map((sourceId) => updateSource(sourceId, { cluster_id: created.id })));
+    await Promise.all(
+      selectedSourceIds.map((sourceId) => updateSource(sourceId, { cluster_id: created.id })),
+    );
     setSelectedSourceIds([]);
     navigate({ to: "/clusters/$clusterId", params: { clusterId: created.id } });
   }
@@ -169,6 +185,16 @@ function ClusterDetail() {
     const updated = clusterFromRecord(await pauseClusterExpert(cluster.id));
     setBackendCluster(updated);
     setNameDraft(updated.name);
+  }
+
+  async function mergeIntoTarget() {
+    if (!usingBackend || !mergeTargetId || mergeTargetId === cluster.id) return;
+    try {
+      const target = await mergeClusterInto(cluster.id, mergeTargetId);
+      navigate({ to: "/clusters/$clusterId", params: { clusterId: target.id } });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not merge this cluster.");
+    }
   }
 
   return (
@@ -196,6 +222,33 @@ function ClusterDetail() {
         <p className="mt-2 text-sm text-muted-foreground">
           {cluster.description || "No description yet."}
         </p>
+        {usingBackend && (
+          <div className="mt-4 flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-3 py-2">
+            <span className="text-sm text-muted-foreground">Merge this cluster into</span>
+            <Select value={mergeTargetId} onValueChange={setMergeTargetId}>
+              <SelectTrigger className="h-8 w-56">
+                <SelectValue placeholder="Choose cluster" />
+              </SelectTrigger>
+              <SelectContent>
+                {allBackendClusters
+                  .filter((candidate) => candidate.id !== cluster.id)
+                  .map((candidate) => (
+                    <SelectItem key={candidate.id} value={candidate.id}>
+                      {candidate.name}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!mergeTargetId}
+              onClick={() => void mergeIntoTarget()}
+            >
+              Merge
+            </Button>
+          </div>
+        )}
         {error && (
           <div className="mt-4 rounded-md border border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
             {usingBackend ? error : `Using local fallback data: ${error}`}
@@ -217,7 +270,9 @@ function ClusterDetail() {
             <Card title="Recent activity">
               <ul className="space-y-1.5 text-sm">
                 {clusterChats.slice(0, 4).map((chat) => (
-                  <li key={chat.id} className="text-muted-foreground">- {chat.title}</li>
+                  <li key={chat.id} className="text-muted-foreground">
+                    - {chat.title}
+                  </li>
                 ))}
                 {clusterChats.length === 0 && (
                   <li className="text-muted-foreground">No chats yet.</li>
@@ -269,7 +324,11 @@ function ClusterDetail() {
                       {sourceStateLabel[source.state]}
                     </span>
                     {usingBackend && (
-                      <Button variant="ghost" size="sm" onClick={() => void moveSource(source.id, null)}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void moveSource(source.id, null)}
+                      >
                         Remove
                       </Button>
                     )}
@@ -288,9 +347,16 @@ function ClusterDetail() {
                   Add from vault
                 </div>
                 {availableSources.slice(0, 8).map((source) => (
-                  <div key={source.id} className="flex items-center justify-between gap-3 border-b border-border px-4 py-2 text-sm last:border-b-0">
+                  <div
+                    key={source.id}
+                    className="flex items-center justify-between gap-3 border-b border-border px-4 py-2 text-sm last:border-b-0"
+                  >
                     <span className="truncate text-muted-foreground">{source.title}</span>
-                    <Button variant="outline" size="sm" onClick={() => void moveSource(source.id, cluster.id)}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void moveSource(source.id, cluster.id)}
+                    >
                       Add
                     </Button>
                   </div>
@@ -309,9 +375,7 @@ function ClusterDetail() {
               <button
                 key={chat.id}
                 className="block w-full rounded-md border border-border bg-card px-4 py-3 text-left text-sm hover:bg-accent"
-                onClick={() =>
-                  navigate({ to: "/chat/$chatId", params: { chatId: chat.id } })
-                }
+                onClick={() => navigate({ to: "/chat/$chatId", params: { chatId: chat.id } })}
                 type="button"
               >
                 {chat.title}
@@ -326,26 +390,30 @@ function ClusterDetail() {
             <Card title="Status">
               <div className="flex items-center justify-between">
                 <ExpertBadge status={cluster.expert} />
-                <span className="text-xs text-muted-foreground">
-                  {expertLabel[cluster.expert]}
-                </span>
+                <span className="text-xs text-muted-foreground">{expertLabel[cluster.expert]}</span>
               </div>
-              <p className="mt-3 text-sm text-muted-foreground">
-                {expertStatusCopy(cluster)}
-              </p>
+              <p className="mt-3 text-sm text-muted-foreground">{expertStatusCopy(cluster)}</p>
               <div className="mt-4 flex gap-2">
-                <Button variant="outline" size="sm" disabled={!usingBackend} onClick={() => void queueExpertLearning()}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!usingBackend}
+                  onClick={() => void queueExpertLearning()}
+                >
                   Queue learning
                 </Button>
-                <Button variant="ghost" size="sm" disabled={!usingBackend} onClick={() => void pauseExpertLearning()}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!usingBackend}
+                  onClick={() => void pauseExpertLearning()}
+                >
                   Pause
                 </Button>
               </div>
             </Card>
             <details className="rounded-md border border-border bg-card px-4 py-3 text-sm">
-              <summary className="cursor-pointer text-muted-foreground">
-                Advanced details
-              </summary>
+              <summary className="cursor-pointer text-muted-foreground">Advanced details</summary>
               <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
                 <dt className="text-muted-foreground">Training data</dt>
                 <dd>{clusterSources.length} sources</dd>
@@ -388,13 +456,16 @@ function ClusterDetail() {
 }
 
 function expertStatusCopy(cluster: Cluster) {
-  if (cluster.expert === "ready") return "This local expert is ready to inform answers in your voice.";
+  if (cluster.expert === "ready")
+    return "This local expert is ready to inform answers in your voice.";
   if (cluster.expert === "learning") {
     return "This cluster is usable now. Its local expert is still learning in the background.";
   }
-  if (cluster.expert === "needs-update") return "New source changes are ready for the next learning pass.";
+  if (cluster.expert === "needs-update")
+    return "New source changes are ready for the next learning pass.";
   if (cluster.expert === "paused") return "Learning is paused for this cluster.";
-  if (cluster.expert === "issue") return "This expert needs attention before it can continue learning.";
+  if (cluster.expert === "issue")
+    return "This expert needs attention before it can continue learning.";
   return "This local expert is being set up.";
 }
 

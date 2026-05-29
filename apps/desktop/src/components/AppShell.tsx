@@ -14,8 +14,15 @@ import {
 import { useStore } from "@/lib/mockStore";
 import { CommandPalette, useCommandPalette } from "@/components/CommandPalette";
 import { Button } from "@/components/ui/button";
-import { useEffect } from "react";
-import { createChatSession, listVaults, useBackendHealth } from "@/lib/backend";
+import { useEffect, useState } from "react";
+import {
+  createChatSession,
+  getJobStatus,
+  listVaults,
+  runJobsOnce,
+  useBackendHealth,
+  type JobQueueStatus,
+} from "@/lib/backend";
 
 const nav = [
   { to: "/search", label: "Mind", icon: Search },
@@ -33,6 +40,7 @@ export function AppShell() {
   const { vaultPath, chats, isIndexing, indexingProgress } = useStore();
   const { open: openPalette, setOpen } = useCommandPalette();
   const backend = useBackendHealth();
+  const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -62,6 +70,27 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, [navigate, setOpen]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refreshJobs() {
+      try {
+        const status = await getJobStatus();
+        if (!cancelled) setJobs(status);
+      } catch {
+        if (!cancelled) setJobs(null);
+      }
+    }
+
+    void refreshJobs();
+    const id = window.setInterval(refreshJobs, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
   const savedChats = chats.filter((c) => c.saved).slice(0, 6);
 
   async function newChat() {
@@ -78,14 +107,22 @@ export function AppShell() {
     navigate({ to: "/chat" });
   }
 
+  async function runJobs() {
+    try {
+      setJobs(await runJobsOnce());
+    } catch {
+      // Keep the existing footer state if the backend cannot run jobs right now.
+    }
+  }
+
+  const activeJobCount = (jobs?.queued ?? 0) + (jobs?.running ?? 0);
+
   return (
     <div className="flex h-screen w-full flex-col bg-background text-foreground">
       <div className="flex flex-1 min-h-0">
         <aside className="flex w-64 flex-col border-r border-border bg-sidebar">
           <div className="border-b border-sidebar-border px-4 py-3">
-            <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-              Vault
-            </div>
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Vault</div>
             <button className="mt-1 flex w-full items-center gap-2 truncate text-left text-sm font-medium">
               <FolderOpen className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="truncate">{vaultPath ?? "Local memory"}</span>
@@ -169,6 +206,24 @@ export function AppShell() {
         ) : (
           <span>Idle</span>
         )}
+        {jobs && (
+          <>
+            <span className="opacity-50">/</span>
+            <button
+              type="button"
+              onClick={() => void runJobs()}
+              className="rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-foreground"
+              title={
+                jobs.failed > 0
+                  ? `${jobs.failed} failed background job${jobs.failed === 1 ? "" : "s"}`
+                  : "Run due background jobs once"
+              }
+            >
+              Jobs {activeJobCount > 0 ? `${activeJobCount} active` : "idle"}
+              {jobs.failed > 0 ? ` / ${jobs.failed} failed` : ""}
+            </button>
+          </>
+        )}
         <span className="ml-auto opacity-60">Ctrl/Cmd K commands / Ctrl/Cmd N new chat</span>
         <span
           className={
@@ -179,7 +234,7 @@ export function AppShell() {
                 ? "bg-muted text-muted-foreground"
                 : backend.status === "degraded"
                   ? "bg-[var(--status-learning)]/15 text-foreground"
-                : "bg-[var(--status-issue)]/15 text-foreground")
+                  : "bg-[var(--status-issue)]/15 text-foreground")
           }
           title={
             backend.status === "degraded"

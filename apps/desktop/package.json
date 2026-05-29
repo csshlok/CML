@@ -1,5 +1,8 @@
 {
   "name": "@cml/desktop",
+  "version": "0.1.0",
+  "description": "Local desktop app for the CML context management layer.",
+  "author": "CML",
   "private": true,
   "sideEffects": false,
   "type": "module",
@@ -7,6 +10,7 @@
   "build": {
     "appId": "local.cml.desktop",
     "productName": "CML",
+    "electronVersion": "39.8.10",
     "directories": {
       "output": "release"
     },
@@ -33,18 +37,29 @@
       }
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "signAndEditExecutable": false,
+      "forceCodeSigning": false,
+      "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "oneClick": true,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CML",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "CML-${version}-Setup.${ext}"
     }
   },
   "scripts": {
-    "dev": "concurrently -k \"vite dev --host 127.0.0.1 --port 5173\" \"wait-on tcp:5173 && electron .\"",
+    "dev": "concurrently -k \"vite dev --host 127.0.0.1 --port 5173\" \"wait-on tcp:5173 && node scripts/start-electron.cjs\"",
     "dev:web": "vite dev --host 127.0.0.1 --port 5173",
     "build": "vite build",
-    "package:win": "npm run build && electron-builder --win --x64",
+    "package:win": "npm run build && npm exec electron-builder -- --win --x64",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "lint": "eslint .",
@@ -115,7 +130,7 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.4",
     "concurrently": "^9.2.1",
-    "electron": "^39.2.7",
+    "electron": "39.8.10",
     "electron-builder": "^26.0.12",
     "eslint": "^9.32.0",
     "eslint-config-prettier": "^10.1.1",

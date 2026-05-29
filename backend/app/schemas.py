@@ -38,6 +38,10 @@ class ClusterUpdate(BaseModel):
     expert_status: str | None = None
 
 
+class ClusterMergeRequest(BaseModel):
+    target_cluster_id: str
+
+
 class ClusterRead(BaseModel):
     id: str
     vault_id: str
@@ -327,6 +331,11 @@ class EmbeddingRuntimeStatus(BaseModel):
     dimensions: int
     available: bool
     detail: str
+
+
+class EmbeddingRuntimeConfigure(BaseModel):
+    provider: str
+    cache_dir: str | None = None
 
 
 class AppJobRead(BaseModel):

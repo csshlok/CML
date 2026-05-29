@@ -1,3 +1,7 @@
+param(
+  [switch]$IncludeEmbeddingRuntime
+)
+
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -40,7 +44,13 @@ $runtimePython = Join-Path $runtimeDir "Scripts\python.exe"
   "pypdf>=5.0.0" `
   "python-docx>=1.1.2"
 
+if ($IncludeEmbeddingRuntime) {
+  Write-Host "Installing optional embedding runtime dependencies..."
+  & $runtimePython -m pip install "sentence-transformers>=3.0.0"
+}
+
 Write-Host "Packaging Windows app with electron-builder..."
+$env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
 Push-Location $desktopDir
 try {
   npm run package:win

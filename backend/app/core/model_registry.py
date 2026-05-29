@@ -78,6 +78,7 @@ MODEL_REGISTRY: tuple[LocalModel, ...] = (
 
 _download_state: dict[str, dict[str, Any]] = {}
 _download_lock = threading.Lock()
+_cancelled_downloads: set[str] = set()
 
 
 def models_dir() -> Path:
@@ -122,6 +123,7 @@ def start_model_download(model_id: str) -> dict[str, Any]:
         return {"model_id": model_id, "status": "installed", "local_path": existing["local_path"]}
 
     with _download_lock:
+        _cancelled_downloads.discard(model_id)
         state = _download_state.get(model_id)
         if state and state["status"] in {"resolving", "downloading"}:
             return state
@@ -136,6 +138,28 @@ def start_model_download(model_id: str) -> dict[str, Any]:
     thread = threading.Thread(target=_download_model, args=(model,), daemon=True)
     thread.start()
     return _download_state[model_id]
+
+
+def cancel_model_download(model_id: str) -> dict[str, Any]:
+    model = get_model(model_id)
+    if model is None:
+        raise KeyError(model_id)
+    with _download_lock:
+        state = _download_state.get(model_id)
+        if not state or state.get("status") not in {"resolving", "downloading"}:
+            _download_state[model_id] = {
+                "model_id": model_id,
+                "status": "cancelled",
+                "bytes_downloaded": state.get("bytes_downloaded") if state else 0,
+                "total_bytes": state.get("total_bytes") if state else None,
+                "file_name": state.get("file_name") if state else None,
+                "local_path": state.get("local_path") if state else None,
+                "error": None,
+            }
+            return _download_state[model_id]
+        _cancelled_downloads.add(model_id)
+        state.update({"status": "cancelling"})
+        return state
 
 
 def _model_to_dict(model: LocalModel) -> dict[str, Any]:
@@ -155,7 +179,9 @@ def _find_local_model_file(model: LocalModel) -> Path | None:
 
 def _download_model(model: LocalModel) -> None:
     try:
+        _raise_if_cancelled(model.id)
         file_name = _resolve_gguf_filename(model)
+        _raise_if_cancelled(model.id)
         safe_file_name = _safe_model_file_name(file_name)
         url = f"https://huggingface.co/{model.hf_repo}/resolve/main/{quote(file_name, safe='')}"
         validate_huggingface_url(url)
@@ -176,6 +202,7 @@ def _download_model(model: LocalModel) -> None:
             downloaded = 0
             with partial.open("wb") as file:
                 while True:
+                    _raise_if_cancelled(model.id)
                     chunk = response.read(1024 * 1024)
                     if not chunk:
                         break
@@ -196,8 +223,36 @@ def _download_model(model: LocalModel) -> None:
                 }
             )
     except Exception as exc:
+        if isinstance(exc, DownloadCancelled):
+            _cleanup_partial_download(model)
+            with _download_lock:
+                _cancelled_downloads.discard(model.id)
+                _download_state[model.id].update({"status": "cancelled", "error": None})
+            return
         with _download_lock:
             _download_state[model.id].update({"status": "failed", "error": str(exc)})
+
+
+class DownloadCancelled(RuntimeError):
+    pass
+
+
+def _raise_if_cancelled(model_id: str) -> None:
+    with _download_lock:
+        if model_id in _cancelled_downloads:
+            raise DownloadCancelled()
+
+
+def _cleanup_partial_download(model: LocalModel) -> None:
+    state = _download_state.get(model.id) or {}
+    local_path = state.get("local_path")
+    if not local_path:
+        return
+    partial = Path(str(local_path)).with_suffix(Path(str(local_path)).suffix + ".part")
+    try:
+        partial.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _resolve_gguf_filename(model: LocalModel) -> str:

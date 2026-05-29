@@ -79,7 +79,8 @@ async function probeBackend(url: string): Promise<{ status: BackendHealthStatus 
     const paths = spec?.paths ?? {};
     const hasChatRoutes =
       Boolean(paths["/api/v1/chat/sessions"]) &&
-      Boolean(paths["/api/v1/chat/messages/{message_id}"]);
+      Boolean(paths["/api/v1/chat/messages/{message_id}"]) &&
+      Boolean(paths["/api/v1/models/embeddings/configure"]);
     return { status: hasChatRoutes ? "online" : "degraded" };
   } catch {
     return { status: "offline" };
@@ -157,6 +158,27 @@ export type ClusterExpertJobRecord = {
   detail: string;
   created_at: string;
   updated_at: string;
+};
+
+export type AppJobRecord = {
+  id: string;
+  job_type: string;
+  status: string;
+  payload: string;
+  dedupe_key: string | null;
+  attempts: number;
+  max_attempts: number;
+  last_error: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type JobQueueStatus = {
+  queued: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  latest: AppJobRecord[];
 };
 
 export type SourceRecord = {
@@ -320,7 +342,10 @@ export async function createVault(payload: { name: string; path: string }) {
   });
 }
 
-export async function updateVault(id: string, payload: Partial<Pick<VaultRecord, "name" | "path">>) {
+export async function updateVault(
+  id: string,
+  payload: Partial<Pick<VaultRecord, "name" | "path">>,
+) {
   return request<VaultRecord>(`/api/v1/vaults/${id}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
@@ -372,10 +397,16 @@ export async function retrainClusterExpert(clusterId: string) {
 }
 
 export async function pauseClusterExpert(clusterId: string) {
-  return request<ClusterRecord>(
-    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/pause`,
-    { method: "POST" },
-  );
+  return request<ClusterRecord>(`/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/pause`, {
+    method: "POST",
+  });
+}
+
+export async function mergeClusterInto(sourceClusterId: string, targetClusterId: string) {
+  return request<ClusterRecord>(`/api/v1/clusters/${encodeURIComponent(sourceClusterId)}/merge`, {
+    method: "POST",
+    body: JSON.stringify({ target_cluster_id: targetClusterId }),
+  });
 }
 
 export async function listClusterSuggestions(vaultId: string, limit = 12) {
@@ -441,7 +472,19 @@ export async function createSourceFromUrl(payload: {
 
 export async function updateSource(
   id: string,
-  payload: Partial<Pick<SourceRecord, "cluster_id" | "title" | "state" | "raw_text" | "extracted_text" | "summary" | "tags" | "cover_image_url">>,
+  payload: Partial<
+    Pick<
+      SourceRecord,
+      | "cluster_id"
+      | "title"
+      | "state"
+      | "raw_text"
+      | "extracted_text"
+      | "summary"
+      | "tags"
+      | "cover_image_url"
+    >
+  >,
 ) {
   return request<SourceRecord>(`/api/v1/sources/${id}`, {
     method: "PATCH",
@@ -496,16 +539,20 @@ export async function streamChatContext(
     limit?: number;
   },
   handlers: {
-    onMeta?: (payload: Pick<ChatContextResponse, "clusters_used" | "citations" | "warnings">) => void;
+    onMeta?: (
+      payload: Pick<ChatContextResponse, "clusters_used" | "citations" | "warnings">,
+    ) => void;
     onToken: (text: string) => void;
     onDone?: (payload: Partial<ChatContextResponse>) => void;
   },
+  signal?: AbortSignal,
 ) {
   const backendUrl = await getBackendUrl();
   const response = await fetch(`${backendUrl}/api/v1/chat/context/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal,
   });
   if (!response.ok || !response.body) {
     throw new Error(`Backend stream failed: ${response.status}`);
@@ -523,13 +570,14 @@ export async function streamChatContext(
       const event = parseSseEvent(eventBlock);
       if (!event) continue;
       if (event.event === "meta") handlers.onMeta?.(event.data);
-      if (event.event === "token" && typeof event.data.text === "string") handlers.onToken(event.data.text);
+      if (event.event === "token" && typeof event.data.text === "string")
+        handlers.onToken(event.data.text);
       if (event.event === "done") handlers.onDone?.(event.data);
     }
   }
 }
 
-function parseSseEvent(block: string): { event: string; data: any } | null {
+function parseSseEvent(block: string): { event: string; data: Record<string, unknown> } | null {
   const eventLine = block.split("\n").find((line) => line.startsWith("event:"));
   const dataLine = block.split("\n").find((line) => line.startsWith("data:"));
   if (!eventLine || !dataLine) return null;
@@ -587,6 +635,14 @@ export async function deleteChatSession(id: string) {
   await request<void>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+export async function getJobStatus() {
+  return request<JobQueueStatus>("/api/v1/jobs/status");
+}
+
+export async function runJobsOnce() {
+  return request<JobQueueStatus>("/api/v1/jobs/run-once", { method: "POST" });
+}
+
 export async function listLocalModels() {
   return request<LocalModelRecord[]>("/api/v1/models");
 }
@@ -599,10 +655,27 @@ export async function getEmbeddingRuntimeStatus() {
   return request<EmbeddingRuntimeStatus>("/api/v1/models/embeddings");
 }
 
+export async function configureEmbeddingRuntime(payload: {
+  provider: "hash" | "sentence-transformers";
+  cache_dir?: string | null;
+}) {
+  return request<EmbeddingRuntimeStatus>("/api/v1/models/embeddings/configure", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function startModelDownload(modelId: string) {
   return request<ModelDownloadState>(`/api/v1/models/${encodeURIComponent(modelId)}/download`, {
     method: "POST",
   });
+}
+
+export async function cancelModelDownload(modelId: string) {
+  return request<ModelDownloadState>(
+    `/api/v1/models/${encodeURIComponent(modelId)}/download/cancel`,
+    { method: "POST" },
+  );
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

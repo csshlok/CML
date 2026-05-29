@@ -8,6 +8,7 @@ __pycache__/
 dist/
 dist-ssr/
 release/
+apps/desktop/packaging/
 out/
 .output/
 .vinxi/

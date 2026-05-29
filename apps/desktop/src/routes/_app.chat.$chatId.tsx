@@ -1,15 +1,10 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import {
-  useStore,
-  streamMockReply,
-  newId,
-  type Cluster,
-  type Source,
-} from "@/lib/mockStore";
+import { useStore, streamMockReply, newId, type Cluster, type Source } from "@/lib/mockStore";
 import {
   deleteChatSession,
   getChatSession,
+  listChatSessions,
   listClusters,
   listSources,
   listVaults,
@@ -34,18 +29,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ClusterChip, ClusterDot } from "@/components/ClusterChip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-  Send,
   Bookmark,
-  ThumbsUp,
-  ThumbsDown,
+  MessageSquare,
   Paperclip,
   Quote,
+  RotateCcw,
+  Send,
+  SlidersHorizontal,
+  StopCircle,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
 } from "lucide-react";
 
@@ -57,15 +52,8 @@ export const Route = createFileRoute("/_app/chat/$chatId")({
 function ChatView() {
   const { chatId } = Route.useParams();
   const navigate = useNavigate();
-  const {
-    chats,
-    clusters,
-    sources,
-    appendMessage,
-    setMessageUseful,
-    saveChat,
-    createChat,
-  } = useStore();
+  const { chats, clusters, sources, appendMessage, setMessageUseful, saveChat, createChat } =
+    useStore();
   const chat = chats.find((c) => c.id === chatId);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -76,25 +64,40 @@ function ChatView() {
   const [backendReady, setBackendReady] = useState(false);
   const [backendSessionId, setBackendSessionId] = useState<string | null>(null);
   const [backendSession, setBackendSession] = useState<ChatSessionRecord | null>(null);
-  const [backendMessages, setBackendMessages] = useState<import("@/lib/mockStore").ChatMessage[]>([]);
+  const [backendMessages, setBackendMessages] = useState<import("@/lib/mockStore").ChatMessage[]>(
+    [],
+  );
+  const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
   const [titleDraft, setTitleDraft] = useState("");
   const [memoryState, setMemoryState] = useState("idle");
   const [loadingSession, setLoadingSession] = useState(true);
+  const [streamStatus, setStreamStatus] = useState<string | null>(null);
+  const [streamWarnings, setStreamWarnings] = useState<string[]>([]);
+  const [lastError, setLastError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const consumedPendingPromptRef = useRef<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   async function loadBackendContext() {
+    setLoadingSession(true);
+    setBackendSession(null);
+    setBackendSessionId(null);
+    setBackendMessages([]);
+    setLastError(null);
     try {
       const vaults = await listVaults();
       const activeVault = vaults[0] ?? null;
       setVaultRecord(activeVault);
       if (!activeVault) return;
       await reindexVaultSearch(activeVault.id).catch(() => undefined);
-      const [clusterRows, sourceRows] = await Promise.all([
+      const [clusterRows, sourceRows, chatRows] = await Promise.all([
         listClusters(activeVault.id),
         listSources(activeVault.id),
+        listChatSessions(activeVault.id),
       ]);
       setBackendClusters(clusterRows.map(clusterFromRecord));
       setBackendSources(sourceRows.map(sourceFromRecord));
+      setBackendChats(chatRows);
       try {
         const session = await getChatSession(chatId);
         setBackendSession(session);
@@ -120,11 +123,23 @@ function ChatView() {
 
   useEffect(() => {
     void loadBackendContext();
-  }, []);
+    return () => {
+      abortControllerRef.current?.abort();
+    };
+  }, [chatId]);
 
   useEffect(() => {
     setTitleDraft(backendSession?.title ?? chat?.title ?? "New chat");
   }, [backendSession?.title, chat?.title]);
+
+  useEffect(() => {
+    if (loadingSession || streaming || consumedPendingPromptRef.current === chatId) return;
+    const pendingPrompt = window.sessionStorage.getItem(`cml.pendingPrompt.${chatId}`);
+    if (!pendingPrompt) return;
+    consumedPendingPromptRef.current = chatId;
+    window.sessionStorage.removeItem(`cml.pendingPrompt.${chatId}`);
+    void send(pendingPrompt);
+  }, [chatId, loadingSession, streaming]);
 
   if (loadingSession && !chat && !backendSession) {
     return (
@@ -144,13 +159,16 @@ function ChatView() {
 
   const activeClusters = backendReady ? backendClusters : clusters;
   const activeSources = backendReady ? backendSources : sources;
-  const messages = backendSession ? backendMessages : chat?.messages ?? [];
+  const messages = backendSession ? backendMessages : (chat?.messages ?? []);
   const scopeClusterId = backendSession?.scope_cluster_id ?? chat?.scopeClusterId ?? null;
   const saved = backendSession?.saved ?? chat?.saved ?? false;
 
   const scope = scopeClusterId
-    ? activeClusters.find((c) => c.id === scopeClusterId) ?? null
+    ? (activeClusters.find((c) => c.id === scopeClusterId) ?? null)
     : null;
+  const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+  const latestCitations = latestAssistant?.citations ?? [];
+  const latestWarnings = streamWarnings.length > 0 ? streamWarnings : [];
 
   const setScope = async (val: string) => {
     const nextScope = val === "global" ? null : val;
@@ -172,7 +190,9 @@ function ChatView() {
   const toggleSaved = async () => {
     if (backendSession) {
       try {
-        const updated = await updateChatSession(backendSession.id, { saved: !backendSession.saved });
+        const updated = await updateChatSession(backendSession.id, {
+          saved: !backendSession.saved,
+        });
         setBackendSession(updated);
       } catch {
         // Preserve the current saved state if the backend update fails.
@@ -202,9 +222,9 @@ function ChatView() {
 
   const send = async (promptOverride?: string) => {
     const prompt = (promptOverride ?? input).trim();
-    if (!prompt) return;
+    if (!prompt || streaming) return;
     const userMsg = { id: newId(), role: "user" as const, content: prompt };
-    if (backendSession) {
+    if (backendReady && vault) {
       setBackendMessages((current) => [...current, userMsg]);
     } else if (chat) {
       appendMessage(chat.id, userMsg);
@@ -212,8 +232,13 @@ function ChatView() {
     if (!promptOverride) setInput("");
     setStreaming(true);
     setStreamText("");
+    setStreamStatus("Finding relevant context...");
+    setStreamWarnings([]);
+    setLastError(null);
     if (backendSession) setMemoryState("indexing");
     if (backendReady && vault) {
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
       try {
         let streamedAnswer = "";
         let streamedMeta: Pick<ChatContextResponse, "clusters_used" | "citations" | "warnings"> = {
@@ -222,27 +247,39 @@ function ChatView() {
           warnings: [],
         };
         let streamedDone: Partial<ChatContextResponse> = {};
-        await streamChatContext({
-          vault_id: vault.id,
-          prompt,
-          cluster_id: scope?.id ?? null,
-          session_id: backendSessionId,
-          persist: true,
-          limit: 6,
-        }, {
-          onMeta: (meta) => {
-            streamedMeta = meta;
+        await streamChatContext(
+          {
+            vault_id: vault.id,
+            prompt,
+            cluster_id: scope?.id ?? null,
+            session_id: backendSessionId ?? chatId,
+            persist: true,
+            limit: 6,
           },
-          onToken: (text) => {
-            streamedAnswer += text;
-            setStreamText(streamedAnswer);
+          {
+            onMeta: (meta) => {
+              streamedMeta = meta;
+              setStreamStatus(
+                meta.citations.length > 0
+                  ? `Using ${meta.citations.length} source${meta.citations.length === 1 ? "" : "s"}`
+                  : "No matching source found yet",
+              );
+              setStreamWarnings(meta.warnings ?? []);
+            },
+            onToken: (text) => {
+              streamedAnswer += text;
+              setStreamStatus("Writing answer...");
+              setStreamText(streamedAnswer);
+            },
+            onDone: (done) => {
+              streamedDone = done;
+              setStreamWarnings(done.warnings ?? streamedMeta.warnings ?? []);
+            },
           },
-          onDone: (done) => {
-            streamedDone = done;
-          },
-        });
+          abortController.signal,
+        );
         const response = {
-          session_id: streamedDone.session_id ?? backendSessionId ?? null,
+          session_id: streamedDone.session_id ?? backendSessionId ?? chatId,
           answer: streamedDone.answer ?? streamedAnswer,
           clusters_used: streamedMeta.clusters_used,
           citations: streamedMeta.citations,
@@ -264,28 +301,35 @@ function ChatView() {
           })),
           useful: null,
         } satisfies import("@/lib/mockStore").ChatMessage;
-        if (backendSession) {
-          if (response.session_id) {
-            try {
-              const refreshed = await getChatSession(response.session_id);
-              setBackendSession(refreshed);
-              setBackendMessages(refreshed.messages.map(messageFromRecord));
-              setMemoryState(refreshed.memory_status ?? response.memory_status ?? "indexed");
-              const [clusterRows, sourceRows] = await Promise.all([
-                listClusters(vault.id),
-                listSources(vault.id),
-              ]);
-              setBackendClusters(clusterRows.map(clusterFromRecord));
-              setBackendSources(sourceRows.map(sourceFromRecord));
-            } catch {
-              // Optimistic messages above remain usable until the next refresh.
-            }
+        if (response.session_id) {
+          setBackendMessages((current) => [...current, assistantMessage]);
+          try {
+            const refreshed = await getChatSession(response.session_id);
+            setBackendSession(refreshed);
+            setBackendSessionId(refreshed.id);
+            setBackendMessages(refreshed.messages.map(messageFromRecord));
+            setMemoryState(refreshed.memory_status ?? response.memory_status ?? "indexed");
+            const [clusterRows, sourceRows, chatRows] = await Promise.all([
+              listClusters(vault.id),
+              listSources(vault.id),
+              listChatSessions(vault.id),
+            ]);
+            setBackendClusters(clusterRows.map(clusterFromRecord));
+            setBackendSources(sourceRows.map(sourceFromRecord));
+            setBackendChats(chatRows);
+          } catch {
+            // Optimistic messages above remain usable until the next refresh.
           }
         } else if (chat) {
           appendMessage(chat.id, assistantMessage);
         }
       } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          setStreamStatus("Stopped before saving this answer.");
+          return;
+        }
         setMemoryState("issue");
+        setLastError(error instanceof Error ? error.message : "Could not retrieve local context.");
         const errorMessage = {
           id: newId(),
           role: "assistant",
@@ -301,9 +345,12 @@ function ChatView() {
           appendMessage(chat.id, errorMessage);
         }
       } finally {
-          setStreaming(false);
-          setStreamText("");
+        if (abortControllerRef.current === abortController) {
+          abortControllerRef.current = null;
         }
+        setStreaming(false);
+        setStreamText("");
+      }
       return;
     }
     let full = "";
@@ -319,24 +366,32 @@ function ChatView() {
           reason: i === 0 ? "style" : "facts",
         }));
     const usedSources = activeSources
-      .filter((s) =>
-        usedClusters.some((u) => u.clusterId === s.clusterId) && s.state === "indexed",
-      )
+      .filter((s) => usedClusters.some((u) => u.clusterId === s.clusterId) && s.state === "indexed")
       .slice(0, 3)
       .map((s) => ({
         sourceId: s.id,
         snippet: s.preview.slice(0, 80) + "...",
       }));
-    if (chat) appendMessage(chat.id, {
-      id: newId(),
-      role: "assistant",
-      content: full.trim(),
-      clustersUsed: usedClusters,
-      citations: usedSources,
-      useful: null,
-    });
+    if (chat)
+      appendMessage(chat.id, {
+        id: newId(),
+        role: "assistant",
+        content: full.trim(),
+        clustersUsed: usedClusters,
+        citations: usedSources,
+        useful: null,
+      });
     setStreaming(false);
     setStreamText("");
+  };
+
+  const stopStreaming = () => {
+    abortControllerRef.current?.abort();
+  };
+
+  const retryLastUserMessage = () => {
+    const lastUser = [...messages].reverse().find((message) => message.role === "user");
+    if (lastUser) void send(lastUser.content);
   };
 
   const setBackendMessageUseful = async (messageId: string, value: boolean) => {
@@ -366,135 +421,224 @@ function ChatView() {
   };
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-border bg-card/40 px-6 py-3">
-        <Input
-          value={titleDraft}
-          onChange={(event) => setTitleDraft(event.target.value)}
-          onBlur={commitTitle}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.currentTarget.blur();
-            }
-          }}
-          disabled={!backendSession}
-          aria-label="Chat title"
-          className="h-8 w-56 border-transparent bg-transparent px-2 text-sm font-medium disabled:opacity-100"
-        />
-        <div className="text-xs text-muted-foreground">Scope</div>
-        <Select
-          value={scopeClusterId ?? "global"}
-          onValueChange={setScope}
+    <div className="flex h-full">
+      <aside className="hidden w-64 shrink-0 border-r border-border bg-card/30 p-2 lg:block">
+        <Button
+          variant="ghost"
+          className="mb-2 w-full justify-start gap-2"
+          onClick={() => navigate({ to: "/chat" })}
         >
-          <SelectTrigger className="h-8 w-56">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="global">Global - all clusters</SelectItem>
-            {activeClusters.map((c) => (
-              <SelectItem key={c.id} value={c.id}>
-                {c.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <div className="ml-auto flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={toggleSaved}
-          >
-            <Bookmark className={"h-4 w-4 " + (saved ? "fill-current" : "")} />
-            {saved ? "Saved" : "Save"}
-          </Button>
-          <Button variant="ghost" size="sm" className="gap-1" onClick={() => void deleteCurrentChat()}>
-            <Trash2 className="h-4 w-4" />
-            Delete
-          </Button>
-          <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-            {backendReady ? "Semantic context" : "Local fallback context"}
-          </span>
-          {backendSession && (
-            <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-              Memory {memoryLabel(memoryState)}
-            </span>
-          )}
+          <MessageSquare className="h-4 w-4" /> New chat
+        </Button>
+        <div className="space-y-0.5">
+          {backendChats.map((session) => (
+            <Link
+              key={session.id}
+              to="/chat/$chatId"
+              params={{ chatId: session.id }}
+              className={
+                "block truncate rounded-md px-2.5 py-1.5 text-sm transition-colors " +
+                (session.id === backendSession?.id
+                  ? "bg-accent text-foreground"
+                  : "text-muted-foreground hover:bg-accent/70 hover:text-foreground")
+              }
+            >
+              {session.title}
+            </Link>
+          ))}
         </div>
-      </header>
+      </aside>
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl px-6 py-8">
-          {messages.length === 0 && !streaming && (
-            <div className="text-center text-muted-foreground">
-              <p className="text-lg font-medium text-foreground">
-                Ask anything across your context.
-              </p>
-              <p className="mt-2 text-sm">
-                {scope
-                  ? `Scoped to ${scope.name}.`
-                  : "Working across all clusters in your vault."}
-              </p>
-            </div>
-          )}
-          <div className="space-y-6">
-            {messages.map((m) => (
-              <Message
-                key={m.id}
-                msg={m}
-                clusters={activeClusters}
-                sources={activeSources}
-                onUseful={(v) => {
-                  void setBackendMessageUseful(m.id, v);
-                }}
-                onSaved={() => void toggleBackendMessageSaved(m.id, Boolean(m.saved))}
-                onRegenerate={() => regenerateFromMessage(m.id)}
-              />
-            ))}
-            {streaming && (
-              <div className="rounded-md border border-border bg-card p-4">
-                <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                  {streamText}
-                  <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-foreground/40 align-middle" />
-                </p>
-              </div>
-            )}
-          </div>
-          <div ref={endRef} />
-        </div>
-      </div>
-
-      <div className="border-t border-border bg-card/40 p-4">
-        <div className="mx-auto flex max-w-2xl items-end gap-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="shrink-0"
-            disabled
-            aria-label="Attachments are not available yet"
-            title="Attachments are not available yet"
-          >
-            <Paperclip className="h-4 w-4" />
-          </Button>
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={scope ? `Ask ${scope.name}...` : "Ask your vault..."}
-            rows={2}
-            className="resize-none"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                void send();
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex flex-wrap items-center gap-3 border-b border-border bg-card/40 px-6 py-3">
+          <Input
+            value={titleDraft}
+            onChange={(event) => setTitleDraft(event.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.currentTarget.blur();
               }
             }}
+            disabled={!backendSession}
+            aria-label="Chat title"
+            className="h-8 min-w-0 flex-1 border-transparent bg-transparent px-2 text-sm font-medium disabled:opacity-100 md:max-w-sm"
           />
-          <Button onClick={() => void send()} disabled={streaming || !input.trim()}>
-            <Send className="h-4 w-4" />
-          </Button>
+          <Select value={scopeClusterId ?? "global"} onValueChange={setScope}>
+            <SelectTrigger className="h-8 w-52 gap-2 text-xs">
+              <SlidersHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="global">All vault context</SelectItem>
+              {activeClusters.map((c) => (
+                <SelectItem key={c.id} value={c.id}>
+                  {c.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <div className="ml-auto flex items-center gap-2">
+            {lastError && (
+              <Button variant="outline" size="sm" className="gap-1" onClick={retryLastUserMessage}>
+                <RotateCcw className="h-4 w-4" />
+                Retry
+              </Button>
+            )}
+            {streaming && (
+              <Button variant="outline" size="sm" className="gap-1" onClick={stopStreaming}>
+                <StopCircle className="h-4 w-4" />
+                Stop
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" onClick={toggleSaved}>
+              <Bookmark className={"h-4 w-4 " + (saved ? "fill-current" : "")} />
+              {saved ? "Saved" : "Save"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1"
+              onClick={() => void deleteCurrentChat()}
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete
+            </Button>
+            <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+              {backendReady ? "Semantic context" : "Local fallback context"}
+            </span>
+            {backendSession && (
+              <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                Memory {memoryLabel(memoryState)}
+              </span>
+            )}
+          </div>
+        </header>
+
+        <div className="flex min-h-0 flex-1">
+          <div className="min-w-0 flex-1 overflow-y-auto">
+            <div className="mx-auto max-w-3xl px-6 py-8">
+              {messages.length === 0 && !streaming && (
+                <div className="text-muted-foreground">
+                  <p className="text-lg font-medium text-foreground">Ask across your vault.</p>
+                  <p className="mt-2 text-sm">
+                    {scope
+                      ? `Scoped to ${scope.name}.`
+                      : "Working across all clusters in your vault."}
+                  </p>
+                </div>
+              )}
+              <div className="space-y-6">
+                {messages.map((m) => (
+                  <Message
+                    key={m.id}
+                    msg={m}
+                    clusters={activeClusters}
+                    sources={activeSources}
+                    onUseful={(v) => {
+                      void setBackendMessageUseful(m.id, v);
+                    }}
+                    onSaved={() => void toggleBackendMessageSaved(m.id, Boolean(m.saved))}
+                    onRegenerate={() => regenerateFromMessage(m.id)}
+                  />
+                ))}
+                {streaming && (
+                  <div className="rounded-md border border-border bg-card p-4">
+                    {streamStatus && (
+                      <div className="mb-2 text-xs text-muted-foreground">{streamStatus}</div>
+                    )}
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed">
+                      {streamText}
+                      <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-foreground/40 align-middle" />
+                    </p>
+                  </div>
+                )}
+              </div>
+              <div ref={endRef} />
+            </div>
+          </div>
+          <aside className="hidden w-80 shrink-0 overflow-y-auto border-l border-border bg-card/20 p-4 xl:block">
+            <div className="text-sm font-medium">Context used</div>
+            <div className="mt-3 space-y-3">
+              {latestCitations.length === 0 ? (
+                <div className="text-sm text-muted-foreground">
+                  Citations from the next answer will appear here.
+                </div>
+              ) : (
+                latestCitations.map((citation, index) => {
+                  const source = activeSources.find((item) => item.id === citation.sourceId);
+                  return (
+                    <div
+                      key={`${citation.sourceId}-${index}`}
+                      className="rounded-md border border-border bg-card p-3"
+                    >
+                      <div className="truncate text-sm font-medium">
+                        {source?.title ?? "Source"}
+                      </div>
+                      <p className="mt-2 line-clamp-4 text-xs leading-5 text-muted-foreground">
+                        {citation.snippet}
+                      </p>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+            {latestWarnings.length > 0 && (
+              <div className="mt-5 border-t border-border pt-4">
+                <div className="text-sm font-medium">Runtime notes</div>
+                <ul className="mt-2 space-y-2 text-xs text-muted-foreground">
+                  {latestWarnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </aside>
         </div>
-        <p className="mx-auto mt-1.5 max-w-2xl text-[11px] text-muted-foreground">
-          Ctrl/Cmd Enter to send / all processing local / memory {memoryLabel(memoryState)}
-        </p>
+
+        <div className="border-t border-border bg-card/40 p-4">
+          {lastError && (
+            <div className="mx-auto mb-2 max-w-3xl rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+              {lastError}
+            </div>
+          )}
+          <div className="mx-auto flex max-w-3xl items-end gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="shrink-0"
+              disabled
+              aria-label="Attachments are not available yet"
+              title="Attachments are not available yet"
+            >
+              <Paperclip className="h-4 w-4" />
+            </Button>
+            <Textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={scope ? `Ask ${scope.name}...` : "Ask your vault..."}
+              rows={2}
+              className="resize-none"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+            />
+            <Button
+              onClick={() => void send()}
+              disabled={streaming || !input.trim()}
+              className="shrink-0"
+            >
+              <Send className="h-4 w-4" />
+            </Button>
+          </div>
+          <p className="mx-auto mt-1.5 max-w-3xl text-[11px] text-muted-foreground">
+            Ctrl/Cmd Enter to send / {scope ? scope.name : "all vault context"} / memory{" "}
+            {memoryLabel(memoryState)}
+          </p>
+        </div>
       </div>
     </div>
   );

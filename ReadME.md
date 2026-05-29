@@ -116,8 +116,11 @@ The Electron shell opens the same local UI through `npm run dev`.
 - `POST /api/v1/chat/context` - build a retrieval-grounded chat draft with clusters used and citations.
 - `GET /api/v1/models` - list recommended local model options and install status.
 - `GET /api/v1/models/runtime` - check whether a local OpenAI-compatible model runtime is reachable.
+- `GET /api/v1/models/embeddings` - inspect the active local embedding provider.
+- `POST /api/v1/models/embeddings/configure` - switch between hash embeddings and optional SentenceTransformers/MiniLM.
 - `GET /api/v1/models/{model_id}` - inspect one model option.
 - `POST /api/v1/models/{model_id}/download` - start an explicit GGUF model download into local app data.
+- `POST /api/v1/models/{model_id}/download/cancel` - cancel an active GGUF model download and clean up the partial file.
 - `GET /api/v1/bridge/status` - Context Bridge status.
 - `POST /api/v1/bridge/context` - request selected context for an external local client.
 - `GET /api/v1/bridge/requests` - recent bridge request history.
@@ -149,7 +152,15 @@ Planned bridge surfaces:
 - CLI for terminal use.
 - Copy-context helper for manual paste.
 
-V1 bridge work currently has status and request logging. Semantic retrieval, permissions, and the MCP server are still open.
+V1 bridge work currently has status, request logging, semantic retrieval, permissions, and first CLI/MCP prototypes. Per-client setup and deeper MCP client testing are still open.
+
+Current development helpers:
+
+```powershell
+$env:CML_BRIDGE_TOKEN="token-from-bridge-settings"
+.\scripts\bridge\cml-bridge.ps1 "retrieve context for my assignment"
+.venv\Scripts\python.exe -m backend.app.bridge_mcp
+```
 
 ## Local expert model plan
 

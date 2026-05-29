@@ -1,7 +1,9 @@
 import hashlib
+import importlib.util
 import json
 import math
 import re
+from pathlib import Path
 from uuid import uuid4
 
 from backend.app.core.config import get_settings
@@ -19,29 +21,72 @@ def tokenize(text: str) -> list[str]:
 
 
 def embed_text(text: str) -> list[float]:
-    settings = get_settings()
-    if settings.embedding_provider == "sentence-transformers":
-        return _embed_with_sentence_transformers(text, settings.embedding_model)
+    config = embedding_config()
+    if config["provider"] == "sentence-transformers":
+        return _embed_with_sentence_transformers(config["model"], config["cache_dir"], text)
     return _embed_with_hash(text)
 
 
 def embedding_status() -> dict:
-    settings = get_settings()
+    config = embedding_config()
     status = {
-        "provider": settings.embedding_provider,
-        "model": settings.embedding_model if settings.embedding_provider != "hash" else "hash",
-        "dimensions": settings.embedding_dimensions if settings.embedding_provider != "hash" else HASH_EMBEDDING_DIMENSIONS,
+        "provider": config["provider"],
+        "model": config["model"] if config["provider"] != "hash" else "hash",
+        "dimensions": config["dimensions"] if config["provider"] != "hash" else HASH_EMBEDDING_DIMENSIONS,
         "available": True,
         "detail": "Using deterministic hash embeddings.",
     }
-    if settings.embedding_provider == "sentence-transformers":
-        try:
-            _get_sentence_transformer(settings.embedding_model, settings.embedding_cache_dir)
+    if config["provider"] == "sentence-transformers":
+        if importlib.util.find_spec("sentence_transformers") is not None:
             status["detail"] = "SentenceTransformers embedding model is available."
-        except Exception as exc:
+        else:
             status["available"] = False
-            status["detail"] = f"SentenceTransformers is not available: {exc}"
+            status["detail"] = "SentenceTransformers is not installed in this Python runtime."
     return status
+
+
+def embedding_config() -> dict:
+    settings = get_settings()
+    config = {
+        "provider": settings.embedding_provider,
+        "model": settings.embedding_model,
+        "dimensions": settings.embedding_dimensions,
+        "cache_dir": settings.embedding_cache_dir,
+    }
+    config_path = _embedding_config_path()
+    if config_path.exists():
+        try:
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            saved = {}
+        if isinstance(saved, dict):
+            provider = saved.get("provider")
+            cache_dir = saved.get("cache_dir")
+            if provider in {"hash", "sentence-transformers"}:
+                config["provider"] = provider
+            if isinstance(cache_dir, str) and cache_dir.strip():
+                config["cache_dir"] = Path(cache_dir)
+    return config
+
+
+def configure_embedding_runtime(provider: str, cache_dir: str | None = None) -> dict:
+    if provider not in {"hash", "sentence-transformers"}:
+        raise ValueError("Embedding provider must be 'hash' or 'sentence-transformers'")
+    config_path = _embedding_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"provider": provider, "cache_dir": cache_dir or ""}
+    config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    global _SENTENCE_TRANSFORMER_MODEL
+    global _SENTENCE_TRANSFORMER_MODEL_NAME
+    global _SENTENCE_TRANSFORMER_CACHE_DIR
+    _SENTENCE_TRANSFORMER_MODEL = None
+    _SENTENCE_TRANSFORMER_MODEL_NAME = None
+    _SENTENCE_TRANSFORMER_CACHE_DIR = None
+    return embedding_status()
+
+
+def _embedding_config_path() -> Path:
+    return get_settings().data_dir / "embedding-runtime.json"
 
 
 def _embed_with_hash(text: str) -> list[float]:
@@ -85,9 +130,8 @@ def _get_sentence_transformer(model_name: str, cache_dir=None):
     return _SENTENCE_TRANSFORMER_MODEL
 
 
-def _embed_with_sentence_transformers(text: str, model_name: str) -> list[float]:
-    settings = get_settings()
-    model = _get_sentence_transformer(model_name, settings.embedding_cache_dir)
+def _embed_with_sentence_transformers(model_name: str, cache_dir, text: str) -> list[float]:
+    model = _get_sentence_transformer(model_name, cache_dir)
     vector = model.encode(text or "", normalize_embeddings=True)
     return [float(value) for value in vector.tolist()]
 

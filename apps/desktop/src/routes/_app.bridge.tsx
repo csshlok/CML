@@ -30,34 +30,39 @@ function BridgeView() {
   const [clusters, setClusters] = useState<ClusterRecord[]>([]);
   const [saving, setSaving] = useState(false);
 
+  async function loadBridgeState(options: { clearOnError?: boolean } = {}) {
+    if (backend.status !== "online") return;
+    try {
+      const [nextStatus, nextRequests, nextVaults, nextClusters] = await Promise.all([
+        getBridgeStatus(),
+        listBridgeRequests(),
+        listVaults(),
+        listClusters(),
+      ]);
+      setStatus(nextStatus);
+      setRequests(nextRequests);
+      setVaults(nextVaults);
+      setClusters(nextClusters);
+    } catch {
+      if (options.clearOnError) {
+        setStatus(null);
+        setRequests([]);
+        setVaults([]);
+        setClusters([]);
+      }
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
 
-    async function loadBridgeState() {
-      if (backend.status !== "online") return;
-      try {
-        const [nextStatus, nextRequests, nextVaults, nextClusters] = await Promise.all([
-          getBridgeStatus(),
-          listBridgeRequests(),
-          listVaults(),
-          listClusters(),
-        ]);
-        if (!cancelled) {
-          setStatus(nextStatus);
-          setRequests(nextRequests);
-          setVaults(nextVaults);
-          setClusters(nextClusters);
-        }
-      } catch {
-        if (!cancelled) {
-          setStatus(null);
-          setRequests([]);
-        }
-      }
+    async function refreshIfMounted() {
+      if (cancelled) return;
+      await loadBridgeState({ clearOnError: true });
     }
 
-    loadBridgeState();
-    const id = window.setInterval(loadBridgeState, 5000);
+    void refreshIfMounted();
+    const id = window.setInterval(refreshIfMounted, 60_000);
     return () => {
       cancelled = true;
       window.clearInterval(id);
@@ -69,6 +74,7 @@ function BridgeView() {
     try {
       const updated = await updateBridgeSettings(payload);
       setStatus(updated);
+      await loadBridgeState();
     } finally {
       setSaving(false);
     }
@@ -101,8 +107,8 @@ function BridgeView() {
             </div>
             <h1 className="mt-2 text-2xl font-semibold tracking-tight">Context Bridge</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Let local AI tools request selected context from this vault. Keep it off until you have
-              chosen exactly which vaults and clusters another client can read.
+              Let local AI tools request selected context from this vault. Keep it off until you
+              have chosen exactly which vaults and clusters another client can read.
             </p>
           </div>
 
@@ -248,9 +254,7 @@ function BridgeView() {
               ))}
             </div>
           ) : (
-            <p className="mt-3 text-sm text-muted-foreground">
-              No external context requests yet.
-            </p>
+            <p className="mt-3 text-sm text-muted-foreground">No external context requests yet.</p>
           )}
           <div className="mt-4 flex gap-2">
             <Button
@@ -258,12 +262,54 @@ function BridgeView() {
               size="sm"
               onClick={() => {
                 void navigator.clipboard.writeText(
-                  `POST ${backend.url}/api/v1/bridge/context\nx-cml-bridge-token: ${status?.bridge_token ?? ""}\n{\"query\":\"...\",\"vault_id\":\"${status?.allowed_vault_ids[0] ?? ""}\",\"client_name\":\"local-client\"}`,
+                  [
+                    `POST ${backend.url}/api/v1/bridge/context`,
+                    `x-cml-bridge-token: ${status?.bridge_token ?? ""}`,
+                    JSON.stringify({
+                      query: "...",
+                      vault_id: status?.allowed_vault_ids[0] ?? "",
+                      client_name: "local-client",
+                    }),
+                  ].join("\n"),
                 );
               }}
             >
               <Copy className="h-3.5 w-3.5" />
               Copy HTTP example
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                void navigator.clipboard.writeText(
+                  `$env:CML_BRIDGE_TOKEN="${status?.bridge_token ?? ""}"\n.\\scripts\\bridge\\cml-bridge.ps1 "summarize my relevant context" -BackendUrl ${backend.url}`,
+                );
+              }}
+            >
+              <Terminal className="h-3.5 w-3.5" />
+              Copy CLI example
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                void navigator.clipboard.writeText(
+                  JSON.stringify(
+                    {
+                      command: ".venv\\Scripts\\python.exe",
+                      args: ["-m", "backend.app.bridge_mcp"],
+                      env: {
+                        CML_BACKEND_URL: backend.url,
+                        CML_BRIDGE_TOKEN: status?.bridge_token ?? "",
+                      },
+                    },
+                    null,
+                    2,
+                  ),
+                );
+              }}
+            >
+              Copy MCP config
             </Button>
             <Button
               variant="outline"
@@ -312,15 +358,7 @@ function PermissionRow({
   );
 }
 
-function BridgeCard({
-  icon,
-  title,
-  body,
-}: {
-  icon: ReactNode;
-  title: string;
-  body: string;
-}) {
+function BridgeCard({ icon, title, body }: { icon: ReactNode; title: string; body: string }) {
   return (
     <div className="rounded-md border border-border bg-card p-4">
       <div className="flex items-center gap-2 text-sm font-medium">

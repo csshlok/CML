@@ -69,7 +69,7 @@ def generate_grounded_answer(
         "temperature": 0.2,
         "stream": False,
     }
-    response = _openai_post("/chat/completions", payload, timeout=settings.llm_timeout_seconds)
+    response = _openai_post("/chat/completions", payload, timeout=_interactive_timeout())
     try:
         text = response["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError) as exc:
@@ -109,7 +109,7 @@ def stream_grounded_answer(
         "temperature": 0.2,
         "stream": True,
     }
-    yield from _openai_stream("/chat/completions", payload, timeout=settings.llm_timeout_seconds)
+    yield from _openai_stream("/chat/completions", payload, timeout=_interactive_timeout())
 
 
 def _build_context_prompt(prompt: str, citations: list[dict], clusters_used: list[dict]) -> str:
@@ -156,8 +156,12 @@ def _openai_post(path: str, payload: dict[str, Any], timeout: float) -> dict[str
     try:
         with urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
+    except TimeoutError as exc:
+        raise LLMRuntimeError(f"Local model runtime timed out at {url}") from exc
     except URLError as exc:
         raise LLMRuntimeError(f"Local model runtime is not reachable at {url}") from exc
+    except OSError as exc:
+        raise LLMRuntimeError(f"Local model runtime failed at {url}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise LLMRuntimeError("Local model returned invalid JSON.") from exc
 
@@ -189,5 +193,13 @@ def _openai_stream(path: str, payload: dict[str, Any], timeout: float):
                 text = delta.get("content")
                 if text:
                     yield text
+    except TimeoutError as exc:
+        raise LLMRuntimeError(f"Local model runtime timed out at {url}") from exc
     except URLError as exc:
         raise LLMRuntimeError(f"Local model runtime is not reachable at {url}") from exc
+    except OSError as exc:
+        raise LLMRuntimeError(f"Local model runtime failed at {url}: {exc}") from exc
+
+
+def _interactive_timeout() -> float:
+    return min(get_settings().llm_timeout_seconds, 8.0)

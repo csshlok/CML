@@ -249,12 +249,36 @@ def _get_bridge_settings() -> dict:
     with connect() as conn:
         _ensure_bridge_settings(conn)
         row = conn.execute("SELECT * FROM bridge_settings WHERE id = 'default'").fetchone()
-    allowed_vault_ids = _json_list(row["allowed_vault_ids"])
-    allowed_cluster_ids = _json_list(row["allowed_cluster_ids"])
+        existing_vault_ids = {
+            vault["id"] for vault in conn.execute("SELECT id FROM vaults").fetchall()
+        }
+        existing_cluster_ids = {
+            cluster["id"] for cluster in conn.execute("SELECT id FROM clusters").fetchall()
+        }
+        allowed_vault_ids = [
+            str(item) for item in _json_list(row["allowed_vault_ids"]) if str(item) in existing_vault_ids
+        ]
+        allowed_cluster_ids = [
+            str(item)
+            for item in _json_list(row["allowed_cluster_ids"])
+            if str(item) in existing_cluster_ids
+        ]
+        if (
+            allowed_vault_ids != _json_list(row["allowed_vault_ids"])
+            or allowed_cluster_ids != _json_list(row["allowed_cluster_ids"])
+        ):
+            conn.execute(
+                """
+                UPDATE bridge_settings
+                SET allowed_vault_ids = ?, allowed_cluster_ids = ?, updated_at = ?
+                WHERE id = 'default'
+                """,
+                (json.dumps(allowed_vault_ids), json.dumps(allowed_cluster_ids), utc_now()),
+            )
     return {
         "enabled": bool(row["enabled"]),
-        "allowed_vault_ids": [str(item) for item in allowed_vault_ids],
-        "allowed_cluster_ids": [str(item) for item in allowed_cluster_ids],
+        "allowed_vault_ids": allowed_vault_ids,
+        "allowed_cluster_ids": allowed_cluster_ids,
         "allow_raw_snippets": bool(row["allow_raw_snippets"]),
         "allow_style_profile": bool(row["allow_style_profile"]),
         "allow_expert_calls": bool(row["allow_expert_calls"]),

@@ -19,7 +19,7 @@ During development:
 
 1. Electron launches the desktop window.
 2. Vite serves the React UI on `127.0.0.1:5173`.
-3. The Python backend runs on `127.0.0.1:7342`.
+3. The Python backend runs on `127.0.0.1:7343` by default. The desktop shell can choose another open loopback port in the `7343-7355` range when needed.
 4. The UI talks to the backend over local HTTP/WebSocket APIs.
 
 In packaged builds:

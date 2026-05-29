@@ -1,9 +1,20 @@
 from fastapi import APIRouter, HTTPException
 
-from backend.app.core.embeddings import embedding_status
+from backend.app.core.embeddings import configure_embedding_runtime, embedding_status
 from backend.app.core.llm_runtime import runtime_status
-from backend.app.core.model_registry import list_models, model_status, start_model_download
-from backend.app.schemas import EmbeddingRuntimeStatus, ModelDownloadStart, ModelRead, ModelRuntimeStatus
+from backend.app.core.model_registry import (
+    cancel_model_download,
+    list_models,
+    model_status,
+    start_model_download,
+)
+from backend.app.schemas import (
+    EmbeddingRuntimeConfigure,
+    EmbeddingRuntimeStatus,
+    ModelDownloadStart,
+    ModelRead,
+    ModelRuntimeStatus,
+)
 
 router = APIRouter(prefix="/models", tags=["models"])
 
@@ -23,6 +34,14 @@ def get_embedding_status() -> dict:
     return embedding_status()
 
 
+@router.post("/embeddings/configure", response_model=EmbeddingRuntimeStatus)
+def configure_embeddings(payload: EmbeddingRuntimeConfigure) -> dict:
+    try:
+        return configure_embedding_runtime(payload.provider, payload.cache_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/{model_id}", response_model=ModelRead)
 def get_local_model(model_id: str) -> dict:
     try:
@@ -35,5 +54,13 @@ def get_local_model(model_id: str) -> dict:
 def download_local_model(model_id: str) -> dict:
     try:
         return start_model_download(model_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Model not found") from exc
+
+
+@router.post("/{model_id}/download/cancel", response_model=ModelDownloadStart)
+def cancel_local_model_download(model_id: str) -> dict:
+    try:
+        return cancel_model_download(model_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Model not found") from exc

@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { Check, Plus, RefreshCw } from "lucide-react";
+import { Check, Plus, RefreshCw, X } from "lucide-react";
 import { ClusterDot, ExpertBadge } from "@/components/ClusterChip";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,12 +14,7 @@ import {
   type ClusterSuggestionRecord,
   type VaultRecord,
 } from "@/lib/backend";
-import {
-  useStore,
-  type Cluster,
-  type ClusterTint,
-  type Source,
-} from "@/lib/mockStore";
+import { useStore, type Cluster, type ClusterTint, type Source } from "@/lib/mockStore";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 
 export const Route = createFileRoute("/_app/clusters")({
@@ -33,6 +28,7 @@ function ClustersList() {
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [suggestions, setSuggestions] = useState<ClusterSuggestionRecord[]>([]);
+  const [dismissedSuggestions, setDismissedSuggestions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -64,6 +60,9 @@ function ClustersList() {
 
   const clusters = vault ? backendClusters : mockClusters;
   const sources = vault ? backendSources : mockSources;
+  const visibleSuggestions = suggestions.filter(
+    (suggestion) => !dismissedSuggestions.includes(suggestionKey(suggestion)),
+  );
   const sourceCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const source of sources) {
@@ -127,22 +126,44 @@ function ClustersList() {
               </p>
             </div>
             <div className="divide-y divide-border">
-              {suggestions.length === 0 ? (
+              {visibleSuggestions.length === 0 ? (
                 <div className="px-4 py-4 text-sm text-muted-foreground">
                   No cluster moves suggested right now.
                 </div>
               ) : (
-                suggestions.map((suggestion) => (
-                  <div key={`${suggestion.source_id}-${suggestion.suggested_cluster_id}`} className="flex items-center gap-4 px-4 py-3">
+                visibleSuggestions.map((suggestion) => (
+                  <div
+                    key={`${suggestion.source_id}-${suggestion.suggested_cluster_id}`}
+                    className="flex items-center gap-4 px-4 py-3"
+                  >
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-medium">{suggestion.source_title}</div>
                       <div className="mt-1 text-sm text-muted-foreground">
-                        Suggested: {suggestion.suggested_cluster_name} / {(suggestion.confidence * 100).toFixed(0)}% confidence
+                        Suggested: {suggestion.suggested_cluster_name} /{" "}
+                        {(suggestion.confidence * 100).toFixed(0)}% confidence
                       </div>
                     </div>
-                    <Button size="sm" variant="outline" onClick={() => void acceptSuggestion(suggestion)}>
-                      <Check className="mr-1.5 h-4 w-4" /> Accept
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void acceptSuggestion(suggestion)}
+                      >
+                        <Check className="mr-1.5 h-4 w-4" /> Accept
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() =>
+                          setDismissedSuggestions((current) => [
+                            ...current,
+                            suggestionKey(suggestion),
+                          ])
+                        }
+                      >
+                        <X className="mr-1.5 h-4 w-4" /> Dismiss
+                      </Button>
+                    </div>
                   </div>
                 ))
               )}
@@ -178,6 +199,10 @@ function ClustersList() {
       </div>
     </div>
   );
+}
+
+function suggestionKey(suggestion: ClusterSuggestionRecord) {
+  return `${suggestion.source_id}:${suggestion.suggested_cluster_id}`;
 }
 
 function nextTint(index: number) {

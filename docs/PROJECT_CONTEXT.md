@@ -65,17 +65,17 @@ Progress bar legend:
 
 | Phase | Status | Progress | Notes |
 | --- | --- | --- | --- |
-| Product definition | In progress | `[########--] 82%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, runtime boundary, model storage decision, and first packaging/runtime launch direction are documented. Needs production installer specifics. |
-| UI prototype cleanup | In progress | `[#########-] 98%` | V0 reviewed. Cross-platform shortcuts fixed. CML Mind workspace, clickable source cards, setup flow, cleaned-up blob map, UI audit cleanup, misleading-control pass, backend-backed cluster detail, persisted chat actions, Bridge permission controls, cluster source controls, and expert controls are in place. Needs visual QA and final shared toolbar polish. |
-| Desktop app foundation | In progress | `[#########-] 88%` | Electron workspace created, frontend build passes, Vite dev server verified, file-opening IPC/file picker primitives added, UI routes can call configurable backend APIs, Settings can read model/runtime status, and Electron can manage a local backend process. Needs packaged-app verification. |
-| Local backend foundation | In progress | `[#########-] 87%` | SQLite config/storage foundation, CRUD route groups, ingestion endpoints, Bridge settings/token auth, chat streaming/memory status, background app job queue, expert job queue scaffold, embedding runtime status, and first-pass clustering service are working. Needs service-layer cleanup and tests. |
+| Product definition | In progress | `[########--] 84%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, runtime boundary, model storage decision, and first Windows installer/runtime direction are documented. Needs final production installer/update policy. |
+| UI prototype cleanup | In progress | `[#########-] 99%` | V0 reviewed. Cross-platform shortcuts fixed. CML Mind workspace, clickable source cards, setup flow, cleaned-up blob map, UI audit cleanup, misleading-control pass, backend-backed cluster detail, persisted chat actions, Bridge permission controls, cluster source controls, expert controls, and real Chat index composer are in place. Needs visual QA and final shared toolbar polish. |
+| Desktop app foundation | In progress | `[#########-] 95%` | Electron workspace created, frontend build passes, Vite dev server verified, file-opening IPC/file picker primitives added, UI routes can call configurable backend APIs, Settings can read model/runtime status, Electron can manage a local backend process, stale backend probing rejects missing setup APIs, and the unpacked packaged app launches with a bundled backend. Needs installer install/uninstall smoke. |
+| Local backend foundation | In progress | `[#########-] 88%` | SQLite config/storage foundation, CRUD route groups, ingestion endpoints, Bridge settings/token auth, chat streaming/memory status, background app job queue, expert job queue scaffold, embedding runtime status, and first-pass clustering service are working. Needs service-layer cleanup and tests. |
 | Vault ingestion | In progress | `[#########-] 91%` | Source metadata/text records can be created and viewed from the Sources UI. TXT/Markdown/DOCX/PDF, pasted text, static link ingestion, setup import, desktop drag/drop import, local synced-folder import, per-file batch import failure reporting, link title/image metadata, generated summaries/tags, in-app capture dialogs, and queued source reindexing work. Needs screenshots/OCR extraction and dynamic-page parsing. |
-| Embeddings and clustering | In progress | `[######----] 62%` | First-pass keyword auto-clustering, local chunking, deterministic local embeddings, optional SentenceTransformers runtime path/cache setting, SQLite vector storage, semantic search API, semantic Mind search, and reviewable cluster move suggestions are working. Need installed model validation and richer split/merge suggestions. |
-| Chat and context routing | In progress | `[#########-] 92%` | Retrieval-grounded chat context, persisted backend chat sessions/messages, backend chat sidebar loading/deletion, answer feedback/save actions, background transcript memory indexing, SSE answer streaming, local model runtime adapter, model setup UI, llama.cpp runtime helper scripts, fallback drafts, cluster usage, warnings, and citations are working. Needs manual routing polish and richer stream error states. |
+| Embeddings and clustering | In progress | `[#######---] 76%` | First-pass keyword auto-clustering, local chunking, deterministic local embeddings, optional SentenceTransformers runtime path/cache setting, installed MiniLM cache, runtime embedding provider switching, SQLite vector storage, semantic search API, semantic Mind search, reviewable cluster move suggestions, suggestion dismissal, and cluster merge are working. Need richer split suggestions and one-click packaged MiniLM install/download. |
+| Chat and context routing | In progress | `[#########-] 96%` | Retrieval-grounded chat context, persisted backend chat sessions/messages, backend chat sidebar loading/deletion, context-first Chat index composer, global-by-default retrieval with optional cluster scope, answer feedback/save actions, background transcript memory indexing, SSE answer streaming, stop/retry controls, local model runtime adapter, model setup UI, llama.cpp runtime helper scripts, fallback drafts, cluster usage, warnings, and citations are working. Needs deeper multi-turn routing polish. |
 | Compulsory cluster experts | In progress | `[##--------] 20%` | Expert lifecycle states, expert job queue table, retrain/pause routes, cluster detail controls, and source/chat-memory change triggers are scaffolded. Need real local training implementation, adapter files, evaluation, and rollback. |
-| Context Bridge | In progress | `[#######---] 72%` | Bridge UI route reads backend status/history and can update local permission settings. HTTP bridge context now enforces enabled state, app token, vault/cluster allowlists, raw-text redaction, semantic retrieval, and request logging. Needs MCP server, CLI, and per-client setup. |
-| Packaging and installer | In progress | `[####------] 35%` | Windows llama.cpp runtime download/start scripts, Electron backend process management, electron-builder packaging scaffold, and packaged Python runtime staging exist. Need real installer build/launch verification. |
-| QA and hardening | In progress | `[##--------] 22%` | Security pass completed across backend, Electron shell, frontend dynamic CSS, and dependency audit. Backend compile/build/smoke checks now cover queued jobs. Needs Python CVE audit, broader tests, reliability checks, failure states, and performance review. |
+| Context Bridge | In progress | `[#######---] 78%` | Bridge UI route reads backend status/history and can update local permission settings. HTTP bridge context now enforces enabled state, app token, vault/cluster allowlists, raw-text redaction, semantic retrieval, and request logging. First CLI and MCP stdio prototypes are in place. Needs per-client setup and deeper MCP client smoke. |
+| Packaging and installer | In progress | `[#######---] 72%` | Windows llama.cpp runtime download/start scripts, Electron backend process management, electron-builder packaging scaffold, packaged Python runtime staging, branded one-click NSIS installer build, CML icon, and unpacked packaged backend launch verification are working. Need installer install/uninstall smoke and packaged model setup flow. |
+| QA and hardening | In progress | `[###-------] 28%` | Security pass completed across backend, Electron shell, frontend dynamic CSS, and dependency audit. Backend compile/build/smoke checks now cover queued jobs, packaged launch, and npm audit. Needs Python CVE audit, broader tests, reliability checks, failure states, and performance review. |
 
 ## Week-By-Week Goals
 
@@ -733,29 +733,90 @@ Exit criteria:
 - Smoke-tested queued source indexing: created a source, saw a queued job, ran jobs once, and semantic search returned the indexed chunk.
 - Smoke-tested queued chat memory: persisted a chat turn, received `memory_status = indexing`, ran jobs once, and confirmed the session moved to `indexed`.
 - Verified this pass with backend compile, Electron syntax checks, desktop production build, PowerShell script syntax checks, `git diff --check`, and embedding status smoke test.
+- Reworked the Chat index tab into a usable chat entry surface:
+  - added a real prompt textarea instead of an empty-state-only panel
+  - added global/cluster scope selection
+  - creates a backend chat session from the first prompt
+  - forwards the pending prompt into the chat detail route and auto-sends it after the session loads
+  - keeps Ctrl/Cmd Enter as the quick-send shortcut
+- Installed and validated the optional local embedding model:
+  - installed `sentence-transformers` into the local Python environment
+  - downloaded `sentence-transformers/all-MiniLM-L6-v2` into `T:\LLM\embeddings`
+  - set local `.env` embedding values for provider, model, dimensions, and cache directory
+  - verified the live backend can report the SentenceTransformers provider when launched with the local `.env`
+  - smoke-tested MiniLM semantic search against a temporary indexed source
+- Hardened the Electron developer launch path by adding `apps/desktop/scripts/start-electron.cjs`, which clears `ELECTRON_RUN_AS_NODE` before starting Electron.
+- Updated `.gitignore` so generated desktop packaging runtime/source staging stays out of git.
+- Finished the first real Windows package pass:
+  - fixed the desktop packaging script to use `npm exec electron-builder`
+  - added required desktop app metadata for electron-builder
+  - disabled local code-signing/editing for unsigned development builds to avoid Windows symlink extraction failures
+  - bumped Electron to `39.8.10` after audit flagged the older pinned version
+  - rebuilt the NSIS installer at `apps/desktop/release/CML Setup 0.1.0.exe`
+  - launched `apps/desktop/release/win-unpacked/CML.exe` and verified its bundled backend returns `/health` on `127.0.0.1:7343`
+- Verified this pass with backend compile, Electron script syntax checks, desktop production build, Windows package build, unpacked packaged-app launch smoke, `npm audit`, and `git diff --check`.
+- Reworked the Windows installer toward a cleaner setup experience:
+  - switched electron-builder NSIS to one-click, per-user, no-elevation install
+  - removed the install-directory wizard step and desktop shortcut default
+  - added a generated CML app icon so the installer and packaged app no longer fall back to Electron branding
+  - rebuilt the branded installer at `apps/desktop/release/CML-0.1.0-Setup.exe`
+- Added packaged embedding setup controls:
+  - added `POST /api/v1/models/embeddings/configure`
+  - added runtime embedding provider overrides stored under local app data
+  - updated Settings so users can choose lightweight hash embeddings or MiniLM/SentenceTransformers with an optional cache folder
+  - changed embedding status checks so Settings does not load model weights just to display availability
+  - added `-IncludeEmbeddingRuntime` to the Windows packaging script for builds that intentionally bundle optional SentenceTransformers dependencies
+- Added first Context Bridge external-client prototypes:
+  - added `backend.app.bridge_cli`
+  - added `scripts/bridge/cml-bridge.ps1`
+  - added `backend.app.bridge_mcp` with `list_clusters` and `get_cluster_context` tools over stdio JSON-RPC
+  - added Bridge UI copy actions for HTTP, CLI, token, and MCP config examples
+- Tightened frontend/Electron backend freshness probes so the app rejects stale backends missing the current embedding setup route.
+- Verified this pass with backend compile, desktop production build, embedding configure smoke, Bridge CLI/MCP syntax checks, Windows package build, and unpacked packaged-app backend launch smoke.
+- Fixed the unpacked packaged app blank screen by serving the TanStack Start production renderer through a local Electron-owned loopback renderer server instead of trying to load a missing `dist/client/index.html` file through `file://`.
+- Added cancellable model downloads:
+  - added `POST /api/v1/models/{model_id}/download/cancel`
+  - added cooperative cancellation and partial-file cleanup in the model download worker
+  - added a Settings `Cancel` button while a model download is resolving or downloading
+- Restarted the current backend on `http://127.0.0.1:7343` and verified the new cancel and embedding setup routes.
+- Rebuilt and smoke-tested `apps/desktop/release/win-unpacked/CML.exe`; the window now opens to `Mind` and the packaged renderer server listens on a local loopback port.
+- Fixed Settings local scrolling and narrow-window overflow without rebuilding the release package.
+- Reworked Chat toward a context-first workspace:
+  - the Chat index now defaults to all vault context instead of asking the user to choose global vs cluster first
+  - cluster scope remains available as an optional context selector
+  - chat detail now includes a session list, context-used rail, runtime notes, stop/retry controls, and route reload handling when switching chat IDs
+  - local model synthesis now uses a shorter interactive timeout and falls back to retrieval drafts instead of hanging when the runtime is slow or unavailable
+- Fixed Chat route nesting so generated and existing `/chat/{id}` sessions open the real chat detail instead of leaving the user on the starter composer.
+- Fixed a Chat send race where the pending first prompt could complete before the backend session was attached, leaving no assistant reply in the UI.
+- Tightened Bridge permission freshness:
+  - the backend now prunes deleted/stale vault and cluster IDs from Bridge settings
+  - the Bridge page refreshes full backend status, vaults, clusters, and request history after saves and on a one-minute timer
+- Improved cluster organization:
+  - suggested cluster moves can be accepted or dismissed
+  - clusters can be merged into another cluster, moving sources and scoped chats and marking the target expert stale
+- Added app-wide background job visibility in the footer with queued/running/failed counts and a run-once action.
 
 ## Current Open Work
 
 - Decide first supported OS for downloadable app.
-- Run and verify the real Windows installer build with `npm run package:win`, including packaged backend launch.
-- Decide whether packaged Python runtime should include optional embedding dependencies or download them during setup.
-- Install and test optional `sentence-transformers` in a Python 3.11/3.12-compatible environment before switching the default embedding provider.
+- Run installer install/uninstall smoke on a clean path, not only the unpacked packaged app.
+- Decide whether release builds should include optional embedding dependencies by default or keep them behind `-IncludeEmbeddingRuntime`.
+- Add one-click MiniLM dependency/model install from Settings instead of only allowing selection of an already available runtime/cache.
+- Run a real long-download cancellation test against a model download before calling cancellation production-ready.
 - Add job retry/backoff policy, cancellation, and UI-facing job failure states.
 - Persist synced-folder import history and optionally add watched folder refresh.
 - Persist real source paths from ingestion so the map preview Vault/Explorer actions work on user-added files.
 - Add backend service layer around raw route/database operations.
 - Extend extraction beyond TXT/Markdown/DOCX/PDF/static links to screenshots, OCR, and dynamic-page parsing.
 - Add task/list item ingestion as a first-class source type.
-- Connect frontend cluster/chat screens more deeply to backend APIs.
 - Continue UI polish for chat, sources, settings, and onboarding.
 - Continue applying remaining UI audit recommendations: shared page header/toolbar patterns and visual QA on the new cluster/Bridge controls.
 - Continue replacing remaining V0 visual language in chat, settings, onboarding, and footer copy.
 - Replace remaining copied/inspired-too-literally UI surfaces with CML-specific workflows.
 - Finish vault ingestion edge cases: screenshots/OCR, dynamic links, and watched folder refresh.
-- Expand embedding-based suggestions to include split/merge workflows and batch review.
+- Expand embedding-based suggestions to include split workflows and batch review.
 - Do a qualitative answer comparison across the downloaded GGUF models using representative CML prompts and local context.
 - Add manual cluster override polish against backend state.
-- Add richer stream error/stop states in the Chat UI.
 - Decide whether multi-cluster chat transcripts should also create a separate linked chat-memory cluster later.
 - Replace expert lifecycle scaffold with real local training, adapter storage, evaluation, and rollback.
 - Add a real backend profile/settings record for setup fields like user name and default vault instead of keeping them only in local storage.
@@ -799,8 +860,20 @@ Exit criteria:
 - Diagnosed the `{"detail":"Not Found"}` UI issue: `7342` is an older stale backend that lacks `/api/v1/chat/messages/{message_id}` and `/api/v1/bridge/settings`, while `7343` has the current routes. The desktop API client now probes configured URL, `7343`, then `7342`, and only uses a backend with the current chat routes. Also set local `.env` `VITE_CML_BACKEND_URL=http://127.0.0.1:7343`.
 - Restarted the desktop dev stack after unsetting `ELECTRON_RUN_AS_NODE`; Vite is reachable at `http://127.0.0.1:5173/` and the current backend routes are reachable on `7343`.
 - Electron now has a backend process manager for dev and packaged mode. Packaged mode now expects staged backend source plus a staged Python venv runtime under app resources.
-- Embeddings remain hash-based by default until the optional SentenceTransformers dependency and model are installed and tested in a compatible Python environment. The intended V1 embedding model is `sentence-transformers/all-MiniLM-L6-v2`, cached locally through `CML_EMBEDDING_CACHE_DIR`.
-- The Windows packaging scaffold now stages a Python runtime, but the actual installer has not yet been built or verified end to end.
+- Embeddings remain hash-based by default for packaged installs until setup-time model selection is wired. The intended V1 embedding model is `sentence-transformers/all-MiniLM-L6-v2`, cached locally through `CML_EMBEDDING_CACHE_DIR`.
+- `sentence-transformers/all-MiniLM-L6-v2` is installed and cached locally at `T:\LLM\embeddings` for development testing. Windows may warn about Hugging Face cache symlinks unless Developer Mode/admin symlink privileges are enabled; the cache still works but can use more disk.
+- The local development `.env` is configured for SentenceTransformers/MiniLM, but the packaged backend currently starts without that local `.env` and therefore reports the hash embedding provider. The setup flow needs to write packaged-user embedding settings before MiniLM becomes the packaged default.
+- The Windows NSIS installer build now succeeds at `apps/desktop/release/CML Setup 0.1.0.exe`, and the unpacked packaged app starts its bundled backend successfully on `127.0.0.1:7343`.
+- Electron has been bumped to `39.8.10`; `npm audit` currently reports zero vulnerabilities.
+- Dev Electron launch now goes through `apps/desktop/scripts/start-electron.cjs` so `ELECTRON_RUN_AS_NODE` is removed before opening the window.
+- The current Windows installer artifact is `apps/desktop/release/CML-0.1.0-Setup.exe`. It uses electron-builder's one-click NSIS mode, which removes the old wizard-style path chooser and is the cleanest installer experience available without replacing NSIS with a custom installer.
+- Packaged launch smoke requires `ELECTRON_RUN_AS_NODE` to be unset. If that environment variable is set globally, packaged Electron exits as Node before the app can start.
+- Embedding provider selection is now runtime-configurable. Hash embeddings remain the dependency-light default; MiniLM/SentenceTransformers can be selected when the optional Python runtime and model cache are available.
+- The first Bridge MCP server is a prototype stdio JSON-RPC bridge around the existing local HTTP permissions model, not a fully polished per-client onboarding flow yet.
+- Packaged Electron now serves the production TanStack renderer through an internal loopback server because the build is SSR-shaped and does not emit a normal `dist/client/index.html`.
+- Model download cancellation is cooperative. It can stop active chunked downloads and remove partial files, but should still be tested against a real multi-GB transfer.
+- Chat should remain global-by-default and context-first. Cluster selection is a refinement control, not a setup step before asking.
+- Local synthesis must not make Chat feel broken. If the configured OpenAI-compatible runtime is unavailable or slow, the app should quickly return a retrieval-backed answer with citations and a visible runtime note.
 
 ## Update Protocol
 

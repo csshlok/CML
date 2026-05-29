@@ -9,6 +9,8 @@ const isDev = !app.isPackaged;
 const devUrl = process.env.CML_DESKTOP_DEV_URL || "http://127.0.0.1:5173";
 let backendProcess = null;
 let backendUrl = process.env.VITE_CML_BACKEND_URL || process.env.CML_BACKEND_URL || null;
+let rendererServer = null;
+let rendererUrl = null;
 const supportedSourceExtensions = new Set([".txt", ".md", ".markdown", ".docx", ".pdf"]);
 const supportedOpenExtensions = new Set([...supportedSourceExtensions, ".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const skippedFolderNames = new Set([".git", "node_modules", ".venv", "dist", "build"]);
@@ -20,7 +22,7 @@ async function createWindow() {
     height: 820,
     minWidth: 1024,
     minHeight: 680,
-    title: "CML",
+    title: "Vault",
     backgroundColor: "#fbfaf6",
     show: false,
     webPreferences: {
@@ -32,7 +34,13 @@ async function createWindow() {
   });
 
   window.once("ready-to-show", () => {
+    window.setTitle("Vault");
     window.show();
+  });
+
+  window.on("page-title-updated", (event) => {
+    event.preventDefault();
+    window.setTitle("Vault");
   });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -48,7 +56,10 @@ async function createWindow() {
     window.loadURL(url.toString());
     window.webContents.openDevTools({ mode: "detach" });
   } else {
-    window.loadFile(path.join(__dirname, "../dist/client/index.html"));
+    rendererUrl = rendererUrl || await startPackagedRendererServer();
+    const url = new URL(rendererUrl);
+    if (backendUrl) url.searchParams.set("backendUrl", backendUrl);
+    window.loadURL(url.toString());
   }
 }
 
@@ -160,6 +171,85 @@ async function ensureBackend() {
   return startedUrl;
 }
 
+async function startPackagedRendererServer() {
+  if (rendererServer && rendererUrl) return rendererUrl;
+  const port = await findOpenPort(5174, 5190);
+  const clientDir = path.join(__dirname, "../dist/client");
+  const serverEntry = path.join(__dirname, "../dist/server/index.js");
+  const workerModule = await import(pathToFileUrl(serverEntry));
+  const worker = workerModule.default;
+
+  rendererServer = http.createServer(async (request, response) => {
+    try {
+      const parsed = new URL(request.url || "/", `http://127.0.0.1:${port}`);
+      const staticResponse = await tryServeStaticAsset(clientDir, parsed.pathname);
+      if (staticResponse) {
+        writeNodeResponse(response, staticResponse.status, staticResponse.headers, staticResponse.body);
+        return;
+      }
+
+      const target = `http://127.0.0.1:${port}${request.url || "/"}`;
+      const webRequest = new Request(target, {
+        method: request.method,
+        headers: request.headers,
+      });
+      const webResponse = await worker.fetch(webRequest, {}, {});
+      const body = Buffer.from(await webResponse.arrayBuffer());
+      writeNodeResponse(response, webResponse.status, Object.fromEntries(webResponse.headers), body);
+    } catch (error) {
+      response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+      response.end(error instanceof Error ? error.stack || error.message : String(error));
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    rendererServer.once("error", reject);
+    rendererServer.listen(port, "127.0.0.1", resolve);
+  });
+  rendererUrl = `http://127.0.0.1:${port}/`;
+  return rendererUrl;
+}
+
+async function tryServeStaticAsset(clientDir, pathname) {
+  const safePathname = decodeURIComponent(pathname).replace(/^\/+/, "");
+  if (!safePathname || safePathname.includes("..")) return null;
+  if (!(safePathname.startsWith("assets/") || safePathname === "favicon.svg")) return null;
+  const target = path.join(clientDir, safePathname);
+  if (!target.startsWith(clientDir)) return null;
+  try {
+    const body = await fs.readFile(target);
+    return {
+      status: 200,
+      headers: { "content-type": contentTypeForPath(target) },
+      body,
+    };
+  } catch {
+    return {
+      status: 404,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+      body: Buffer.from("Not found"),
+    };
+  }
+}
+
+function writeNodeResponse(response, status, headers, body) {
+  response.writeHead(status, headers);
+  response.end(body);
+}
+
+function contentTypeForPath(targetPath) {
+  const ext = path.extname(targetPath).toLowerCase();
+  if (ext === ".js") return "text/javascript; charset=utf-8";
+  if (ext === ".css") return "text/css; charset=utf-8";
+  if (ext === ".svg") return "image/svg+xml";
+  if (ext === ".json") return "application/json; charset=utf-8";
+  return "application/octet-stream";
+}
+
+function pathToFileUrl(targetPath) {
+  return `file:///${targetPath.replace(/\\/g, "/").replace(/^([a-zA-Z]):/, "$1:")}`;
+}
+
 async function findExistingCurrentBackend() {
   const candidates = [
     process.env.VITE_CML_BACKEND_URL,
@@ -177,7 +267,11 @@ function isCurrentBackend(url) {
   return httpJson(`${url}/openapi.json`, 1200)
     .then((spec) => {
       const paths = spec && spec.paths ? spec.paths : {};
-      return Boolean(paths["/api/v1/chat/context/stream"] && paths["/api/v1/bridge/settings"]);
+      return Boolean(
+        paths["/api/v1/chat/context/stream"] &&
+        paths["/api/v1/bridge/settings"] &&
+        paths["/api/v1/models/embeddings/configure"],
+      );
     })
     .catch(() => false);
 }
@@ -315,6 +409,9 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  if (rendererServer) {
+    rendererServer.close();
+  }
   if (backendProcess && !backendProcess.killed) {
     backendProcess.kill();
   }

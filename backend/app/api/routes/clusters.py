@@ -9,6 +9,7 @@ from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
     ClusterCreate,
     ClusterExpertJobRead,
+    ClusterMergeRequest,
     ClusterRead,
     ClusterSuggestionRead,
     ClusterUpdate,
@@ -139,6 +140,40 @@ def pause_expert(cluster_id: str) -> dict:
             (utc_now(), cluster_id),
         )
     return get_cluster(cluster_id)
+
+
+@router.post("/{cluster_id}/merge", response_model=ClusterRead)
+def merge_cluster(cluster_id: str, payload: ClusterMergeRequest) -> dict:
+    if cluster_id == payload.target_cluster_id:
+        raise HTTPException(status_code=400, detail="Choose a different target cluster.")
+
+    now = utc_now()
+    with connect() as conn:
+        source = conn.execute("SELECT * FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
+        target = conn.execute(
+            "SELECT * FROM clusters WHERE id = ?",
+            (payload.target_cluster_id,),
+        ).fetchone()
+        if source is None or target is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        if source["vault_id"] != target["vault_id"]:
+            raise HTTPException(status_code=400, detail="Clusters must be in the same vault.")
+
+        conn.execute(
+            "UPDATE sources SET cluster_id = ?, updated_at = ? WHERE cluster_id = ?",
+            (payload.target_cluster_id, now, cluster_id),
+        )
+        conn.execute(
+            "UPDATE chat_sessions SET scope_cluster_id = ?, updated_at = ? WHERE scope_cluster_id = ?",
+            (payload.target_cluster_id, now, cluster_id),
+        )
+        conn.execute(
+            "UPDATE clusters SET expert_status = 'needs-update', updated_at = ? WHERE id = ?",
+            (now, payload.target_cluster_id),
+        )
+        conn.execute("DELETE FROM clusters WHERE id = ?", (cluster_id,))
+        row = conn.execute("SELECT * FROM clusters WHERE id = ?", (payload.target_cluster_id,)).fetchone()
+    return dict_from_row(row)
 
 
 @router.delete("/{cluster_id}", status_code=204)
