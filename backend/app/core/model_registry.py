@@ -38,7 +38,7 @@ MODEL_REGISTRY: tuple[LocalModel, ...] = (
         id="phi-4-mini-instruct-q4_k_m",
         name="Phi-4 Mini Instruct Q4_K_M",
         role="low-spec-fallback",
-        hf_repo="tensorblock/Phi-4-mini-instruct-GGUF",
+        hf_repo="unsloth/Phi-4-mini-instruct-GGUF",
         quantization="Q4_K_M",
         approximate_download_gb=2.5,
         recommended_ram_gb="8+",
@@ -58,7 +58,7 @@ MODEL_REGISTRY: tuple[LocalModel, ...] = (
         id="gemma-3-4b-it-q4_k_m",
         name="Gemma 3 4B IT Q4_K_M",
         role="optional",
-        hf_repo="tensorblock/gemma-3-4b-it-GGUF",
+        hf_repo="Aldaris/gemma-3-4b-it-Q4_K_M-GGUF",
         quantization="Q4_K_M",
         approximate_download_gb=2.5,
         recommended_ram_gb="8+",
@@ -68,7 +68,7 @@ MODEL_REGISTRY: tuple[LocalModel, ...] = (
         id="gemma-3-12b-it-q4_k_m",
         name="Gemma 3 12B IT Q4_K_M",
         role="optional-large",
-        hf_repo="tensorblock/gemma-3-12b-it-GGUF",
+        hf_repo="nocturne23/gemma-3-12b-it-Q4_K_M-GGUF",
         quantization="Q4_K_M",
         approximate_download_gb=6.9,
         recommended_ram_gb="24+",
@@ -81,7 +81,8 @@ _download_lock = threading.Lock()
 
 
 def models_dir() -> Path:
-    path = get_settings().data_dir / "models"
+    settings = get_settings()
+    path = settings.models_dir or settings.data_dir / "models"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

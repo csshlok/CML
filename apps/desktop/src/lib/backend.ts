@@ -156,6 +156,39 @@ export type ChatSessionRecord = {
   messages: ChatMessageRecord[];
 };
 
+export type ModelDownloadState = {
+  model_id: string;
+  status: string;
+  bytes_downloaded: number | null;
+  total_bytes: number | null;
+  file_name: string | null;
+  local_path: string | null;
+  error: string | null;
+};
+
+export type LocalModelRecord = {
+  id: string;
+  name: string;
+  role: string;
+  hf_repo: string;
+  quantization: string;
+  approximate_download_gb: number;
+  recommended_ram_gb: string;
+  notes: string;
+  llama_cpp_ref: string;
+  installed: boolean;
+  local_path: string | null;
+  download: ModelDownloadState | null;
+};
+
+export type ModelRuntimeStatus = {
+  provider: string;
+  base_url: string;
+  model: string;
+  available: boolean;
+  detail: string;
+};
+
 export async function getBridgeStatus() {
   return request<BridgeStatus>("/api/v1/bridge/status");
 }
@@ -339,6 +372,20 @@ export async function updateChatSession(
 
 export async function deleteChatSession(id: string) {
   await request<void>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function listLocalModels() {
+  return request<LocalModelRecord[]>("/api/v1/models");
+}
+
+export async function getModelRuntimeStatus() {
+  return request<ModelRuntimeStatus>("/api/v1/models/runtime");
+}
+
+export async function startModelDownload(modelId: string) {
+  return request<ModelDownloadState>(`/api/v1/models/${encodeURIComponent(modelId)}/download`, {
+    method: "POST",
+  });
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

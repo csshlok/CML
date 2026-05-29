@@ -5,8 +5,13 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
   createVault,
+  getModelRuntimeStatus,
+  listLocalModels,
   listVaults,
+  startModelDownload,
   updateVault,
+  type LocalModelRecord,
+  type ModelRuntimeStatus,
   type VaultRecord,
 } from "@/lib/backend";
 
@@ -21,6 +26,10 @@ function SettingsView() {
   const [pathDraft, setPathDraft] = useState(vaultPath ?? "");
   const [status, setStatus] = useState<"idle" | "loading" | "saving" | "saved" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
+  const [models, setModels] = useState<LocalModelRecord[]>([]);
+  const [runtime, setRuntime] = useState<ModelRuntimeStatus | null>(null);
+  const [modelError, setModelError] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadVault() {
@@ -43,6 +52,35 @@ function SettingsView() {
     void loadVault();
   }, [setVault]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadModels() {
+      try {
+        const [modelRows, runtimeStatus] = await Promise.all([
+          listLocalModels(),
+          getModelRuntimeStatus(),
+        ]);
+        if (cancelled) return;
+        setModels(modelRows);
+        setRuntime(runtimeStatus);
+        setModelError(null);
+      } catch (err) {
+        if (!cancelled) {
+          setModelError(err instanceof Error ? err.message : "Could not load local model settings.");
+        }
+      }
+    }
+
+    void loadModels();
+    const id = window.setInterval(loadModels, 4000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
   async function saveVaultPath() {
     const path = pathDraft.trim();
     if (!path) return;
@@ -61,13 +99,24 @@ function SettingsView() {
     }
   }
 
+  async function downloadModel(modelId: string) {
+    setDownloadingId(modelId);
+    setModelError(null);
+    try {
+      await startModelDownload(modelId);
+      setModels(await listLocalModels());
+    } catch (err) {
+      setModelError(err instanceof Error ? err.message : "Could not start model download.");
+    } finally {
+      setDownloadingId(null);
+    }
+  }
+
   return (
-    <div className="mx-auto max-w-2xl px-6 py-10">
-      <h1 className="font-serif text-3xl">Settings</h1>
+    <div className="mx-auto max-w-4xl px-6 py-10">
+      <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
       <section className="mt-8 rounded-md border border-border bg-card p-4">
-        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          Vault location
-        </div>
+        <div className="text-sm font-medium">Vault location</div>
         <div className="mt-2 flex gap-2">
           <Input
             value={pathDraft}
@@ -92,7 +141,76 @@ function SettingsView() {
       </section>
 
       <section className="mt-6 rounded-md border border-border bg-card p-4">
-        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Shortcuts</div>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium">Local models</div>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              These models are downloaded to your configured local model folder and used through a local OpenAI-compatible runtime.
+            </p>
+          </div>
+          <div className="rounded-md border border-border px-3 py-2 text-xs">
+            <div className="font-medium">{runtime?.available ? "Runtime online" : "Runtime offline"}</div>
+            <div className="mt-1 max-w-72 truncate text-muted-foreground">
+              {runtime?.detail ?? "Checking local runtime..."}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 divide-y divide-border rounded-md border border-border">
+          {models.map((model) => {
+            const progress =
+              model.download?.total_bytes && model.download.bytes_downloaded
+                ? Math.min(100, Math.round((model.download.bytes_downloaded / model.download.total_bytes) * 100))
+                : null;
+            const busy = model.download?.status === "resolving" || model.download?.status === "downloading";
+
+            return (
+              <div key={model.id} className="grid gap-3 p-4 md:grid-cols-[1fr_auto] md:items-center">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="font-medium">{model.name}</div>
+                    <span className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                      {model.role}
+                    </span>
+                    <span className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                      {model.quantization}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    {model.notes} {model.approximate_download_gb} GB download, {model.recommended_ram_gb} GB RAM.
+                  </div>
+                  <div className="mt-1 truncate text-xs text-muted-foreground">{model.hf_repo}</div>
+                  {model.local_path && (
+                    <div className="mt-1 truncate text-xs text-muted-foreground">{model.local_path}</div>
+                  )}
+                  {busy && (
+                    <div className="mt-3 h-1.5 overflow-hidden rounded bg-muted">
+                      <div
+                        className="h-full bg-foreground"
+                        style={{ width: `${progress ?? 8}%` }}
+                      />
+                    </div>
+                  )}
+                  {model.download?.error && (
+                    <div className="mt-2 text-xs text-destructive">{model.download.error}</div>
+                  )}
+                </div>
+                <Button
+                  variant={model.installed ? "outline" : "default"}
+                  onClick={() => void downloadModel(model.id)}
+                  disabled={model.installed || busy || downloadingId === model.id}
+                >
+                  {model.installed ? "Installed" : busy ? progress ? `${progress}%` : "Starting" : "Download"}
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+        {modelError && <p className="mt-3 text-xs text-destructive">{modelError}</p>}
+      </section>
+
+      <section className="mt-6 rounded-md border border-border bg-card p-4">
+        <div className="text-sm font-medium">Shortcuts</div>
         <dl className="mt-3 grid grid-cols-2 gap-y-1 text-sm">
           <dt className="text-muted-foreground">Command palette</dt><dd>Ctrl/Cmd K</dd>
           <dt className="text-muted-foreground">New chat</dt><dd>Ctrl/Cmd N</dd>
@@ -104,7 +222,7 @@ function SettingsView() {
       </section>
 
       <section className="mt-6 rounded-md border border-border bg-card p-4">
-        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Advanced</div>
+        <div className="text-sm font-medium">Advanced</div>
         <p className="mt-2 text-sm text-muted-foreground">
           Power-user details like training logs and expert versions appear here.
         </p>

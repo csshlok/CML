@@ -27,6 +27,26 @@ Target completion: **end of July 2026**.
 - Real app workspace: `apps/desktop`.
 - Local backend workspace: `backend`.
 
+## Local LLM Model Decisions
+
+The first CML model ladder is saved for local synthesis. These are free, local-first, reproducible GGUF targets that the app can download/select during setup. Model weights should not be bundled into the first installer.
+
+| Role | Model | Backend ID | Hugging Face repo | Quantization | Approx download | Recommended RAM | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Default | Qwen3 4B Q4_K_M | `qwen3-4b-q4_k_m` | `Qwen/Qwen3-4B-GGUF` | `Q4_K_M` | ~2.5 GB | 8+ GB | Main recommended local synthesis model for V1. |
+| Low-spec fallback | Phi-4 Mini Instruct Q4_K_M | `phi-4-mini-instruct-q4_k_m` | `unsloth/Phi-4-mini-instruct-GGUF` | `Q4_K_M` | ~2.5 GB | 8+ GB | Fallback for weaker machines if Qwen3 4B is not suitable. |
+| Quality option | Qwen3 8B Q4_K_M | `qwen3-8b-q4_k_m` | `Qwen/Qwen3-8B-GGUF` | `Q4_K_M` | ~4.8 GB | 16+ GB | Better answer quality for users with more memory. |
+| Optional later | Gemma 3 4B IT Q4_K_M | `gemma-3-4b-it-q4_k_m` | `Aldaris/gemma-3-4b-it-Q4_K_M-GGUF` | `Q4_K_M` | ~2.5 GB | 8+ GB | Later comparison candidate. |
+| Optional larger later | Gemma 3 12B IT Q4_K_M | `gemma-3-12b-it-q4_k_m` | `nocturne23/gemma-3-12b-it-Q4_K_M-GGUF` | `Q4_K_M` | ~6.9 GB | 24+ GB | Larger later experiment for higher-quality local synthesis. |
+
+Runtime boundary:
+
+- CML expects an OpenAI-compatible local runtime endpoint for synthesis.
+- For llama.cpp, run `llama-server` with the selected GGUF.
+- Ollama can be used if it exposes an OpenAI-compatible local API for the selected model.
+- Retrieval-backed extractive drafts remain the fallback when no local synthesis runtime is available.
+- Cluster experts are still a separate lifecycle; these synthesis models are the larger answer-composition layer, not the per-cluster expert adapters.
+
 ## Phase Progress
 
 Progress bar legend:
@@ -45,16 +65,16 @@ Progress bar legend:
 
 | Phase | Status | Progress | Notes |
 | --- | --- | --- | --- |
-| Product definition | In progress | `[#######---] 70%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, and runtime boundary are documented. Needs packaging/runtime UX details. |
+| Product definition | In progress | `[########--] 80%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, runtime boundary, and model storage decision are documented. Needs packaging/runtime launch UX details. |
 | UI prototype cleanup | In progress | `[########--] 80%` | V0 reviewed. Cross-platform shortcuts fixed. CML Mind workspace, clickable source cards, and cleaned-up blob map are in place. Needs broader chat/settings/onboarding polish. |
-| Desktop app foundation | In progress | `[#######---] 70%` | Electron workspace created, frontend build passes, Vite dev server verified, file-opening IPC/file picker primitives added, and UI routes can call backend APIs. Needs Electron window verification and packaging. |
+| Desktop app foundation | In progress | `[########--] 80%` | Electron workspace created, frontend build passes, Vite dev server verified, file-opening IPC/file picker primitives added, UI routes can call backend APIs, and Settings can read model/runtime status. Needs Electron window verification and packaging. |
 | Local backend foundation | In progress | `[#######---] 70%` | SQLite config/storage foundation, CRUD route groups, ingestion endpoints, and first-pass clustering service are working. Needs app-level services and tests. |
 | Vault ingestion | In progress | `[#########-] 90%` | Source metadata/text records can be created and viewed from the Sources UI. TXT/Markdown/DOCX/PDF, pasted text, static link ingestion, desktop drag/drop import, local synced-folder import, per-file batch import failure reporting, link title/image metadata, generated summaries/tags, and in-app capture dialogs work. Needs screenshots/OCR extraction and dynamic-page parsing. |
 | Embeddings and clustering | In progress | `[#####-----] 50%` | First-pass keyword auto-clustering, local chunking, deterministic local embeddings, SQLite vector storage, semantic search API, semantic Mind search, and reviewable cluster move suggestions are working. Need stronger embedding model and richer split/merge suggestions. |
-| Chat and context routing | In progress | `[#####-----] 50%` | Retrieval-grounded chat context, persisted backend chat sessions/messages, backend chat sidebar loading, local model runtime adapter, fallback drafts, cluster usage, warnings, and citations are working. Needs streaming and manual routing polish. |
+| Chat and context routing | In progress | `[#######---] 70%` | Retrieval-grounded chat context, persisted backend chat sessions/messages, backend chat sidebar loading, local model runtime adapter, model setup UI, llama.cpp runtime helper scripts, fallback drafts, cluster usage, warnings, and citations are working. Needs streaming and manual routing polish. |
 | Compulsory cluster experts | Not started | `[----------] 0%` | Need expert lifecycle, training queue, local fine-tuning spike. |
 | Context Bridge | In progress | `[####------] 40%` | Bridge UI route now reads backend status and request history. Needs MCP server, CLI, permissions, and semantic retrieval. |
-| Packaging and installer | Not started | `[----------] 0%` | Need local downloadable build for Windows first, then macOS/Linux. |
+| Packaging and installer | In progress | `[#---------] 10%` | Windows llama.cpp runtime download/start scripts exist for local testing. Need app packaging, bundled service process management, and installer flow. |
 | QA and hardening | In progress | `[##--------] 20%` | Security pass completed across backend, Electron shell, frontend dynamic CSS, and dependency audit. Needs Python CVE audit, broader tests, reliability checks, failure states, and performance review. |
 
 ## Week-By-Week Goals
@@ -520,6 +540,47 @@ Exit criteria:
 - Verified security smoke checks for SSRF blocking, model filename traversal blocking, and allowlisted update routes.
 - Verified `docs/` is not ignored by root `.gitignore` or local Git exclude rules.
 - Verified all current docs are already tracked by Git and pushed the current `main` branch to GitHub.
+- Added a dedicated Local LLM Model Decisions section with the selected model ladder, backend IDs, Hugging Face repos, quantization, estimated download sizes, RAM targets, and runtime boundary.
+- Updated the Phi and Gemma model registry entries to public repos that expose matching `Q4_K_M` GGUF files.
+- Added `CML_MODELS_DIR` so model storage can be configured separately from the app database/data folder.
+- Pointed the local machine `.env` at `T:\LLM` for model testing downloads.
+- Added frontend backend helpers for local model listing, runtime status, and starting model downloads.
+- Added a Settings local models section showing model role, quantization, repo, size/RAM target, installed path, runtime status, and download progress.
+- Downloaded all selected local synthesis GGUF models into `T:\LLM`:
+  - `qwen3-4b-q4_k_m`: `T:\LLM\qwen3-4b-q4_k_m\Qwen3-4B-Q4_K_M.gguf`
+  - `phi-4-mini-instruct-q4_k_m`: `T:\LLM\phi-4-mini-instruct-q4_k_m\Phi-4-mini-instruct-Q4_K_M.gguf`
+  - `qwen3-8b-q4_k_m`: `T:\LLM\qwen3-8b-q4_k_m\Qwen3-8B-Q4_K_M.gguf`
+  - `gemma-3-4b-it-q4_k_m`: `T:\LLM\gemma-3-4b-it-q4_k_m\gemma-3-4b-it-q4_k_m.gguf`
+  - `gemma-3-12b-it-q4_k_m`: `T:\LLM\gemma-3-12b-it-q4_k_m\gemma-3-12b-it-q4_k_m.gguf`
+- Verified the backend model registry sees all five models as installed from `T:\LLM`.
+- Verified backend syntax with `.venv\Scripts\python.exe -m compileall backend\app` after configurable model storage and registry updates.
+- Verified production build with `npm run build` after the model setup UI.
+- Downloaded llama.cpp Windows CPU x64 runtime `b9374` into `T:\LLM\runtimes\llama.cpp\b9374`.
+- Verified `llama-server.exe` and `llama-cli.exe` are available from the downloaded llama.cpp runtime.
+- Added `scripts/llm/download-llama-cpp.ps1` for reproducible llama.cpp runtime download/extraction.
+- Added `scripts/llm/start-llama-server.ps1` to launch any downloaded GGUF model through a local OpenAI-compatible `/v1` endpoint.
+- Added `scripts/llm/test-local-model.ps1` to test the running local model endpoint.
+- Added `scripts/llm/benchmark-local-models.ps1` to benchmark the selected local model ladder through llama.cpp.
+- Updated `.env.example`, local `.env`, and [ReadME.md](../ReadME.md) to use the helper default endpoint `http://127.0.0.1:8084/v1` and model alias `cml-local`.
+- Smoke-tested Qwen3 4B through `llama-server` with the OpenAI-compatible endpoint; generation was about 15.9 tokens/sec on CPU for the short test prompt.
+- Stopped the hidden llama.cpp test server after verification so no background model process remained on port `8084`.
+- Ran the short benchmark harness across all five downloaded GGUF models on CPU with 8 threads and 4096 context:
+  - Qwen3 4B Q4_K_M: ~44.2 prompt tokens/sec, ~15.1 generated tokens/sec.
+  - Phi-4 Mini Instruct Q4_K_M: ~49.5 prompt tokens/sec, ~16.1 generated tokens/sec.
+  - Qwen3 8B Q4_K_M: ~25.0 prompt tokens/sec, ~8.2 generated tokens/sec.
+  - Gemma 3 4B IT Q4_K_M: ~47.9 prompt tokens/sec, ~9.0 generated tokens/sec.
+  - Gemma 3 12B IT Q4_K_M: ~14.3 prompt tokens/sec, ~4.4 generated tokens/sec.
+- Verified no benchmark server process remained listening on port `8094`.
+- Confirmed the machine has an NVIDIA GeForce RTX 3060 Laptop GPU visible through `nvidia-smi`.
+- Downloaded llama.cpp Windows CUDA 12.4 runtime and matching CUDA DLL bundle into `T:\LLM\runtimes\llama.cpp\b9374-cuda-12.4`.
+- Updated llama.cpp helper scripts to support CPU/CUDA runtime selection and configurable GPU layer offload.
+- Smoke-tested Qwen3 4B through CUDA `llama-server`; generation improved to about 35.0 tokens/sec on the short prompt.
+- Ran the short CUDA benchmark harness across all five downloaded GGUF models on the RTX 3060 Laptop GPU:
+  - Qwen3 4B Q4_K_M: ~173.8 prompt tokens/sec, ~34.7 generated tokens/sec.
+  - Phi-4 Mini Instruct Q4_K_M: ~346.1 prompt tokens/sec, ~33.3 generated tokens/sec.
+  - Qwen3 8B Q4_K_M: ~199.8 prompt tokens/sec, ~18.1 generated tokens/sec.
+  - Gemma 3 4B IT Q4_K_M: ~271.7 prompt tokens/sec, ~36.8 generated tokens/sec.
+  - Gemma 3 12B IT Q4_K_M: ~16.9 prompt tokens/sec, ~2.8 generated tokens/sec.
 
 ## Current Open Work
 
@@ -539,7 +600,8 @@ Exit criteria:
 - Finish vault ingestion edge cases: screenshots/OCR, dynamic links, and watched folder refresh.
 - Add clustering and retrieval.
 - Expand embedding-based suggestions to include split/merge workflows and batch review.
-- Add UI controls for model download/runtime setup, streaming responses, and manual cluster override polish against backend state.
+- Do a qualitative answer comparison across the downloaded GGUF models using representative CML prompts and local context.
+- Add streaming responses and manual cluster override polish against backend state.
 - Add cluster expert training lifecycle.
 - Add Python dependency CVE auditing to the toolchain, such as `pip-audit`, and run it in QA.
 - Add local backend access hardening before exposing it beyond trusted loopback desktop use.
@@ -564,6 +626,10 @@ Exit criteria:
 - Expected model download sizes: Phi-4-mini-instruct Q4_K_M about 2.5 GB, Qwen3-4B Q4_K_M about 2.3-2.5 GB, Qwen3-8B Q4_K_M about 4.8 GB download / about 5.3 GB loaded weights, Gemma 3 4B Q4_K_M about 2.3-2.5 GB, and Gemma 3 12B Q4_K_M about 6.8-6.9 GB.
 - Local model downloads are explicit. The backend exposes a download endpoint, but the app should not automatically pull multi-GB weights without a clear user action.
 - Local synthesis currently expects an OpenAI-compatible endpoint. For llama.cpp this means running `llama-server` with the selected GGUF; for Ollama this means using its compatible local API surface when available.
+- Current llama.cpp runtime test uses `llama-server --api-prefix /v1` because the latest downloaded server exposes `/chat/completions` by default unless a prefix is provided.
+- Port `8080` is already used locally by another dev server, so the CML llama.cpp helper defaults to `8084`.
+- Early CPU speed result: Phi-4 Mini and Qwen3 4B are the fastest usable V1 candidates on this machine; Qwen3 8B is slower but plausible for quality mode; Gemma 12B is likely too slow for default local chat without GPU/offload.
+- Early CUDA speed result on the RTX 3060 Laptop GPU: Gemma 3 4B, Qwen3 4B, and Phi-4 Mini are all fast enough for interactive local chat; Qwen3 8B is usable as quality mode; Gemma 12B performs poorly with full offload on this 6 GB GPU and should not be a default.
 - The local backend still assumes trusted loopback desktop use. Before any wider network exposure, add an app token, stricter origin checks, and per-vault permission boundaries.
 - Python dependency CVE auditing was not completed because `pip-audit` is not installed in the current environment.
 

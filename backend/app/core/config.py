@@ -9,6 +9,7 @@ ROOT_DIR = Path(__file__).resolve().parents[3]
 class Settings(BaseSettings):
     data_dir: Path = Path("data")
     database_path: Path = Path("data/cml.sqlite3")
+    models_dir: Path | None = None
     api_prefix: str = "/api/v1"
     llm_provider: str = "none"
     llm_base_url: str = "http://127.0.0.1:8080/v1"
