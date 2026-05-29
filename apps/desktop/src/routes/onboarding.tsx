@@ -1,175 +1,318 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { Check, FileText, FolderOpen, Link2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
-import { useStore, ClusterTint } from "@/lib/mockStore";
-import { FolderOpen, Upload, Link2, FileText, Check } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  createSourceFromPath,
+  createSourceFromText,
+  createSourceFromUrl,
+  createVault,
+  type VaultRecord,
+} from "@/lib/backend";
+import { useStore } from "@/lib/mockStore";
+
+type Step = 0 | 1 | 2 | 3;
 
 export const Route = createFileRoute("/onboarding")({
-  head: () => ({ meta: [{ title: "Welcome — Context Workspace" }] }),
+  head: () => ({ meta: [{ title: "Set up CML" }] }),
   component: Onboarding,
 });
 
 function Onboarding() {
-  const [step, setStep] = useState(0);
-  const [vault, setVault] = useState("~/Documents/Context");
-  const [pasted, setPasted] = useState("");
-  const [link, setLink] = useState("");
   const navigate = useNavigate();
   const store = useStore();
+  const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
 
-  const next = () => setStep((s) => s + 1);
+  const [step, setStep] = useState<Step>(0);
+  const [userName, setUserName] = useState("");
+  const [vaultName, setVaultName] = useState("Local memory");
+  const [vaultPath, setVaultPath] = useState("");
+  const [vault, setVault] = useState<VaultRecord | null>(null);
+  const [link, setLink] = useState("");
+  const [textTitle, setTextTitle] = useState("First note");
+  const [pastedText, setPastedText] = useState("");
+  const [isImporting, setIsImporting] = useState(false);
+  const [importMessage, setImportMessage] = useState("No content imported yet.");
+  const [importedCount, setImportedCount] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
-  const finish = () => {
-    store.setVault(vault);
+  const canContinue = useMemo(() => {
+    if (step === 0) return userName.trim().length > 0;
+    if (step === 1) return vaultName.trim().length > 0;
+    if (step === 2) return vaultPath.trim().length > 0;
+    return true;
+  }, [step, userName, vaultName, vaultPath]);
+
+  async function chooseVaultFolder() {
+    const selected = await desktop?.selectVaultFolder?.();
+    if (selected) setVaultPath(selected);
+  }
+
+  async function ensureVault() {
+    if (vault) return vault;
+    const path = vaultPath.trim();
+    const name = vaultName.trim();
+    if (!path || !name) throw new Error("Choose a vault name and location first.");
+
+    const created = await createVault({ name, path });
+    setVault(created);
+    store.setVault(created.path);
+    return created;
+  }
+
+  async function continueFromVaultLocation() {
+    setError(null);
+    try {
+      await ensureVault();
+      setStep(3);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create the vault.");
+    }
+  }
+
+  async function importFiles(paths: string[]) {
+    const currentVault = await ensureVault();
+    setIsImporting(true);
+    setError(null);
+    let imported = 0;
+    let failed = 0;
+    let firstFailure = "";
+
+    for (const path of paths) {
+      try {
+        await createSourceFromPath({ vault_id: currentVault.id, path });
+        imported += 1;
+      } catch (err) {
+        failed += 1;
+        if (!firstFailure) firstFailure = err instanceof Error ? err.message : path;
+      }
+    }
+
+    setImportedCount((count) => count + imported);
+    setImportMessage(
+      failed
+        ? `Imported ${imported}. ${failed} failed. First issue: ${firstFailure}`
+        : imported
+          ? `Imported ${imported} item${imported === 1 ? "" : "s"}.`
+          : "No supported files were found.",
+    );
+    setIsImporting(false);
+  }
+
+  async function addFiles() {
+    const paths = await desktop?.selectSourceFiles?.();
+    if (!paths?.length) return;
+    await importFiles(paths);
+  }
+
+  async function addFolder() {
+    const folders = await desktop?.selectSourceFolders?.();
+    if (!folders?.length) return;
+    const paths = desktop?.listSupportedFiles ? await desktop.listSupportedFiles(folders) : folders;
+    await importFiles(paths);
+  }
+
+  async function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const droppedPaths = desktop?.getDroppedFilePaths?.(event.dataTransfer.files) ?? [];
+    if (!droppedPaths.length) {
+      setImportMessage("Drop import is available in the desktop app.");
+      return;
+    }
+    const paths = desktop?.listSupportedFiles ? await desktop.listSupportedFiles(droppedPaths) : droppedPaths;
+    await importFiles(paths);
+  }
+
+  async function addLink() {
+    if (!link.trim()) return;
+    setIsImporting(true);
+    setError(null);
+    try {
+      const currentVault = await ensureVault();
+      await createSourceFromUrl({ vault_id: currentVault.id, url: link.trim() });
+      setImportedCount((count) => count + 1);
+      setImportMessage("Imported 1 link.");
+      setLink("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not import the link.");
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
+  async function addText() {
+    if (!pastedText.trim()) return;
+    setIsImporting(true);
+    setError(null);
+    try {
+      const currentVault = await ensureVault();
+      await createSourceFromText({
+        vault_id: currentVault.id,
+        title: textTitle.trim() || "First note",
+        text: pastedText.trim(),
+      });
+      setImportedCount((count) => count + 1);
+      setImportMessage("Imported 1 note.");
+      setPastedText("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not import the note.");
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
+  function finish() {
     store.completeSetup();
     if (typeof window !== "undefined") {
       window.localStorage.setItem("ctx.onboarded", "1");
+      window.localStorage.setItem("ctx.userName", userName.trim());
+      window.localStorage.setItem("ctx.vaultName", vaultName.trim());
     }
-    navigate({ to: "/chat" });
-  };
+    navigate({ to: "/search" });
+  }
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="mx-auto max-w-xl px-6 py-16">
-        <div className="mb-10 flex items-center gap-2 text-xs text-muted-foreground">
-          {["Vault", "Add content", "Indexing", "Clusters"].map((label, i) => (
-            <div key={label} className="flex items-center gap-2">
-              <span
-                className={
-                  "flex h-5 w-5 items-center justify-center rounded-full border " +
-                  (i <= step ? "border-primary text-primary" : "border-border")
-                }
-              >
-                {i < step ? <Check className="h-3 w-3" /> : i + 1}
-              </span>
-              <span className={i === step ? "text-foreground" : ""}>{label}</span>
-              {i < 3 && <span className="mx-1 h-px w-6 bg-border" />}
-            </div>
-          ))}
-        </div>
+      <div className="mx-auto max-w-3xl px-6 py-12">
+        <SetupSteps step={step} />
 
         {step === 0 && (
-          <Section
-            title="Choose a place for your local memory."
-            sub="Your vault stays on this device. You can move it later."
-          >
-            <div className="rounded-md border border-border bg-card p-4">
-              <label className="text-xs uppercase tracking-wider text-muted-foreground">
-                Vault location
-              </label>
-              <div className="mt-2 flex gap-2">
-                <Input value={vault} onChange={(e) => setVault(e.target.value)} />
-                <Button variant="outline" type="button">
-                  <FolderOpen className="mr-1.5 h-4 w-4" /> Browse
-                </Button>
-              </div>
-            </div>
-            <div className="mt-6 flex justify-end">
-              <Button onClick={next}>Continue</Button>
-            </div>
-          </Section>
+          <SetupSection title="What should CML call you?" sub="This is only used inside your local workspace.">
+            <Field label="Your name">
+              <Input value={userName} onChange={(event) => setUserName(event.target.value)} autoFocus />
+            </Field>
+            <Actions>
+              <Button onClick={() => setStep(1)} disabled={!canContinue}>Continue</Button>
+            </Actions>
+          </SetupSection>
         )}
 
         {step === 1 && (
-          <Section
-            title="Drop files, links, screenshots, or notes to begin."
-            sub="Anything you add here becomes part of your context."
-          >
-            <div className="grid gap-3">
-              <div className="flex items-center justify-center rounded-md border border-dashed border-border bg-card p-10 text-sm text-muted-foreground">
-                <Upload className="mr-2 h-4 w-4" /> Drop files or a folder here
-              </div>
-              <div className="rounded-md border border-border bg-card p-3">
-                <label className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
-                  <Link2 className="h-3.5 w-3.5" /> Add a link
-                </label>
-                <Input
-                  className="mt-2"
-                  placeholder="https://…"
-                  value={link}
-                  onChange={(e) => setLink(e.target.value)}
-                />
-              </div>
-              <div className="rounded-md border border-border bg-card p-3">
-                <label className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
-                  <FileText className="h-3.5 w-3.5" /> Paste text
-                </label>
-                <Textarea
-                  className="mt-2"
-                  rows={4}
-                  placeholder="A note, a quote, anything…"
-                  value={pasted}
-                  onChange={(e) => setPasted(e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="mt-6 flex justify-between">
-              <Button variant="ghost" onClick={next}>
-                Skip — use sample vault
-              </Button>
-              <Button
-                onClick={() => {
-                  if (link) store.addSource({ title: link, type: "link" });
-                  if (pasted)
-                    store.addSource({ title: pasted.slice(0, 40), type: "note", preview: pasted });
-                  store.startIndexing();
-                  next();
-                }}
-              >
-                Continue
-              </Button>
-            </div>
-          </Section>
+          <SetupSection title="Name your vault." sub="A vault is the local memory space where your sources, clusters, and chats live.">
+            <Field label="Vault name">
+              <Input value={vaultName} onChange={(event) => setVaultName(event.target.value)} autoFocus />
+            </Field>
+            <Actions>
+              <Button variant="outline" onClick={() => setStep(0)}>Back</Button>
+              <Button onClick={() => setStep(2)} disabled={!canContinue}>Continue</Button>
+            </Actions>
+          </SetupSection>
         )}
 
-        {step === 2 && <IndexingStep onDone={next} />}
+        {step === 2 && (
+          <SetupSection title="Choose where the vault is stored." sub="CML keeps the vault on this device. You can use a normal folder or a synced folder.">
+            <Field label="Vault location">
+              <div className="flex gap-2">
+                <Input
+                  value={vaultPath}
+                  onChange={(event) => setVaultPath(event.target.value)}
+                  placeholder="C:\Users\You\Documents\CML Vault"
+                />
+                <Button variant="outline" onClick={chooseVaultFolder} disabled={!desktop?.selectVaultFolder}>
+                  <FolderOpen className="mr-1.5 h-4 w-4" />
+                  Browse
+                </Button>
+              </div>
+            </Field>
+            {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+            <Actions>
+              <Button variant="outline" onClick={() => setStep(1)}>Back</Button>
+              <Button onClick={() => void continueFromVaultLocation()} disabled={!canContinue}>Create vault</Button>
+            </Actions>
+          </SetupSection>
+        )}
 
         {step === 3 && (
-          <Section
-            title="We suggested a few clusters."
-            sub="Rename, merge, or accept — you can always change these later."
+          <SetupSection
+            title="Add your first context."
+            sub="Drop files, choose a folder, add a link, or paste text. CML can start searching immediately while local experts learn later."
           >
-            <div className="space-y-2">
-              {store.clusters.map((c) => (
-                <div
-                  key={c.id}
-                  className="flex items-center gap-3 rounded-md border border-border bg-card p-3"
-                >
-                  <span
-                    className="h-2.5 w-2.5 rounded-full"
-                    style={{ background: `var(--cluster-${c.tint})` }}
-                  />
-                  <Input
-                    defaultValue={c.name}
-                    onBlur={(e) => store.renameCluster(c.id, e.target.value)}
-                    className="h-8 max-w-xs"
-                  />
-                  <span className="text-xs text-muted-foreground">{c.description}</span>
+            <div
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => void handleDrop(event)}
+              className="flex min-h-40 items-center justify-center rounded-md border border-dashed border-border bg-card p-6 text-center"
+            >
+              <div>
+                <Upload className="mx-auto h-5 w-5 text-muted-foreground" />
+                <div className="mt-3 text-sm font-medium">Drop files or folders here</div>
+                <div className="mt-1 text-sm text-muted-foreground">TXT, Markdown, DOCX, and PDF are supported now.</div>
+                <div className="mt-4 flex justify-center gap-2">
+                  <Button variant="outline" onClick={() => void addFiles()} disabled={!desktop?.selectSourceFiles || isImporting}>Add files</Button>
+                  <Button variant="outline" onClick={() => void addFolder()} disabled={!desktop?.selectSourceFolders || isImporting}>Add folder</Button>
                 </div>
-              ))}
+              </div>
             </div>
-            <div className="mt-6 flex justify-end gap-2">
-              <Button variant="outline" onClick={() => {
-                const tints: ClusterTint[] = ["sand", "lavender", "terracotta"];
-                const used = new Set(store.clusters.map((c) => c.tint));
-                const tint = tints.find((t) => !used.has(t)) ?? "sand";
-                store.addCluster({ name: "New cluster", tint, description: "" });
-              }}>
-                Add cluster
-              </Button>
-              <Button onClick={finish}>Open chat</Button>
+
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <div className="rounded-md border border-border bg-card p-4">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <Link2 className="h-4 w-4" />
+                  Add a link
+                </div>
+                <Input className="mt-3" value={link} onChange={(event) => setLink(event.target.value)} placeholder="https://..." />
+                <Button className="mt-3" variant="outline" onClick={() => void addLink()} disabled={!link.trim() || isImporting}>Import link</Button>
+              </div>
+
+              <div className="rounded-md border border-border bg-card p-4">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <FileText className="h-4 w-4" />
+                  Paste text
+                </div>
+                <Input className="mt-3" value={textTitle} onChange={(event) => setTextTitle(event.target.value)} placeholder="Note title" />
+                <Textarea className="mt-2" rows={4} value={pastedText} onChange={(event) => setPastedText(event.target.value)} placeholder="Paste a note, brief, chat transcript, or assignment..." />
+                <Button className="mt-3" variant="outline" onClick={() => void addText()} disabled={!pastedText.trim() || isImporting}>Import text</Button>
+              </div>
             </div>
-          </Section>
+
+            <div className="mt-5 rounded-md border border-border bg-card p-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-sm font-medium">Learning starts with indexing</div>
+                  <div className="mt-1 text-sm text-muted-foreground">{importMessage}</div>
+                </div>
+                <div className="text-sm text-muted-foreground">{importedCount} imported</div>
+              </div>
+              {isImporting && <Progress value={70} className="mt-3 h-1.5" />}
+              {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+            </div>
+
+            <Actions>
+              <Button variant="outline" onClick={finish}>Skip for now</Button>
+              <Button onClick={finish}>{importedCount > 0 ? "Open CML" : "Open empty vault"}</Button>
+            </Actions>
+          </SetupSection>
         )}
       </div>
     </div>
   );
 }
 
-function Section({
+function SetupSteps({ step }: { step: Step }) {
+  const labels = ["Name", "Vault", "Location", "Content"];
+  return (
+    <div className="mb-10 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+      {labels.map((label, index) => (
+        <div key={label} className="flex items-center gap-2">
+          <span
+            className={
+              "flex h-6 w-6 items-center justify-center rounded-full border text-xs " +
+              (index <= step ? "border-foreground text-foreground" : "border-border")
+            }
+          >
+            {index < step ? <Check className="h-3.5 w-3.5" /> : index + 1}
+          </span>
+          <span className={index === step ? "text-foreground" : ""}>{label}</span>
+          {index < labels.length - 1 && <span className="mx-1 h-px w-6 bg-border" />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SetupSection({
   title,
   sub,
   children,
@@ -179,37 +322,23 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <div>
-      <h1 className="font-serif text-3xl leading-tight">{title}</h1>
-      <p className="mt-2 text-sm text-muted-foreground">{sub}</p>
+    <section>
+      <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+      <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{sub}</p>
       <div className="mt-8">{children}</div>
-    </div>
+    </section>
   );
 }
 
-function IndexingStep({ onDone }: { onDone: () => void }) {
-  const { isIndexing, indexingProgress, sources } = useStore();
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <Section
-      title="Reading your content…"
-      sub="This happens locally. You can keep working — chat is available once anything is indexed."
-    >
-      <Progress value={indexingProgress * 100} className="h-1.5" />
-      <div className="mt-6 max-h-64 space-y-1 overflow-y-auto rounded-md border border-border bg-card p-2 text-sm">
-        {sources.slice(0, 8).map((s) => (
-          <div key={s.id} className="flex items-center justify-between px-2 py-1">
-            <span className="truncate">{s.title}</span>
-            <span className="text-xs text-muted-foreground">
-              {s.state === "indexed" ? "Indexed" : s.state === "extracting" ? "Extracting" : "Waiting"}
-            </span>
-          </div>
-        ))}
-      </div>
-      <div className="mt-6 flex justify-end">
-        <Button onClick={onDone} disabled={isIndexing && indexingProgress < 1}>
-          {isIndexing && indexingProgress < 1 ? "Indexing…" : "Continue"}
-        </Button>
-      </div>
-    </Section>
+    <label className="block rounded-md border border-border bg-card p-4">
+      <span className="text-sm font-medium">{label}</span>
+      <div className="mt-2">{children}</div>
+    </label>
   );
+}
+
+function Actions({ children }: { children: React.ReactNode }) {
+  return <div className="mt-6 flex justify-end gap-2">{children}</div>;
 }

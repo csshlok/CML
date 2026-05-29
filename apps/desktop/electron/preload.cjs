@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld("cmlDesktop", {
   openPath: (targetPath) => ipcRenderer.invoke("cml:open-path", targetPath),
   selectSourceFiles: () => ipcRenderer.invoke("cml:select-source-files"),
   selectSourceFolders: () => ipcRenderer.invoke("cml:select-source-folders"),
+  selectVaultFolder: () => ipcRenderer.invoke("cml:select-vault-folder"),
   selectCoverImage: () => ipcRenderer.invoke("cml:select-cover-image"),
   listSupportedFiles: (targetPaths) => ipcRenderer.invoke("cml:list-supported-files", targetPaths),
   getDroppedFilePaths: (files) =>

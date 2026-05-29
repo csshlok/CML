@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-05-28
+Last updated: 2026-05-29
 
 ## Project Goal
 
@@ -66,10 +66,10 @@ Progress bar legend:
 | Phase | Status | Progress | Notes |
 | --- | --- | --- | --- |
 | Product definition | In progress | `[########--] 80%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, runtime boundary, and model storage decision are documented. Needs packaging/runtime launch UX details. |
-| UI prototype cleanup | In progress | `[########--] 80%` | V0 reviewed. Cross-platform shortcuts fixed. CML Mind workspace, clickable source cards, and cleaned-up blob map are in place. Needs broader chat/settings/onboarding polish. |
+| UI prototype cleanup | In progress | `[#########-] 90%` | V0 reviewed. Cross-platform shortcuts fixed. CML Mind workspace, clickable source cards, setup flow, and cleaned-up blob map are in place. Needs broader chat/settings polish. |
 | Desktop app foundation | In progress | `[########--] 80%` | Electron workspace created, frontend build passes, Vite dev server verified, file-opening IPC/file picker primitives added, UI routes can call backend APIs, and Settings can read model/runtime status. Needs Electron window verification and packaging. |
 | Local backend foundation | In progress | `[#######---] 70%` | SQLite config/storage foundation, CRUD route groups, ingestion endpoints, and first-pass clustering service are working. Needs app-level services and tests. |
-| Vault ingestion | In progress | `[#########-] 90%` | Source metadata/text records can be created and viewed from the Sources UI. TXT/Markdown/DOCX/PDF, pasted text, static link ingestion, desktop drag/drop import, local synced-folder import, per-file batch import failure reporting, link title/image metadata, generated summaries/tags, and in-app capture dialogs work. Needs screenshots/OCR extraction and dynamic-page parsing. |
+| Vault ingestion | In progress | `[#########-] 90%` | Source metadata/text records can be created and viewed from the Sources UI. TXT/Markdown/DOCX/PDF, pasted text, static link ingestion, setup import, desktop drag/drop import, local synced-folder import, per-file batch import failure reporting, link title/image metadata, generated summaries/tags, and in-app capture dialogs work. Needs screenshots/OCR extraction and dynamic-page parsing. |
 | Embeddings and clustering | In progress | `[#####-----] 50%` | First-pass keyword auto-clustering, local chunking, deterministic local embeddings, SQLite vector storage, semantic search API, semantic Mind search, and reviewable cluster move suggestions are working. Need stronger embedding model and richer split/merge suggestions. |
 | Chat and context routing | In progress | `[#######---] 70%` | Retrieval-grounded chat context, persisted backend chat sessions/messages, backend chat sidebar loading, local model runtime adapter, model setup UI, llama.cpp runtime helper scripts, fallback drafts, cluster usage, warnings, and citations are working. Needs streaming and manual routing polish. |
 | Compulsory cluster experts | Not started | `[----------] 0%` | Need expert lifecycle, training queue, local fine-tuning spike. |
@@ -581,6 +581,23 @@ Exit criteria:
   - Qwen3 8B Q4_K_M: ~199.8 prompt tokens/sec, ~18.1 generated tokens/sec.
   - Gemma 3 4B IT Q4_K_M: ~271.7 prompt tokens/sec, ~36.8 generated tokens/sec.
   - Gemma 3 12B IT Q4_K_M: ~16.9 prompt tokens/sec, ~2.8 generated tokens/sec.
+- Regrouped the development plan against the current implementation state before choosing the next build step.
+- Replaced the mock onboarding flow with a real setup sequence:
+  - ask for the user's name
+  - ask for vault name
+  - ask for vault storage location
+  - create the backend vault
+  - let the user drop files/folders, choose files/folders, add a link, or paste text to seed the vault
+- Added Electron IPC/preload support for choosing a dedicated vault folder.
+- Wired setup content import to real backend ingestion routes for files, folders, links, and pasted text.
+- Changed onboarding completion to open the Mind/search workspace instead of Chat.
+- Stored setup user/vault display values in local storage for now.
+- Verified production build with `npm run build` after the setup flow replacement.
+- Verified Electron main/preload syntax with `node --check` after adding vault-folder picker IPC.
+- Installed the external `vipulgupta2048/codex-skills` repo under `C:\Users\csshl\.agents\skills\codex-skills`.
+- Confirmed the cloned skills repo currently exposes a `frontend-design` skill at `C:\Users\csshl\.agents\skills\codex-skills\skills\frontend-design\SKILL.md`.
+- Used the `frontend-design` skill to run a deep UI/interaction audit across the desktop app shell, Mind/search, Sources, Clusters, Map, Chat, Bridge, Settings, onboarding, shared components, and global styling.
+- Identified the main UI cleanup themes: remove remaining mojibake text, unify page headers/toolbars, replace disabled/inert controls with working or clearly staged states, connect mock-backed commands/details to backend data, improve map accessibility and interaction clarity, and reduce inconsistent typography.
 
 ## Current Open Work
 
@@ -594,6 +611,7 @@ Exit criteria:
 - Add task/list item ingestion as a first-class source type.
 - Connect frontend cluster/chat screens more deeply to backend APIs.
 - Continue UI polish for chat, sources, settings, and onboarding.
+- Apply the UI audit recommendations: shared page header/toolbar patterns, consistent user-facing status labels, backend-aware command palette actions, map selection/accessibility fixes, and cleanup of disabled placeholder controls.
 - Continue replacing remaining V0 visual language in chat, settings, onboarding, and footer copy.
 - Replace remaining copied/inspired-too-literally UI surfaces with CML-specific workflows.
 - Add real local backend.
@@ -603,6 +621,7 @@ Exit criteria:
 - Do a qualitative answer comparison across the downloaded GGUF models using representative CML prompts and local context.
 - Add streaming responses and manual cluster override polish against backend state.
 - Add cluster expert training lifecycle.
+- Add a real backend profile/settings record for setup fields like user name and default vault instead of keeping them only in local storage.
 - Add Python dependency CVE auditing to the toolchain, such as `pip-audit`, and run it in QA.
 - Add local backend access hardening before exposing it beyond trusted loopback desktop use.
 
@@ -630,8 +649,10 @@ Exit criteria:
 - Port `8080` is already used locally by another dev server, so the CML llama.cpp helper defaults to `8084`.
 - Early CPU speed result: Phi-4 Mini and Qwen3 4B are the fastest usable V1 candidates on this machine; Qwen3 8B is slower but plausible for quality mode; Gemma 12B is likely too slow for default local chat without GPU/offload.
 - Early CUDA speed result on the RTX 3060 Laptop GPU: Gemma 3 4B, Qwen3 4B, and Phi-4 Mini are all fast enough for interactive local chat; Qwen3 8B is usable as quality mode; Gemma 12B performs poorly with full offload on this 6 GB GPU and should not be a default.
+- Setup now creates a real backend vault and can seed it with real sources. User profile details are still local UI metadata until a backend profile/settings table is added.
 - The local backend still assumes trusted loopback desktop use. Before any wider network exposure, add an app token, stricter origin checks, and per-vault permission boundaries.
 - Python dependency CVE auditing was not completed because `pip-audit` is not installed in the current environment.
+- UI audit risk: several visible actions still look production-ready but are not wired yet, especially Bridge controls, chat attachments/save/regenerate actions, cluster expert controls, and some command palette actions. These should either become functional or be presented as setup/preview states before user testing.
 
 ## Update Protocol
 

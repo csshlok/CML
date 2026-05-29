@@ -79,6 +79,15 @@ app.whenReady().then(() => {
     return result.filePaths;
   });
 
+  ipcMain.handle("cml:select-vault-folder", async () => {
+    const result = await dialog.showOpenDialog({
+      title: "Choose vault location",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (result.canceled) return null;
+    return result.filePaths[0] ?? null;
+  });
+
   ipcMain.handle("cml:list-supported-files", async (_event, targetPaths) => {
     if (!Array.isArray(targetPaths)) return [];
     const files = [];

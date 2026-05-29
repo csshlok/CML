@@ -7,6 +7,7 @@ declare global {
       openPath: (targetPath: string) => Promise<boolean>;
       selectSourceFiles: () => Promise<string[]>;
       selectSourceFolders: () => Promise<string[]>;
+      selectVaultFolder: () => Promise<string | null>;
       selectCoverImage: () => Promise<string | null>;
       listSupportedFiles: (targetPaths: string[]) => Promise<string[]>;
       getDroppedFilePaths: (files: File[] | FileList) => string[];
