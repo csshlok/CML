@@ -151,10 +151,12 @@ class BridgeStatus(BaseModel):
 
 
 class BridgeContextRequest(BaseModel):
+    vault_id: str | None = None
     query: str = Field(min_length=1)
     cluster_id: str | None = None
     mode: str = "context"
     client_name: str = "unknown"
+    limit: int = Field(default=5, ge=1, le=12)
 
 
 class BridgeContextResponse(BaseModel):
@@ -225,7 +227,14 @@ class ChatMessageRead(BaseModel):
     clusters_used: list[ChatClusterUse]
     citations: list[ChatCitation]
     warnings: list[str]
+    useful: bool | None = None
+    saved: bool = False
     created_at: str
+
+
+class ChatMessageUpdate(BaseModel):
+    useful: bool | None = None
+    saved: bool | None = None
 
 
 class ChatSessionRead(BaseModel):

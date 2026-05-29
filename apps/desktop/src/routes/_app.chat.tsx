@@ -3,12 +3,13 @@ import { useEffect, useState } from "react";
 import { useStore } from "@/lib/mockStore";
 import {
   createChatSession,
+  deleteChatSession,
   listChatSessions,
   listVaults,
   type ChatSessionRecord,
   type VaultRecord,
 } from "@/lib/backend";
-import { MessageSquare, Plus } from "lucide-react";
+import { MessageSquare, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export const Route = createFileRoute("/_app/chat")({
@@ -23,10 +24,24 @@ function ChatIndex() {
   const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
   const [backendReady, setBackendReady] = useState(false);
 
+  async function load() {
+    try {
+      const vaults = await listVaults();
+      const activeVault = vaults[0] ?? null;
+      setVault(activeVault);
+      if (!activeVault) return;
+      const sessions = await listChatSessions(activeVault.id);
+      setBackendChats(sessions);
+      setBackendReady(true);
+    } catch {
+      setBackendReady(false);
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
 
-    async function load() {
+    async function loadIfMounted() {
       try {
         const vaults = await listVaults();
         const activeVault = vaults[0] ?? null;
@@ -42,7 +57,7 @@ function ChatIndex() {
       }
     }
 
-    void load();
+    void loadIfMounted();
 
     return () => {
       cancelled = true;
@@ -50,17 +65,25 @@ function ChatIndex() {
   }, []);
 
   async function newChat() {
-    if (backendReady && vault) {
-      try {
-        const session = await createChatSession({ vault_id: vault.id });
+    try {
+      const activeVault = vault ?? (await listVaults())[0] ?? null;
+      if (activeVault) {
+        const session = await createChatSession({ vault_id: activeVault.id });
         navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
         return;
-      } catch {
-        // Fall back to local mock chat below.
       }
+    } catch {
+      // Fall back to local mock chat below.
     }
     const chat = createChat(null);
     navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
+  }
+
+  async function removeChat(id: string) {
+    if (backendReady) {
+      await deleteChatSession(id);
+      await load();
+    }
   }
 
   const visibleChats = backendReady ? backendChats : chats;
@@ -77,14 +100,26 @@ function ChatIndex() {
         </Button>
         <div className="space-y-0.5">
           {visibleChats.map((c) => (
-            <Link
-              key={c.id}
-              to="/chat/$chatId"
-              params={{ chatId: c.id }}
-              className="block truncate rounded-md px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              {c.title}
-            </Link>
+            <div key={c.id} className="group flex items-center gap-1 rounded-md hover:bg-accent">
+              <Link
+                to="/chat/$chatId"
+                params={{ chatId: c.id }}
+                className="min-w-0 flex-1 truncate px-2.5 py-1.5 text-sm text-muted-foreground group-hover:text-foreground"
+              >
+                {c.title}
+              </Link>
+              {backendReady && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="mr-1 h-7 w-7 opacity-0 group-hover:opacity-100"
+                  aria-label={`Delete ${c.title}`}
+                  onClick={() => void removeChat(c.id)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
           ))}
         </div>
       </div>

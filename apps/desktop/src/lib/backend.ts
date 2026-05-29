@@ -142,6 +142,8 @@ export type ChatMessageRecord = {
   clusters_used: ChatContextResponse["clusters_used"];
   citations: ChatContextResponse["citations"];
   warnings: string[];
+  useful: boolean | null;
+  saved: boolean;
   created_at: string;
 };
 
@@ -228,6 +230,20 @@ export async function createCluster(payload: {
 }) {
   return request<ClusterRecord>("/api/v1/clusters", {
     method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getCluster(id: string) {
+  return request<ClusterRecord>(`/api/v1/clusters/${encodeURIComponent(id)}`);
+}
+
+export async function updateCluster(
+  id: string,
+  payload: Partial<Pick<ClusterRecord, "name" | "description" | "color" | "expert_status">>,
+) {
+  return request<ClusterRecord>(`/api/v1/clusters/${encodeURIComponent(id)}`, {
+    method: "PATCH",
     body: JSON.stringify(payload),
   });
 }
@@ -365,6 +381,16 @@ export async function updateChatSession(
   payload: Partial<Pick<ChatSessionRecord, "title" | "scope_cluster_id" | "saved">>,
 ) {
   return request<ChatSessionRecord>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateChatMessage(
+  id: string,
+  payload: Partial<Pick<ChatMessageRecord, "useful" | "saved">>,
+) {
+  return request<ChatSessionRecord>(`/api/v1/chat/messages/${encodeURIComponent(id)}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
   });

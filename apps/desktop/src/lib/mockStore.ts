@@ -63,6 +63,7 @@ export interface ChatMessage {
   clustersUsed?: { clusterId: string; reason: string }[];
   citations?: CitationRef[];
   useful?: boolean | null;
+  saved?: boolean;
 }
 
 export interface Chat {

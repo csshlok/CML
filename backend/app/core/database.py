@@ -123,6 +123,8 @@ def init_db() -> None:
         )
         _add_column_if_missing(conn, "sources", "tags", "TEXT NOT NULL DEFAULT '[]'")
         _add_column_if_missing(conn, "sources", "cover_image_url", "TEXT")
+        _add_column_if_missing(conn, "chat_messages", "useful", "INTEGER")
+        _add_column_if_missing(conn, "chat_messages", "saved", "INTEGER NOT NULL DEFAULT 0")
 
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

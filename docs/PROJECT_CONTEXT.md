@@ -66,14 +66,14 @@ Progress bar legend:
 | Phase | Status | Progress | Notes |
 | --- | --- | --- | --- |
 | Product definition | In progress | `[########--] 80%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, runtime boundary, and model storage decision are documented. Needs packaging/runtime launch UX details. |
-| UI prototype cleanup | In progress | `[#########-] 92%` | V0 reviewed. Cross-platform shortcuts fixed. CML Mind workspace, clickable source cards, setup flow, cleaned-up blob map, UI audit cleanup, and misleading-control pass are in place. Needs final backend-backed detail views and visual QA. |
+| UI prototype cleanup | In progress | `[#########-] 96%` | V0 reviewed. Cross-platform shortcuts fixed. CML Mind workspace, clickable source cards, setup flow, cleaned-up blob map, UI audit cleanup, misleading-control pass, backend-backed cluster detail, and persisted chat actions are in place. Needs visual QA and Bridge permissions/setup UX. |
 | Desktop app foundation | In progress | `[########--] 80%` | Electron workspace created, frontend build passes, Vite dev server verified, file-opening IPC/file picker primitives added, UI routes can call backend APIs, and Settings can read model/runtime status. Needs Electron window verification and packaging. |
-| Local backend foundation | In progress | `[#######---] 70%` | SQLite config/storage foundation, CRUD route groups, ingestion endpoints, and first-pass clustering service are working. Needs app-level services and tests. |
+| Local backend foundation | In progress | `[#######---] 74%` | SQLite config/storage foundation, CRUD route groups, ingestion endpoints, chat transcript memory, and first-pass clustering service are working. Needs app-level services and tests. |
 | Vault ingestion | In progress | `[#########-] 90%` | Source metadata/text records can be created and viewed from the Sources UI. TXT/Markdown/DOCX/PDF, pasted text, static link ingestion, setup import, desktop drag/drop import, local synced-folder import, per-file batch import failure reporting, link title/image metadata, generated summaries/tags, and in-app capture dialogs work. Needs screenshots/OCR extraction and dynamic-page parsing. |
 | Embeddings and clustering | In progress | `[#####-----] 50%` | First-pass keyword auto-clustering, local chunking, deterministic local embeddings, SQLite vector storage, semantic search API, semantic Mind search, and reviewable cluster move suggestions are working. Need stronger embedding model and richer split/merge suggestions. |
-| Chat and context routing | In progress | `[#######---] 70%` | Retrieval-grounded chat context, persisted backend chat sessions/messages, backend chat sidebar loading, local model runtime adapter, model setup UI, llama.cpp runtime helper scripts, fallback drafts, cluster usage, warnings, and citations are working. Needs streaming and manual routing polish. |
+| Chat and context routing | In progress | `[########--] 80%` | Retrieval-grounded chat context, persisted backend chat sessions/messages, backend chat sidebar loading/deletion, answer feedback/save actions, transcript memory indexing, local model runtime adapter, model setup UI, llama.cpp runtime helper scripts, fallback drafts, cluster usage, warnings, and citations are working. Needs streaming and manual routing polish. |
 | Compulsory cluster experts | Not started | `[----------] 0%` | Need expert lifecycle, training queue, local fine-tuning spike. |
-| Context Bridge | In progress | `[####------] 40%` | Bridge UI route now reads backend status and request history. Needs MCP server, CLI, permissions, and semantic retrieval. |
+| Context Bridge | In progress | `[#####-----] 55%` | Bridge UI route reads backend status and request history. HTTP bridge context now uses local semantic retrieval and logs requests. Needs MCP server, CLI, permissions, and per-client setup. |
 | Packaging and installer | In progress | `[#---------] 10%` | Windows llama.cpp runtime download/start scripts exist for local testing. Need app packaging, bundled service process management, and installer flow. |
 | QA and hardening | In progress | `[##--------] 20%` | Security pass completed across backend, Electron shell, frontend dynamic CSS, and dependency audit. Needs Python CVE audit, broader tests, reliability checks, failure states, and performance review. |
 
@@ -612,6 +612,32 @@ Exit criteria:
   - verified the desktop production build with `npm run build`
 - Activated the local development stack after the UI audit pass: backend health is responding at `http://127.0.0.1:7342/health` and the desktop UI dev server is responding at `http://127.0.0.1:5173/`.
 - Fixed the local Electron launch issue for this session by starting Electron with `ELECTRON_RUN_AS_NODE` removed; the inherited environment had `ELECTRON_RUN_AS_NODE=1`, which made Electron behave like Node and crash before opening a window.
+- Wired the cluster detail route to real backend data:
+  - added frontend `getCluster` and `updateCluster` helpers
+  - cluster detail now loads backend cluster metadata, vault sources, and scoped chat sessions
+  - cluster rename persists through the backend when available
+  - "Chat with cluster" creates a backend chat session scoped to the selected cluster
+  - cluster source, chat, expert, and map tabs now render backend-backed data with mock fallback only if the backend lookup fails
+  - verified current cluster/source API compatibility against the running backend
+  - verified production build with `npm run build`
+- Completed the next chat-action pass:
+  - app-shell and Chat index `New chat` now create a backend chat session when a vault exists, so the user lands on a real chat composer instead of a dead created-chat state
+  - Chat index and Chat detail now expose backend chat deletion
+  - assistant answer `useful` and `saved` actions persist through `PATCH /api/v1/chat/messages/{message_id}`
+  - regenerate reuses the prior user prompt in the current chat view
+  - every persisted chat turn is converted into an indexed transcript source
+  - transcript memory is attached to each cluster used by the chat; unscoped chats fall back to a dedicated `Chats` cluster
+  - deleting a chat also deletes its generated transcript source records
+  - refreshed chat context after answers so newly indexed transcript memory appears in the UI-backed source/cluster state
+- Completed the first semantic Context Bridge backend pass:
+  - `POST /api/v1/bridge/context` now accepts an optional `vault_id` and `limit`
+  - bridge context retrieval uses local semantic search instead of arbitrary latest-source metadata
+  - bridge responses preserve ranked source order and selected matching clusters
+  - bridge requests continue to be logged for the Bridge UI request history
+- Verified backend syntax with `.venv\Scripts\python.exe -m compileall backend\app`.
+- Verified production desktop build with `npm run build`.
+- Smoke-tested chat transcript memory directly against the backend: created a chat, persisted a turn, saved/marked the assistant answer useful, confirmed one transcript source was created, deleted the chat, and confirmed transcript cleanup.
+- Smoke-tested semantic Bridge retrieval with a temporary indexed source; the Bridge returned the matching source through semantic search and the temporary source was removed after verification.
 
 ## Current Open Work
 
@@ -625,7 +651,7 @@ Exit criteria:
 - Add task/list item ingestion as a first-class source type.
 - Connect frontend cluster/chat screens more deeply to backend APIs.
 - Continue UI polish for chat, sources, settings, and onboarding.
-- Continue applying remaining UI audit recommendations: shared page header/toolbar patterns, backend-backed cluster detail actions, fully persisted chat answer actions, and Bridge permission/setup flows.
+- Continue applying remaining UI audit recommendations: shared page header/toolbar patterns, Bridge permission/setup flows, and real cluster source-picker/move controls from the detail view.
 - Continue replacing remaining V0 visual language in chat, settings, onboarding, and footer copy.
 - Replace remaining copied/inspired-too-literally UI surfaces with CML-specific workflows.
 - Add real local backend.
@@ -634,6 +660,7 @@ Exit criteria:
 - Expand embedding-based suggestions to include split/merge workflows and batch review.
 - Do a qualitative answer comparison across the downloaded GGUF models using representative CML prompts and local context.
 - Add streaming responses and manual cluster override polish against backend state.
+- Add explicit UI for chat transcript memory status and decide whether multi-cluster chat transcripts should also create a separate linked chat-memory cluster later.
 - Add cluster expert training lifecycle.
 - Add a real backend profile/settings record for setup fields like user name and default vault instead of keeping them only in local storage.
 - Add Python dependency CVE auditing to the toolchain, such as `pip-audit`, and run it in QA.
@@ -667,7 +694,9 @@ Exit criteria:
 - The local backend still assumes trusted loopback desktop use. Before any wider network exposure, add an app token, stricter origin checks, and per-vault permission boundaries.
 - Python dependency CVE auditing was not completed because `pip-audit` is not installed in the current environment.
 - Electron launch note: if the window does not open but Vite is reachable, check `ELECTRON_RUN_AS_NODE`. It must be unset for the Electron shell process.
-- UI audit risk reduced: Bridge controls, chat attachment/save/regenerate actions, cluster expert controls, cluster source-picker actions, and command palette new chat are no longer misleading production-looking dead controls. Remaining risk is backend completeness, especially cluster detail persistence, Bridge permissions, and persisted chat answer feedback/actions.
+- UI audit risk reduced: Bridge controls, chat attachment/save/regenerate actions, cluster expert controls, cluster source-picker actions, and command palette new chat are no longer misleading production-looking dead controls. Cluster detail now uses backend data. Chat answer feedback/save/delete/regenerate controls now have backend behavior. Remaining risk is backend completeness, especially Bridge permissions, MCP/CLI setup, and direct source move controls inside cluster detail.
+- Chat transcript memory currently indexes immediately after each persisted turn, which satisfies the "store and index after the user leaves" intent more aggressively. Later we can add a debounced/background job so long chats do not reindex on every turn.
+- Context Bridge HTTP retrieval is now semantic and local, but it still has no permission boundary. Before exposing it to external clients beyond trusted local testing, add app-token auth and per-vault/per-cluster permissions.
 
 ## Update Protocol
 

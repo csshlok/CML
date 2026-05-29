@@ -9,11 +9,13 @@ import {
 } from "@/lib/mockStore";
 import {
   buildChatContext,
+  deleteChatSession,
   getChatSession,
   listClusters,
   listSources,
   listVaults,
   reindexVaultSearch,
+  updateChatMessage,
   updateChatSession,
   type ChatMessageRecord,
   type ChatSessionRecord,
@@ -43,6 +45,7 @@ import {
   ThumbsDown,
   Paperclip,
   Quote,
+  Trash2,
 } from "lucide-react";
 
 export const Route = createFileRoute("/_app/chat/$chatId")({
@@ -186,16 +189,23 @@ function ChatView() {
     }
   };
 
-  const send = async () => {
-    if (!input.trim()) return;
-    const userMsg = { id: newId(), role: "user" as const, content: input.trim() };
+  const deleteCurrentChat = async () => {
+    if (backendSession) {
+      await deleteChatSession(backendSession.id);
+    }
+    navigate({ to: "/chat" });
+  };
+
+  const send = async (promptOverride?: string) => {
+    const prompt = (promptOverride ?? input).trim();
+    if (!prompt) return;
+    const userMsg = { id: newId(), role: "user" as const, content: prompt };
     if (backendSession) {
       setBackendMessages((current) => [...current, userMsg]);
     } else if (chat) {
       appendMessage(chat.id, userMsg);
     }
-    const prompt = input.trim();
-    setInput("");
+    if (!promptOverride) setInput("");
     setStreaming(true);
     setStreamText("");
     if (backendReady && vault) {
@@ -231,6 +241,12 @@ function ChatView() {
               const refreshed = await getChatSession(response.session_id);
               setBackendSession(refreshed);
               setBackendMessages(refreshed.messages.map(messageFromRecord));
+              const [clusterRows, sourceRows] = await Promise.all([
+                listClusters(vault.id),
+                listSources(vault.id),
+              ]);
+              setBackendClusters(clusterRows.map(clusterFromRecord));
+              setBackendSources(sourceRows.map(sourceFromRecord));
             } catch {
               // Optimistic messages above remain usable until the next refresh.
             }
@@ -292,6 +308,32 @@ function ChatView() {
     setStreamText("");
   };
 
+  const setBackendMessageUseful = async (messageId: string, value: boolean) => {
+    if (backendSession) {
+      const updated = await updateChatMessage(messageId, { useful: value });
+      setBackendSession(updated);
+      setBackendMessages(updated.messages.map(messageFromRecord));
+      return;
+    }
+    if (chat) setMessageUseful(chat.id, messageId, value);
+  };
+
+  const toggleBackendMessageSaved = async (messageId: string, current: boolean) => {
+    if (!backendSession) return;
+    const updated = await updateChatMessage(messageId, { saved: !current });
+    setBackendSession(updated);
+    setBackendMessages(updated.messages.map(messageFromRecord));
+  };
+
+  const regenerateFromMessage = (messageId: string) => {
+    const index = messages.findIndex((message) => message.id === messageId);
+    const priorUser = messages
+      .slice(0, Math.max(0, index))
+      .reverse()
+      .find((message) => message.role === "user");
+    if (priorUser) void send(priorUser.content);
+  };
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-3 border-b border-border bg-card/40 px-6 py-3">
@@ -334,6 +376,10 @@ function ChatView() {
             <Bookmark className={"h-4 w-4 " + (saved ? "fill-current" : "")} />
             {saved ? "Saved" : "Save"}
           </Button>
+          <Button variant="ghost" size="sm" className="gap-1" onClick={() => void deleteCurrentChat()}>
+            <Trash2 className="h-4 w-4" />
+            Delete
+          </Button>
           <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
             {backendReady ? "Semantic context" : "Local fallback context"}
           </span>
@@ -362,8 +408,10 @@ function ChatView() {
                 clusters={activeClusters}
                 sources={activeSources}
                 onUseful={(v) => {
-                  if (chat) setMessageUseful(chat.id, m.id, v);
+                  void setBackendMessageUseful(m.id, v);
                 }}
+                onSaved={() => void toggleBackendMessageSaved(m.id, Boolean(m.saved))}
+                onRegenerate={() => regenerateFromMessage(m.id)}
               />
             ))}
             {streaming && (
@@ -400,16 +448,16 @@ function ChatView() {
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
-                send();
+                void send();
               }
             }}
           />
-          <Button onClick={send} disabled={streaming || !input.trim()}>
+          <Button onClick={() => void send()} disabled={streaming || !input.trim()}>
             <Send className="h-4 w-4" />
           </Button>
         </div>
         <p className="mx-auto mt-1.5 max-w-2xl text-[11px] text-muted-foreground">
-          Ctrl/Cmd Enter to send · all processing local
+          Ctrl/Cmd Enter to send / all processing local
         </p>
       </div>
     </div>
@@ -429,7 +477,8 @@ function messageFromRecord(record: ChatMessageRecord): import("@/lib/mockStore")
       sourceId: citation.source_id,
       snippet: citation.snippet,
     })),
-    useful: null,
+    useful: record.useful,
+    saved: record.saved,
   };
 }
 
@@ -438,11 +487,15 @@ function Message({
   clusters,
   sources,
   onUseful,
+  onSaved,
+  onRegenerate,
 }: {
   msg: import("@/lib/mockStore").ChatMessage;
   clusters: Cluster[];
   sources: import("@/lib/mockStore").Source[];
   onUseful: (v: boolean) => void;
+  onSaved: () => void;
+  onRegenerate: () => void;
 }) {
   if (msg.role === "user") {
     return (
@@ -463,7 +516,7 @@ function Message({
               <span key={u.clusterId} className="flex items-center gap-1.5">
                 <ClusterChip cluster={c} />
                 <span className="opacity-70">for {u.reason}</span>
-                {i < msg.clustersUsed!.length - 1 && <span>·</span>}
+                {i < msg.clustersUsed!.length - 1 && <span>/</span>}
               </span>
             );
           })}
@@ -491,9 +544,10 @@ function Message({
         </div>
       )}
       <div className="mt-3 flex items-center gap-1 border-t border-border pt-2 text-xs text-muted-foreground">
-        <span className="px-2 text-[11px] text-muted-foreground">
-          Save/regenerate arrives with persisted answer actions.
-        </span>
+        <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onSaved}>
+          <Bookmark className={"mr-1 h-3.5 w-3.5 " + (msg.saved ? "fill-current" : "")} />
+          {msg.saved ? "Saved" : "Save answer"}
+        </Button>
         <Button
           variant="ghost"
           size="sm"
@@ -509,6 +563,9 @@ function Message({
           onClick={() => onUseful(false)}
         >
           <ThumbsDown className="h-3.5 w-3.5" />
+        </Button>
+        <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onRegenerate}>
+          Regenerate
         </Button>
       </div>
     </div>

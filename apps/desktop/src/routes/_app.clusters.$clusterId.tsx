@@ -1,16 +1,21 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useStore, expertLabel, sourceStateLabel } from "@/lib/mockStore";
+import { useEffect, useState } from "react";
+import { MessageSquare } from "lucide-react";
+import { useStore, expertLabel, sourceStateLabel, type Cluster, type Source } from "@/lib/mockStore";
 import { ClusterDot, ExpertBadge } from "@/components/ClusterChip";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
-import { MessageSquare } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClusterMap } from "@/components/ClusterMap";
+import {
+  createChatSession,
+  getCluster,
+  listChatSessions,
+  listSources,
+  updateCluster,
+  type ChatSessionRecord,
+} from "@/lib/backend";
+import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 
 export const Route = createFileRoute("/_app/clusters/$clusterId")({
   head: () => ({ meta: [{ title: "Cluster" }] }),
@@ -21,16 +26,107 @@ function ClusterDetail() {
   const { clusterId } = Route.useParams();
   const navigate = useNavigate();
   const { clusters, sources, chats, renameCluster, createChat } = useStore();
-  const cluster = clusters.find((c) => c.id === clusterId);
+  const [backendCluster, setBackendCluster] = useState<Cluster | null>(null);
+  const [backendVaultId, setBackendVaultId] = useState<string | null>(null);
+  const [backendSources, setBackendSources] = useState<Source[]>([]);
+  const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
+  const [nameDraft, setNameDraft] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const mockCluster = clusters.find((cluster) => cluster.id === clusterId) ?? null;
+  const cluster = backendCluster ?? mockCluster;
+  const usingBackend = Boolean(backendCluster);
+
+  async function loadBackendCluster() {
+    setLoading(true);
+    setError(null);
+    try {
+      const clusterRow = await getCluster(clusterId);
+      const nextCluster = clusterFromRecord(clusterRow);
+      setBackendVaultId(clusterRow.vault_id);
+      const [sourceRows, chatRows] = await Promise.all([
+        listSources(clusterRow.vault_id),
+        listChatSessions(clusterRow.vault_id),
+      ]);
+      setBackendCluster(nextCluster);
+      setNameDraft(nextCluster.name);
+      setBackendSources(sourceRows.map(sourceFromRecord));
+      setBackendChats(chatRows.filter((chat) => chat.scope_cluster_id === clusterRow.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load this cluster from the backend.");
+      setBackendCluster(null);
+      setBackendVaultId(null);
+      if (mockCluster) setNameDraft(mockCluster.name);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadBackendCluster();
+  }, [clusterId]);
+
+  useEffect(() => {
+    if (!backendCluster && mockCluster) setNameDraft(mockCluster.name);
+  }, [backendCluster, mockCluster?.name]);
+
+  if (loading && !cluster) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        Loading cluster...
+      </div>
+    );
+  }
+
   if (!cluster) {
     return (
-      <div className="flex h-full items-center justify-center text-muted-foreground">
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
         Cluster not found.
       </div>
     );
   }
-  const clusterSources = sources.filter((s) => s.clusterId === cluster.id);
-  const clusterChats = chats.filter((c) => c.scopeClusterId === cluster.id);
+
+  const activeSources = usingBackend ? backendSources : sources;
+  const clusterSources = activeSources.filter((source) => source.clusterId === cluster.id);
+  const clusterChats = usingBackend
+    ? backendChats
+    : chats.filter((chat) => chat.scopeClusterId === cluster.id);
+
+  async function commitName() {
+    const nextName = nameDraft.trim();
+    if (!nextName || nextName === cluster.name) return;
+    if (usingBackend) {
+      try {
+        const updated = clusterFromRecord(await updateCluster(cluster.id, { name: nextName }));
+        setBackendCluster(updated);
+        setNameDraft(updated.name);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not rename this cluster.");
+        setNameDraft(cluster.name);
+      }
+      return;
+    }
+    renameCluster(cluster.id, nextName);
+  }
+
+  async function openClusterChat() {
+    if (usingBackend && backendCluster && backendVaultId) {
+      try {
+        const session = await createChatSession({
+          vault_id: backendVaultId,
+          title: `${backendCluster.name} chat`,
+          scope_cluster_id: backendCluster.id,
+        });
+        navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
+        return;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not create a cluster chat.");
+      }
+    }
+    const chat = createChat(cluster.id);
+    navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
+  }
 
   return (
     <div className="h-full overflow-y-auto">
@@ -38,24 +134,30 @@ function ClusterDetail() {
         <div className="flex items-center gap-3">
           <ClusterDot tint={cluster.tint} size={12} />
           <Input
-            defaultValue={cluster.name}
-            onBlur={(e) => renameCluster(cluster.id, e.target.value)}
+            value={nameDraft}
+            onChange={(event) => setNameDraft(event.target.value)}
+            onBlur={() => void commitName()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
+            aria-label="Cluster name"
             className="h-9 max-w-sm border-transparent bg-transparent px-1 text-2xl font-semibold tracking-tight shadow-none focus-visible:bg-card"
           />
           <div className="ml-auto flex items-center gap-2">
             <ExpertBadge status={cluster.expert} />
-            <Button
-              size="sm"
-              onClick={() => {
-                const c = createChat(cluster.id);
-                navigate({ to: "/chat/$chatId", params: { chatId: c.id } });
-              }}
-            >
+            <Button size="sm" onClick={() => void openClusterChat()}>
               <MessageSquare className="mr-1.5 h-4 w-4" /> Chat with cluster
             </Button>
           </div>
         </div>
-        <p className="mt-2 text-sm text-muted-foreground">{cluster.description}</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {cluster.description || "No description yet."}
+        </p>
+        {error && (
+          <div className="mt-4 rounded-md border border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+            {usingBackend ? error : `Using local fallback data: ${error}`}
+          </div>
+        )}
 
         <Tabs defaultValue="overview" className="mt-8">
           <TabsList>
@@ -67,12 +169,12 @@ function ClusterDetail() {
           </TabsList>
 
           <TabsContent value="overview" className="mt-6 space-y-4">
-            <Card title="Summary">{cluster.summary}</Card>
-            <Card title="Style profile">{cluster.styleProfile}</Card>
+            <Card title="Summary">{cluster.summary || "Summary pending."}</Card>
+            <Card title="Style profile">{cluster.styleProfile || "Style profile pending."}</Card>
             <Card title="Recent activity">
               <ul className="space-y-1.5 text-sm">
-                {clusterChats.slice(0, 4).map((c) => (
-                  <li key={c.id} className="text-muted-foreground">- {c.title}</li>
+                {clusterChats.slice(0, 4).map((chat) => (
+                  <li key={chat.id} className="text-muted-foreground">- {chat.title}</li>
                 ))}
                 {clusterChats.length === 0 && (
                   <li className="text-muted-foreground">No chats yet.</li>
@@ -83,14 +185,14 @@ function ClusterDetail() {
 
           <TabsContent value="sources" className="mt-6">
             <div className="rounded-md border border-border">
-              {clusterSources.map((s) => (
+              {clusterSources.map((source) => (
                 <div
-                  key={s.id}
-                  className="flex items-center justify-between border-b border-border px-4 py-2.5 text-sm last:border-b-0"
+                  key={source.id}
+                  className="flex items-center justify-between gap-4 border-b border-border px-4 py-2.5 text-sm last:border-b-0"
                 >
-                  <span className="truncate">{s.title}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {sourceStateLabel[s.state]}
+                  <span className="truncate">{source.title}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {sourceStateLabel[source.state]}
                   </span>
                 </div>
               ))}
@@ -106,13 +208,17 @@ function ClusterDetail() {
           </TabsContent>
 
           <TabsContent value="chats" className="mt-6 space-y-1">
-            {clusterChats.map((c) => (
-              <div
-                key={c.id}
-                className="rounded-md border border-border bg-card px-4 py-3 text-sm"
+            {clusterChats.map((chat) => (
+              <button
+                key={chat.id}
+                className="block w-full rounded-md border border-border bg-card px-4 py-3 text-left text-sm hover:bg-accent"
+                onClick={() =>
+                  navigate({ to: "/chat/$chatId", params: { chatId: chat.id } })
+                }
+                type="button"
               >
-                {c.title}
-              </div>
+                {chat.title}
+              </button>
             ))}
             {clusterChats.length === 0 && (
               <p className="text-sm text-muted-foreground">No chats yet for this cluster.</p>
@@ -128,16 +234,10 @@ function ClusterDetail() {
                 </span>
               </div>
               <p className="mt-3 text-sm text-muted-foreground">
-                {cluster.expert === "ready"
-                  ? "This local expert is ready to inform answers in your voice."
-                  : cluster.expert === "learning"
-                  ? "This cluster is usable now. Its local expert is still learning in the background."
-                  : "This local expert is being set up."}
+                {expertStatusCopy(cluster)}
               </p>
-              <div className="mt-4 flex gap-2">
-                <div className="rounded-md border border-dashed border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
-                  Training controls appear after the local expert queue is implemented.
-                </div>
+              <div className="mt-4 rounded-md border border-dashed border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+                Training controls appear after the local expert queue is implemented.
               </div>
             </Card>
             <details className="rounded-md border border-border bg-card px-4 py-3 text-sm">
@@ -148,18 +248,22 @@ function ClusterDetail() {
                 <dt className="text-muted-foreground">Training data</dt>
                 <dd>{clusterSources.length} sources</dd>
                 <dt className="text-muted-foreground">Last trained</dt>
-                <dd>3 hours ago</dd>
+                <dd>Pending</dd>
                 <dt className="text-muted-foreground">Version</dt>
-                <dd>v0.4</dd>
-                <dt className="text-muted-foreground">Model path</dt>
-                <dd className="truncate">~/vault/experts/{cluster.id}</dd>
+                <dd>Pending</dd>
+                <dt className="text-muted-foreground">Expert record</dt>
+                <dd className="truncate">{cluster.id}</dd>
               </dl>
             </details>
           </TabsContent>
 
           <TabsContent value="map" className="mt-6">
             <div className="h-[420px] rounded-md border border-border bg-card">
-              <ClusterMap focusClusterId={cluster.id} />
+              <ClusterMap
+                focusClusterId={cluster.id}
+                clusters={usingBackend ? [cluster] : undefined}
+                sources={usingBackend ? activeSources : undefined}
+              />
             </div>
           </TabsContent>
         </Tabs>
@@ -168,12 +272,21 @@ function ClusterDetail() {
   );
 }
 
+function expertStatusCopy(cluster: Cluster) {
+  if (cluster.expert === "ready") return "This local expert is ready to inform answers in your voice.";
+  if (cluster.expert === "learning") {
+    return "This cluster is usable now. Its local expert is still learning in the background.";
+  }
+  if (cluster.expert === "needs-update") return "New source changes are ready for the next learning pass.";
+  if (cluster.expert === "paused") return "Learning is paused for this cluster.";
+  if (cluster.expert === "issue") return "This expert needs attention before it can continue learning.";
+  return "This local expert is being set up.";
+}
+
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="rounded-md border border-border bg-card p-4">
-      <div className="text-xs font-medium text-muted-foreground">
-        {title}
-      </div>
+      <div className="text-xs font-medium text-muted-foreground">{title}</div>
       <div className="mt-2 text-sm">{children}</div>
     </div>
   );

@@ -15,7 +15,7 @@ import { useStore } from "@/lib/mockStore";
 import { CommandPalette, useCommandPalette } from "@/components/CommandPalette";
 import { Button } from "@/components/ui/button";
 import { useEffect } from "react";
-import { useBackendHealth } from "@/lib/backend";
+import { createChatSession, listVaults, useBackendHealth } from "@/lib/backend";
 
 const nav = [
   { to: "/search", label: "Mind", icon: Search },
@@ -63,6 +63,20 @@ export function AppShell() {
   }, [navigate, setOpen]);
 
   const savedChats = chats.filter((c) => c.saved).slice(0, 6);
+
+  async function newChat() {
+    try {
+      const vault = (await listVaults())[0];
+      if (vault) {
+        const session = await createChatSession({ vault_id: vault.id, title: "New chat" });
+        navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
+        return;
+      }
+    } catch {
+      // The Chat index still offers local fallback when the backend is not available.
+    }
+    navigate({ to: "/chat" });
+  }
 
   return (
     <div className="flex h-screen w-full flex-col bg-background text-foreground">
@@ -132,12 +146,13 @@ export function AppShell() {
               <Command className="h-3.5 w-3.5" /> Command palette
               <span className="ml-auto text-[10px] opacity-60">Ctrl/Cmd K</span>
             </Button>
-            <Link
-              to="/chat"
-              className="mt-1 flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm font-medium text-primary hover:bg-sidebar-accent/60"
+            <button
+              type="button"
+              onClick={() => void newChat()}
+              className="mt-1 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm font-medium text-primary hover:bg-sidebar-accent/60"
             >
               <Plus className="h-4 w-4" /> New chat
-            </Link>
+            </button>
           </div>
         </aside>
 
