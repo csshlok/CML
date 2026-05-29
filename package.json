@@ -11,7 +11,8 @@
     "dev:desktop": "npm run dev --workspace @cml/desktop",
     "build": "npm run build --workspace @cml/desktop",
     "lint": "npm run lint --workspace @cml/desktop",
-    "backend": ".venv\\Scripts\\python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 7342",
-    "backend:system": "python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 7342"
+    "backend": ".venv\\Scripts\\python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 7343",
+    "backend:system": "python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 7343",
+    "backend:7342": ".venv\\Scripts\\python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 7342"
   }
 }

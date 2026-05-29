@@ -177,9 +177,15 @@ export function AppShell() {
               ? "bg-[var(--status-ready)]/15 text-foreground"
               : backend.status === "checking"
                 ? "bg-muted text-muted-foreground"
+                : backend.status === "degraded"
+                  ? "bg-[var(--status-learning)]/15 text-foreground"
                 : "bg-[var(--status-issue)]/15 text-foreground")
           }
-          title={backend.url}
+          title={
+            backend.status === "degraded"
+              ? `${backend.url} is reachable but missing current chat routes`
+              : backend.url
+          }
         >
           Backend {backend.status}
         </span>

@@ -1,3 +1,4 @@
+import json
 from uuid import uuid4
 
 from fastapi import APIRouter
@@ -9,6 +10,7 @@ from backend.app.schemas import (
     BridgeContextRequest,
     BridgeContextResponse,
     BridgeRequestRead,
+    BridgeSettingsUpdate,
     BridgeStatus,
     SemanticSearchRequest,
 )
@@ -18,16 +20,59 @@ router = APIRouter(prefix="/bridge", tags=["bridge"])
 
 @router.get("/status", response_model=BridgeStatus)
 def bridge_status() -> dict[str, str | bool]:
+    settings = _get_bridge_settings()
     return {
-        "enabled": False,
+        **settings,
         "mcp": "planned",
         "http_api": "available",
         "cli": "planned",
     }
 
 
+@router.patch("/settings", response_model=BridgeStatus)
+def update_bridge_settings(payload: BridgeSettingsUpdate) -> dict:
+    updates = payload.model_dump(exclude_unset=True)
+    settings = _get_bridge_settings()
+    next_settings = {**settings, **updates}
+    now = utc_now()
+    with connect() as conn:
+        _ensure_bridge_settings(conn)
+        conn.execute(
+            """
+            UPDATE bridge_settings
+            SET enabled = ?,
+                allowed_vault_ids = ?,
+                allowed_cluster_ids = ?,
+                allow_raw_snippets = ?,
+                allow_style_profile = ?,
+                allow_expert_calls = ?,
+                updated_at = ?
+            WHERE id = 'default'
+            """,
+            (
+                1 if next_settings["enabled"] else 0,
+                json.dumps(next_settings["allowed_vault_ids"]),
+                json.dumps(next_settings["allowed_cluster_ids"]),
+                1 if next_settings["allow_raw_snippets"] else 0,
+                1 if next_settings["allow_style_profile"] else 0,
+                1 if next_settings["allow_expert_calls"] else 0,
+                now,
+            ),
+        )
+    return bridge_status()
+
+
 @router.post("/context", response_model=BridgeContextResponse)
 def build_context(payload: BridgeContextRequest) -> dict:
+    settings = _get_bridge_settings()
+    if not settings["enabled"]:
+        return {
+            "query": payload.query,
+            "selected_clusters": [],
+            "source_snippets": [],
+            "warnings": ["Bridge is off. Enable it before external clients can request context."],
+        }
+
     with connect() as conn:
         vault_id = payload.vault_id
         if vault_id:
@@ -50,7 +95,22 @@ def build_context(payload: BridgeContextRequest) -> dict:
                 }
             vault_id = vault["id"]
 
+        if settings["allowed_vault_ids"] and vault_id not in settings["allowed_vault_ids"]:
+            return {
+                "query": payload.query,
+                "selected_clusters": [],
+                "source_snippets": [],
+                "warnings": ["Bridge blocked this request because the vault is not allowed."],
+            }
+
         if payload.cluster_id:
+            if settings["allowed_cluster_ids"] and payload.cluster_id not in settings["allowed_cluster_ids"]:
+                return {
+                    "query": payload.query,
+                    "selected_clusters": [],
+                    "source_snippets": [],
+                    "warnings": ["Bridge blocked this request because the cluster is not allowed."],
+                }
             cluster = conn.execute(
                 "SELECT id FROM clusters WHERE id = ? AND vault_id = ?",
                 (payload.cluster_id, vault_id),
@@ -126,6 +186,12 @@ def build_context(payload: BridgeContextRequest) -> dict:
 
     sources_by_id = {row["id"]: source_from_row(row) for row in source_rows}
     ordered_sources = [sources_by_id[source_id] for source_id in source_ids if source_id in sources_by_id]
+    if not settings["allow_raw_snippets"]:
+        for source in ordered_sources:
+            source["raw_text"] = ""
+            source["extracted_text"] = ""
+        if ordered_sources:
+            warnings.append("Raw source text is redacted by Bridge permissions.")
     if results:
         warnings.append("Bridge context is ranked by local semantic search.")
 
@@ -148,3 +214,46 @@ def list_bridge_requests() -> list[dict]:
             """
         ).fetchall()
     return [dict_from_row(row) for row in rows]
+
+
+def _ensure_bridge_settings(conn) -> None:
+    existing = conn.execute("SELECT id FROM bridge_settings WHERE id = 'default'").fetchone()
+    if existing is not None:
+        return
+    now = utc_now()
+    conn.execute(
+        """
+        INSERT INTO bridge_settings (
+            id, enabled, allowed_vault_ids, allowed_cluster_ids, allow_raw_snippets,
+            allow_style_profile, allow_expert_calls, created_at, updated_at
+        )
+        VALUES ('default', 0, '[]', '[]', 0, 0, 0, ?, ?)
+        """,
+        (now, now),
+    )
+
+
+def _get_bridge_settings() -> dict:
+    with connect() as conn:
+        _ensure_bridge_settings(conn)
+        row = conn.execute("SELECT * FROM bridge_settings WHERE id = 'default'").fetchone()
+    allowed_vault_ids = _json_list(row["allowed_vault_ids"])
+    allowed_cluster_ids = _json_list(row["allowed_cluster_ids"])
+    return {
+        "enabled": bool(row["enabled"]),
+        "allowed_vault_ids": [str(item) for item in allowed_vault_ids],
+        "allowed_cluster_ids": [str(item) for item in allowed_cluster_ids],
+        "allow_raw_snippets": bool(row["allow_raw_snippets"]),
+        "allow_style_profile": bool(row["allow_style_profile"]),
+        "allow_expert_calls": bool(row["allow_expert_calls"]),
+    }
+
+
+def _json_list(value: str | None) -> list:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []

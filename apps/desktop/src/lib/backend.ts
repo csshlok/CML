@@ -1,24 +1,42 @@
 import { useEffect, useState } from "react";
 
-const BACKEND_URL = "http://127.0.0.1:7342";
+const CONFIGURED_BACKEND_URL =
+  (import.meta.env.VITE_CML_BACKEND_URL as string | undefined) || "http://127.0.0.1:7343";
+const BACKEND_CANDIDATES = Array.from(
+  new Set([CONFIGURED_BACKEND_URL, "http://127.0.0.1:7343", "http://127.0.0.1:7342"]),
+);
+let resolvedBackendUrl: string | null = null;
 
-export type BackendHealthStatus = "checking" | "online" | "offline";
+export type BackendHealthStatus = "checking" | "online" | "degraded" | "offline";
 
 export function useBackendHealth() {
   const [status, setStatus] = useState<BackendHealthStatus>("checking");
+  const [url, setUrl] = useState(CONFIGURED_BACKEND_URL);
 
   useEffect(() => {
     let cancelled = false;
 
     async function check() {
-      try {
-        const response = await fetch(`${BACKEND_URL}/health`, {
-          signal: AbortSignal.timeout(1000),
-        });
-        if (!cancelled) setStatus(response.ok ? "online" : "offline");
-      } catch {
-        if (!cancelled) setStatus("offline");
+      let degradedCandidateSeen = false;
+      for (const candidate of BACKEND_CANDIDATES) {
+        const probe = await probeBackend(candidate);
+        if (probe.status === "online") {
+          resolvedBackendUrl = candidate;
+          if (!cancelled) {
+            setUrl(candidate);
+            setStatus("online");
+          }
+          return;
+        }
+        if (probe.status === "degraded" && candidate === CONFIGURED_BACKEND_URL) {
+          degradedCandidateSeen = true;
+          if (!cancelled) {
+            setUrl(candidate);
+            setStatus("degraded");
+          }
+        }
       }
+      if (!cancelled && !degradedCandidateSeen) setStatus("offline");
     }
 
     check();
@@ -32,8 +50,41 @@ export function useBackendHealth() {
 
   return {
     status,
-    url: BACKEND_URL,
+    url,
   };
+}
+
+async function probeBackend(url: string): Promise<{ status: BackendHealthStatus }> {
+  try {
+    const response = await fetch(`${url}/health`, {
+      signal: AbortSignal.timeout(1000),
+    });
+    if (!response.ok) return { status: "offline" };
+    const openapi = await fetch(`${url}/openapi.json`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!openapi.ok) return { status: "degraded" };
+    const spec = await openapi.json();
+    const paths = spec?.paths ?? {};
+    const hasChatRoutes =
+      Boolean(paths["/api/v1/chat/sessions"]) &&
+      Boolean(paths["/api/v1/chat/messages/{message_id}"]);
+    return { status: hasChatRoutes ? "online" : "degraded" };
+  } catch {
+    return { status: "offline" };
+  }
+}
+
+async function getBackendUrl() {
+  if (resolvedBackendUrl) return resolvedBackendUrl;
+  for (const candidate of BACKEND_CANDIDATES) {
+    const probe = await probeBackend(candidate);
+    if (probe.status === "online") {
+      resolvedBackendUrl = candidate;
+      return candidate;
+    }
+  }
+  return CONFIGURED_BACKEND_URL;
 }
 
 export type BridgeStatus = {
@@ -41,6 +92,11 @@ export type BridgeStatus = {
   mcp: string;
   http_api: string;
   cli: string;
+  allowed_vault_ids: string[];
+  allowed_cluster_ids: string[];
+  allow_raw_snippets: boolean;
+  allow_style_profile: boolean;
+  allow_expert_calls: boolean;
 };
 
 export type BridgeRequest = {
@@ -132,6 +188,7 @@ export type ChatContextResponse = {
     score: number;
   }>;
   warnings: string[];
+  memory_status: string | null;
 };
 
 export type ChatMessageRecord = {
@@ -153,6 +210,8 @@ export type ChatSessionRecord = {
   title: string;
   scope_cluster_id: string | null;
   saved: boolean;
+  memory_status: string;
+  memory_updated_at: string | null;
   created_at: string;
   updated_at: string;
   messages: ChatMessageRecord[];
@@ -197,6 +256,25 @@ export async function getBridgeStatus() {
 
 export async function listBridgeRequests() {
   return request<BridgeRequest[]>("/api/v1/bridge/requests");
+}
+
+export async function updateBridgeSettings(
+  payload: Partial<
+    Pick<
+      BridgeStatus,
+      | "enabled"
+      | "allowed_vault_ids"
+      | "allowed_cluster_ids"
+      | "allow_raw_snippets"
+      | "allow_style_profile"
+      | "allow_expert_calls"
+    >
+  >,
+) {
+  return request<BridgeStatus>("/api/v1/bridge/settings", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function listVaults() {
@@ -415,7 +493,8 @@ export async function startModelDownload(modelId: string) {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${BACKEND_URL}${path}`, {
+  const backendUrl = await getBackendUrl();
+  const response = await fetch(`${backendUrl}${path}`, {
     ...init,
     headers: init?.body ? { "Content-Type": "application/json", ...init.headers } : init?.headers,
   });

@@ -77,6 +77,7 @@ function ChatView() {
   const [backendSession, setBackendSession] = useState<ChatSessionRecord | null>(null);
   const [backendMessages, setBackendMessages] = useState<import("@/lib/mockStore").ChatMessage[]>([]);
   const [titleDraft, setTitleDraft] = useState("");
+  const [memoryState, setMemoryState] = useState("idle");
   const [loadingSession, setLoadingSession] = useState(true);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -98,9 +99,11 @@ function ChatView() {
         setBackendSession(session);
         setBackendSessionId(session.id);
         setBackendMessages(session.messages.map(messageFromRecord));
+        setMemoryState(session.memory_status ?? "idle");
       } catch {
         setBackendSession(null);
         setBackendMessages([]);
+        setMemoryState("idle");
       }
       setBackendReady(true);
     } catch {
@@ -208,6 +211,7 @@ function ChatView() {
     if (!promptOverride) setInput("");
     setStreaming(true);
     setStreamText("");
+    if (backendSession) setMemoryState("indexing");
     if (backendReady && vault) {
       try {
         const response = await buildChatContext({
@@ -219,7 +223,8 @@ function ChatView() {
           limit: 6,
         });
         setBackendSessionId(response.session_id);
-        setStreamText(response.answer);
+        setMemoryState(response.memory_status ?? "indexed");
+        await revealAnswer(response.answer);
         const assistantMessage = {
           id: newId(),
           role: "assistant",
@@ -235,12 +240,12 @@ function ChatView() {
           useful: null,
         } satisfies import("@/lib/mockStore").ChatMessage;
         if (backendSession) {
-          setBackendMessages((current) => [...current, assistantMessage]);
           if (response.session_id) {
             try {
               const refreshed = await getChatSession(response.session_id);
               setBackendSession(refreshed);
               setBackendMessages(refreshed.messages.map(messageFromRecord));
+              setMemoryState(refreshed.memory_status ?? response.memory_status ?? "indexed");
               const [clusterRows, sourceRows] = await Promise.all([
                 listClusters(vault.id),
                 listSources(vault.id),
@@ -255,6 +260,7 @@ function ChatView() {
           appendMessage(chat.id, assistantMessage);
         }
       } catch (error) {
+        setMemoryState("issue");
         const errorMessage = {
           id: newId(),
           role: "assistant",
@@ -270,9 +276,9 @@ function ChatView() {
           appendMessage(chat.id, errorMessage);
         }
       } finally {
-        setStreaming(false);
-        setStreamText("");
-      }
+          setStreaming(false);
+          setStreamText("");
+        }
       return;
     }
     let full = "";
@@ -334,6 +340,18 @@ function ChatView() {
     if (priorUser) void send(priorUser.content);
   };
 
+  const revealAnswer = async (text: string) => {
+    const words = text.split(/(\s+)/);
+    let rendered = "";
+    for (const word of words) {
+      rendered += word;
+      setStreamText(rendered);
+      if (word.trim()) {
+        await new Promise((resolve) => window.setTimeout(resolve, 12));
+      }
+    }
+  };
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-3 border-b border-border bg-card/40 px-6 py-3">
@@ -383,6 +401,11 @@ function ChatView() {
           <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
             {backendReady ? "Semantic context" : "Local fallback context"}
           </span>
+          {backendSession && (
+            <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+              Memory {memoryLabel(memoryState)}
+            </span>
+          )}
         </div>
       </header>
 
@@ -457,11 +480,18 @@ function ChatView() {
           </Button>
         </div>
         <p className="mx-auto mt-1.5 max-w-2xl text-[11px] text-muted-foreground">
-          Ctrl/Cmd Enter to send / all processing local
+          Ctrl/Cmd Enter to send / all processing local / memory {memoryLabel(memoryState)}
         </p>
       </div>
     </div>
   );
+}
+
+function memoryLabel(status: string) {
+  if (status === "indexed") return "saved";
+  if (status === "indexing") return "saving";
+  if (status === "issue") return "issue";
+  return "idle";
 }
 
 function messageFromRecord(record: ChatMessageRecord): import("@/lib/mockStore").ChatMessage {

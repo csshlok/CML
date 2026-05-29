@@ -148,6 +148,20 @@ class BridgeStatus(BaseModel):
     mcp: str
     http_api: str
     cli: str
+    allowed_vault_ids: list[str] = []
+    allowed_cluster_ids: list[str] = []
+    allow_raw_snippets: bool = False
+    allow_style_profile: bool = False
+    allow_expert_calls: bool = False
+
+
+class BridgeSettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    allowed_vault_ids: list[str] | None = None
+    allowed_cluster_ids: list[str] | None = None
+    allow_raw_snippets: bool | None = None
+    allow_style_profile: bool | None = None
+    allow_expert_calls: bool | None = None
 
 
 class BridgeContextRequest(BaseModel):
@@ -205,6 +219,7 @@ class ChatContextResponse(BaseModel):
     clusters_used: list[ChatClusterUse]
     citations: list[ChatCitation]
     warnings: list[str]
+    memory_status: str | None = None
 
 
 class ChatSessionCreate(BaseModel):
@@ -243,6 +258,8 @@ class ChatSessionRead(BaseModel):
     title: str
     scope_cluster_id: str | None
     saved: bool
+    memory_status: str = "idle"
+    memory_updated_at: str | None = None
     created_at: str
     updated_at: str
     messages: list[ChatMessageRead] = []

@@ -76,6 +76,18 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS bridge_settings (
+                id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                allowed_vault_ids TEXT NOT NULL DEFAULT '[]',
+                allowed_cluster_ids TEXT NOT NULL DEFAULT '[]',
+                allow_raw_snippets INTEGER NOT NULL DEFAULT 0,
+                allow_style_profile INTEGER NOT NULL DEFAULT 0,
+                allow_expert_calls INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS source_chunks (
                 id TEXT PRIMARY KEY,
                 source_id TEXT NOT NULL,
@@ -125,6 +137,8 @@ def init_db() -> None:
         _add_column_if_missing(conn, "sources", "cover_image_url", "TEXT")
         _add_column_if_missing(conn, "chat_messages", "useful", "INTEGER")
         _add_column_if_missing(conn, "chat_messages", "saved", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "chat_sessions", "memory_status", "TEXT NOT NULL DEFAULT 'idle'")
+        _add_column_if_missing(conn, "chat_sessions", "memory_updated_at", "TEXT")
 
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

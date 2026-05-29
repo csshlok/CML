@@ -52,16 +52,19 @@ def create_chat_session(payload: ChatSessionCreate) -> dict:
             "title": payload.title or "New chat",
             "scope_cluster_id": payload.scope_cluster_id,
             "saved": 0,
+            "memory_status": "idle",
+            "memory_updated_at": None,
             "created_at": now,
             "updated_at": now,
         }
         conn.execute(
             """
             INSERT INTO chat_sessions (
-                id, vault_id, title, scope_cluster_id, saved, created_at, updated_at
+                id, vault_id, title, scope_cluster_id, saved, memory_status, memory_updated_at, created_at, updated_at
             )
             VALUES (
-                :id, :vault_id, :title, :scope_cluster_id, :saved, :created_at, :updated_at
+                :id, :vault_id, :title, :scope_cluster_id, :saved, :memory_status,
+                :memory_updated_at, :created_at, :updated_at
             )
             """,
             session,
@@ -254,6 +257,7 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
         "clusters_used": clusters_used,
         "citations": citations,
         "warnings": warnings,
+        "memory_status": "indexed" if payload.persist else None,
     }
 
 
@@ -291,9 +295,10 @@ def _persist_chat_turn(
             conn.execute(
                 """
                 INSERT INTO chat_sessions (
-                    id, vault_id, title, scope_cluster_id, saved, created_at, updated_at
+                    id, vault_id, title, scope_cluster_id, saved, memory_status, memory_updated_at,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, 0, ?, ?)
+                VALUES (?, ?, ?, ?, 0, 'idle', NULL, ?, ?)
                 """,
                 (session_id, vault_id, title, cluster_id, now, now),
             )
@@ -342,7 +347,15 @@ def _persist_chat_turn(
             """,
             (now, title, session_id),
         )
+        conn.execute(
+            "UPDATE chat_sessions SET memory_status = 'indexing', memory_updated_at = ? WHERE id = ?",
+            (now, session_id),
+        )
         _upsert_chat_transcript_sources(conn, vault_id=vault_id, session_id=session_id)
+        conn.execute(
+            "UPDATE chat_sessions SET memory_status = 'indexed', memory_updated_at = ? WHERE id = ?",
+            (utc_now(), session_id),
+        )
 
     return session_id, user_message_id, assistant_message_id
 
@@ -503,6 +516,8 @@ def _ensure_cluster(conn, cluster_id: str, vault_id: str) -> None:
 def _session_from_row(row, messages: list[dict]) -> dict:
     session = dict_from_row(row) if hasattr(row, "keys") else dict(row)
     session["saved"] = bool(session["saved"])
+    session["memory_status"] = session.get("memory_status") or "idle"
+    session["memory_updated_at"] = session.get("memory_updated_at")
     session["messages"] = messages
     return session
 

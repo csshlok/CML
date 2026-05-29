@@ -75,10 +75,10 @@ npm run dev
 Useful checks:
 
 ```bash
-curl http://127.0.0.1:7342/health
-curl http://127.0.0.1:7342/api/v1/vaults
-curl http://127.0.0.1:7342/api/v1/sources
-curl http://127.0.0.1:7342/api/v1/bridge/status
+curl http://127.0.0.1:7343/health
+curl http://127.0.0.1:7343/api/v1/vaults
+curl http://127.0.0.1:7343/api/v1/sources
+curl http://127.0.0.1:7343/api/v1/bridge/status
 ```
 
 The Vite development view is available at:
