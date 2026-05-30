@@ -196,6 +196,62 @@ def init_db() -> None:
                 FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS chat_generations (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                user_message_id TEXT,
+                assistant_message_id TEXT,
+                vault_id TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                state TEXT NOT NULL,
+                runtime_provider TEXT NOT NULL DEFAULT '',
+                runtime_model TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                heartbeat_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL,
+                FOREIGN KEY (assistant_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS retrieval_snapshots (
+                id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                vault_id TEXT NOT NULL,
+                query TEXT NOT NULL,
+                retrieval_mode TEXT NOT NULL DEFAULT 'semantic',
+                embedding_model_id TEXT NOT NULL DEFAULT '',
+                token_budget INTEGER,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS retrieval_snapshot_items (
+                id TEXT PRIMARY KEY,
+                snapshot_id TEXT NOT NULL,
+                source_id TEXT,
+                chunk_id TEXT,
+                page_id TEXT,
+                source_title_at_answer_time TEXT NOT NULL,
+                page_number INTEGER,
+                snippet_hash TEXT NOT NULL DEFAULT '',
+                short_snippet_excerpt TEXT NOT NULL DEFAULT '',
+                relevance_score REAL NOT NULL DEFAULT 0,
+                item_rank INTEGER NOT NULL,
+                state TEXT NOT NULL DEFAULT 'current',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (snapshot_id) REFERENCES retrieval_snapshots(id) ON DELETE CASCADE,
+                FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL,
+                FOREIGN KEY (chunk_id) REFERENCES source_chunks(id) ON DELETE SET NULL,
+                FOREIGN KEY (page_id) REFERENCES source_pages(id) ON DELETE SET NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_source_chunks_vault_id ON source_chunks(vault_id);
             CREATE INDEX IF NOT EXISTS idx_source_chunks_cluster_id ON source_chunks(cluster_id);
             CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id ON source_chunks(source_id);
@@ -203,6 +259,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_source_pages_vault_id ON source_pages(vault_id);
             CREATE INDEX IF NOT EXISTS idx_chat_sessions_vault_id ON chat_sessions(vault_id);
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_generations_state ON chat_generations(state, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_retrieval_snapshots_message_id ON retrieval_snapshots(message_id);
+            CREATE INDEX IF NOT EXISTS idx_retrieval_snapshot_items_snapshot_id ON retrieval_snapshot_items(snapshot_id);
             CREATE INDEX IF NOT EXISTS idx_app_jobs_status ON app_jobs(status, created_at);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_app_jobs_dedupe_active
                 ON app_jobs(dedupe_key)

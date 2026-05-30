@@ -26,14 +26,17 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
             SELECT
                 chunks.id AS chunk_id,
                 chunks.source_id,
+                chunks.page_id,
                 chunks.cluster_id,
                 chunks.chunk_index,
                 chunks.text,
                 chunks.embedding,
                 sources.title AS source_title,
-                sources.source_type
+                sources.source_type,
+                pages.page_number
             FROM source_chunks chunks
             JOIN sources ON sources.id = chunks.source_id
+            LEFT JOIN source_pages pages ON pages.id = chunks.page_id
             WHERE chunks.vault_id = ? AND sources.deleted_at IS NULL {cluster_clause}
             """,
             params,
@@ -51,6 +54,8 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
                 "source_type": row["source_type"],
                 "cluster_id": row["cluster_id"],
                 "chunk_id": row["chunk_id"],
+                "page_id": row["page_id"],
+                "page_number": row["page_number"],
                 "chunk_index": row["chunk_index"],
                 "snippet": row["text"],
                 "score": round(score, 4),

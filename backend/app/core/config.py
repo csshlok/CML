@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 384
     embedding_cache_dir: Path | None = None
     allow_hash_embeddings: bool = False
+    ocr_binary_path: Path | None = None
     api_token: str | None = None
 
     model_config = SettingsConfigDict(env_prefix="CML_", env_file=ROOT_DIR / ".env", extra="ignore")

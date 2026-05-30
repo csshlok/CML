@@ -25,6 +25,7 @@
         "to": "backend",
         "filter": [
           "app/**/*",
+          "bin/**/*",
           "pyproject.toml"
         ]
       },

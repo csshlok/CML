@@ -6,6 +6,7 @@ from backend.app.core.auth import LocalApiAuthMiddleware
 from backend.app.core.background_jobs import enqueue_startup_reconciliation_jobs, start_background_worker
 from backend.app.core.config import get_settings
 from backend.app.core.database import init_db
+from backend.app.core.generation_recovery import recover_interrupted_generations
 from backend.app.core.startup_checks import run_startup_checks
 from backend.app.core.vault_lock import acquire_vault_lock, release_vault_lock
 from backend.app.schemas import HealthResponse
@@ -30,6 +31,7 @@ def startup() -> None:
     acquire_vault_lock()
     init_db()
     run_startup_checks()
+    recover_interrupted_generations()
     enqueue_startup_reconciliation_jobs()
     start_background_worker()
 

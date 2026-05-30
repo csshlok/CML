@@ -4,11 +4,62 @@ from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from backend.app.core.network_security import NetworkSecurityError, validate_public_http_url
+from backend.app.core.ocr import OCRError, ocr_image, ocr_pdf_pages
 
 
-SUPPORTED_TEXT_EXTENSIONS = {".md", ".markdown", ".txt"}
-SUPPORTED_DOCUMENT_EXTENSIONS = SUPPORTED_TEXT_EXTENSIONS | {".docx", ".pdf"}
+SUPPORTED_TEXT_EXTENSIONS = {
+    ".asc",
+    ".csv",
+    ".htm",
+    ".html",
+    ".json",
+    ".jsonl",
+    ".log",
+    ".md",
+    ".markdown",
+    ".rtf",
+    ".text",
+    ".tsv",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+SUPPORTED_CODE_EXTENSIONS = {
+    ".bat",
+    ".c",
+    ".cpp",
+    ".cs",
+    ".css",
+    ".go",
+    ".java",
+    ".js",
+    ".jsx",
+    ".kt",
+    ".lua",
+    ".php",
+    ".ps1",
+    ".py",
+    ".rb",
+    ".rs",
+    ".sh",
+    ".sql",
+    ".swift",
+    ".toml",
+    ".ts",
+    ".tsx",
+}
+SUPPORTED_IMAGE_EXTENSIONS = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
+SUPPORTED_MEDIA_EXTENSIONS = {".aac", ".flac", ".m4a", ".mov", ".mp3", ".mp4", ".ogg", ".wav", ".webm"}
+SUPPORTED_DOCUMENT_EXTENSIONS = (
+    SUPPORTED_TEXT_EXTENSIONS
+    | SUPPORTED_CODE_EXTENSIONS
+    | SUPPORTED_IMAGE_EXTENSIONS
+    | SUPPORTED_MEDIA_EXTENSIONS
+    | {".docx", ".pdf"}
+)
 MAX_LOCAL_FILE_BYTES = 50 * 1024 * 1024
+MAX_LOCAL_MEDIA_BYTES = 250 * 1024 * 1024
 MAX_LINK_BYTES = 2_000_000
 MAX_REDIRECTS = 5
 
@@ -26,30 +77,44 @@ def extract_pages_from_path(path: str) -> tuple[str, list[str]]:
     source_path = Path(path).expanduser()
     if not source_path.exists() or not source_path.is_file():
         raise ExtractionError("File does not exist or is not readable")
+    suffix = source_path.suffix.lower()
     try:
-        if source_path.stat().st_size > MAX_LOCAL_FILE_BYTES:
+        size = source_path.stat().st_size
+        max_bytes = MAX_LOCAL_MEDIA_BYTES if suffix in SUPPORTED_MEDIA_EXTENSIONS else MAX_LOCAL_FILE_BYTES
+        if size > max_bytes:
             raise ExtractionError("File is too large to ingest safely")
     except OSError as exc:
         raise ExtractionError("File does not exist or is not readable") from exc
 
-    suffix = source_path.suffix.lower()
     if suffix in SUPPORTED_TEXT_EXTENSIONS:
         return source_path.name, [_extract_plain_text(source_path)]
+    if suffix in SUPPORTED_CODE_EXTENSIONS:
+        return source_path.name, [_extract_code_text(source_path)]
     if suffix == ".docx":
         return source_path.name, [_extract_docx_text(source_path)]
     if suffix == ".pdf":
         return source_path.name, _extract_pdf_pages(source_path)
+    if suffix in SUPPORTED_IMAGE_EXTENSIONS:
+        return source_path.name, [_extract_image_text(source_path)]
+    if suffix in SUPPORTED_MEDIA_EXTENSIONS:
+        return source_path.name, [_extract_media_metadata(source_path)]
 
-    raise ExtractionError("Supported file types are TXT, Markdown, DOCX, and PDF")
+    raise ExtractionError("This file type is not supported for local vault ingestion yet")
 
 
 def _extract_plain_text(source_path: Path) -> str:
     try:
-        return source_path.read_text(encoding="utf-8")
+        text = source_path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        return source_path.read_text(encoding="utf-8-sig")
+        text = source_path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError as exc:
         raise ExtractionError(str(exc)) from exc
+    return _clean_text_payload(source_path, text)
+
+
+def _extract_code_text(source_path: Path) -> str:
+    text = _extract_plain_text(source_path)
+    return f"Code file: {source_path.name}\n\n{text}"
 
 
 def _extract_docx_text(source_path: Path) -> str:
@@ -95,8 +160,51 @@ def _extract_pdf_pages(source_path: Path) -> list[str]:
 
     readable_pages = [page for page in pages if page.strip()]
     if not readable_pages:
-        raise ExtractionError("No readable text was found in this PDF file")
+        try:
+            ocr_pages = ocr_pdf_pages(source_path)
+        except OCRError as exc:
+            raise ExtractionError(f"No readable text was found in this PDF file. {exc}") from exc
+        readable_ocr_pages = [page for page in ocr_pages if page.strip()]
+        if not readable_ocr_pages:
+            raise ExtractionError("No readable text was found in this PDF file, including after local OCR.")
+        return ocr_pages
     return pages
+
+
+def _extract_image_text(source_path: Path) -> str:
+    try:
+        text = ocr_image(source_path)
+        if text.strip():
+            return text
+    except OCRError:
+        pass
+    return _file_metadata_text(source_path, note="Image stored in vault metadata. OCR runtime is not configured yet.")
+
+
+def _extract_media_metadata(source_path: Path) -> str:
+    return _file_metadata_text(
+        source_path,
+        note="Media file stored in vault metadata. Audio/video transcription is not configured yet.",
+    )
+
+
+def _file_metadata_text(source_path: Path, *, note: str) -> str:
+    stat = source_path.stat()
+    return "\n".join(
+        [
+            note,
+            f"File name: {source_path.name}",
+            f"File type: {source_path.suffix.lower() or 'unknown'}",
+            f"Size bytes: {stat.st_size}",
+        ]
+    )
+
+
+def _clean_text_payload(source_path: Path, text: str) -> str:
+    cleaned = text.strip()
+    if not cleaned:
+        raise ExtractionError(f"No readable text was found in {source_path.name}")
+    return cleaned
 
 
 class _TextHTMLParser(HTMLParser):

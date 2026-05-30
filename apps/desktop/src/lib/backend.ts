@@ -210,6 +210,18 @@ export type SourceRecord = {
   updated_at: string;
 };
 
+export type SourcePageRecord = {
+  id: string;
+  source_id: string;
+  vault_id: string;
+  page_number: number;
+  raw_text: string;
+  extraction_version: string;
+  content_hash: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type SemanticSearchResult = {
   source_id: string;
   source_title: string;
@@ -242,6 +254,10 @@ export type ChatContextResponse = {
     source_title: string;
     snippet: string;
     score: number;
+    chunk_id?: string | null;
+    page_id?: string | null;
+    page_number?: number | null;
+    state?: string;
   }>;
   warnings: string[];
   memory_status: string | null;
@@ -501,6 +517,10 @@ export async function updateSource(
     method: "PATCH",
     body: JSON.stringify(payload),
   });
+}
+
+export async function listSourcePages(sourceId: string) {
+  return request<SourcePageRecord[]>(`/api/v1/sources/${encodeURIComponent(sourceId)}/pages`);
 }
 
 export async function deleteSource(id: string) {

@@ -15,9 +15,11 @@ import {
   createSourceFromText,
   createSourceFromUrl,
   deleteSource as deleteBackendSource,
+  listSourcePages,
   listClusters,
   listSources,
   listVaults,
+  type SourcePageRecord,
   updateSource as updateBackendSource,
   type VaultRecord,
 } from "@/lib/backend";
@@ -72,6 +74,7 @@ function SourcesView() {
   } = useStore();
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<Source | null>(null);
+  const [selectedPages, setSelectedPages] = useState<SourcePageRecord[]>([]);
   const [vault, setActiveVault] = useState<VaultRecord | null>(null);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
@@ -120,6 +123,26 @@ function SourcesView() {
   const usingBackend = Boolean(vault);
   const sources = usingBackend ? backendSources : mockSources;
   const clusters = usingBackend ? backendClusters : mockClusters;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadPages() {
+      if (!selected || !usingBackend) {
+        setSelectedPages([]);
+        return;
+      }
+      try {
+        const pages = await listSourcePages(selected.id);
+        if (!cancelled) setSelectedPages(pages);
+      } catch {
+        if (!cancelled) setSelectedPages([]);
+      }
+    }
+    void loadPages();
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.id, usingBackend]);
 
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -459,6 +482,25 @@ function SourcesView() {
                     {selected.preview || "No preview available."}
                   </p>
                 </div>
+                {selectedPages.length > 0 && (
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                      Pages
+                    </div>
+                    <div className="mt-1 max-h-72 overflow-y-auto rounded-md border border-border">
+                      {selectedPages.map((page) => (
+                        <details key={page.id} className="border-b border-border last:border-b-0">
+                          <summary className="cursor-pointer px-3 py-2 text-xs font-medium">
+                            Page {page.page_number}
+                          </summary>
+                          <div className="px-3 pb-3 text-xs leading-relaxed text-muted-foreground">
+                            {page.raw_text || "No text extracted for this page."}
+                          </div>
+                        </details>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {selected.state === "failed" && (
                   <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs">
                     <div className="font-medium text-destructive">Extraction failed</div>

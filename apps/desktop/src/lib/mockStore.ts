@@ -54,6 +54,9 @@ export interface Cluster {
 export interface CitationRef {
   sourceId: string;
   snippet: string;
+  pageNumber?: number | null;
+  state?: string;
+  title?: string;
 }
 
 export interface ChatMessage {

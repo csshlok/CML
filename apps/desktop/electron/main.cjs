@@ -13,7 +13,14 @@ let backendUrl = process.env.VITE_CML_BACKEND_URL || process.env.CML_BACKEND_URL
 let backendApiToken = process.env.CML_API_TOKEN || null;
 let rendererServer = null;
 let rendererUrl = null;
-const supportedSourceExtensions = new Set([".txt", ".md", ".markdown", ".docx", ".pdf"]);
+const supportedSourceExtensions = new Set([
+  ".aac", ".asc", ".bat", ".bmp", ".c", ".cpp", ".cs", ".csv", ".css", ".docx",
+  ".flac", ".gif", ".go", ".htm", ".html", ".java", ".jpeg", ".jpg", ".js",
+  ".json", ".jsonl", ".jsx", ".kt", ".log", ".lua", ".m4a", ".markdown", ".md",
+  ".mov", ".mp3", ".mp4", ".ogg", ".pdf", ".php", ".png", ".ps1", ".py", ".rb",
+  ".rs", ".rtf", ".sh", ".sql", ".swift", ".text", ".tif", ".tiff", ".toml",
+  ".ts", ".tsv", ".tsx", ".txt", ".wav", ".webm", ".webp", ".xml", ".yaml", ".yml",
+]);
 const supportedOpenExtensions = new Set([...supportedSourceExtensions, ".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const skippedFolderNames = new Set([".git", "node_modules", ".venv", "dist", "build"]);
 
@@ -109,7 +116,15 @@ if (gotSingleInstanceLock) {
         title: "Add sources",
         properties: ["openFile", "multiSelections"],
         filters: [
-          { name: "Documents", extensions: ["txt", "md", "markdown", "docx", "pdf"] },
+        {
+          name: "Vault sources",
+          extensions: [
+            "txt", "md", "markdown", "docx", "pdf", "csv", "json", "jsonl", "html", "htm",
+            "xml", "yaml", "yml", "rtf", "log", "py", "js", "ts", "tsx", "jsx", "go", "rs",
+            "java", "cs", "cpp", "c", "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff",
+            "mp3", "wav", "m4a", "flac", "mp4", "mov", "webm",
+          ],
+        },
           { name: "All files", extensions: ["*"] },
         ],
       });

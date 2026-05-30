@@ -28,6 +28,9 @@ if (Test-Path $stagingDir) {
 }
 New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
 Copy-Item -Recurse -Force (Join-Path $backendDir "app") (Join-Path $stagingDir "app")
+if (Test-Path (Join-Path $backendDir "bin")) {
+  Copy-Item -Recurse -Force (Join-Path $backendDir "bin") (Join-Path $stagingDir "bin")
+}
 Copy-Item -Force (Join-Path $backendDir "pyproject.toml") (Join-Path $stagingDir "pyproject.toml")
 
 Write-Host "Building packaged backend Python runtime..."
@@ -42,7 +45,8 @@ $runtimePython = Join-Path $runtimeDir "Scripts\python.exe"
   "uvicorn[standard]>=0.30.0" `
   "pydantic-settings>=2.6.0" `
   "pypdf>=5.0.0" `
-  "python-docx>=1.1.2"
+  "python-docx>=1.1.2" `
+  "PyMuPDF>=1.24.0"
 
 if ($IncludeEmbeddingRuntime) {
   Write-Host "Installing optional embedding runtime dependencies..."

@@ -298,6 +298,9 @@ function ChatView() {
           citations: response.citations.map((citation) => ({
             sourceId: citation.source_id,
             snippet: citation.snippet,
+            pageNumber: citation.page_number,
+            state: citation.state,
+            title: citation.source_title,
           })),
           useful: null,
         } satisfies import("@/lib/mockStore").ChatMessage;
@@ -663,6 +666,9 @@ function messageFromRecord(record: ChatMessageRecord): import("@/lib/mockStore")
     citations: record.citations.map((citation) => ({
       sourceId: citation.source_id,
       snippet: citation.snippet,
+      pageNumber: citation.page_number,
+      state: citation.state,
+      title: citation.source_title,
     })),
     useful: record.useful,
     saved: record.saved,
@@ -714,15 +720,32 @@ function Message({
         <div className="mt-3 flex flex-wrap gap-1.5">
           {msg.citations.map((cit, i) => {
             const s = sources.find((x) => x.id === cit.sourceId);
+            const title = s?.title ?? cit.title ?? "source";
+            const stateText =
+              cit.state === "source_deleted"
+                ? "Source deleted"
+                : cit.state === "source_reindexed"
+                  ? "Source changed"
+                  : null;
             return (
               <Popover key={i}>
                 <PopoverTrigger asChild>
                   <button className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-[11px] hover:bg-accent">
-                    <Quote className="h-3 w-3" /> {s?.title ?? "source"}
+                    <Quote className="h-3 w-3" /> {title}
+                    {cit.pageNumber ? <span className="text-muted-foreground">p.{cit.pageNumber}</span> : null}
+                    {stateText ? <span className="text-muted-foreground">({stateText})</span> : null}
                   </button>
                 </PopoverTrigger>
                 <PopoverContent className="w-80 text-xs">
-                  <div className="mb-1 font-medium">{s?.title}</div>
+                  <div className="mb-1 font-medium">{title}</div>
+                  {cit.pageNumber ? (
+                    <div className="mb-2 text-muted-foreground">Page {cit.pageNumber}</div>
+                  ) : null}
+                  {stateText ? (
+                    <div className="mb-2 rounded-md border border-border bg-card px-2 py-1 text-muted-foreground">
+                      {stateText}. Showing the excerpt saved when this answer was generated.
+                    </div>
+                  ) : null}
                   <p className="text-muted-foreground">{cit.snippet}</p>
                 </PopoverContent>
               </Popover>

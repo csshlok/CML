@@ -16,6 +16,7 @@ from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
     SourceCreate,
     SourcePathCreate,
+    SourcePageRead,
     SourceRead,
     SourceTextCreate,
     SourceUpdate,
@@ -154,12 +155,13 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     text = "\n\n".join(page for page in pages if page.strip()).strip()
 
+    suffix = Path(payload.path).suffix.lower()
     return _create_source_record(
         SourceCreate(
             vault_id=payload.vault_id,
             cluster_id=payload.cluster_id,
             title=title,
-            source_type="note" if title.lower().endswith((".md", ".markdown", ".txt")) else "file",
+            source_type=_source_type_for_suffix(suffix),
             original_path=payload.path,
             checksum=_file_checksum(Path(payload.path)),
             raw_text=text,
@@ -211,6 +213,26 @@ def get_source(source_id: str) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="Source not found")
     return source_from_row(row)
+
+
+@router.get("/{source_id}/pages", response_model=list[SourcePageRead])
+def list_source_pages(source_id: str) -> list[dict]:
+    with connect() as conn:
+        source = conn.execute(
+            "SELECT id FROM sources WHERE id = ? AND deleted_at IS NULL",
+            (source_id,),
+        ).fetchone()
+        if source is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        rows = conn.execute(
+            """
+            SELECT * FROM source_pages
+            WHERE source_id = ?
+            ORDER BY page_number ASC
+            """,
+            (source_id,),
+        ).fetchall()
+    return [dict_from_row(row) for row in rows]
 
 
 @router.patch("/{source_id}", response_model=SourceRead)
@@ -354,3 +376,17 @@ def _file_checksum(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _source_type_for_suffix(suffix: str) -> str:
+    if suffix in {".md", ".markdown", ".txt", ".text"}:
+        return "note"
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+        return "image"
+    if suffix in {".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg"}:
+        return "audio"
+    if suffix in {".mp4", ".mov", ".webm"}:
+        return "video"
+    if suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".cpp", ".c"}:
+        return "code"
+    return "file"

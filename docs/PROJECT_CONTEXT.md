@@ -68,16 +68,16 @@ Progress bar legend:
 | Phase | Status | Progress | Notes |
 | --- | --- | --- | --- |
 | Product definition | In progress | `[#########-] 90%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, runtime boundary, model storage decision, installer direction, production-gap notes, and job/maintenance architecture are documented. Needs final production installer/update policy and explicit V1 cut list. |
-| UI prototype cleanup | In progress | `[########--] 84%` | Core app routes, Mind workspace, source cards, setup flow, chat composer, Bridge controls, cluster detail, and backend-backed actions are in place. Newly identified gaps make this less complete than previously scored: cluster visual redesign, map fallback/performance, data-point naming, saved-chat refresh, setup model-choice UI, diagnostics UI, and visual QA remain. |
+| UI prototype cleanup | In progress | `[########--] 84%` | Core app routes, Mind workspace, source cards, setup flow, chat composer, Bridge controls, cluster detail, and backend-backed actions are in place. Newly identified gaps make this less complete than previously scored: cluster visual redesign, map fallback/performance, data-point naming, saved-chat refresh, compulsory embedding setup gate, setup model-choice UI, diagnostics UI, and visual QA remain. |
 | Desktop app foundation | In progress | `[#########-] 86%` | Electron workspace, Vite dev server, build, file IPC, configurable backend API probing, dev backend process handling, single-instance handling, local backend token handoff, and unpacked packaged launch are working. Needs robust runtime process management, vault-lock UI surfacing, and installer smoke. |
-| Local backend foundation | In progress | `[########--] 82%` | SQLite CRUD routes, ingestion endpoints, Bridge settings/token auth, chat streaming/memory status, policy-aware background worker foundation, startup integrity/schema checks, vault ownership lock, optional local API token middleware, Electron token handoff, startup vector reconciliation queueing, expert scaffold, and model status routes work. Needs service-layer cleanup, migration runner, full auth hardening tests, repair UI, and broader recovery drills. |
-| Vault ingestion | In progress | `[#######---] 72%` | Current ingestion handles TXT/Markdown/DOCX/PDF, pasted text, static links, drag/drop, local folder import, basic summaries/tags, queued reindexing, page-aware source/chunk schema, source tombstones, delete cleanup, and checksum dedupe. Product-grade vault ingestion still needs OCR, scanned PDF handling, robust PDF reader UI/pagination, small audio/video handling, dynamic link extraction, broader type gating, large-cluster scale behavior, and failure/progress policy. |
+| Local backend foundation | In progress | `[########--] 84%` | SQLite CRUD routes, ingestion endpoints, Bridge settings/token auth, chat streaming/memory status, policy-aware background worker foundation, startup integrity/schema checks, vault ownership lock, optional local API token middleware, Electron token handoff, startup vector reconciliation queueing, runtime state reporting, retriable generation recovery, expert scaffold, and model status routes work. Needs service-layer cleanup, migration runner, full auth hardening tests, repair UI, and broader recovery drills. |
+| Vault ingestion | In progress | `[########--] 82%` | Current ingestion handles TXT/Markdown/DOCX/PDF, CSV/JSON/XML/YAML/RTF/logs, common code files, bundled-local-OCR image/scanned-PDF hooks, small audio/video metadata, pasted text, static links, drag/drop, local folder import, basic summaries/tags, queued reindexing, page-aware source/chunk schema, source tombstones, delete cleanup, and checksum dedupe. Product-grade vault ingestion still needs staging the OCR binary/tessdata into the installer, more OCR QA, real audio/video transcription, dynamic link extraction, large-cluster scale behavior, and failure/progress policy. |
 | Embeddings and clustering | In progress | `[######----] 64%` | Keyword clustering, chunking, MiniLM-first embedding configuration, dev-only hash fallback, SQLite vector storage with chunk model/index metadata, semantic search, map search, suggestions, dismissals, merge controls, and first incremental vector reconciliation job work. Needs vector-store consistency/compaction, active embedding-index transitions, large-cluster relevance ledgers, and merge artifact policy. |
-| Chat and context routing | In progress | `[#######---] 70%` | Global-by-default chat, persisted sessions/messages, backend sidebar, streaming, citations, runtime fallback, answer actions, transcript indexing, and local runtime adapter are working. Needs complete-scope answering, token budgets, citation snapshot/audit schemas, chat pagination/retention, retriable generation recovery, visible runtime failure states, and long-running analysis UI. |
+| Chat and context routing | In progress | `[#######---] 78%` | Global-by-default chat, persisted sessions/messages, pending generation records, retriable startup recovery, retrieval snapshots/items, backend sidebar, streaming, page-aware citations, stale/deleted citation labels, runtime fallback, answer actions, transcript indexing, and local runtime adapter are working. Needs complete-scope answering, token budgets, richer citation click-through actions, chat pagination/retention, richer runtime failure UI, and long-running analysis UI. |
 | Compulsory cluster experts | In progress | `[#---------] 12%` | Expert lifecycle UI/state and job scaffolds exist. Real product behavior still needs training implementation, pending/failed/hardware-unsupported states, structured failure codes, retry policy, adapter storage, evaluation, rollback, merge invalidation, and artifact cleanup. |
 | Context Bridge | In progress | `[######----] 64%` | Bridge UI, settings/history, HTTP context endpoint, token-gated Bridge access, allowlists, semantic retrieval, request logging, and first CLI/MCP prototypes exist. Needs core backend auth separation, stale permission proof, per-client setup, token lifecycle, malformed-client handling, and real MCP client smoke. |
 | Packaging and installer | In progress | `[######----] 60%` | Windows packaging scaffold, Python runtime staging, one-click NSIS build, icon, unpacked launch smoke, and model download scripts exist. Needs installer install/uninstall smoke, disk-space checks, post-install model setup, runtime repair flow, update/migration policy, and diagnostic export packaging. |
-| QA and hardening | In progress | `[###-------] 32%` | Security pass, dependency audit, compile/build/smoke checks, job architecture documentation, scheduler checkpoint tests, source-page indexing tests, delete/search cleanup tests, duplicate-source tests, reconciliation queue tests, and startup-path smoke exist. Needs Python CVE audit, auth/vault-lock integration tests, migration tests, scale/performance benchmarks, map benchmarks, diagnostics, failure-state tests, and recovery drills. |
+| QA and hardening | In progress | `[####------] 38%` | Security pass, dependency audit, compile/build/smoke checks, job architecture documentation, scheduler checkpoint tests, source-page indexing tests, expanded file extraction tests, delete/search cleanup tests, duplicate-source tests, reconciliation queue tests, retrieval snapshot tests, interrupted-generation recovery tests, and startup-path smoke exist. Needs Python CVE audit, auth/vault-lock integration tests, migration tests, scale/performance benchmarks, map benchmarks, diagnostics, failure-state tests, and recovery drills. |
 
 ## Week-By-Week Goals
 
@@ -390,6 +390,31 @@ Exit criteria:
   - changed source deletion to tombstone immediately, exclude from search immediately, and queue cleanup for derived page/chunk data
   - made MiniLM the default embedding backend and moved hash embeddings behind an explicit dev/test flag
   - added focused test coverage for page-linked chunk creation, source deletion/search exclusion, cleanup, duplicate detection, incremental vector reconciliation queueing, and scheduler checkpoints
+- Continued Phase 3 ingestion expansion:
+  - expanded local ingestion to CSV, JSON/JSONL, HTML/HTM, XML, YAML, RTF, logs, common source-code files, images, and small audio/video files
+  - image ingestion uses OCR if `pytesseract`/Pillow are present and otherwise stores file metadata with an explicit OCR-not-configured note
+  - small audio/video files currently ingest as metadata records; transcription remains a separate model/runtime feature
+  - expanded Electron file picker and folder scan allowlist to match the broader backend ingestion allowlist
+- Added runtime/generation durability foundations:
+  - local model runtime status now reports `missing`, `checking`, `ready`, `busy`, or `unreachable`, plus in-flight generation count
+  - chat requests persist user prompts and `chat_generations` before synthesis/streaming begins
+  - backend startup marks interrupted `in_flight` generations as `retriable`
+- Added chat retrieval durability:
+  - added `retrieval_snapshots` and `retrieval_snapshot_items` tables separate from `chat_messages`
+  - retrieval snapshot items store source/chunk/page IDs, page number, source title at answer time, snippet hash, short excerpt, score, rank, and state
+  - assistant message save and retrieval snapshot writes happen in the same SQLite transaction
+  - added tests for snapshot writes and interrupted generation recovery
+- Added bundled-local OCR foundations:
+  - added a local OCR adapter that runs `backend/bin/ocr/tesseract.exe` directly with local `tessdata`
+  - scanned PDFs fall back to page-by-page local OCR through PyMuPDF rendering when embedded text is missing
+  - images run through the bundled OCR engine when present and otherwise vault as metadata with an explicit local-OCR-unavailable note
+  - packaging now includes `backend/bin/**/*` and the packaged Python runtime installs PyMuPDF
+  - `docs/WORKING_COMMANDS.md` records the expected OCR bundle location and common dev commands
+- Added page/citation visibility:
+  - added `/sources/{source_id}/pages`
+  - Sources detail sheet now shows extracted pages
+  - chat citation chips show page numbers and stale/deleted source labels from retrieval snapshots
+- Audio/video transcription remains a V1 todo. Current audio/video ingestion intentionally stores metadata only until a local transcription runtime is selected and benchmarked.
 - Added first-pass keyword-based automatic cluster assignment during indexed source creation.
 - Added conservative automatic cluster creation when a new indexed source does not match an existing cluster.
 - Updated the map to render unclustered sources as standalone loose data points.
@@ -940,6 +965,7 @@ Exit criteria:
 - The July-end target is achievable for a demoable MVP if we keep V1 focused.
 - The riskiest feature is local fine-tuning, not the desktop shell.
 - The app should remain useful during expert bootstrapping through retrieval-backed context.
+- First-time onboarding must require a real embedding backend before the user reaches the main vault. The user can either download Vault's recommended embedding model or point Vault at an existing compatible local embedding model/cache path. Hash embeddings are dev/test only and must never satisfy production onboarding.
 - We should avoid silent full-device scans in V1.
 - Every task should end by updating this file with completed work and remaining work.
 - Electron is the pragmatic first shell. Tauri can be reconsidered after the app flow is proven.

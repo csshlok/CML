@@ -8,8 +8,9 @@ from fastapi.responses import StreamingResponse
 from backend.app.api.routes.search import semantic_search
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.embeddings import active_embedding_model_id, content_hash
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
-from backend.app.core.llm_runtime import LLMRuntimeError, generate_grounded_answer, stream_grounded_answer
+from backend.app.core.llm_runtime import LLMRuntimeError, generate_grounded_answer, runtime_status, stream_grounded_answer
 from backend.app.core.memory_card import summarize_text
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
@@ -85,7 +86,8 @@ def get_chat_session(session_id: str) -> dict:
             "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC",
             (session_id,),
         ).fetchall()
-    return _session_from_row(row, [_message_from_row(message) for message in messages])
+        hydrated_messages = [_message_from_row(conn, message) for message in messages]
+    return _session_from_row(row, hydrated_messages)
 
 
 @router.patch("/sessions/{session_id}", response_model=ChatSessionRead)
@@ -161,6 +163,14 @@ def update_chat_message(message_id: str, payload: ChatMessageUpdate) -> dict:
 
 @router.post("/context", response_model=ChatContextResponse)
 def build_chat_context(payload: ChatContextRequest) -> dict:
+    generation = _start_chat_generation(
+        vault_id=payload.vault_id,
+        session_id=payload.session_id,
+        cluster_id=payload.cluster_id,
+        prompt=payload.prompt,
+    ) if payload.persist else None
+    if generation:
+        payload = payload.model_copy(update={"session_id": generation["session_id"]})
     context = _build_retrieval_context(payload)
     citations = context["citations"]
     clusters_used = context["clusters_used"]
@@ -168,19 +178,21 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
     answer = context["answer"]
 
     session_id = payload.session_id
-    user_message_id = None
-    assistant_message_id = None
-    if payload.persist:
-        session_id, user_message_id, assistant_message_id = _persist_chat_turn(
+    user_message_id = generation["user_message_id"] if generation else None
+    assistant_message_id = generation["assistant_message_id"] if generation else None
+    if generation:
+        _complete_chat_generation(
+            generation_id=generation["generation_id"],
+            session_id=generation["session_id"],
+            assistant_message_id=generation["assistant_message_id"],
             vault_id=payload.vault_id,
-            session_id=session_id,
-            cluster_id=payload.cluster_id,
             prompt=payload.prompt,
             answer=answer,
             clusters_used=clusters_used,
             citations=citations,
             warnings=warnings,
         )
+        session_id = generation["session_id"]
 
     return {
         "session_id": session_id,
@@ -198,7 +210,18 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
 @router.post("/context/stream")
 def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
     def events():
-        context = _build_retrieval_context(payload, synthesize=False)
+        generation = None
+        if payload.persist:
+            generation = _start_chat_generation(
+                vault_id=payload.vault_id,
+                session_id=payload.session_id,
+                cluster_id=payload.cluster_id,
+                prompt=payload.prompt,
+            )
+            active_payload = payload.model_copy(update={"session_id": generation["session_id"]})
+        else:
+            active_payload = payload
+        context = _build_retrieval_context(active_payload, synthesize=False)
         answer_parts: list[str] = []
         warnings = list(context["warnings"])
         citations = context["citations"]
@@ -215,7 +238,7 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
         else:
             try:
                 for chunk in stream_grounded_answer(
-                    prompt=payload.prompt,
+                    prompt=active_payload.prompt,
                     citations=citations,
                     clusters_used=clusters_used,
                 ):
@@ -223,21 +246,22 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                     yield _sse("token", {"text": chunk})
                 warnings.append("Answered by streaming local model runtime.")
             except LLMRuntimeError as exc:
-                fallback = _build_extract_answer(payload.prompt, citations)
+                fallback = _build_extract_answer(active_payload.prompt, citations)
                 warnings.append(f"Using retrieval draft fallback because local streaming is unavailable: {exc}")
                 for chunk in _chunk_text(fallback):
                     answer_parts.append(chunk)
                     yield _sse("token", {"text": chunk})
 
         answer = "".join(answer_parts).strip()
-        session_id = payload.session_id
-        user_message_id = None
-        assistant_message_id = None
-        if payload.persist:
-            session_id, user_message_id, assistant_message_id = _persist_chat_turn(
+        session_id = generation["session_id"] if generation else payload.session_id
+        user_message_id = generation["user_message_id"] if generation else None
+        assistant_message_id = generation["assistant_message_id"] if generation else None
+        if generation:
+            _complete_chat_generation(
+                generation_id=generation["generation_id"],
+                session_id=generation["session_id"],
+                assistant_message_id=generation["assistant_message_id"],
                 vault_id=payload.vault_id,
-                session_id=session_id,
-                cluster_id=payload.cluster_id,
                 prompt=payload.prompt,
                 answer=answer,
                 clusters_used=clusters_used,
@@ -306,8 +330,12 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         {
             "source_id": result["source_id"],
             "source_title": result["source_title"],
+            "chunk_id": result.get("chunk_id"),
+            "page_id": result.get("page_id"),
+            "page_number": result.get("page_number"),
             "snippet": _trim_snippet(result["snippet"]),
             "score": result["score"],
+            "state": "current",
         }
         for result in results[:4]
     ]
@@ -386,9 +414,37 @@ def _persist_chat_turn(
     citations: list[dict],
     warnings: list[str],
 ) -> tuple[str, str, str]:
+    generation = _start_chat_generation(
+        vault_id=vault_id,
+        session_id=session_id,
+        cluster_id=cluster_id,
+        prompt=prompt,
+    )
+    _complete_chat_generation(
+        generation_id=generation["generation_id"],
+        session_id=generation["session_id"],
+        assistant_message_id=generation["assistant_message_id"],
+        vault_id=vault_id,
+        prompt=prompt,
+        answer=answer,
+        clusters_used=clusters_used,
+        citations=citations,
+        warnings=warnings,
+    )
+    return generation["session_id"], generation["user_message_id"], generation["assistant_message_id"]
+
+
+def _start_chat_generation(
+    *,
+    vault_id: str,
+    session_id: str | None,
+    cluster_id: str | None,
+    prompt: str,
+) -> dict:
     now = utc_now()
     title = _title_from_prompt(prompt)
     with connect() as conn:
+        _ensure_vault(conn, vault_id)
         if session_id is None:
             session_id = f"chat-{uuid4()}"
             conn.execute(
@@ -411,6 +467,8 @@ def _persist_chat_turn(
 
         user_message_id = f"msg-{uuid4()}"
         assistant_message_id = f"msg-{uuid4()}"
+        generation_id = f"gen-{uuid4()}"
+        runtime = runtime_status()
         conn.execute(
             """
             INSERT INTO chat_messages (
@@ -420,6 +478,60 @@ def _persist_chat_turn(
             """,
             (user_message_id, session_id, prompt, now),
         )
+        conn.execute(
+            """
+            INSERT INTO chat_generations (
+                id, session_id, user_message_id, assistant_message_id, vault_id, prompt, state,
+                runtime_provider, runtime_model, error, heartbeat_at, created_at, updated_at,
+                completed_at
+            )
+            VALUES (?, ?, ?, NULL, ?, ?, 'in_flight', ?, ?, '', ?, ?, ?, NULL)
+            """,
+            (
+                generation_id,
+                session_id,
+                user_message_id,
+                vault_id,
+                prompt,
+                runtime["provider"],
+                runtime["model"],
+                now,
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE chat_sessions
+            SET updated_at = ?,
+                title = CASE WHEN title = 'New chat' THEN ? ELSE title END
+            WHERE id = ?
+            """,
+            (now, title, session_id),
+        )
+
+    return {
+        "generation_id": generation_id,
+        "session_id": session_id,
+        "user_message_id": user_message_id,
+        "assistant_message_id": assistant_message_id,
+    }
+
+
+def _complete_chat_generation(
+    *,
+    generation_id: str,
+    session_id: str,
+    assistant_message_id: str,
+    vault_id: str,
+    prompt: str,
+    answer: str,
+    clusters_used: list[dict],
+    citations: list[dict],
+    warnings: list[str],
+) -> None:
+    now = utc_now()
+    with connect() as conn:
         conn.execute(
             """
             INSERT INTO chat_messages (
@@ -437,14 +549,22 @@ def _persist_chat_turn(
                 now,
             ),
         )
+        _write_retrieval_snapshot(
+            conn,
+            message_id=assistant_message_id,
+            session_id=session_id,
+            vault_id=vault_id,
+            query=prompt,
+            citations=citations,
+            now=now,
+        )
         conn.execute(
             """
-            UPDATE chat_sessions
-            SET updated_at = ?,
-                title = CASE WHEN title = 'New chat' THEN ? ELSE title END
+            UPDATE chat_generations
+            SET state = 'completed', assistant_message_id = ?, completed_at = ?, updated_at = ?
             WHERE id = ?
             """,
-            (now, title, session_id),
+            (assistant_message_id, now, now, generation_id),
         )
         conn.execute(
             "UPDATE chat_sessions SET memory_status = 'indexing', memory_updated_at = ? WHERE id = ?",
@@ -457,7 +577,54 @@ def _persist_chat_turn(
             dedupe_key=f"chat-memory:{session_id}",
         )
 
-    return session_id, user_message_id, assistant_message_id
+
+def _write_retrieval_snapshot(
+    conn,
+    *,
+    message_id: str,
+    session_id: str,
+    vault_id: str,
+    query: str,
+    citations: list[dict],
+    now: str,
+) -> None:
+    snapshot_id = f"snapshot-{uuid4()}"
+    conn.execute(
+        """
+        INSERT INTO retrieval_snapshots (
+            id, message_id, session_id, vault_id, query, retrieval_mode,
+            embedding_model_id, token_budget, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, 'semantic', ?, NULL, ?)
+        """,
+        (snapshot_id, message_id, session_id, vault_id, query, active_embedding_model_id(), now),
+    )
+    for rank, citation in enumerate(citations, start=1):
+        conn.execute(
+            """
+            INSERT INTO retrieval_snapshot_items (
+                id, snapshot_id, source_id, chunk_id, page_id, source_title_at_answer_time,
+                page_number, snippet_hash, short_snippet_excerpt, relevance_score, item_rank,
+                state, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"snapshot-item-{uuid4()}",
+                snapshot_id,
+                citation.get("source_id"),
+                citation.get("chunk_id"),
+                citation.get("page_id"),
+                citation.get("source_title") or "",
+                citation.get("page_number"),
+                content_hash(citation.get("snippet") or ""),
+                _trim_snippet(citation.get("snippet") or "", limit=260),
+                float(citation.get("score") or 0),
+                rank,
+                citation.get("state") or "current",
+                now,
+            ),
+        )
 
 
 def _upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> None:
@@ -623,14 +790,62 @@ def _session_from_row(row, messages: list[dict]) -> dict:
     return session
 
 
-def _message_from_row(row) -> dict:
+def _message_from_row(conn, row) -> dict:
     message = dict_from_row(row)
     message["clusters_used"] = _json_list(message.get("clusters_used"))
-    message["citations"] = _json_list(message.get("citations"))
+    message["citations"] = _snapshot_citations_for_message(conn, message) or _json_list(message.get("citations"))
     message["warnings"] = _json_list(message.get("warnings"))
     message["useful"] = None if message.get("useful") is None else bool(message["useful"])
     message["saved"] = bool(message.get("saved", 0))
     return message
+
+
+def _snapshot_citations_for_message(conn, message: dict) -> list[dict]:
+    if message.get("role") != "assistant":
+        return []
+    snapshot = conn.execute(
+        "SELECT * FROM retrieval_snapshots WHERE message_id = ? ORDER BY created_at DESC LIMIT 1",
+        (message["id"],),
+    ).fetchone()
+    if snapshot is None:
+        return []
+    rows = conn.execute(
+        """
+        SELECT
+            items.*,
+            sources.deleted_at AS source_deleted_at,
+            sources.updated_at AS source_updated_at,
+            chunks.indexed_at AS chunk_indexed_at
+        FROM retrieval_snapshot_items items
+        LEFT JOIN sources ON sources.id = items.source_id
+        LEFT JOIN source_chunks chunks ON chunks.id = items.chunk_id
+        WHERE items.snapshot_id = ?
+        ORDER BY items.item_rank ASC
+        """,
+        (snapshot["id"],),
+    ).fetchall()
+    citations = []
+    for row in rows:
+        state = "current"
+        if row["source_id"] is None or row["source_deleted_at"]:
+            state = "source_deleted"
+        elif row["chunk_id"] and row["chunk_indexed_at"] is None:
+            state = "source_reindexed"
+        elif row["source_updated_at"] and row["source_updated_at"] > snapshot["created_at"]:
+            state = "source_reindexed"
+        citations.append(
+            {
+                "source_id": row["source_id"] or "",
+                "source_title": row["source_title_at_answer_time"],
+                "chunk_id": row["chunk_id"],
+                "page_id": row["page_id"],
+                "page_number": row["page_number"],
+                "snippet": row["short_snippet_excerpt"],
+                "score": row["relevance_score"],
+                "state": state,
+            }
+        )
+    return citations
 
 
 def _json_list(value: str | None) -> list:

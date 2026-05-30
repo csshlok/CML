@@ -227,6 +227,110 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(source_count, 1)
 
+    def test_code_and_media_files_are_ingestable(self) -> None:
+        from backend.app.core.extraction import extract_pages_from_path
+
+        code_path = Path(self.tmp.name) / "example.py"
+        code_path.write_text("def hello():\n    return 'vault'\n", encoding="utf-8")
+        media_path = Path(self.tmp.name) / "clip.mp4"
+        media_path.write_bytes(b"not a real movie, but small media metadata is enough")
+
+        code_title, code_pages = extract_pages_from_path(str(code_path))
+        media_title, media_pages = extract_pages_from_path(str(media_path))
+
+        self.assertEqual(code_title, "example.py")
+        self.assertIn("Code file", code_pages[0])
+        self.assertEqual(media_title, "clip.mp4")
+        self.assertIn("Media file stored in vault metadata", media_pages[0])
+
+    def test_chat_answer_writes_generation_and_retrieval_snapshot(self) -> None:
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Runtime notes",
+                source_type="note",
+                raw_text="local runtime recovery citation snapshot durable retrieval " * 80,
+            )
+        )
+        run_due_jobs_once(limit=1)
+
+        response = build_chat_context(
+            ChatContextRequest(vault_id="vault-1", prompt="runtime recovery citation snapshot")
+        )
+
+        with connect() as conn:
+            generation = conn.execute(
+                "SELECT * FROM chat_generations WHERE session_id = ?",
+                (response["session_id"],),
+            ).fetchone()
+            snapshot = conn.execute(
+                "SELECT * FROM retrieval_snapshots WHERE message_id = ?",
+                (response["assistant_message_id"],),
+            ).fetchone()
+            items = conn.execute(
+                "SELECT * FROM retrieval_snapshot_items WHERE snapshot_id = ?",
+                (snapshot["id"],),
+            ).fetchall()
+
+        self.assertEqual(generation["state"], "completed")
+        self.assertIsNotNone(snapshot)
+        self.assertGreaterEqual(len(items), 1)
+        self.assertTrue(items[0]["source_title_at_answer_time"])
+
+    def test_startup_recovery_marks_in_flight_generations_retriable(self) -> None:
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.generation_recovery import recover_interrupted_generations
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id, vault_id, title, scope_cluster_id, saved, memory_status,
+                    memory_updated_at, created_at, updated_at
+                )
+                VALUES ('chat-1', 'vault-1', 'Recovery', NULL, 0, 'idle', NULL, ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_generations (
+                    id, session_id, user_message_id, assistant_message_id, vault_id, prompt,
+                    state, runtime_provider, runtime_model, error, heartbeat_at, created_at,
+                    updated_at, completed_at
+                )
+                VALUES ('gen-1', 'chat-1', NULL, NULL, 'vault-1', 'hello', 'in_flight',
+                    'none', '', '', ?, ?, ?, NULL)
+                """,
+                (now, now, now),
+            )
+
+        recovered = recover_interrupted_generations()
+
+        with connect() as conn:
+            row = conn.execute("SELECT state, error FROM chat_generations WHERE id = 'gen-1'").fetchone()
+        self.assertEqual(recovered, 1)
+        self.assertEqual(row["state"], "retriable")
+        self.assertIn("interrupted", row["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

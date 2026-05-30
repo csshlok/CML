@@ -138,6 +138,18 @@ class SourceRead(BaseModel):
     updated_at: str
 
 
+class SourcePageRead(BaseModel):
+    id: str
+    source_id: str
+    vault_id: str
+    page_number: int
+    raw_text: str
+    extraction_version: str
+    content_hash: str
+    created_at: str
+    updated_at: str
+
+
 class SemanticSearchRequest(BaseModel):
     vault_id: str
     query: str = Field(min_length=1)
@@ -151,6 +163,8 @@ class SemanticSearchResult(BaseModel):
     source_type: str
     cluster_id: str | None
     chunk_id: str
+    page_id: str | None = None
+    page_number: int | None = None
     chunk_index: int
     snippet: str
     score: float
@@ -222,6 +236,10 @@ class ChatCitation(BaseModel):
     source_title: str
     snippet: str
     score: float
+    chunk_id: str | None = None
+    page_id: str | None = None
+    page_number: int | None = None
+    state: str = "current"
 
 
 class ChatClusterUse(BaseModel):
@@ -325,6 +343,8 @@ class ModelRuntimeStatus(BaseModel):
     base_url: str
     model: str
     available: bool
+    state: str = "missing"
+    in_flight: int = 0
     detail: str
 
 

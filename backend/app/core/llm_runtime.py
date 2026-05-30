@@ -1,8 +1,10 @@
 from dataclasses import dataclass
+from contextlib import contextmanager
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 import json
+import threading
 
 from backend.app.core.config import get_settings
 
@@ -18,23 +20,37 @@ class LLMRuntimeError(RuntimeError):
     pass
 
 
+_IN_FLIGHT_LOCK = threading.Lock()
+_IN_FLIGHT_GENERATIONS = 0
+
+
 def runtime_status() -> dict[str, Any]:
     settings = get_settings()
+    in_flight = _in_flight_count()
     status = {
         "provider": settings.llm_provider,
         "base_url": settings.llm_base_url,
         "model": settings.llm_model,
         "available": False,
+        "state": "missing" if settings.llm_provider == "none" else "checking",
+        "in_flight": in_flight,
         "detail": "No local model runtime configured.",
     }
     if settings.llm_provider == "none":
         return status
+    if in_flight > 0:
+        status["state"] = "busy"
+        status["available"] = True
+        status["detail"] = "Local model runtime is processing a generation."
+        return status
     try:
         _openai_get("/models", timeout=2)
     except LLMRuntimeError as exc:
+        status["state"] = "unreachable"
         status["detail"] = str(exc)
         return status
     status["available"] = True
+    status["state"] = "ready"
     status["detail"] = "Local model runtime is reachable."
     return status
 
@@ -69,7 +85,8 @@ def generate_grounded_answer(
         "temperature": 0.2,
         "stream": False,
     }
-    response = _openai_post("/chat/completions", payload, timeout=_interactive_timeout())
+    with generation_in_flight():
+        response = _openai_post("/chat/completions", payload, timeout=_interactive_timeout())
     try:
         text = response["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError) as exc:
@@ -109,7 +126,25 @@ def stream_grounded_answer(
         "temperature": 0.2,
         "stream": True,
     }
-    yield from _openai_stream("/chat/completions", payload, timeout=_interactive_timeout())
+    with generation_in_flight():
+        yield from _openai_stream("/chat/completions", payload, timeout=_interactive_timeout())
+
+
+@contextmanager
+def generation_in_flight():
+    global _IN_FLIGHT_GENERATIONS
+    with _IN_FLIGHT_LOCK:
+        _IN_FLIGHT_GENERATIONS += 1
+    try:
+        yield
+    finally:
+        with _IN_FLIGHT_LOCK:
+            _IN_FLIGHT_GENERATIONS = max(0, _IN_FLIGHT_GENERATIONS - 1)
+
+
+def _in_flight_count() -> int:
+    with _IN_FLIGHT_LOCK:
+        return _IN_FLIGHT_GENERATIONS
 
 
 def _build_context_prompt(prompt: str, citations: list[dict], clusters_used: list[dict]) -> str:
