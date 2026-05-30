@@ -13,6 +13,10 @@ Electron is the first desktop shell choice because Node is already available in 
 - `docs`: product, UI, project context, and architecture documents.
 - `UI-CML-V0`: preserved reference copy of the initial UI prototype.
 
+Key architecture references:
+
+- [JOB_AND_MAINTENANCE_ARCHITECTURE.md](JOB_AND_MAINTENANCE_ARCHITECTURE.md) defines the target background job taxonomy, scheduler rules, dependency model, and startup recovery state transitions for ingestion, indexing, diagnostics, cleanup, merge repair, and future expert training.
+
 ## Runtime Shape
 
 During development:

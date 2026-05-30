@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-05-29
+Last updated: 2026-05-30
 
 ## Project Goal
 
@@ -20,6 +20,8 @@ Target completion: **end of July 2026**.
 - Cluster expert behavior: expert lifecycle exists immediately; retrieval-backed bootstrapping can answer before fine-tuning completes.
 - Local synthesis model ladder: Qwen3-4B Q4_K_M as the default recommended model, Phi-4-mini-instruct Q4_K_M as the low-spec fallback, Qwen3-8B Q4_K_M as the higher-quality option, and Gemma 3 4B/12B as optional later long-context/vision-adjacent candidates.
 - Model packaging: do not bundle LLM weights in the first installer. Ship CML smaller and let users download/select local models during setup.
+- First-run model setup: after Vault is installed, users should be able to either use CML's recommended local model set or connect their own already-installed local models for synthesis, embeddings, clustering, and later expert workflows.
+- Embedding product direction: deterministic/hash embeddings are a development fallback only. V1 should default to a real local LLM embedding model path, with user-selectable model configuration during setup/settings.
 - External integrations: Context Bridge via MCP, local HTTP API, CLI, and copy/export helpers.
 - Privacy: local-first by default.
 - Existing UI prototype: `UI-CML-V0/context-whisperer-suite-main`.
@@ -65,17 +67,17 @@ Progress bar legend:
 
 | Phase | Status | Progress | Notes |
 | --- | --- | --- | --- |
-| Product definition | In progress | `[########--] 84%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, runtime boundary, model storage decision, and first Windows installer/runtime direction are documented. Needs final production installer/update policy. |
-| UI prototype cleanup | In progress | `[#########-] 99%` | V0 reviewed. Cross-platform shortcuts fixed. CML Mind workspace, clickable source cards, setup flow, cleaned-up blob map, UI audit cleanup, misleading-control pass, backend-backed cluster detail, persisted chat actions, Bridge permission controls, cluster source controls, expert controls, and real Chat index composer are in place. Needs visual QA and final shared toolbar polish. |
-| Desktop app foundation | In progress | `[#########-] 95%` | Electron workspace created, frontend build passes, Vite dev server verified, file-opening IPC/file picker primitives added, UI routes can call configurable backend APIs, Settings can read model/runtime status, Electron can manage a local backend process, stale backend probing rejects missing setup APIs, and the unpacked packaged app launches with a bundled backend. Needs installer install/uninstall smoke. |
-| Local backend foundation | In progress | `[#########-] 88%` | SQLite config/storage foundation, CRUD route groups, ingestion endpoints, Bridge settings/token auth, chat streaming/memory status, background app job queue, expert job queue scaffold, embedding runtime status, and first-pass clustering service are working. Needs service-layer cleanup and tests. |
-| Vault ingestion | In progress | `[#########-] 91%` | Source metadata/text records can be created and viewed from the Sources UI. TXT/Markdown/DOCX/PDF, pasted text, static link ingestion, setup import, desktop drag/drop import, local synced-folder import, per-file batch import failure reporting, link title/image metadata, generated summaries/tags, in-app capture dialogs, and queued source reindexing work. Needs screenshots/OCR extraction and dynamic-page parsing. |
-| Embeddings and clustering | In progress | `[#######---] 76%` | First-pass keyword auto-clustering, local chunking, deterministic local embeddings, optional SentenceTransformers runtime path/cache setting, installed MiniLM cache, runtime embedding provider switching, SQLite vector storage, semantic search API, semantic Mind search, reviewable cluster move suggestions, suggestion dismissal, and cluster merge are working. Need richer split suggestions and one-click packaged MiniLM install/download. |
-| Chat and context routing | In progress | `[#########-] 96%` | Retrieval-grounded chat context, persisted backend chat sessions/messages, backend chat sidebar loading/deletion, context-first Chat index composer, global-by-default retrieval with optional cluster scope, answer feedback/save actions, background transcript memory indexing, SSE answer streaming, stop/retry controls, local model runtime adapter, model setup UI, llama.cpp runtime helper scripts, fallback drafts, cluster usage, warnings, and citations are working. Needs deeper multi-turn routing polish. |
-| Compulsory cluster experts | In progress | `[##--------] 20%` | Expert lifecycle states, expert job queue table, retrain/pause routes, cluster detail controls, and source/chat-memory change triggers are scaffolded. Need real local training implementation, adapter files, evaluation, and rollback. |
-| Context Bridge | In progress | `[#######---] 78%` | Bridge UI route reads backend status/history and can update local permission settings. HTTP bridge context now enforces enabled state, app token, vault/cluster allowlists, raw-text redaction, semantic retrieval, and request logging. First CLI and MCP stdio prototypes are in place. Needs per-client setup and deeper MCP client smoke. |
-| Packaging and installer | In progress | `[#######---] 72%` | Windows llama.cpp runtime download/start scripts, Electron backend process management, electron-builder packaging scaffold, packaged Python runtime staging, branded one-click NSIS installer build, CML icon, and unpacked packaged backend launch verification are working. Need installer install/uninstall smoke and packaged model setup flow. |
-| QA and hardening | In progress | `[###-------] 28%` | Security pass completed across backend, Electron shell, frontend dynamic CSS, and dependency audit. Backend compile/build/smoke checks now cover queued jobs, packaged launch, and npm audit. Needs Python CVE audit, broader tests, reliability checks, failure states, and performance review. |
+| Product definition | In progress | `[#########-] 90%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, runtime boundary, model storage decision, installer direction, production-gap notes, and job/maintenance architecture are documented. Needs final production installer/update policy and explicit V1 cut list. |
+| UI prototype cleanup | In progress | `[########--] 84%` | Core app routes, Mind workspace, source cards, setup flow, chat composer, Bridge controls, cluster detail, and backend-backed actions are in place. Newly identified gaps make this less complete than previously scored: cluster visual redesign, map fallback/performance, data-point naming, saved-chat refresh, setup model-choice UI, diagnostics UI, and visual QA remain. |
+| Desktop app foundation | In progress | `[########--] 82%` | Electron workspace, Vite dev server, build, file IPC, configurable backend API probing, dev backend process handling, and unpacked packaged launch are working. Needs single-instance lock, vault lock coordination, local API token handoff, robust runtime process management, and installer smoke. |
+| Local backend foundation | In progress | `[#######---] 70%` | SQLite CRUD routes, ingestion endpoints, Bridge settings/token auth, chat streaming/memory status, simple background worker, expert scaffold, and model status routes work. Needs service-layer cleanup, authenticated core API, startup integrity/migration sequence, job taxonomy scheduler, vault lock handling, reconciliation, and tests. |
+| Vault ingestion | In progress | `[######----] 62%` | Current ingestion handles TXT/Markdown/DOCX/PDF, pasted text, static links, drag/drop, local folder import, basic summaries/tags, and queued reindexing. Product-grade vault ingestion still needs OCR, scanned PDF/page pagination, small audio/video handling, dynamic link extraction, broader type gating, large-cluster scale behavior, and failure/progress policy. |
+| Embeddings and clustering | In progress | `[######----] 58%` | Keyword clustering, chunking, development hash embeddings, optional MiniLM runtime path, SQLite vector storage, semantic search, map search, suggestions, dismissals, and merge controls work. Needs real embedding default/setup, vector consistency/reconciliation/compaction, active embedding-index transitions, large-cluster relevance ledgers, and merge artifact policy. |
+| Chat and context routing | In progress | `[#######---] 70%` | Global-by-default chat, persisted sessions/messages, backend sidebar, streaming, citations, runtime fallback, answer actions, transcript indexing, and local runtime adapter are working. Needs complete-scope answering, token budgets, citation snapshot/audit schemas, chat pagination/retention, retriable generation recovery, visible runtime failure states, and long-running analysis UI. |
+| Compulsory cluster experts | In progress | `[#---------] 12%` | Expert lifecycle UI/state and job scaffolds exist. Real product behavior still needs training implementation, pending/failed/hardware-unsupported states, structured failure codes, retry policy, adapter storage, evaluation, rollback, merge invalidation, and artifact cleanup. |
+| Context Bridge | In progress | `[######----] 64%` | Bridge UI, settings/history, HTTP context endpoint, token-gated Bridge access, allowlists, semantic retrieval, request logging, and first CLI/MCP prototypes exist. Needs core backend auth separation, stale permission proof, per-client setup, token lifecycle, malformed-client handling, and real MCP client smoke. |
+| Packaging and installer | In progress | `[######----] 60%` | Windows packaging scaffold, Python runtime staging, one-click NSIS build, icon, unpacked launch smoke, and model download scripts exist. Needs installer install/uninstall smoke, disk-space checks, post-install model setup, runtime repair flow, update/migration policy, and diagnostic export packaging. |
+| QA and hardening | In progress | `[##--------] 22%` | Security pass, dependency audit, compile/build/smoke checks, and job architecture documentation exist. Needs Python CVE audit, backend auth, vault integrity/migration tests, reconciliation tests, scale/performance benchmarks, map benchmarks, diagnostics, failure-state tests, and recovery drills. |
 
 ## Week-By-Week Goals
 
@@ -355,6 +357,14 @@ Exit criteria:
 - Updated [ReadME.md](../ReadME.md) to document the new ingestion endpoints and current state.
 - Reviewed `t:\csshl\m2-res_480p.mp4` as an ingestion/storage reference video.
 - Added [INGESTION_REFERENCE_NOTES.md](INGESTION_REFERENCE_NOTES.md) with observed ingest types, inferred normalized memory-card storage model, and CML implications.
+- Added [JOB_AND_MAINTENANCE_ARCHITECTURE.md](JOB_AND_MAINTENANCE_ARCHITECTURE.md) as the target scheduler/maintenance architecture:
+  - fixed write-scope vocabulary
+  - concrete timeout policy structure
+  - separate `user_visible` and `user_initiated`
+  - preemption rules
+  - V1 dependency model
+  - filled job type registry
+  - scheduler rules and startup recovery state tables
 - Added first-pass keyword-based automatic cluster assignment during indexed source creation.
 - Added conservative automatic cluster creation when a new indexed source does not match an existing cluster.
 - Updated the map to render unclustered sources as standalone loose data points.
@@ -795,21 +805,49 @@ Exit criteria:
   - suggested cluster moves can be accepted or dismissed
   - clusters can be merged into another cluster, moving sources and scoped chats and marking the target expert stale
 - Added app-wide background job visibility in the footer with queued/running/failed counts and a run-once action.
+- Captured the May 30 product-gap pass in project context:
+  - broaden ingestion requirements to common local memory types, bounded small video/audio, OCR, scanned PDFs, and dynamic links
+  - require PDF pagination/page-level context storage
+  - require 1,000+ document cluster storage/retrieval planning with bounded cache usage
+  - require Bridge permission freshness, saved-chat refresh, and cluster/map visual/data-point fixes
+  - mark deterministic/hash embeddings as development fallback only, with real local embedding setup as the product default
 
 ## Current Open Work
 
 - Decide first supported OS for downloadable app.
 - Run installer install/uninstall smoke on a clean path, not only the unpacked packaged app.
 - Decide whether release builds should include optional embedding dependencies by default or keep them behind `-IncludeEmbeddingRuntime`.
-- Add one-click MiniLM dependency/model install from Settings instead of only allowing selection of an already available runtime/cache.
+- Replace user-facing deterministic/hash embedding selection with real local embedding setup. Hash embeddings may remain a hidden development fallback, but the product default must be an LLM embedding model.
+- Build first-run setup for model choices: recommended CML-managed downloads after install, or connect existing user-installed local models/endpoints for embeddings, synthesis, clustering, and later expert workflows.
+- Add one-click local embedding dependency/model install from setup/settings instead of only allowing selection of an already available runtime/cache.
 - Run a real long-download cancellation test against a model download before calling cancellation production-ready.
 - Add job retry/backoff policy, cancellation, and UI-facing job failure states.
 - Persist synced-folder import history and optionally add watched folder refresh.
 - Persist real source paths from ingestion so the map preview Vault/Explorer actions work on user-added files.
 - Add backend service layer around raw route/database operations.
-- Extend extraction beyond TXT/Markdown/DOCX/PDF/static links to screenshots, OCR, and dynamic-page parsing.
+- Expand ingestion beyond the current narrow document set. Support common user-thrown local memory types where safe and bounded: images/screenshots, PDFs, DOCX, Markdown/TXT, notes, links, chat exports, audio clips, and small video files. Reject or gate unsafe/oversized formats such as executables, archives that exceed limits, and large movie files.
+- Implement OCR for screenshots/images and scanned PDFs, including CPU throughput limits, visible job progress, and clear failure states.
+- Fix PDF reader/storage behavior with working pagination. Store page-level extracted text, page metadata, and source/page references so chat citations and previews can open the right page.
+- Add a large-cluster storage/retrieval plan for 1,000+ documents in one cluster: compact source metadata, chunk/page indexes, summarized context layers, lazy loading, pagination, and bounded cache usage.
+- Design and implement complete-scope answering for large clusters in stages:
+  - first build a coverage ledger and BM25/embedding relevance scoring across every document in scope, without any LLM map pass
+  - benchmark and tune relevance thresholds on real vault data before depending on them for latency or correctness
+  - then add LLM map passes only for above-threshold or coverage-required documents
+  - then add reduce/reconcile/final synthesis phases
+  - add derived-artifact caching only after the pipeline reveals which queries/artifacts are worth caching
+- Implement the source-of-truth/index consistency model before shipping real embedding transitions:
+  - SQLite is authoritative; vector indexes are derived and rebuildable
+  - embedding writes must use a SQLite transactional outbox and idempotent vector keys
+  - failed/running/stuck embedding jobs must recover without leaving chunks permanently unsearchable
+  - search must gracefully handle chunks that exist in SQLite but do not yet have vectors
+  - add startup incremental reconciliation, periodic reconciliation, and manual full "repair vault" reconciliation
+  - add deletion cleanup that prevents deleted sensitive content from surfacing even before async orphan cleanup completes
+  - add vector/index compaction and storage accounting policy
+- Replace static-only link ingestion with backend page capture/extraction that can open a URL, extract readable text, page metadata, images/media references, and handle dynamic pages through a browser/readability path where safe.
 - Add task/list item ingestion as a first-class source type.
 - Continue UI polish for chat, sources, settings, and onboarding.
+- Redesign cluster UI visual language. Current cluster surfaces are too dull and low-energy; use cleaner color, restrained gradients, better contrast, and more optimistic status/cluster cards without returning to generic AI gradients.
+- Fix map/data-point labeling so every visible data point has its own readable name, including unclustered or unsupported items.
 - Continue applying remaining UI audit recommendations: shared page header/toolbar patterns and visual QA on the new cluster/Bridge controls.
 - Continue replacing remaining V0 visual language in chat, settings, onboarding, and footer copy.
 - Replace remaining copied/inspired-too-literally UI surfaces with CML-specific workflows.
@@ -822,6 +860,21 @@ Exit criteria:
 - Add a real backend profile/settings record for setup fields like user name and default vault instead of keeping them only in local storage.
 - Add Python dependency CVE auditing to the toolchain, such as `pip-audit`, and run it in QA.
 - Add local backend access hardening before exposing it beyond trusted loopback desktop use.
+- Fix Bridge permission freshness end-to-end. Permissions must only show existing vaults and clusters, and deleted/demo/stale IDs such as old CRUD/demo vaults must be pruned from both backend settings and UI state.
+- Fix saved chats sidebar/tab refresh below Settings so it reflects created, renamed, deleted, and newly indexed chats without requiring a hard reload.
+- Implement chat retention/evidence integrity before chat history grows large:
+  - separate user-facing citation snapshots from internal retrieval audit logs
+  - write assistant message, citation snapshot, and denormalized fallback citation fields atomically at message save/finalization time
+  - add cursor pagination for chat sessions and messages with cursors that encode ordering/filter state
+  - add stale/deleted/reindexed citation states with user-facing actions
+  - compact old retrieval evidence into minimal tombstones instead of deleting citation records outright
+  - define ownership for chat transcript sources before deletion work: either chat-owned transcript sources cascade forward on chat deletion, or transcript sources become independent vault sources with explicit unlink semantics
+  - track chat-related storage as a breakdown across message text, citation snapshots, retrieval audit logs, transcript source chunks, and any chat-derived training examples
+- Define the cross-system failure coordination contract before implementing runtime/auth/expert/write-lock hardening:
+  - startup order must be vault ownership, SQLite integrity/schema/migrations, job recovery, vector/index reconciliation, runtime detection, then API/UI traffic
+  - long generations need persisted heartbeat fields so slow inference is not mistaken for a hung runtime
+  - every background job type needs an explicit restart policy: `requeue`, `reconcile_then_retry`, or `manual_review`
+  - runtime crash, backend restart during indexing, and vault lock contention must have state transition diagrams before implementation
 
 ## Running Notes
 
@@ -835,9 +888,9 @@ Exit criteria:
 - The actual cluster hit target should stay stable; any blob movement should be visual-only so double-click and drag remain reliable.
 - Avoid direct UI copying from reference products. Use references only for interaction principles, then translate them into CML-specific layouts and working controls.
 - Port `7342` was still responding with stale pre-DOCX/PDF backend behavior during the ingestion smoke test, so document ingestion was verified on a clean temporary backend at `7343`. Restart the normal backend/session before testing DOCX/PDF through the desktop app.
-- Current link ingestion is static HTTP/HTML extraction. JavaScript-rendered pages, authenticated pages, and richer article readability cleanup need a later browser/readability extraction pass.
+- Current link ingestion is static HTTP/HTML extraction. The target behavior is backend-driven URL opening/extraction that captures readable text, metadata, and image/media references, with a browser/readability path for safe dynamic pages. Authenticated pages remain a later explicit-connector problem.
 - Direct Drive/Dropbox/OneDrive cloud APIs are intentionally out of V1. Synced folders provide the free local path now; OAuth connectors can come after the core local context flow works.
-- Current local embeddings are deterministic hashed vectors so the app stays free and dependency-light. They establish the vector/search architecture, but we should later swap in a stronger local embedding model when packaging constraints are clearer.
+- Current local embeddings include deterministic hashed vectors for development/bootstrap only. This must not remain the user-facing product option because it undermines the core promise of semantic local context. V1 should default to a real local embedding model with setup-time user choice and explicit model storage.
 - Cluster suggestions are intentionally review-only. User confirmation should remain the default until confidence, undo, and source provenance are stronger.
 - Chat persistence now stores retrieval metadata first. This gives the later local model/runtime a durable place to attach model choice, token usage, streaming chunks, and answer feedback without changing the whole chat API.
 - Expected model download sizes: Phi-4-mini-instruct Q4_K_M about 2.5 GB, Qwen3-4B Q4_K_M about 2.3-2.5 GB, Qwen3-8B Q4_K_M about 4.8 GB download / about 5.3 GB loaded weights, Gemma 3 4B Q4_K_M about 2.3-2.5 GB, and Gemma 3 12B Q4_K_M about 6.8-6.9 GB.
@@ -860,20 +913,50 @@ Exit criteria:
 - Diagnosed the `{"detail":"Not Found"}` UI issue: `7342` is an older stale backend that lacks `/api/v1/chat/messages/{message_id}` and `/api/v1/bridge/settings`, while `7343` has the current routes. The desktop API client now probes configured URL, `7343`, then `7342`, and only uses a backend with the current chat routes. Also set local `.env` `VITE_CML_BACKEND_URL=http://127.0.0.1:7343`.
 - Restarted the desktop dev stack after unsetting `ELECTRON_RUN_AS_NODE`; Vite is reachable at `http://127.0.0.1:5173/` and the current backend routes are reachable on `7343`.
 - Electron now has a backend process manager for dev and packaged mode. Packaged mode now expects staged backend source plus a staged Python venv runtime under app resources.
-- Embeddings remain hash-based by default for packaged installs until setup-time model selection is wired. The intended V1 embedding model is `sentence-transformers/all-MiniLM-L6-v2`, cached locally through `CML_EMBEDDING_CACHE_DIR`.
+- Packaged installs must move away from hash embeddings as the default. Until setup-time model selection is wired, hash embeddings are only an implementation fallback. The intended V1 path is a real local embedding model, with `sentence-transformers/all-MiniLM-L6-v2` as the current development candidate cached locally through `CML_EMBEDDING_CACHE_DIR`.
 - `sentence-transformers/all-MiniLM-L6-v2` is installed and cached locally at `T:\LLM\embeddings` for development testing. Windows may warn about Hugging Face cache symlinks unless Developer Mode/admin symlink privileges are enabled; the cache still works but can use more disk.
-- The local development `.env` is configured for SentenceTransformers/MiniLM, but the packaged backend currently starts without that local `.env` and therefore reports the hash embedding provider. The setup flow needs to write packaged-user embedding settings before MiniLM becomes the packaged default.
+- The local development `.env` is configured for SentenceTransformers/MiniLM, but the packaged backend currently starts without that local `.env` and can report the hash embedding provider. The setup flow needs to write packaged-user embedding settings before a real embedding model becomes the packaged default.
 - The Windows NSIS installer build now succeeds at `apps/desktop/release/CML Setup 0.1.0.exe`, and the unpacked packaged app starts its bundled backend successfully on `127.0.0.1:7343`.
 - Electron has been bumped to `39.8.10`; `npm audit` currently reports zero vulnerabilities.
 - Dev Electron launch now goes through `apps/desktop/scripts/start-electron.cjs` so `ELECTRON_RUN_AS_NODE` is removed before opening the window.
 - The current Windows installer artifact is `apps/desktop/release/CML-0.1.0-Setup.exe`. It uses electron-builder's one-click NSIS mode, which removes the old wizard-style path chooser and is the cleanest installer experience available without replacing NSIS with a custom installer.
 - Packaged launch smoke requires `ELECTRON_RUN_AS_NODE` to be unset. If that environment variable is set globally, packaged Electron exits as Node before the app can start.
-- Embedding provider selection is now runtime-configurable. Hash embeddings remain the dependency-light default; MiniLM/SentenceTransformers can be selected when the optional Python runtime and model cache are available.
+- Embedding provider selection is now runtime-configurable, but the product setup should not present deterministic/hash embeddings as a normal choice. Users should choose between CML's recommended embedding model download and their own compatible local embedding model/runtime.
 - The first Bridge MCP server is a prototype stdio JSON-RPC bridge around the existing local HTTP permissions model, not a fully polished per-client onboarding flow yet.
 - Packaged Electron now serves the production TanStack renderer through an internal loopback server because the build is SSR-shaped and does not emit a normal `dist/client/index.html`.
 - Model download cancellation is cooperative. It can stop active chunked downloads and remove partial files, but should still be tested against a real multi-GB transfer.
 - Chat should remain global-by-default and context-first. Cluster selection is a refinement control, not a setup step before asking.
 - Local synthesis must not make Chat feel broken. If the configured OpenAI-compatible runtime is unavailable or slow, the app should quickly return a retrieval-backed answer with citations and a visible runtime note.
+- Complete-scope answering for large clusters must not mean raw stuffing or an LLM call for every document. The intended contract is: every document in the selected scope is scored and accounted for; above-threshold or coverage-required documents are analyzed in detail; low-relevance and unreadable documents are explicitly recorded.
+- Relevance threshold tuning is the critical first benchmark for complete-scope answering. Too high silently misses relevant documents; too low causes unacceptable local inference latency. Start with explicit BM25 + embedding scoring ledgers and tune on real vaults before adding expensive LLM map passes.
+- Query cache keys should use exact query fingerprints initially. Semantic cache reuse can improve hit rate later, but it creates correctness risk when similar-looking prompts require different evidence.
+- Broad-query routing should default to a fast answer path with a visible "Run complete analysis" action for expensive full-scope work. Automatic breadth detection can be added later, but the first version should explain the latency tradeoff before launching a long job.
+- Complete-analysis background jobs should show progress and document accounting, but should not stream partial synthesized answers from incomplete evidence sets. Showing a partial answer that later changes creates trust problems. Stream only the final synthesis once the evidence set is complete.
+- Cache invalidation for large-cluster answers must track contributing documents, not only a blunt cluster membership version. If a newly added or moved document was scored low-relevance for a cached query, prior query-level artifacts may remain valid; if it contributed to `docs_analyzed` or relevant evidence, invalidate the affected reduce/final artifacts.
+- Map packet `read_errors` need a reducer contract. The reducer must classify each failed/partial document as skipped, retried, metadata-only, cached-text-only, OCR-failed, timeout, or unsupported, and the final answer must report those counts rather than ignoring the field.
+- Derived cache controls should be granular and plain-language: clear query-level cache, clear cluster summaries, or clear all derived artifacts. The UI must explain rebuild cost before clearing because broad questions may take several minutes again after cache removal.
+- Vector/index consistency model: SQLite is the source of truth and vectors are derived indexes. This requires a transactional outbox for embedding jobs, idempotent vector keys, reconciliation, and rebuild/repair controls before MiniLM or any real embedding model transition ships broadly.
+- Embedding worker failure must be handled explicitly. A job can be committed in SQLite, marked running, then fail during vector write because of disk full, lock contention, or process death. Stuck-job recovery and reconciliation must detect `running` jobs with no corresponding vector row and requeue them. Search must degrade gracefully for chunks missing vectors instead of making them permanently invisible.
+- Verify LanceDB upsert semantics before committing to the vector key design. If LanceDB cannot atomically upsert by a deterministic composite key, the implementation must use a safe delete/insert or versioned-write pattern that avoids long invisibility windows during searches.
+- Reconciliation cannot full-scan large vaults on every app launch. Keep per-vault/index watermarks such as `last_reconciled_at` and reconcile incrementally by modified rows by default. Full cross-check reconciliation should be a manual "repair vault" action or an occasional background maintenance job, not a startup blocker.
+- Embedding model transitions need an active-index policy. When moving from hash embeddings to MiniLM or another model, keep old vectors readable until the new model index is complete enough, then atomically switch the active embedding model/index version for the vault. Do not mix similarity scores from different embedding models in one ranked result set.
+- Delete semantics must protect user trust. When a source is deleted or marked deleted in SQLite, search/retrieval must exclude it immediately at the SQLite/filter layer even if async vector cleanup has not completed. Deletion cleanup jobs should be high priority, with synchronous vector delete attempted for direct user deletes when practical.
+- Index size reporting needs a measurement policy. Per-vault size can use actual index directory size; per-cluster/source size may be an estimate based on chunk/vector counts unless the vector store exposes precise accounting. The UI should label estimated numbers honestly.
+- Vector indexes need compaction policy, not only orphan cleanup. LanceDB/columnar stores can fragment after many writes/deletes. Add scheduled or threshold-based compaction after bulk cleanup/reindexing and expose it as part of vault repair/maintenance.
+- Chat history model: chat text is durable user data; retrieval evidence is derived and versioned. Do not conflate user-facing citation display with internal retrieval debugging. Use separate storage/retention for citation snapshots and retrieval audit logs.
+- Citation snapshots must be written atomically with assistant message finalization. If streaming is cancelled or the backend crashes, the saved message and its citation display data should not diverge. Avoid follow-up jobs for core citation snapshot writes.
+- Chat pagination cursors need to encode ordering and filter state, not only timestamp/row ID. Future filters by source, cluster, date, or search term must not return inconsistent pages when new messages are inserted between requests.
+- Old citation snapshots should be compacted, not hard-deleted. If message text includes inline citations, deleting the snapshot leaves historical answer text pointing nowhere. Compact to minimal tombstones with source title, source ID if still present, page/location, snippet hash, and stale/deleted state.
+- Stale citation labels need actions. Deleted-source citations should show stored excerpt/fallback metadata. Re-indexed citations should link to the current source/chunk/page when possible with a note that the source changed after the answer.
+- Chat transcript memory creates a reference-cycle risk because chats can be indexed as sources and later cited by other chats. Decide ownership before schema work: chat-owned transcript source with forward cascade on chat deletion, or independent source after indexing with explicit unlink/delete behavior. Avoid bidirectional implicit cascades.
+- Chat storage reporting must include all chat-related footprint, not only `ChatMessage` rows: message text, citation snapshots, retrieval audit logs, transcript source chunks, and chat-derived training examples. Show the breakdown before adding archive/compact controls.
+- Cross-system failure sequencing rule: acquire/verify vault ownership first; verify SQLite integrity, schema version, and migrations second; recover jobs third; reconcile vector/index state fourth; detect runtime fifth; accept API/UI traffic last. Do not run job recovery against a database that has not passed integrity/schema checks.
+- SQLite startup checks must run before job recovery mutates state. At minimum use `PRAGMA integrity_check`, schema version validation, and a migration runner that can detect/handle interrupted migrations. If integrity or migration fails, halt startup into a repair flow instead of accepting traffic.
+- Generation heartbeat storage should be explicit. Store `last_heartbeat_at` on the generation record in SQLite, updated roughly every 10 seconds during active inference as a low-priority write outside the main job queue. Hung detection should require both repeated runtime health failures and heartbeat silence to avoid false positives on slow hardware.
+- Background job types need restart policy metadata before restart recovery is implemented. Initial classification: extraction, embedding generation, OCR, link fetch, cluster suggestions, and expert status updates are `requeue`; expert training, cluster merges, vault migrations, and delete/cleanup jobs are `reconcile_then_retry`; unknown or partially implemented jobs are `manual_review`.
+- Runtime crash during generation should mark the active generation `retriable` or `failed_runtime`, show restart/retry/context-only actions, and leave indexing jobs running unless they explicitly depend on the runtime. Vault lock state should not be touched by runtime recovery.
+- Backend restart during active indexing should mark old-session `running` jobs as interrupted, then apply each job type's restart policy. Old `in_flight` generations become `retriable`; runtime state is re-detected from process/port/model rather than trusted from memory.
+- Vault lock contention on launch should refuse a second write owner when the lock owner process is verified alive. If Electron receives a second-instance launch, focus/restore the existing window. If a different vault path is requested, V1 should refuse and explain rather than opening another writer.
 
 ## Update Protocol
 
