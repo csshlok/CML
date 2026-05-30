@@ -80,6 +80,7 @@ function ChatView() {
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<ModelRuntimeStatus | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [lastUserPrompt, setLastUserPrompt] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const consumedPendingPromptRef = useRef<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -251,10 +252,11 @@ function ChatView() {
     navigate({ to: "/chat" });
   };
 
-  const send = async (promptOverride?: string, attachmentOverride?: string[]) => {
+  const send = async (promptOverride?: string, attachmentOverride?: string[], completeAnalysis = false) => {
     const selectedAttachments = attachmentOverride ?? (promptOverride ? [] : attachments);
     const prompt = (promptOverride ?? input).trim() || (selectedAttachments.length > 0 ? "Read and store these attachments." : "");
     if ((!prompt && selectedAttachments.length === 0) || streaming) return;
+    setLastUserPrompt(prompt);
     const attachmentNote =
       selectedAttachments.length > 0
         ? `\n\nAttachments:\n${selectedAttachments.map((path) => `- ${fileNameFromPath(path)}`).join("\n")}`
@@ -271,7 +273,7 @@ function ChatView() {
     }
     setStreaming(true);
     setStreamText("");
-    setStreamStatus("Finding relevant context...");
+    setStreamStatus(completeAnalysis ? "Scoring every source in scope..." : "Routing message...");
     setStreamWarnings([]);
     setLastError(null);
     setAttachmentNotice(
@@ -285,11 +287,13 @@ function ChatView() {
       abortControllerRef.current = abortController;
       try {
         let streamedAnswer = "";
-        let streamedMeta: Pick<ChatContextResponse, "clusters_used" | "citations" | "coverage_ledger" | "attachments_stored" | "warnings"> = {
+        let streamedMeta: Pick<ChatContextResponse, "clusters_used" | "citations" | "coverage_ledger" | "attachments_stored" | "intent" | "runtime_state" | "warnings"> = {
           clusters_used: [],
           citations: [],
           coverage_ledger: null,
           attachments_stored: [],
+          intent: "general_chat",
+          runtime_state: null,
           warnings: [],
         };
         let streamedDone: Partial<ChatContextResponse> = {};
@@ -300,7 +304,8 @@ function ChatView() {
             cluster_id: scope?.id ?? null,
             session_id: backendSessionId ?? chatId,
             persist: true,
-            limit: 6,
+            limit: completeAnalysis ? 12 : 6,
+            complete_analysis: completeAnalysis,
             attachments: selectedAttachments.map((path) => ({
               path,
               cluster_id: scope?.id ?? null,
@@ -311,7 +316,11 @@ function ChatView() {
               streamedMeta = meta;
               const coverage = meta.coverage_ledger;
               setStreamStatus(
-                coverage
+                meta.intent === "general_chat"
+                  ? "Using local LLM chat"
+                  : completeAnalysis
+                    ? `Complete analysis: considered ${coverage?.sources_considered ?? 0} source${coverage?.sources_considered === 1 ? "" : "s"}; analyzing ${coverage?.sources_analyzed ?? 0}.`
+                    : coverage
                   ? `Considered ${coverage.sources_considered} source${coverage.sources_considered === 1 ? "" : "s"}; analyzing ${coverage.sources_analyzed}.`
                   : meta.citations.length > 0
                   ? `Using ${meta.citations.length} source${meta.citations.length === 1 ? "" : "s"}`
@@ -321,7 +330,7 @@ function ChatView() {
             },
             onToken: (text) => {
               streamedAnswer += text;
-              setStreamStatus("Writing answer...");
+              setStreamStatus(completeAnalysis ? "Writing complete analysis..." : "Writing answer...");
               setStreamText(streamedAnswer);
             },
             onDone: (done) => {
@@ -599,6 +608,16 @@ function ChatView() {
                 Retry
               </Button>
             )}
+            {lastUserPrompt && !streaming && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1"
+                onClick={() => void send(lastUserPrompt, [], true)}
+              >
+                Complete analysis
+              </Button>
+            )}
             {streaming && (
               <Button variant="outline" size="sm" className="gap-1" onClick={stopStreaming}>
                 <StopCircle className="h-4 w-4" />
@@ -622,7 +641,7 @@ function ChatView() {
               {backendReady ? "Semantic context" : "Local fallback context"}
             </span>
             <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-              {runtime?.available ? `LLM ${runtime.provider}` : "LLM offline"}
+              {runtime?.available ? `LLM ${runtime.state ?? runtime.provider}` : "LLM offline"}
             </span>
             {backendSession && (
               <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
@@ -723,6 +742,11 @@ function ChatView() {
           {lastError && (
             <div className="mx-auto mb-2 max-w-3xl rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
               {lastError}
+            </div>
+          )}
+          {backendReady && runtime && !runtime.available && (
+            <div className="mx-auto mb-2 max-w-3xl rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+              Local LLM is offline. General chat is degraded until a local model runtime is running.
             </div>
           )}
           {attachmentNotice && (

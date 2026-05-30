@@ -325,7 +325,9 @@ class SourcePageIndexingTests(unittest.TestCase):
         )
         run_due_jobs_once(limit=2)
 
-        response = build_chat_context(ChatContextRequest(vault_id="vault-1", prompt="alpha beta", limit=1))
+        response = build_chat_context(
+            ChatContextRequest(vault_id="vault-1", prompt="what context has alpha beta", limit=1)
+        )
 
         ledger = response["coverage_ledger"]
         self.assertEqual(ledger["sources_considered"], 2)
@@ -361,7 +363,74 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIn("Hello", response["answer"])
         self.assertEqual(response["citations"], [])
         self.assertEqual(response["coverage_ledger"]["sources_analyzed"], 0)
-        self.assertIn("Answered directly", response["warnings"][0])
+        self.assertTrue(any("Answered directly" in warning for warning in response["warnings"]))
+
+    def test_general_chat_without_runtime_is_degraded_not_retrieval(self) -> None:
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Unrelated source",
+                source_type="note",
+                raw_text="this source should not be used for a general writing request " * 80,
+            )
+        )
+        run_due_jobs_once(limit=1)
+
+        response = build_chat_context(
+            ChatContextRequest(vault_id="vault-1", prompt="write a short friendly email")
+        )
+
+        self.assertEqual(response["intent"], "general_chat")
+        self.assertEqual(response["citations"], [])
+        self.assertIn("local LLM runtime", response["answer"])
+
+    def test_complete_analysis_sets_intent_and_expands_analysis_set(self) -> None:
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        for index in range(3):
+            create_source(
+                SourceCreate(
+                    vault_id="vault-1",
+                    title=f"Context {index}",
+                    source_type="note",
+                    raw_text=f"complete analysis topic shared evidence {index} " * 80,
+                )
+            )
+        run_due_jobs_once(limit=3)
+
+        response = build_chat_context(
+            ChatContextRequest(
+                vault_id="vault-1",
+                prompt="complete analysis topic",
+                complete_analysis=True,
+            )
+        )
+
+        self.assertEqual(response["intent"], "complete_analysis")
+        self.assertEqual(response["coverage_ledger"]["sources_considered"], 3)
+        self.assertGreaterEqual(response["coverage_ledger"]["sources_analyzed"], 1)
 
     def test_chat_attachment_is_ingested_as_cluster_source(self) -> None:
         from backend.app.api.routes.chat import build_chat_context

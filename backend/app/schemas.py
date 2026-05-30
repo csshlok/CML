@@ -251,6 +251,7 @@ class ChatContextRequest(BaseModel):
     session_id: str | None = None
     persist: bool = True
     limit: int = Field(default=6, ge=1, le=12)
+    complete_analysis: bool = False
     attachments: list[ChatAttachmentInput] = Field(default_factory=list)
 
 
@@ -289,6 +290,8 @@ class ChatContextResponse(BaseModel):
     citations: list[ChatCitation]
     coverage_ledger: ChatCoverageLedger | None = None
     attachments_stored: list[ChatAttachmentStored] = []
+    intent: str = "general_chat"
+    runtime_state: str | None = None
     warnings: list[str]
     memory_status: str | None = None
 

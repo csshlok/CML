@@ -20,7 +20,14 @@ from backend.app.core.embeddings import (
 )
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path
-from backend.app.core.llm_runtime import LLMRuntimeError, generate_grounded_answer, runtime_status, stream_grounded_answer
+from backend.app.core.llm_runtime import (
+    LLMRuntimeError,
+    generate_direct_answer,
+    generate_grounded_answer,
+    runtime_status,
+    stream_direct_answer,
+    stream_grounded_answer,
+)
 from backend.app.core.memory_card import generate_tags, summarize_text
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
@@ -215,6 +222,8 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
         "citations": citations,
         "coverage_ledger": context["coverage_ledger"],
         "attachments_stored": generation["attachment_sources"] if generation else [],
+        "intent": context["intent"],
+        "runtime_state": context["runtime_state"],
         "warnings": warnings,
         "memory_status": "indexing" if payload.persist else None,
     }
@@ -246,9 +255,23 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
             "citations": citations,
             "coverage_ledger": context["coverage_ledger"],
             "attachments_stored": attachments_stored,
+            "intent": context["intent"],
+            "runtime_state": context["runtime_state"],
             "warnings": warnings,
         })
-        if not citations:
+        if context["intent"] == "general_chat" and context["runtime_state"] == "ready":
+            try:
+                for chunk in stream_direct_answer(prompt=active_payload.prompt):
+                    answer_parts.append(chunk)
+                    yield _sse("token", {"text": chunk})
+                warnings.append("Answered by local LLM runtime without vault retrieval.")
+            except LLMRuntimeError as exc:
+                fallback = _build_runtime_unavailable_answer(active_payload.prompt, str(exc))
+                warnings.append(f"Local LLM runtime became unavailable during chat: {exc}")
+                for chunk in _chunk_text(fallback):
+                    answer_parts.append(chunk)
+                    yield _sse("token", {"text": chunk})
+        elif not citations:
             for chunk in _chunk_text(context["answer"]):
                 answer_parts.append(chunk)
                 yield _sse("token", {"text": chunk})
@@ -292,6 +315,8 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
             "answer": answer,
             "coverage_ledger": context["coverage_ledger"],
             "attachments_stored": attachments_stored,
+            "intent": context["intent"],
+            "runtime_state": context["runtime_state"],
             "warnings": warnings,
             "memory_status": "indexing" if payload.persist else None,
         })
@@ -313,24 +338,27 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
             if session is None:
                 raise HTTPException(status_code=404, detail="Chat session not found")
 
-    if _is_conversational_prompt(payload.prompt):
-        return _build_direct_chat_context(payload)
+    intent = _classify_chat_intent(payload)
+    runtime = runtime_status()
+    if intent == "general_chat":
+        return _build_direct_chat_context(payload, runtime_state=runtime["state"], synthesize=synthesize)
 
     include_chat_transcripts = _should_include_chat_transcripts(payload.prompt)
+    effective_limit = 12 if payload.complete_analysis else payload.limit
     source_scores = _score_sources_for_query(
         vault_id=payload.vault_id,
         cluster_id=payload.cluster_id,
         query=payload.prompt,
         include_chat_transcripts=include_chat_transcripts,
     )
-    analyzed_source_ids = [item["source_id"] for item in source_scores[: payload.limit]]
+    analyzed_source_ids = [item["source_id"] for item in source_scores[: effective_limit]]
 
     search_response = semantic_search(
         SemanticSearchRequest(
             vault_id=payload.vault_id,
             cluster_id=payload.cluster_id,
             query=payload.prompt,
-            limit=min(30, max(payload.limit * 4, 12)),
+            limit=min(30, max(effective_limit * 4, 12)),
         )
     )
     results = [
@@ -381,6 +409,8 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     ]
 
     warnings = []
+    if payload.complete_analysis:
+        warnings.append("Complete analysis mode: scored every indexed source in scope before selecting the analysis set.")
     warnings.append(
         "Coverage ledger: considered "
         f"{coverage_ledger['sources_considered']} source(s), analyzed "
@@ -413,22 +443,43 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "clusters_used": clusters_used,
         "citations": citations,
         "coverage_ledger": coverage_ledger,
+        "intent": intent,
+        "runtime_state": runtime["state"],
         "warnings": warnings,
     }
 
 
-def _build_direct_chat_context(payload: ChatContextRequest) -> dict:
+def _build_direct_chat_context(payload: ChatContextRequest, *, runtime_state: str, synthesize: bool) -> dict:
     coverage_ledger = _build_coverage_ledger(
         vault_id=payload.vault_id,
         cluster_id=payload.cluster_id,
         analyzed_source_ids=[],
     )
+    warnings = ["Vault retrieval was not used for this general chat message."]
+    if _is_conversational_prompt(payload.prompt):
+        answer = _build_direct_chat_answer(payload.prompt)
+        warnings.append("Answered directly because this was conversational chat.")
+    elif synthesize and runtime_state == "ready":
+        try:
+            result = generate_direct_answer(prompt=payload.prompt)
+            answer = result.text
+            warnings.append(f"Answered by local LLM runtime: {result.provider} / {result.model}.")
+        except LLMRuntimeError as exc:
+            answer = _build_runtime_unavailable_answer(payload.prompt, str(exc))
+            warnings.append(f"Local LLM runtime is unavailable: {exc}")
+    elif runtime_state == "ready":
+        answer = ""
+    else:
+        answer = _build_runtime_unavailable_answer(payload.prompt, runtime_state)
+        warnings.append("Local LLM runtime is unavailable; general chat is in degraded mode.")
     return {
-        "answer": _build_direct_chat_answer(payload.prompt),
+        "answer": answer,
         "clusters_used": [],
         "citations": [],
         "coverage_ledger": {**coverage_ledger, "sources_analyzed": 0, "sources_low_relevance": coverage_ledger["sources_considered"]},
-        "warnings": ["Answered directly without vault retrieval because this was conversational chat."],
+        "intent": "general_chat",
+        "runtime_state": runtime_state,
+        "warnings": warnings,
     }
 
 
@@ -522,6 +573,46 @@ def _is_conversational_prompt(prompt: str) -> bool:
     return False
 
 
+def _classify_chat_intent(payload: ChatContextRequest) -> str:
+    prompt = payload.prompt.lower()
+    if payload.attachments:
+        return "attachment_ingestion"
+    if payload.complete_analysis:
+        return "complete_analysis"
+    if payload.cluster_id:
+        return "cluster_question"
+    if _is_conversational_prompt(payload.prompt):
+        return "general_chat"
+    retrieval_markers = (
+        "vault",
+        "source",
+        "sources",
+        "cluster",
+        "clusters",
+        "document",
+        "documents",
+        "file",
+        "files",
+        "pdf",
+        "note",
+        "notes",
+        "citation",
+        "citations",
+        "context",
+        "indexed",
+        "stored",
+        "memory",
+        "summarize my",
+        "what do you know about",
+        "what context",
+        "according to",
+        "based on",
+    )
+    if any(marker in prompt for marker in retrieval_markers):
+        return "vault_question"
+    return "general_chat"
+
+
 def _should_include_chat_transcripts(prompt: str) -> bool:
     normalized = prompt.lower()
     return any(
@@ -556,6 +647,16 @@ def _build_direct_chat_answer(prompt: str) -> str:
     if trimmed in {"ok", "okay"}:
         return "Okay. Send me what you want to work on next."
     return "I am here. Ask me anything, or attach a file if you want me to store and use it."
+
+
+def _build_runtime_unavailable_answer(prompt: str, detail: str) -> str:
+    if _is_conversational_prompt(prompt):
+        return _build_direct_chat_answer(prompt)
+    return (
+        "The local LLM runtime is not available, so I cannot answer this as a general chatbot yet. "
+        "Start or configure a local model runtime, then retry this message. "
+        f"Runtime state: {detail}"
+    )
 
 
 def _sse(event: str, payload: dict) -> str:

@@ -272,6 +272,8 @@ export type ChatContextResponse = {
     title: string;
     cluster_id: string | null;
   }>;
+  intent: string;
+  runtime_state: string | null;
   warnings: string[];
   memory_status: string | null;
 };
@@ -581,6 +583,7 @@ export async function buildChatContext(payload: {
   persist?: boolean;
   limit?: number;
   attachments?: Array<{ path: string; cluster_id?: string | null }>;
+  complete_analysis?: boolean;
 }) {
   return request<ChatContextResponse>("/api/v1/chat/context", {
     method: "POST",
@@ -597,12 +600,19 @@ export async function streamChatContext(
     persist?: boolean;
     limit?: number;
     attachments?: Array<{ path: string; cluster_id?: string | null }>;
+    complete_analysis?: boolean;
   },
   handlers: {
     onMeta?: (
       payload: Pick<
         ChatContextResponse,
-        "clusters_used" | "citations" | "coverage_ledger" | "attachments_stored" | "warnings"
+        | "clusters_used"
+        | "citations"
+        | "coverage_ledger"
+        | "attachments_stored"
+        | "intent"
+        | "runtime_state"
+        | "warnings"
       >,
     ) => void;
     onToken: (text: string) => void;

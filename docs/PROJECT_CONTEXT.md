@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-05-30
+Last updated: 2026-05-31
 
 ## Project Goal
 
@@ -67,17 +67,17 @@ Progress bar legend:
 
 | Phase | Status | Progress | Notes |
 | --- | --- | --- | --- |
-| Product definition | In progress | `[#########-] 90%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, runtime boundary, model storage decision, installer direction, production-gap notes, and job/maintenance architecture are documented. Needs final production installer/update policy and explicit V1 cut list. |
-| UI prototype cleanup | In progress | `[#########-] 88%` | Core app routes, Mind workspace, source cards, setup flow, chat composer, prompt-zero chat attachments, Bridge controls, cluster detail, live saved-chat sidebar, diagnostics export UI, and backend-backed actions are in place. Newly identified gaps remain: cluster visual redesign, map fallback/performance, compulsory embedding setup gate, setup model-choice UI, and visual QA. |
-| Desktop app foundation | In progress | `[#########-] 86%` | Electron workspace, Vite dev server, build, file IPC, configurable backend API probing, dev backend process handling, single-instance handling, local backend token handoff, and unpacked packaged launch are working. Needs robust runtime process management, vault-lock UI surfacing, and installer smoke. |
-| Local backend foundation | In progress | `[#########-] 86%` | SQLite CRUD routes, ingestion endpoints, Bridge settings/token auth, chat streaming/memory status, policy-aware background worker foundation, startup integrity/schema checks, vault ownership lock, optional local API token middleware, Electron token handoff, startup vector reconciliation queueing, runtime state reporting, retriable generation recovery, diagnostic bundle export, expert scaffold, and model status routes work. Needs service-layer cleanup, migration runner, full auth hardening tests, repair UI, and broader recovery drills. |
-| Vault ingestion | In progress | `[########--] 84%` | Current ingestion handles TXT/Markdown/DOCX/PDF, CSV/JSON/XML/YAML/RTF/logs, common code files, bundled-local-OCR image/scanned-PDF hooks, small audio/video metadata, pasted text, static links, drag/drop, local folder import, chat attachments as sources, basic summaries/tags, queued reindexing, page-aware source/chunk schema, source tombstones, delete cleanup, and checksum dedupe. Product-grade vault ingestion still needs staging the OCR binary/tessdata into the installer, more OCR QA, real audio/video transcription, dynamic link extraction, large-cluster scale behavior, and failure/progress policy. |
-| Embeddings and clustering | In progress | `[#######---] 68%` | Keyword clustering, chunking, MiniLM-first embedding configuration, dev-only hash fallback, SQLite vector storage with chunk model/index metadata, semantic search, source-level broad-query scoring, map search, suggestions, dismissals, merge controls, first incremental vector reconciliation job work, and chat coverage ledgers. Needs vector-store consistency/compaction, active embedding-index transitions, production relevance threshold tuning, and merge artifact policy. |
-| Chat and context routing | In progress | `[#########-] 89%` | Global-by-default chat, chatbot-first greeting/small-talk handling, prompt-zero file attachments, drag/drop attachment staging, attachment-to-source ingestion, stored-attachment confirmation with source names, persisted sessions/messages, pending generation records, retriable startup recovery, retrieval snapshots/items, backend chat list/sidebar refresh, streaming, page-aware citations, stale/deleted citation labels, citation source actions, runtime status visibility, source-level coverage-ledger accounting, runtime fallback notes, answer actions, transcript indexing, and local runtime adapter are working. Needs full complete-scope map/reduce answering, token budgets, chat pagination/retention, richer runtime failure UI, and long-running analysis UI. |
-| Compulsory cluster experts | In progress | `[#---------] 12%` | Expert lifecycle UI/state and job scaffolds exist. Real product behavior still needs training implementation, pending/failed/hardware-unsupported states, structured failure codes, retry policy, adapter storage, evaluation, rollback, merge invalidation, and artifact cleanup. |
-| Context Bridge | In progress | `[#######---] 68%` | Bridge UI, settings/history, HTTP context endpoint, token-gated Bridge access, sanitized allowlists, one-minute permission refresh, manual refresh, semantic retrieval, request logging, and first CLI/MCP prototypes exist. Needs core backend auth separation, per-client setup, token lifecycle, malformed-client handling, and real MCP client smoke. |
-| Packaging and installer | In progress | `[######----] 60%` | Windows packaging scaffold, Python runtime staging, one-click NSIS build, icon, unpacked launch smoke, and model download scripts exist. Needs installer install/uninstall smoke, disk-space checks, post-install model setup, runtime repair flow, update/migration policy, and diagnostic export packaging. |
-| QA and hardening | In progress | `[#####-----] 46%` | Security pass, dependency audit, compile/build/smoke checks, job architecture documentation, scheduler checkpoint tests, source-page indexing tests, expanded file extraction tests, delete/search cleanup tests, duplicate-source tests, reconciliation queue tests, retrieval snapshot tests, chat attachment ingestion/result tests, chatbot-first greeting regression tests, coverage-ledger tests, Bridge stale-permission tests, diagnostic-bundle tests, interrupted-generation recovery tests, and startup-path smoke exist. Needs Python CVE audit, auth/vault-lock integration tests, migration tests, scale/performance benchmarks, map benchmarks, diagnostics UI smoke, failure-state tests, and recovery drills. |
+| Product definition | In progress | `[#########-] 94%` | Product PRD, UI PRD, project context, architecture doc, model ladder, runtime boundary, model storage decision, installer direction, production-gap notes, job/maintenance architecture, and public-V1 blocker list are documented. Needs final production installer/update policy and explicit public-V1/private-alpha cut line. |
+| UI prototype cleanup | In progress | `[########--] 86%` | Core app routes, Mind workspace, source cards, setup flow, chat composer, prompt-zero chat attachments, Bridge controls, cluster detail, live saved-chat sidebar, diagnostics export UI, runtime/degraded chat states, and backend-backed actions are in place. Public-V1 UI still needs startup repair screens, embedding setup gate, retriable-generation timeline states, cluster visual redesign, map fallback/performance, setup model-choice UI, and visual QA. |
+| Desktop app foundation | In progress | `[########--] 80%` | Electron workspace, Vite dev server, build, file IPC, configurable backend API probing, dev backend process handling, single-instance handling, local backend token handoff, and unpacked packaged launch are working. Public-V1 blockers remain: pre-vault/full-vault lifecycle, user-selected vault data path ownership, startup-status IPC/file contract, repair UI, robust runtime process management, vault-lock override UI, and installer smoke. |
+| Local backend foundation | In progress | `[########--] 82%` | SQLite CRUD routes, ingestion endpoints, Bridge settings/token auth, chat streaming/memory status, policy-aware background worker foundation, startup integrity/schema checks, vault ownership lock, optional local API token middleware, Electron token handoff, startup vector reconciliation queueing, runtime state reporting, direct local-LLM generation paths, retriable generation recovery, diagnostic bundle export, expert scaffold, and model status routes work. Public-V1 blockers remain: pre-vault route guard, migration runner, startup-status writes, repair failure modes, full auth hardening tests, scheduler synthesis gate, deletion graph, and broader recovery drills. |
+| Vault ingestion | In progress | `[########--] 80%` | Current ingestion handles TXT/Markdown/DOCX/PDF, CSV/JSON/XML/YAML/RTF/logs, common code files, bundled-local-OCR image/scanned-PDF hooks, small audio/video metadata, pasted text, static links, drag/drop, local folder import, chat attachments as sources, basic summaries/tags, queued reindexing, page-aware source/chunk schema, source tombstones, delete cleanup, and checksum dedupe. Public-V1 ingestion still needs embedding-gate enforcement, OCR installer staging/QA, dynamic link extraction, large-cluster scale behavior, disk preflight, deletion graph, and failure/progress policy. |
+| Embeddings and clustering | In progress | `[######----] 62%` | Keyword clustering, chunking, MiniLM-first embedding configuration, dev-only hash fallback, SQLite vector storage with chunk model/index metadata, semantic search, source-level broad-query scoring, map search, suggestions, dismissals, merge controls, first incremental vector reconciliation job work, and chat coverage ledgers exist. Public-V1 blockers remain: compulsory embedding setup/health gate, no silent semantic fallback, vector-store consistency/compaction, active embedding-index transitions, threshold benchmarks, and merge artifact policy. |
+| Chat and context routing | In progress | `[########--] 88%` | Global-by-default chat, LLM-first intent routing, chatbot-first greeting/small-talk handling, direct local-runtime chat for general prompts, prompt-zero file attachments, drag/drop attachment staging, attachment-to-source ingestion, stored-attachment confirmation with source names, persisted sessions/messages, pending generation records, retriable startup recovery, retrieval snapshots/items, backend chat list/sidebar refresh, streaming, page-aware citations, stale/deleted citation labels, citation source actions, runtime status visibility, source-level coverage-ledger accounting, visible degraded-runtime notes, expanded-analysis foundation, answer actions, transcript indexing, and local runtime adapter are working. Needs combined timeline/retriable placeholder UI, `expanded_analysis` rename/reserved `complete_analysis` validation, embedding-missing retrieval degradation, full complete-scope map/reduce answering, token budgets, chat pagination/retention, richer runtime failure UI, and long-running analysis UI. |
+| Compulsory cluster experts | In progress | `[#---------] 10%` | Expert lifecycle UI/state and job scaffolds exist, but public-V1 language should shift toward cluster memory/context profiles unless real training meets graduation criteria. Real product behavior still needs training implementation, AVX2/hardware matrix, pending/failed/hardware-unsupported states, structured failure codes, retry policy, adapter storage, evaluation, rollback, merge invalidation, and artifact cleanup. |
+| Context Bridge | In progress | `[######----] 62%` | Bridge UI, settings/history, HTTP context endpoint, token-gated Bridge access, sanitized allowlists, one-minute permission refresh, manual refresh, semantic retrieval, request logging, and first CLI/MCP prototypes exist. Public-V1 blockers remain: core backend auth separation, per-client setup, token lifecycle, MCP notification correctness, app error-code registry, no-active-vault behavior, malformed-client handling, and real Claude Desktop smoke. |
+| Packaging and installer | In progress | `[#####-----] 52%` | Windows packaging scaffold, Python runtime staging, one-click NSIS build, icon, unpacked launch smoke, and model download scripts exist. Public-V1 blockers remain: install/uninstall smoke, disk-space checks, post-install model/embedding setup, vault data path ownership, startup repair flow, update/migration policy, diagnostic export packaging, and OCR/model staging verification. |
+| QA and hardening | In progress | `[####------] 40%` | Security pass, dependency audit, compile/build/smoke checks, job architecture documentation, scheduler checkpoint tests, source-page indexing tests, expanded file extraction tests, delete/search cleanup tests, duplicate-source tests, reconciliation queue tests, retrieval snapshot tests, chat attachment ingestion/result tests, chatbot-first greeting/general-chat routing regression tests, expanded-analysis foundation tests, coverage-ledger tests, Bridge stale-permission tests, diagnostic-bundle tests, interrupted-generation recovery tests, and startup-path smoke exist. Public-V1 blockers still need Python CVE audit, auth/vault-lock integration tests, migration tests, startup repair tests, disk preflight tests, deletion graph tests, scale/performance benchmarks, map benchmarks, MCP client smoke, diagnostic redaction tests, failure-state tests, and recovery drills. |
 
 ## Week-By-Week Goals
 
@@ -435,6 +435,13 @@ Exit criteria:
   - greetings and small-talk prompts now answer directly without vault retrieval, so chat behaves like a chatbot first
   - chat transcript sources are excluded from normal retrieval unless the user explicitly asks about prior chats or conversation history
   - added a regression test for the `Hello` prompt so it cannot be answered with old transcript snippets again
+- Completed the LLM-first chat routing pass:
+  - general conversation is now routed to the configured local OpenAI-compatible LLM runtime first instead of defaulting to semantic retrieval
+  - vault retrieval is only used when the prompt asks for vault/source/cluster/context knowledge, includes attachments, scopes to a cluster, or explicitly runs complete analysis
+  - streaming responses expose `intent` and `runtime_state` metadata so the UI can distinguish local LLM chat, retrieval-backed answers, complete analysis, and degraded runtime states
+  - when the local LLM runtime is unavailable, general chat shows an explicit degraded answer instead of disguising retrieval output as normal chatbot behavior
+  - the chat detail UI now shows a local-runtime offline banner and a visible `Complete analysis` action that reruns the last prompt through broader source accounting
+  - added backend regression coverage for general-chat degraded routing and explicit complete-analysis routing
 - Improved attachment result visibility:
   - chat responses and streams now return the sources created from attachments
   - the chat UI shows stored attachment source names after ingestion completes
@@ -899,6 +906,77 @@ Exit criteria:
   - require 1,000+ document cluster storage/retrieval planning with bounded cache usage
   - require Bridge permission freshness, saved-chat refresh, and cluster/map visual/data-point fixes
   - mark deterministic/hash embeddings as development fallback only, with real local embedding setup as the product default
+- Captured the final production-risk review in project context:
+  - public V1 now has an explicit blocker list; if these are not complete, the July build is a private alpha/demo and must not be treated as a public user-data product
+  - vault data path correctness is a product blocker: user-selected vault folders must own the real SQLite database and derived local data, not only a metadata display path
+  - pre-vault backend mode must be route-restricted and must not create real vault/source/chat/cluster records before the full vault backend starts
+  - startup failure reporting needs a shared startup phase registry, startup-status file, and Electron repair/startup error surface
+  - scheduler synthesis gating must account for active/retriable generations and expose running job detail before the UI promises background work will pause
+  - current "complete analysis" behavior must be renamed to "expanded analysis"; `complete_analysis` is reserved for future map/reduce and must be rejected if requested
+  - expert/training language should shift to cluster memory/context profiles for V1 unless real adapter training meets defined reliability, quality, hardware, recovery, and storage criteria
+  - MCP bridge needs strict JSON-RPC notification handling, app error code registry, no-active-vault errors, and real Claude Desktop smoke before being advertised
+  - transcript memory retrieval needs source-class weighting and separate compare-source-classes handling, not only keyword inclusion/exclusion
+
+## Public V1 Blockers
+
+These items are not ordinary polish. If they are not implemented and verified, the July build should be labeled private alpha/demo only and should not be positioned as a public product for real user data.
+
+- Vault data location correctness:
+  - Electron must set the full-vault backend data paths from the user-selected vault folder: `CML_DATA_DIR=<vault>/.vault` and `CML_DATABASE_PATH=<vault>/.vault/cml.sqlite3`.
+  - Onboarding must show the exact resolved vault data path before finish.
+  - User-selected `vaults.path` cannot remain only display metadata.
+- Pre-vault/full-vault backend lifecycle:
+  - Add `CML_BACKEND_MODE=pre_vault | full_vault`.
+  - Default developer mode can be `full_vault`, but startup must log mode, data dir, database path, startup status path, and whether the data dir was explicit or defaulted.
+  - In `pre_vault`, middleware must reject all vault/source/chat/cluster/search/bridge write/read routes with `409 Vault not initialized`.
+  - Pre-vault mode may handle only health, setup/status, model/embedding validation, startup status, app-level config, and diagnostics.
+  - Pre-vault mode must not ingest sources, index chunks, create chats, create clusters, or write real vault records.
+- Startup failure and repair surface:
+  - Add `shared/startup-phases.json` as the canonical startup phase vocabulary, with hardcoded Python/Electron fallback phases for broken installs.
+  - Electron must set `CML_STARTUP_STATUS_PATH=<appData>/startup-status.json` before every backend launch.
+  - Python must write structured startup status for lock, DB init, integrity/schema/migration, job recovery, reconciliation, runtime detection, ready, and failure phases.
+  - Electron must show structured startup failure/repair UI instead of generic backend unavailable when integrity/schema/lock startup fails.
+- Migration runner and schema versioning:
+  - Add schema version tracking and an idempotent migration runner before shipping schema changes to real users.
+  - Interrupted migrations must be detected before job recovery mutates data.
+- Disk preflight:
+  - Add disk-space checks before installer/model downloads, OCR/model staging, indexing, and large ingestion jobs.
+  - Show required/available space before multi-GB downloads.
+- Local API auth hardening:
+  - Token-gate private backend APIs for Electron-managed backends.
+  - Validate renderer origins from observed dev/packaged origins.
+  - Keep Bridge token permissions separate from core local API auth.
+- Embedding setup gate and degraded boundary:
+  - First-run setup must require a real embedding backend or existing compatible model path before normal vault use.
+  - On every launch, embedding health must be rechecked; do not trust `embedding-runtime.json` alone.
+  - If embeddings are missing, allow source list/page previews/raw text/general LLM chat, but block semantic search, retrieval chat, Bridge retrieval, clustering, new indexing, and re-embedding with explicit messages.
+- Scheduler synthesis protection:
+  - `_claim_next_job()` must enforce `can_run_during_synthesis`.
+  - Treat `in_flight` generations as active and recent/dismissal-pending `retriable` generations as synthesis-protected according to the final retry policy.
+  - Retry must re-acquire synthesis protection before starting a new generation.
+  - `/jobs/status` must expose running job type, started time, timeout, cancellable status, elapsed time, and rough remaining estimate before UI promises background work will pause shortly.
+- Chat recovery and timeline:
+  - Add one combined chat timeline endpoint that returns user messages, assistant messages, and retriable generation placeholders in chronological order.
+  - Retriable generation placeholders must be rendered as explicit interrupted states, not blank gaps or fake assistant messages.
+  - Partial streamed text remains ephemeral in V1; offer retry using stored prompt/scope and copy partial text, not durable partial assistant messages.
+- Complete-scope naming and validation:
+  - Current broad rerun mode should be `expanded_analysis`.
+  - Reserve `complete_analysis` for future evidence-packet map/reduce.
+  - Valid JSON requests containing `complete_analysis` must return `501 Not Implemented`; malformed JSON keeps normal parse/validation behavior.
+- Deletion and retention graph:
+  - Source deletion must cover raw text, extracted pages, chunks, vectors, citation states, transcript sources, training examples, expert artifacts, and derived caches according to explicit ownership rules.
+  - Deleted sensitive content must be excluded from search/retrieval immediately, before async cleanup.
+- Diagnostic redaction and support:
+  - Diagnostic bundles must have tested redaction, bundle format version, app/backend/schema versions, generated timestamp, and clear local log rotation policy.
+  - Add tests proving source text and private content are not leaked by diagnostics by default.
+- MCP Bridge production readiness:
+  - JSON-RPC notifications must not emit responses.
+  - Define app error codes such as `1001 no_active_vault`, `1002 permission_denied`, `1003 vault_not_found`, `1004 cluster_not_allowed`, `1005 cml_backend_unreachable`, and `1006 invalid_bridge_configuration`.
+  - Distinguish dead stdio bridge process from live bridge with unreachable CML HTTP backend.
+  - Add real Claude Desktop end-to-end smoke before advertising MCP.
+- Expert/product claim hardening:
+  - V1 user-facing language should be cluster memory/context profiles unless real adapter training meets the graduation criteria.
+  - Adapter graduation requires supported hardware matrix, AVX2 detection, reliable failure codes, rollback/versioning, cleanup, quality win over retrieval baseline, and verified runtime on supported tiers.
 
 ## Current Open Work
 
@@ -908,12 +986,11 @@ Exit criteria:
 - Replace user-facing deterministic/hash embedding selection with real local embedding setup. Hash embeddings may remain a hidden development fallback, but the product default must be an LLM embedding model.
 - Build first-run setup for model choices: recommended CML-managed downloads after install, or connect existing user-installed local models/endpoints for embeddings, synthesis, clustering, and later expert workflows.
 - Add one-click local embedding dependency/model install from setup/settings instead of only allowing selection of an already available runtime/cache.
-- Rework chat into an LLM-first chatbot, not retrieval-first answer generation:
-  - normal messages should go to the configured local LLM runtime first
-  - vault retrieval should be added only when the user asks for vault knowledge, cluster context, citations, file/attachment understanding, or complete-scope analysis
-  - if the local LLM runtime is unavailable, show an explicit degraded state instead of pretending retrieval fallback is the chatbot
-  - keep rule handling minimal and only for obvious offline greetings/errors, not as the core chat engine
-  - stop treating semantic retrieval as the default response generator for general conversation
+- Finish hardening LLM-first chat after the first routing pass:
+  - tune the retrieval-intent classifier on real prompts so vault questions route to context while normal conversation stays with the local LLM
+  - add richer local-runtime recovery actions for missing, busy, crashed, and hung model states
+  - replace the current complete-analysis foreground rerun with the planned long-running map/reduce job once evidence packets and token budgets are implemented
+  - keep deterministic/rule handling minimal and only for obvious offline greetings/errors, not as the core chat engine
 - Run a real long-download cancellation test against a model download before calling cancellation production-ready.
 - Add job retry/backoff policy, cancellation, and UI-facing job failure states.
 - Persist synced-folder import history and optionally add watched folder refresh.
@@ -1059,7 +1136,9 @@ Exit criteria:
 - Complete-scope answering for large clusters must not mean raw stuffing or an LLM call for every document. The intended contract is: every document in the selected scope is scored and accounted for; above-threshold or coverage-required documents are analyzed in detail; low-relevance and unreadable documents are explicitly recorded.
 - Relevance threshold tuning is the critical first benchmark for complete-scope answering. Too high silently misses relevant documents; too low causes unacceptable local inference latency. Start with explicit BM25 + embedding scoring ledgers and tune on real vaults before adding expensive LLM map passes.
 - Query cache keys should use exact query fingerprints initially. Semantic cache reuse can improve hit rate later, but it creates correctness risk when similar-looking prompts require different evidence.
-- Broad-query routing should default to a fast answer path with a visible "Run complete analysis" action for expensive full-scope work. Automatic breadth detection can be added later, but the first version should explain the latency tradeoff before launching a long job.
+- Broad-query routing should default to a fast answer path with a visible "Run expanded analysis" action for the current broader-scoring mode. Automatic breadth detection can be added later, but the first version should explain the latency tradeoff before launching a long job.
+- The current implemented broad rerun is not complete-scope answering and must not be labeled complete analysis. Use `expanded_analysis` for current code. Reserve `complete_analysis` for a future evidence-packet map/reduce path that can account for every source in scope, handle partial failures, and synthesize only after the evidence set is complete.
+- Requests containing `complete_analysis` should be rejected with `501 Not Implemented` after JSON parse succeeds and before intent routing. Malformed JSON should keep normal parse/validation behavior. This prevents accidental silent aliasing to `expanded_analysis`.
 - Complete-analysis background jobs should show progress and document accounting, but should not stream partial synthesized answers from incomplete evidence sets. Showing a partial answer that later changes creates trust problems. Stream only the final synthesis once the evidence set is complete.
 - Cache invalidation for large-cluster answers must track contributing documents, not only a blunt cluster membership version. If a newly added or moved document was scored low-relevance for a cached query, prior query-level artifacts may remain valid; if it contributed to `docs_analyzed` or relevant evidence, invalidate the affected reduce/final artifacts.
 - Map packet `read_errors` need a reducer contract. The reducer must classify each failed/partial document as skipped, retried, metadata-only, cached-text-only, OCR-failed, timeout, or unsupported, and the final answer must report those counts rather than ignoring the field.
@@ -1084,15 +1163,33 @@ Exit criteria:
 - Generation heartbeat storage should be explicit. Store `last_heartbeat_at` on the generation record in SQLite, updated roughly every 10 seconds during active inference as a low-priority write outside the main job queue. Hung detection should require both repeated runtime health failures and heartbeat silence to avoid false positives on slow hardware.
 - Background job types need restart policy metadata before restart recovery is implemented. Initial classification: extraction, embedding generation, OCR, link fetch, cluster suggestions, and expert status updates are `requeue`; expert training, cluster merges, vault migrations, and delete/cleanup jobs are `reconcile_then_retry`; unknown or partially implemented jobs are `manual_review`.
 - Runtime crash during generation should mark the active generation `retriable` or `failed_runtime`, show restart/retry/context-only actions, and leave indexing jobs running unless they explicitly depend on the runtime. Vault lock state should not be touched by runtime recovery.
+- Scheduler synthesis gating decision: for V1, keep chat generation state in `chat_generations` rather than migrating it into `app_jobs`, but `_claim_next_job()` must query generation state before claiming jobs with `can_run_during_synthesis = false`. This is deliberate technical debt; the long-term cleaner path is to unify long-running generation work under the job system.
+- Synthesis-active gating should treat `in_flight` generations as active. Retriable generations should stay visible indefinitely in the UI, but only block non-synthesis-safe jobs while they are recent or awaiting user decision according to the final policy. Retry starts a new generation and must re-acquire synthesis protection before streaming.
+- The UI must not promise "pausing shortly" unless `/jobs/status` exposes running job type, start time, timeout, cancellable state, elapsed time, and estimated remaining time. If a long non-preemptable job is running, the UI should say retry will start after the current background task finishes and offer cancellation only when the job is cancellable.
+- Interrupted streaming answers are not durable assistant messages unless `_complete_chat_generation()` commits. V1 should show partial frontend text as ephemeral, with `Retry` using the persisted prompt/scope and `Copy partial text`; after restart, render a durable retriable-generation placeholder from `chat_generations`.
+- Chat timelines should come from one combined endpoint that returns `user_message`, `assistant_message`, and `retriable_generation` items in chronological order. Do not make the frontend merge separate `chat_messages` and `chat_generations` queries.
 - Backend restart during active indexing should mark old-session `running` jobs as interrupted, then apply each job type's restart policy. Old `in_flight` generations become `retriable`; runtime state is re-detected from process/port/model rather than trusted from memory.
 - Vault lock contention on launch should refuse a second write owner when the lock owner process is verified alive. If Electron receives a second-instance launch, focus/restore the existing window. If a different vault path is requested, V1 should refuse and explain rather than opening another writer.
 - Backend startup hard gates: acquire vault lock, run `PRAGMA integrity_check` and parse result rows, validate schema version/run migrations, recover jobs, run lightweight vector reconciliation scan that only queues jobs, detect runtime without waiting for it, then open API traffic. If integrity check returns anything other than `ok`, halt into repair flow. If integrity check exceeds 60 seconds, surface a slow-vault startup message rather than a blank window.
+- Vault lock process verification currently depends on Windows CIM/PowerShell command-line inspection. If verification fails because access is restricted, treat the lock as `unverifiable`, not simply stale or live. The UI must offer Cancel/Open anyway with explicit corruption warning, and lock override audit logs must record detection, dialog display, user choice, startup result, and interrupted-before-choice cases.
+- Startup status contract: Electron sets `CML_STARTUP_STATUS_PATH` to an app-data JSON file before backend launch. Python writes structured phases there. Use `shared/startup-phases.json` as canonical phase vocabulary, with hardcoded fallback phases in Python/Electron for broken installs where the shared file is missing or malformed.
+- Startup status phase names must be stable values such as `starting`, `pre_vault_mode`, `vault_lock_acquiring`, `vault_lock_failed`, `database_initializing`, `integrity_check_running`, `integrity_check_failed`, `schema_check_running`, `schema_check_failed`, `job_recovery_running`, `reconciliation_queued`, `runtime_detection_running`, `ready`, and `startup_failed`.
+- Pre-vault/full-vault lifecycle: first launch without an active vault starts a restricted pre-vault backend using app-data only and no vault lock. After vault folder selection, Electron shuts that backend down and starts a full-vault backend with data/database paths under the chosen vault folder. Ingestion/indexing/chat/clusters are only allowed after the full-vault backend owns the vault path.
 - Token storage must start with an interface before implementation: `TokenStore.get()`, `TokenStore.set(token)`, and `TokenStore.clear()`. V1 can use Windows DPAPI with a restricted app-data file fallback, but DPAPI calls must not spread through the codebase.
 - CORS allowlist must be based on observed renderer origins. Before implementing the allowlist, add temporary dev/package logging for the `Origin` header and record actual values for Vite dev and packaged loopback renderer.
 - Electron single-instance handler product rule: a second launch focuses/restores the existing window. If the second launch requests a different vault path, V1 shows "Vault is already open. Close the current vault before opening another." No second writer and no silent ignore.
 - Ingestion schema target: `sources` store source-level identity/status/checksum; `source_pages` store page number, raw/extracted text, extraction version, and page content hash; `source_chunks` store source/page IDs, chunk index, text, embedding model ID, normalized-text content hash, index version, and indexed timestamp. Chunks without a page ID should not exist in the clean schema.
 - Content hash decision: use SHA-256 of normalized chunk text as the stable hash for chunks/indexing. Do not use MD5 or a rolling hash. Changing the algorithm later is a full re-embedding migration.
 - Production builds should not expose hash embeddings as a user-selectable fallback. Hash embeddings are development-only behind an explicit flag. If a real embedding model is unavailable in production setup, the UI should say embeddings are not configured rather than silently using hash vectors.
+- Embedding health boundary: existing source lists, page previews, raw text, and general LLM chat can continue when embeddings are unavailable. Semantic search, retrieval chat, Bridge retrieval, clustering, new indexing, and re-embedding must block or degrade with explicit messages because query embedding still requires the embedding provider.
+- Retrieval-intent chat must check embedding health before context assembly. If a vault/source/cluster/context question needs memory and embeddings are missing, return an explicit degraded retrieval state instead of silently falling back to LLM-only with empty context.
+- Chat transcript memory policy: transcript sources should not dominate retrieval. Current keyword exclusion is a guardrail, not the final model. Add source-class weighting calibrated against transcript-win, transcript-lose, and mixed document+transcript cases before relying on transcript retrieval broadly.
+- Comparison queries such as "compare my notes and our chat about X" require a separate `compare_source_classes` intent. This should retrieve top evidence independently per source class and use a grouped synthesis prompt, not a single mixed ranked context block.
+- MCP Bridge protocol notes: JSON-RPC notifications must produce no response. Use positive app error codes for Bridge/application failures. `1005` means the stdio bridge is alive but the CML HTTP backend is unreachable; a dead stdio bridge process is an OS/process-manager failure outside JSON-RPC and should be surfaced by process startup/stderr behavior.
+- MCP `list_clusters` and context calls must not silently choose the first vault. If no active/allowed vault is configured, return a JSON-RPC application error such as `1001 no_active_vault`, not a successful text response or empty list.
+- Expert/product-language contingency: if real local adapter training is not reliable by V1, rename mainstream UX to cluster memory/context profiles and keep adapter training hidden or advanced/experimental. Do not ship "trained local expert" claims until the implementation actually trains, versions, evaluates, rolls back, and recovers on supported hardware.
+- Adapter graduation criteria: publish a hardware matrix with AVX2 requirement, GPU tier, CPU high-spec tier, and CPU minimum tier. Training must meet reliability, quality, runtime, recovery, storage, and failure-code criteria on supported tiers before leaving experimental status. If AVX2 detection fails, mark hardware as `unknown`, allow one explicit warned attempt, and convert illegal-instruction/runtime failure into `hardware_unsupported`.
+- Public V1 gate: migration runner, disk preflight, startup repair, auth hardening, vault data path correctness, embedding setup, deletion graph, scheduler synthesis gate, diagnostic redaction tests, and MCP smoke are blockers. If incomplete, the July build is private alpha/demo only.
 
 ## Update Protocol
 

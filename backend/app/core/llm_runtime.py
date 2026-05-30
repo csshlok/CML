@@ -96,6 +96,27 @@ def generate_grounded_answer(
     return LLMResult(text=text, provider=settings.llm_provider, model=settings.llm_model)
 
 
+def generate_direct_answer(*, prompt: str) -> LLMResult:
+    settings = get_settings()
+    if settings.llm_provider == "none":
+        raise LLMRuntimeError("No local model runtime configured.")
+    payload = {
+        "model": settings.llm_model,
+        "messages": _direct_messages(prompt),
+        "temperature": 0.4,
+        "stream": False,
+    }
+    with generation_in_flight():
+        response = _openai_post("/chat/completions", payload, timeout=_interactive_timeout())
+    try:
+        text = response["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMRuntimeError("Local model returned an unexpected response.") from exc
+    if not text:
+        raise LLMRuntimeError("Local model returned an empty response.")
+    return LLMResult(text=text, provider=settings.llm_provider, model=settings.llm_model)
+
+
 def stream_grounded_answer(
     *,
     prompt: str,
@@ -124,6 +145,20 @@ def stream_grounded_answer(
         "model": settings.llm_model,
         "messages": messages,
         "temperature": 0.2,
+        "stream": True,
+    }
+    with generation_in_flight():
+        yield from _openai_stream("/chat/completions", payload, timeout=_interactive_timeout())
+
+
+def stream_direct_answer(*, prompt: str):
+    settings = get_settings()
+    if settings.llm_provider == "none":
+        raise LLMRuntimeError("No local model runtime configured.")
+    payload = {
+        "model": settings.llm_model,
+        "messages": _direct_messages(prompt),
+        "temperature": 0.4,
         "stream": True,
     }
     with generation_in_flight():
@@ -165,6 +200,21 @@ def _build_context_prompt(prompt: str, citations: list[dict], clusters_used: lis
         f"Local source context:\n{citation_text or 'No retrieved context.'}\n\n"
         "Write the best grounded answer using this context."
     )
+
+
+def _direct_messages(prompt: str) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are Vault, a local-first assistant inside the user's desktop vault. "
+                "Answer naturally and helpfully. Do not claim to have used vault context unless "
+                "context was supplied. If the user asks for their vault, files, sources, or "
+                "clusters, say you need to retrieve vault context."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
 
 
 def _openai_get(path: str, timeout: float) -> dict[str, Any]:
