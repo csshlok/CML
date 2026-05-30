@@ -290,6 +290,58 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertGreaterEqual(len(items), 1)
         self.assertTrue(items[0]["source_title_at_answer_time"])
 
+    def test_chat_attachment_is_ingested_as_cluster_source(self) -> None:
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatAttachmentInput, ChatContextRequest
+
+        now = utc_now()
+        attachment_path = Path(self.tmp.name) / "attached-note.txt"
+        attachment_path.write_text("attached cluster evidence from chat upload " * 80, encoding="utf-8")
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-1', 'vault-1', 'Target', '', 'sage', 'setting-up', ?, ?)
+                """,
+                (now, now),
+            )
+
+        response = build_chat_context(
+            ChatContextRequest(
+                vault_id="vault-1",
+                cluster_id="cluster-1",
+                prompt="Read this attachment and store it in the target cluster",
+                attachments=[ChatAttachmentInput(path=str(attachment_path))],
+            )
+        )
+
+        with connect() as conn:
+            source = conn.execute(
+                "SELECT * FROM sources WHERE original_path = ?",
+                (str(attachment_path),),
+            ).fetchone()
+            attachment = conn.execute(
+                "SELECT * FROM chat_attachments WHERE source_id = ?",
+                (source["id"],),
+            ).fetchone()
+            chunks = conn.execute(
+                "SELECT COUNT(*) AS count FROM source_chunks WHERE source_id = ?",
+                (source["id"],),
+            ).fetchone()["count"]
+
+        self.assertEqual(source["cluster_id"], "cluster-1")
+        self.assertEqual(source["state"], "indexed")
+        self.assertIsNotNone(attachment)
+        self.assertGreater(chunks, 0)
+        self.assertEqual(response["session_id"], attachment["session_id"])
+
     def test_startup_recovery_marks_in_flight_generations_retriable(self) -> None:
         from backend.app.core.database import connect, utc_now
         from backend.app.core.generation_recovery import recover_interrupted_generations

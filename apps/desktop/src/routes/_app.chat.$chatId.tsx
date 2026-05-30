@@ -74,6 +74,7 @@ function ChatView() {
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const [streamWarnings, setStreamWarnings] = useState<string[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<string[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
   const consumedPendingPromptRef = useRef<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -221,15 +222,23 @@ function ChatView() {
   };
 
   const send = async (promptOverride?: string) => {
-    const prompt = (promptOverride ?? input).trim();
-    if (!prompt || streaming) return;
-    const userMsg = { id: newId(), role: "user" as const, content: prompt };
+    const selectedAttachments = promptOverride ? [] : attachments;
+    const prompt = (promptOverride ?? input).trim() || (selectedAttachments.length > 0 ? "Read and store these attachments." : "");
+    if ((!prompt && selectedAttachments.length === 0) || streaming) return;
+    const attachmentNote =
+      selectedAttachments.length > 0
+        ? `\n\nAttachments:\n${selectedAttachments.map((path) => `- ${fileNameFromPath(path)}`).join("\n")}`
+        : "";
+    const userMsg = { id: newId(), role: "user" as const, content: prompt + attachmentNote };
     if (backendReady && vault) {
       setBackendMessages((current) => [...current, userMsg]);
     } else if (chat) {
       appendMessage(chat.id, userMsg);
     }
-    if (!promptOverride) setInput("");
+    if (!promptOverride) {
+      setInput("");
+      setAttachments([]);
+    }
     setStreaming(true);
     setStreamText("");
     setStreamStatus("Finding relevant context...");
@@ -255,6 +264,10 @@ function ChatView() {
             session_id: backendSessionId ?? chatId,
             persist: true,
             limit: 6,
+            attachments: selectedAttachments.map((path) => ({
+              path,
+              cluster_id: scope?.id ?? null,
+            })),
           },
           {
             onMeta: (meta) => {
@@ -390,6 +403,16 @@ function ChatView() {
 
   const stopStreaming = () => {
     abortControllerRef.current?.abort();
+  };
+
+  const addAttachments = async () => {
+    if (!window.cmlDesktop?.selectSourceFiles) return;
+    const paths = await window.cmlDesktop.selectSourceFiles();
+    setAttachments((current) => Array.from(new Set([...current, ...paths])));
+  };
+
+  const removeAttachment = (path: string) => {
+    setAttachments((current) => current.filter((item) => item !== path));
   };
 
   const retryLastUserMessage = () => {
@@ -610,9 +633,10 @@ function ChatView() {
               variant="ghost"
               size="icon"
               className="shrink-0"
-              disabled
-              aria-label="Attachments are not available yet"
-              title="Attachments are not available yet"
+              disabled={streaming || !backendReady}
+              aria-label="Attach files"
+              title="Attach files"
+              onClick={() => void addAttachments()}
             >
               <Paperclip className="h-4 w-4" />
             </Button>
@@ -631,12 +655,27 @@ function ChatView() {
             />
             <Button
               onClick={() => void send()}
-              disabled={streaming || !input.trim()}
+              disabled={streaming || (!input.trim() && attachments.length === 0)}
               className="shrink-0"
             >
               <Send className="h-4 w-4" />
             </Button>
           </div>
+          {attachments.length > 0 && (
+            <div className="mx-auto mt-2 flex max-w-3xl flex-wrap gap-1.5">
+              {attachments.map((path) => (
+                <button
+                  key={path}
+                  type="button"
+                  className="rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent"
+                  onClick={() => removeAttachment(path)}
+                  title="Remove attachment"
+                >
+                  {fileNameFromPath(path)}
+                </button>
+              ))}
+            </div>
+          )}
           <p className="mx-auto mt-1.5 max-w-3xl text-[11px] text-muted-foreground">
             Ctrl/Cmd Enter to send / {scope ? scope.name : "all vault context"} / memory{" "}
             {memoryLabel(memoryState)}
@@ -652,6 +691,10 @@ function memoryLabel(status: string) {
   if (status === "indexing") return "saving";
   if (status === "issue") return "issue";
   return "idle";
+}
+
+function fileNameFromPath(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
 function messageFromRecord(record: ChatMessageRecord): import("@/lib/mockStore").ChatMessage {

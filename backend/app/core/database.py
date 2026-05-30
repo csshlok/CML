@@ -217,6 +217,19 @@ def init_db() -> None:
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS chat_attachments (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                original_path TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
+                FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS retrieval_snapshots (
                 id TEXT PRIMARY KEY,
                 message_id TEXT NOT NULL,
@@ -260,6 +273,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_chat_sessions_vault_id ON chat_sessions(vault_id);
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);
             CREATE INDEX IF NOT EXISTS idx_chat_generations_state ON chat_generations(state, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_chat_attachments_message_id ON chat_attachments(message_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_attachments_source_id ON chat_attachments(source_id);
             CREATE INDEX IF NOT EXISTS idx_retrieval_snapshots_message_id ON retrieval_snapshots(message_id);
             CREATE INDEX IF NOT EXISTS idx_retrieval_snapshot_items_snapshot_id ON retrieval_snapshot_items(snapshot_id);
             CREATE INDEX IF NOT EXISTS idx_app_jobs_status ON app_jobs(status, created_at);

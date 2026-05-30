@@ -19,7 +19,17 @@ def upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> N
         return
 
     clusters = _transcript_target_clusters(conn, vault_id=vault_id, session=session, messages=messages)
-    transcript = _transcript_text(session, messages)
+    attachments = conn.execute(
+        """
+        SELECT chat_attachments.*, sources.title AS source_title, sources.cluster_id
+        FROM chat_attachments
+        JOIN sources ON sources.id = chat_attachments.source_id
+        WHERE chat_attachments.session_id = ?
+        ORDER BY chat_attachments.created_at ASC
+        """,
+        (session_id,),
+    ).fetchall()
+    transcript = _transcript_text(session, messages, attachments)
     now = utc_now()
     for cluster in clusters:
         source_id = f"chat-source-{session_id}-{cluster['id']}"
@@ -128,11 +138,20 @@ def _ensure_chats_cluster(conn, vault_id: str) -> dict:
     return {"id": cluster["id"], "name": cluster["name"]}
 
 
-def _transcript_text(session, messages) -> str:
+def _transcript_text(session, messages, attachments=None) -> str:
     lines = [f"Chat transcript: {session['title']}", ""]
     for message in messages:
         role = "User" if message["role"] == "user" else "Assistant"
         lines.append(f"{role}: {message['content']}")
+        message_attachments = [
+            attachment
+            for attachment in (attachments or [])
+            if attachment["message_id"] == message["id"]
+        ]
+        for attachment in message_attachments:
+            lines.append(
+                f"Attachment stored as source: {attachment['source_title']} ({attachment['source_id']})"
+            )
         lines.append("")
     return "\n".join(lines).strip()
 

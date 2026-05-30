@@ -553,6 +553,7 @@ export async function buildChatContext(payload: {
   session_id?: string | null;
   persist?: boolean;
   limit?: number;
+  attachments?: Array<{ path: string; cluster_id?: string | null }>;
 }) {
   return request<ChatContextResponse>("/api/v1/chat/context", {
     method: "POST",
@@ -568,6 +569,7 @@ export async function streamChatContext(
     session_id?: string | null;
     persist?: boolean;
     limit?: number;
+    attachments?: Array<{ path: string; cluster_id?: string | null }>;
   },
   handlers: {
     onMeta?: (

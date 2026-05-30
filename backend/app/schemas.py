@@ -222,6 +222,11 @@ class BridgeRequestRead(BaseModel):
     created_at: str
 
 
+class ChatAttachmentInput(BaseModel):
+    path: str = Field(min_length=1)
+    cluster_id: str | None = None
+
+
 class ChatContextRequest(BaseModel):
     vault_id: str
     prompt: str = Field(min_length=1)
@@ -229,6 +234,7 @@ class ChatContextRequest(BaseModel):
     session_id: str | None = None
     persist: bool = True
     limit: int = Field(default=6, ge=1, le=12)
+    attachments: list[ChatAttachmentInput] = Field(default_factory=list)
 
 
 class ChatCitation(BaseModel):

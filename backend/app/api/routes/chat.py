@@ -1,5 +1,7 @@
 from collections import OrderedDict
+import hashlib
 import json
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
@@ -8,10 +10,11 @@ from fastapi.responses import StreamingResponse
 from backend.app.api.routes.search import semantic_search
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.embeddings import active_embedding_model_id, content_hash
+from backend.app.core.embeddings import active_embedding_model_id, content_hash, reindex_source_chunks
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
+from backend.app.core.extraction import ExtractionError, extract_pages_from_path
 from backend.app.core.llm_runtime import LLMRuntimeError, generate_grounded_answer, runtime_status, stream_grounded_answer
-from backend.app.core.memory_card import summarize_text
+from backend.app.core.memory_card import generate_tags, summarize_text
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
     ChatContextRequest,
@@ -168,6 +171,7 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
         session_id=payload.session_id,
         cluster_id=payload.cluster_id,
         prompt=payload.prompt,
+        attachments=payload.attachments,
     ) if payload.persist else None
     if generation:
         payload = payload.model_copy(update={"session_id": generation["session_id"]})
@@ -217,6 +221,7 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                 session_id=payload.session_id,
                 cluster_id=payload.cluster_id,
                 prompt=payload.prompt,
+                attachments=payload.attachments,
             )
             active_payload = payload.model_copy(update={"session_id": generation["session_id"]})
         else:
@@ -419,6 +424,7 @@ def _persist_chat_turn(
         session_id=session_id,
         cluster_id=cluster_id,
         prompt=prompt,
+        attachments=[],
     )
     _complete_chat_generation(
         generation_id=generation["generation_id"],
@@ -440,6 +446,7 @@ def _start_chat_generation(
     session_id: str | None,
     cluster_id: str | None,
     prompt: str,
+    attachments: list | None = None,
 ) -> dict:
     now = utc_now()
     title = _title_from_prompt(prompt)
@@ -478,6 +485,15 @@ def _start_chat_generation(
             """,
             (user_message_id, session_id, prompt, now),
         )
+        attachment_sources = _ingest_chat_attachments(
+            conn,
+            vault_id=vault_id,
+            session_id=session_id,
+            message_id=user_message_id,
+            default_cluster_id=cluster_id,
+            attachments=attachments or [],
+            now=now,
+        )
         conn.execute(
             """
             INSERT INTO chat_generations (
@@ -515,6 +531,7 @@ def _start_chat_generation(
         "session_id": session_id,
         "user_message_id": user_message_id,
         "assistant_message_id": assistant_message_id,
+        "attachment_sources": attachment_sources,
     }
 
 
@@ -625,6 +642,152 @@ def _write_retrieval_snapshot(
                 now,
             ),
         )
+
+
+def _ingest_chat_attachments(
+    conn,
+    *,
+    vault_id: str,
+    session_id: str,
+    message_id: str,
+    default_cluster_id: str | None,
+    attachments: list,
+    now: str,
+) -> list[dict]:
+    stored_sources: list[dict] = []
+    for attachment in attachments:
+        path = str(getattr(attachment, "path", "") or "").strip()
+        if not path:
+            continue
+        target_cluster_id = str(getattr(attachment, "cluster_id", "") or default_cluster_id or "").strip() or None
+        if target_cluster_id:
+            _ensure_cluster(conn, target_cluster_id, vault_id)
+        try:
+            title, pages = extract_pages_from_path(path)
+        except ExtractionError as exc:
+            raise HTTPException(status_code=400, detail=f"Could not read chat attachment {Path(path).name}: {exc}") from exc
+        text = "\n\n".join(page for page in pages if page.strip()).strip()
+        if not text:
+            raise HTTPException(status_code=400, detail=f"Chat attachment {Path(path).name} had no readable text.")
+        checksum = _file_checksum(Path(path))
+        existing = conn.execute(
+            """
+            SELECT * FROM sources
+            WHERE vault_id = ? AND checksum = ? AND deleted_at IS NULL
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (vault_id, checksum),
+        ).fetchone()
+        if existing is not None:
+            source = dict_from_row(existing)
+            if target_cluster_id and source.get("cluster_id") != target_cluster_id:
+                conn.execute(
+                    "UPDATE sources SET cluster_id = ?, updated_at = ? WHERE id = ?",
+                    (target_cluster_id, now, source["id"]),
+                )
+                source["cluster_id"] = target_cluster_id
+        else:
+            source = {
+                "id": f"source-{uuid4()}",
+                "vault_id": vault_id,
+                "cluster_id": target_cluster_id,
+                "title": title,
+                "source_type": _source_type_for_suffix(Path(path).suffix.lower()),
+                "state": "indexed",
+                "original_path": path,
+                "url": None,
+                "checksum": checksum,
+                "raw_text": text,
+                "extracted_text": text,
+                "summary": summarize_text(text),
+                "tags": json.dumps(generate_tags(title, text, "file") + ["CHAT_ATTACHMENT"]),
+                "cover_image_url": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+            conn.execute(
+                """
+                INSERT INTO sources (
+                    id, vault_id, cluster_id, title, source_type, state, original_path, url,
+                    checksum, raw_text, extracted_text, summary, tags, cover_image_url,
+                    created_at, updated_at
+                )
+                VALUES (
+                    :id, :vault_id, :cluster_id, :title, :source_type, :state, :original_path,
+                    :url, :checksum, :raw_text, :extracted_text, :summary, :tags,
+                    :cover_image_url, :created_at, :updated_at
+                )
+                """,
+                source,
+            )
+            _replace_source_pages(conn, source_id=source["id"], vault_id=vault_id, page_texts=pages, now=now)
+        row = conn.execute("SELECT * FROM sources WHERE id = ?", (source["id"],)).fetchone()
+        if row is not None:
+            source = dict_from_row(row)
+            reindex_source_chunks(conn, source)
+        conn.execute(
+            """
+            INSERT INTO chat_attachments (
+                id, session_id, message_id, source_id, file_name, original_path, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (f"chat-attachment-{uuid4()}", session_id, message_id, source["id"], title, path, now),
+        )
+        if source.get("cluster_id"):
+            mark_cluster_needs_update(conn, source["cluster_id"], "Chat attachment was added to this cluster.")
+        stored_sources.append({"source_id": source["id"], "title": source["title"], "cluster_id": source.get("cluster_id")})
+    return stored_sources
+
+
+def _replace_source_pages(conn, *, source_id: str, vault_id: str, page_texts: list[str], now: str) -> None:
+    conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
+    for index, text in enumerate(page_texts, start=1):
+        page_text = (text or "").strip()
+        if not page_text:
+            continue
+        conn.execute(
+            """
+            INSERT INTO source_pages (
+                id, source_id, vault_id, page_number, raw_text, extraction_version,
+                content_hash, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'v1', ?, ?, ?)
+            """,
+            (
+                f"page-{uuid4()}",
+                source_id,
+                vault_id,
+                index,
+                page_text,
+                content_hash(page_text),
+                now,
+                now,
+            ),
+        )
+
+
+def _file_checksum(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _source_type_for_suffix(suffix: str) -> str:
+    if suffix in {".md", ".markdown", ".txt", ".text"}:
+        return "note"
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+        return "image"
+    if suffix in {".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg"}:
+        return "audio"
+    if suffix in {".mp4", ".mov", ".webm"}:
+        return "video"
+    if suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".cpp", ".c"}:
+        return "code"
+    return "file"
 
 
 def _upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> None:
