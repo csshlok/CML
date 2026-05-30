@@ -1,8 +1,9 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { type DragEvent, useEffect, useRef, useState } from "react";
 import { useStore, streamMockReply, newId, type Cluster, type Source } from "@/lib/mockStore";
 import {
   deleteChatSession,
+  getModelRuntimeStatus,
   getChatSession,
   listChatSessions,
   listClusters,
@@ -15,6 +16,7 @@ import {
   type ChatContextResponse,
   type ChatMessageRecord,
   type ChatSessionRecord,
+  type ModelRuntimeStatus,
   type VaultRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
@@ -75,6 +77,9 @@ function ChatView() {
   const [streamWarnings, setStreamWarnings] = useState<string[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<string[]>([]);
+  const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
+  const [runtime, setRuntime] = useState<ModelRuntimeStatus | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const consumedPendingPromptRef = useRef<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -111,6 +116,7 @@ function ChatView() {
         setMemoryState("idle");
       }
       setBackendReady(true);
+      void getModelRuntimeStatus().then(setRuntime).catch(() => setRuntime(null));
     } catch {
       setBackendReady(false);
     } finally {
@@ -130,16 +136,39 @@ function ChatView() {
   }, [chatId]);
 
   useEffect(() => {
+    if (!backendReady) return;
+    let cancelled = false;
+    async function refreshRuntime() {
+      try {
+        const status = await getModelRuntimeStatus();
+        if (!cancelled) setRuntime(status);
+      } catch {
+        if (!cancelled) setRuntime(null);
+      }
+    }
+    void refreshRuntime();
+    const id = window.setInterval(refreshRuntime, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [backendReady]);
+
+  useEffect(() => {
     setTitleDraft(backendSession?.title ?? chat?.title ?? "New chat");
   }, [backendSession?.title, chat?.title]);
 
   useEffect(() => {
     if (loadingSession || streaming || consumedPendingPromptRef.current === chatId) return;
     const pendingPrompt = window.sessionStorage.getItem(`cml.pendingPrompt.${chatId}`);
-    if (!pendingPrompt) return;
+    const pendingAttachments = JSON.parse(
+      window.sessionStorage.getItem(`cml.pendingAttachments.${chatId}`) ?? "[]",
+    ) as string[];
+    if (!pendingPrompt && pendingAttachments.length === 0) return;
     consumedPendingPromptRef.current = chatId;
     window.sessionStorage.removeItem(`cml.pendingPrompt.${chatId}`);
-    void send(pendingPrompt);
+    window.sessionStorage.removeItem(`cml.pendingAttachments.${chatId}`);
+    void send(pendingPrompt ?? undefined, pendingAttachments);
   }, [chatId, loadingSession, streaming]);
 
   if (loadingSession && !chat && !backendSession) {
@@ -195,6 +224,7 @@ function ChatView() {
           saved: !backendSession.saved,
         });
         setBackendSession(updated);
+        window.dispatchEvent(new Event("vault:chats-changed"));
       } catch {
         // Preserve the current saved state if the backend update fails.
       }
@@ -221,8 +251,8 @@ function ChatView() {
     navigate({ to: "/chat" });
   };
 
-  const send = async (promptOverride?: string) => {
-    const selectedAttachments = promptOverride ? [] : attachments;
+  const send = async (promptOverride?: string, attachmentOverride?: string[]) => {
+    const selectedAttachments = attachmentOverride ?? (promptOverride ? [] : attachments);
     const prompt = (promptOverride ?? input).trim() || (selectedAttachments.length > 0 ? "Read and store these attachments." : "");
     if ((!prompt && selectedAttachments.length === 0) || streaming) return;
     const attachmentNote =
@@ -244,15 +274,21 @@ function ChatView() {
     setStreamStatus("Finding relevant context...");
     setStreamWarnings([]);
     setLastError(null);
+    setAttachmentNotice(
+      selectedAttachments.length > 0
+        ? `Storing ${selectedAttachments.length} attachment${selectedAttachments.length === 1 ? "" : "s"} as vault source${selectedAttachments.length === 1 ? "" : "s"}...`
+        : null,
+    );
     if (backendSession) setMemoryState("indexing");
     if (backendReady && vault) {
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
       try {
         let streamedAnswer = "";
-        let streamedMeta: Pick<ChatContextResponse, "clusters_used" | "citations" | "warnings"> = {
+        let streamedMeta: Pick<ChatContextResponse, "clusters_used" | "citations" | "coverage_ledger" | "warnings"> = {
           clusters_used: [],
           citations: [],
+          coverage_ledger: null,
           warnings: [],
         };
         let streamedDone: Partial<ChatContextResponse> = {};
@@ -272,8 +308,11 @@ function ChatView() {
           {
             onMeta: (meta) => {
               streamedMeta = meta;
+              const coverage = meta.coverage_ledger;
               setStreamStatus(
-                meta.citations.length > 0
+                coverage
+                  ? `Considered ${coverage.sources_considered} source${coverage.sources_considered === 1 ? "" : "s"}; analyzing ${coverage.sources_analyzed}.`
+                  : meta.citations.length > 0
                   ? `Using ${meta.citations.length} source${meta.citations.length === 1 ? "" : "s"}`
                   : "No matching source found yet",
               );
@@ -333,6 +372,12 @@ function ChatView() {
             setBackendClusters(clusterRows.map(clusterFromRecord));
             setBackendSources(sourceRows.map(sourceFromRecord));
             setBackendChats(chatRows);
+            window.dispatchEvent(new Event("vault:chats-changed"));
+            if (selectedAttachments.length > 0) {
+              setAttachmentNotice(
+                `Stored ${selectedAttachments.length} attachment${selectedAttachments.length === 1 ? "" : "s"} in ${scope?.name ?? "the vault"}.`,
+              );
+            }
           } catch {
             // Optimistic messages above remain usable until the next refresh.
           }
@@ -345,7 +390,15 @@ function ChatView() {
           return;
         }
         setMemoryState("issue");
-        setLastError(error instanceof Error ? error.message : "Could not retrieve local context.");
+        const message = error instanceof Error ? error.message : "Could not retrieve local context.";
+        setLastError(
+          selectedAttachments.length > 0
+            ? `Could not store or read an attachment: ${message}`
+            : message,
+        );
+        if (selectedAttachments.length > 0) {
+          setAttachmentNotice("Attachment ingestion failed. The file was not saved as a source.");
+        }
         const errorMessage = {
           id: newId(),
           role: "assistant",
@@ -408,11 +461,31 @@ function ChatView() {
   const addAttachments = async () => {
     if (!window.cmlDesktop?.selectSourceFiles) return;
     const paths = await window.cmlDesktop.selectSourceFiles();
-    setAttachments((current) => Array.from(new Set([...current, ...paths])));
+    addAttachmentPaths(paths);
+  };
+
+  const addAttachmentPaths = (paths: string[]) => {
+    const cleanPaths = paths.filter(Boolean);
+    if (cleanPaths.length === 0) return;
+    setAttachments((current) => Array.from(new Set([...current, ...cleanPaths])));
+    setAttachmentNotice(
+      `${cleanPaths.length} attachment${cleanPaths.length === 1 ? "" : "s"} ready to store with your next message.`,
+    );
   };
 
   const removeAttachment = (path: string) => {
     setAttachments((current) => current.filter((item) => item !== path));
+  };
+
+  const handleDrop = async (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragActive(false);
+    if (!backendReady) return;
+    const droppedPaths = window.cmlDesktop?.getDroppedFilePaths?.(event.dataTransfer.files) ?? [];
+    const paths = window.cmlDesktop?.listSupportedFiles
+      ? await window.cmlDesktop.listSupportedFiles(droppedPaths)
+      : droppedPaths;
+    addAttachmentPaths(paths);
   };
 
   const retryLastUserMessage = () => {
@@ -435,6 +508,7 @@ function ChatView() {
     const updated = await updateChatMessage(messageId, { saved: !current });
     setBackendSession(updated);
     setBackendMessages(updated.messages.map(messageFromRecord));
+    window.dispatchEvent(new Event("vault:chats-changed"));
   };
 
   const regenerateFromMessage = (messageId: string) => {
@@ -447,7 +521,15 @@ function ChatView() {
   };
 
   return (
-    <div className="flex h-full">
+    <div
+      className="flex h-full"
+      onDragOver={(event) => {
+        event.preventDefault();
+        if (backendReady) setDragActive(true);
+      }}
+      onDragLeave={() => setDragActive(false)}
+      onDrop={(event) => void handleDrop(event)}
+    >
       <aside className="hidden w-64 shrink-0 border-r border-border bg-card/30 p-2 lg:block">
         <Button
           variant="ghost"
@@ -533,6 +615,9 @@ function ChatView() {
             <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
               {backendReady ? "Semantic context" : "Local fallback context"}
             </span>
+            <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+              {runtime?.available ? `LLM ${runtime.provider}` : "LLM offline"}
+            </span>
             {backendSession && (
               <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
                 Memory {memoryLabel(memoryState)}
@@ -566,6 +651,7 @@ function ChatView() {
                     }}
                     onSaved={() => void toggleBackendMessageSaved(m.id, Boolean(m.saved))}
                     onRegenerate={() => regenerateFromMessage(m.id)}
+                    onOpenSources={() => navigate({ to: "/sources" })}
                   />
                 ))}
                 {streaming && (
@@ -623,9 +709,19 @@ function ChatView() {
         </div>
 
         <div className="border-t border-border bg-card/40 p-4">
+          {dragActive && (
+            <div className="mx-auto mb-2 max-w-3xl rounded-md border border-dashed border-primary/50 bg-primary/5 px-3 py-2 text-xs text-foreground">
+              Drop files to attach them to this chat.
+            </div>
+          )}
           {lastError && (
             <div className="mx-auto mb-2 max-w-3xl rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
               {lastError}
+            </div>
+          )}
+          {attachmentNotice && (
+            <div className="mx-auto mb-2 max-w-3xl rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+              {attachmentNotice}
             </div>
           )}
           <div className="mx-auto flex max-w-3xl items-end gap-2">
@@ -671,7 +767,7 @@ function ChatView() {
                   onClick={() => removeAttachment(path)}
                   title="Remove attachment"
                 >
-                  {fileNameFromPath(path)}
+                  {fileNameFromPath(path)} <span className="ml-1 text-foreground">Ready</span>
                 </button>
               ))}
             </div>
@@ -725,6 +821,7 @@ function Message({
   onUseful,
   onSaved,
   onRegenerate,
+  onOpenSources,
 }: {
   msg: import("@/lib/mockStore").ChatMessage;
   clusters: Cluster[];
@@ -732,6 +829,7 @@ function Message({
   onUseful: (v: boolean) => void;
   onSaved: () => void;
   onRegenerate: () => void;
+  onOpenSources: () => void;
 }) {
   if (msg.role === "user") {
     return (
@@ -790,6 +888,36 @@ function Message({
                     </div>
                   ) : null}
                   <p className="text-muted-foreground">{cit.snippet}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {s?.localPath && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => s.localPath && void window.cmlDesktop?.openPath(s.localPath)}
+                      >
+                        Open file
+                      </Button>
+                    )}
+                    {s?.localPath && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => s.localPath && void window.cmlDesktop?.showItemInFolder(s.localPath)}
+                      >
+                        Show in folder
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={onOpenSources}
+                    >
+                      View sources
+                    </Button>
+                  </div>
                 </PopoverContent>
               </Popover>
             );

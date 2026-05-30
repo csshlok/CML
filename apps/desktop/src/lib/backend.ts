@@ -259,6 +259,13 @@ export type ChatContextResponse = {
     page_number?: number | null;
     state?: string;
   }>;
+  coverage_ledger: {
+    sources_considered: number;
+    sources_analyzed: number;
+    sources_low_relevance: number;
+    relevance_threshold: number;
+    scope: string;
+  } | null;
   warnings: string[];
   memory_status: string | null;
 };
@@ -573,7 +580,7 @@ export async function streamChatContext(
   },
   handlers: {
     onMeta?: (
-      payload: Pick<ChatContextResponse, "clusters_used" | "citations" | "warnings">,
+      payload: Pick<ChatContextResponse, "clusters_used" | "citations" | "coverage_ledger" | "warnings">,
     ) => void;
     onToken: (text: string) => void;
     onDone?: (payload: Partial<ChatContextResponse>) => void;

@@ -49,3 +49,6 @@ lovable/
 # Keep docs and V0 reference tracked
 .agents/
 skills-lock.json
+
+# Local Codex skill cache/worktrees
+codex-skills/

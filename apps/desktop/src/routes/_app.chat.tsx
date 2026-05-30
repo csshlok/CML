@@ -1,5 +1,5 @@
 import { createFileRoute, Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { type DragEvent, useEffect, useState } from "react";
 import { useStore } from "@/lib/mockStore";
 import {
   listClusters,
@@ -11,7 +11,7 @@ import {
   type ClusterRecord,
   type VaultRecord,
 } from "@/lib/backend";
-import { MessageSquare, Plus, Send, SlidersHorizontal, Trash2 } from "lucide-react";
+import { MessageSquare, Paperclip, Plus, Send, SlidersHorizontal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -36,6 +36,9 @@ function ChatIndex() {
   const [backendClusters, setBackendClusters] = useState<ClusterRecord[]>([]);
   const [backendReady, setBackendReady] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [attachments, setAttachments] = useState<string[]>([]);
+  const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const [scopeClusterId, setScopeClusterId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
@@ -103,8 +106,8 @@ function ChatIndex() {
   }
 
   async function startPromptChat() {
-    const text = prompt.trim();
-    if (!text || creating) return;
+    const text = prompt.trim() || (attachments.length > 0 ? "Read and store these attachments." : "");
+    if ((!text && attachments.length === 0) || creating) return;
     setCreating(true);
     try {
       const activeVault = vault ?? (await listVaults())[0] ?? null;
@@ -115,6 +118,10 @@ function ChatIndex() {
           scope_cluster_id: scopeClusterId,
         });
         window.sessionStorage.setItem(`cml.pendingPrompt.${session.id}`, text);
+        if (attachments.length > 0) {
+          window.sessionStorage.setItem(`cml.pendingAttachments.${session.id}`, JSON.stringify(attachments));
+        }
+        window.dispatchEvent(new Event("vault:chats-changed"));
         navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
         return;
       }
@@ -125,14 +132,47 @@ function ChatIndex() {
     }
     const chat = createChat(scopeClusterId);
     window.sessionStorage.setItem(`cml.pendingPrompt.${chat.id}`, text);
+    if (attachments.length > 0) {
+      window.sessionStorage.setItem(`cml.pendingAttachments.${chat.id}`, JSON.stringify(attachments));
+    }
     navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
   }
 
   async function removeChat(id: string) {
     if (backendReady) {
       await deleteChatSession(id);
+      window.dispatchEvent(new Event("vault:chats-changed"));
       await load();
     }
+  }
+
+  function addAttachmentPaths(paths: string[]) {
+    const cleanPaths = paths.filter(Boolean);
+    if (cleanPaths.length === 0) return;
+    setAttachments((current) => Array.from(new Set([...current, ...cleanPaths])));
+    setAttachmentNotice(
+      `${cleanPaths.length} attachment${cleanPaths.length === 1 ? "" : "s"} ready to store with your first message.`,
+    );
+  }
+
+  async function addAttachments() {
+    if (!window.cmlDesktop?.selectSourceFiles) return;
+    addAttachmentPaths(await window.cmlDesktop.selectSourceFiles());
+  }
+
+  function removeAttachment(path: string) {
+    setAttachments((current) => current.filter((item) => item !== path));
+  }
+
+  async function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setDragActive(false);
+    if (!backendReady) return;
+    const droppedPaths = window.cmlDesktop?.getDroppedFilePaths?.(event.dataTransfer.files) ?? [];
+    const paths = window.cmlDesktop?.listSupportedFiles
+      ? await window.cmlDesktop.listSupportedFiles(droppedPaths)
+      : droppedPaths;
+    addAttachmentPaths(paths);
   }
 
   const visibleChats = backendReady ? backendChats : chats;
@@ -142,7 +182,15 @@ function ChatIndex() {
   }
 
   return (
-    <div className="flex h-full">
+    <div
+      className="flex h-full"
+      onDragOver={(event) => {
+        event.preventDefault();
+        if (backendReady) setDragActive(true);
+      }}
+      onDragLeave={() => setDragActive(false)}
+      onDrop={(event) => void handleDrop(event)}
+    >
       <div className="w-64 border-r border-border bg-card/40 p-2">
         <Button variant="ghost" className="mb-2 w-full justify-start gap-2" onClick={newChat}>
           <Plus className="h-4 w-4" /> New chat
@@ -188,6 +236,16 @@ function ChatIndex() {
 
         <main className="flex flex-1 items-center justify-center px-8">
           <section className="w-full max-w-2xl">
+            {dragActive && (
+              <div className="mb-2 rounded-md border border-dashed border-primary/50 bg-primary/5 px-3 py-2 text-xs text-foreground">
+                Drop files to attach them to the first message.
+              </div>
+            )}
+            {attachmentNotice && (
+              <div className="mb-2 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                {attachmentNotice}
+              </div>
+            )}
             <div className="rounded-md border border-border bg-card p-3">
               <Textarea
                 value={prompt}
@@ -203,6 +261,17 @@ function ChatIndex() {
                 }}
               />
               <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  disabled={!backendReady || creating}
+                  aria-label="Attach files"
+                  title="Attach files"
+                  onClick={() => void addAttachments()}
+                >
+                  <Paperclip className="h-4 w-4" />
+                </Button>
                 <Select
                   value={scopeClusterId ?? "global"}
                   onValueChange={(value) => setScopeClusterId(value === "global" ? null : value)}
@@ -226,13 +295,28 @@ function ChatIndex() {
                 <Button
                   className="ml-auto gap-2"
                   onClick={() => void startPromptChat()}
-                  disabled={!prompt.trim() || creating}
+                  disabled={(!prompt.trim() && attachments.length === 0) || creating}
                 >
                   <Send className="h-4 w-4" />
                   Send
                 </Button>
               </div>
             </div>
+            {attachments.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {attachments.map((path) => (
+                  <button
+                    key={path}
+                    type="button"
+                    className="rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent"
+                    onClick={() => removeAttachment(path)}
+                    title="Remove attachment"
+                  >
+                    {fileNameFromPath(path)} <span className="ml-1 text-foreground">Ready</span>
+                  </button>
+                ))}
+              </div>
+            )}
             {visibleChats.length > 0 && (
               <div className="mt-5 text-sm text-muted-foreground">
                 Ctrl/Cmd Enter sends. Existing chats stay in the left list.
@@ -243,6 +327,10 @@ function ChatIndex() {
       </div>
     </div>
   );
+}
+
+function fileNameFromPath(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
 function titleFromPrompt(prompt: string) {

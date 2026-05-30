@@ -18,9 +18,11 @@ import { useEffect, useState } from "react";
 import {
   createChatSession,
   getJobStatus,
+  listChatSessions,
   listVaults,
   runJobsOnce,
   useBackendHealth,
+  type ChatSessionRecord,
   type JobQueueStatus,
 } from "@/lib/backend";
 
@@ -41,6 +43,7 @@ export function AppShell() {
   const { open: openPalette, setOpen } = useCommandPalette();
   const backend = useBackendHealth();
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
+  const [backendSavedChats, setBackendSavedChats] = useState<ChatSessionRecord[]>([]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -91,7 +94,36 @@ export function AppShell() {
     };
   }, []);
 
-  const savedChats = chats.filter((c) => c.saved).slice(0, 6);
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refreshSavedChats() {
+      try {
+        const vault = (await listVaults())[0] ?? null;
+        if (!vault) {
+          if (!cancelled) setBackendSavedChats([]);
+          return;
+        }
+        const sessions = await listChatSessions(vault.id);
+        if (!cancelled) setBackendSavedChats(sessions.filter((session) => session.saved).slice(0, 6));
+      } catch {
+        if (!cancelled) setBackendSavedChats([]);
+      }
+    }
+
+    void refreshSavedChats();
+    const id = window.setInterval(refreshSavedChats, 15000);
+    window.addEventListener("vault:chats-changed", refreshSavedChats);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      window.removeEventListener("vault:chats-changed", refreshSavedChats);
+    };
+  }, []);
+
+  const savedChats =
+    backend.status === "offline" ? chats.filter((c) => c.saved).slice(0, 6) : backendSavedChats;
 
   async function newChat() {
     try {

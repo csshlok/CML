@@ -206,6 +206,7 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
         "answer": answer,
         "clusters_used": clusters_used,
         "citations": citations,
+        "coverage_ledger": context["coverage_ledger"],
         "warnings": warnings,
         "memory_status": "indexing" if payload.persist else None,
     }
@@ -234,6 +235,7 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
         yield _sse("meta", {
             "clusters_used": clusters_used,
             "citations": citations,
+            "coverage_ledger": context["coverage_ledger"],
             "warnings": warnings,
         })
         if not citations:
@@ -278,6 +280,7 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
             "user_message_id": user_message_id,
             "assistant_message_id": assistant_message_id,
             "answer": answer,
+            "coverage_ledger": context["coverage_ledger"],
             "warnings": warnings,
             "memory_status": "indexing" if payload.persist else None,
         })
@@ -309,6 +312,11 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     )
     results = search_response["results"]
     source_ids = list(OrderedDict.fromkeys(result["source_id"] for result in results))
+    coverage_ledger = _build_coverage_ledger(
+        vault_id=payload.vault_id,
+        cluster_id=payload.cluster_id,
+        analyzed_source_ids=source_ids,
+    )
 
     clusters_used = []
     if results:
@@ -346,6 +354,12 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     ]
 
     warnings = []
+    warnings.append(
+        "Coverage ledger: considered "
+        f"{coverage_ledger['sources_considered']} source(s), analyzed "
+        f"{coverage_ledger['sources_analyzed']} source(s), marked "
+        f"{coverage_ledger['sources_low_relevance']} low relevance."
+    )
     if not citations:
         answer = (
             "I could not find matching indexed context for this prompt yet. "
@@ -371,7 +385,34 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "answer": answer,
         "clusters_used": clusters_used,
         "citations": citations,
+        "coverage_ledger": coverage_ledger,
         "warnings": warnings,
+    }
+
+
+def _build_coverage_ledger(*, vault_id: str, cluster_id: str | None, analyzed_source_ids: list[str]) -> dict:
+    params: list[str] = [vault_id]
+    cluster_clause = ""
+    if cluster_id:
+        cluster_clause = "AND cluster_id = ?"
+        params.append(cluster_id)
+    with connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT id) AS source_count
+            FROM sources
+            WHERE vault_id = ? AND state = 'indexed' AND deleted_at IS NULL {cluster_clause}
+            """,
+            params,
+        ).fetchone()
+    considered = int(row["source_count"] if row else 0)
+    analyzed = min(len(set(analyzed_source_ids)), considered)
+    return {
+        "sources_considered": considered,
+        "sources_analyzed": analyzed,
+        "sources_low_relevance": max(considered - analyzed, 0),
+        "relevance_threshold": 0.0,
+        "scope": "cluster" if cluster_id else "vault",
     }
 
 

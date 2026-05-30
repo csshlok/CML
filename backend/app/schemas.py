@@ -254,6 +254,14 @@ class ChatClusterUse(BaseModel):
     reason: str
 
 
+class ChatCoverageLedger(BaseModel):
+    sources_considered: int = 0
+    sources_analyzed: int = 0
+    sources_low_relevance: int = 0
+    relevance_threshold: float = 0.0
+    scope: str = "vault"
+
+
 class ChatContextResponse(BaseModel):
     session_id: str | None = None
     user_message_id: str | None = None
@@ -262,6 +270,7 @@ class ChatContextResponse(BaseModel):
     answer: str
     clusters_used: list[ChatClusterUse]
     citations: list[ChatCitation]
+    coverage_ledger: ChatCoverageLedger | None = None
     warnings: list[str]
     memory_status: str | None = None
 

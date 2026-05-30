@@ -289,6 +289,48 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIsNotNone(snapshot)
         self.assertGreaterEqual(len(items), 1)
         self.assertTrue(items[0]["source_title_at_answer_time"])
+        self.assertIsNotNone(response["coverage_ledger"])
+        self.assertEqual(response["coverage_ledger"]["sources_considered"], 1)
+        self.assertEqual(response["coverage_ledger"]["sources_analyzed"], 1)
+
+    def test_chat_coverage_ledger_counts_low_relevance_sources(self) -> None:
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Relevant note",
+                source_type="note",
+                raw_text="alpha beta complete scope evidence " * 80,
+            )
+        )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Other note",
+                source_type="note",
+                raw_text="zebra orange unrelated archive " * 80,
+            )
+        )
+        run_due_jobs_once(limit=2)
+
+        response = build_chat_context(ChatContextRequest(vault_id="vault-1", prompt="alpha beta", limit=1))
+
+        ledger = response["coverage_ledger"]
+        self.assertEqual(ledger["sources_considered"], 2)
+        self.assertEqual(ledger["sources_analyzed"], 1)
+        self.assertEqual(ledger["sources_low_relevance"], 1)
 
     def test_chat_attachment_is_ingested_as_cluster_source(self) -> None:
         from backend.app.api.routes.chat import build_chat_context
