@@ -27,6 +27,7 @@ def bridge_status() -> dict[str, str | bool]:
         "mcp": "planned",
         "http_api": "available",
         "cli": "planned",
+        "last_refreshed_at": utc_now(),
     }
 
 

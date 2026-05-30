@@ -186,6 +186,7 @@ class BridgeStatus(BaseModel):
     allow_style_profile: bool = False
     allow_expert_calls: bool = False
     bridge_token: str = ""
+    last_refreshed_at: str | None = None
 
 
 class BridgeSettingsUpdate(BaseModel):
@@ -222,8 +223,24 @@ class BridgeRequestRead(BaseModel):
     created_at: str
 
 
+class DiagnosticBundleResponse(BaseModel):
+    bundle_path: str
+    bundle_format_version: int
+    bundle_generated_at: str
+    app_version: str
+    backend_version: str
+    schema_version: int
+    included_files: list[str]
+
+
 class ChatAttachmentInput(BaseModel):
     path: str = Field(min_length=1)
+    cluster_id: str | None = None
+
+
+class ChatAttachmentStored(BaseModel):
+    source_id: str
+    title: str
     cluster_id: str | None = None
 
 
@@ -271,6 +288,7 @@ class ChatContextResponse(BaseModel):
     clusters_used: list[ChatClusterUse]
     citations: list[ChatCitation]
     coverage_ledger: ChatCoverageLedger | None = None
+    attachments_stored: list[ChatAttachmentStored] = []
     warnings: list[str]
     memory_status: str | None = None
 

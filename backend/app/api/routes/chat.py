@@ -10,7 +10,14 @@ from fastapi.responses import StreamingResponse
 from backend.app.api.routes.search import semantic_search
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.embeddings import active_embedding_model_id, content_hash, reindex_source_chunks
+from backend.app.core.embeddings import (
+    active_embedding_model_id,
+    content_hash,
+    cosine_similarity,
+    decode_embedding,
+    embed_text,
+    reindex_source_chunks,
+)
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path
 from backend.app.core.llm_runtime import LLMRuntimeError, generate_grounded_answer, runtime_status, stream_grounded_answer
@@ -207,6 +214,7 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
         "clusters_used": clusters_used,
         "citations": citations,
         "coverage_ledger": context["coverage_ledger"],
+        "attachments_stored": generation["attachment_sources"] if generation else [],
         "warnings": warnings,
         "memory_status": "indexing" if payload.persist else None,
     }
@@ -232,10 +240,12 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
         warnings = list(context["warnings"])
         citations = context["citations"]
         clusters_used = context["clusters_used"]
+        attachments_stored = generation["attachment_sources"] if generation else []
         yield _sse("meta", {
             "clusters_used": clusters_used,
             "citations": citations,
             "coverage_ledger": context["coverage_ledger"],
+            "attachments_stored": attachments_stored,
             "warnings": warnings,
         })
         if not citations:
@@ -281,6 +291,7 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
             "assistant_message_id": assistant_message_id,
             "answer": answer,
             "coverage_ledger": context["coverage_ledger"],
+            "attachments_stored": attachments_stored,
             "warnings": warnings,
             "memory_status": "indexing" if payload.persist else None,
         })
@@ -302,20 +313,36 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
             if session is None:
                 raise HTTPException(status_code=404, detail="Chat session not found")
 
+    if _is_conversational_prompt(payload.prompt):
+        return _build_direct_chat_context(payload)
+
+    include_chat_transcripts = _should_include_chat_transcripts(payload.prompt)
+    source_scores = _score_sources_for_query(
+        vault_id=payload.vault_id,
+        cluster_id=payload.cluster_id,
+        query=payload.prompt,
+        include_chat_transcripts=include_chat_transcripts,
+    )
+    analyzed_source_ids = [item["source_id"] for item in source_scores[: payload.limit]]
+
     search_response = semantic_search(
         SemanticSearchRequest(
             vault_id=payload.vault_id,
             cluster_id=payload.cluster_id,
             query=payload.prompt,
-            limit=payload.limit,
+            limit=min(30, max(payload.limit * 4, 12)),
         )
     )
-    results = search_response["results"]
+    results = [
+        result for result in search_response["results"]
+        if (not analyzed_source_ids or result["source_id"] in analyzed_source_ids)
+        and (include_chat_transcripts or not _is_chat_transcript_result(result))
+    ]
     source_ids = list(OrderedDict.fromkeys(result["source_id"] for result in results))
     coverage_ledger = _build_coverage_ledger(
         vault_id=payload.vault_id,
         cluster_id=payload.cluster_id,
-        analyzed_source_ids=source_ids,
+        analyzed_source_ids=analyzed_source_ids,
     )
 
     clusters_used = []
@@ -390,6 +417,21 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     }
 
 
+def _build_direct_chat_context(payload: ChatContextRequest) -> dict:
+    coverage_ledger = _build_coverage_ledger(
+        vault_id=payload.vault_id,
+        cluster_id=payload.cluster_id,
+        analyzed_source_ids=[],
+    )
+    return {
+        "answer": _build_direct_chat_answer(payload.prompt),
+        "clusters_used": [],
+        "citations": [],
+        "coverage_ledger": {**coverage_ledger, "sources_analyzed": 0, "sources_low_relevance": coverage_ledger["sources_considered"]},
+        "warnings": ["Answered directly without vault retrieval because this was conversational chat."],
+    }
+
+
 def _build_coverage_ledger(*, vault_id: str, cluster_id: str | None, analyzed_source_ids: list[str]) -> dict:
     params: list[str] = [vault_id]
     cluster_clause = ""
@@ -414,6 +456,106 @@ def _build_coverage_ledger(*, vault_id: str, cluster_id: str | None, analyzed_so
         "relevance_threshold": 0.0,
         "scope": "cluster" if cluster_id else "vault",
     }
+
+
+def _score_sources_for_query(
+    *,
+    vault_id: str,
+    cluster_id: str | None,
+    query: str,
+    include_chat_transcripts: bool = False,
+) -> list[dict]:
+    query_vector = embed_text(query)
+    params: list[str] = [vault_id]
+    cluster_clause = ""
+    if cluster_id:
+        cluster_clause = "AND chunks.cluster_id = ?"
+        params.append(cluster_id)
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT chunks.source_id, chunks.embedding, sources.source_type, sources.tags
+            FROM source_chunks chunks
+            JOIN sources ON sources.id = chunks.source_id
+            WHERE chunks.vault_id = ?
+              AND sources.state = 'indexed'
+              AND sources.deleted_at IS NULL
+              {cluster_clause}
+            """,
+            params,
+        ).fetchall()
+    best_by_source: dict[str, float] = {}
+    for row in rows:
+        if not include_chat_transcripts and _is_chat_transcript_source(row):
+            continue
+        score = cosine_similarity(query_vector, decode_embedding(row["embedding"]))
+        source_id = row["source_id"]
+        if score > best_by_source.get(source_id, -1):
+            best_by_source[source_id] = score
+    scored = [
+        {"source_id": source_id, "score": round(score, 4)}
+        for source_id, score in best_by_source.items()
+        if score > 0
+    ]
+    scored.sort(key=lambda item: item["score"], reverse=True)
+    return scored
+
+
+def _is_conversational_prompt(prompt: str) -> bool:
+    normalized = " ".join(prompt.lower().strip().split())
+    trimmed = normalized.strip(" .!?")
+    if trimmed in {
+        "hi",
+        "hello",
+        "hey",
+        "yo",
+        "sup",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "thanks",
+        "thank you",
+        "ok",
+        "okay",
+    }:
+        return True
+    return False
+
+
+def _should_include_chat_transcripts(prompt: str) -> bool:
+    normalized = prompt.lower()
+    return any(
+        phrase in normalized
+        for phrase in (
+            "previous chat",
+            "chat history",
+            "our conversation",
+            "earlier conversation",
+            "what did i ask",
+            "what did we discuss",
+            "transcript",
+        )
+    )
+
+
+def _is_chat_transcript_result(result: dict) -> bool:
+    return str(result.get("source_id") or "").startswith("chat-source-")
+
+
+def _is_chat_transcript_source(row) -> bool:
+    tags = row["tags"] if "tags" in row.keys() else ""
+    return str(row["source_id"]).startswith("chat-source-") or "TRANSCRIPT" in str(tags)
+
+
+def _build_direct_chat_answer(prompt: str) -> str:
+    trimmed = prompt.strip().lower().strip(" .!?")
+    if trimmed in {"hi", "hello", "hey", "yo", "sup"}:
+        return "Hello. What do you want to work on in your vault?"
+    if trimmed in {"thanks", "thank you"}:
+        return "You are welcome."
+    if trimmed in {"ok", "okay"}:
+        return "Okay. Send me what you want to work on next."
+    return "I am here. Ask me anything, or attach a file if you want me to store and use it."
 
 
 def _sse(event: str, payload: dict) -> str:

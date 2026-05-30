@@ -1,12 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.api.routes import bridge, chat, clusters, jobs, models, search, sources, vaults
+from backend.app.api.routes import bridge, chat, clusters, diagnostics, jobs, models, search, sources, vaults
 from backend.app.core.auth import LocalApiAuthMiddleware
 from backend.app.core.background_jobs import enqueue_startup_reconciliation_jobs, start_background_worker
 from backend.app.core.config import get_settings
 from backend.app.core.database import init_db
 from backend.app.core.generation_recovery import recover_interrupted_generations
+from backend.app.core.logging_setup import setup_logging
 from backend.app.core.startup_checks import run_startup_checks
 from backend.app.core.vault_lock import acquire_vault_lock, release_vault_lock
 from backend.app.schemas import HealthResponse
@@ -28,6 +29,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup() -> None:
+    setup_logging()
     acquire_vault_lock()
     init_db()
     run_startup_checks()
@@ -54,3 +56,4 @@ app.include_router(chat.router, prefix=settings.api_prefix)
 app.include_router(bridge.router, prefix=settings.api_prefix)
 app.include_router(models.router, prefix=settings.api_prefix)
 app.include_router(jobs.router, prefix=settings.api_prefix)
+app.include_router(diagnostics.router, prefix=settings.api_prefix)

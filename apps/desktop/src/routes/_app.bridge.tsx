@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { Cable, Copy, ExternalLink, Shield, Terminal } from "lucide-react";
+import { Cable, Copy, ExternalLink, RefreshCw, Shield, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -39,7 +39,13 @@ function BridgeView() {
         listVaults(),
         listClusters(),
       ]);
-      setStatus(nextStatus);
+      const vaultIds = new Set(nextVaults.map((vault) => vault.id));
+      const clusterIds = new Set(nextClusters.map((cluster) => cluster.id));
+      setStatus({
+        ...nextStatus,
+        allowed_vault_ids: nextStatus.allowed_vault_ids.filter((id) => vaultIds.has(id)),
+        allowed_cluster_ids: nextStatus.allowed_cluster_ids.filter((id) => clusterIds.has(id)),
+      });
       setRequests(nextRequests);
       setVaults(nextVaults);
       setClusters(nextClusters);
@@ -110,9 +116,12 @@ function BridgeView() {
               Let local AI tools request selected context from this vault. Keep it off until you
               have chosen exactly which vaults and clusters another client can read.
             </p>
+            <div className="mt-2 text-xs text-muted-foreground">
+              Permissions refresh every minute. Last checked {status?.last_refreshed_at ?? "not yet"}.
+            </div>
           </div>
 
-          <div className="rounded-md border border-border bg-card p-3">
+          <div className="flex items-center gap-2 rounded-md border border-border bg-card p-3">
             <div className="flex items-center gap-3">
               <Switch
                 checked={Boolean(status?.enabled)}
@@ -128,6 +137,16 @@ function BridgeView() {
                 </div>
               </div>
             </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              disabled={saving || backend.status !== "online"}
+              aria-label="Refresh Bridge permissions"
+              title="Refresh Bridge permissions"
+              onClick={() => void loadBridgeState({ clearOnError: true })}
+            >
+              <RefreshCw className="h-4 w-4" />
+            </Button>
           </div>
         </div>
 

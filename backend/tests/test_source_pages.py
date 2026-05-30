@@ -332,6 +332,37 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(ledger["sources_analyzed"], 1)
         self.assertEqual(ledger["sources_low_relevance"], 1)
 
+    def test_chat_greeting_skips_retrieval_and_transcripts(self) -> None:
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Chat transcript - old answer",
+                source_type="note",
+                raw_text="Chat transcript old semantic context that should not answer hello " * 80,
+            )
+        )
+        run_due_jobs_once(limit=1)
+
+        response = build_chat_context(ChatContextRequest(vault_id="vault-1", prompt="Hello"))
+
+        self.assertIn("Hello", response["answer"])
+        self.assertEqual(response["citations"], [])
+        self.assertEqual(response["coverage_ledger"]["sources_analyzed"], 0)
+        self.assertIn("Answered directly", response["warnings"][0])
+
     def test_chat_attachment_is_ingested_as_cluster_source(self) -> None:
         from backend.app.api.routes.chat import build_chat_context
         from backend.app.core.database import connect, utc_now
@@ -383,6 +414,54 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIsNotNone(attachment)
         self.assertGreater(chunks, 0)
         self.assertEqual(response["session_id"], attachment["session_id"])
+        self.assertEqual(response["attachments_stored"][0]["source_id"], source["id"])
+
+    def test_bridge_status_prunes_deleted_permission_ids(self) -> None:
+        from backend.app.api.routes.bridge import bridge_status, update_bridge_settings
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import BridgeSettingsUpdate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        update_bridge_settings(
+            BridgeSettingsUpdate(
+                allowed_vault_ids=["vault-1", "deleted-vault"],
+                allowed_cluster_ids=["deleted-cluster"],
+            )
+        )
+        status = bridge_status()
+
+        self.assertEqual(status["allowed_vault_ids"], ["vault-1"])
+        self.assertEqual(status["allowed_cluster_ids"], [])
+        self.assertTrue(status["last_refreshed_at"])
+
+    def test_diagnostic_bundle_exports_redacted_support_zip(self) -> None:
+        from pathlib import Path
+        from zipfile import ZipFile
+
+        from backend.app.api.routes.diagnostics import create_diagnostic_bundle
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        response = create_diagnostic_bundle()
+        bundle_path = Path(response["bundle_path"])
+
+        self.assertTrue(bundle_path.exists())
+        self.assertIn("manifest.json", response["included_files"])
+        with ZipFile(bundle_path) as bundle:
+            self.assertIn("manifest.json", bundle.namelist())
+            self.assertIn("database-summary.json", bundle.namelist())
 
     def test_startup_recovery_marks_in_flight_generations_retriable(self) -> None:
         from backend.app.core.database import connect, utc_now

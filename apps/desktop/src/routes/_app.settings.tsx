@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import {
   cancelModelDownload,
   configureEmbeddingRuntime,
+  createDiagnosticBundle,
   createVault,
   getEmbeddingRuntimeStatus,
   getModelRuntimeStatus,
@@ -39,6 +40,7 @@ function SettingsView() {
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [diagnosticStatus, setDiagnosticStatus] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadVault() {
@@ -148,6 +150,16 @@ function SettingsView() {
       setModelError(err instanceof Error ? err.message : "Could not update embedding settings.");
     } finally {
       setEmbeddingSaving(false);
+    }
+  }
+
+  async function exportDiagnostics() {
+    setDiagnosticStatus("Creating diagnostic bundle...");
+    try {
+      const bundle = await createDiagnosticBundle();
+      setDiagnosticStatus(`Diagnostic bundle saved to ${bundle.bundle_path}`);
+    } catch (err) {
+      setDiagnosticStatus(err instanceof Error ? err.message : "Could not create diagnostic bundle.");
     }
   }
 
@@ -365,6 +377,19 @@ function SettingsView() {
           <p className="mt-2 text-sm text-muted-foreground">
             Power-user details like training logs and expert versions appear here.
           </p>
+          <div className="mt-4 border-t border-border pt-4">
+            <div className="text-sm font-medium">Diagnostics</div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Export a local support bundle with version details, database counts, integrity check
+              results, and redacted logs. Source text is not included.
+            </p>
+            <Button className="mt-3" variant="outline" onClick={() => void exportDiagnostics()}>
+              Export diagnostic bundle
+            </Button>
+            {diagnosticStatus && (
+              <p className="mt-2 break-all text-xs text-muted-foreground">{diagnosticStatus}</p>
+            )}
+          </div>
         </section>
       </div>
     </div>

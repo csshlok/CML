@@ -285,10 +285,11 @@ function ChatView() {
       abortControllerRef.current = abortController;
       try {
         let streamedAnswer = "";
-        let streamedMeta: Pick<ChatContextResponse, "clusters_used" | "citations" | "coverage_ledger" | "warnings"> = {
+        let streamedMeta: Pick<ChatContextResponse, "clusters_used" | "citations" | "coverage_ledger" | "attachments_stored" | "warnings"> = {
           clusters_used: [],
           citations: [],
           coverage_ledger: null,
+          attachments_stored: [],
           warnings: [],
         };
         let streamedDone: Partial<ChatContextResponse> = {};
@@ -373,7 +374,12 @@ function ChatView() {
             setBackendSources(sourceRows.map(sourceFromRecord));
             setBackendChats(chatRows);
             window.dispatchEvent(new Event("vault:chats-changed"));
-            if (selectedAttachments.length > 0) {
+            const storedAttachments = streamedDone.attachments_stored ?? streamedMeta.attachments_stored ?? [];
+            if (storedAttachments.length > 0) {
+              setAttachmentNotice(
+                `Stored ${storedAttachments.map((item) => item.title).join(", ")} in ${scope?.name ?? "the vault"}.`,
+              );
+            } else if (selectedAttachments.length > 0) {
               setAttachmentNotice(
                 `Stored ${selectedAttachments.length} attachment${selectedAttachments.length === 1 ? "" : "s"} in ${scope?.name ?? "the vault"}.`,
               );

@@ -121,6 +121,7 @@ export type BridgeStatus = {
   allow_style_profile: boolean;
   allow_expert_calls: boolean;
   bridge_token: string;
+  last_refreshed_at?: string | null;
 };
 
 export type BridgeRequest = {
@@ -266,8 +267,23 @@ export type ChatContextResponse = {
     relevance_threshold: number;
     scope: string;
   } | null;
+  attachments_stored: Array<{
+    source_id: string;
+    title: string;
+    cluster_id: string | null;
+  }>;
   warnings: string[];
   memory_status: string | null;
+};
+
+export type DiagnosticBundleResponse = {
+  bundle_path: string;
+  bundle_format_version: number;
+  bundle_generated_at: string;
+  app_version: string;
+  backend_version: string;
+  schema_version: number;
+  included_files: string[];
 };
 
 export type ChatMessageRecord = {
@@ -363,6 +379,10 @@ export async function updateBridgeSettings(
     method: "PATCH",
     body: JSON.stringify(payload),
   });
+}
+
+export async function createDiagnosticBundle() {
+  return request<DiagnosticBundleResponse>("/api/v1/diagnostics/bundle", { method: "POST" });
 }
 
 export async function listVaults() {
@@ -580,7 +600,10 @@ export async function streamChatContext(
   },
   handlers: {
     onMeta?: (
-      payload: Pick<ChatContextResponse, "clusters_used" | "citations" | "coverage_ledger" | "warnings">,
+      payload: Pick<
+        ChatContextResponse,
+        "clusters_used" | "citations" | "coverage_ledger" | "attachments_stored" | "warnings"
+      >,
     ) => void;
     onToken: (text: string) => void;
     onDone?: (payload: Partial<ChatContextResponse>) => void;
