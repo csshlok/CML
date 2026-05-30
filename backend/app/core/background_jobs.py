@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from uuid import uuid4
 
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.embeddings import reindex_source_chunks
+from backend.app.core.embeddings import active_embedding_model_id, reindex_source_chunks
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 
 JOB_POLL_SECONDS = 1.0
@@ -73,6 +73,40 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         cancellable=False,
         preemptable=False,
         timeout_seconds=300,
+        soft_timeout_seconds=None,
+        timeout_action="defer",
+    ),
+    "delete_source_cleanup": JobPolicy(
+        priority="critical",
+        idempotency_class="reconcile_required",
+        restart_policy="reconcile_then_retry",
+        dependency_failure_policy="manual_review",
+        write_scope="source",
+        concurrency_group="delete_cleanup",
+        resource_cost="medium",
+        can_run_during_synthesis=True,
+        user_visible=True,
+        user_initiated=True,
+        cancellable=False,
+        preemptable=False,
+        timeout_seconds=300,
+        soft_timeout_seconds=None,
+        timeout_action="escalate",
+    ),
+    "vector_reconcile_incremental": JobPolicy(
+        priority="high",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="vector_index",
+        concurrency_group="vector_writer",
+        resource_cost="medium",
+        can_run_during_synthesis=False,
+        user_visible=False,
+        user_initiated=False,
+        cancellable=False,
+        preemptable=False,
+        timeout_seconds=900,
         soft_timeout_seconds=None,
         timeout_action="defer",
     ),
@@ -211,6 +245,16 @@ def start_background_worker() -> None:
         _WORKER_STARTED = True
 
 
+def enqueue_startup_reconciliation_jobs() -> None:
+    with connect() as conn:
+        enqueue_job(
+            conn,
+            job_type="vector_reconcile_incremental",
+            payload={},
+            dedupe_key="vector-reconcile:startup",
+        )
+
+
 def run_due_jobs_once(limit: int = 5) -> int:
     _refresh_blocked_dependencies()
     processed = 0
@@ -311,6 +355,10 @@ def _run_claimed_job(job: dict) -> None:
             _run_reindex_source(payload)
         elif job["job_type"] == "chat_transcript_memory":
             _run_chat_transcript_memory(payload)
+        elif job["job_type"] == "delete_source_cleanup":
+            _run_delete_source_cleanup(payload)
+        elif job["job_type"] == "vector_reconcile_incremental":
+            _run_vector_reconcile_incremental(payload)
         else:
             raise ValueError(f"Unsupported job type: {job['job_type']}")
     except Exception as exc:
@@ -336,7 +384,7 @@ def _run_reindex_source(payload: dict) -> None:
         if row is None:
             return
         source = dict_from_row(row)
-        if source["state"] != "indexed":
+        if source.get("deleted_at") or source["state"] != "indexed":
             conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
             return
         reindex_source_chunks(conn, source)
@@ -359,6 +407,48 @@ def _run_chat_transcript_memory(payload: dict) -> None:
             "UPDATE chat_sessions SET memory_status = 'indexed', memory_updated_at = ? WHERE id = ?",
             (utc_now(), session_id),
         )
+
+
+def _run_delete_source_cleanup(payload: dict) -> None:
+    source_id = str(payload["source_id"])
+    with connect() as conn:
+        conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
+        conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
+
+
+def _run_vector_reconcile_incremental(payload: dict) -> None:
+    vault_id = payload.get("vault_id")
+    model_id = active_embedding_model_id()
+    with connect() as conn:
+        params: list[str] = []
+        vault_clause = ""
+        if vault_id:
+            vault_clause = "AND sources.vault_id = ?"
+            params.append(str(vault_id))
+        params.append(model_id)
+        rows = conn.execute(
+            f"""
+            SELECT sources.id
+            FROM sources
+            LEFT JOIN source_chunks chunks ON chunks.source_id = sources.id
+            WHERE sources.state = 'indexed'
+                AND sources.deleted_at IS NULL
+                {vault_clause}
+            GROUP BY sources.id
+            HAVING COUNT(chunks.id) = 0
+                OR SUM(CASE WHEN chunks.embedding_model_id != ? THEN 1 ELSE 0 END) > 0
+            LIMIT 100
+            """,
+            params,
+        ).fetchall()
+        for row in rows:
+            enqueue_job(
+                conn,
+                job_type="reindex_source",
+                payload={"source_id": row["id"]},
+                dedupe_key=f"reindex-source:{row['id']}",
+                scope_id=row["id"],
+            )
 
 
 def _mark_job_failed_or_retry(job: dict, error: str) -> None:

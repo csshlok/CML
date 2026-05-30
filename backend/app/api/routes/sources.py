@@ -1,4 +1,6 @@
 import json
+import hashlib
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
@@ -34,7 +36,8 @@ def list_sources(vault_id: str | None = None, cluster_id: str | None = None) -> 
         clauses.append("cluster_id = ?")
         params.append(cluster_id)
 
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    clauses.append("deleted_at IS NULL")
+    where = f"WHERE {' AND '.join(clauses)}"
     with connect() as conn:
         rows = conn.execute(
             f"SELECT * FROM sources {where} ORDER BY updated_at DESC",
@@ -65,7 +68,21 @@ def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = 
             ).fetchone()
             if cluster is None:
                 raise HTTPException(status_code=404, detail="Cluster not found")
-        elif raw_text:
+
+        checksum = payload.checksum or (content_hash(raw_text) if raw_text else None)
+        if checksum:
+            existing = conn.execute(
+                """
+                SELECT * FROM sources
+                WHERE vault_id = ? AND checksum = ? AND deleted_at IS NULL
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (payload.vault_id, checksum),
+            ).fetchone()
+            if existing is not None:
+                return source_from_row(existing)
+        if cluster_id is None and raw_text:
             cluster_id = assign_or_create_cluster(
                 conn,
                 vault_id=payload.vault_id,
@@ -82,6 +99,7 @@ def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = 
             "state": "indexed" if payload.raw_text else "waiting",
             "original_path": payload.original_path,
             "url": payload.url,
+            "checksum": checksum,
             "raw_text": raw_text,
             "extracted_text": raw_text,
             "summary": payload.summary
@@ -100,11 +118,11 @@ def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = 
             """
             INSERT INTO sources (
                 id, vault_id, cluster_id, title, source_type, state, original_path, url,
-                raw_text, extracted_text, summary, tags, cover_image_url, created_at, updated_at
+                checksum, raw_text, extracted_text, summary, tags, cover_image_url, created_at, updated_at
             )
             VALUES (
                 :id, :vault_id, :cluster_id, :title, :source_type, :state, :original_path, :url,
-                :raw_text, :extracted_text, :summary, :tags, :cover_image_url, :created_at, :updated_at
+                :checksum, :raw_text, :extracted_text, :summary, :tags, :cover_image_url, :created_at, :updated_at
             )
             """,
             source,
@@ -143,6 +161,7 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
             title=title,
             source_type="note" if title.lower().endswith((".md", ".markdown", ".txt")) else "file",
             original_path=payload.path,
+            checksum=_file_checksum(Path(payload.path)),
             raw_text=text,
         ),
         page_texts=pages,
@@ -185,7 +204,10 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
 @router.get("/{source_id}", response_model=SourceRead)
 def get_source(source_id: str) -> dict:
     with connect() as conn:
-        row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM sources WHERE id = ? AND deleted_at IS NULL",
+            (source_id,),
+        ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Source not found")
     return source_from_row(row)
@@ -221,7 +243,7 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
     params = {"id": source_id, **updates}
     with connect() as conn:
         existing = conn.execute(
-            "SELECT id, vault_id, cluster_id FROM sources WHERE id = ?",
+            "SELECT id, vault_id, cluster_id FROM sources WHERE id = ? AND deleted_at IS NULL",
             (source_id,),
         ).fetchone()
         if existing is None:
@@ -262,10 +284,26 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
 
 @router.delete("/{source_id}", status_code=204)
 def delete_source(source_id: str) -> None:
+    now = utc_now()
     with connect() as conn:
-        result = conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+        result = conn.execute(
+            """
+            UPDATE sources
+            SET state = 'deleted', deleted_at = ?, updated_at = ?
+            WHERE id = ? AND deleted_at IS NULL
+            """,
+            (now, now, source_id),
+        )
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Source not found")
+        enqueue_job(
+            conn,
+            job_type="delete_source_cleanup",
+            payload={"source_id": source_id},
+            dedupe_key=f"delete-source-cleanup:{source_id}",
+            scope_id=source_id,
+            user_initiated=True,
+        )
 
 
 def source_from_row(row) -> dict:
@@ -308,3 +346,11 @@ def _replace_source_pages(conn, *, source_id: str, vault_id: str, page_texts: li
                 "updated_at": now,
             },
         )
+
+
+def _file_checksum(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

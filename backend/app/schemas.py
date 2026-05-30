@@ -81,6 +81,7 @@ class SourceCreate(BaseModel):
     source_type: str
     original_path: str | None = None
     url: str | None = None
+    checksum: str | None = None
     raw_text: str = ""
     summary: str | None = None
     tags: list[str] | None = None
@@ -126,11 +127,13 @@ class SourceRead(BaseModel):
     state: str
     original_path: str | None
     url: str | None
+    checksum: str | None = None
     raw_text: str
     extracted_text: str
     summary: str
     tags: list[str]
     cover_image_url: str | None
+    deleted_at: str | None = None
     created_at: str
     updated_at: str
 

@@ -57,11 +57,13 @@ def init_db() -> None:
                 state TEXT NOT NULL DEFAULT 'waiting',
                 original_path TEXT,
                 url TEXT,
+                checksum TEXT,
                 raw_text TEXT NOT NULL DEFAULT '',
                 extracted_text TEXT NOT NULL DEFAULT '',
                 summary TEXT NOT NULL DEFAULT '',
                 tags TEXT NOT NULL DEFAULT '[]',
                 cover_image_url TEXT,
+                deleted_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
@@ -209,6 +211,8 @@ def init_db() -> None:
         )
         _add_column_if_missing(conn, "sources", "tags", "TEXT NOT NULL DEFAULT '[]'")
         _add_column_if_missing(conn, "sources", "cover_image_url", "TEXT")
+        _add_column_if_missing(conn, "sources", "deleted_at", "TEXT")
+        _add_column_if_missing(conn, "sources", "checksum", "TEXT")
         _add_column_if_missing(conn, "chat_messages", "useful", "INTEGER")
         _add_column_if_missing(conn, "chat_messages", "saved", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "chat_sessions", "memory_status", "TEXT NOT NULL DEFAULT 'idle'")
@@ -247,6 +251,8 @@ def init_db() -> None:
                 ON app_jobs(depends_on_job_id);
             CREATE INDEX IF NOT EXISTS idx_source_chunks_page_id
                 ON source_chunks(page_id);
+            CREATE INDEX IF NOT EXISTS idx_sources_checksum
+                ON sources(vault_id, checksum);
             """
         )
 

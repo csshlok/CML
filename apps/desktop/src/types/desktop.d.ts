@@ -10,6 +10,7 @@ declare global {
       selectVaultFolder: () => Promise<string | null>;
       selectCoverImage: () => Promise<string | null>;
       getBackendUrl: () => Promise<string | null>;
+      getBackendToken: () => Promise<string | null>;
       listSupportedFiles: (targetPaths: string[]) => Promise<string[]>;
       getDroppedFilePaths: (files: File[] | FileList) => string[];
       showItemInFolder: (targetPath: string) => Promise<boolean>;

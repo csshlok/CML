@@ -47,8 +47,11 @@ def embedding_status() -> dict:
 
 def embedding_config() -> dict:
     settings = get_settings()
+    provider = settings.embedding_provider
+    if provider == "hash" and not settings.allow_hash_embeddings:
+        provider = "sentence-transformers"
     config = {
-        "provider": settings.embedding_provider,
+        "provider": provider,
         "model": settings.embedding_model,
         "dimensions": settings.embedding_dimensions,
         "cache_dir": settings.embedding_cache_dir,
@@ -62,7 +65,7 @@ def embedding_config() -> dict:
         if isinstance(saved, dict):
             provider = saved.get("provider")
             cache_dir = saved.get("cache_dir")
-            if provider in {"hash", "sentence-transformers"}:
+            if provider == "sentence-transformers" or (provider == "hash" and settings.allow_hash_embeddings):
                 config["provider"] = provider
             if isinstance(cache_dir, str) and cache_dir.strip():
                 config["cache_dir"] = Path(cache_dir)
@@ -85,8 +88,10 @@ def content_hash(text: str) -> str:
 
 
 def configure_embedding_runtime(provider: str, cache_dir: str | None = None) -> dict:
+    if provider == "hash" and not get_settings().allow_hash_embeddings:
+        raise ValueError("Hash embeddings are only available in explicit dev/test mode")
     if provider not in {"hash", "sentence-transformers"}:
-        raise ValueError("Embedding provider must be 'hash' or 'sentence-transformers'")
+        raise ValueError("Embedding provider must be 'sentence-transformers'")
     config_path = _embedding_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"provider": provider, "cache_dir": cache_dir or ""}

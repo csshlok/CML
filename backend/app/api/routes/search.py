@@ -34,7 +34,7 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
                 sources.source_type
             FROM source_chunks chunks
             JOIN sources ON sources.id = chunks.source_id
-            WHERE chunks.vault_id = ? {cluster_clause}
+            WHERE chunks.vault_id = ? AND sources.deleted_at IS NULL {cluster_clause}
             """,
             params,
         ).fetchall()
@@ -74,7 +74,7 @@ def reindex_vault(vault_id: str) -> dict:
         rows = conn.execute(
             """
             SELECT * FROM sources
-            WHERE vault_id = ? AND state = 'indexed'
+            WHERE vault_id = ? AND state = 'indexed' AND deleted_at IS NULL
             """,
             (vault_id,),
         ).fetchall()

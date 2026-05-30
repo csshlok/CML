@@ -11,6 +11,7 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
         os.environ["CML_DATABASE_PATH"] = str(self.db_path)
         os.environ["CML_DATA_DIR"] = self.tmp.name
         os.environ["CML_EMBEDDING_PROVIDER"] = "hash"
+        os.environ["CML_ALLOW_HASH_EMBEDDINGS"] = "1"
 
         from backend.app.core.config import get_settings
 
@@ -27,6 +28,7 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
         os.environ.pop("CML_DATABASE_PATH", None)
         os.environ.pop("CML_DATA_DIR", None)
         os.environ.pop("CML_EMBEDDING_PROVIDER", None)
+        os.environ.pop("CML_ALLOW_HASH_EMBEDDINGS", None)
         self.tmp.cleanup()
 
     def test_high_priority_runs_before_low_priority(self) -> None:

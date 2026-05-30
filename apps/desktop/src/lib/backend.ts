@@ -6,6 +6,7 @@ const BACKEND_CANDIDATES = Array.from(
   new Set([CONFIGURED_BACKEND_URL, "http://127.0.0.1:7343", "http://127.0.0.1:7342"]),
 );
 let resolvedBackendUrl: string | null = null;
+let resolvedBackendToken: string | null = null;
 
 if (typeof window !== "undefined") {
   const queryBackendUrl = new URLSearchParams(window.location.search).get("backendUrl");
@@ -14,6 +15,9 @@ if (typeof window !== "undefined") {
   } else {
     void window.cmlDesktop?.getBackendUrl?.().then((url) => {
       if (url) resolvedBackendUrl = url;
+    });
+    void window.cmlDesktop?.getBackendToken?.().then((token) => {
+      if (token) resolvedBackendToken = token;
     });
   }
 }
@@ -97,6 +101,13 @@ async function getBackendUrl() {
     }
   }
   return CONFIGURED_BACKEND_URL;
+}
+
+async function getBackendToken() {
+  if (resolvedBackendToken) return resolvedBackendToken;
+  const token = await window.cmlDesktop?.getBackendToken?.();
+  if (token) resolvedBackendToken = token;
+  return resolvedBackendToken;
 }
 
 export type BridgeStatus = {
@@ -548,9 +559,12 @@ export async function streamChatContext(
   signal?: AbortSignal,
 ) {
   const backendUrl = await getBackendUrl();
+  const token = await getBackendToken();
+  const headers = new Headers({ "Content-Type": "application/json" });
+  if (token) headers.set("x-cml-api-token", token);
   const response = await fetch(`${backendUrl}/api/v1/chat/context/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(payload),
     signal,
   });
@@ -656,7 +670,7 @@ export async function getEmbeddingRuntimeStatus() {
 }
 
 export async function configureEmbeddingRuntime(payload: {
-  provider: "hash" | "sentence-transformers";
+  provider: "sentence-transformers";
   cache_dir?: string | null;
 }) {
   return request<EmbeddingRuntimeStatus>("/api/v1/models/embeddings/configure", {
@@ -680,9 +694,13 @@ export async function cancelModelDownload(modelId: string) {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const backendUrl = await getBackendUrl();
+  const token = await getBackendToken();
+  const headers = new Headers(init?.headers);
+  if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (token) headers.set("x-cml-api-token", token);
   const response = await fetch(`${backendUrl}${path}`, {
     ...init,
-    headers: init?.body ? { "Content-Type": "application/json", ...init.headers } : init?.headers,
+    headers,
   });
   if (!response.ok) {
     let detail = "";

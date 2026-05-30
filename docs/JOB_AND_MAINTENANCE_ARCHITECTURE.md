@@ -173,7 +173,7 @@ This table is the source of truth for current and planned V1 job types. Values c
 | `fetch_link` | planned | normal | idempotent | requeue | cancel | source | network_fetch | medium | true | true | true | true | false | 180s / fail |
 | `embed_source_chunks` | planned | high | idempotent | requeue | requeue_on_retry | vector_index | vector_writer | medium | false | true | false | true | false | 900s / defer |
 | `orphan_vector_cleanup` | planned | high | idempotent | requeue | cancel | vector_index | vector_writer | medium | false | false | false | false | false | 600s / defer |
-| `vector_reconcile_incremental` | planned | high | idempotent | requeue | cancel | vector_index | vector_writer | medium | false | false | false | false | false | 900s / defer |
+| `vector_reconcile_incremental` | implemented | high | idempotent | requeue | cancel | vector_index | vector_writer | medium | false | false | false | false | false | 900s / defer |
 | `vector_reconcile_full` | planned | on_demand | idempotent | requeue | manual_review | vector_index | vector_writer | very_heavy | false | true | true | true | false | null / escalate |
 | `vector_compact` | planned | low | idempotent | requeue | cancel | vector_index | vector_writer | heavy | false | false | false | false | false | 1800s / defer |
 | `cluster_suggestion` | planned | normal | idempotent | requeue | cancel | cluster | null | medium | false | true | false | true | false | 600s / defer |
@@ -187,7 +187,7 @@ This table is the source of truth for current and planned V1 job types. Values c
 | `diagnostic_bundle` | planned | on_demand | idempotent | manual_review | manual_review | system | diagnostics | medium | true | true | true | true | false | 300s / fail |
 | `vault_integrity_check` | planned | critical | idempotent | manual_review | manual_review | vault | vault_repair | medium | false | true | true | false | false | null / escalate |
 | `vault_migration` | planned | critical | reconcile_required | manual_review | manual_review | vault | vault_repair | heavy | false | true | false | false | false | null / escalate |
-| `delete_source_cleanup` | planned | critical | reconcile_required | reconcile_then_retry | manual_review | source | delete_cleanup | medium | true | true | true | false | false | 300s / escalate |
+| `delete_source_cleanup` | implemented | critical | reconcile_required | reconcile_then_retry | manual_review | source | delete_cleanup | medium | true | true | true | false | false | 300s / escalate |
 | `map_position_save` | planned | low | idempotent | requeue | cancel | system | map_layout | light | true | false | false | false | false | 30s / defer |
 
 ## Dependency Examples

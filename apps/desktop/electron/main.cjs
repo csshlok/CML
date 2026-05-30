@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const net = require("node:net");
@@ -9,11 +10,14 @@ const isDev = !app.isPackaged;
 const devUrl = process.env.CML_DESKTOP_DEV_URL || "http://127.0.0.1:5173";
 let backendProcess = null;
 let backendUrl = process.env.VITE_CML_BACKEND_URL || process.env.CML_BACKEND_URL || null;
+let backendApiToken = process.env.CML_API_TOKEN || null;
 let rendererServer = null;
 let rendererUrl = null;
 const supportedSourceExtensions = new Set([".txt", ".md", ".markdown", ".docx", ".pdf"]);
 const supportedOpenExtensions = new Set([...supportedSourceExtensions, ".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const skippedFolderNames = new Set([".git", "node_modules", ".venv", "dist", "build"]);
+
+let mainWindow = null;
 
 async function createWindow() {
   backendUrl = await ensureBackend();
@@ -32,6 +36,7 @@ async function createWindow() {
       sandbox: true,
     },
   });
+  mainWindow = window;
 
   window.once("ready-to-show", () => {
     window.setTitle("Vault");
@@ -63,89 +68,115 @@ async function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
-  ipcMain.handle("cml:open-path", async (_event, targetPath) => {
-    if (!(await isSafeOpenPath(targetPath))) return false;
-    const error = await shell.openPath(targetPath);
-    return error.length === 0;
-  });
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
-  ipcMain.handle("cml:show-item-in-folder", async (_event, targetPath) => {
-    if (!(await isExistingLocalPath(targetPath))) return false;
-    shell.showItemInFolder(targetPath);
-    return true;
-  });
-
-  ipcMain.handle("cml:select-source-files", async () => {
-    const result = await dialog.showOpenDialog({
-      title: "Add sources",
-      properties: ["openFile", "multiSelections"],
-      filters: [
-        { name: "Documents", extensions: ["txt", "md", "markdown", "docx", "pdf"] },
-        { name: "All files", extensions: ["*"] },
-      ],
-    });
-    if (result.canceled) return [];
-    return result.filePaths;
-  });
-
-  ipcMain.handle("cml:select-source-folders", async () => {
-    const result = await dialog.showOpenDialog({
-      title: "Add synced folder",
-      properties: ["openDirectory", "multiSelections"],
-    });
-    if (result.canceled) return [];
-    return result.filePaths;
-  });
-
-  ipcMain.handle("cml:select-vault-folder", async () => {
-    const result = await dialog.showOpenDialog({
-      title: "Choose vault location",
-      properties: ["openDirectory", "createDirectory"],
-    });
-    if (result.canceled) return null;
-    return result.filePaths[0] ?? null;
-  });
-
-  ipcMain.handle("cml:list-supported-files", async (_event, targetPaths) => {
-    if (!Array.isArray(targetPaths)) return [];
-    const files = [];
-    for (const targetPath of targetPaths) {
-      if (typeof targetPath !== "string" || targetPath.length === 0) continue;
-      await collectSupportedFiles(targetPath, files);
-      if (files.length >= 500) break;
-    }
-    return files.slice(0, 500);
-  });
-
-  ipcMain.handle("cml:select-cover-image", async () => {
-    const result = await dialog.showOpenDialog({
-      title: "Choose card image",
-      properties: ["openFile"],
-      filters: [
-        { name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif"] },
-        { name: "All files", extensions: ["*"] },
-      ],
-    });
-    if (result.canceled) return null;
-    return result.filePaths[0];
-  });
-
-  ipcMain.handle("cml:get-backend-url", async () => backendUrl);
-
-  void createWindow();
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      void createWindow();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", (_event, argv) => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      const requestedVaultArg = argv.find((arg) => arg.startsWith("--vault="));
+      if (requestedVaultArg) {
+        dialog.showMessageBox(mainWindow, {
+          type: "info",
+          title: "Vault is already open",
+          message: "Vault is already open.",
+          detail: "Close the current vault before opening another.",
+        });
+      }
     }
   });
-});
+}
+
+if (gotSingleInstanceLock) {
+  app.whenReady().then(() => {
+    ipcMain.handle("cml:open-path", async (_event, targetPath) => {
+      if (!(await isSafeOpenPath(targetPath))) return false;
+      const error = await shell.openPath(targetPath);
+      return error.length === 0;
+    });
+
+    ipcMain.handle("cml:show-item-in-folder", async (_event, targetPath) => {
+      if (!(await isExistingLocalPath(targetPath))) return false;
+      shell.showItemInFolder(targetPath);
+      return true;
+    });
+
+    ipcMain.handle("cml:select-source-files", async () => {
+      const result = await dialog.showOpenDialog({
+        title: "Add sources",
+        properties: ["openFile", "multiSelections"],
+        filters: [
+          { name: "Documents", extensions: ["txt", "md", "markdown", "docx", "pdf"] },
+          { name: "All files", extensions: ["*"] },
+        ],
+      });
+      if (result.canceled) return [];
+      return result.filePaths;
+    });
+
+    ipcMain.handle("cml:select-source-folders", async () => {
+      const result = await dialog.showOpenDialog({
+        title: "Add synced folder",
+        properties: ["openDirectory", "multiSelections"],
+      });
+      if (result.canceled) return [];
+      return result.filePaths;
+    });
+
+    ipcMain.handle("cml:select-vault-folder", async () => {
+      const result = await dialog.showOpenDialog({
+        title: "Choose vault location",
+        properties: ["openDirectory", "createDirectory"],
+      });
+      if (result.canceled) return null;
+      return result.filePaths[0] ?? null;
+    });
+
+    ipcMain.handle("cml:list-supported-files", async (_event, targetPaths) => {
+      if (!Array.isArray(targetPaths)) return [];
+      const files = [];
+      for (const targetPath of targetPaths) {
+        if (typeof targetPath !== "string" || targetPath.length === 0) continue;
+        await collectSupportedFiles(targetPath, files);
+        if (files.length >= 500) break;
+      }
+      return files.slice(0, 500);
+    });
+
+    ipcMain.handle("cml:select-cover-image", async () => {
+      const result = await dialog.showOpenDialog({
+        title: "Choose card image",
+        properties: ["openFile"],
+        filters: [
+          { name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif"] },
+          { name: "All files", extensions: ["*"] },
+        ],
+      });
+      if (result.canceled) return null;
+      return result.filePaths[0];
+    });
+
+    ipcMain.handle("cml:get-backend-url", async () => backendUrl);
+    ipcMain.handle("cml:get-backend-token", async () => getBackendApiToken());
+
+    void createWindow();
+
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        void createWindow();
+      }
+    });
+  });
+}
 
 async function ensureBackend() {
   const existing = await findExistingCurrentBackend();
   if (existing) return existing;
 
+  const token = await getBackendApiToken();
   const port = await findOpenPort(7343, 7355);
   const rootDir = isDev ? path.resolve(__dirname, "../../..") : process.resourcesPath;
   const pythonPath = isDev
@@ -160,6 +191,7 @@ async function ensureBackend() {
       env: {
         ...process.env,
         CML_API_PREFIX: process.env.CML_API_PREFIX || "/api/v1",
+        CML_API_TOKEN: token,
       },
       windowsHide: true,
       stdio: "ignore",
@@ -169,6 +201,28 @@ async function ensureBackend() {
   const startedUrl = `http://127.0.0.1:${port}`;
   await waitForBackend(startedUrl, 12000);
   return startedUrl;
+}
+
+async function getBackendApiToken() {
+  if (backendApiToken) return backendApiToken;
+  const tokenPath = getBackendTokenPath();
+  try {
+    const token = (await fs.readFile(tokenPath, "utf8")).trim();
+    if (token.length >= 32) {
+      backendApiToken = token;
+      return token;
+    }
+  } catch {
+    // Missing or unreadable token files are regenerated locally.
+  }
+  backendApiToken = crypto.randomBytes(32).toString("base64url");
+  await fs.mkdir(path.dirname(tokenPath), { recursive: true });
+  await fs.writeFile(tokenPath, backendApiToken, { encoding: "utf8", mode: 0o600 });
+  return backendApiToken;
+}
+
+function getBackendTokenPath() {
+  return path.join(app.getPath("userData"), "backend-token");
 }
 
 async function startPackagedRendererServer() {

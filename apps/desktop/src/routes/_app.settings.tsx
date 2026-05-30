@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "@/lib/mockStore";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,6 @@ import {
   type ModelRuntimeStatus,
   type VaultRecord,
 } from "@/lib/backend";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
 export const Route = createFileRoute("/_app/settings")({
   head: () => ({ meta: [{ title: "Settings" }] }),
@@ -36,12 +35,8 @@ function SettingsView() {
   const [models, setModels] = useState<LocalModelRecord[]>([]);
   const [runtime, setRuntime] = useState<ModelRuntimeStatus | null>(null);
   const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
-  const [embeddingProviderDraft, setEmbeddingProviderDraft] = useState<
-    "hash" | "sentence-transformers"
-  >("hash");
   const [embeddingCacheDraft, setEmbeddingCacheDraft] = useState("");
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
-  const embeddingDraftHydrated = useRef(false);
   const [modelError, setModelError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
@@ -80,12 +75,6 @@ function SettingsView() {
         setModels(modelRows);
         setRuntime(runtimeStatus);
         setEmbeddingRuntime(embeddingStatus);
-        if (!embeddingDraftHydrated.current) {
-          setEmbeddingProviderDraft(
-            embeddingStatus.provider === "sentence-transformers" ? "sentence-transformers" : "hash",
-          );
-          embeddingDraftHydrated.current = true;
-        }
         setModelError(null);
       } catch (err) {
         if (!cancelled) {
@@ -151,7 +140,7 @@ function SettingsView() {
     setModelError(null);
     try {
       const nextStatus = await configureEmbeddingRuntime({
-        provider: embeddingProviderDraft,
+        provider: "sentence-transformers",
         cache_dir: embeddingCacheDraft.trim() || null,
       });
       setEmbeddingRuntime(nextStatus);
@@ -220,35 +209,13 @@ function SettingsView() {
             <dd>{embeddingRuntime?.dimensions ?? "-"}</dd>
           </dl>
           <div className="mt-5 border-t border-border pt-4">
-            <RadioGroup
-              value={embeddingProviderDraft}
-              onValueChange={(value) =>
-                setEmbeddingProviderDraft(
-                  value === "sentence-transformers" ? "sentence-transformers" : "hash",
-                )
-              }
-              className="grid gap-3 md:grid-cols-2"
-            >
-              <label className="flex cursor-pointer items-start gap-3 rounded-md border border-border p-3">
-                <RadioGroupItem value="hash" className="mt-0.5" />
-                <span>
-                  <span className="block text-sm font-medium">Lightweight local search</span>
-                  <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                    Uses bundled deterministic embeddings. Fast startup, no model download.
-                  </span>
-                </span>
-              </label>
-              <label className="flex cursor-pointer items-start gap-3 rounded-md border border-border p-3">
-                <RadioGroupItem value="sentence-transformers" className="mt-0.5" />
-                <span>
-                  <span className="block text-sm font-medium">MiniLM semantic search</span>
-                  <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                    Uses sentence-transformers/all-MiniLM-L6-v2 when the optional runtime is
-                    installed.
-                  </span>
-                </span>
-              </label>
-            </RadioGroup>
+            <div className="rounded-md border border-border p-3 text-sm">
+              <div className="font-medium">MiniLM semantic search</div>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                Vault uses sentence-transformers/all-MiniLM-L6-v2 for retrieval. Hash embeddings are
+                reserved for explicit development and test runs.
+              </p>
+            </div>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row">
               <Input
                 value={embeddingCacheDraft}
