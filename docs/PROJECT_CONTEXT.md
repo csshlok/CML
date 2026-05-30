@@ -70,14 +70,14 @@ Progress bar legend:
 | Product definition | In progress | `[#########-] 90%` | Product PRD, UI PRD, project context, architecture doc, first local model ladder, runtime boundary, model storage decision, installer direction, production-gap notes, and job/maintenance architecture are documented. Needs final production installer/update policy and explicit V1 cut list. |
 | UI prototype cleanup | In progress | `[########--] 84%` | Core app routes, Mind workspace, source cards, setup flow, chat composer, Bridge controls, cluster detail, and backend-backed actions are in place. Newly identified gaps make this less complete than previously scored: cluster visual redesign, map fallback/performance, data-point naming, saved-chat refresh, setup model-choice UI, diagnostics UI, and visual QA remain. |
 | Desktop app foundation | In progress | `[########--] 82%` | Electron workspace, Vite dev server, build, file IPC, configurable backend API probing, dev backend process handling, and unpacked packaged launch are working. Needs single-instance lock, vault lock coordination, local API token handoff, robust runtime process management, and installer smoke. |
-| Local backend foundation | In progress | `[#######---] 70%` | SQLite CRUD routes, ingestion endpoints, Bridge settings/token auth, chat streaming/memory status, simple background worker, expert scaffold, and model status routes work. Needs service-layer cleanup, authenticated core API, startup integrity/migration sequence, job taxonomy scheduler, vault lock handling, reconciliation, and tests. |
-| Vault ingestion | In progress | `[######----] 62%` | Current ingestion handles TXT/Markdown/DOCX/PDF, pasted text, static links, drag/drop, local folder import, basic summaries/tags, and queued reindexing. Product-grade vault ingestion still needs OCR, scanned PDF/page pagination, small audio/video handling, dynamic link extraction, broader type gating, large-cluster scale behavior, and failure/progress policy. |
-| Embeddings and clustering | In progress | `[######----] 58%` | Keyword clustering, chunking, development hash embeddings, optional MiniLM runtime path, SQLite vector storage, semantic search, map search, suggestions, dismissals, and merge controls work. Needs real embedding default/setup, vector consistency/reconciliation/compaction, active embedding-index transitions, large-cluster relevance ledgers, and merge artifact policy. |
+| Local backend foundation | In progress | `[#######---] 75%` | SQLite CRUD routes, ingestion endpoints, Bridge settings/token auth, chat streaming/memory status, policy-aware background worker foundation, startup integrity checks, optional local API token middleware, expert scaffold, and model status routes work. Needs service-layer cleanup, mandatory authenticated core API with Electron token handoff, migration runner, full scheduler rollout, vault lock handling, reconciliation, and broader tests. |
+| Vault ingestion | In progress | `[######----] 66%` | Current ingestion handles TXT/Markdown/DOCX/PDF, pasted text, static links, drag/drop, local folder import, basic summaries/tags, queued reindexing, and page-aware source/chunk schema. Product-grade vault ingestion still needs OCR, scanned PDF handling, robust PDF reader UI/pagination, small audio/video handling, dynamic link extraction, broader type gating, large-cluster scale behavior, and failure/progress policy. |
+| Embeddings and clustering | In progress | `[######----] 60%` | Keyword clustering, chunking, development hash embeddings, optional MiniLM runtime path, SQLite vector storage with chunk model/index metadata, semantic search, map search, suggestions, dismissals, and merge controls work. Needs real embedding default/setup, vector consistency/reconciliation/compaction, active embedding-index transitions, large-cluster relevance ledgers, and merge artifact policy. |
 | Chat and context routing | In progress | `[#######---] 70%` | Global-by-default chat, persisted sessions/messages, backend sidebar, streaming, citations, runtime fallback, answer actions, transcript indexing, and local runtime adapter are working. Needs complete-scope answering, token budgets, citation snapshot/audit schemas, chat pagination/retention, retriable generation recovery, visible runtime failure states, and long-running analysis UI. |
 | Compulsory cluster experts | In progress | `[#---------] 12%` | Expert lifecycle UI/state and job scaffolds exist. Real product behavior still needs training implementation, pending/failed/hardware-unsupported states, structured failure codes, retry policy, adapter storage, evaluation, rollback, merge invalidation, and artifact cleanup. |
 | Context Bridge | In progress | `[######----] 64%` | Bridge UI, settings/history, HTTP context endpoint, token-gated Bridge access, allowlists, semantic retrieval, request logging, and first CLI/MCP prototypes exist. Needs core backend auth separation, stale permission proof, per-client setup, token lifecycle, malformed-client handling, and real MCP client smoke. |
 | Packaging and installer | In progress | `[######----] 60%` | Windows packaging scaffold, Python runtime staging, one-click NSIS build, icon, unpacked launch smoke, and model download scripts exist. Needs installer install/uninstall smoke, disk-space checks, post-install model setup, runtime repair flow, update/migration policy, and diagnostic export packaging. |
-| QA and hardening | In progress | `[##--------] 22%` | Security pass, dependency audit, compile/build/smoke checks, and job architecture documentation exist. Needs Python CVE audit, backend auth, vault integrity/migration tests, reconciliation tests, scale/performance benchmarks, map benchmarks, diagnostics, failure-state tests, and recovery drills. |
+| QA and hardening | In progress | `[##--------] 24%` | Security pass, dependency audit, compile/build/smoke checks, job architecture documentation, and first scheduler checkpoint tests exist. Needs Python CVE audit, backend auth, vault integrity/migration tests, reconciliation tests, scale/performance benchmarks, map benchmarks, diagnostics, failure-state tests, and recovery drills. |
 
 ## Week-By-Week Goals
 
@@ -365,6 +365,24 @@ Exit criteria:
   - V1 dependency model
   - filled job type registry
   - scheduler rules and startup recovery state tables
+- Started Phase 1 scheduler implementation:
+  - extended `app_jobs` with scheduler policy fields, dependency fields, scope/concurrency fields, lifecycle timestamps, and status detail
+  - added a code-level job registry for `reindex_source` and `chat_transcript_memory`
+  - made enqueued jobs persist resolved policy metadata
+  - replaced FIFO claim with priority, dependency, write-scope, and concurrency-group aware claiming under the V1 single-worker assumption
+  - added startup recovery for interrupted `running` jobs based on restart policy
+  - added `manual_review`, `cancelled`, and `blocked_by_dependency` queue accounting
+  - added checkpoint tests for priority order, dependency cancellation, restart requeue, unknown job safety, and same-scope waiting
+- Started Phase 2 backend ownership/auth hardening:
+  - added SQLite startup integrity/schema checks with `PRAGMA integrity_check`
+  - added optional local API token middleware that protects private routes when `CML_API_TOKEN` is configured while keeping `/health` and docs public
+  - left mandatory auth off by default until Electron token storage/handoff is wired so current dev app behavior remains usable
+- Started Phase 3 ingestion/indexing rework:
+  - added `source_pages` table with page number, raw text, extraction version, and SHA-256 content hash
+  - extended `source_chunks` with `page_id`, `embedding_model_id`, chunk content hash, index version, and indexed timestamp
+  - changed reindexing to create/use source pages and write page-linked chunks
+  - changed path ingestion to preserve per-page PDF text when available
+  - added focused test coverage for page-linked chunk creation and scheduler checkpoints
 - Added first-pass keyword-based automatic cluster assignment during indexed source creation.
 - Added conservative automatic cluster creation when a new indexed source does not match an existing cluster.
 - Updated the map to render unclustered sources as standalone loose data points.
@@ -875,6 +893,40 @@ Exit criteria:
   - long generations need persisted heartbeat fields so slow inference is not mistaken for a hung runtime
   - every background job type needs an explicit restart policy: `requeue`, `reconcile_then_retry`, or `manual_review`
   - runtime crash, backend restart during indexing, and vault lock contention must have state transition diagrams before implementation
+- Use the clean-slate schema window before any user data ships:
+  - design `RetrievalSnapshot` and retrieval audit tables now instead of storing long-term retrieval metadata only as JSON on `chat_messages`
+  - encode the expert lifecycle state machine now: `retrieval_ready`, `expert_training_pending`, `expert_training_ready`, `expert_training_failed`, and `hardware_unsupported`
+  - define `sources`, `source_pages`, and `source_chunks` so every chunk references a page and every citation can navigate chunk -> page -> source -> file
+  - document SHA-256 of normalized text as the stable content-hash algorithm; changing it later requires full re-embedding
+  - put reconciliation job types in the job registry before reconciliation code can queue them
+  - hide hash embeddings behind an explicit development flag; production setup should not silently fall back to hash embeddings
+
+## Next Build Checkpoints
+
+### Phase 1: Job Scheduler
+
+- High-priority job queued behind a running low-priority job runs next after the low-priority job completes.
+- Dependent job with `dependency_failure_policy = cancel` transitions to `cancelled` when its dependency fails.
+- Backend restart with a `running` job and `restart_policy = requeue` transitions that job back to `queued`.
+- Unknown job type transitions to `manual_review`; worker does not crash.
+- Two jobs with the same write scope do not run concurrently under the V1 single-worker assumption.
+
+### Phase 2: Backend Ownership And Auth
+
+- Private API route without token returns 401 and exposes no data.
+- Private API route with valid token returns 200.
+- Second app launch focuses/restores first window and exits cleanly.
+- Startup with corrupt SQLite halts at integrity check, surfaces repair flow, and does not open private API traffic.
+- Startup with stale vault lock from dead process reclaims lock and proceeds.
+- Startup with valid live vault lock refuses write access and surfaces the correct message.
+
+### Phase 3: Ingestion And Indexing Rework
+
+- Ingest a 10-page PDF and verify one source, ten `source_pages`, chunks with non-null `page_id`, chunk `content_hash`, and queued embedding jobs.
+- Delete a source and verify SQLite marks it deleted immediately, search excludes it through joins/filters immediately, and vector cleanup is queued.
+- Run reconciliation with a chunk missing a vector and verify a correctly scoped re-embed job is queued.
+- Run reconciliation with stale `embedding_model_id` and verify stale chunks are detected without duplicate active jobs.
+- Ingest the same file twice and verify checksum-based duplicate detection plus user-facing deduplication behavior.
 
 ## Running Notes
 
@@ -957,6 +1009,13 @@ Exit criteria:
 - Runtime crash during generation should mark the active generation `retriable` or `failed_runtime`, show restart/retry/context-only actions, and leave indexing jobs running unless they explicitly depend on the runtime. Vault lock state should not be touched by runtime recovery.
 - Backend restart during active indexing should mark old-session `running` jobs as interrupted, then apply each job type's restart policy. Old `in_flight` generations become `retriable`; runtime state is re-detected from process/port/model rather than trusted from memory.
 - Vault lock contention on launch should refuse a second write owner when the lock owner process is verified alive. If Electron receives a second-instance launch, focus/restore the existing window. If a different vault path is requested, V1 should refuse and explain rather than opening another writer.
+- Backend startup hard gates: acquire vault lock, run `PRAGMA integrity_check` and parse result rows, validate schema version/run migrations, recover jobs, run lightweight vector reconciliation scan that only queues jobs, detect runtime without waiting for it, then open API traffic. If integrity check returns anything other than `ok`, halt into repair flow. If integrity check exceeds 60 seconds, surface a slow-vault startup message rather than a blank window.
+- Token storage must start with an interface before implementation: `TokenStore.get()`, `TokenStore.set(token)`, and `TokenStore.clear()`. V1 can use Windows DPAPI with a restricted app-data file fallback, but DPAPI calls must not spread through the codebase.
+- CORS allowlist must be based on observed renderer origins. Before implementing the allowlist, add temporary dev/package logging for the `Origin` header and record actual values for Vite dev and packaged loopback renderer.
+- Electron single-instance handler product rule: a second launch focuses/restores the existing window. If the second launch requests a different vault path, V1 shows "Vault is already open. Close the current vault before opening another." No second writer and no silent ignore.
+- Ingestion schema target: `sources` store source-level identity/status/checksum; `source_pages` store page number, raw/extracted text, extraction version, and page content hash; `source_chunks` store source/page IDs, chunk index, text, embedding model ID, normalized-text content hash, index version, and indexed timestamp. Chunks without a page ID should not exist in the clean schema.
+- Content hash decision: use SHA-256 of normalized chunk text as the stable hash for chunks/indexing. Do not use MD5 or a rolling hash. Changing the algorithm later is a full re-embedding migration.
+- Production builds should not expose hash embeddings as a user-selectable fallback. Hash embeddings are development-only behind an explicit flag. If a real embedding model is unavailable in production setup, the UI should say embeddings are not configured rather than silently using hash vectors.
 
 ## Update Protocol
 

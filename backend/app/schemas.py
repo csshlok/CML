@@ -344,16 +344,39 @@ class AppJobRead(BaseModel):
     status: str
     payload: str
     dedupe_key: str | None = None
+    priority: str | None = None
+    idempotency_class: str | None = None
+    restart_policy: str | None = None
+    dependency_failure_policy: str | None = None
+    write_scope: str | None = None
+    scope_id: str | None = None
+    concurrency_group: str | None = None
+    resource_cost: str | None = None
+    can_run_during_synthesis: int | None = None
+    user_visible: int | None = None
+    user_initiated: int | None = None
+    cancellable: int | None = None
+    preemptable: int | None = None
+    timeout_seconds: int | None = None
+    soft_timeout_seconds: int | None = None
+    timeout_action: str | None = None
+    depends_on_job_id: str | None = None
     attempts: int
     max_attempts: int
     last_error: str
+    status_detail: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
     created_at: str
     updated_at: str
 
 
 class JobQueueStatus(BaseModel):
     queued: int
+    blocked_by_dependency: int = 0
     running: int
     succeeded: int
     failed: int
+    cancelled: int = 0
+    manual_review: int = 0
     latest: list[AppJobRead]

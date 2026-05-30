@@ -18,6 +18,11 @@ class ExtractionError(Exception):
 
 
 def extract_text_from_path(path: str) -> tuple[str, str]:
+    title, pages = extract_pages_from_path(path)
+    return title, "\n\n".join(page for page in pages if page.strip()).strip()
+
+
+def extract_pages_from_path(path: str) -> tuple[str, list[str]]:
     source_path = Path(path).expanduser()
     if not source_path.exists() or not source_path.is_file():
         raise ExtractionError("File does not exist or is not readable")
@@ -29,11 +34,11 @@ def extract_text_from_path(path: str) -> tuple[str, str]:
 
     suffix = source_path.suffix.lower()
     if suffix in SUPPORTED_TEXT_EXTENSIONS:
-        return source_path.name, _extract_plain_text(source_path)
+        return source_path.name, [_extract_plain_text(source_path)]
     if suffix == ".docx":
-        return source_path.name, _extract_docx_text(source_path)
+        return source_path.name, [_extract_docx_text(source_path)]
     if suffix == ".pdf":
-        return source_path.name, _extract_pdf_text(source_path)
+        return source_path.name, _extract_pdf_pages(source_path)
 
     raise ExtractionError("Supported file types are TXT, Markdown, DOCX, and PDF")
 
@@ -72,6 +77,11 @@ def _extract_docx_text(source_path: Path) -> str:
 
 
 def _extract_pdf_text(source_path: Path) -> str:
+    pages = _extract_pdf_pages(source_path)
+    return "\n\n".join(page for page in pages if page.strip()).strip()
+
+
+def _extract_pdf_pages(source_path: Path) -> list[str]:
     try:
         from pypdf import PdfReader
     except ImportError as exc:
@@ -79,14 +89,14 @@ def _extract_pdf_text(source_path: Path) -> str:
 
     try:
         reader = PdfReader(str(source_path))
-        pages = [page.extract_text() or "" for page in reader.pages]
+        pages = [(page.extract_text() or "").strip() for page in reader.pages]
     except Exception as exc:
         raise ExtractionError(f"Could not read PDF file: {exc}") from exc
 
-    text = "\n\n".join(page.strip() for page in pages if page.strip()).strip()
-    if not text:
+    readable_pages = [page for page in pages if page.strip()]
+    if not readable_pages:
         raise ExtractionError("No readable text was found in this PDF file")
-    return text
+    return pages
 
 
 class _TextHTMLParser(HTMLParser):

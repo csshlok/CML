@@ -6,8 +6,9 @@ from fastapi import APIRouter, HTTPException
 from backend.app.core.clustering import assign_or_create_cluster
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.embeddings import content_hash
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
-from backend.app.core.extraction import ExtractionError, extract_text_from_path, extract_text_from_url
+from backend.app.core.extraction import ExtractionError, extract_pages_from_path, extract_text_from_url
 from backend.app.core.memory_card import generate_tags, summarize_text
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
@@ -44,7 +45,14 @@ def list_sources(vault_id: str | None = None, cluster_id: str | None = None) -> 
 
 @router.post("", response_model=SourceRead)
 def create_source(payload: SourceCreate) -> dict:
+    return _create_source_record(payload, page_texts=[payload.raw_text] if payload.raw_text else None)
+
+
+def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = None) -> dict:
     now = utc_now()
+    raw_text = payload.raw_text
+    if page_texts:
+        raw_text = "\n\n".join(page for page in page_texts if page.strip()).strip()
     with connect() as conn:
         vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (payload.vault_id,)).fetchone()
         if vault is None:
@@ -57,12 +65,12 @@ def create_source(payload: SourceCreate) -> dict:
             ).fetchone()
             if cluster is None:
                 raise HTTPException(status_code=404, detail="Cluster not found")
-        elif payload.raw_text:
+        elif raw_text:
             cluster_id = assign_or_create_cluster(
                 conn,
                 vault_id=payload.vault_id,
                 title=payload.title,
-                text=payload.raw_text,
+                text=raw_text,
             )
 
         source = {
@@ -74,15 +82,15 @@ def create_source(payload: SourceCreate) -> dict:
             "state": "indexed" if payload.raw_text else "waiting",
             "original_path": payload.original_path,
             "url": payload.url,
-            "raw_text": payload.raw_text,
-            "extracted_text": payload.raw_text,
+            "raw_text": raw_text,
+            "extracted_text": raw_text,
             "summary": payload.summary
             if payload.summary is not None
-            else summarize_text(payload.raw_text),
+            else summarize_text(raw_text),
             "tags": json.dumps(
                 payload.tags
                 if payload.tags is not None
-                else generate_tags(payload.title, payload.raw_text, payload.source_type),
+                else generate_tags(payload.title, raw_text, payload.source_type),
             ),
             "cover_image_url": payload.cover_image_url,
             "created_at": now,
@@ -101,6 +109,14 @@ def create_source(payload: SourceCreate) -> dict:
             """,
             source,
         )
+        if page_texts:
+            _replace_source_pages(
+                conn,
+                source_id=source["id"],
+                vault_id=source["vault_id"],
+                page_texts=page_texts,
+                now=now,
+            )
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source["id"],)).fetchone()
         if row is not None and source["state"] == "indexed":
             enqueue_job(
@@ -115,11 +131,12 @@ def create_source(payload: SourceCreate) -> dict:
 @router.post("/from-path", response_model=SourceRead)
 def create_source_from_path(payload: SourcePathCreate) -> dict:
     try:
-        title, text = extract_text_from_path(payload.path)
+        title, pages = extract_pages_from_path(payload.path)
     except ExtractionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    text = "\n\n".join(page for page in pages if page.strip()).strip()
 
-    return create_source(
+    return _create_source_record(
         SourceCreate(
             vault_id=payload.vault_id,
             cluster_id=payload.cluster_id,
@@ -127,7 +144,8 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
             source_type="note" if title.lower().endswith((".md", ".markdown", ".txt")) else "file",
             original_path=payload.path,
             raw_text=text,
-        )
+        ),
+        page_texts=pages,
     )
 
 
@@ -202,7 +220,10 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
     )
     params = {"id": source_id, **updates}
     with connect() as conn:
-        existing = conn.execute("SELECT id, cluster_id FROM sources WHERE id = ?", (source_id,)).fetchone()
+        existing = conn.execute(
+            "SELECT id, vault_id, cluster_id FROM sources WHERE id = ?",
+            (source_id,),
+        ).fetchone()
         if existing is None:
             raise HTTPException(status_code=404, detail="Source not found")
         if updates.get("cluster_id"):
@@ -213,6 +234,15 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
             if cluster is None:
                 raise HTTPException(status_code=404, detail="Cluster not found")
         conn.execute(f"UPDATE sources SET {assignments} WHERE id = :id", params)
+        if "raw_text" in updates or "extracted_text" in updates:
+            text = str(updates.get("extracted_text") or updates.get("raw_text") or "")
+            _replace_source_pages(
+                conn,
+                source_id=source_id,
+                vault_id=existing["vault_id"],
+                page_texts=[text] if text else [],
+                now=updates["updated_at"],
+            )
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
         if row is not None and any(key in updates for key in {"cluster_id", "raw_text", "extracted_text", "state"}):
             source = dict_from_row(row)
@@ -247,3 +277,34 @@ def source_from_row(row) -> dict:
         tags = []
     source["tags"] = tags if isinstance(tags, list) else []
     return source
+
+
+def _replace_source_pages(conn, *, source_id: str, vault_id: str, page_texts: list[str], now: str) -> None:
+    conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
+    for index, text in enumerate(page_texts, start=1):
+        page_text = (text or "").strip()
+        if not page_text:
+            continue
+        conn.execute(
+            """
+            INSERT INTO source_pages (
+                id, source_id, vault_id, page_number, raw_text, extraction_version,
+                content_hash, created_at, updated_at
+            )
+            VALUES (
+                :id, :source_id, :vault_id, :page_number, :raw_text, :extraction_version,
+                :content_hash, :created_at, :updated_at
+            )
+            """,
+            {
+                "id": f"page-{uuid4()}",
+                "source_id": source_id,
+                "vault_id": vault_id,
+                "page_number": index,
+                "raw_text": page_text,
+                "extraction_version": "v1",
+                "content_hash": content_hash(page_text),
+                "created_at": now,
+                "updated_at": now,
+            },
+        )

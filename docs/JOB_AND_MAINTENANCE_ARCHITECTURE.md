@@ -47,6 +47,7 @@ The scheduler needs these fields either stored on the job row or resolved from a
 | `scope_id` | string/null | ID for scoped locks, such as source ID or cluster ID. |
 | `concurrency_group` | string/null | Global group lock, such as `vector_writer`. |
 | `depends_on_job_id` | string/null | Optional predecessor job. |
+| `dependency_failure_policy` | enum | `cancel`, `requeue_on_retry`, or `manual_review`. No null/default ambiguity. |
 | `resource_cost` | enum | `light`, `medium`, `heavy`, `very_heavy`. |
 | `can_run_during_synthesis` | bool | Whether job can run while local chat generation is active. |
 | `user_visible` | bool | Whether progress/failure should appear in user-facing job UI. |
@@ -74,6 +75,8 @@ The scheduler needs these fields either stored on the job row or resolved from a
 
 V1 should keep a single writer for `vector_index` and avoid per-cluster vector concurrency until benchmarks prove it is needed.
 
+V1 scheduler assumption: one backend process and one scheduler worker owns job claims for a vault. Scope locking can use query-before-claim checks against currently `running` jobs. This assumption must remain visible in code; adding a second worker/thread requires replacing that check with an atomic claim/lock mechanism.
+
 ## Timeout Policy
 
 Timeout is structured, not a single number.
@@ -92,6 +95,7 @@ V1 uses a single optional dependency:
 
 ```txt
 depends_on_job_id TEXT NULL
+dependency_failure_policy TEXT NOT NULL
 ```
 
 Scheduler rule:
@@ -104,6 +108,14 @@ Scheduler rule:
 | dependency `failed`/`cancelled`/`manual_review` | Mark dependent `blocked_by_dependency`. |
 
 This is not a full DAG engine. It is enough for V1 chains such as extract -> embed -> suggest cluster, merge -> reindex -> retrain, and integrity check -> diagnostic bundle.
+
+Dependency failure policy:
+
+| Policy | Action when dependency cannot succeed |
+| --- | --- |
+| `cancel` | Mark dependent job `cancelled`; this is expected, not an error. |
+| `requeue_on_retry` | Keep blocked while dependency is retried; if dependency later succeeds, run. |
+| `manual_review` | Mark dependent job `manual_review` with the dependency failure details. |
 
 ## Scheduler Rules
 
@@ -152,30 +164,31 @@ Rules should be implemented as executable ordering logic, not comments.
 
 This table is the source of truth for current and planned V1 job types. Values can change after benchmarks, but every new job type must fill these fields before implementation.
 
-| Job type | Status | Priority | Idempotency | Restart policy | Write scope | Concurrency group | Resource | During synthesis | User visible | User initiated | Cancellable | Preemptable | Timeout policy |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `reindex_source` | implemented | high | idempotent | requeue | source | vector_writer | medium | false | true | sometimes | true | false | 600s / defer |
-| `chat_transcript_memory` | implemented | normal | idempotent | requeue | chat | vector_writer | medium | false | true | false | false | false | 300s / defer |
-| `extract_source` | planned | high | idempotent | requeue | source | null | medium | true | true | true | true | false | 600s / fail |
-| `ocr_source` | planned | normal | idempotent | requeue | source | ocr_cpu | heavy | false | true | true | true | false | 1800s / defer |
-| `fetch_link` | planned | normal | idempotent | requeue | source | network_fetch | medium | true | true | true | true | false | 180s / fail |
-| `embed_source_chunks` | planned | high | idempotent | requeue | vector_index | vector_writer | medium | false | true | false | true | false | 900s / defer |
-| `vector_reconcile_incremental` | planned | high | idempotent | requeue | vector_index | vector_writer | medium | false | false | false | false | false | 900s / defer |
-| `vector_reconcile_full` | planned | on_demand | idempotent | requeue | vector_index | vector_writer | very_heavy | false | true | true | true | false | null / escalate |
-| `vector_compact` | planned | low | idempotent | defer | vector_index | vector_writer | heavy | false | false | false | false | false | 1800s / defer |
-| `cluster_suggestion` | planned | normal | idempotent | requeue | cluster | null | medium | false | true | false | true | false | 600s / defer |
-| `cluster_merge_prepare` | planned | high | reconcile_required | reconcile_then_retry | cluster | merge_workflow | medium | false | true | true | false | false | 300s / escalate |
-| `cluster_merge_apply` | planned | critical | reconcile_required | reconcile_then_retry | cluster | merge_workflow | medium | false | true | true | false | false | 300s / escalate |
-| `cluster_merge_rollback` | planned | critical | reconcile_required | reconcile_then_retry | cluster | merge_workflow | medium | false | true | true | false | false | 600s / escalate |
-| `expert_train` | planned | normal | non_idempotent | reconcile_then_retry | expert | expert_training | very_heavy | false | true | true | true | false | null / escalate |
-| `expert_status_update` | planned | normal | idempotent | requeue | expert | null | light | true | true | false | false | false | 60s / fail |
-| `artifact_cleanup` | planned | low | reconcile_required | reconcile_then_retry | system | maintenance | medium | true | false | false | false | false | 600s / defer |
-| `log_cleanup` | planned | low | idempotent | requeue | system | maintenance | light | true | false | false | false | false | 60s / defer |
-| `diagnostic_bundle` | planned | on_demand | idempotent | manual_review | system | diagnostics | medium | true | true | true | true | false | 300s / fail |
-| `vault_integrity_check` | planned | critical | idempotent | manual_review | vault | vault_repair | medium | false | true | true | false | false | null / escalate |
-| `vault_migration` | planned | critical | reconcile_required | manual_review | vault | vault_repair | heavy | false | true | false | false | false | null / escalate |
-| `delete_source_cleanup` | planned | critical | reconcile_required | reconcile_then_retry | source | delete_cleanup | medium | true | true | true | false | false | 300s / escalate |
-| `map_position_save` | planned | low | idempotent | requeue | system | map_layout | light | true | false | false | false | false | 30s / defer |
+| Job type | Status | Priority | Idempotency | Restart policy | Dependency failure | Write scope | Concurrency group | Resource | During synthesis | User visible | User initiated | Cancellable | Preemptable | Timeout policy |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `reindex_source` | implemented | high | idempotent | requeue | cancel | source | vector_writer | medium | false | true | sometimes | true | false | 600s / defer |
+| `chat_transcript_memory` | implemented | normal | idempotent | requeue | cancel | chat | vector_writer | medium | false | true | false | false | false | 300s / defer |
+| `extract_source` | planned | high | idempotent | requeue | cancel | source | null | medium | true | true | true | true | false | 600s / fail |
+| `ocr_source` | planned | normal | idempotent | requeue | cancel | source | ocr_cpu | heavy | false | true | true | true | false | 1800s / defer |
+| `fetch_link` | planned | normal | idempotent | requeue | cancel | source | network_fetch | medium | true | true | true | true | false | 180s / fail |
+| `embed_source_chunks` | planned | high | idempotent | requeue | requeue_on_retry | vector_index | vector_writer | medium | false | true | false | true | false | 900s / defer |
+| `orphan_vector_cleanup` | planned | high | idempotent | requeue | cancel | vector_index | vector_writer | medium | false | false | false | false | false | 600s / defer |
+| `vector_reconcile_incremental` | planned | high | idempotent | requeue | cancel | vector_index | vector_writer | medium | false | false | false | false | false | 900s / defer |
+| `vector_reconcile_full` | planned | on_demand | idempotent | requeue | manual_review | vector_index | vector_writer | very_heavy | false | true | true | true | false | null / escalate |
+| `vector_compact` | planned | low | idempotent | requeue | cancel | vector_index | vector_writer | heavy | false | false | false | false | false | 1800s / defer |
+| `cluster_suggestion` | planned | normal | idempotent | requeue | cancel | cluster | null | medium | false | true | false | true | false | 600s / defer |
+| `cluster_merge_prepare` | planned | high | reconcile_required | reconcile_then_retry | manual_review | cluster | merge_workflow | medium | false | true | true | false | false | 300s / escalate |
+| `cluster_merge_apply` | planned | critical | reconcile_required | reconcile_then_retry | manual_review | cluster | merge_workflow | medium | false | true | true | false | false | 300s / escalate |
+| `cluster_merge_rollback` | planned | critical | reconcile_required | reconcile_then_retry | manual_review | cluster | merge_workflow | medium | false | true | true | false | false | 600s / escalate |
+| `expert_train` | planned | normal | non_idempotent | reconcile_then_retry | manual_review | expert | expert_training | very_heavy | false | true | true | true | false | null / escalate |
+| `expert_status_update` | planned | normal | idempotent | requeue | cancel | expert | null | light | true | true | false | false | false | 60s / fail |
+| `artifact_cleanup` | planned | low | reconcile_required | reconcile_then_retry | cancel | system | maintenance | medium | true | false | false | false | false | 600s / defer |
+| `log_cleanup` | planned | low | idempotent | requeue | cancel | system | maintenance | light | true | false | false | false | false | 60s / defer |
+| `diagnostic_bundle` | planned | on_demand | idempotent | manual_review | manual_review | system | diagnostics | medium | true | true | true | true | false | 300s / fail |
+| `vault_integrity_check` | planned | critical | idempotent | manual_review | manual_review | vault | vault_repair | medium | false | true | true | false | false | null / escalate |
+| `vault_migration` | planned | critical | reconcile_required | manual_review | manual_review | vault | vault_repair | heavy | false | true | false | false | false | null / escalate |
+| `delete_source_cleanup` | planned | critical | reconcile_required | reconcile_then_retry | manual_review | source | delete_cleanup | medium | true | true | true | false | false | 300s / escalate |
+| `map_position_save` | planned | low | idempotent | requeue | cancel | system | map_layout | light | true | false | false | false | false | 30s / defer |
 
 ## Dependency Examples
 
@@ -229,11 +242,23 @@ Age of the lock file alone is never a reclaim condition.
 ## Migration From Current Worker
 
 1. Add registry metadata in code for existing job types.
-2. Add schema fields: `priority`, `depends_on_job_id`, `scope_id`, `status_detail`, `started_at`, `completed_at`, and optional persisted resolved policy fields.
+2. Add schema fields: `priority`, `depends_on_job_id`, `dependency_failure_policy`, `scope_id`, `status_detail`, `started_at`, `completed_at`, and optional persisted resolved policy fields.
 3. Replace FIFO claim with dependency/scope/priority-aware claim.
 4. Add startup recovery before worker starts.
 5. Split `reindex_source` into extraction and embedding jobs when OCR/PDF/link pipelines are expanded.
 6. Add maintenance jobs only after scheduler rules are enforced.
+
+## Phase 1 Checkpoint Tests
+
+These tests define "done" for the scheduler foundation.
+
+| Scenario | Expected result |
+| --- | --- |
+| High-priority job queued while low-priority job is already running. | Low-priority job completes; high-priority job runs next. |
+| Job A fails; job B depends on A with `dependency_failure_policy = cancel`. | Job B transitions to `cancelled`, not `failed`. |
+| Backend restarts with a job in `running` state and `restart_policy = requeue`. | Startup recovery transitions job to `queued`. |
+| Unknown job type arrives. | Job transitions to `manual_review`; worker does not crash. |
+| Two jobs with the same write scope; one is running. | Second job waits until first completes. |
 
 ## Non-Goals For V1
 

@@ -108,9 +108,29 @@ def init_db() -> None:
                 status TEXT NOT NULL,
                 payload TEXT NOT NULL DEFAULT '{}',
                 dedupe_key TEXT,
+                priority TEXT NOT NULL DEFAULT 'normal',
+                idempotency_class TEXT NOT NULL DEFAULT 'idempotent',
+                restart_policy TEXT NOT NULL DEFAULT 'requeue',
+                dependency_failure_policy TEXT NOT NULL DEFAULT 'cancel',
+                write_scope TEXT NOT NULL DEFAULT 'none',
+                scope_id TEXT,
+                concurrency_group TEXT,
+                resource_cost TEXT NOT NULL DEFAULT 'light',
+                can_run_during_synthesis INTEGER NOT NULL DEFAULT 1,
+                user_visible INTEGER NOT NULL DEFAULT 0,
+                user_initiated INTEGER NOT NULL DEFAULT 0,
+                cancellable INTEGER NOT NULL DEFAULT 0,
+                preemptable INTEGER NOT NULL DEFAULT 0,
+                timeout_seconds INTEGER,
+                soft_timeout_seconds INTEGER,
+                timeout_action TEXT NOT NULL DEFAULT 'fail',
+                depends_on_job_id TEXT,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 max_attempts INTEGER NOT NULL DEFAULT 3,
                 last_error TEXT NOT NULL DEFAULT '',
+                status_detail TEXT NOT NULL DEFAULT '',
+                started_at TEXT,
+                completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -118,15 +138,36 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS source_chunks (
                 id TEXT PRIMARY KEY,
                 source_id TEXT NOT NULL,
+                page_id TEXT,
                 vault_id TEXT NOT NULL,
                 cluster_id TEXT,
                 chunk_index INTEGER NOT NULL,
                 text TEXT NOT NULL,
                 embedding TEXT NOT NULL,
+                embedding_model_id TEXT NOT NULL DEFAULT 'hash',
+                content_hash TEXT NOT NULL DEFAULT '',
+                index_version TEXT NOT NULL DEFAULT 'v1',
+                indexed_at TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
+                FOREIGN KEY (page_id) REFERENCES source_pages(id) ON DELETE CASCADE,
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
                 FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS source_pages (
+                id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                vault_id TEXT NOT NULL,
+                page_number INTEGER NOT NULL,
+                raw_text TEXT NOT NULL DEFAULT '',
+                extraction_version TEXT NOT NULL DEFAULT 'v1',
+                content_hash TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                UNIQUE(source_id, page_number)
             );
 
             CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -156,6 +197,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_source_chunks_vault_id ON source_chunks(vault_id);
             CREATE INDEX IF NOT EXISTS idx_source_chunks_cluster_id ON source_chunks(cluster_id);
             CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id ON source_chunks(source_id);
+            CREATE INDEX IF NOT EXISTS idx_source_pages_source_id ON source_pages(source_id);
+            CREATE INDEX IF NOT EXISTS idx_source_pages_vault_id ON source_pages(vault_id);
             CREATE INDEX IF NOT EXISTS idx_chat_sessions_vault_id ON chat_sessions(vault_id);
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);
             CREATE INDEX IF NOT EXISTS idx_app_jobs_status ON app_jobs(status, created_at);
@@ -171,6 +214,41 @@ def init_db() -> None:
         _add_column_if_missing(conn, "chat_sessions", "memory_status", "TEXT NOT NULL DEFAULT 'idle'")
         _add_column_if_missing(conn, "chat_sessions", "memory_updated_at", "TEXT")
         _add_column_if_missing(conn, "bridge_settings", "bridge_token", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "source_chunks", "page_id", "TEXT")
+        _add_column_if_missing(conn, "source_chunks", "embedding_model_id", "TEXT NOT NULL DEFAULT 'hash'")
+        _add_column_if_missing(conn, "source_chunks", "content_hash", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "source_chunks", "index_version", "TEXT NOT NULL DEFAULT 'v1'")
+        _add_column_if_missing(conn, "source_chunks", "indexed_at", "TEXT")
+        _add_column_if_missing(conn, "app_jobs", "priority", "TEXT NOT NULL DEFAULT 'normal'")
+        _add_column_if_missing(conn, "app_jobs", "idempotency_class", "TEXT NOT NULL DEFAULT 'idempotent'")
+        _add_column_if_missing(conn, "app_jobs", "restart_policy", "TEXT NOT NULL DEFAULT 'requeue'")
+        _add_column_if_missing(conn, "app_jobs", "dependency_failure_policy", "TEXT NOT NULL DEFAULT 'cancel'")
+        _add_column_if_missing(conn, "app_jobs", "write_scope", "TEXT NOT NULL DEFAULT 'none'")
+        _add_column_if_missing(conn, "app_jobs", "scope_id", "TEXT")
+        _add_column_if_missing(conn, "app_jobs", "concurrency_group", "TEXT")
+        _add_column_if_missing(conn, "app_jobs", "resource_cost", "TEXT NOT NULL DEFAULT 'light'")
+        _add_column_if_missing(conn, "app_jobs", "can_run_during_synthesis", "INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing(conn, "app_jobs", "user_visible", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "app_jobs", "user_initiated", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "app_jobs", "cancellable", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "app_jobs", "preemptable", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "app_jobs", "timeout_seconds", "INTEGER")
+        _add_column_if_missing(conn, "app_jobs", "soft_timeout_seconds", "INTEGER")
+        _add_column_if_missing(conn, "app_jobs", "timeout_action", "TEXT NOT NULL DEFAULT 'fail'")
+        _add_column_if_missing(conn, "app_jobs", "depends_on_job_id", "TEXT")
+        _add_column_if_missing(conn, "app_jobs", "status_detail", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "app_jobs", "started_at", "TEXT")
+        _add_column_if_missing(conn, "app_jobs", "completed_at", "TEXT")
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_app_jobs_runnable
+                ON app_jobs(status, priority, created_at);
+            CREATE INDEX IF NOT EXISTS idx_app_jobs_dependency
+                ON app_jobs(depends_on_job_id);
+            CREATE INDEX IF NOT EXISTS idx_source_chunks_page_id
+                ON source_chunks(page_id);
+            """
+        )
 
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:

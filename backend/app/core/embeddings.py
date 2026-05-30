@@ -69,6 +69,21 @@ def embedding_config() -> dict:
     return config
 
 
+def active_embedding_model_id() -> str:
+    config = embedding_config()
+    if config["provider"] == "sentence-transformers":
+        return str(config["model"])
+    return "hash-dev"
+
+
+def normalize_for_hash(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def content_hash(text: str) -> str:
+    return hashlib.sha256(normalize_for_hash(text).encode("utf-8")).hexdigest()
+
+
 def configure_embedding_runtime(provider: str, cache_dir: str | None = None) -> dict:
     if provider not in {"hash", "sentence-transformers"}:
         raise ValueError("Embedding provider must be 'hash' or 'sentence-transformers'")
@@ -172,28 +187,84 @@ def chunk_text(text: str) -> list[str]:
 
 def reindex_source_chunks(conn, source: dict) -> int:
     conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source["id"],))
-    text = (source.get("extracted_text") or source.get("raw_text") or "").strip()
-    chunks = chunk_text(text)
+    _ensure_source_pages(conn, source)
+    pages = conn.execute(
+        """
+        SELECT * FROM source_pages
+        WHERE source_id = ?
+        ORDER BY page_number ASC
+        """,
+        (source["id"],),
+    ).fetchall()
     now = utc_now()
-    for index, chunk in enumerate(chunks):
-        conn.execute(
-            """
-            INSERT INTO source_chunks (
-                id, source_id, vault_id, cluster_id, chunk_index, text, embedding, created_at
+    chunk_count = 0
+    model_id = active_embedding_model_id()
+    for page in pages:
+        chunks = chunk_text(page["raw_text"])
+        for index, chunk in enumerate(chunks):
+            conn.execute(
+                """
+                INSERT INTO source_chunks (
+                    id, source_id, page_id, vault_id, cluster_id, chunk_index, text, embedding,
+                    embedding_model_id, content_hash, index_version, indexed_at, created_at
+                )
+                VALUES (
+                    :id, :source_id, :page_id, :vault_id, :cluster_id, :chunk_index, :text,
+                    :embedding, :embedding_model_id, :content_hash, :index_version, :indexed_at,
+                    :created_at
+                )
+                """,
+                {
+                    "id": f"chunk-{uuid4()}",
+                    "source_id": source["id"],
+                    "page_id": page["id"],
+                    "vault_id": source["vault_id"],
+                    "cluster_id": source.get("cluster_id"),
+                    "chunk_index": index,
+                    "text": chunk,
+                    "embedding": encode_embedding(embed_text(chunk)),
+                    "embedding_model_id": model_id,
+                    "content_hash": content_hash(chunk),
+                    "index_version": "v1",
+                    "indexed_at": now,
+                    "created_at": now,
+                },
             )
-            VALUES (
-                :id, :source_id, :vault_id, :cluster_id, :chunk_index, :text, :embedding, :created_at
-            )
-            """,
-            {
-                "id": f"chunk-{uuid4()}",
-                "source_id": source["id"],
-                "vault_id": source["vault_id"],
-                "cluster_id": source.get("cluster_id"),
-                "chunk_index": index,
-                "text": chunk,
-                "embedding": encode_embedding(embed_text(chunk)),
-                "created_at": now,
-            },
+            chunk_count += 1
+    return chunk_count
+
+
+def _ensure_source_pages(conn, source: dict) -> None:
+    existing = conn.execute(
+        "SELECT 1 FROM source_pages WHERE source_id = ? LIMIT 1",
+        (source["id"],),
+    ).fetchone()
+    if existing is not None:
+        return
+    text = (source.get("extracted_text") or source.get("raw_text") or "").strip()
+    if not text:
+        return
+    now = utc_now()
+    conn.execute(
+        """
+        INSERT INTO source_pages (
+            id, source_id, vault_id, page_number, raw_text, extraction_version,
+            content_hash, created_at, updated_at
         )
-    return len(chunks)
+        VALUES (
+            :id, :source_id, :vault_id, :page_number, :raw_text, :extraction_version,
+            :content_hash, :created_at, :updated_at
+        )
+        """,
+        {
+            "id": f"page-{uuid4()}",
+            "source_id": source["id"],
+            "vault_id": source["vault_id"],
+            "page_number": 1,
+            "raw_text": text,
+            "extraction_version": "v1",
+            "content_hash": content_hash(text),
+            "created_at": now,
+            "updated_at": now,
+        },
+    )
