@@ -168,6 +168,24 @@ export type ClusterExpertJobRecord = {
   action: string;
   status: string;
   detail: string;
+  failure_code: string;
+  artifact_path: string | null;
+  hardware_tier: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ExpertArtifactRecord = {
+  id: string;
+  cluster_id: string;
+  vault_id: string;
+  job_id: string | null;
+  artifact_type: string;
+  status: string;
+  local_path: string | null;
+  base_model: string;
+  hardware_tier: string;
+  quality_score: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -178,6 +196,17 @@ export type AppJobRecord = {
   status: string;
   payload: string;
   dedupe_key: string | null;
+  priority?: string | null;
+  write_scope?: string | null;
+  scope_id?: string | null;
+  resource_cost?: string | null;
+  cancellable?: number | null;
+  timeout_seconds?: number | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  elapsed_seconds?: number | null;
+  estimated_remaining_seconds?: number | null;
+  status_detail?: string | null;
   attempts: number;
   max_attempts: number;
   last_error: string;
@@ -187,9 +216,13 @@ export type AppJobRecord = {
 
 export type JobQueueStatus = {
   queued: number;
+  blocked_by_dependency: number;
   running: number;
   succeeded: number;
   failed: number;
+  cancelled: number;
+  manual_review: number;
+  running_jobs: AppJobRecord[];
   latest: AppJobRecord[];
 };
 
@@ -411,12 +444,63 @@ export type HardwareStatusRead = {
 };
 
 export type LocalFolderScanResponse = {
+  import_id: string | null;
   path: string;
   integration_type: string;
   supported_files: string[];
   supported_count: number;
   skipped_count: number;
   truncated: boolean;
+};
+
+export type IntegrationImportRecord = {
+  id: string;
+  vault_id: string | null;
+  integration_type: string;
+  root_path: string;
+  status: string;
+  supported_count: number;
+  skipped_count: number;
+  truncated: boolean;
+  last_scan_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ExtensionClientRecord = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  allowed_vault_ids: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ExtensionClientCreateResponse = ExtensionClientRecord & {
+  token: string;
+};
+
+export type ExtensionCaptureRecord = {
+  id: string;
+  client_id: string | null;
+  vault_id: string;
+  source_id: string | null;
+  capture_type: string;
+  title: string;
+  url: string;
+  status: string;
+  created_at: string;
+};
+
+export type VaultLockAuditRecord = {
+  id: string;
+  event_type: string;
+  pid: number | null;
+  owner_pid: number | null;
+  lock_path: string;
+  detail: string;
+  user_choice: string;
+  created_at: string;
 };
 
 export async function getBridgeStatus() {
@@ -506,6 +590,12 @@ export async function updateCluster(
 export async function listClusterExpertJobs(clusterId: string) {
   return request<ClusterExpertJobRecord[]>(
     `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/jobs`,
+  );
+}
+
+export async function listClusterExpertArtifacts(clusterId: string) {
+  return request<ExpertArtifactRecord[]>(
+    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/artifacts`,
   );
 }
 
@@ -787,6 +877,12 @@ export async function runJobsOnce() {
   return request<JobQueueStatus>("/api/v1/jobs/run-once", { method: "POST" });
 }
 
+export async function cancelJob(jobId: string) {
+  return request<AppJobRecord>(`/api/v1/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+  });
+}
+
 export async function listLocalModels() {
   return request<LocalModelRecord[]>("/api/v1/models");
 }
@@ -828,14 +924,63 @@ export async function getHardwareStatus() {
   return request<HardwareStatusRead>("/api/v1/system/hardware");
 }
 
+export async function listVaultLockAudit(limit = 20) {
+  return request<VaultLockAuditRecord[]>(`/api/v1/system/vault-lock/audit?limit=${limit}`);
+}
+
+export async function listIntegrationImports(vaultId?: string) {
+  const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
+  return request<IntegrationImportRecord[]>(`/api/v1/integrations/imports${query}`);
+}
+
 export async function scanLocalFolderIntegration(payload: {
   path: string;
+  vault_id?: string | null;
   max_files?: number;
 }) {
   return request<LocalFolderScanResponse>("/api/v1/integrations/local-folder/scan", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export async function refreshIntegrationImport(importId: string) {
+  return request<LocalFolderScanResponse>(
+    `/api/v1/integrations/imports/${encodeURIComponent(importId)}/refresh`,
+    { method: "POST" },
+  );
+}
+
+export async function listExtensionClients() {
+  return request<ExtensionClientRecord[]>("/api/v1/extension/clients");
+}
+
+export async function createExtensionClient(payload: { name: string }) {
+  return request<ExtensionClientCreateResponse>("/api/v1/extension/clients", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateExtensionClient(
+  clientId: string,
+  payload: { enabled?: boolean; allowed_vault_ids?: string[] },
+) {
+  return request<ExtensionClientRecord>(`/api/v1/extension/clients/${encodeURIComponent(clientId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function revokeExtensionClient(clientId: string) {
+  await request<void>(`/api/v1/extension/clients/${encodeURIComponent(clientId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function listExtensionCaptures(vaultId?: string) {
+  const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
+  return request<ExtensionCaptureRecord[]>(`/api/v1/extension/captures${query}`);
 }
 
 export async function startModelDownload(modelId: string) {

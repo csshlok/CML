@@ -322,6 +322,29 @@ def job_queue_status() -> dict:
     }
 
 
+def cancel_job(job_id: str) -> dict:
+    now = utc_now()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        job = dict_from_row(row)
+        if int(job.get("cancellable") or 0) != 1:
+            raise ValueError("Job is not cancellable")
+        if job["status"] not in {"queued", "blocked_by_dependency", "running"}:
+            raise ValueError("Only queued, blocked, or running jobs can be cancelled")
+        conn.execute(
+            """
+            UPDATE app_jobs
+            SET status = 'cancelled', status_detail = 'Cancelled by user.', completed_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, now, job_id),
+        )
+        updated = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
+    return dict_from_row(updated)
+
+
 def _worker_loop() -> None:
     while True:
         try:
@@ -435,7 +458,7 @@ def _run_claimed_job(job: dict) -> None:
             UPDATE app_jobs
             SET status = 'succeeded', completed_at = ?, updated_at = ?, last_error = '',
                 status_detail = ''
-            WHERE id = ?
+            WHERE id = ? AND status = 'running'
             """,
             (utc_now(), utc_now(), job["id"]),
         )

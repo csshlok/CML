@@ -13,6 +13,7 @@ from backend.app.schemas import (
     ClusterRead,
     ClusterSuggestionRead,
     ClusterUpdate,
+    ExpertArtifactRead,
 )
 
 router = APIRouter(prefix="/clusters", tags=["clusters"])
@@ -108,6 +109,24 @@ def list_expert_jobs(cluster_id: str) -> list[dict]:
         if existing is None:
             raise HTTPException(status_code=404, detail="Cluster not found")
         return latest_expert_jobs(conn, cluster_id)
+
+
+@router.get("/{cluster_id}/expert/artifacts", response_model=list[ExpertArtifactRead])
+def list_expert_artifacts(cluster_id: str) -> list[dict]:
+    with connect() as conn:
+        existing = conn.execute("SELECT id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        rows = conn.execute(
+            """
+            SELECT * FROM expert_artifacts
+            WHERE cluster_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 25
+            """,
+            (cluster_id,),
+        ).fetchall()
+        return [dict_from_row(row) for row in rows]
 
 
 @router.post("/{cluster_id}/expert/retrain", response_model=ClusterExpertJobRead)

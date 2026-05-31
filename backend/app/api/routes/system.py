@@ -3,7 +3,8 @@ from fastapi import APIRouter, HTTPException
 from backend.app.core.hardware import hardware_status
 from backend.app.core.preflight import disk_preflight
 from backend.app.core.startup_status import read_startup_status
-from backend.app.schemas import DiskPreflightRequest, DiskPreflightResponse, HardwareStatusRead, StartupStatusRead
+from backend.app.core.database import connect, dict_from_row
+from backend.app.schemas import DiskPreflightRequest, DiskPreflightResponse, HardwareStatusRead, StartupStatusRead, VaultLockAuditRead
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -37,3 +38,18 @@ def check_disk_preflight(payload: DiskPreflightRequest) -> dict:
 @router.get("/hardware", response_model=HardwareStatusRead)
 def get_hardware_status() -> dict:
     return hardware_status()
+
+
+@router.get("/vault-lock/audit", response_model=list[VaultLockAuditRead])
+def list_vault_lock_audit(limit: int = 20) -> list[dict]:
+    safe_limit = max(1, min(limit, 100))
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM vault_lock_audit
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+    return [dict_from_row(row) for row in rows]

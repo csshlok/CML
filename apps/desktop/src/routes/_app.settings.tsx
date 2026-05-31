@@ -4,19 +4,36 @@ import { useStore } from "@/lib/mockStore";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
+  cancelJob,
   cancelModelDownload,
   configureEmbeddingRuntime,
+  createExtensionClient,
   createDiagnosticBundle,
   createVault,
   getEmbeddingRuntimeStatus,
+  getHardwareStatus,
+  getJobStatus,
   getModelRuntimeStatus,
+  listExtensionCaptures,
+  listExtensionClients,
+  listIntegrationImports,
   listLocalModels,
+  listVaultLockAudit,
   listVaults,
+  refreshIntegrationImport,
+  revokeExtensionClient,
+  scanLocalFolderIntegration,
   startModelDownload,
   updateVault,
   type EmbeddingRuntimeStatus,
+  type ExtensionCaptureRecord,
+  type ExtensionClientRecord,
+  type HardwareStatusRead,
+  type IntegrationImportRecord,
+  type JobQueueStatus,
   type LocalModelRecord,
   type ModelRuntimeStatus,
+  type VaultLockAuditRecord,
   type VaultRecord,
 } from "@/lib/backend";
 
@@ -41,6 +58,16 @@ function SettingsView() {
   const [modelError, setModelError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [diagnosticStatus, setDiagnosticStatus] = useState<string | null>(null);
+  const [hardware, setHardware] = useState<HardwareStatusRead | null>(null);
+  const [imports, setImports] = useState<IntegrationImportRecord[]>([]);
+  const [folderDraft, setFolderDraft] = useState("");
+  const [folderScanStatus, setFolderScanStatus] = useState<string | null>(null);
+  const [extensionClients, setExtensionClients] = useState<ExtensionClientRecord[]>([]);
+  const [extensionCaptures, setExtensionCaptures] = useState<ExtensionCaptureRecord[]>([]);
+  const [newExtensionToken, setNewExtensionToken] = useState<string | null>(null);
+  const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
+  const [lockAudit, setLockAudit] = useState<VaultLockAuditRecord[]>([]);
+  const [advancedStatus, setAdvancedStatus] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadVault() {
@@ -95,6 +122,39 @@ function SettingsView() {
       window.clearInterval(id);
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAdvanced() {
+      try {
+        const [hardwareStatus, importRows, clientRows, captureRows] = await Promise.all([
+          getHardwareStatus(),
+          listIntegrationImports(backendVault?.id),
+          listExtensionClients(),
+          listExtensionCaptures(backendVault?.id),
+        ]);
+        if (cancelled) return;
+        setHardware(hardwareStatus);
+        setImports(importRows);
+        setExtensionClients(clientRows);
+        setExtensionCaptures(captureRows);
+        setJobs(await getJobStatus());
+        setLockAudit(await listVaultLockAudit(5));
+      } catch {
+        if (!cancelled) {
+          setHardware(null);
+        }
+      }
+    }
+
+    void loadAdvanced();
+    const id = window.setInterval(loadAdvanced, 8000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [backendVault?.id]);
 
   async function saveVaultPath() {
     const path = pathDraft.trim();
@@ -165,6 +225,69 @@ function SettingsView() {
       setDiagnosticStatus(`Diagnostic bundle saved to ${bundle.bundle_path}`);
     } catch (err) {
       setDiagnosticStatus(err instanceof Error ? err.message : "Could not create diagnostic bundle.");
+    }
+  }
+
+  async function scanFolder() {
+    const path = folderDraft.trim();
+    if (!path) return;
+    setFolderScanStatus("Scanning folder...");
+    try {
+      const scan = await scanLocalFolderIntegration({
+        path,
+        vault_id: backendVault?.id ?? null,
+        max_files: 500,
+      });
+      setFolderScanStatus(
+        `Found ${scan.supported_count} supported file${scan.supported_count === 1 ? "" : "s"}.`,
+      );
+      if (backendVault?.id) setImports(await listIntegrationImports(backendVault.id));
+    } catch (err) {
+      setFolderScanStatus(err instanceof Error ? err.message : "Folder scan failed.");
+    }
+  }
+
+  async function pairExtension() {
+    setNewExtensionToken(null);
+    try {
+      const client = await createExtensionClient({ name: "Browser extension" });
+      setNewExtensionToken(client.token);
+      setExtensionClients(await listExtensionClients());
+    } catch (err) {
+      setNewExtensionToken(err instanceof Error ? err.message : "Could not create extension token.");
+    }
+  }
+
+  async function revokeExtension(clientId: string) {
+    setAdvancedStatus(null);
+    try {
+      await revokeExtensionClient(clientId);
+      setExtensionClients(await listExtensionClients());
+      setAdvancedStatus("Extension client revoked.");
+    } catch (err) {
+      setAdvancedStatus(err instanceof Error ? err.message : "Could not revoke extension client.");
+    }
+  }
+
+  async function refreshImport(importId: string) {
+    setAdvancedStatus("Refreshing import...");
+    try {
+      await refreshIntegrationImport(importId);
+      if (backendVault?.id) setImports(await listIntegrationImports(backendVault.id));
+      setAdvancedStatus("Import refreshed.");
+    } catch (err) {
+      setAdvancedStatus(err instanceof Error ? err.message : "Could not refresh import.");
+    }
+  }
+
+  async function cancelBackgroundJob(jobId: string) {
+    setAdvancedStatus(null);
+    try {
+      await cancelJob(jobId);
+      setJobs(await getJobStatus());
+      setAdvancedStatus("Background job cancelled.");
+    } catch (err) {
+      setAdvancedStatus(err instanceof Error ? err.message : "Could not cancel job.");
     }
   }
 
@@ -382,6 +505,160 @@ function SettingsView() {
           <p className="mt-2 text-sm text-muted-foreground">
             Power-user details like training logs and expert versions appear here.
           </p>
+          <div className="mt-4 border-t border-border pt-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-md border border-border p-3">
+                <div className="text-sm font-medium">Adapter readiness</div>
+                <dl className="mt-3 grid grid-cols-[120px_1fr] gap-y-1 text-xs">
+                  <dt className="text-muted-foreground">Tier</dt>
+                  <dd>{hardware?.hardware_tier ?? "Checking"}</dd>
+                  <dt className="text-muted-foreground">AVX2</dt>
+                  <dd>
+                    {hardware?.avx2 === true ? "Available" : hardware?.avx2 === false ? "Missing" : "Unknown"}
+                  </dd>
+                  <dt className="text-muted-foreground">CPU</dt>
+                  <dd>{hardware?.cpu_count ?? "-"} cores</dd>
+                </dl>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  {hardware?.detail ?? "Checking local training capabilities."}
+                </p>
+              </div>
+
+              <div className="rounded-md border border-border p-3">
+                <div className="text-sm font-medium">Browser extension</div>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Create a local token for the future extension. Store it now only for local testing.
+                </p>
+                <Button className="mt-3" variant="outline" onClick={() => void pairExtension()}>
+                  Create extension token
+                </Button>
+                {newExtensionToken && (
+                  <p className="mt-2 break-all rounded border border-border bg-muted/35 p-2 text-xs">
+                    {newExtensionToken}
+                  </p>
+                )}
+                <div className="mt-3 text-xs text-muted-foreground">
+                  {extensionClients.length} client{extensionClients.length === 1 ? "" : "s"} paired,{" "}
+                  {extensionCaptures.length} capture{extensionCaptures.length === 1 ? "" : "s"} stored.
+                </div>
+                <div className="mt-3 divide-y divide-border rounded-md border border-border">
+                  {extensionClients.slice(0, 3).map((client) => (
+                    <div key={client.id} className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[1fr_auto]">
+                      <span className="truncate">
+                        {client.name} · {client.enabled ? "enabled" : "disabled"}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => void revokeExtension(client.id)}
+                        disabled={!client.enabled}
+                      >
+                        Revoke
+                      </Button>
+                    </div>
+                  ))}
+                  {extensionClients.length === 0 && (
+                    <div className="px-3 py-2 text-xs text-muted-foreground">
+                      No extension clients yet.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-md border border-border p-3">
+              <div className="text-sm font-medium">Local imports</div>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <Input
+                  value={folderDraft}
+                  onChange={(event) => setFolderDraft(event.target.value)}
+                  placeholder="Scan a synced folder or Obsidian vault path"
+                />
+                <Button variant="outline" onClick={() => void scanFolder()}>
+                  Scan
+                </Button>
+              </div>
+              {folderScanStatus && (
+                <p className="mt-2 text-xs text-muted-foreground">{folderScanStatus}</p>
+              )}
+              <div className="mt-3 divide-y divide-border rounded-md border border-border">
+                {imports.slice(0, 4).map((item) => (
+                  <div key={item.id} className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[1fr_auto]">
+                    <span className="truncate">{item.root_path}</span>
+                    <span className="text-muted-foreground">
+                      {item.integration_type} · {item.supported_count} files
+                    </span>
+                    <Button size="sm" variant="ghost" onClick={() => void refreshImport(item.id)}>
+                      Refresh
+                    </Button>
+                  </div>
+                ))}
+                {imports.length === 0 && (
+                  <div className="px-3 py-3 text-xs text-muted-foreground">
+                    No local import scans recorded yet.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div className="rounded-md border border-border p-3">
+              <div className="text-sm font-medium">Background jobs</div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                {jobs
+                  ? `${jobs.running} running, ${jobs.queued} queued, ${jobs.failed} failed`
+                  : "Checking jobs..."}
+              </div>
+              <div className="mt-3 divide-y divide-border rounded-md border border-border">
+                {(jobs?.running_jobs ?? []).slice(0, 3).map((job) => (
+                  <div key={job.id} className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[1fr_auto]">
+                    <span className="truncate">
+                      {job.job_type}
+                      {job.estimated_remaining_seconds != null && (
+                        <span className="ml-2 text-muted-foreground">
+                          ~{job.estimated_remaining_seconds}s left
+                        </span>
+                      )}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={job.cancellable !== 1}
+                      onClick={() => void cancelBackgroundJob(job.id)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                ))}
+                {(jobs?.running_jobs ?? []).length === 0 && (
+                  <div className="px-3 py-2 text-xs text-muted-foreground">No running jobs.</div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-border p-3">
+              <div className="text-sm font-medium">Vault lock audit</div>
+              <div className="mt-3 divide-y divide-border rounded-md border border-border">
+                {lockAudit.slice(0, 4).map((event) => (
+                  <div key={event.id} className="px-3 py-2 text-xs">
+                    <div className="truncate">{event.event_type}</div>
+                    <div className="truncate text-muted-foreground">
+                      pid {event.pid ?? "-"} · owner {event.owner_pid ?? "-"}
+                    </div>
+                  </div>
+                ))}
+                {lockAudit.length === 0 && (
+                  <div className="px-3 py-2 text-xs text-muted-foreground">
+                    No lock events recorded.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {advancedStatus && <p className="mt-3 text-xs text-muted-foreground">{advancedStatus}</p>}
+
           <div className="mt-4 border-t border-border pt-4">
             <div className="text-sm font-medium">Diagnostics</div>
             <p className="mt-1 text-sm text-muted-foreground">

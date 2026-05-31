@@ -18,6 +18,7 @@ import {
   createCluster,
   getCluster,
   listClusterExpertJobs,
+  listClusterExpertArtifacts,
   listChatSessions,
   listClusters,
   listSources,
@@ -27,6 +28,7 @@ import {
   updateSource,
   updateCluster,
   type ClusterExpertJobRecord,
+  type ExpertArtifactRecord,
   type ChatSessionRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
@@ -46,6 +48,7 @@ function ClusterDetail() {
   const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
   const [allBackendClusters, setAllBackendClusters] = useState<Cluster[]>([]);
   const [expertJobs, setExpertJobs] = useState<ClusterExpertJobRecord[]>([]);
+  const [expertArtifacts, setExpertArtifacts] = useState<ExpertArtifactRecord[]>([]);
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [mergeTargetId, setMergeTargetId] = useState("");
   const [nameDraft, setNameDraft] = useState("");
@@ -63,11 +66,12 @@ function ClusterDetail() {
       const clusterRow = await getCluster(clusterId);
       const nextCluster = clusterFromRecord(clusterRow);
       setBackendVaultId(clusterRow.vault_id);
-      const [sourceRows, chatRows, clusterRows, jobRows] = await Promise.all([
+      const [sourceRows, chatRows, clusterRows, jobRows, artifactRows] = await Promise.all([
         listSources(clusterRow.vault_id),
         listChatSessions(clusterRow.vault_id),
         listClusters(clusterRow.vault_id),
         listClusterExpertJobs(clusterRow.id).catch(() => []),
+        listClusterExpertArtifacts(clusterRow.id).catch(() => []),
       ]);
       setBackendCluster(nextCluster);
       setNameDraft(nextCluster.name);
@@ -75,6 +79,7 @@ function ClusterDetail() {
       setBackendChats(chatRows.filter((chat) => chat.scope_cluster_id === clusterRow.id));
       setAllBackendClusters(clusterRows.map(clusterFromRecord));
       setExpertJobs(jobRows);
+      setExpertArtifacts(artifactRows);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Could not load this cluster from the backend.",
@@ -428,13 +433,32 @@ function ClusterDetail() {
             <Card title="Recent expert jobs">
               <div className="space-y-2">
                 {expertJobs.slice(0, 5).map((job) => (
-                  <div key={job.id} className="flex items-center justify-between gap-3 text-xs">
+                  <div key={job.id} className="grid gap-1 text-xs sm:grid-cols-[1fr_auto]">
                     <span className="truncate">{job.action}</span>
-                    <span className="text-muted-foreground">{job.status}</span>
+                    <span className="text-muted-foreground">
+                      {job.failure_code ? `${job.status} / ${job.failure_code}` : job.status}
+                    </span>
                   </div>
                 ))}
                 {expertJobs.length === 0 && (
                   <div className="text-sm text-muted-foreground">No expert jobs yet.</div>
+                )}
+              </div>
+            </Card>
+            <Card title="Adapter artifacts">
+              <div className="space-y-2">
+                {expertArtifacts.slice(0, 5).map((artifact) => (
+                  <div key={artifact.id} className="grid gap-1 text-xs sm:grid-cols-[1fr_auto]">
+                    <span className="truncate">
+                      {artifact.artifact_type} · {artifact.hardware_tier || "unknown hardware"}
+                    </span>
+                    <span className="text-muted-foreground">{artifact.status}</span>
+                  </div>
+                ))}
+                {expertArtifacts.length === 0 && (
+                  <div className="text-sm text-muted-foreground">
+                    No adapter artifacts yet. The LoRA runner is still scaffolded.
+                  </div>
                 )}
               </div>
             </Card>

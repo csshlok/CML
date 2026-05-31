@@ -630,7 +630,11 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIn(result["avx2"], {True, False, None})
 
     def test_integration_scan_records_import_history(self) -> None:
-        from backend.app.api.routes.integrations import scan_local_folder_integration
+        from backend.app.api.routes.integrations import (
+            list_integration_imports,
+            refresh_integration_import,
+            scan_local_folder_integration,
+        )
         from backend.app.core.database import connect, utc_now
         from backend.app.schemas import LocalFolderScanRequest
 
@@ -653,12 +657,25 @@ class SourcePageIndexingTests(unittest.TestCase):
             row = conn.execute("SELECT * FROM integration_imports WHERE id = ?", (result["import_id"],)).fetchone()
         self.assertEqual(row["vault_id"], "vault-1")
         self.assertEqual(row["supported_count"], 1)
+        listed = list_integration_imports("vault-1")
+        self.assertEqual(listed[0]["id"], result["import_id"])
+        self.assertFalse(listed[0]["truncated"])
+        (folder / "second.md").write_text("another synced note", encoding="utf-8")
+        refreshed = refresh_integration_import(result["import_id"])
+        self.assertEqual(refreshed["supported_count"], 2)
 
     def test_extension_capture_creates_source_and_capture_record(self) -> None:
-        from backend.app.api.routes.extension import capture_from_extension, create_extension_client
+        from backend.app.api.routes.extension import (
+            capture_from_extension,
+            create_extension_client,
+            list_extension_captures,
+            list_extension_clients,
+            revoke_extension_client,
+            update_extension_client,
+        )
         from backend.app.core.background_jobs import run_due_jobs_once
         from backend.app.core.database import connect, utc_now
-        from backend.app.schemas import ExtensionCaptureRequest, ExtensionClientCreate
+        from backend.app.schemas import ExtensionCaptureRequest, ExtensionClientCreate, ExtensionClientUpdate
 
         now = utc_now()
         with connect() as conn:
@@ -685,9 +702,29 @@ class SourcePageIndexingTests(unittest.TestCase):
             source = conn.execute("SELECT * FROM sources WHERE id = ?", (response["source_id"],)).fetchone()
         self.assertEqual(capture["status"], "stored")
         self.assertEqual(source["source_type"], "extension_selection")
+        self.assertEqual(len(list_extension_clients()), 1)
+        self.assertEqual(list_extension_captures("vault-1")[0]["id"], response["capture_id"])
+        updated = update_extension_client(
+            client["id"],
+            ExtensionClientUpdate(allowed_vault_ids=["other-vault"]),
+        )
+        self.assertEqual(updated["allowed_vault_ids"], ["other-vault"])
+        with self.assertRaises(Exception):
+            capture_from_extension(
+                ExtensionCaptureRequest(
+                    vault_id="vault-1",
+                    capture_type="selection",
+                    title="Blocked thought",
+                    text="blocked by extension permission",
+                ),
+                x_cml_extension_token=client["token"],
+            )
+        revoke_extension_client(client["id"])
+        self.assertFalse(list_extension_clients()[0]["enabled"])
 
     def test_expert_retrain_queues_adapter_job_or_hardware_gate(self) -> None:
-        from backend.app.api.routes.clusters import queue_expert_retrain
+        from backend.app.api.routes.clusters import list_expert_artifacts, queue_expert_retrain
+        from backend.app.core.background_jobs import run_due_jobs_once
         from backend.app.core.database import connect, utc_now
 
         now = utc_now()
@@ -718,8 +755,12 @@ class SourcePageIndexingTests(unittest.TestCase):
         else:
             self.assertIsNotNone(adapter_job)
             self.assertEqual(adapter_job["scope_id"], "cluster-1")
+            run_due_jobs_once(limit=1)
+            artifacts = list_expert_artifacts("cluster-1")
+            self.assertGreaterEqual(len(artifacts), 1)
 
     def test_vault_lock_audit_records_events(self) -> None:
+        from backend.app.api.routes.system import list_vault_lock_audit
         from backend.app.core.database import connect
         from backend.app.core.vault_lock import acquire_vault_lock, release_vault_lock
 
@@ -731,6 +772,27 @@ class SourcePageIndexingTests(unittest.TestCase):
         event_types = [row["event_type"] for row in rows]
         self.assertIn("acquired", event_types)
         self.assertIn("released", event_types)
+        self.assertGreaterEqual(len(list_vault_lock_audit()), 2)
+
+    def test_cancellable_job_can_be_cancelled(self) -> None:
+        from backend.app.api.routes.jobs import cancel_app_job
+        from backend.app.core.background_jobs import enqueue_job
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            job = enqueue_job(
+                conn,
+                job_type="reindex_source",
+                payload={"source_id": "source-1"},
+                dedupe_key="cancel-test",
+                scope_id="source-1",
+                user_initiated=True,
+            )
+
+        cancelled = cancel_app_job(job["id"])
+
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual(cancelled["status_detail"], "Cancelled by user.")
 
 
 if __name__ == "__main__":

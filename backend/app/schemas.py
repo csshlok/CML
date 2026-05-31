@@ -77,6 +77,21 @@ class ClusterExpertJobRead(BaseModel):
     updated_at: str
 
 
+class ExpertArtifactRead(BaseModel):
+    id: str
+    cluster_id: str
+    vault_id: str
+    job_id: str | None = None
+    artifact_type: str
+    status: str
+    local_path: str | None = None
+    base_model: str
+    hardware_tier: str
+    quality_score: float | None = None
+    created_at: str
+    updated_at: str
+
+
 class SourceCreate(BaseModel):
     vault_id: str
     cluster_id: str | None = None
@@ -431,15 +446,46 @@ class LocalFolderScanResponse(BaseModel):
     truncated: bool
 
 
+class IntegrationImportRead(BaseModel):
+    id: str
+    vault_id: str | None = None
+    integration_type: str
+    root_path: str
+    status: str
+    supported_count: int
+    skipped_count: int
+    truncated: bool
+    last_scan_at: str
+    created_at: str
+    updated_at: str
+
+
 class ExtensionClientCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    allowed_vault_ids: list[str] = []
+
+
+class ExtensionClientUpdate(BaseModel):
+    enabled: bool | None = None
+    allowed_vault_ids: list[str] | None = None
 
 
 class ExtensionClientCreateResponse(BaseModel):
     id: str
     name: str
     token: str
+    enabled: bool = True
+    allowed_vault_ids: list[str] = []
     created_at: str
+
+
+class ExtensionClientRead(BaseModel):
+    id: str
+    name: str
+    enabled: bool
+    allowed_vault_ids: list[str] = []
+    created_at: str
+    updated_at: str
 
 
 class ExtensionStatusResponse(BaseModel):
@@ -461,6 +507,29 @@ class ExtensionCaptureResponse(BaseModel):
     capture_id: str
     source_id: str
     status: str
+
+
+class ExtensionCaptureRead(BaseModel):
+    id: str
+    client_id: str | None = None
+    vault_id: str
+    source_id: str | None = None
+    capture_type: str
+    title: str
+    url: str
+    status: str
+    created_at: str
+
+
+class VaultLockAuditRead(BaseModel):
+    id: str
+    event_type: str
+    pid: int | None = None
+    owner_pid: int | None = None
+    lock_path: str
+    detail: str
+    user_choice: str
+    created_at: str
 
 
 class DiskPreflightRequest(BaseModel):

@@ -155,6 +155,7 @@ def init_db() -> None:
                 name TEXT NOT NULL,
                 token_hash TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                allowed_vault_ids TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -393,6 +394,7 @@ def init_db() -> None:
         _add_column_if_missing(conn, "cluster_expert_jobs", "failure_code", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "cluster_expert_jobs", "artifact_path", "TEXT")
         _add_column_if_missing(conn, "cluster_expert_jobs", "hardware_tier", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "extension_clients", "allowed_vault_ids", "TEXT NOT NULL DEFAULT '[]'")
         conn.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_app_jobs_runnable
