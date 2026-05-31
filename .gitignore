@@ -52,3 +52,5 @@ skills-lock.json
 
 # Local Codex skill cache/worktrees
 codex-skills/
+docs/vault_ui_prompt.md
+UI-ref/

@@ -38,11 +38,11 @@ export const Route = createFileRoute("/_app/home")({
   component: HomeView,
 });
 
-function HomeView() {
+export function HomeView() {
   const mock = useStore();
   const [vault, setVault] = useState<VaultRecord | null>(null);
-  const [sources, setSources] = useState<Source[]>(mock.sources);
-  const [clusters, setClusters] = useState<Cluster[]>(mock.clusters);
+  const [sources, setSources] = useState<Source[]>([]);
+  const [clusters, setClusters] = useState<Cluster[]>([]);
   const [chats, setChats] = useState<ChatSessionRecord[]>([]);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
   const [query, setQuery] = useState("");
@@ -94,6 +94,18 @@ function HomeView() {
   const unsorted = sources.filter((source) => !source.clusterId).slice(0, 4);
   const indexedCount = sources.filter((source) => source.state === "indexed").length;
   const activeJobs = (jobs?.running ?? 0) + (jobs?.queued ?? 0);
+  const activityItems = [
+    ...recentSources.slice(0, 3).map((source) => ({
+      id: `source:${source.id}`,
+      time: formatRelativeDay(source.updatedAt),
+      title: source.state === "indexed" ? `Indexed ${source.title}` : `${source.state} ${source.title}`,
+    })),
+    ...chats.slice(0, 2).map((chat) => ({
+      id: `chat:${chat.id}`,
+      time: formatRelativeDay(chat.updated_at),
+      title: chat.title,
+    })),
+  ];
 
   async function startChat() {
     const text = query.trim();
@@ -111,7 +123,7 @@ function HomeView() {
       <main className="min-w-0 overflow-y-auto px-8 py-10">
         <header className="flex items-start justify-between gap-6">
           <div>
-            <h1 className="font-serif text-4xl font-medium tracking-tight">Mind</h1>
+            <h1 className="page-title">Mind</h1>
             <p className="mt-3 text-sm text-muted-foreground">
               Your private AI memory, ready to search.
             </p>
@@ -243,15 +255,16 @@ function HomeView() {
             <Link to="/activity" className="text-sm text-primary">View all</Link>
           </div>
           <div className="mt-5 space-y-4 border-l border-border pl-4">
-            {["Added 3 sources", "Extracted 42 memories", "Chat session", "Cluster summary updated", "Added 6 sources"].map((item, index) => (
-              <div key={item} className="relative text-sm">
+            {activityItems.map((item) => (
+              <div key={item.id} className="relative text-sm">
                 <span className="absolute -left-[18px] top-1.5 h-2 w-2 rounded-full bg-[var(--cluster-sage)]" />
-                <div className="text-muted-foreground">
-                  {index < 3 ? ["9:42 AM", "9:15 AM", "8:01 AM"][index] : index === 3 ? "Yesterday, 11:08 PM" : "May 29"}
-                </div>
-                <div className="mt-1">{item}</div>
+                <div className="text-muted-foreground">{item.time}</div>
+                <div className="mt-1">{item.title}</div>
               </div>
             ))}
+            {activityItems.length === 0 && (
+              <div className="text-sm text-muted-foreground">No recent activity yet.</div>
+            )}
           </div>
         </section>
       </aside>
@@ -297,7 +310,7 @@ function MemoryRow({ source, cluster }: { source: Source; cluster?: Cluster }) {
           {source.summary || source.preview || "Key memory summary will appear after indexing."}
         </div>
       </div>
-      <span className="text-xs text-muted-foreground">{cluster?.name ?? "9:42 AM"}</span>
+      <span className="text-xs text-muted-foreground">{cluster?.name ?? sourceStateText(source)}</span>
     </div>
   );
 }
@@ -312,7 +325,7 @@ function UnsortedRow({ source, index }: { source: Source; index: number }) {
       </span>
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm font-semibold">{source.title}</div>
-        <div className="mt-1 text-xs text-muted-foreground">{source.type} <span className="px-1">·</span> {source.state}</div>
+        <div className="mt-1 text-xs text-muted-foreground">{source.type} <span className="px-1">/</span> {source.state}</div>
       </div>
       <span className="text-xs text-muted-foreground">{index === 0 ? "Today" : "Yesterday"}</span>
     </div>
@@ -349,4 +362,25 @@ function QuickAction({
       <ArrowRight className="h-4 w-4 text-muted-foreground" />
     </Link>
   );
+}
+
+function sourceStateText(source: Source) {
+  if (source.state === "indexed") return "Indexed";
+  if (source.state === "extracting") return "Processing";
+  if (source.state === "failed") return "Needs review";
+  return "Waiting";
+}
+
+function formatRelativeDay(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const now = new Date();
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  if (sameDay) {
+    return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+  }
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
 }

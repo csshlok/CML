@@ -296,7 +296,7 @@ function Onboarding() {
           </div>
 
           <div className="mt-16">
-            <div className="max-w-[280px] text-4xl font-semibold leading-tight">
+            <div className="max-w-[280px] text-[30px] font-semibold leading-tight">
               Private memory starts here
             </div>
             <p className="mt-5 max-w-[280px] text-sm leading-6 text-muted-foreground">
@@ -695,7 +695,7 @@ function SetupPanel({
       <div className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-accent text-accent-foreground">
         {icon}
       </div>
-      <h1 className="mt-6 text-3xl font-semibold text-foreground sm:text-4xl">{title}</h1>
+      <h1 className="mt-6 text-[30px] font-semibold text-foreground">{title}</h1>
       <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">{sub}</p>
       <div className="mt-8 grid gap-4">{children}</div>
     </div>

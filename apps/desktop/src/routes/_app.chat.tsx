@@ -246,7 +246,7 @@ function ChatIndex() {
                 {attachmentNotice}
               </div>
             )}
-            <div className="rounded-md border border-border bg-card/95 p-4 shadow-[0_10px_36px_oklch(0.28_0.02_70_/_0.04)]">
+            <div className="rounded-md border border-border bg-card/95 p-4">
               <Textarea
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}

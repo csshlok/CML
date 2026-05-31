@@ -44,7 +44,7 @@ function TasksView() {
   const rows = useMemo(() => {
     const latest = jobs?.latest ?? [];
     const running = jobs?.running_jobs ?? [];
-    const merged = uniqueJobs([...running, ...latest, ...fallbackJobs]);
+    const merged = uniqueJobs([...running, ...latest]);
     const normalized = query.trim().toLowerCase();
     return merged
       .filter((job) => matchesFilter(job, filter))
@@ -75,12 +75,12 @@ function TasksView() {
   const activeJob = selected ?? rows[0] ?? null;
 
   return (
-    <div className="grid h-full grid-cols-[minmax(0,1fr)_340px] overflow-hidden bg-background">
+    <div className="vault-page-wash grid h-full grid-cols-[minmax(0,1fr)_320px] overflow-hidden bg-background">
       <main className="min-w-0 overflow-y-auto px-8 py-8">
         <header className="border-b border-border pb-6">
           <div className="flex items-start justify-between gap-6">
             <div>
-              <h1 className="text-[34px] font-semibold leading-tight">Tasks</h1>
+              <h1 className="page-title">Tasks</h1>
               <p className="mt-2 text-sm text-muted-foreground">Background work that keeps your vault current.</p>
             </div>
             <Button onClick={() => void runOnce()}>
@@ -154,7 +154,7 @@ function TasksView() {
         </section>
       </main>
 
-      <aside className="border-l border-border bg-card/60 px-6 py-8">
+      <aside className="right-panel px-6 py-8">
         <h2 className="text-sm font-semibold">Job detail</h2>
         {activeJob ? (
           <div className="mt-5">
@@ -162,7 +162,7 @@ function TasksView() {
               {statusIcon(activeJob.status)}
               <span className="font-medium">{activeJob.status.replace(/_/g, " ")}</span>
             </div>
-            <h3 className="mt-6 text-xl font-semibold leading-snug">{jobTitle(activeJob.job_type)}</h3>
+            <h3 className="mt-6 text-[15px] font-semibold leading-snug">{jobTitle(activeJob.job_type)}</h3>
             <p className="mt-3 text-sm leading-6 text-muted-foreground">
               {activeJob.status_detail || activeJob.last_error || "No additional job detail was reported."}
             </p>
@@ -256,52 +256,3 @@ function formatDate(value: string) {
     minute: "2-digit",
   }).format(date);
 }
-
-const fallbackJobs: AppJobRecord[] = [
-  {
-    id: "fallback-ocr",
-    job_type: "ocr_source_pages",
-    status: "running",
-    payload: "{}",
-    dedupe_key: "ocr:sample",
-    priority: "high",
-    write_scope: "source",
-    scope_id: "sample",
-    resource_cost: "heavy",
-    cancellable: 1,
-    timeout_seconds: 2700,
-    started_at: new Date(Date.now() - 180000).toISOString(),
-    completed_at: null,
-    elapsed_seconds: 180,
-    estimated_remaining_seconds: 420,
-    status_detail: "Reading scanned PDF pages with local OCR.",
-    attempts: 1,
-    max_attempts: 3,
-    last_error: "",
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  },
-  {
-    id: "fallback-reconcile",
-    job_type: "reconcile_vector_index",
-    status: "queued",
-    payload: "{}",
-    dedupe_key: "reconcile:vault",
-    priority: "normal",
-    write_scope: "vector_index",
-    scope_id: "vault",
-    resource_cost: "medium",
-    cancellable: 0,
-    timeout_seconds: 600,
-    started_at: null,
-    completed_at: null,
-    elapsed_seconds: null,
-    estimated_remaining_seconds: null,
-    status_detail: "Waiting for the current OCR task to finish.",
-    attempts: 0,
-    max_attempts: 3,
-    last_error: "",
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  },
-];

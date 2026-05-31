@@ -103,15 +103,15 @@ function BridgeView() {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="vault-page-wash h-full overflow-y-auto">
       <div className="mx-auto max-w-4xl px-8 py-10">
         <div className="flex items-start justify-between gap-6">
           <div>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Cable className="h-4 w-4" />
-              Context Bridge
+              Bridge
             </div>
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight">Context Bridge</h1>
+            <h1 className="page-title mt-2">Bridge</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
               Let local AI tools request selected context from this vault. Keep it off until you
               have chosen exactly which vaults and clusters another client can read.

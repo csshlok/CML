@@ -1,25 +1,25 @@
 import { Link, useNavigate, useRouterState, Outlet } from "@tanstack/react-router";
 import {
   Activity,
-  Briefcase,
-  Home,
-  MessageSquare,
-  Layers,
-  Files,
-  Globe2,
-  Search,
-  Cable,
-  Settings as SettingsIcon,
-  Plus,
+  Boxes,
+  CalendarDays,
+  CheckSquare,
+  ChevronDown,
   FolderOpen,
-  Command,
+  Globe,
+  Home,
+  Layers,
+  LayoutGrid,
+  Link2,
+  MessageSquare,
+  Search,
+  Settings,
+  Plus,
   UserRound,
-  Asterisk,
   LockKeyhole,
 } from "lucide-react";
 import { useStore } from "@/lib/mockStore";
 import { CommandPalette, useCommandPalette } from "@/components/CommandPalette";
-import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
 import {
   createChatSession,
@@ -33,18 +33,36 @@ import {
   type JobQueueStatus,
 } from "@/lib/backend";
 
-const nav = [
+type NavItem = {
+  to:
+    | "/home"
+    | "/chat"
+    | "/search"
+    | "/sources"
+    | "/clusters"
+    | "/map"
+    | "/timeline"
+    | "/bridge"
+    | "/tasks"
+    | "/activity"
+    | "/settings";
+  label: string;
+  icon: typeof Home;
+  separated?: boolean;
+};
+
+const nav: NavItem[] = [
   { to: "/home", label: "Home", icon: Home },
   { to: "/chat", label: "Chat", icon: MessageSquare },
-  { to: "/search", label: "Mind", icon: Search },
-  { to: "/sources", label: "Sources", icon: Files },
-  { to: "/clusters", label: "Clusters", icon: Layers },
-  { to: "/map", label: "Map", icon: Globe2 },
-  { to: "/timeline", label: "Timeline", icon: Activity },
-  { to: "/bridge", label: "Bridge", icon: Cable },
-  { to: "/tasks", label: "Tasks", icon: Briefcase },
+  { to: "/search", label: "Mind", icon: LayoutGrid },
+  { to: "/sources", label: "Sources", icon: Layers },
+  { to: "/clusters", label: "Clusters", icon: Boxes },
+  { to: "/map", label: "Map", icon: Globe },
+  { to: "/timeline", label: "Timeline", icon: CalendarDays },
+  { to: "/bridge", label: "Bridge", icon: Link2 },
+  { to: "/tasks", label: "Tasks", icon: CheckSquare, separated: true },
   { to: "/activity", label: "Activity", icon: Activity },
-  { to: "/settings", label: "Settings", icon: SettingsIcon },
+  { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
 export function AppShell() {
@@ -185,74 +203,70 @@ export function AppShell() {
   const taskCount = (jobs?.queued ?? 0) + (jobs?.running ?? 0) + (jobs?.failed ?? 0);
 
   return (
-    <div className="vault-shell flex h-screen w-full flex-col text-foreground">
+    <div className="vault-shell flex-col text-foreground">
       <div className="flex min-h-0 flex-1">
-        <aside className="vault-sidebar flex w-[248px] flex-col border-r border-sidebar-border">
-          <div className="px-5 py-5">
-            <div className="flex items-center gap-3">
-              <span className="vault-sidebar-mark flex h-7 w-7 items-center justify-center rounded-md">
-                <Asterisk className="h-5 w-5" />
-              </span>
-              <div className="min-w-0">
-                <div className="text-lg font-semibold leading-5">Vault</div>
-                <button className="flex w-full items-center gap-1.5 truncate text-left text-xs text-muted-foreground hover:text-foreground">
-                  <FolderOpen className="h-3 w-3 shrink-0" />
-                  <span className="truncate">{vaultPath ?? "Local memory"}</span>
-                </button>
-              </div>
+        <aside className="vault-sidebar flex flex-col">
+          <div className="px-4 pb-2 pt-4">
+            <div className="panel-section-title mb-2">Vault</div>
+            <button className="flex w-full items-center gap-2 truncate text-left text-[12px] text-[var(--text-primary)] hover:text-[var(--primary)]">
+              <FolderOpen className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
+              <span className="truncate">{vaultPath ?? "Choose vault"}</span>
+            </button>
+            <div className="mt-4 flex items-center gap-2">
+              <span className="text-[16px] leading-none text-[var(--text-primary)]">✳</span>
+              <span className="text-[14px] font-medium leading-5 text-[var(--text-primary)]">Vault</span>
             </div>
             <button
               type="button"
               onClick={() => setOpen(true)}
-              className="mt-5 flex h-10 w-full items-center gap-2 rounded-md border border-sidebar-border bg-card px-3 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+              className="mt-4 flex h-8 w-full items-center gap-2 rounded-md border border-[var(--border-input)] bg-[var(--bg-input)] px-3 text-left text-[13px] text-[var(--text-placeholder)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-body)]"
             >
-              <Search className="h-4 w-4" />
+              <Search className="h-3.5 w-3.5" strokeWidth={1.5} />
               <span className="min-w-0 flex-1">Search</span>
-              <span className="text-[11px] opacity-60">Ctrl K</span>
+              <span className="text-[11px] text-[var(--text-subtle)]">⌘K</span>
             </button>
           </div>
 
-          <nav className="flex-1 overflow-y-auto px-4 pb-4">
-            <div className="space-y-0.5">
+          <nav className="flex-1 overflow-y-auto px-4 pb-4 pt-2">
+            <div className="space-y-1">
               {nav.map((item) => {
                 const Icon = item.icon;
                 const active = pathname.startsWith(item.to);
                 return (
-                  <Link
-                    key={item.to}
-                    to={item.to}
-                    data-active={active}
-                    className={
-                      "vault-nav-item flex items-center gap-3 rounded-md px-2.5 py-2 text-sm transition-colors " +
-                      (active
-                        ? ""
-                        : "text-muted-foreground hover:bg-sidebar-accent/70 hover:text-foreground")
-                    }
+                  <div key={item.to} className={item.separated ? "mt-4 border-t border-[var(--border-default)] pt-4" : ""}>
+                    <Link
+                      to={item.to}
+                      data-active={active}
+                      className="vault-nav-item flex items-center gap-3 px-2.5 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
                     >
-                      <Icon className="h-4 w-4" />
+                      <Icon className="h-4 w-4" strokeWidth={1.5} />
                       <span className="min-w-0 flex-1">{item.label}</span>
                       {item.to === "/tasks" && taskCount > 0 && (
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                        <span className="rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)]">
                           {taskCount}
                         </span>
                       )}
                     </Link>
-                  );
-                })}
+                  </div>
+                );
+              })}
             </div>
 
             {sidebarClusters.length > 0 && (
-              <div className="mt-6 border-t border-sidebar-border pt-5">
-                <div className="px-2.5 pb-2 text-xs font-medium text-muted-foreground">Recent</div>
+              <div className="mt-6 border-t border-[var(--border-default)] pt-5">
+                <div className="panel-section-title px-2.5 pb-2">Recent</div>
                 <div className="space-y-1">
-                  {sidebarClusters.map((cluster) => (
+                  {sidebarClusters.map((cluster, index) => (
                     <Link
                       key={cluster.id}
                       to="/clusters/$clusterId"
                       params={{ clusterId: cluster.id }}
-                      className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-sidebar-accent/70 hover:text-foreground"
+                      className="flex h-7 items-center gap-2 rounded-md px-2.5 text-[13px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
                     >
-                      <span className="h-2.5 w-2.5 rounded-full bg-[var(--cluster-sage)]" />
+                      <span
+                        className="h-2 w-2 rounded-full"
+                        style={{ background: clusterDot(index) }}
+                      />
                       <span className="truncate">{cluster.name}</span>
                     </Link>
                   ))}
@@ -260,18 +274,21 @@ export function AppShell() {
               </div>
             )}
 
-            {savedChats.length > 0 && (
-              <div className="mt-6 border-t border-sidebar-border pt-5">
-                <div className="px-2.5 pb-1.5 text-xs font-medium text-muted-foreground">
-                  Saved chats
+            {savedChats.length > 0 && pathname.startsWith("/chat") && (
+              <div className="mt-6 border-t border-[var(--border-default)] pt-5">
+                <div className="panel-section-title flex items-center justify-between px-2.5 pb-2">
+                  <span>Saved chats</span>
+                  <button type="button" onClick={() => void newChat()} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+                    <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  </button>
                 </div>
-                <div className="space-y-0.5">
+                <div className="space-y-1">
                   {savedChats.map((c) => (
                     <Link
                       key={c.id}
                       to="/chat/$chatId"
                       params={{ chatId: c.id }}
-                      className="block truncate rounded-md px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-sidebar-accent/70 hover:text-foreground"
+                      className="block truncate rounded-md px-2.5 py-1.5 text-[13px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
                     >
                       {c.title}
                     </Link>
@@ -281,50 +298,44 @@ export function AppShell() {
             )}
           </nav>
 
-          <div className="border-t border-sidebar-border p-4">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="w-full justify-start gap-2 text-muted-foreground"
-              onClick={() => setOpen(true)}
-            >
-              <Command className="h-3.5 w-3.5" /> Command palette
-              <span className="ml-auto text-[10px] opacity-60">Ctrl K</span>
-            </Button>
-            <button
-              type="button"
-              onClick={() => void newChat()}
-              className="mt-1 flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm font-medium text-primary hover:bg-sidebar-accent/70"
-            >
-              <Plus className="h-4 w-4" /> New chat
-            </button>
-            <div className="mt-5 flex items-center gap-3 border-t border-sidebar-border pt-4">
-              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-foreground text-background">
-                <UserRound className="h-4 w-4" />
+          <div className="border-t border-[var(--border-default)] p-4">
+            <div className="flex items-center gap-3">
+              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--text-primary)] text-[var(--bg-card)]">
+                <UserRound className="h-4 w-4" strokeWidth={1.5} />
               </span>
-              <div className="min-w-0">
-                <div className="truncate text-sm font-medium">Arjun Mehta</div>
-                <div className="truncate text-xs text-muted-foreground">arjun@vault.local</div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[13px] font-medium text-[var(--text-primary)]">
+                  {vaultPath ? vaultName(vaultPath) : "Local profile"}
+                </div>
+                <div className="truncate text-[12px] text-[var(--text-muted)]">
+                  {vaultPath ?? "No vault selected"}
+                </div>
               </div>
+              <ChevronDown className="h-3.5 w-3.5 text-[var(--text-muted)]" strokeWidth={1.5} />
             </div>
           </div>
         </aside>
 
-        <main className="flex-1 min-w-0 overflow-hidden">
+        <main className="content-area">
           <Outlet />
         </main>
       </div>
 
-      <footer className="vault-footer flex h-7 shrink-0 items-center border-t border-border bg-background/80 px-4 text-[11px] text-muted-foreground">
+      <footer className="vault-footer flex shrink-0 items-center border-t border-[var(--border-default)] px-4">
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          <span className="truncate">{vaultPath ?? "T:\\CML\\embedding-smoke"}</span>
+          <span className={`h-2 w-2 rounded-full ${backend.status === "online" ? "bg-[var(--status-ready)]" : "bg-[var(--status-muted)]"}`} />
+          <span className="truncate">{vaultPath ?? "No active vault"}</span>
           <span>/</span>
-          <span>{backend.status === "online" ? "Ready" : backend.status === "checking" ? "Checking" : "Offline"}</span>
+          <span>{backend.status === "online" ? "Backend online" : backend.status === "checking" ? "Checking backend" : "Backend offline"}</span>
           <span>/</span>
           <span>{jobs?.running ? `${jobs.running} job running` : jobs?.queued ? `${jobs.queued} queued` : "Jobs idle"}</span>
         </div>
         <div className="hidden items-center gap-2 md:flex">
-          <LockKeyhole className="h-3 w-3" />
+          <span>Ctrl/Cmd K commands</span>
+          <span>/</span>
+          <span>Ctrl/Cmd N new chat</span>
+          <span>/</span>
+          <LockKeyhole className="h-3 w-3" strokeWidth={1.5} />
           <span>All data stays on your device</span>
         </div>
       </footer>
@@ -332,4 +343,19 @@ export function AppShell() {
       <CommandPalette open={openPalette} onOpenChange={setOpen} />
     </div>
   );
+}
+
+function vaultName(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+function clusterDot(index: number) {
+  const colors = [
+    "var(--cluster-sage)",
+    "var(--cluster-terracotta)",
+    "var(--cluster-sky)",
+    "var(--cluster-lavender)",
+    "var(--cluster-sand)",
+  ];
+  return colors[index % colors.length];
 }

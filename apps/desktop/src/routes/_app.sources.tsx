@@ -295,7 +295,7 @@ function SourcesView() {
       )}
       <main className="min-w-0 overflow-y-auto px-7 py-8">
         <header className="mb-8">
-          <h1 className="font-serif text-4xl font-medium tracking-tight">Sources</h1>
+          <h1 className="page-title">Sources</h1>
           <p className="mt-3 text-sm text-muted-foreground">
             Files, links, notes, images, and transcripts stored locally.
           </p>
@@ -420,9 +420,9 @@ function SourcesView() {
         <div className="mt-8 flex items-center justify-between text-sm text-muted-foreground">
           <span>{filtered.length} sources</span>
           <div className="flex items-center gap-4">
-            <button type="button" className="text-muted-foreground">‹</button>
+            <button type="button" className="text-muted-foreground">Prev</button>
             <span className="rounded-md border border-border bg-card px-4 py-2 text-foreground">1</span>
-            <button type="button" className="text-muted-foreground">›</button>
+            <button type="button" className="text-muted-foreground">Next</button>
           </div>
           <span className="rounded-md border border-border bg-card px-4 py-2">25</span>
         </div>
@@ -527,7 +527,7 @@ function SourceInspector({
           <div>
             <h2 className="line-clamp-2 text-lg font-semibold">{source.title}</h2>
             <div className="mt-2 text-sm text-muted-foreground">
-              {sourceTypeLabel(source)} <span className="px-1">·</span> {fileSizeEstimate(source)}
+              {sourceTypeLabel(source)} <span className="px-1">/</span> {fileSizeEstimate(source)}
             </div>
           </div>
         </div>
@@ -658,7 +658,18 @@ function pageEstimate(source: Source) {
 function lastIndexed(source: Source) {
   if (source.state === "failed") return "Needs review";
   if (source.state === "extracting") return "In progress";
-  return "May 31, 2026";
+  return formatDate(source.updatedAt);
+}
+
+function formatDate(value: string) {
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return "Unknown";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(timestamp);
 }
 
 function fileSizeEstimate(source: Source) {

@@ -48,6 +48,7 @@ function MapView() {
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendReady, setBackendReady] = useState(false);
   const [selectedId, setSelectedId] = useState("c-design");
+  const [drillClusterId, setDrillClusterId] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadMapData() {
@@ -77,84 +78,39 @@ function MapView() {
   const selectedSources = selected
     ? sources.filter((source) => source.clusterId === selected.id)
     : [];
+  const drilledCluster = drillClusterId
+    ? clusters.find((cluster) => cluster.id === drillClusterId) ?? null
+    : null;
+  const drilledSources = drilledCluster
+    ? sources.filter((source) => source.clusterId === drilledCluster.id)
+    : [];
+  const sourceCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const source of sources) {
+      if (source.clusterId) counts.set(source.clusterId, (counts.get(source.clusterId) ?? 0) + 1);
+    }
+    return counts;
+  }, [sources]);
 
   const graphNodes = useMemo<MapNode[]>(() => {
-    const [design, strategy, health, travel, meetings] = clusters;
-    const personal: Cluster = {
-      id: "c-personal",
-      name: "Personal Writing",
-      tint: "sage",
-      description: "Drafts, essays, and reflective notes.",
-      expert: "ready",
-      lastActive: new Date().toISOString(),
-      summary: "Writing references and draft thinking.",
-      styleProfile: "Reflective and personal.",
-    };
-    const interviews: Cluster = {
-      id: "c-interviews",
-      name: "User Interviews",
-      tint: "blush",
-      description: "Customer interview notes and themes.",
-      expert: "ready",
-      lastActive: new Date().toISOString(),
-      summary: "Interviews and user research themes.",
-      styleProfile: "Evidence-led.",
-    };
-    const competitor: Cluster = {
-      id: "c-competitor",
-      name: "Competitor Analysis",
-      tint: "sky",
-      description: "Competitive analysis and market mapping.",
-      expert: "ready",
-      lastActive: new Date().toISOString(),
-      summary: "Competitive positioning references.",
-      styleProfile: "Analytical.",
-    };
-    const ux: Cluster = {
-      id: "c-ux",
-      name: "UX Patterns",
-      tint: "lavender",
-      description: "Interaction and design pattern library.",
-      expert: "ready",
-      lastActive: new Date().toISOString(),
-      summary: "Reusable interaction patterns.",
-      styleProfile: "Pattern-based.",
-    };
-    const systems: Cluster = {
-      id: "c-systems",
-      name: "Design Systems",
-      tint: "sand",
-      description: "Design system references.",
-      expert: "ready",
-      lastActive: new Date().toISOString(),
-      summary: "Tokens, components, and systems.",
-      styleProfile: "Systematic.",
-    };
-    const principles: Cluster = {
-      id: "c-principles",
-      name: "Interface Principles",
-      tint: "sand",
-      description: "Interface principles and heuristics.",
-      expert: "ready",
-      lastActive: new Date().toISOString(),
-      summary: "Principles for calm interfaces.",
-      styleProfile: "Principled.",
-    };
-
-    return [
-      { id: design?.id ?? "c-design", cluster: design, x: 50, y: 43, w: 170 },
-      { id: health?.id ?? "c-health", cluster: health, x: 22, y: 22, label: "informs", w: 182 },
-      { id: travel?.id ?? "c-travel", cluster: travel, x: 50, y: 18, label: "references", w: 176 },
-      { id: strategy?.id ?? "c-strategy", cluster: strategy, x: 78, y: 25, label: "aligns with", w: 174 },
-      { id: personal.id, cluster: personal, x: 82, y: 43, label: "inspires", w: 166 },
-      { id: meetings?.id ?? "c-meetings", cluster: meetings, x: 20, y: 43, label: "discussed in", w: 164 },
-      { id: interviews.id, cluster: interviews, x: 22, y: 62, label: "validates", w: 160 },
-      { id: competitor.id, cluster: competitor, x: 50, y: 66, label: "compares with", w: 188 },
-      { id: ux.id, cluster: ux, x: 80, y: 62, label: "uses patterns", w: 158 },
-      { id: systems.id, cluster: systems, x: 38, y: 83, label: "influences", w: 158 },
-      { id: principles.id, cluster: principles, x: 61, y: 83, label: "foundational to", w: 172 },
-    ].filter((node) => node.cluster);
-  }, [clusters]);
+    const ranked = [...clusters]
+      .sort((a, b) => (sourceCounts.get(b.id) ?? 0) - (sourceCounts.get(a.id) ?? 0))
+      .slice(0, 80);
+    return ranked.map((cluster, index) => {
+      if (index === 0) return { id: cluster.id, cluster, x: 50, y: 43, w: 178 };
+      const angle = index * 2.399963;
+      const ring = Math.floor((index - 1) / 8) + 1;
+      const radius = 16 + ring * 11;
+      return {
+        id: cluster.id,
+        cluster,
+        x: Math.max(12, Math.min(88, 50 + Math.cos(angle) * radius)),
+        y: Math.max(16, Math.min(84, 43 + Math.sin(angle) * radius * 0.72)),
+        label: relationshipLabel(index),
+        w: 154 + Math.min(34, cluster.name.length * 2),
+      };
+    });
+  }, [clusters, sourceCounts]);
 
   if (!selected) return null;
 
@@ -162,7 +118,7 @@ function MapView() {
     <div className="vault-page-wash grid h-full grid-cols-[minmax(0,1fr)_326px] overflow-hidden">
       <main className="min-w-0 overflow-y-auto px-8 py-9">
         <header>
-          <h1 className="font-serif text-4xl font-medium tracking-tight">Map</h1>
+          <h1 className="page-title">Map</h1>
           <p className="mt-3 text-sm text-muted-foreground">A navigable view of your memory spaces.</p>
         </header>
 
@@ -172,34 +128,45 @@ function MapView() {
             Search map
           </div>
           <Button variant="outline" className="gap-2"><Filter className="h-4 w-4" /> Filter</Button>
-          <Button variant="outline" className="gap-2"><Maximize2 className="h-4 w-4" /> Fit view</Button>
+          <Button variant="outline" className="gap-2" onClick={() => setDrillClusterId(null)}><Maximize2 className="h-4 w-4" /> Fit view</Button>
           <Button variant="outline" className="gap-2"><List className="h-4 w-4" /> List</Button>
+          {drilledCluster && (
+            <Button variant="outline" className="gap-2" onClick={() => setDrillClusterId(null)}>
+              Back to map
+            </Button>
+          )}
           <Button variant="outline" className="ml-auto gap-2"><span className="h-2.5 w-2.5 rounded-full bg-muted-foreground" /> Legend</Button>
         </div>
 
         <section className="relative mt-6 h-[660px] overflow-hidden rounded-md">
-          <svg className="absolute inset-0 h-full w-full" role="presentation">
-            <GraphLine nodes={graphNodes} from={0} to={1} />
-            <GraphLine nodes={graphNodes} from={0} to={2} />
-            <GraphLine nodes={graphNodes} from={0} to={3} />
-            <GraphLine nodes={graphNodes} from={0} to={4} />
-            <GraphLine nodes={graphNodes} from={0} to={5} />
-            <GraphLine nodes={graphNodes} from={0} to={6} />
-            <GraphLine nodes={graphNodes} from={0} to={7} />
-            <GraphLine nodes={graphNodes} from={0} to={8} />
-            <GraphLine nodes={graphNodes} from={7} to={9} />
-            <GraphLine nodes={graphNodes} from={7} to={10} />
-          </svg>
-
-          {graphNodes.map((node, index) => (
-            <MapCard
-              key={node.id}
-              node={node}
-              selected={node.cluster.id === selected.id || (!clusters.some((c) => c.id === node.id) && index === 0)}
-              sourceCount={sources.filter((source) => source.clusterId === node.cluster.id).length || nodeSourceCount(index)}
-              onSelect={() => setSelectedId(node.cluster.id)}
+          {drilledCluster ? (
+            <ClusterDataPointMap
+              cluster={drilledCluster}
+              sources={drilledSources}
+              onBack={() => setDrillClusterId(null)}
             />
-          ))}
+          ) : (
+            <>
+              <svg className="absolute inset-0 h-full w-full" role="presentation">
+                {graphNodes.slice(1).map((_, index) => (
+                  <GraphLine key={graphNodes[index + 1]?.id} nodes={graphNodes} from={0} to={index + 1} />
+                ))}
+              </svg>
+
+              {graphNodes.map((node) => (
+                <MapCard
+                  key={node.id}
+                  node={node}
+                  selected={node.cluster.id === selected.id}
+                  sourceCount={sourceCounts.get(node.cluster.id) ?? 0}
+                  onSelect={() => {
+                    setSelectedId(node.cluster.id);
+                    setDrillClusterId(node.cluster.id);
+                  }}
+                />
+              ))}
+            </>
+          )}
 
           <div className="absolute bottom-12 left-0 flex flex-col overflow-hidden rounded-md border border-border bg-card">
             <button className="flex h-9 w-9 items-center justify-center border-b border-border" type="button"><ZoomIn className="h-4 w-4" /></button>
@@ -219,17 +186,20 @@ function MapView() {
             </Link>
           </div>
           <div className="grid gap-2 md:grid-cols-5">
-            {clusters.slice(0, 5).map((cluster, index) => (
+            {clusters.slice(0, 5).map((cluster) => (
               <button
                 key={cluster.id}
                 type="button"
-                onClick={() => setSelectedId(cluster.id)}
+                onClick={() => {
+                  setSelectedId(cluster.id);
+                  setDrillClusterId(cluster.id);
+                }}
                 className="flex items-center gap-3 border-r border-border px-2 py-1.5 text-left last:border-r-0"
               >
                 <IconTile tint={cluster.tint} />
                 <span className="min-w-0">
                   <span className="block truncate text-sm font-medium">{cluster.name}</span>
-                  <span className="block text-xs text-muted-foreground">{10 - index} connections</span>
+                  <span className="block text-xs text-muted-foreground">{sourceCounts.get(cluster.id) ?? 0} sources</span>
                 </span>
               </button>
             ))}
@@ -237,7 +207,7 @@ function MapView() {
         </section>
       </main>
 
-      <aside className="overflow-y-auto border-l border-border bg-card/35 px-7 py-8">
+      <aside className="right-panel px-7 py-8">
         <div className="flex items-center gap-3">
           <span className={`h-2.5 w-2.5 rounded-full bg-[var(--cluster-${selected.tint})]`} />
           <h2 className="text-lg font-semibold">{selected.name}</h2>
@@ -246,17 +216,20 @@ function MapView() {
           <X className="h-4 w-4 text-muted-foreground" />
         </div>
         <p className="mt-8 text-sm leading-6 text-muted-foreground">{selected.description}</p>
-        <p className="mt-4 text-xs text-muted-foreground">Created Jan 12, 2026 <span className="px-2">/</span> Owner: You</p>
+        <p className="mt-4 text-xs text-muted-foreground">Updated {formatDate(selected.lastActive)} <span className="px-2">/</span> Local vault</p>
 
-        <MetricGrid className="mt-10" />
+        <MetricGrid className="mt-10" sources={selectedSources.length} />
         <Divider />
         <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Nearest clusters</h3>
         <div className="mt-5 space-y-5">
-          {["Product Strategy", "Health & Longevity", "UX Patterns", "User Interviews", "Competitor Analysis"].map((name, index) => (
-            <div key={name} className="flex items-center gap-3 text-sm">
-              <span className="h-2.5 w-2.5 rounded-full" style={{ background: ["#c47f6f", "#789bb0", "#9486b4", "#d4998d", "#7ca2b9"][index] }} />
-              <span className="flex-1">{name}</span>
-              <span className="text-muted-foreground">{["0.72", "0.61", "0.57", "0.48", "0.44"][index]}</span>
+          {nearestClusters(clusters, selected, sourceCounts).map((cluster) => (
+            <div key={cluster.id} className="flex items-center gap-3 text-sm">
+              <span
+                className="h-2.5 w-2.5 rounded-full"
+                style={{ background: `var(--cluster-${cluster.tint})` }}
+              />
+              <span className="flex-1">{cluster.name}</span>
+              <span className="text-muted-foreground">{sourceCounts.get(cluster.id) ?? 0}</span>
             </div>
           ))}
         </div>
@@ -264,18 +237,21 @@ function MapView() {
         <Divider />
         <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Related sources</h3>
         <div className="mt-5 space-y-5">
-          {(selectedSources.length ? selectedSources : sources.slice(0, 3)).slice(0, 3).map((source, index) => (
-            <SourceLine key={source.id} source={source} memories={[46, 24, 18][index] ?? 18} />
+          {selectedSources.slice(0, 5).map((source) => (
+            <SourceLine key={source.id} source={source} memories={memoryEstimate(source)} />
           ))}
+          {selectedSources.length === 0 && (
+            <div className="text-sm text-muted-foreground">No sources are linked to this cluster yet.</div>
+          )}
         </div>
         <Link to="/sources" className="mt-6 flex items-center gap-2 text-sm text-primary">
-          View all {selectedSources.length || 68} sources <ArrowRight className="h-4 w-4" />
+          View all {selectedSources.length} sources <ArrowRight className="h-4 w-4" />
         </Link>
 
         <Divider />
         <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Actions</h3>
         <div className="mt-4 space-y-2">
-          <ActionButton icon={<MoveRight className="h-4 w-4" />} label="Move to another cluster" />
+          <ActionButton icon={<MoveRight className="h-4 w-4" />} label="Open cluster datapoints" onClick={() => setDrillClusterId(selected.id)} />
           <ActionButton icon={<SlidersHorizontal className="h-4 w-4" />} label="Suggest cluster correction" />
           <ActionButton icon={<Archive className="h-4 w-4" />} label="Archive this cluster" danger />
         </div>
@@ -294,7 +270,7 @@ function GraphLine({ nodes, from, to }: { nodes: MapNode[]; from: number; to: nu
       y1={`${a.y}%`}
       x2={`${b.x}%`}
       y2={`${b.y}%`}
-      stroke="oklch(0.74 0.01 80)"
+      stroke="var(--border-default)"
       strokeWidth="1"
     />
   );
@@ -316,13 +292,13 @@ function MapCard({
     <button
       type="button"
       onClick={onSelect}
-      className="absolute -translate-x-1/2 -translate-y-1/2 rounded-md border bg-card/95 px-4 py-3 text-left shadow-[0_8px_30px_oklch(0.32_0.02_70_/_0.035)] transition-transform hover:-translate-y-[calc(50%+2px)]"
+      className="absolute -translate-x-1/2 -translate-y-1/2 rounded-md border bg-card/95 px-4 py-3 text-left transition-transform hover:-translate-y-[calc(50%+2px)]"
       style={{
         left: `${node.x}%`,
         top: `${node.y}%`,
         width: node.w ?? 170,
         borderColor: selected ? `var(--cluster-${node.cluster.tint})` : "var(--border)",
-        background: `color-mix(in oklab, var(--cluster-${node.cluster.tint}) 9%, var(--card))`,
+        background: "var(--bg-card)",
       }}
     >
       <div className="flex gap-3">
@@ -338,14 +314,104 @@ function MapCard({
   );
 }
 
+function ClusterDataPointMap({
+  cluster,
+  sources,
+  onBack,
+}: {
+  cluster: Cluster;
+  sources: Source[];
+  onBack: () => void;
+}) {
+  const visibleSources = sources.slice(0, 160);
+  const hiddenCount = Math.max(0, sources.length - visibleSources.length);
+  const points = visibleSources.map((source, index) => {
+    const angle = index * 2.399963;
+    const ring = Math.floor(index / 20) + 1;
+    const radius = 80 + ring * 42;
+    return {
+      source,
+      x: 50 + Math.cos(angle) * Math.min(38, radius / 11),
+      y: 48 + Math.sin(angle) * Math.min(34, radius / 14),
+    };
+  });
+
+  return (
+    <div className="absolute inset-0">
+      <svg className="absolute inset-0 h-full w-full" role="presentation">
+        {points.map((point) => (
+          <line
+            key={point.source.id}
+            x1="50%"
+            y1="48%"
+            x2={`${point.x}%`}
+            y2={`${point.y}%`}
+            stroke="var(--border-default)"
+            strokeWidth="1"
+          />
+        ))}
+      </svg>
+      <button
+        type="button"
+        onClick={onBack}
+        className="absolute left-0 top-0 z-20 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+      >
+        Back to clusters
+      </button>
+      <div
+        className="absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-md border px-5 py-4 text-center"
+        style={{
+          left: "50%",
+          top: "48%",
+          width: 190,
+          borderColor: `var(--cluster-${cluster.tint})`,
+          background: "var(--bg-card)",
+        }}
+      >
+        <IconTile tint={cluster.tint} />
+        <div className="mt-3 text-sm font-semibold">{cluster.name}</div>
+        <div className="mt-1 text-xs text-muted-foreground">{sources.length} data points</div>
+      </div>
+      {points.map((point) => (
+        <Link
+          key={point.source.id}
+          to="/sources"
+          className="absolute z-20 -translate-x-1/2 -translate-y-1/2 rounded-md border border-border bg-card px-3 py-2 text-left hover:bg-accent"
+          style={{
+            left: `${point.x}%`,
+            top: `${point.y}%`,
+            width: 150,
+          }}
+          title={point.source.title}
+        >
+          <div className="truncate text-xs font-medium">{point.source.title}</div>
+          <div className="mt-1 truncate text-[11px] text-muted-foreground">
+            {point.source.type} / {point.source.state}
+          </div>
+        </Link>
+      ))}
+      {hiddenCount > 0 && (
+        <div className="absolute bottom-0 left-0 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+          Showing {visibleSources.length} of {sources.length} data points. Use the list fallback for the full set.
+        </div>
+      )}
+      {sources.length === 0 && (
+        <div className="absolute left-1/2 top-[62%] -translate-x-1/2 text-sm text-muted-foreground">
+          This cluster has no linked data points yet.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function IconTile({ tint }: { tint: Cluster["tint"] }) {
   return (
     <span
       className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
       style={{
-        borderColor: `color-mix(in oklab, var(--cluster-${tint}) 42%, var(--border))`,
+        borderColor: `var(--cluster-${tint})`,
         color: `var(--cluster-${tint})`,
-        background: `color-mix(in oklab, var(--cluster-${tint}) 14%, var(--card))`,
+        background: "var(--bg-card)",
       }}
     >
       <FileText className="h-4 w-4" />
@@ -353,13 +419,13 @@ function IconTile({ tint }: { tint: Cluster["tint"] }) {
   );
 }
 
-function MetricGrid({ className = "" }: { className?: string }) {
+function MetricGrid({ className = "", sources }: { className?: string; sources: number }) {
   return (
     <div className={`grid grid-cols-4 gap-4 ${className}`}>
-      <Metric value="68" label="Sources" />
-      <Metric value="1,284" label="Memories" />
-      <Metric value="12.4k" label="Embeddings" />
-      <Metric value="2.1 GB" label="Size" />
+      <Metric value={sources.toLocaleString()} label="Sources" />
+      <Metric value={(sources * 64).toLocaleString()} label="Memories" />
+      <Metric value={compactNumber(sources * 512)} label="Embeddings" />
+      <Metric value={`${Math.max(1, Math.round(sources / 40))} MB`} label="Size" />
     </div>
   );
 }
@@ -385,10 +451,11 @@ function SourceLine({ source, memories }: { source: Source; memories: number }) 
   );
 }
 
-function ActionButton({ icon, label, danger }: { icon: ReactNode; label: string; danger?: boolean }) {
+function ActionButton({ icon, label, danger, onClick }: { icon: ReactNode; label: string; danger?: boolean; onClick?: () => void }) {
   return (
     <button
       type="button"
+      onClick={onClick}
       className={`flex w-full items-center gap-3 rounded-md border bg-background px-3 py-2 text-left text-sm ${
         danger ? "border-destructive/30 text-destructive" : "border-border text-foreground"
       }`}
@@ -403,6 +470,28 @@ function Divider() {
   return <div className="my-8 h-px bg-border" />;
 }
 
-function nodeSourceCount(index: number) {
-  return [68, 31, 27, 42, 23, 19, 16, 14, 18, 12, 20][index] ?? 12;
+function relationshipLabel(index: number) {
+  return ["informs", "references", "aligns with", "inspires", "discussed in", "validates", "compares with", "uses patterns"][index % 8];
+}
+
+function nearestClusters(clusters: Cluster[], selected: Cluster, counts: Map<string, number>) {
+  return clusters
+    .filter((cluster) => cluster.id !== selected.id)
+    .sort((a, b) => (counts.get(b.id) ?? 0) - (counts.get(a.id) ?? 0))
+    .slice(0, 5);
+}
+
+function memoryEstimate(source: Source) {
+  return Math.max(1, Math.round((source.preview || source.summary || source.title).length / 120));
+}
+
+function compactNumber(value: number) {
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return value.toLocaleString();
+}
+
+function formatDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date);
 }

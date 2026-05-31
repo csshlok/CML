@@ -4,11 +4,13 @@ import { Bot, Cable, CheckCircle2, Clock3, FileText, GitBranch, Search } from "l
 import { Input } from "@/components/ui/input";
 import { useStore, type Cluster, type Source } from "@/lib/mockStore";
 import {
+  getJobStatus,
   listBridgeRequests,
   listChatSessions,
   listClusters,
   listSources,
   listVaults,
+  type AppJobRecord,
   type BridgeRequest,
   type ChatSessionRecord,
 } from "@/lib/backend";
@@ -32,10 +34,12 @@ type ActivityItem = {
 
 export function TimelineRoute() {
   const mock = useStore();
-  const [sources, setSources] = useState<Source[]>(mock.sources);
-  const [clusters, setClusters] = useState<Cluster[]>(mock.clusters);
+  const [sources, setSources] = useState<Source[]>([]);
+  const [clusters, setClusters] = useState<Cluster[]>([]);
   const [chats, setChats] = useState<ChatSessionRecord[]>([]);
   const [bridge, setBridge] = useState<BridgeRequest[]>([]);
+  const [jobs, setJobs] = useState<AppJobRecord[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [filter, setFilter] = useState<"all" | ActivityKind>("all");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<ActivityItem | null>(null);
@@ -46,22 +50,27 @@ export function TimelineRoute() {
       try {
         const vault = (await listVaults())[0] ?? null;
         if (!vault) return;
-        const [sourceRows, clusterRows, chatRows, bridgeRows] = await Promise.all([
+        const [sourceRows, clusterRows, chatRows, bridgeRows, jobRows] = await Promise.all([
           listSources(vault.id),
           listClusters(vault.id),
           listChatSessions(vault.id),
           listBridgeRequests(),
+          getJobStatus().catch(() => null),
         ]);
         if (cancelled) return;
         setSources(sourceRows.map(sourceFromRecord));
         setClusters(clusterRows.map(clusterFromRecord));
         setChats(chatRows);
         setBridge(bridgeRows);
+        setJobs(jobRows?.latest ?? []);
       } catch {
         if (!cancelled) {
           setSources(mock.sources);
           setClusters(mock.clusters);
+          setJobs([]);
         }
+      } finally {
+        if (!cancelled) setLoaded(true);
       }
     }
     void load();
@@ -104,29 +113,29 @@ export function TimelineRoute() {
         detail: request.query || "Context request processed.",
         href: "/bridge",
       })),
-      {
-        id: "job:reconcile",
-        kind: "job",
-        time: new Date().toISOString(),
-        title: "Vector reconciliation queued",
-        detail: "Vault checked for missing or stale embeddings.",
+      ...jobs.map((job) => ({
+        id: `job:${job.id}`,
+        kind: "job" as const,
+        time: job.updated_at || job.created_at,
+        title: jobTitle(job),
+        detail: job.status_detail || job.last_error || job.job_type.replace(/_/g, " "),
         href: "/tasks",
-      },
+      })),
     ];
     const normalized = query.trim().toLowerCase();
     return rows
       .filter((item) => filter === "all" || item.kind === filter)
       .filter((item) => !normalized || `${item.title} ${item.detail}`.toLowerCase().includes(normalized))
       .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
-  }, [bridge, chats, clusters, filter, query, sources]);
+  }, [bridge, chats, clusters, filter, jobs, query, sources]);
 
   const activeItem = selected ?? activities[0] ?? null;
 
   return (
-    <div className="grid h-full grid-cols-[minmax(0,1fr)_340px] overflow-hidden bg-background">
+    <div className="vault-page-wash grid h-full grid-cols-[minmax(0,1fr)_320px] overflow-hidden bg-background">
       <main className="min-w-0 overflow-y-auto px-8 py-8">
         <header className="border-b border-border pb-6">
-          <h1 className="text-[34px] font-semibold leading-tight">Timeline</h1>
+          <h1 className="page-title">Timeline</h1>
           <p className="mt-2 text-sm text-muted-foreground">Everything Vault processed, indexed, changed, and answered.</p>
           <div className="mt-6 grid gap-3 md:grid-cols-[1fr_auto]">
             <div className="relative max-w-xl">
@@ -172,11 +181,19 @@ export function TimelineRoute() {
                 </button>
               );
             })}
+            {loaded && activities.length === 0 && (
+              <div className="px-4 py-10 text-sm text-muted-foreground">
+                No backend activity has been recorded yet.
+              </div>
+            )}
+            {!loaded && (
+              <div className="px-4 py-10 text-sm text-muted-foreground">Loading activity...</div>
+            )}
           </div>
         </section>
       </main>
 
-      <aside className="border-l border-border bg-card/60 px-6 py-8">
+      <aside className="right-panel px-6 py-8">
         <h2 className="text-sm font-semibold">Activity detail</h2>
         {activeItem ? (
           <div className="mt-5">
@@ -203,6 +220,15 @@ export function TimelineRoute() {
       </aside>
     </div>
   );
+}
+
+function jobTitle(job: AppJobRecord) {
+  const label = job.job_type
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part[0]?.toUpperCase() + part.slice(1))
+    .join(" ");
+  return `${label || "Job"} ${job.status}`;
 }
 
 function Meta({ label, value }: { label: string; value: string }) {

@@ -224,7 +224,7 @@ function SettingsView() {
 
       <main className="min-w-0 overflow-y-auto px-7 py-9">
         <header>
-          <h1 className="font-serif text-4xl font-medium tracking-tight">Settings</h1>
+          <h1 className="page-title">Settings</h1>
           <p className="mt-3 text-sm text-muted-foreground">
             Local models, storage, privacy, and maintenance.
           </p>
@@ -232,7 +232,7 @@ function SettingsView() {
 
         <div className="mt-7 space-y-4">
           {activeSection === "profile" ? (
-            <ProfileSettings />
+            <ProfileSettings vaultPath={backendVault?.path ?? vaultPath ?? ""} />
           ) : (
             <>
           {statusMessage && (
@@ -317,13 +317,9 @@ function SettingsView() {
             title="Disk usage"
             description="Manage local data and model storage."
           >
-            <div className="mt-5 h-1.5 rounded-full bg-muted">
-              <span className="block h-full w-[28%] rounded-full bg-primary" />
-            </div>
-            <div className="mt-3 grid grid-cols-3 text-sm text-muted-foreground">
-              <span>Used 124.6 GB</span>
-              <span>Free 375.4 GB</span>
-              <span>Total 500 GB</span>
+            <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
+              Disk usage is not exposed by the backend yet. Vault storage is configured at{" "}
+              <span className="text-foreground">{pathDraft || "No vault selected"}</span>.
             </div>
           </SettingsCard>
 
@@ -427,7 +423,8 @@ function SettingsCard({
   );
 }
 
-function ProfileSettings() {
+function ProfileSettings({ vaultPath }: { vaultPath: string }) {
+  const displayName = vaultPath ? vaultName(vaultPath) : "Local profile";
   return (
     <>
       <section className="vault-card p-5">
@@ -436,8 +433,8 @@ function ProfileSettings() {
             <UserRound className="h-7 w-7" />
           </span>
           <div className="min-w-0 flex-1">
-            <h2 className="text-xl font-semibold">Arjun Mehta</h2>
-            <p className="mt-1 text-sm text-muted-foreground">arjun@vault.local</p>
+            <h2 className="text-xl font-semibold">{displayName}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">{vaultPath || "No vault selected"}</p>
             <div className="mt-3 inline-flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1 text-xs text-primary">
               <ShieldCheck className="h-3.5 w-3.5" />
               Local profile
@@ -453,7 +450,7 @@ function ProfileSettings() {
           This name appears in the sidebar, diagnostics, and local chat transcripts.
         </p>
         <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
-          <Input defaultValue="Arjun Mehta" />
+          <Input value={displayName} readOnly />
           <Button variant="outline">Save</Button>
         </div>
       </section>
@@ -464,7 +461,7 @@ function ProfileSettings() {
           Vault can remember your account identity without syncing private vault data.
         </p>
         <div className="mt-5 divide-y divide-border border-y border-border">
-          <ProfileMethod label="Email" value="arjun@vault.local" status="Connected" />
+          <ProfileMethod label="Local vault" value={vaultPath || "No vault selected"} status={vaultPath ? "Connected" : "Not set"} />
           <ProfileMethod label="Google OAuth" value="Optional account connection" status="Not connected" />
         </div>
       </section>
@@ -487,6 +484,10 @@ function ProfileSettings() {
       </section>
     </>
   );
+}
+
+function vaultName(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
 function ProfileMethod({ label, value, status }: { label: string; value: string; status: string }) {

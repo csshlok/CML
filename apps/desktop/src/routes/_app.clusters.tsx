@@ -33,6 +33,7 @@ function ClustersList() {
   const [suggestions, setSuggestions] = useState<ClusterSuggestionRecord[]>([]);
   const [dismissedSuggestions, setDismissedSuggestions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [mounted, setMounted] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
 
@@ -61,11 +62,12 @@ function ClustersList() {
   }
 
   useEffect(() => {
+    setMounted(true);
     void loadData();
   }, []);
 
-  const clusters = vault ? backendClusters : mockClusters;
-  const sources = vault ? backendSources : mockSources;
+  const clusters = !mounted ? [] : vault ? backendClusters : mockClusters;
+  const sources = !mounted ? [] : vault ? backendSources : mockSources;
   const visibleSuggestions = suggestions.filter(
     (suggestion) => !dismissedSuggestions.includes(suggestionKey(suggestion)),
   );
@@ -112,7 +114,7 @@ function ClustersList() {
         <div className="px-7 py-8">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="max-w-2xl">
-            <h1 className="flex items-center gap-3 font-serif text-4xl font-medium tracking-tight">
+            <h1 className="page-title flex items-center gap-3">
               Clusters
               <span className="rounded bg-muted px-2 py-1 font-sans text-sm text-muted-foreground">
                 {clusters.length}
@@ -215,7 +217,7 @@ function ClustersList() {
                         <div className="min-w-0">
                           <div className="truncate text-sm font-semibold">{cluster.name}</div>
                           <div className="mt-1 text-xs text-muted-foreground">
-                            {count} sources <span className="px-1.5">·</span>{" "}
+                            {count} sources <span className="px-1.5">/</span>{" "}
                             {memoryCount(cluster, count).toLocaleString()} memories
                           </div>
                         </div>
@@ -225,7 +227,7 @@ function ClustersList() {
                     <div className="my-4 h-px bg-border" />
                     <div className="text-xs text-muted-foreground">Top memory</div>
                     <div className="mt-2 line-clamp-2 text-sm font-medium">
-                      {topSource?.title || sampleMemory(index)}
+                      {topSource?.title || "No indexed memory yet"}
                     </div>
                     <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
                       <span className="rounded border border-border px-1.5 py-0.5">
@@ -309,7 +311,7 @@ function ClustersList() {
                   {selectedSources.slice(0, 5).map((source) => (
                     <div key={source.id} className="relative text-sm">
                       <span className="absolute -left-[23px] top-1.5 h-1.5 w-1.5 rounded-full bg-muted-foreground" />
-                      <div className="font-medium">{clusterLastActivity(selectedCluster, sources)}</div>
+                      <div className="font-medium">{formatDate(source.updatedAt)}</div>
                       <div className="mt-1 text-muted-foreground">Added {source.title}</div>
                     </div>
                   ))}
@@ -329,7 +331,7 @@ function ClustersList() {
                       <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-issue)]" />
                       <span>
                         <span className="line-clamp-2 font-medium">{source.title}</span>
-                        <span className="mt-1 block text-xs text-muted-foreground">{source.type.toUpperCase()} · {Math.max(1, Math.round((source.text || "").length / 120))} memories</span>
+                        <span className="mt-1 block text-xs text-muted-foreground">{source.type.toUpperCase()} / {Math.max(1, Math.round((source.text || "").length / 120))} memories</span>
                       </span>
                     </Link>
                   ))}
@@ -388,23 +390,24 @@ function memoryCount(cluster: Cluster, sourceCount: number) {
 }
 
 function clusterLastActivity(cluster: Cluster, sources: Source[]) {
-  const source = sources.find((item) => item.clusterId === cluster.id);
+  const source = sources
+    .filter((item) => item.clusterId === cluster.id)
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
   if (!source) return "No activity";
-  if (source.status === "indexed") return "Today, 9:42 AM";
-  if (source.status === "extracting") return "Today, 9:15 AM";
-  if (source.status === "failed") return "Needs review";
-  return "Yesterday";
+  if (source.status === "failed" || source.state === "failed") return "Needs review";
+  if (source.status === "extracting" || source.state === "extracting") return "In progress";
+  return formatDate(source.updatedAt);
 }
 
-function sampleMemory(index: number) {
-  const memories = [
-    "Design principles for calm interfaces",
-    "North Star metric framework",
-    "Sleep is the multiplier",
-    "Best cafes in Kyoto",
-    "Q2 planning decisions",
-  ];
-  return memories[index % memories.length];
+function formatDate(value: string) {
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return "Unknown";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(timestamp);
 }
 
 function compactNumber(value: number) {
