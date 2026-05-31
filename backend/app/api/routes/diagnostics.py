@@ -70,6 +70,10 @@ def _database_summary() -> dict:
         "chat_attachments",
         "app_jobs",
         "bridge_requests",
+        "vault_lock_audit",
+        "integration_imports",
+        "extension_captures",
+        "expert_artifacts",
     ]
     summary = {}
     with connect() as conn:

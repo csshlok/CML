@@ -35,12 +35,21 @@ def embedding_status() -> dict:
         "dimensions": config["dimensions"] if config["provider"] != "hash" else HASH_EMBEDDING_DIMENSIONS,
         "available": True,
         "detail": "Using deterministic hash embeddings.",
+        "setup_required": False,
+        "cache_dir": str(config["cache_dir"]) if config["cache_dir"] else None,
     }
     if config["provider"] == "sentence-transformers":
         if importlib.util.find_spec("sentence_transformers") is not None:
-            status["detail"] = "SentenceTransformers embedding model is available."
+            try:
+                _embed_with_sentence_transformers(config["model"], config["cache_dir"], "vault setup test")
+                status["detail"] = "SentenceTransformers embedding model is available."
+            except Exception as exc:
+                status["available"] = False
+                status["setup_required"] = True
+                status["detail"] = f"SentenceTransformers is installed, but the embedding model is not ready: {exc}"
         else:
             status["available"] = False
+            status["setup_required"] = True
             status["detail"] = "SentenceTransformers is not installed in this Python runtime."
     return status
 
@@ -74,10 +83,13 @@ def embedding_config() -> dict:
         if isinstance(saved, dict):
             provider = saved.get("provider")
             cache_dir = saved.get("cache_dir")
+            model = saved.get("model")
             if provider == "sentence-transformers" or (provider == "hash" and settings.allow_hash_embeddings):
                 config["provider"] = provider
             if isinstance(cache_dir, str) and cache_dir.strip():
                 config["cache_dir"] = Path(cache_dir)
+            if isinstance(model, str) and model.strip():
+                config["model"] = model.strip()
     return config
 
 
@@ -96,14 +108,20 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(normalize_for_hash(text).encode("utf-8")).hexdigest()
 
 
-def configure_embedding_runtime(provider: str, cache_dir: str | None = None) -> dict:
+def configure_embedding_runtime(provider: str, cache_dir: str | None = None, model: str | None = None) -> dict:
     if provider == "hash" and not get_settings().allow_hash_embeddings:
         raise ValueError("Hash embeddings are only available in explicit dev/test mode")
     if provider not in {"hash", "sentence-transformers"}:
         raise ValueError("Embedding provider must be 'sentence-transformers'")
     config_path = _embedding_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"provider": provider, "cache_dir": cache_dir or ""}
+    if provider == "sentence-transformers" and not (cache_dir or "").strip():
+        raise ValueError("Choose a local embedding model folder or cache folder before continuing")
+    payload = {
+        "provider": provider,
+        "cache_dir": cache_dir or "",
+        "model": model or get_settings().embedding_model,
+    }
     config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     global _SENTENCE_TRANSFORMER_MODEL
     global _SENTENCE_TRANSFORMER_MODEL_NAME
@@ -152,11 +170,25 @@ def _get_sentence_transformer(model_name: str, cache_dir=None):
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:
         raise RuntimeError("install sentence-transformers to use real local embeddings") from exc
-    kwargs = {"cache_folder": str(cache_dir)} if cache_dir else {}
-    _SENTENCE_TRANSFORMER_MODEL = SentenceTransformer(model_name, **kwargs)
+    model_ref = _resolve_sentence_transformer_ref(model_name, cache_dir)
+    kwargs = {"local_files_only": True}
+    if cache_dir and model_ref == model_name:
+        kwargs["cache_folder"] = str(cache_dir)
+    _SENTENCE_TRANSFORMER_MODEL = SentenceTransformer(model_ref, **kwargs)
     _SENTENCE_TRANSFORMER_MODEL_NAME = model_name
     _SENTENCE_TRANSFORMER_CACHE_DIR = cache_key
     return _SENTENCE_TRANSFORMER_MODEL
+
+
+def _resolve_sentence_transformer_ref(model_name: str, cache_dir) -> str:
+    if cache_dir is None:
+        raise RuntimeError("choose a local embedding model folder before using memory search")
+    model_path = Path(cache_dir)
+    if not model_path.exists():
+        raise RuntimeError(f"embedding model path does not exist: {model_path}")
+    if (model_path / "modules.json").exists() or (model_path / "config.json").exists():
+        return str(model_path)
+    return model_name
 
 
 def _embed_with_sentence_transformers(model_name: str, cache_dir, text: str) -> list[float]:

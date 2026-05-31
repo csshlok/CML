@@ -3,12 +3,17 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 from backend.app.core.config import get_settings
-from backend.app.core.database import utc_now
+from backend.app.core.database import connect, utc_now
 
 
 class VaultLockError(RuntimeError):
+    pass
+
+
+class VaultLockUnverifiedError(VaultLockError):
     pass
 
 
@@ -25,12 +30,23 @@ def acquire_vault_lock() -> None:
     existing = _read_lock(lock_path)
     if existing:
         owner_pid = _parse_pid(existing.get("pid"))
-        if owner_pid and owner_pid != current_pid and _is_live_vault_backend(owner_pid):
-            raise VaultLockError(
-                "Vault is already open in another backend process. Close the current Vault instance before reopening it."
-            )
+        if owner_pid and owner_pid != current_pid:
+            owner_state = _classify_lock_owner(owner_pid)
+            if owner_state == "vault_backend":
+                _write_audit("conflict_live_owner", lock_path=lock_path, owner_pid=owner_pid)
+                raise VaultLockError(
+                    "Vault is already open in another backend process. Close the current Vault instance before reopening it."
+                )
+            if owner_state == "unverified":
+                _write_audit("conflict_unverified_owner", lock_path=lock_path, owner_pid=owner_pid)
+                raise VaultLockUnverifiedError(
+                    "Vault lock owner is still running, but Vault could not verify the process identity. "
+                    "Opening this vault anyway can permanently corrupt the database if another Vault process is writing."
+                )
+            _write_audit(f"reclaimed_{owner_state}", lock_path=lock_path, owner_pid=owner_pid)
 
     _write_lock(lock_path, current_pid)
+    _write_audit("acquired", lock_path=lock_path, owner_pid=owner_pid if existing else None)
     _LOCK_PATH = lock_path
 
 
@@ -43,6 +59,7 @@ def release_vault_lock() -> None:
     if _parse_pid(lock.get("pid") if lock else None) == os.getpid():
         try:
             lock_path.unlink()
+            _write_audit("released", lock_path=lock_path)
         except FileNotFoundError:
             pass
     _LOCK_PATH = None
@@ -76,6 +93,31 @@ def _write_lock(lock_path: Path, pid: int) -> None:
     )
 
 
+def _write_audit(event_type: str, *, lock_path: Path, owner_pid: int | None = None, detail: str = "") -> None:
+    try:
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO vault_lock_audit (
+                    id, event_type, pid, owner_pid, lock_path, detail, user_choice, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, '', ?)
+                """,
+                (
+                    f"lock-audit-{uuid4()}",
+                    event_type,
+                    os.getpid(),
+                    owner_pid,
+                    str(lock_path),
+                    detail,
+                    utc_now(),
+                ),
+            )
+    except Exception:
+        # Lock auditing must never prevent startup/shutdown.
+        return
+
+
 def _parse_pid(value: object) -> int | None:
     try:
         pid = int(value)
@@ -84,12 +126,14 @@ def _parse_pid(value: object) -> int | None:
     return pid if pid > 0 else None
 
 
-def _is_live_vault_backend(pid: int) -> bool:
+def _classify_lock_owner(pid: int) -> str:
     command_line = _process_command_line(pid)
     if not command_line:
-        return False
+        return "unverified" if _is_process_alive(pid) else "dead"
     normalized = command_line.lower()
-    return "backend.app.main" in normalized or ("uvicorn" in normalized and "cml" in normalized)
+    if "backend.app.main" in normalized or ("uvicorn" in normalized and "cml" in normalized):
+        return "vault_backend"
+    return "other_process" if _is_process_alive(pid) else "dead"
 
 
 def _current_command_line() -> str:
@@ -118,6 +162,26 @@ def _windows_process_command_line(pid: int) -> str:
     except (OSError, subprocess.SubprocessError):
         return ""
     return output.strip()
+
+
+def _is_process_alive(pid: int) -> bool:
+    if os.name == "nt":
+        command = f"$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($p) {{ 'alive' }}"
+        try:
+            output = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", command],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=3,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return output.strip() == "alive"
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def _posix_process_command_line(pid: int) -> str:

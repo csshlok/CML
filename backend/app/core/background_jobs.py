@@ -111,6 +111,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         soft_timeout_seconds=None,
         timeout_action="defer",
     ),
+    "train_cluster_adapter": JobPolicy(
+        priority="low",
+        idempotency_class="reconcile_required",
+        restart_policy="manual_review",
+        dependency_failure_policy="manual_review",
+        write_scope="expert",
+        concurrency_group="adapter_training",
+        resource_cost="heavy",
+        can_run_during_synthesis=False,
+        user_visible=True,
+        user_initiated=True,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=7200,
+        soft_timeout_seconds=1800,
+        timeout_action="escalate",
+    ),
 }
 
 
@@ -404,6 +421,8 @@ def _run_claimed_job(job: dict) -> None:
             _run_delete_source_cleanup(payload)
         elif job["job_type"] == "vector_reconcile_incremental":
             _run_vector_reconcile_incremental(payload)
+        elif job["job_type"] == "train_cluster_adapter":
+            _run_train_cluster_adapter(payload)
         else:
             raise ValueError(f"Unsupported job type: {job['job_type']}")
     except Exception as exc:
@@ -459,8 +478,26 @@ def _run_chat_transcript_memory(payload: dict) -> None:
 def _run_delete_source_cleanup(payload: dict) -> None:
     source_id = str(payload["source_id"])
     with connect() as conn:
+        conn.execute(
+            """
+            UPDATE retrieval_snapshot_items
+            SET state = 'source_deleted', source_id = NULL, chunk_id = NULL, page_id = NULL
+            WHERE source_id = ?
+            """,
+            (source_id,),
+        )
+        conn.execute("DELETE FROM chat_attachments WHERE source_id = ?", (source_id,))
         conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
         conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
+        conn.execute(
+            """
+            UPDATE sources
+            SET raw_text = '', extracted_text = '', summary = '', tags = '[]',
+                cover_image_url = NULL, original_path = NULL, url = NULL, checksum = NULL
+            WHERE id = ? AND deleted_at IS NOT NULL
+            """,
+            (source_id,),
+        )
 
 
 def _run_vector_reconcile_incremental(payload: dict) -> None:
@@ -497,6 +534,72 @@ def _run_vector_reconcile_incremental(payload: dict) -> None:
                 dedupe_key=f"reindex-source:{row['id']}",
                 scope_id=row["id"],
             )
+
+
+def _run_train_cluster_adapter(payload: dict) -> None:
+    from backend.app.core.hardware import hardware_status
+
+    cluster_id = str(payload.get("cluster_id") or "")
+    vault_id = str(payload.get("vault_id") or "")
+    expert_job_id = str(payload.get("expert_job_id") or "")
+    hardware = hardware_status()
+    now = utc_now()
+    with connect() as conn:
+        if hardware["training_supported"] is not True:
+            conn.execute(
+                """
+                UPDATE clusters SET expert_status = 'hardware_unsupported', updated_at = ?
+                WHERE id = ?
+                """,
+                (now, cluster_id),
+            )
+            if expert_job_id:
+                conn.execute(
+                    """
+                    UPDATE cluster_expert_jobs
+                    SET status = 'manual_review', failure_code = 'hardware_unsupported',
+                        detail = ?, hardware_tier = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (hardware["detail"], hardware["hardware_tier"], now, expert_job_id),
+                )
+            raise RuntimeError(hardware["detail"])
+        conn.execute(
+            """
+            INSERT INTO expert_artifacts (
+                id, cluster_id, vault_id, job_id, artifact_type, status, local_path,
+                base_model, hardware_tier, quality_score, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'lora_adapter', 'planned', NULL, '', ?, NULL, ?, ?)
+            """,
+            (
+                f"artifact-{uuid4()}",
+                cluster_id,
+                vault_id,
+                expert_job_id or None,
+                hardware["hardware_tier"],
+                now,
+                now,
+            ),
+        )
+        if expert_job_id:
+            conn.execute(
+                """
+                UPDATE cluster_expert_jobs
+                SET status = 'manual_review', failure_code = 'training_not_implemented',
+                    detail = 'Adapter training scaffold is ready, but the LoRA runner is not implemented yet.',
+                    hardware_tier = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (hardware["hardware_tier"], now, expert_job_id),
+            )
+        conn.execute(
+            """
+            UPDATE clusters SET expert_status = 'expert_training_pending', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, cluster_id),
+        )
 
 
 def _mark_job_failed_or_retry(job: dict, error: str) -> None:
@@ -574,6 +677,8 @@ def _default_scope_id(write_scope: str, payload: dict) -> str | None:
     if write_scope == "chat":
         return _optional_string(payload.get("session_id"))
     if write_scope == "cluster":
+        return _optional_string(payload.get("cluster_id"))
+    if write_scope == "expert":
         return _optional_string(payload.get("cluster_id"))
     if write_scope == "vault":
         return _optional_string(payload.get("vault_id"))

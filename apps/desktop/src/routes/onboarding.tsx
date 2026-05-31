@@ -20,12 +20,14 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
   cancelModelDownload,
+  checkDiskPreflight,
   configureEmbeddingRuntime,
   createVault,
   getEmbeddingRuntimeStatus,
   listLocalModels,
   startModelDownload,
   type EmbeddingRuntimeStatus,
+  type DiskPreflightResponse,
   type LocalModelRecord,
   type VaultRecord,
 } from "@/lib/backend";
@@ -76,6 +78,7 @@ function Onboarding() {
   const [embeddingChoice, setEmbeddingChoice] = useState<EmbeddingChoice>("recommended");
   const [embeddingCacheDir, setEmbeddingCacheDir] = useState("");
   const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
+  const [diskPreflight, setDiskPreflight] = useState<DiskPreflightResponse | null>(null);
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -136,13 +139,42 @@ function Onboarding() {
 
   async function chooseVaultFolder() {
     const selected = await desktop?.selectVaultFolder?.();
-    if (selected) setVaultPath(selected);
+    if (selected) {
+      setVaultPath(selected);
+      await runVaultDiskPreflight(selected);
+    }
+  }
+
+  async function runVaultDiskPreflight(path: string) {
+    if (!path.trim()) return;
+    setError(null);
+    try {
+      const result = await checkDiskPreflight({
+        path: `${path.replace(/[\\/]+$/, "")}\\.vault`,
+        required_bytes: 5 * 1024 * 1024 * 1024,
+      });
+      setDiskPreflight(result);
+      if (!result.ok) setError(result.message);
+    } catch (err) {
+      setDiskPreflight(null);
+      setError(err instanceof Error ? err.message : "Could not check disk space.");
+    }
   }
 
   async function createVaultAfterFolderSelection() {
     setError(null);
     setMessage("Opening your vault folder...");
     try {
+      const preflight = await checkDiskPreflight({
+        path: resolvedVaultPath,
+        required_bytes: 5 * 1024 * 1024 * 1024,
+      });
+      setDiskPreflight(preflight);
+      if (!preflight.ok) {
+        setError(preflight.message);
+        setMessage(null);
+        return;
+      }
       await desktop?.setActiveVaultFolder?.(vaultPath.trim());
       const created = await createVaultWithRetry(vaultName.trim(), vaultPath.trim());
       setVault(created);
@@ -197,9 +229,15 @@ function Onboarding() {
     setError(null);
     setMessage("Testing memory search...");
     try {
+      const modelPath = embeddingCacheDir.trim();
+      if (!modelPath) {
+        setError("Choose the folder where your local embedding model is stored before continuing.");
+        setMessage(null);
+        return;
+      }
       const status = await configureEmbeddingRuntime({
         provider: "sentence-transformers",
-        cache_dir: embeddingChoice === "existing" ? embeddingCacheDir.trim() || null : null,
+        cache_dir: modelPath,
       });
       setEmbeddingRuntime(status);
       setMessage(status.available ? "Memory search is ready." : status.detail);
@@ -375,7 +413,11 @@ function Onboarding() {
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <Input
                         value={vaultPath}
-                        onChange={(event) => setVaultPath(event.target.value)}
+                        onChange={(event) => {
+                          setVaultPath(event.target.value);
+                          setDiskPreflight(null);
+                        }}
+                        onBlur={(event) => void runVaultDiskPreflight(event.target.value)}
                         placeholder="C:\\Users\\You\\Documents\\Vault"
                       />
                       <Button
@@ -398,6 +440,16 @@ function Onboarding() {
                       <div className="mt-2 break-all font-mono text-xs text-muted-foreground">
                         {resolvedVaultPath}
                       </div>
+                      {diskPreflight && (
+                        <div
+                          className={cn(
+                            "mt-3 text-xs",
+                            diskPreflight.ok ? "text-[var(--status-ready)]" : "text-destructive",
+                          )}
+                        >
+                          {diskPreflight.message} {formatBytes(diskPreflight.available_bytes)} available.
+                        </div>
+                      )}
                     </div>
                   )}
                 </SetupPanel>
@@ -461,13 +513,13 @@ function Onboarding() {
                 <SetupPanel
                   icon={<Sparkles className="h-5 w-5" />}
                   title="Choose the memory-search model"
-                  sub="This step is required. Search, clusters, Bridge, and vault-grounded chat need a real local embedding model."
+                  sub="This step is required. Download the recommended model after install, or link a compatible model cache already on this device."
                 >
                   <div className="grid gap-3 sm:grid-cols-2">
                     <ChoiceButton
                       selected={embeddingChoice === "recommended"}
                       title="Vault recommended"
-                      description="Use sentence-transformers/all-MiniLM-L6-v2."
+                      description="Use all-MiniLM-L6-v2 after you download it locally."
                       onClick={() => setEmbeddingChoice("recommended")}
                     />
                     <ChoiceButton
@@ -478,15 +530,17 @@ function Onboarding() {
                     />
                   </div>
 
-                  {embeddingChoice === "existing" && (
-                    <Field label="Embedding cache folder">
-                      <Input
-                        value={embeddingCacheDir}
-                        onChange={(event) => setEmbeddingCacheDir(event.target.value)}
-                        placeholder="T:\\LLM\\embeddings"
-                      />
-                    </Field>
-                  )}
+                  <Field label={embeddingChoice === "recommended" ? "Downloaded model folder" : "Embedding cache folder"}>
+                    <Input
+                      value={embeddingCacheDir}
+                      onChange={(event) => setEmbeddingCacheDir(event.target.value)}
+                      placeholder={
+                        embeddingChoice === "recommended"
+                          ? "T:\\Models\\all-MiniLM-L6-v2"
+                          : "T:\\LLM\\embeddings"
+                      }
+                    />
+                  </Field>
 
                   <div className="rounded-md border border-border bg-card p-4">
                     <div className="flex items-start justify-between gap-4">
@@ -495,7 +549,8 @@ function Onboarding() {
                           {embeddingRuntime?.available ? "Memory search ready" : "Memory search needs setup"}
                         </div>
                         <div className="mt-1 text-sm text-muted-foreground">
-                          {embeddingRuntime?.detail ?? "Run a local test before entering Vault."}
+                          {embeddingRuntime?.detail ??
+                            "Run a local test before entering Vault. Setup cannot finish until this passes."}
                         </div>
                       </div>
                       {embeddingRuntime?.available && <Check className="h-5 w-5 text-[var(--status-ready)]" />}
@@ -777,4 +832,12 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
       <div className="mt-1 break-words text-sm font-medium">{value}</div>
     </div>
   );
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 GB";
+  const gib = value / 1024 / 1024 / 1024;
+  if (gib >= 1) return `${gib.toFixed(1)} GB`;
+  const mib = value / 1024 / 1024;
+  return `${Math.round(mib)} MB`;
 }

@@ -1,16 +1,17 @@
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { spawn } = require("node:child_process");
-const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
+const { createTokenStore, getOrCreateToken } = require("./token-store.cjs");
 
 const isDev = !app.isPackaged;
 const devUrl = process.env.CML_DESKTOP_DEV_URL || "http://127.0.0.1:5173";
 let backendProcess = null;
 let backendUrl = process.env.VITE_CML_BACKEND_URL || process.env.CML_BACKEND_URL || null;
 let backendApiToken = process.env.CML_API_TOKEN || null;
+let backendTokenStore = null;
 let rendererServer = null;
 let rendererUrl = null;
 const supportedSourceExtensions = new Set([
@@ -92,25 +93,66 @@ async function loadStartupFailure(window, error) {
   const status = await readStartupStatus();
   const detail = status?.message || error?.message || "Vault could not start its local backend.";
   const phase = status?.phase || "startup_failed";
+  const action = repairActionForPhase(phase);
   const html = `
     <!doctype html>
     <meta charset="utf-8" />
     <title>Vault startup issue</title>
-    <body style="margin:0;font-family:Segoe UI,Arial,sans-serif;background:#fbfaf6;color:#1f1a17;">
-      <main style="max-width:680px;margin:12vh auto;padding:32px;">
-        <div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#8b7d72;">Vault</div>
-        <h1 style="font-size:28px;margin:12px 0;">Vault could not open this workspace.</h1>
-        <p style="line-height:1.6;color:#5f524b;">${escapeHtml(detail)}</p>
-        <dl style="margin-top:24px;padding:16px;border:1px solid #ded6cc;border-radius:8px;background:#fff;">
-          <dt style="font-size:12px;color:#8b7d72;">Startup phase</dt>
+    <body style="margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#fbfaf6;color:#1f1a17;">
+      <main style="max-width:760px;margin:10vh auto;padding:32px;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px;">
+          <div style="width:32px;height:32px;border:1px solid #ded6cc;border-radius:8px;display:grid;place-items:center;background:#fffdf9;">V</div>
+          <div>
+            <div style="font-weight:650;font-size:14px;">Vault</div>
+            <div style="font-size:12px;color:#7c6f65;">Startup repair</div>
+          </div>
+        </div>
+        <h1 style="font-size:30px;line-height:1.15;margin:0 0 12px;">Vault needs attention before it can open.</h1>
+        <p style="line-height:1.65;color:#5f524b;margin:0;max-width:620px;">${escapeHtml(detail)}</p>
+        <div style="margin-top:22px;padding:16px;border:1px solid #d7cfc5;border-radius:8px;background:#fffdf9;">
+          <div style="font-weight:600;font-size:14px;">${escapeHtml(action.title)}</div>
+          <div style="margin-top:6px;font-size:13px;line-height:1.55;color:#5f524b;">${escapeHtml(action.body)}</div>
+        </div>
+        <dl style="margin-top:18px;padding:16px;border:1px solid #ded6cc;border-radius:8px;background:#fff;">
+          <dt style="font-size:12px;color:#8b7d72;">Phase</dt>
           <dd style="margin:4px 0 12px;">${escapeHtml(phase)}</dd>
           <dt style="font-size:12px;color:#8b7d72;">Data directory</dt>
-          <dd style="margin:4px 0 0;word-break:break-all;">${escapeHtml(status?.data_dir || "Unknown")}</dd>
+          <dd style="margin:4px 0 12px;word-break:break-all;">${escapeHtml(status?.data_dir || "Unknown")}</dd>
+          <dt style="font-size:12px;color:#8b7d72;">Database</dt>
+          <dd style="margin:4px 0 0;word-break:break-all;">${escapeHtml(status?.database_path || "Unknown")}</dd>
         </dl>
-        <p style="margin-top:20px;font-size:13px;color:#8b7d72;">Close Vault and try again. If this repeats, use Settings diagnostics after the backend can start.</p>
+        <div style="display:flex;gap:10px;margin-top:22px;">
+          <button onclick="location.reload()" style="height:36px;padding:0 14px;border:0;border-radius:8px;background:#765f4d;color:#fff;font-weight:600;">Try again</button>
+          <button onclick="window.close()" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Close Vault</button>
+        </div>
       </main>
     </body>`;
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+}
+
+function repairActionForPhase(phase) {
+  if (phase === "integrity_check_failed") {
+    return {
+      title: "The vault database did not pass its health check.",
+      body: "Do not keep retrying if this repeats. The next repair pass should export diagnostics and offer backup or restore options before any write recovery.",
+    };
+  }
+  if (phase === "schema_check_failed") {
+    return {
+      title: "The vault schema or migration state is incomplete.",
+      body: "Vault stopped before accepting traffic so it does not mutate a half-migrated database.",
+    };
+  }
+  if (phase === "vault_lock_failed") {
+    return {
+      title: "Another Vault process may own this vault.",
+      body: "Close other Vault windows before retrying. Opening the same vault twice can corrupt local data.",
+    };
+  }
+  return {
+    title: "The local backend did not reach a ready state.",
+    body: "Retry once. If it repeats, keep this screen open and use the shown path when collecting diagnostics.",
+  };
 }
 
 async function readStartupStatus() {
@@ -334,24 +376,9 @@ async function setActiveVaultPath(targetPath) {
 
 async function getBackendApiToken() {
   if (backendApiToken) return backendApiToken;
-  const tokenPath = getBackendTokenPath();
-  try {
-    const token = (await fs.readFile(tokenPath, "utf8")).trim();
-    if (token.length >= 32) {
-      backendApiToken = token;
-      return token;
-    }
-  } catch {
-    // Missing or unreadable token files are regenerated locally.
-  }
-  backendApiToken = crypto.randomBytes(32).toString("base64url");
-  await fs.mkdir(path.dirname(tokenPath), { recursive: true });
-  await fs.writeFile(tokenPath, backendApiToken, { encoding: "utf8", mode: 0o600 });
+  backendTokenStore = backendTokenStore || createTokenStore(app.getPath("userData"));
+  backendApiToken = await getOrCreateToken(backendTokenStore);
   return backendApiToken;
-}
-
-function getBackendTokenPath() {
-  return path.join(app.getPath("userData"), "backend-token");
 }
 
 async function startPackagedRendererServer() {

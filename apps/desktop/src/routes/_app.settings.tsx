@@ -141,9 +141,14 @@ function SettingsView() {
     setEmbeddingSaving(true);
     setModelError(null);
     try {
+      const modelPath = embeddingCacheDraft.trim();
+      if (!modelPath) {
+        setModelError("Choose the local embedding model folder before saving.");
+        return;
+      }
       const nextStatus = await configureEmbeddingRuntime({
         provider: "sentence-transformers",
-        cache_dir: embeddingCacheDraft.trim() || null,
+        cache_dir: modelPath,
       });
       setEmbeddingRuntime(nextStatus);
     } catch (err) {
@@ -224,15 +229,15 @@ function SettingsView() {
             <div className="rounded-md border border-border p-3 text-sm">
               <div className="font-medium">MiniLM semantic search</div>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                Vault uses sentence-transformers/all-MiniLM-L6-v2 for retrieval. Hash embeddings are
-                reserved for explicit development and test runs.
+                Vault uses a local sentence-transformers model for retrieval. The installer does not
+                bundle embedding weights; choose the folder where the model is already downloaded.
               </p>
             </div>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row">
               <Input
                 value={embeddingCacheDraft}
                 onChange={(event) => setEmbeddingCacheDraft(event.target.value)}
-                placeholder="Optional model cache folder, for example T:\\LLM\\embeddings"
+                placeholder="Required local model folder, for example T:\\Models\\all-MiniLM-L6-v2"
               />
               <Button onClick={() => void saveEmbeddingRuntime()} disabled={embeddingSaving}>
                 {embeddingSaving ? "Saving" : "Use"}

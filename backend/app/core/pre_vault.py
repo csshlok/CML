@@ -10,6 +10,8 @@ ALLOWED_PRE_VAULT_PATHS = (
     "/api/v1/models",
     "/api/v1/jobs/status",
     "/api/v1/diagnostics",
+    "/api/v1/system",
+    "/api/v1/extension/status",
 )
 
 

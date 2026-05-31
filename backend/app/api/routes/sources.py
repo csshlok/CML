@@ -313,16 +313,59 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
 def delete_source(source_id: str) -> None:
     now = utc_now()
     with connect() as conn:
+        source = conn.execute(
+            "SELECT id, cluster_id FROM sources WHERE id = ? AND deleted_at IS NULL",
+            (source_id,),
+        ).fetchone()
+        if source is None:
+            raise HTTPException(status_code=404, detail="Source not found")
         result = conn.execute(
             """
             UPDATE sources
-            SET state = 'deleted', deleted_at = ?, updated_at = ?
+            SET state = 'deleted',
+                deleted_at = ?,
+                updated_at = ?,
+                raw_text = '',
+                extracted_text = '',
+                summary = '',
+                tags = '[]',
+                cover_image_url = NULL,
+                original_path = NULL,
+                url = NULL,
+                checksum = NULL
             WHERE id = ? AND deleted_at IS NULL
             """,
             (now, now, source_id),
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Source not found")
+        conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
+        conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
+        conn.execute("DELETE FROM chat_attachments WHERE source_id = ?", (source_id,))
+        conn.execute(
+            """
+            UPDATE retrieval_snapshot_items
+            SET state = 'source_deleted', source_id = NULL, chunk_id = NULL, page_id = NULL
+            WHERE source_id = ? OR chunk_id IN (
+                SELECT id FROM source_chunks WHERE source_id = ?
+            ) OR page_id IN (
+                SELECT id FROM source_pages WHERE source_id = ?
+            )
+            """,
+            (source_id, source_id, source_id),
+        )
+        conn.execute(
+            """
+            UPDATE app_jobs
+            SET status = 'cancelled', status_detail = 'Source was deleted.', completed_at = ?, updated_at = ?
+            WHERE status IN ('queued', 'blocked_by_dependency')
+                AND (
+                    scope_id = ?
+                    OR payload LIKE ?
+                )
+            """,
+            (now, now, source_id, f'%"{source_id}"%'),
+        )
         enqueue_job(
             conn,
             job_type="delete_source_cleanup",
@@ -331,6 +374,7 @@ def delete_source(source_id: str) -> None:
             scope_id=source_id,
             user_initiated=True,
         )
+        mark_cluster_needs_update(conn, source["cluster_id"], "Source was deleted.")
 
 
 def source_from_row(row) -> dict:

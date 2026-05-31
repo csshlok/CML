@@ -49,3 +49,16 @@ def write_startup_status(phase: str, *, status: str = "running", message: str = 
     except OSError:
         # Startup status must never be the reason the backend cannot start.
         return
+
+
+def read_startup_status() -> dict | None:
+    settings = get_settings()
+    status_path = settings.startup_status_path
+    if status_path is None:
+        return None
+    try:
+        raw = Path(status_path).read_text(encoding="utf-8")
+        parsed = json.loads(raw)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None

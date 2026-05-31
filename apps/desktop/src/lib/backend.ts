@@ -373,6 +373,50 @@ export type EmbeddingRuntimeStatus = {
   dimensions: number;
   available: boolean;
   detail: string;
+  setup_required: boolean;
+  cache_dir: string | null;
+};
+
+export type DiskPreflightResponse = {
+  path: string;
+  probe_path: string;
+  required_bytes: number;
+  available_bytes: number;
+  ok: boolean;
+  message: string;
+};
+
+export type StartupStatusRead = {
+  phase: string;
+  raw_phase: string | null;
+  status: string;
+  message: string;
+  error_code: string;
+  backend_mode: string;
+  data_dir: string;
+  database_path: string;
+  updated_at: string;
+};
+
+export type HardwareStatusRead = {
+  os: string;
+  machine: string;
+  processor: string;
+  cpu_count: number;
+  total_memory_bytes: number | null;
+  avx2: boolean | null;
+  hardware_tier: string;
+  training_supported: boolean;
+  detail: string;
+};
+
+export type LocalFolderScanResponse = {
+  path: string;
+  integration_type: string;
+  supported_files: string[];
+  supported_count: number;
+  skipped_count: number;
+  truncated: boolean;
 };
 
 export async function getBridgeStatus() {
@@ -758,8 +802,37 @@ export async function getEmbeddingRuntimeStatus() {
 export async function configureEmbeddingRuntime(payload: {
   provider: "sentence-transformers";
   cache_dir?: string | null;
+  model?: string | null;
 }) {
   return request<EmbeddingRuntimeStatus>("/api/v1/models/embeddings/configure", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function checkDiskPreflight(payload: {
+  path: string;
+  required_bytes?: number | null;
+}) {
+  return request<DiskPreflightResponse>("/api/v1/system/preflight/disk", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getStartupStatus() {
+  return request<StartupStatusRead>("/api/v1/system/startup-status");
+}
+
+export async function getHardwareStatus() {
+  return request<HardwareStatusRead>("/api/v1/system/hardware");
+}
+
+export async function scanLocalFolderIntegration(payload: {
+  path: string;
+  max_files?: number;
+}) {
+  return request<LocalFolderScanResponse>("/api/v1/integrations/local-folder/scan", {
     method: "POST",
     body: JSON.stringify(payload),
   });

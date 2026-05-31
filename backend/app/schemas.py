@@ -70,6 +70,9 @@ class ClusterExpertJobRead(BaseModel):
     action: str
     status: str
     detail: str
+    failure_code: str = ""
+    artifact_path: str | None = None
+    hardware_tier: str = ""
     created_at: str
     updated_at: str
 
@@ -390,11 +393,100 @@ class EmbeddingRuntimeStatus(BaseModel):
     dimensions: int
     available: bool
     detail: str
+    setup_required: bool = False
+    cache_dir: str | None = None
 
 
 class EmbeddingRuntimeConfigure(BaseModel):
     provider: str
     cache_dir: str | None = None
+    model: str | None = None
+
+
+class HardwareStatusRead(BaseModel):
+    os: str
+    machine: str
+    processor: str
+    cpu_count: int
+    total_memory_bytes: int | None = None
+    avx2: bool | None = None
+    hardware_tier: str
+    training_supported: bool
+    detail: str
+
+
+class LocalFolderScanRequest(BaseModel):
+    path: str
+    vault_id: str | None = None
+    max_files: int = Field(default=500, ge=1, le=5000)
+
+
+class LocalFolderScanResponse(BaseModel):
+    import_id: str | None = None
+    path: str
+    integration_type: str
+    supported_files: list[str]
+    supported_count: int
+    skipped_count: int
+    truncated: bool
+
+
+class ExtensionClientCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class ExtensionClientCreateResponse(BaseModel):
+    id: str
+    name: str
+    token: str
+    created_at: str
+
+
+class ExtensionStatusResponse(BaseModel):
+    ok: bool
+    client_id: str | None = None
+    detail: str
+
+
+class ExtensionCaptureRequest(BaseModel):
+    vault_id: str
+    cluster_id: str | None = None
+    capture_type: str = "page"
+    title: str = Field(min_length=1, max_length=240)
+    url: str = ""
+    text: str = Field(min_length=1)
+
+
+class ExtensionCaptureResponse(BaseModel):
+    capture_id: str
+    source_id: str
+    status: str
+
+
+class DiskPreflightRequest(BaseModel):
+    path: str
+    required_bytes: int | None = None
+
+
+class DiskPreflightResponse(BaseModel):
+    path: str
+    probe_path: str
+    required_bytes: int
+    available_bytes: int
+    ok: bool
+    message: str
+
+
+class StartupStatusRead(BaseModel):
+    phase: str
+    raw_phase: str | None = None
+    status: str
+    message: str = ""
+    error_code: str = ""
+    backend_mode: str = ""
+    data_dir: str = ""
+    database_path: str = ""
+    updated_at: str = ""
 
 
 class AppJobRead(BaseModel):

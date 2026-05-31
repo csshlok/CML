@@ -37,7 +37,7 @@ def get_embedding_status() -> dict:
 @router.post("/embeddings/configure", response_model=EmbeddingRuntimeStatus)
 def configure_embeddings(payload: EmbeddingRuntimeConfigure) -> dict:
     try:
-        return configure_embedding_runtime(payload.provider, payload.cache_dir)
+        return configure_embedding_runtime(payload.provider, payload.cache_dir, payload.model)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

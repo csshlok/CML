@@ -98,10 +98,80 @@ def init_db() -> None:
                 action TEXT NOT NULL,
                 status TEXT NOT NULL,
                 detail TEXT NOT NULL DEFAULT '',
+                failure_code TEXT NOT NULL DEFAULT '',
+                artifact_path TEXT,
+                hardware_tier TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS expert_artifacts (
+                id TEXT PRIMARY KEY,
+                cluster_id TEXT NOT NULL,
+                vault_id TEXT NOT NULL,
+                job_id TEXT,
+                artifact_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                local_path TEXT,
+                base_model TEXT NOT NULL DEFAULT '',
+                hardware_tier TEXT NOT NULL DEFAULT '',
+                quality_score REAL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS vault_lock_audit (
+                id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                pid INTEGER,
+                owner_pid INTEGER,
+                lock_path TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT '',
+                user_choice TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS integration_imports (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT,
+                integration_type TEXT NOT NULL,
+                root_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                supported_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                truncated INTEGER NOT NULL DEFAULT 0,
+                last_scan_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS extension_clients (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                token_hash TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS extension_captures (
+                id TEXT PRIMARY KEY,
+                client_id TEXT,
+                vault_id TEXT NOT NULL,
+                source_id TEXT,
+                capture_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                url TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (client_id) REFERENCES extension_clients(id) ON DELETE SET NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS app_jobs (
@@ -278,6 +348,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_retrieval_snapshots_message_id ON retrieval_snapshots(message_id);
             CREATE INDEX IF NOT EXISTS idx_retrieval_snapshot_items_snapshot_id ON retrieval_snapshot_items(snapshot_id);
             CREATE INDEX IF NOT EXISTS idx_app_jobs_status ON app_jobs(status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_integration_imports_vault ON integration_imports(vault_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_extension_captures_vault ON extension_captures(vault_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_expert_artifacts_cluster ON expert_artifacts(cluster_id, updated_at);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_app_jobs_dedupe_active
                 ON app_jobs(dedupe_key)
                 WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running');
@@ -317,6 +390,9 @@ def init_db() -> None:
         _add_column_if_missing(conn, "app_jobs", "status_detail", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "app_jobs", "started_at", "TEXT")
         _add_column_if_missing(conn, "app_jobs", "completed_at", "TEXT")
+        _add_column_if_missing(conn, "cluster_expert_jobs", "failure_code", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "cluster_expert_jobs", "artifact_path", "TEXT")
+        _add_column_if_missing(conn, "cluster_expert_jobs", "hardware_tier", "TEXT NOT NULL DEFAULT ''")
         conn.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_app_jobs_runnable
