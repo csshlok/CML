@@ -1,4 +1,5 @@
 from pathlib import Path
+import importlib.util
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -291,6 +292,11 @@ def extract_text_from_url(url: str) -> tuple[str, str, str | None]:
         text = parser.text()
         title = parser.meta_title or parser.page_title
         cover_image_url = urljoin(url, parser.cover_image_url) if parser.cover_image_url else None
+        if _needs_dynamic_extraction(text, decoded):
+            dynamic = _extract_dynamic_text_from_url(final_url)
+            if dynamic is not None and len(dynamic[1]) > len(text):
+                title, text, dynamic_cover = dynamic
+                cover_image_url = dynamic_cover or cover_image_url
     else:
         text = decoded.strip()
         title = ""
@@ -301,6 +307,37 @@ def extract_text_from_url(url: str) -> tuple[str, str, str | None]:
 
     fallback_title = (parsed.netloc + parsed.path).rstrip("/") or url
     return title or fallback_title, text, cover_image_url
+
+
+def _needs_dynamic_extraction(text: str, html: str) -> bool:
+    lowered = html.lower()
+    script_count = lowered.count("<script")
+    app_markers = ("id=\"root\"", "id=\"app\"", "__next", "data-reactroot", "vite")
+    return (len(text.strip()) < 500 and script_count >= 3) or any(marker in lowered for marker in app_markers)
+
+
+def _extract_dynamic_text_from_url(url: str) -> tuple[str, str, str | None] | None:
+    if importlib.util.find_spec("playwright") is None:
+        return None
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return None
+    try:
+        validate_public_http_url(url)
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(url, wait_until="networkidle", timeout=12000)
+            title = page.title()
+            text = page.locator("body").inner_text(timeout=5000).strip()
+            cover = page.locator("meta[property='og:image']").first.get_attribute("content", timeout=1000)
+            browser.close()
+        if text:
+            return title or url, text, urljoin(url, cover) if cover else None
+    except Exception:
+        return None
+    return None
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):

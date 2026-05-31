@@ -1,39 +1,48 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { useStore } from "@/lib/mockStore";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { useEffect, useState, type ReactNode } from "react";
 import {
-  cancelJob,
+  Activity,
+  CheckCircle2,
+  ChevronRight,
+  Database,
+  Download,
+  FileText,
+  Folder,
+  Layers,
+  Lock,
+  MessageSquare,
+  Play,
+  RefreshCw,
+  Server,
+  Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
+  TerminalSquare,
+  UserRound,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { useStore } from "@/lib/mockStore";
+import {
   cancelModelDownload,
   configureEmbeddingRuntime,
-  createExtensionClient,
   createDiagnosticBundle,
   createVault,
   getEmbeddingRuntimeStatus,
   getHardwareStatus,
   getJobStatus,
   getModelRuntimeStatus,
-  listExtensionCaptures,
-  listExtensionClients,
-  listIntegrationImports,
+  getOCRRuntimeStatus,
   listLocalModels,
-  listVaultLockAudit,
   listVaults,
-  refreshIntegrationImport,
-  revokeExtensionClient,
-  scanLocalFolderIntegration,
   startModelDownload,
   updateVault,
   type EmbeddingRuntimeStatus,
-  type ExtensionCaptureRecord,
-  type ExtensionClientRecord,
   type HardwareStatusRead,
-  type IntegrationImportRecord,
   type JobQueueStatus,
   type LocalModelRecord,
   type ModelRuntimeStatus,
-  type VaultLockAuditRecord,
+  type OCRRuntimeStatusRead,
   type VaultRecord,
 } from "@/lib/backend";
 
@@ -42,638 +51,504 @@ export const Route = createFileRoute("/_app/settings")({
   component: SettingsView,
 });
 
+const settingsSections = [
+  { id: "profile", label: "Profile", icon: UserRound },
+  { id: "storage", label: "Vault storage", icon: Database },
+  { id: "models", label: "Local models", icon: TerminalSquare },
+  { id: "embeddings", label: "Embeddings", icon: Layers },
+  { id: "ocr", label: "OCR", icon: Settings2 },
+  { id: "diagnostics", label: "Diagnostics", icon: Activity },
+  { id: "privacy", label: "Privacy", icon: Lock },
+  { id: "advanced", label: "Advanced", icon: SlidersHorizontal },
+] as const;
+
 function SettingsView() {
   const { vaultPath, setVault } = useStore();
+  const [activeSection, setActiveSection] = useState("models");
   const [backendVault, setBackendVault] = useState<VaultRecord | null>(null);
   const [pathDraft, setPathDraft] = useState(vaultPath ?? "");
-  const [status, setStatus] = useState<"idle" | "loading" | "saving" | "saved" | "error">(
-    "loading",
-  );
-  const [error, setError] = useState<string | null>(null);
   const [models, setModels] = useState<LocalModelRecord[]>([]);
   const [runtime, setRuntime] = useState<ModelRuntimeStatus | null>(null);
   const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
   const [embeddingCacheDraft, setEmbeddingCacheDraft] = useState("");
-  const [embeddingSaving, setEmbeddingSaving] = useState(false);
-  const [modelError, setModelError] = useState<string | null>(null);
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
-  const [diagnosticStatus, setDiagnosticStatus] = useState<string | null>(null);
+  const [ocrRuntime, setOcrRuntime] = useState<OCRRuntimeStatusRead | null>(null);
   const [hardware, setHardware] = useState<HardwareStatusRead | null>(null);
-  const [imports, setImports] = useState<IntegrationImportRecord[]>([]);
-  const [folderDraft, setFolderDraft] = useState("");
-  const [folderScanStatus, setFolderScanStatus] = useState<string | null>(null);
-  const [extensionClients, setExtensionClients] = useState<ExtensionClientRecord[]>([]);
-  const [extensionCaptures, setExtensionCaptures] = useState<ExtensionCaptureRecord[]>([]);
-  const [newExtensionToken, setNewExtensionToken] = useState<string | null>(null);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
-  const [lockAudit, setLockAudit] = useState<VaultLockAuditRecord[]>([]);
-  const [advancedStatus, setAdvancedStatus] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   useEffect(() => {
-    async function loadVault() {
-      setStatus("loading");
+    let cancelled = false;
+
+    async function load() {
       try {
-        const vaults = await listVaults();
-        const firstVault = vaults[0] ?? null;
+        const [vaultRows, modelRows, runtimeStatus, embeddingStatus, ocrStatus, hardwareStatus, jobStatus] =
+          await Promise.all([
+            listVaults(),
+            listLocalModels(),
+            getModelRuntimeStatus(),
+            getEmbeddingRuntimeStatus(),
+            getOCRRuntimeStatus(),
+            getHardwareStatus(),
+            getJobStatus(),
+          ]);
+        if (cancelled) return;
+        const firstVault = vaultRows[0] ?? null;
         setBackendVault(firstVault);
         if (firstVault) {
           setPathDraft(firstVault.path);
           setVault(firstVault.path);
         }
-        setStatus("idle");
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not load vault settings.");
-        setStatus("error");
-      }
-    }
-
-    void loadVault();
-  }, [setVault]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadModels() {
-      try {
-        const [modelRows, runtimeStatus, embeddingStatus] = await Promise.all([
-          listLocalModels(),
-          getModelRuntimeStatus(),
-          getEmbeddingRuntimeStatus(),
-        ]);
-        if (cancelled) return;
         setModels(modelRows);
         setRuntime(runtimeStatus);
         setEmbeddingRuntime(embeddingStatus);
-        setModelError(null);
-      } catch (err) {
-        if (!cancelled) {
-          setModelError(
-            err instanceof Error ? err.message : "Could not load local model settings.",
-          );
-        }
-      }
-    }
-
-    void loadModels();
-    const id = window.setInterval(loadModels, 4000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadAdvanced() {
-      try {
-        const [hardwareStatus, importRows, clientRows, captureRows] = await Promise.all([
-          getHardwareStatus(),
-          listIntegrationImports(backendVault?.id),
-          listExtensionClients(),
-          listExtensionCaptures(backendVault?.id),
-        ]);
-        if (cancelled) return;
+        setEmbeddingCacheDraft(embeddingStatus.cache_dir ?? "");
+        setOcrRuntime(ocrStatus);
         setHardware(hardwareStatus);
-        setImports(importRows);
-        setExtensionClients(clientRows);
-        setExtensionCaptures(captureRows);
-        setJobs(await getJobStatus());
-        setLockAudit(await listVaultLockAudit(5));
-      } catch {
+        setJobs(jobStatus);
+      } catch (error) {
         if (!cancelled) {
-          setHardware(null);
+          setStatusMessage(error instanceof Error ? error.message : "Settings backend unavailable.");
         }
       }
     }
 
-    void loadAdvanced();
-    const id = window.setInterval(loadAdvanced, 8000);
+    void load();
+    const id = window.setInterval(load, 6000);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [backendVault?.id]);
+  }, [setVault]);
 
   async function saveVaultPath() {
     const path = pathDraft.trim();
     if (!path) return;
-    setStatus("saving");
-    setError(null);
+    setSaving(true);
     try {
       const nextVault = backendVault
         ? await updateVault(backendVault.id, { path })
         : await createVault({ name: "Local memory", path });
       setBackendVault(nextVault);
       setVault(nextVault.path);
-      setStatus("saved");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save vault settings.");
-      setStatus("error");
+      setStatusMessage("Vault location saved.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not save vault location.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveEmbeddingRuntime() {
+    const modelPath = embeddingCacheDraft.trim();
+    if (!modelPath) {
+      setStatusMessage("Choose the local embedding model folder before saving.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const nextStatus = await configureEmbeddingRuntime({
+        provider: "sentence-transformers",
+        cache_dir: modelPath,
+      });
+      setEmbeddingRuntime(nextStatus);
+      setStatusMessage("Embedding model path saved.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not update embedding settings.");
+    } finally {
+      setSaving(false);
     }
   }
 
   async function downloadModel(modelId: string) {
     setDownloadingId(modelId);
-    setModelError(null);
     try {
       await startModelDownload(modelId);
       setModels(await listLocalModels());
-    } catch (err) {
-      setModelError(err instanceof Error ? err.message : "Could not start model download.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not start model download.");
     } finally {
       setDownloadingId(null);
     }
   }
 
   async function cancelDownload(modelId: string) {
-    setModelError(null);
     try {
       await cancelModelDownload(modelId);
       setModels(await listLocalModels());
-    } catch (err) {
-      setModelError(err instanceof Error ? err.message : "Could not cancel model download.");
-    }
-  }
-
-  async function saveEmbeddingRuntime() {
-    setEmbeddingSaving(true);
-    setModelError(null);
-    try {
-      const modelPath = embeddingCacheDraft.trim();
-      if (!modelPath) {
-        setModelError("Choose the local embedding model folder before saving.");
-        return;
-      }
-      const nextStatus = await configureEmbeddingRuntime({
-        provider: "sentence-transformers",
-        cache_dir: modelPath,
-      });
-      setEmbeddingRuntime(nextStatus);
-    } catch (err) {
-      setModelError(err instanceof Error ? err.message : "Could not update embedding settings.");
-    } finally {
-      setEmbeddingSaving(false);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not cancel model download.");
     }
   }
 
   async function exportDiagnostics() {
-    setDiagnosticStatus("Creating diagnostic bundle...");
+    setStatusMessage("Creating diagnostic bundle...");
     try {
       const bundle = await createDiagnosticBundle();
-      setDiagnosticStatus(`Diagnostic bundle saved to ${bundle.bundle_path}`);
-    } catch (err) {
-      setDiagnosticStatus(err instanceof Error ? err.message : "Could not create diagnostic bundle.");
+      setStatusMessage(`Diagnostic bundle saved to ${bundle.bundle_path}`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not create diagnostic bundle.");
     }
   }
 
-  async function scanFolder() {
-    const path = folderDraft.trim();
-    if (!path) return;
-    setFolderScanStatus("Scanning folder...");
-    try {
-      const scan = await scanLocalFolderIntegration({
-        path,
-        vault_id: backendVault?.id ?? null,
-        max_files: 500,
-      });
-      setFolderScanStatus(
-        `Found ${scan.supported_count} supported file${scan.supported_count === 1 ? "" : "s"}.`,
-      );
-      if (backendVault?.id) setImports(await listIntegrationImports(backendVault.id));
-    } catch (err) {
-      setFolderScanStatus(err instanceof Error ? err.message : "Folder scan failed.");
-    }
-  }
-
-  async function pairExtension() {
-    setNewExtensionToken(null);
-    try {
-      const client = await createExtensionClient({ name: "Browser extension" });
-      setNewExtensionToken(client.token);
-      setExtensionClients(await listExtensionClients());
-    } catch (err) {
-      setNewExtensionToken(err instanceof Error ? err.message : "Could not create extension token.");
-    }
-  }
-
-  async function revokeExtension(clientId: string) {
-    setAdvancedStatus(null);
-    try {
-      await revokeExtensionClient(clientId);
-      setExtensionClients(await listExtensionClients());
-      setAdvancedStatus("Extension client revoked.");
-    } catch (err) {
-      setAdvancedStatus(err instanceof Error ? err.message : "Could not revoke extension client.");
-    }
-  }
-
-  async function refreshImport(importId: string) {
-    setAdvancedStatus("Refreshing import...");
-    try {
-      await refreshIntegrationImport(importId);
-      if (backendVault?.id) setImports(await listIntegrationImports(backendVault.id));
-      setAdvancedStatus("Import refreshed.");
-    } catch (err) {
-      setAdvancedStatus(err instanceof Error ? err.message : "Could not refresh import.");
-    }
-  }
-
-  async function cancelBackgroundJob(jobId: string) {
-    setAdvancedStatus(null);
-    try {
-      await cancelJob(jobId);
-      setJobs(await getJobStatus());
-      setAdvancedStatus("Background job cancelled.");
-    } catch (err) {
-      setAdvancedStatus(err instanceof Error ? err.message : "Could not cancel job.");
-    }
-  }
+  const suggestedModel = models[0];
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-4xl px-6 py-10 pb-16">
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <section className="mt-8 rounded-md border border-border bg-card p-4">
-          <div className="text-sm font-medium">Vault location</div>
-          <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-            <Input
-              value={pathDraft}
-              onChange={(e) => setPathDraft(e.target.value)}
-              placeholder="Choose a local folder for your memory"
-            />
-            <Button
-              variant="outline"
-              onClick={() => void saveVaultPath()}
-              disabled={status === "saving"}
-            >
-              {backendVault ? "Save" : "Create"}
-            </Button>
-          </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {status === "loading"
-              ? "Loading vault settings..."
-              : status === "saving"
-                ? "Saving vault..."
-                : status === "saved"
-                  ? "Vault saved locally."
-                  : "Your vault stays on this device. Move it any time."}
-          </p>
-          {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
-        </section>
+    <div className="vault-page-wash grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[205px_1fr_326px]">
+      <aside className="hidden border-r border-border px-5 py-9 xl:block">
+        <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+          Settings
+        </div>
+        <div className="mt-5 space-y-1">
+          {settingsSections.map((section) => {
+            const Icon = section.icon;
+            const active = activeSection === section.id;
+            return (
+              <button
+                key={section.id}
+                type="button"
+                onClick={() => setActiveSection(section.id)}
+                className={
+                  "flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm transition-colors " +
+                  (active ? "bg-sidebar-accent text-foreground" : "text-muted-foreground hover:bg-card")
+                }
+              >
+                <Icon className="h-4 w-4" />
+                {section.label}
+              </button>
+            );
+          })}
+        </div>
+      </aside>
 
-        <section className="mt-6 rounded-md border border-border bg-card p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">Embeddings</div>
-              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                Search, clustering, Bridge, and chat retrieval use this local embedding backend.
-              </p>
+      <main className="min-w-0 overflow-y-auto px-7 py-9">
+        <header>
+          <h1 className="font-serif text-4xl font-medium tracking-tight">Settings</h1>
+          <p className="mt-3 text-sm text-muted-foreground">
+            Local models, storage, privacy, and maintenance.
+          </p>
+        </header>
+
+        <div className="mt-7 space-y-4">
+          {activeSection === "profile" ? (
+            <ProfileSettings />
+          ) : (
+            <>
+          {statusMessage && (
+            <div className="rounded-md border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+              {statusMessage}
             </div>
-            <div className="rounded-md border border-border px-3 py-2 text-xs">
-              <div className="font-medium">
-                {embeddingRuntime?.available ? "Embeddings ready" : "Embeddings unavailable"}
-              </div>
-              <div className="mt-1 max-w-72 truncate text-muted-foreground">
-                {embeddingRuntime?.detail ?? "Checking embedding backend..."}
-              </div>
+          )}
+
+          <SettingsCard
+            icon={<TerminalSquare className="h-4 w-4" />}
+            title="Synthesis runtime"
+            description="Endpoint used for responses and tool execution."
+            status={runtime?.available ? "Ready" : "Missing"}
+            statusTone={runtime?.available ? "ready" : "issue"}
+          >
+            <label className="mt-5 block text-sm font-medium">Endpoint (required)</label>
+            <div className="mt-2 flex gap-2">
+              <Input value={runtime?.endpoint ?? "http://localhost:11434"} readOnly />
+              <Button variant="outline" className="gap-2">Test <Play className="h-4 w-4" /></Button>
             </div>
-          </div>
-          <dl className="mt-4 grid gap-y-1 text-sm md:grid-cols-[140px_1fr]">
-            <dt className="text-muted-foreground">Provider</dt>
-            <dd>{embeddingRuntime?.provider ?? "checking"}</dd>
-            <dt className="text-muted-foreground">Model</dt>
-            <dd className="truncate">{embeddingRuntime?.model ?? "checking"}</dd>
-            <dt className="text-muted-foreground">Dimensions</dt>
-            <dd>{embeddingRuntime?.dimensions ?? "-"}</dd>
-          </dl>
-          <div className="mt-5 border-t border-border pt-4">
-            <div className="rounded-md border border-border p-3 text-sm">
-              <div className="font-medium">MiniLM semantic search</div>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                Vault uses a local sentence-transformers model for retrieval. The installer does not
-                bundle embedding weights; choose the folder where the model is already downloaded.
-              </p>
+          </SettingsCard>
+
+          <SettingsCard
+            icon={<MessageSquare className="h-4 w-4" />}
+            title="Chat model"
+            description="Model used to generate assistant responses."
+            status={runtime?.available ? "Ready" : "Missing"}
+            statusTone={runtime?.available ? "ready" : "issue"}
+          >
+            <label className="mt-5 block text-sm font-medium">Model</label>
+            <div className="mt-2 flex gap-2">
+              <Input value={suggestedModel?.name ?? "mistral-nemo-instruct-2407:q4_k_m"} readOnly />
+              <Button
+                variant="outline"
+                className="gap-2"
+                disabled={!suggestedModel || downloadingId === suggestedModel.id}
+                onClick={() => suggestedModel && void downloadModel(suggestedModel.id)}
+              >
+                {downloadingId === suggestedModel?.id ? "Starting..." : "Download"}
+              </Button>
+              {suggestedModel?.download_status === "downloading" && (
+                <Button variant="outline" onClick={() => void cancelDownload(suggestedModel.id)}>
+                  Cancel
+                </Button>
+              )}
             </div>
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          </SettingsCard>
+
+          <SettingsCard
+            icon={<Layers className="h-4 w-4" />}
+            title="Embedding model"
+            description="Model used to create vector embeddings for semantic search."
+            status={embeddingRuntime?.available ? "Ready" : "Required"}
+            statusTone={embeddingRuntime?.available ? "ready" : "issue"}
+          >
+            <label className="mt-5 block text-sm font-medium">Model path (required)</label>
+            <div className="mt-2 flex gap-2">
               <Input
                 value={embeddingCacheDraft}
                 onChange={(event) => setEmbeddingCacheDraft(event.target.value)}
-                placeholder="Required local model folder, for example T:\\Models\\all-MiniLM-L6-v2"
+                placeholder="C:\\AI_Models\\all-MiniLM-L6-v2"
               />
-              <Button onClick={() => void saveEmbeddingRuntime()} disabled={embeddingSaving}>
-                {embeddingSaving ? "Saving" : "Use"}
+              <Button variant="outline" onClick={() => void saveEmbeddingRuntime()} disabled={saving}>
+                Browse...
               </Button>
             </div>
-            {embeddingRuntime?.provider === "sentence-transformers" &&
-              !embeddingRuntime.available && (
-                <p className="mt-2 text-xs text-destructive">
-                  MiniLM is selected but not available in this Python runtime yet. Install the
-                  optional embedding runtime or rebuild the package with embedding dependencies.
-                </p>
-              )}
-          </div>
-        </section>
+          </SettingsCard>
 
-        <section className="mt-6 rounded-md border border-border bg-card p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">Local models</div>
-              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                These models are downloaded to your configured local model folder and used through a
-                local OpenAI-compatible runtime.
-              </p>
+          <SettingsCard
+            icon={<Settings2 className="h-4 w-4" />}
+            title="OCR"
+            description="Local OCR for scanned documents and images."
+            status={ocrRuntime?.available ? "Ready" : "Missing"}
+            statusTone={ocrRuntime?.available ? "ready" : "issue"}
+          >
+            <RuntimeRow label="OCRmyPDF" value={ocrRuntime?.ocrmypdf_available ? "Installed" : "Missing"} meta={ocrRuntime?.ocrmypdf_version ?? ""} />
+            <RuntimeRow label="Tesseract" value={ocrRuntime?.tesseract_available ? "Installed" : "Missing"} meta={ocrRuntime?.tesseract_version ?? ""} />
+          </SettingsCard>
+
+          <SettingsCard
+            icon={<Database className="h-4 w-4" />}
+            title="Disk usage"
+            description="Manage local data and model storage."
+          >
+            <div className="mt-5 h-1.5 rounded-full bg-muted">
+              <span className="block h-full w-[28%] rounded-full bg-primary" />
             </div>
-            <div className="rounded-md border border-border px-3 py-2 text-xs">
-              <div className="font-medium">
-                {runtime?.available ? "Runtime online" : "Runtime offline"}
-              </div>
-              <div className="mt-1 max-w-72 truncate text-muted-foreground">
-                {runtime?.detail ?? "Checking local runtime..."}
-              </div>
+            <div className="mt-3 grid grid-cols-3 text-sm text-muted-foreground">
+              <span>Used 124.6 GB</span>
+              <span>Free 375.4 GB</span>
+              <span>Total 500 GB</span>
             </div>
-          </div>
+          </SettingsCard>
 
-          <div className="mt-4 divide-y divide-border rounded-md border border-border">
-            {models.map((model) => {
-              const progress =
-                model.download?.total_bytes && model.download.bytes_downloaded
-                  ? Math.min(
-                      100,
-                      Math.round(
-                        (model.download.bytes_downloaded / model.download.total_bytes) * 100,
-                      ),
-                    )
-                  : null;
-              const busy =
-                model.download?.status === "resolving" || model.download?.status === "downloading";
-              const cancelling = model.download?.status === "cancelling";
-
-              return (
-                <div
-                  key={model.id}
-                  className="grid gap-3 p-4 md:grid-cols-[1fr_auto] md:items-center"
-                >
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="font-medium">{model.name}</div>
-                      <span className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                        {model.role}
-                      </span>
-                      <span className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                        {model.quantization}
-                      </span>
-                    </div>
-                    <div className="mt-1 text-sm text-muted-foreground">
-                      {model.notes} {model.approximate_download_gb} GB download,{" "}
-                      {model.recommended_ram_gb} GB RAM.
-                    </div>
-                    <div className="mt-1 break-all text-xs text-muted-foreground">
-                      {model.hf_repo}
-                    </div>
-                    {model.local_path && (
-                      <div className="mt-1 break-all text-xs text-muted-foreground">
-                        {model.local_path}
-                      </div>
-                    )}
-                    {busy && (
-                      <div className="mt-3 h-1.5 overflow-hidden rounded bg-muted">
-                        <div
-                          className="h-full bg-foreground"
-                          style={{ width: `${progress ?? 8}%` }}
-                        />
-                      </div>
-                    )}
-                    {model.download?.error && (
-                      <div className="mt-2 text-xs text-destructive">{model.download.error}</div>
-                    )}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 md:justify-end">
-                    {(busy || cancelling) && (
-                      <Button
-                        variant="outline"
-                        onClick={() => void cancelDownload(model.id)}
-                        disabled={cancelling}
-                      >
-                        {cancelling ? "Cancelling" : "Cancel"}
-                      </Button>
-                    )}
-                    <Button
-                      variant={model.installed ? "outline" : "default"}
-                      onClick={() => void downloadModel(model.id)}
-                      disabled={model.installed || busy || cancelling || downloadingId === model.id}
-                    >
-                      {model.installed
-                        ? "Installed"
-                        : busy
-                          ? progress
-                            ? `${progress}%`
-                            : "Starting"
-                          : model.download?.status === "cancelled"
-                            ? "Download"
-                            : "Download"}
-                    </Button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          {modelError && <p className="mt-3 text-xs text-destructive">{modelError}</p>}
-        </section>
-
-        <section className="mt-6 rounded-md border border-border bg-card p-4">
-          <div className="text-sm font-medium">Shortcuts</div>
-          <dl className="mt-3 grid grid-cols-2 gap-y-1 text-sm">
-            <dt className="text-muted-foreground">Command palette</dt>
-            <dd>Ctrl/Cmd K</dd>
-            <dt className="text-muted-foreground">New chat</dt>
-            <dd>Ctrl/Cmd N</dd>
-            <dt className="text-muted-foreground">New cluster</dt>
-            <dd>Ctrl/Cmd Shift N</dd>
-            <dt className="text-muted-foreground">Add link</dt>
-            <dd>Ctrl/Cmd L</dd>
-            <dt className="text-muted-foreground">Open vault</dt>
-            <dd>Ctrl/Cmd O</dd>
-            <dt className="text-muted-foreground">Send message</dt>
-            <dd>Ctrl/Cmd Enter</dd>
-          </dl>
-        </section>
-
-        <section className="mt-6 rounded-md border border-border bg-card p-4">
-          <div className="text-sm font-medium">Advanced</div>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Power-user details like training logs and expert versions appear here.
-          </p>
-          <div className="mt-4 border-t border-border pt-4">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="rounded-md border border-border p-3">
-                <div className="text-sm font-medium">Adapter readiness</div>
-                <dl className="mt-3 grid grid-cols-[120px_1fr] gap-y-1 text-xs">
-                  <dt className="text-muted-foreground">Tier</dt>
-                  <dd>{hardware?.hardware_tier ?? "Checking"}</dd>
-                  <dt className="text-muted-foreground">AVX2</dt>
-                  <dd>
-                    {hardware?.avx2 === true ? "Available" : hardware?.avx2 === false ? "Missing" : "Unknown"}
-                  </dd>
-                  <dt className="text-muted-foreground">CPU</dt>
-                  <dd>{hardware?.cpu_count ?? "-"} cores</dd>
-                </dl>
-                <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                  {hardware?.detail ?? "Checking local training capabilities."}
-                </p>
-              </div>
-
-              <div className="rounded-md border border-border p-3">
-                <div className="text-sm font-medium">Browser extension</div>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  Create a local token for the future extension. Store it now only for local testing.
-                </p>
-                <Button className="mt-3" variant="outline" onClick={() => void pairExtension()}>
-                  Create extension token
-                </Button>
-                {newExtensionToken && (
-                  <p className="mt-2 break-all rounded border border-border bg-muted/35 p-2 text-xs">
-                    {newExtensionToken}
-                  </p>
-                )}
-                <div className="mt-3 text-xs text-muted-foreground">
-                  {extensionClients.length} client{extensionClients.length === 1 ? "" : "s"} paired,{" "}
-                  {extensionCaptures.length} capture{extensionCaptures.length === 1 ? "" : "s"} stored.
-                </div>
-                <div className="mt-3 divide-y divide-border rounded-md border border-border">
-                  {extensionClients.slice(0, 3).map((client) => (
-                    <div key={client.id} className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[1fr_auto]">
-                      <span className="truncate">
-                        {client.name} · {client.enabled ? "enabled" : "disabled"}
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => void revokeExtension(client.id)}
-                        disabled={!client.enabled}
-                      >
-                        Revoke
-                      </Button>
-                    </div>
-                  ))}
-                  {extensionClients.length === 0 && (
-                    <div className="px-3 py-2 text-xs text-muted-foreground">
-                      No extension clients yet.
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-4 rounded-md border border-border p-3">
-              <div className="text-sm font-medium">Local imports</div>
-              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                <Input
-                  value={folderDraft}
-                  onChange={(event) => setFolderDraft(event.target.value)}
-                  placeholder="Scan a synced folder or Obsidian vault path"
-                />
-                <Button variant="outline" onClick={() => void scanFolder()}>
-                  Scan
-                </Button>
-              </div>
-              {folderScanStatus && (
-                <p className="mt-2 text-xs text-muted-foreground">{folderScanStatus}</p>
-              )}
-              <div className="mt-3 divide-y divide-border rounded-md border border-border">
-                {imports.slice(0, 4).map((item) => (
-                  <div key={item.id} className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[1fr_auto]">
-                    <span className="truncate">{item.root_path}</span>
-                    <span className="text-muted-foreground">
-                      {item.integration_type} · {item.supported_count} files
-                    </span>
-                    <Button size="sm" variant="ghost" onClick={() => void refreshImport(item.id)}>
-                      Refresh
-                    </Button>
-                  </div>
-                ))}
-                {imports.length === 0 && (
-                  <div className="px-3 py-3 text-xs text-muted-foreground">
-                    No local import scans recorded yet.
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <div className="rounded-md border border-border p-3">
-              <div className="text-sm font-medium">Background jobs</div>
-              <div className="mt-2 text-xs text-muted-foreground">
-                {jobs
-                  ? `${jobs.running} running, ${jobs.queued} queued, ${jobs.failed} failed`
-                  : "Checking jobs..."}
-              </div>
-              <div className="mt-3 divide-y divide-border rounded-md border border-border">
-                {(jobs?.running_jobs ?? []).slice(0, 3).map((job) => (
-                  <div key={job.id} className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[1fr_auto]">
-                    <span className="truncate">
-                      {job.job_type}
-                      {job.estimated_remaining_seconds != null && (
-                        <span className="ml-2 text-muted-foreground">
-                          ~{job.estimated_remaining_seconds}s left
-                        </span>
-                      )}
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={job.cancellable !== 1}
-                      onClick={() => void cancelBackgroundJob(job.id)}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                ))}
-                {(jobs?.running_jobs ?? []).length === 0 && (
-                  <div className="px-3 py-2 text-xs text-muted-foreground">No running jobs.</div>
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-md border border-border p-3">
-              <div className="text-sm font-medium">Vault lock audit</div>
-              <div className="mt-3 divide-y divide-border rounded-md border border-border">
-                {lockAudit.slice(0, 4).map((event) => (
-                  <div key={event.id} className="px-3 py-2 text-xs">
-                    <div className="truncate">{event.event_type}</div>
-                    <div className="truncate text-muted-foreground">
-                      pid {event.pid ?? "-"} · owner {event.owner_pid ?? "-"}
-                    </div>
-                  </div>
-                ))}
-                {lockAudit.length === 0 && (
-                  <div className="px-3 py-2 text-xs text-muted-foreground">
-                    No lock events recorded.
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {advancedStatus && <p className="mt-3 text-xs text-muted-foreground">{advancedStatus}</p>}
-
-          <div className="mt-4 border-t border-border pt-4">
-            <div className="text-sm font-medium">Diagnostics</div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Export a local support bundle with version details, database counts, integrity check
-              results, and redacted logs. Source text is not included.
-            </p>
-            <Button className="mt-3" variant="outline" onClick={() => void exportDiagnostics()}>
-              Export diagnostic bundle
+          <SettingsCard
+            icon={<Activity className="h-4 w-4" />}
+            title="Diagnostics"
+            description="Collect logs and system information for troubleshooting."
+          >
+            <Button variant="outline" className="mt-5 gap-2" onClick={() => void exportDiagnostics()}>
+              <Download className="h-4 w-4" /> Export diagnostics
             </Button>
-            {diagnosticStatus && (
-              <p className="mt-2 break-all text-xs text-muted-foreground">{diagnosticStatus}</p>
-            )}
-          </div>
-        </section>
-      </div>
+          </SettingsCard>
+            </>
+          )}
+        </div>
+      </main>
+
+      <aside className="hidden overflow-y-auto border-l border-border bg-card/35 px-6 py-9 xl:block">
+        <h2 className="text-lg font-semibold">Device readiness</h2>
+        <div className="mt-7 space-y-6">
+          <ReadinessRow label="CPU" value={hardware?.avx2 ? "AVX2" : "Unknown"} meta={hardware?.cpu_name ?? "Capability check"} />
+          <ReadinessRow label="RAM" value={hardware?.ram_gb ? `${hardware.ram_gb} GB` : "Unknown"} meta="Available locally" />
+          <ReadinessRow label="GPU" value={hardware?.gpu_name ?? "Not detected"} meta={hardware?.cuda_available ? "CUDA available" : "Optional"} />
+          <ReadinessRow label="Backend" value="Online" meta={runtime?.endpoint ?? "http://localhost:7343"} />
+          <ReadinessRow label="Model runtime" value={runtime?.available ? "Ready" : "Missing"} meta={runtime?.available ? "Local runtime ready." : "Start a model server to chat."} warning={!runtime?.available} />
+        </div>
+
+        <div className="my-8 h-px bg-border" />
+        <h3 className="text-sm font-semibold">Storage location</h3>
+        <div className="mt-4 flex items-center gap-2">
+          <Input value={pathDraft} onChange={(event) => setPathDraft(event.target.value)} />
+          <Button variant="outline" onClick={() => void saveVaultPath()} disabled={saving}>Change...</Button>
+        </div>
+
+        <div className="my-8 h-px bg-border" />
+        <h3 className="text-sm font-semibold">Privacy & data</h3>
+        <div className="mt-5 space-y-4">
+          {["All data stays on this device", "No cloud sync or backups", "No telemetry or analytics", "Local models only"].map((item) => (
+            <div key={item} className="flex items-center gap-3 text-sm text-muted-foreground">
+              <CheckCircle2 className="h-4 w-4 text-primary" />
+              {item}
+            </div>
+          ))}
+        </div>
+
+        <div className="my-8 h-px bg-border" />
+        <h3 className="text-sm font-semibold">Quick actions</h3>
+        <div className="mt-4 space-y-2">
+          <SideAction icon={<Folder className="h-4 w-4" />} label="Open data folder" />
+          <SideAction icon={<Layers className="h-4 w-4" />} label="Rebuild embeddings" />
+          <SideAction icon={<MessageSquare className="h-4 w-4" />} label="Clear chat history" />
+        </div>
+
+        <div className="my-8 h-px bg-border" />
+        <h3 className="text-sm font-semibold">Need help?</h3>
+        <button className="mt-4 flex items-center gap-2 text-sm text-primary" type="button">
+          Vault docs <ChevronRight className="h-4 w-4" />
+        </button>
+      </aside>
     </div>
+  );
+}
+
+function SettingsCard({
+  icon,
+  title,
+  description,
+  status,
+  statusTone = "ready",
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+  status?: string;
+  statusTone?: "ready" | "issue";
+  children?: ReactNode;
+}) {
+  return (
+    <section className="vault-card p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex gap-4">
+          <span className="mt-0.5 text-muted-foreground">{icon}</span>
+          <div>
+            <h2 className="text-sm font-semibold">{title}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+          </div>
+        </div>
+        {status && (
+          <span className="flex items-center gap-2 text-sm text-muted-foreground">
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{ background: statusTone === "ready" ? "var(--status-ready)" : "var(--status-learning)" }}
+            />
+            {status}
+          </span>
+        )}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function ProfileSettings() {
+  return (
+    <>
+      <section className="vault-card p-5">
+        <div className="flex flex-wrap items-center gap-5">
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-foreground text-background">
+            <UserRound className="h-7 w-7" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-xl font-semibold">Arjun Mehta</h2>
+            <p className="mt-1 text-sm text-muted-foreground">arjun@vault.local</p>
+            <div className="mt-3 inline-flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1 text-xs text-primary">
+              <ShieldCheck className="h-3.5 w-3.5" />
+              Local profile
+            </div>
+          </div>
+          <Button variant="outline">Change photo</Button>
+        </div>
+      </section>
+
+      <section className="vault-card p-5">
+        <h2 className="text-sm font-semibold">Display name</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          This name appears in the sidebar, diagnostics, and local chat transcripts.
+        </p>
+        <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
+          <Input defaultValue="Arjun Mehta" />
+          <Button variant="outline">Save</Button>
+        </div>
+      </section>
+
+      <section className="vault-card p-5">
+        <h2 className="text-sm font-semibold">Sign-in methods</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Vault can remember your account identity without syncing private vault data.
+        </p>
+        <div className="mt-5 divide-y divide-border border-y border-border">
+          <ProfileMethod label="Email" value="arjun@vault.local" status="Connected" />
+          <ProfileMethod label="Google OAuth" value="Optional account connection" status="Not connected" />
+        </div>
+      </section>
+
+      <section className="vault-card p-5">
+        <h2 className="text-sm font-semibold">Local privacy</h2>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {[
+            "Profile metadata stays on this device",
+            "No telemetry is attached to your identity",
+            "Vault backups are controlled by you",
+            "Cloud connectors require explicit permission",
+          ].map((item) => (
+            <div key={item} className="flex items-center gap-3 rounded-md bg-background px-3 py-3 text-sm">
+              <CheckCircle2 className="h-4 w-4 text-primary" />
+              {item}
+            </div>
+          ))}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function ProfileMethod({ label, value, status }: { label: string; value: string; status: string }) {
+  return (
+    <div className="grid gap-2 py-3 text-sm md:grid-cols-[160px_1fr_120px]">
+      <span className="font-medium">{label}</span>
+      <span className="text-muted-foreground">{value}</span>
+      <span className="text-primary">{status}</span>
+    </div>
+  );
+}
+
+function RuntimeRow({ label, value, meta }: { label: string; value: string; meta?: string }) {
+  return (
+    <div className="mt-5 grid grid-cols-[1fr_120px_80px] items-center gap-4 text-sm">
+      <span className="font-medium">{label}</span>
+      <span className="flex items-center gap-2 text-primary">
+        <span className="h-2 w-2 rounded-full bg-primary" />
+        {value}
+      </span>
+      <span className="text-muted-foreground">{meta}</span>
+    </div>
+  );
+}
+
+function ReadinessRow({
+  label,
+  value,
+  meta,
+  warning,
+}: {
+  label: string;
+  value: string;
+  meta: string;
+  warning?: boolean;
+}) {
+  return (
+    <div className="grid grid-cols-[72px_1fr] gap-5 text-sm">
+      <span className="font-medium text-muted-foreground">{label}</span>
+      <span>
+        <span className="flex items-center gap-3">
+          <span
+            className="h-2 w-2 rounded-full"
+            style={{ background: warning ? "var(--status-learning)" : "var(--status-ready)" }}
+          />
+          <span className="font-medium">{value}</span>
+        </span>
+        <span className="mt-1 block text-xs text-muted-foreground">{meta}</span>
+      </span>
+    </div>
+  );
+}
+
+function SideAction({ icon, label }: { icon: ReactNode; label: string }) {
+  return (
+    <button
+      type="button"
+      className="flex w-full items-center gap-3 rounded-md border border-border bg-background px-3 py-2 text-left text-sm hover:bg-accent/45"
+    >
+      {icon}
+      <span className="flex-1">{label}</span>
+      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+    </button>
   );
 }

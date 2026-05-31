@@ -443,6 +443,28 @@ export type HardwareStatusRead = {
   detail: string;
 };
 
+export type OCRRuntimeStatusRead = {
+  available: boolean;
+  pdf_ocr_available: boolean;
+  image_ocr_available: boolean;
+  tesseract_path: string | null;
+  ocrmypdf_command: string | null;
+  tessdata_path: string | null;
+  ghostscript_path: string | null;
+  qpdf_path: string | null;
+  missing: string[];
+  detail: string;
+};
+
+export type VaultSafetyRead = {
+  database_path: string;
+  integrity_ok: boolean;
+  integrity_result: string[];
+  wal_checkpoint: string;
+  backup_path: string | null;
+  created_at: string;
+};
+
 export type LocalFolderScanResponse = {
   import_id: string | null;
   path: string;
@@ -922,6 +944,18 @@ export async function getStartupStatus() {
 
 export async function getHardwareStatus() {
   return request<HardwareStatusRead>("/api/v1/system/hardware");
+}
+
+export async function getOCRRuntimeStatus() {
+  return request<OCRRuntimeStatusRead>("/api/v1/system/ocr");
+}
+
+export async function getVaultSafetyStatus() {
+  return request<VaultSafetyRead>("/api/v1/system/vault-safety");
+}
+
+export async function createVaultBackup() {
+  return request<VaultSafetyRead>("/api/v1/system/vault-safety/backup", { method: "POST" });
 }
 
 export async function listVaultLockAudit(limit = 20) {

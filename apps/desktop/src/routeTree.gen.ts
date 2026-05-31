@@ -12,13 +12,17 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AppTimelineRouteImport } from './routes/_app.timeline'
+import { Route as AppTasksRouteImport } from './routes/_app.tasks'
 import { Route as AppSourcesRouteImport } from './routes/_app.sources'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AppSearchRouteImport } from './routes/_app.search'
 import { Route as AppMapRouteImport } from './routes/_app.map'
+import { Route as AppHomeRouteImport } from './routes/_app.home'
 import { Route as AppClustersRouteImport } from './routes/_app.clusters'
 import { Route as AppChatRouteImport } from './routes/_app.chat'
 import { Route as AppBridgeRouteImport } from './routes/_app.bridge'
+import { Route as AppActivityRouteImport } from './routes/_app.activity'
 import { Route as AppClustersClusterIdRouteImport } from './routes/_app.clusters.$clusterId'
 import { Route as AppChatChatIdRouteImport } from './routes/_app.chat.$chatId'
 
@@ -35,6 +39,16 @@ const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AppTimelineRoute = AppTimelineRouteImport.update({
+  id: '/timeline',
+  path: '/timeline',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppTasksRoute = AppTasksRouteImport.update({
+  id: '/tasks',
+  path: '/tasks',
+  getParentRoute: () => AppRoute,
 } as any)
 const AppSourcesRoute = AppSourcesRouteImport.update({
   id: '/sources',
@@ -56,6 +70,11 @@ const AppMapRoute = AppMapRouteImport.update({
   path: '/map',
   getParentRoute: () => AppRoute,
 } as any)
+const AppHomeRoute = AppHomeRouteImport.update({
+  id: '/home',
+  path: '/home',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppClustersRoute = AppClustersRouteImport.update({
   id: '/clusters',
   path: '/clusters',
@@ -69,6 +88,11 @@ const AppChatRoute = AppChatRouteImport.update({
 const AppBridgeRoute = AppBridgeRouteImport.update({
   id: '/bridge',
   path: '/bridge',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppActivityRoute = AppActivityRouteImport.update({
+  id: '/activity',
+  path: '/activity',
   getParentRoute: () => AppRoute,
 } as any)
 const AppClustersClusterIdRoute = AppClustersClusterIdRouteImport.update({
@@ -85,26 +109,34 @@ const AppChatChatIdRoute = AppChatChatIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
+  '/activity': typeof AppActivityRoute
   '/bridge': typeof AppBridgeRoute
   '/chat': typeof AppChatRouteWithChildren
   '/clusters': typeof AppClustersRouteWithChildren
+  '/home': typeof AppHomeRoute
   '/map': typeof AppMapRoute
   '/search': typeof AppSearchRoute
   '/settings': typeof AppSettingsRoute
   '/sources': typeof AppSourcesRoute
+  '/tasks': typeof AppTasksRoute
+  '/timeline': typeof AppTimelineRoute
   '/chat/$chatId': typeof AppChatChatIdRoute
   '/clusters/$clusterId': typeof AppClustersClusterIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
+  '/activity': typeof AppActivityRoute
   '/bridge': typeof AppBridgeRoute
   '/chat': typeof AppChatRouteWithChildren
   '/clusters': typeof AppClustersRouteWithChildren
+  '/home': typeof AppHomeRoute
   '/map': typeof AppMapRoute
   '/search': typeof AppSearchRoute
   '/settings': typeof AppSettingsRoute
   '/sources': typeof AppSourcesRoute
+  '/tasks': typeof AppTasksRoute
+  '/timeline': typeof AppTimelineRoute
   '/chat/$chatId': typeof AppChatChatIdRoute
   '/clusters/$clusterId': typeof AppClustersClusterIdRoute
 }
@@ -113,13 +145,17 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_app': typeof AppRouteWithChildren
   '/onboarding': typeof OnboardingRoute
+  '/_app/activity': typeof AppActivityRoute
   '/_app/bridge': typeof AppBridgeRoute
   '/_app/chat': typeof AppChatRouteWithChildren
   '/_app/clusters': typeof AppClustersRouteWithChildren
+  '/_app/home': typeof AppHomeRoute
   '/_app/map': typeof AppMapRoute
   '/_app/search': typeof AppSearchRoute
   '/_app/settings': typeof AppSettingsRoute
   '/_app/sources': typeof AppSourcesRoute
+  '/_app/tasks': typeof AppTasksRoute
+  '/_app/timeline': typeof AppTimelineRoute
   '/_app/chat/$chatId': typeof AppChatChatIdRoute
   '/_app/clusters/$clusterId': typeof AppClustersClusterIdRoute
 }
@@ -128,26 +164,34 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/onboarding'
+    | '/activity'
     | '/bridge'
     | '/chat'
     | '/clusters'
+    | '/home'
     | '/map'
     | '/search'
     | '/settings'
     | '/sources'
+    | '/tasks'
+    | '/timeline'
     | '/chat/$chatId'
     | '/clusters/$clusterId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/onboarding'
+    | '/activity'
     | '/bridge'
     | '/chat'
     | '/clusters'
+    | '/home'
     | '/map'
     | '/search'
     | '/settings'
     | '/sources'
+    | '/tasks'
+    | '/timeline'
     | '/chat/$chatId'
     | '/clusters/$clusterId'
   id:
@@ -155,13 +199,17 @@ export interface FileRouteTypes {
     | '/'
     | '/_app'
     | '/onboarding'
+    | '/_app/activity'
     | '/_app/bridge'
     | '/_app/chat'
     | '/_app/clusters'
+    | '/_app/home'
     | '/_app/map'
     | '/_app/search'
     | '/_app/settings'
     | '/_app/sources'
+    | '/_app/tasks'
+    | '/_app/timeline'
     | '/_app/chat/$chatId'
     | '/_app/clusters/$clusterId'
   fileRoutesById: FileRoutesById
@@ -195,6 +243,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_app/timeline': {
+      id: '/_app/timeline'
+      path: '/timeline'
+      fullPath: '/timeline'
+      preLoaderRoute: typeof AppTimelineRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/tasks': {
+      id: '/_app/tasks'
+      path: '/tasks'
+      fullPath: '/tasks'
+      preLoaderRoute: typeof AppTasksRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/sources': {
       id: '/_app/sources'
       path: '/sources'
@@ -223,6 +285,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppMapRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/home': {
+      id: '/_app/home'
+      path: '/home'
+      fullPath: '/home'
+      preLoaderRoute: typeof AppHomeRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/clusters': {
       id: '/_app/clusters'
       path: '/clusters'
@@ -242,6 +311,13 @@ declare module '@tanstack/react-router' {
       path: '/bridge'
       fullPath: '/bridge'
       preLoaderRoute: typeof AppBridgeRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/activity': {
+      id: '/_app/activity'
+      path: '/activity'
+      fullPath: '/activity'
+      preLoaderRoute: typeof AppActivityRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/clusters/$clusterId': {
@@ -285,23 +361,31 @@ const AppClustersRouteWithChildren = AppClustersRoute._addFileChildren(
 )
 
 interface AppRouteChildren {
+  AppActivityRoute: typeof AppActivityRoute
   AppBridgeRoute: typeof AppBridgeRoute
   AppChatRoute: typeof AppChatRouteWithChildren
   AppClustersRoute: typeof AppClustersRouteWithChildren
+  AppHomeRoute: typeof AppHomeRoute
   AppMapRoute: typeof AppMapRoute
   AppSearchRoute: typeof AppSearchRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppSourcesRoute: typeof AppSourcesRoute
+  AppTasksRoute: typeof AppTasksRoute
+  AppTimelineRoute: typeof AppTimelineRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppActivityRoute: AppActivityRoute,
   AppBridgeRoute: AppBridgeRoute,
   AppChatRoute: AppChatRouteWithChildren,
   AppClustersRoute: AppClustersRouteWithChildren,
+  AppHomeRoute: AppHomeRoute,
   AppMapRoute: AppMapRoute,
   AppSearchRoute: AppSearchRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppSourcesRoute: AppSourcesRoute,
+  AppTasksRoute: AppTasksRoute,
+  AppTimelineRoute: AppTimelineRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

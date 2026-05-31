@@ -77,6 +77,40 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         soft_timeout_seconds=None,
         timeout_action="defer",
     ),
+    "ocr_source": JobPolicy(
+        priority="normal",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="source",
+        concurrency_group="ocr_cpu",
+        resource_cost="heavy",
+        can_run_during_synthesis=False,
+        user_visible=True,
+        user_initiated=False,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=1800,
+        soft_timeout_seconds=300,
+        timeout_action="defer",
+    ),
+    "expanded_analysis": JobPolicy(
+        priority="normal",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="chat",
+        concurrency_group="analysis",
+        resource_cost="medium",
+        can_run_during_synthesis=True,
+        user_visible=True,
+        user_initiated=True,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=900,
+        soft_timeout_seconds=120,
+        timeout_action="defer",
+    ),
     "delete_source_cleanup": JobPolicy(
         priority="critical",
         idempotency_class="reconcile_required",
@@ -440,6 +474,10 @@ def _run_claimed_job(job: dict) -> None:
             _run_reindex_source(payload)
         elif job["job_type"] == "chat_transcript_memory":
             _run_chat_transcript_memory(payload)
+        elif job["job_type"] == "ocr_source":
+            _run_ocr_source(payload)
+        elif job["job_type"] == "expanded_analysis":
+            _run_expanded_analysis(payload, job["id"])
         elif job["job_type"] == "delete_source_cleanup":
             _run_delete_source_cleanup(payload)
         elif job["job_type"] == "vector_reconcile_incremental":
@@ -496,6 +534,127 @@ def _run_chat_transcript_memory(payload: dict) -> None:
             "UPDATE chat_sessions SET memory_status = 'indexed', memory_updated_at = ? WHERE id = ?",
             (utc_now(), session_id),
         )
+
+
+def _run_ocr_source(payload: dict) -> None:
+    require_embeddings_available("OCR source indexing")
+    from backend.app.core.extraction import extract_pages_from_path
+
+    source_id = str(payload["source_id"])
+    with connect() as conn:
+        source = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+        if source is None or source["deleted_at"] is not None:
+            return
+        path = source["original_path"]
+        if not path:
+            raise RuntimeError("OCR source job requires an original local path.")
+        title, pages = extract_pages_from_path(path)
+        text = "\n\n".join(page for page in pages if page.strip()).strip()
+        if not text:
+            raise RuntimeError("OCR produced no readable text.")
+        now = utc_now()
+        conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
+        for index, page_text in enumerate(pages, start=1):
+            cleaned = (page_text or "").strip()
+            if not cleaned:
+                continue
+            conn.execute(
+                """
+                INSERT INTO source_pages (
+                    id, source_id, vault_id, page_number, raw_text, extraction_version,
+                    content_hash, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'ocrmypdf-tesseract-v1', ?, ?, ?)
+                """,
+                (
+                    f"page-{uuid4()}",
+                    source_id,
+                    source["vault_id"],
+                    index,
+                    cleaned,
+                    content_hash(cleaned),
+                    now,
+                    now,
+                ),
+            )
+        conn.execute(
+            """
+            UPDATE sources
+            SET title = ?, raw_text = ?, extracted_text = ?, state = 'indexed', updated_at = ?
+            WHERE id = ?
+            """,
+            (title or source["title"], text, text, now, source_id),
+        )
+        row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+        if row is not None:
+            reindex_source_chunks(conn, dict_from_row(row))
+            mark_cluster_needs_update(conn, row["cluster_id"], "OCR source text was indexed.")
+
+
+def _run_expanded_analysis(payload: dict, job_id: str) -> None:
+    query = str(payload.get("query") or "").strip()
+    vault_id = str(payload.get("vault_id") or "").strip()
+    cluster_id = str(payload.get("cluster_id") or "").strip() or None
+    limit = max(1, min(int(payload.get("limit") or 12), 50))
+    if not query or not vault_id:
+        raise RuntimeError("Expanded analysis requires vault_id and query.")
+    require_embeddings_available("Expanded analysis")
+    from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text
+
+    query_embedding = embed_text(query)
+    params: list[str] = [vault_id]
+    cluster_clause = ""
+    if cluster_id:
+        cluster_clause = "AND chunks.cluster_id = ?"
+        params.append(cluster_id)
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT chunks.source_id, chunks.text, chunks.embedding, sources.title
+            FROM source_chunks chunks
+            JOIN sources ON sources.id = chunks.source_id
+            WHERE chunks.vault_id = ?
+              AND sources.state = 'indexed'
+              AND sources.deleted_at IS NULL
+              {cluster_clause}
+            """,
+            params,
+        ).fetchall()
+        best: dict[str, dict] = {}
+        for row in rows:
+            score = cosine_similarity(query_embedding, decode_embedding(row["embedding"]))
+            current = best.get(row["source_id"])
+            if current is None or score > current["score"]:
+                best[row["source_id"]] = {
+                    "source_id": row["source_id"],
+                    "source_title": row["title"],
+                    "score": score,
+                    "excerpt": row["text"],
+                }
+        conn.execute("DELETE FROM analysis_evidence_packets WHERE job_id = ?", (job_id,))
+        now = utc_now()
+        for packet in sorted(best.values(), key=lambda item: item["score"], reverse=True)[:limit]:
+            conn.execute(
+                """
+                INSERT INTO analysis_evidence_packets (
+                    id, job_id, vault_id, cluster_id, query, source_id, source_title,
+                    relevance_score, status, read_error, evidence_excerpt, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready', '', ?, ?)
+                """,
+                (
+                    f"evidence-{uuid4()}",
+                    job_id,
+                    vault_id,
+                    cluster_id,
+                    query,
+                    packet["source_id"],
+                    packet["source_title"],
+                    round(float(packet["score"]), 4),
+                    str(packet["excerpt"])[:1200],
+                    now,
+                ),
+            )
 
 
 def _run_delete_source_cleanup(payload: dict) -> None:

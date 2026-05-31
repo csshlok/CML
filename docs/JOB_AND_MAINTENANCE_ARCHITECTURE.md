@@ -169,7 +169,8 @@ This table is the source of truth for current and planned V1 job types. Values c
 | `reindex_source` | implemented | high | idempotent | requeue | cancel | source | vector_writer | medium | false | true | sometimes | true | false | 600s / defer |
 | `chat_transcript_memory` | implemented | normal | idempotent | requeue | cancel | chat | vector_writer | medium | false | true | false | false | false | 300s / defer |
 | `extract_source` | planned | high | idempotent | requeue | cancel | source | null | medium | true | true | true | true | false | 600s / fail |
-| `ocr_source` | planned | normal | idempotent | requeue | cancel | source | ocr_cpu | heavy | false | true | true | true | false | 1800s / defer |
+| `ocr_source` | implemented | normal | idempotent | requeue | cancel | source | ocr_cpu | heavy | false | true | true | true | false | 1800s / defer |
+| `expanded_analysis` | implemented | normal | idempotent | requeue | cancel | chat | analysis | medium | true | true | true | true | false | 900s / defer |
 | `fetch_link` | planned | normal | idempotent | requeue | cancel | source | network_fetch | medium | true | true | true | true | false | 180s / fail |
 | `embed_source_chunks` | planned | high | idempotent | requeue | requeue_on_retry | vector_index | vector_writer | medium | false | true | false | true | false | 900s / defer |
 | `orphan_vector_cleanup` | planned | high | idempotent | requeue | cancel | vector_index | vector_writer | medium | false | false | false | false | false | 600s / defer |

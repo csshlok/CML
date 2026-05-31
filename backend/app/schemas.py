@@ -558,6 +558,28 @@ class StartupStatusRead(BaseModel):
     updated_at: str = ""
 
 
+class OCRRuntimeStatusRead(BaseModel):
+    available: bool
+    pdf_ocr_available: bool
+    image_ocr_available: bool
+    tesseract_path: str | None = None
+    ocrmypdf_command: str | None = None
+    tessdata_path: str | None = None
+    ghostscript_path: str | None = None
+    qpdf_path: str | None = None
+    missing: list[str]
+    detail: str
+
+
+class VaultSafetyRead(BaseModel):
+    database_path: str
+    integrity_ok: bool
+    integrity_result: list[str]
+    wal_checkpoint: str
+    backup_path: str | None = None
+    created_at: str
+
+
 class AppJobRead(BaseModel):
     id: str
     job_type: str

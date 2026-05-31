@@ -4,7 +4,7 @@ import type { Cluster, ExpertStatus } from "@/lib/mockStore";
 export function ClusterDot({ tint, size = 8 }: { tint: Cluster["tint"]; size?: number }) {
   return (
     <span
-      className="inline-block rounded-full"
+      className="inline-block rounded-sm"
       style={{
         width: size,
         height: size,
@@ -16,7 +16,7 @@ export function ClusterDot({ tint, size = 8 }: { tint: Cluster["tint"]; size?: n
 
 export function ClusterChip({ cluster, asLink = true }: { cluster: Cluster; asLink?: boolean }) {
   const inner = (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2 py-0.5 text-xs">
+    <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-0.5 text-xs shadow-[var(--soft-shadow)]">
       <ClusterDot tint={cluster.tint} />
       {cluster.name}
     </span>
@@ -47,8 +47,8 @@ export function ExpertBadge({ status }: { status: ExpertStatus }) {
     issue: "Issue",
   }[status];
   return (
-    <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-      <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
+    <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/70 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+      <span className="h-1.5 w-1.5 rounded-sm" style={{ background: color }} />
       {label}
     </span>
   );

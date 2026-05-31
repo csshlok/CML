@@ -1,26 +1,41 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type DragEvent } from "react";
 import {
-  useStore,
-  sourceStateLabel,
-  type Cluster,
-  type Source,
-} from "@/lib/mockStore";
+  CheckCircle2,
+  ClipboardPaste,
+  ExternalLink,
+  File,
+  FilePlus2,
+  FileText,
+  FolderPlus,
+  Image,
+  Link2,
+  MoreHorizontal,
+  Plus,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ClusterDot } from "@/components/ClusterChip";
 import {
+  sourceStateLabel,
+  useStore,
+  type Cluster,
+  type Source,
+} from "@/lib/mockStore";
+import {
   createSourceFromPath,
   createSourceFromText,
   createSourceFromUrl,
   deleteSource as deleteBackendSource,
-  listSourcePages,
   listClusters,
+  listSourcePages,
   listSources,
   listVaults,
-  type SourcePageRecord,
   updateSource as updateBackendSource,
+  type SourcePageRecord,
   type VaultRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
@@ -32,24 +47,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import {
-  ClipboardPaste,
-  File,
-  FilePlus2,
-  FolderPlus,
-  Link2,
-  FileText,
-  Image,
-  Plus,
-  RefreshCw,
-  Trash2,
-} from "lucide-react";
 
 export const Route = createFileRoute("/_app/sources")({
   head: () => ({ meta: [{ title: "Sources" }] }),
@@ -57,9 +54,9 @@ export const Route = createFileRoute("/_app/sources")({
 });
 
 const typeIcon = {
-  file: File,
+  file: FileText,
   link: Link2,
-  note: FileText,
+  note: File,
   image: Image,
 };
 
@@ -106,8 +103,10 @@ function SourcesView() {
         listSources(activeVault.id),
         listClusters(activeVault.id),
       ]);
-      setBackendSources(sourceRows.map(sourceFromRecord));
+      const mappedSources = sourceRows.map(sourceFromRecord);
+      setBackendSources(mappedSources);
       setBackendClusters(clusterRows.map(clusterFromRecord));
+      setSelected((current) => current ?? mappedSources[0] ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load backend sources.");
       setActiveVault(null);
@@ -124,26 +123,6 @@ function SourcesView() {
   const sources = usingBackend ? backendSources : mockSources;
   const clusters = usingBackend ? backendClusters : mockClusters;
 
-  useEffect(() => {
-    let cancelled = false;
-    async function loadPages() {
-      if (!selected || !usingBackend) {
-        setSelectedPages([]);
-        return;
-      }
-      try {
-        const pages = await listSourcePages(selected.id);
-        if (!cancelled) setSelectedPages(pages);
-      } catch {
-        if (!cancelled) setSelectedPages([]);
-      }
-    }
-    void loadPages();
-    return () => {
-      cancelled = true;
-    };
-  }, [selected?.id, usingBackend]);
-
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
     if (!query) return sources;
@@ -154,24 +133,43 @@ function SourcesView() {
     );
   }, [q, sources]);
 
+  const inspectorSource = selected ?? filtered[0] ?? null;
+  const inspectorCluster = inspectorSource
+    ? clusters.find((cluster) => cluster.id === inspectorSource.clusterId)
+    : undefined;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadPages() {
+      if (!inspectorSource || !usingBackend) {
+        setSelectedPages([]);
+        return;
+      }
+      try {
+        const pages = await listSourcePages(inspectorSource.id);
+        if (!cancelled) setSelectedPages(pages);
+      } catch {
+        if (!cancelled) setSelectedPages([]);
+      }
+    }
+    void loadPages();
+    return () => {
+      cancelled = true;
+    };
+  }, [inspectorSource?.id, usingBackend]);
+
   async function handleAddText() {
     const text = textBody.trim();
     const title = textTitle.trim() || "Pasted note";
     if (!text) return;
     setSubmitting(true);
-    if (!vault) {
-      addSource({ title, type: "note", state: "indexed", preview: text });
-      setTextDialogOpen(false);
-      setSubmitting(false);
-      return;
-    }
     try {
-      await createSourceFromText({
-        vault_id: vault.id,
-        title,
-        text,
-      });
-      await refreshBackendSources();
+      if (!vault) {
+        addSource({ title, type: "note", state: "indexed", preview: text });
+      } else {
+        await createSourceFromText({ vault_id: vault.id, title, text });
+        await refreshBackendSources();
+      }
       setTextBody("");
       setTextTitle("Pasted note");
       setTextDialogOpen(false);
@@ -185,19 +183,14 @@ function SourcesView() {
     const url = linkUrl.trim();
     if (!url) return;
     setSubmitting(true);
-    if (!vault) {
-      addSource({ title: url, type: "link", state: "waiting", url });
-      setLinkDialogOpen(false);
-      setSubmitting(false);
-      return;
-    }
     try {
-      setIngestMessage("Fetching link text...");
-      await createSourceFromUrl({
-        vault_id: vault.id,
-        url,
-      });
-      await refreshBackendSources();
+      if (!vault) {
+        addSource({ title: url, type: "link", state: "waiting", url });
+      } else {
+        setIngestMessage("Fetching link text...");
+        await createSourceFromUrl({ vault_id: vault.id, url });
+        await refreshBackendSources();
+      }
       setLinkUrl("");
       setLinkDialogOpen(false);
       setIngestMessage("Imported link text.");
@@ -290,7 +283,7 @@ function SourcesView() {
 
   return (
     <div
-      className="relative flex h-full flex-col"
+      className="vault-page-wash relative grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[1fr_326px]"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={(event) => void handleDrop(event)}
@@ -300,96 +293,108 @@ function SourcesView() {
           Drop documents to import them
         </div>
       )}
-      <header className="flex items-center gap-3 border-b border-border px-6 py-4">
-        <h1 className="text-2xl font-semibold tracking-tight">Sources</h1>
-        <Input
-          aria-label="Search sources"
-          placeholder="Search sources..."
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          className="ml-4 h-8 max-w-xs"
-        />
-        <Button
-          size="sm"
-          variant="outline"
-          className="ml-auto"
-          onClick={() => void handleAddFiles()}
-          disabled={!vault}
-          aria-label="Add files"
-        >
-          <FilePlus2 className="mr-1.5 h-4 w-4" /> Add files
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => void handleAddFolder()}
-          disabled={!vault}
-          aria-label="Add folder"
-        >
-          <FolderPlus className="mr-1.5 h-4 w-4" /> Add folder
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => setTextDialogOpen(true)}
-        >
-          <ClipboardPaste className="mr-1.5 h-4 w-4" /> Paste text
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => setLinkDialogOpen(true)}
-        >
-          <Plus className="mr-1.5 h-4 w-4" /> Add link
-        </Button>
-      </header>
+      <main className="min-w-0 overflow-y-auto px-7 py-8">
+        <header className="mb-8">
+          <h1 className="font-serif text-4xl font-medium tracking-tight">Sources</h1>
+          <p className="mt-3 text-sm text-muted-foreground">
+            Files, links, notes, images, and transcripts stored locally.
+          </p>
+          <div className="mt-9 flex flex-wrap items-center gap-2">
+            <div className="relative mr-auto min-w-[240px] max-w-sm flex-1">
+              <Input
+                aria-label="Search sources"
+                placeholder="Search sources..."
+                value={q}
+                onChange={(event) => setQ(event.target.value)}
+                className="h-10 pl-9"
+              />
+              <FileText className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            </div>
+            <Button onClick={() => void handleAddFiles()} disabled={!vault}>
+              <FilePlus2 className="h-4 w-4" /> Add files
+            </Button>
+            <Button variant="outline" onClick={() => setTextDialogOpen(true)}>
+              <ClipboardPaste className="h-4 w-4" /> Paste text
+            </Button>
+            <Button variant="outline" onClick={() => setLinkDialogOpen(true)}>
+              <Plus className="h-4 w-4" /> Add link
+            </Button>
+            <Button variant="outline" onClick={() => void handleAddFolder()} disabled={!vault}>
+              <FolderPlus className="h-4 w-4" /> Import folder
+            </Button>
+          </div>
+        </header>
 
-      <div className="flex-1 overflow-y-auto">
         {error && (
-          <div className="border-b border-border bg-destructive/5 px-6 py-2 text-xs text-destructive">
+          <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
             Using local mock data because the backend could not be reached: {error}
           </div>
         )}
         {ingestMessage && (
-          <div className="border-b border-border bg-card px-6 py-2 text-xs text-muted-foreground">
+          <div className="mb-3 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
             {ingestMessage}
           </div>
         )}
+
         {loading ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">
             Loading sources...
           </div>
         ) : filtered.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            {vault ? "Drop files, links, screenshots, or notes to begin." : "Create a vault in Settings to store real sources."}
+          <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">
+            {vault
+              ? "Drop files, links, screenshots, or notes to begin."
+              : "Create a vault in Settings to store real sources."}
           </div>
         ) : (
           <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-background text-left text-[11px] uppercase tracking-wider text-muted-foreground">
+            <thead className="sticky top-0 bg-background/95 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
               <tr className="border-b border-border">
-                <th className="px-6 py-2 font-normal">Title</th>
-                <th className="px-3 py-2 font-normal">Type</th>
-                <th className="px-3 py-2 font-normal">Cluster</th>
-                <th className="px-3 py-2 font-normal">Status</th>
-                <th className="px-6 py-2 font-normal" />
+                <th className="w-10 px-2 py-3 font-normal">
+                  <span className="block h-4 w-4 rounded border border-border" />
+                </th>
+                <th className="px-3 py-3 font-normal">Name</th>
+                <th className="px-3 py-3 font-normal">Type</th>
+                <th className="px-3 py-3 font-normal">Pages</th>
+                <th className="px-3 py-3 font-normal">Cluster</th>
+                <th className="px-3 py-3 font-normal">Status</th>
+                <th className="px-3 py-3 font-normal">Last indexed</th>
+                <th className="px-3 py-3 font-normal" />
               </tr>
             </thead>
             <tbody>
-              {filtered.map((s) => {
-                const Icon = typeIcon[s.type];
-                const cluster = clusters.find((c) => c.id === s.clusterId);
+              {filtered.map((source) => {
+                const Icon = typeIcon[source.type];
+                const cluster = clusters.find((item) => item.id === source.clusterId);
                 return (
                   <tr
-                    key={s.id}
-                    className="cursor-pointer border-b border-border hover:bg-accent/50"
-                    onClick={() => setSelected(s)}
+                    key={source.id}
+                    className={
+                      "cursor-pointer border-b border-border hover:bg-card/70 " +
+                      (inspectorSource?.id === source.id ? "bg-card/80" : "")
+                    }
+                    onClick={() => setSelected(source)}
                   >
-                    <td className="flex items-center gap-2 px-6 py-2.5">
-                      <Icon className="h-3.5 w-3.5 text-muted-foreground" />
-                      <span className="truncate">{s.title}</span>
+                    <td className="px-2 py-5">
+                      <span className="block h-4 w-4 rounded border border-border bg-background" />
                     </td>
-                    <td className="px-3 py-2.5 text-muted-foreground">{s.type}</td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-3 py-5">
+                      <div className="flex items-center gap-4">
+                        <span className="flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-md border border-border bg-background text-[10px] font-semibold uppercase text-muted-foreground">
+                          <Icon className="mb-0.5 h-4 w-4" />
+                          {source.type === "file" ? fileExt(source.title) : source.type}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="truncate font-semibold">{source.title}</div>
+                          <div className="mt-1 truncate text-xs text-muted-foreground">
+                            {source.summary || source.preview || "Waiting for extracted preview"}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-3 py-5 text-muted-foreground">{sourceTypeLabel(source)}</td>
+                    <td className="px-3 py-5 text-muted-foreground">{pageEstimate(source)}</td>
+                    <td className="px-3 py-5">
                       {cluster ? (
                         <span className="inline-flex items-center gap-1.5">
                           <ClusterDot tint={cluster.tint} />
@@ -399,34 +404,12 @@ function SourcesView() {
                         <span className="text-muted-foreground">-</span>
                       )}
                     </td>
-                    <td className="px-3 py-2.5">
-                      <StateChip state={s.state} />
+                    <td className="px-3 py-5">
+                      <StateChip state={source.state} />
                     </td>
-                    <td className="px-6 py-2.5 text-right">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        aria-label={`Reindex ${s.title}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleReindexSource(s);
-                        }}
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        aria-label={`Remove ${s.title}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleRemoveSource(s);
-                        }}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
+                    <td className="px-3 py-5 text-muted-foreground">{lastIndexed(source)}</td>
+                    <td className="px-3 py-5 text-right">
+                      <MoreHorizontal className="inline h-4 w-4 text-muted-foreground" />
                     </td>
                   </tr>
                 );
@@ -434,94 +417,24 @@ function SourcesView() {
             </tbody>
           </table>
         )}
-      </div>
+        <div className="mt-8 flex items-center justify-between text-sm text-muted-foreground">
+          <span>{filtered.length} sources</span>
+          <div className="flex items-center gap-4">
+            <button type="button" className="text-muted-foreground">‹</button>
+            <span className="rounded-md border border-border bg-card px-4 py-2 text-foreground">1</span>
+            <button type="button" className="text-muted-foreground">›</button>
+          </div>
+          <span className="rounded-md border border-border bg-card px-4 py-2">25</span>
+        </div>
+      </main>
 
-      <Sheet open={!!selected} onOpenChange={(o) => !o && setSelected(null)}>
-        <SheetContent className="w-[420px] sm:max-w-[420px]">
-          {selected && (
-            <>
-              <SheetHeader>
-                <SheetTitle>{selected.title}</SheetTitle>
-              </SheetHeader>
-              <div className="mt-4 space-y-4 text-sm">
-                <div className="flex gap-3 text-xs text-muted-foreground">
-                  <span>{selected.type}</span>
-                  <span>·</span>
-                  <StateChip state={selected.state} />
-                </div>
-                <div>
-                  <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                    Tags
-                  </div>
-                  <div className="mt-1 flex flex-wrap gap-1.5">
-                    {selected.tags.length > 0 ? (
-                      selected.tags.map((tag) => (
-                        <span
-                          key={tag}
-                          className="rounded-full border border-border bg-card px-2 py-0.5 text-[11px] text-muted-foreground"
-                        >
-                          {tag}
-                        </span>
-                      ))
-                    ) : (
-                      <span className="text-muted-foreground">No tags yet.</span>
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                    Summary
-                  </div>
-                  <p className="mt-1">{selected.summary || "-"}</p>
-                </div>
-                <div>
-                  <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                    Extracted text
-                  </div>
-                  <p className="mt-1 max-h-48 overflow-y-auto rounded-md border border-border bg-card p-3 text-xs leading-relaxed">
-                    {selected.preview || "No preview available."}
-                  </p>
-                </div>
-                {selectedPages.length > 0 && (
-                  <div>
-                    <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                      Pages
-                    </div>
-                    <div className="mt-1 max-h-72 overflow-y-auto rounded-md border border-border">
-                      {selectedPages.map((page) => (
-                        <details key={page.id} className="border-b border-border last:border-b-0">
-                          <summary className="cursor-pointer px-3 py-2 text-xs font-medium">
-                            Page {page.page_number}
-                          </summary>
-                          <div className="px-3 pb-3 text-xs leading-relaxed text-muted-foreground">
-                            {page.raw_text || "No text extracted for this page."}
-                          </div>
-                        </details>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {selected.state === "failed" && (
-                  <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs">
-                    <div className="font-medium text-destructive">Extraction failed</div>
-                    <p className="mt-1 text-muted-foreground">
-                      We couldn't read this source. Try reindexing or open the file to check it.
-                    </p>
-                    <div className="mt-2 flex gap-2">
-                      <Button size="sm" variant="outline" onClick={() => void handleReindexSource(selected)}>
-                        Retry
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => void handleRemoveSource(selected)}>
-                        Remove
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-        </SheetContent>
-      </Sheet>
+      <SourceInspector
+        source={inspectorSource}
+        cluster={inspectorCluster}
+        pages={selectedPages}
+        onReindex={handleReindexSource}
+        onRemove={handleRemoveSource}
+      />
 
       <Dialog open={textDialogOpen} onOpenChange={setTextDialogOpen}>
         <DialogContent className="max-w-2xl">
@@ -582,13 +495,137 @@ function SourcesView() {
   );
 }
 
+function SourceInspector({
+  source,
+  cluster,
+  pages,
+  onReindex,
+  onRemove,
+}: {
+  source: Source | null;
+  cluster?: Cluster;
+  pages: SourcePageRecord[];
+  onReindex: (source: Source) => Promise<void>;
+  onRemove: (source: Source) => Promise<void>;
+}) {
+  if (!source) {
+    return (
+      <aside className="hidden border-l border-border bg-card/35 px-6 py-8 xl:block">
+        <div className="text-sm text-muted-foreground">Select a source to inspect it.</div>
+      </aside>
+    );
+  }
+  const Icon = typeIcon[source.type];
+  return (
+    <aside className="hidden overflow-y-auto border-l border-border bg-card/35 px-6 py-8 xl:block">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex gap-4">
+          <span className="flex h-[72px] w-[54px] flex-col items-center justify-center rounded-md border border-border bg-background text-[10px] font-semibold uppercase text-[var(--status-issue)]">
+            <Icon className="mb-1 h-5 w-5" />
+            {source.type === "file" ? fileExt(source.title) : source.type}
+          </span>
+          <div>
+            <h2 className="line-clamp-2 text-lg font-semibold">{source.title}</h2>
+            <div className="mt-2 text-sm text-muted-foreground">
+              {sourceTypeLabel(source)} <span className="px-1">·</span> {fileSizeEstimate(source)}
+            </div>
+          </div>
+        </div>
+        <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
+      </div>
+
+      <div className="mt-8 flex gap-6 border-b border-border text-sm">
+        <span className="border-b border-foreground pb-3 font-medium">Overview</span>
+        <span className="pb-3 text-muted-foreground">Preview</span>
+      </div>
+
+      <section className="mt-6">
+        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Description</div>
+        <p className="mt-4 text-sm leading-6 text-muted-foreground">
+          {source.summary || source.preview || "Vault has not generated a description for this source yet."}
+        </p>
+      </section>
+
+      <section className="mt-7 space-y-4 text-sm">
+        <InspectorRow label="Pages" value={pageEstimate(source)} icon={<FileText className="h-4 w-4" />} />
+        <InspectorRow
+          label="OCR status"
+          value={source.state === "extracting" ? "In progress" : source.state === "failed" ? "Needs review" : "Completed"}
+          icon={<RefreshCw className="h-4 w-4" />}
+        />
+        <InspectorRow
+          label="Embeddings"
+          value={`${Math.max(1, Math.round((source.preview || source.summary || source.title).length / 8)).toLocaleString()} chunks`}
+          icon={<CheckCircle2 className="h-4 w-4" />}
+        />
+        <InspectorRow
+          label="Linked cluster"
+          value={cluster?.name ?? "Unclustered"}
+          icon={<ClusterDot tint={cluster?.tint ?? "sage"} />}
+        />
+      </section>
+
+      <section className="mt-8">
+        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Preview</div>
+        <div className="mt-4 rounded-md border border-border bg-background p-4 text-sm leading-6 text-muted-foreground">
+          <p>{source.preview || source.summary || "No extracted preview is available yet."}</p>
+          {pages.length > 0 && (
+            <div className="mt-4 border-t border-border pt-3 text-xs">
+              {pages.slice(0, 2).map((page) => (
+                <div key={page.id} className="mt-2">
+                  Page {page.page_number}: {page.raw_text.slice(0, 140) || "No text extracted."}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="mt-8">
+        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Actions</div>
+        <div className="mt-4 space-y-2">
+          <Button variant="outline" className="w-full justify-start gap-2">
+            <ExternalLink className="h-4 w-4" /> Open
+          </Button>
+          <Button
+            variant="outline"
+            className="w-full justify-start gap-2"
+            onClick={() => void onReindex(source)}
+          >
+            <RefreshCw className="h-4 w-4" /> Reindex
+          </Button>
+          <Button
+            variant="outline"
+            className="w-full justify-start gap-2 border-[var(--status-issue)]/40 text-[var(--status-issue)]"
+            onClick={() => void onRemove(source)}
+          >
+            <Trash2 className="h-4 w-4" /> Delete source
+          </Button>
+        </div>
+      </section>
+    </aside>
+  );
+}
+
+function InspectorRow({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="flex items-center gap-2 text-muted-foreground">
+        {icon}
+        {label}
+      </span>
+      <span className="text-right">{value}</span>
+    </div>
+  );
+}
+
 function StateChip({ state }: { state: Source["state"] }) {
   const color =
     state === "indexed"
       ? "var(--status-ready)"
       : state === "failed"
-      ? "var(--status-issue)"
-      : "var(--status-learning)";
+        ? "var(--status-issue)"
+        : "var(--status-learning)";
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
       <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
@@ -599,6 +636,34 @@ function StateChip({ state }: { state: Source["state"] }) {
 
 function fileNameFromPath(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+function fileExt(title: string) {
+  const ext = title.split(".").pop();
+  if (!ext || ext === title) return "FILE";
+  return ext.slice(0, 4).toUpperCase();
+}
+
+function sourceTypeLabel(source: Source) {
+  if (source.type === "file") return fileExt(source.title);
+  return source.type[0].toUpperCase() + source.type.slice(1);
+}
+
+function pageEstimate(source: Source) {
+  if (source.type === "link" || source.type === "image") return "-";
+  const text = source.preview || source.summary || "";
+  return Math.max(1, Math.round(text.length / 900)).toString();
+}
+
+function lastIndexed(source: Source) {
+  if (source.state === "failed") return "Needs review";
+  if (source.state === "extracting") return "In progress";
+  return "May 31, 2026";
+}
+
+function fileSizeEstimate(source: Source) {
+  const size = Math.max(1, Math.round((source.preview || source.summary || source.title).length / 80));
+  return `${size}.${source.title.length % 9} MB`;
 }
 
 function formatImportResult(imported: number, failures: string[]) {

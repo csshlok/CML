@@ -248,7 +248,7 @@ class SourcePageIndexingTests(unittest.TestCase):
     def test_scanned_pdf_ocr_prefers_ocrmypdf_and_falls_back_to_tesseract_render(self) -> None:
         from unittest.mock import patch
 
-        from backend.app.core.ocr import OCRError, ocr_pdf_pages
+        from backend.app.core.ocr import OCRError, ocr_pdf_pages, ocr_runtime_status
 
         pdf_path = Path(self.tmp.name) / "scan.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 fake")
@@ -279,6 +279,49 @@ class SourcePageIndexingTests(unittest.TestCase):
         ):
             self.assertEqual(ocr_pdf_pages(pdf_path), ["page one from fallback"])
             fallback.assert_called_once()
+
+        with patch("backend.app.core.ocr._tesseract_executable", return_value=None):
+            status = ocr_runtime_status()
+        self.assertFalse(status["available"])
+        self.assertIn("tesseract", status["missing"])
+
+    def test_dynamic_link_extraction_uses_browser_text_when_static_text_is_thin(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.core.extraction import extract_text_from_url
+
+        class FakeHeaders(dict):
+            def get(self, key, default=None):
+                return super().get(key, default)
+
+        class FakeResponse:
+            headers = FakeHeaders({"content-type": "text/html"})
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return b"<html><head><title>Thin</title></head><body><div id='root'></div><script></script><script></script><script></script></body></html>"
+
+            def geturl(self):
+                return "https://example.com/app"
+
+        with (
+            patch("backend.app.core.extraction._safe_open", return_value=(FakeResponse(), "https://example.com/app")),
+            patch("backend.app.core.extraction.validate_public_http_url"),
+            patch(
+                "backend.app.core.extraction._extract_dynamic_text_from_url",
+                return_value=("Rendered", "Rendered application text " * 40, None),
+            ) as dynamic,
+        ):
+            title, text, _cover = extract_text_from_url("https://example.com/app")
+
+        self.assertEqual(title, "Rendered")
+        self.assertIn("Rendered application text", text)
+        dynamic.assert_called_once()
 
     def test_chat_answer_writes_generation_and_retrieval_snapshot(self) -> None:
         from backend.app.api.routes.chat import build_chat_context
@@ -468,6 +511,56 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(response["intent"], "expanded_analysis")
         self.assertEqual(response["coverage_ledger"]["sources_considered"], 3)
         self.assertGreaterEqual(response["coverage_ledger"]["sources_analyzed"], 1)
+        with connect() as conn:
+            job = conn.execute(
+                "SELECT * FROM app_jobs WHERE job_type = 'expanded_analysis'"
+            ).fetchone()
+        self.assertIsNotNone(job)
+
+    def test_expanded_analysis_job_writes_evidence_packets(self) -> None:
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+        from backend.app.api.routes.sources import create_source
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Evidence source",
+                source_type="note",
+                raw_text="expanded evidence packet context " * 100,
+            )
+        )
+        run_due_jobs_once(limit=1)
+        build_chat_context(
+            ChatContextRequest(
+                vault_id="vault-1",
+                prompt="expanded evidence packet context",
+                expanded_analysis=True,
+            )
+        )
+        run_due_jobs_once(limit=2)
+
+        with connect() as conn:
+            packets = conn.execute("SELECT * FROM analysis_evidence_packets").fetchall()
+        self.assertGreaterEqual(len(packets), 1)
+        self.assertEqual(packets[0]["status"], "ready")
+
+    def test_vault_safety_status_can_create_backup(self) -> None:
+        from backend.app.core.vault_safety import vault_safety_status
+
+        result = vault_safety_status(create_backup=True)
+
+        self.assertTrue(result["integrity_ok"])
+        self.assertTrue(result["backup_path"])
+        self.assertTrue(Path(result["backup_path"]).exists())
 
     def test_chat_attachment_is_ingested_as_cluster_source(self) -> None:
         from backend.app.api.routes.chat import build_chat_context

@@ -6,6 +6,6 @@ export const Route = createFileRoute("/")({
       const seen = window.localStorage.getItem("ctx.onboarded");
       if (!seen) throw redirect({ to: "/onboarding" });
     }
-    throw redirect({ to: "/search" });
+    throw redirect({ to: "/home" });
   },
 });
