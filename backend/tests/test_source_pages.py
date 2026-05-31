@@ -245,6 +245,41 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(media_title, "clip.mp4")
         self.assertIn("Media file stored in vault metadata", media_pages[0])
 
+    def test_scanned_pdf_ocr_prefers_ocrmypdf_and_falls_back_to_tesseract_render(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.core.ocr import OCRError, ocr_pdf_pages
+
+        pdf_path = Path(self.tmp.name) / "scan.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
+        tesseract_path = Path(self.tmp.name) / "tesseract.exe"
+
+        with (
+            patch("backend.app.core.ocr._require_tesseract", return_value=tesseract_path),
+            patch(
+                "backend.app.core.ocr._ocr_pdf_with_ocrmypdf",
+                return_value=["page one from ocrmypdf"],
+            ) as ocrmypdf,
+            patch("backend.app.core.ocr._ocr_pdf_pages_with_tesseract_render") as fallback,
+        ):
+            self.assertEqual(ocr_pdf_pages(pdf_path), ["page one from ocrmypdf"])
+            ocrmypdf.assert_called_once()
+            fallback.assert_not_called()
+
+        with (
+            patch("backend.app.core.ocr._require_tesseract", return_value=tesseract_path),
+            patch(
+                "backend.app.core.ocr._ocr_pdf_with_ocrmypdf",
+                side_effect=OCRError("missing qpdf"),
+            ),
+            patch(
+                "backend.app.core.ocr._ocr_pdf_pages_with_tesseract_render",
+                return_value=["page one from fallback"],
+            ) as fallback,
+        ):
+            self.assertEqual(ocr_pdf_pages(pdf_path), ["page one from fallback"])
+            fallback.assert_called_once()
+
     def test_chat_answer_writes_generation_and_retrieval_snapshot(self) -> None:
         from backend.app.api.routes.chat import build_chat_context
         from backend.app.api.routes.sources import create_source
