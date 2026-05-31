@@ -45,6 +45,15 @@ def embedding_status() -> dict:
     return status
 
 
+def require_embeddings_available(feature: str = "semantic memory") -> None:
+    status = embedding_status()
+    if status["available"]:
+        return
+    raise RuntimeError(
+        f"{feature} requires the local embedding model, but embeddings are unavailable: {status['detail']}"
+    )
+
+
 def embedding_config() -> dict:
     settings = get_settings()
     provider = settings.embedding_provider

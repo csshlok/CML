@@ -2,10 +2,11 @@ import json
 import threading
 import time
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.embeddings import active_embedding_model_id, reindex_source_chunks
+from backend.app.core.embeddings import active_embedding_model_id, reindex_source_chunks, require_embeddings_available
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 
 JOB_POLL_SECONDS = 1.0
@@ -283,6 +284,13 @@ def job_queue_status() -> dict:
             LIMIT 10
             """
         ).fetchall()
+        running = conn.execute(
+            """
+            SELECT * FROM app_jobs
+            WHERE status = 'running'
+            ORDER BY started_at ASC
+            """
+        ).fetchall()
     counts = {row["status"]: row["count"] for row in rows}
     return {
         "queued": counts.get("queued", 0),
@@ -292,6 +300,7 @@ def job_queue_status() -> dict:
         "failed": counts.get("failed", 0),
         "cancelled": counts.get("cancelled", 0),
         "manual_review": counts.get("manual_review", 0),
+        "running_jobs": [_with_runtime_estimate(dict_from_row(row)) for row in running],
         "latest": [dict_from_row(row) for row in latest],
     }
 
@@ -329,6 +338,8 @@ def _claim_next_job() -> dict | None:
             dependency_ready = _resolve_dependency(conn, job)
             if not dependency_ready:
                 continue
+            if _synthesis_conflict(conn, job):
+                continue
             if _has_scope_conflict(conn, job):
                 continue
             now = utc_now()
@@ -343,6 +354,40 @@ def _claim_next_job() -> dict | None:
             )
             return job
     return None
+
+
+def _synthesis_conflict(conn, job: dict) -> bool:
+    if int(job.get("can_run_during_synthesis") or 0) == 1:
+        return False
+    cutoff = (datetime.now(UTC) - timedelta(minutes=30)).isoformat()
+    row = conn.execute(
+        """
+        SELECT 1 FROM chat_generations
+        WHERE state = 'in_flight'
+           OR (state = 'retriable' AND updated_at >= ?)
+        LIMIT 1
+        """,
+        (cutoff,),
+    ).fetchone()
+    return row is not None
+
+
+def _with_runtime_estimate(job: dict) -> dict:
+    timeout = job.get("timeout_seconds")
+    started_at = job.get("started_at")
+    elapsed = None
+    remaining = None
+    if started_at:
+        try:
+            started = datetime.fromisoformat(started_at)
+            elapsed = max(0, int((datetime.now(UTC) - started).total_seconds()))
+        except ValueError:
+            elapsed = None
+    if elapsed is not None and timeout:
+        remaining = max(0, int(timeout) - elapsed)
+    job["elapsed_seconds"] = elapsed
+    job["estimated_remaining_seconds"] = remaining
+    return job
 
 
 def _run_claimed_job(job: dict) -> None:
@@ -378,6 +423,7 @@ def _run_claimed_job(job: dict) -> None:
 
 
 def _run_reindex_source(payload: dict) -> None:
+    require_embeddings_available("Source reindexing")
     source_id = str(payload["source_id"])
     with connect() as conn:
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
@@ -392,6 +438,7 @@ def _run_reindex_source(payload: dict) -> None:
 
 
 def _run_chat_transcript_memory(payload: dict) -> None:
+    require_embeddings_available("Chat transcript memory")
     from backend.app.core.chat_memory import upsert_chat_transcript_sources
 
     vault_id = str(payload["vault_id"])
@@ -417,6 +464,7 @@ def _run_delete_source_cleanup(payload: dict) -> None:
 
 
 def _run_vector_reconcile_incremental(payload: dict) -> None:
+    require_embeddings_available("Vector reconciliation")
     vault_id = payload.get("vault_id")
     model_id = active_embedding_model_id()
     with connect() as conn:

@@ -5,6 +5,7 @@ import {
   deleteChatSession,
   getModelRuntimeStatus,
   getChatSession,
+  getChatTimeline,
   listChatSessions,
   listClusters,
   listSources,
@@ -15,6 +16,7 @@ import {
   updateChatSession,
   type ChatContextResponse,
   type ChatMessageRecord,
+  type ChatTimelineItem,
   type ChatSessionRecord,
   type ModelRuntimeStatus,
   type VaultRecord,
@@ -107,9 +109,10 @@ function ChatView() {
       setBackendChats(chatRows);
       try {
         const session = await getChatSession(chatId);
+        const timeline = await getChatTimeline(chatId).catch(() => null);
         setBackendSession(session);
         setBackendSessionId(session.id);
-        setBackendMessages(session.messages.map(messageFromRecord));
+        setBackendMessages(timeline ? timeline.items.map(messageFromTimelineItem) : session.messages.map(messageFromRecord));
         setMemoryState(session.memory_status ?? "idle");
       } catch {
         setBackendSession(null);
@@ -252,7 +255,7 @@ function ChatView() {
     navigate({ to: "/chat" });
   };
 
-  const send = async (promptOverride?: string, attachmentOverride?: string[], completeAnalysis = false) => {
+  const send = async (promptOverride?: string, attachmentOverride?: string[], expandedAnalysis = false) => {
     const selectedAttachments = attachmentOverride ?? (promptOverride ? [] : attachments);
     const prompt = (promptOverride ?? input).trim() || (selectedAttachments.length > 0 ? "Read and store these attachments." : "");
     if ((!prompt && selectedAttachments.length === 0) || streaming) return;
@@ -273,7 +276,7 @@ function ChatView() {
     }
     setStreaming(true);
     setStreamText("");
-    setStreamStatus(completeAnalysis ? "Scoring every source in scope..." : "Routing message...");
+    setStreamStatus(expandedAnalysis ? "Scoring sources in scope..." : "Routing message...");
     setStreamWarnings([]);
     setLastError(null);
     setAttachmentNotice(
@@ -304,8 +307,8 @@ function ChatView() {
             cluster_id: scope?.id ?? null,
             session_id: backendSessionId ?? chatId,
             persist: true,
-            limit: completeAnalysis ? 12 : 6,
-            complete_analysis: completeAnalysis,
+            limit: expandedAnalysis ? 12 : 6,
+            expanded_analysis: expandedAnalysis,
             attachments: selectedAttachments.map((path) => ({
               path,
               cluster_id: scope?.id ?? null,
@@ -318,8 +321,8 @@ function ChatView() {
               setStreamStatus(
                 meta.intent === "general_chat"
                   ? "Using local LLM chat"
-                  : completeAnalysis
-                    ? `Complete analysis: considered ${coverage?.sources_considered ?? 0} source${coverage?.sources_considered === 1 ? "" : "s"}; analyzing ${coverage?.sources_analyzed ?? 0}.`
+                  : expandedAnalysis
+                    ? `Expanded analysis: considered ${coverage?.sources_considered ?? 0} source${coverage?.sources_considered === 1 ? "" : "s"}; analyzing ${coverage?.sources_analyzed ?? 0}.`
                     : coverage
                   ? `Considered ${coverage.sources_considered} source${coverage.sources_considered === 1 ? "" : "s"}; analyzing ${coverage.sources_analyzed}.`
                   : meta.citations.length > 0
@@ -330,7 +333,7 @@ function ChatView() {
             },
             onToken: (text) => {
               streamedAnswer += text;
-              setStreamStatus(completeAnalysis ? "Writing complete analysis..." : "Writing answer...");
+              setStreamStatus(expandedAnalysis ? "Writing expanded analysis..." : "Writing answer...");
               setStreamText(streamedAnswer);
             },
             onDone: (done) => {
@@ -372,7 +375,8 @@ function ChatView() {
             const refreshed = await getChatSession(response.session_id);
             setBackendSession(refreshed);
             setBackendSessionId(refreshed.id);
-            setBackendMessages(refreshed.messages.map(messageFromRecord));
+            const timeline = await getChatTimeline(refreshed.id).catch(() => null);
+            setBackendMessages(timeline ? timeline.items.map(messageFromTimelineItem) : refreshed.messages.map(messageFromRecord));
             setMemoryState(refreshed.memory_status ?? response.memory_status ?? "indexed");
             const [clusterRows, sourceRows, chatRows] = await Promise.all([
               listClusters(vault.id),
@@ -615,7 +619,7 @@ function ChatView() {
                 className="gap-1"
                 onClick={() => void send(lastUserPrompt, [], true)}
               >
-                Complete analysis
+                Expanded analysis
               </Button>
             )}
             {streaming && (
@@ -844,6 +848,18 @@ function messageFromRecord(record: ChatMessageRecord): import("@/lib/mockStore")
   };
 }
 
+function messageFromTimelineItem(item: ChatTimelineItem): import("@/lib/mockStore").ChatMessage {
+  if (item.message_type === "retriable_generation") {
+    return {
+      id: item.id,
+      role: "retriable",
+      prompt: item.prompt,
+      content: "Vault was interrupted while answering this prompt. The partial answer was not saved.",
+    };
+  }
+  return messageFromRecord(item);
+}
+
 function Message({
   msg,
   clusters,
@@ -865,6 +881,23 @@ function Message({
     return (
       <div className="ml-auto max-w-[85%] rounded-md bg-accent px-3.5 py-2.5 text-sm">
         {msg.content}
+      </div>
+    );
+  }
+  if (msg.role === "retriable") {
+    return (
+      <div className="rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+        <div className="font-medium">Interrupted answer</div>
+        <p className="mt-1 text-amber-900">{msg.content}</p>
+        {msg.prompt ? (
+          <p className="mt-2 rounded border border-amber-200 bg-white/60 px-2 py-1 text-xs text-amber-900">
+            {msg.prompt}
+          </p>
+        ) : null}
+        <Button variant="outline" size="sm" className="mt-3 h-8" onClick={onRegenerate}>
+          <RotateCcw className="mr-1 h-3.5 w-3.5" />
+          Retry
+        </Button>
       </div>
     );
   }

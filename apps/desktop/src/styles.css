@@ -177,4 +177,122 @@
       transform: scale(1.08);
     }
   }
+
+  @keyframes vault-bg-drift {
+    0%, 100% {
+      background-position: 0% 50%, 100% 50%, 50% 0%;
+    }
+    50% {
+      background-position: 100% 50%, 0% 50%, 50% 100%;
+    }
+  }
+
+  @keyframes vault-line-drift {
+    0% {
+      transform: translate3d(-1.5%, -1.5%, 0);
+    }
+    100% {
+      transform: translate3d(1.5%, 1.5%, 0);
+    }
+  }
+
+  @keyframes vault-step-enter {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes vault-word-cycle {
+    0%, 20% {
+      opacity: 0;
+      transform: translateY(0.85em);
+    }
+    26%, 44% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    50%, 100% {
+      opacity: 0;
+      transform: translateY(-0.85em);
+    }
+  }
+
+  .vault-onboarding-shell {
+    position: relative;
+    isolation: isolate;
+  }
+
+  .vault-bg-wash {
+    position: absolute;
+    inset: -20%;
+    background:
+      linear-gradient(120deg, oklch(0.94 0.045 150 / 0.75), transparent 42%),
+      linear-gradient(240deg, oklch(0.92 0.05 230 / 0.7), transparent 44%),
+      linear-gradient(0deg, oklch(0.95 0.04 25 / 0.56), transparent 48%);
+    background-size: 160% 160%, 145% 145%, 180% 180%;
+    animation: vault-bg-drift 18s ease-in-out infinite;
+  }
+
+  .vault-bg-lines {
+    position: absolute;
+    inset: -8%;
+    opacity: 0.26;
+    background-image:
+      linear-gradient(90deg, oklch(0.68 0.03 70 / 0.16) 1px, transparent 1px),
+      linear-gradient(0deg, oklch(0.68 0.03 70 / 0.14) 1px, transparent 1px);
+    background-size: 56px 56px;
+    animation: vault-line-drift 16s ease-in-out infinite alternate;
+    mask-image: linear-gradient(90deg, transparent, black 18%, black 82%, transparent);
+  }
+
+  .vault-onboarding-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: oklch(0.995 0.004 80 / 0.9);
+    padding: 2rem;
+    box-shadow: 0 14px 44px oklch(0.32 0.03 60 / 0.08);
+    backdrop-filter: blur(16px);
+  }
+
+  .vault-step-enter {
+    animation: vault-step-enter 260ms ease-out both;
+  }
+
+  .vault-word-rotator {
+    position: relative;
+    width: 5.5em;
+    height: 1.1em;
+    overflow: hidden;
+    color: oklch(0.42 0.08 150);
+  }
+
+  .vault-word-rotator span {
+    grid-area: 1 / 1;
+    opacity: 0;
+    animation: vault-word-cycle 7.2s ease-in-out infinite;
+  }
+
+  @media (max-width: 640px) {
+    .vault-onboarding-card {
+      padding: 1.25rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .vault-bg-wash,
+    .vault-bg-lines,
+    .vault-step-enter,
+    .vault-word-rotator span {
+      animation: none;
+    }
+
+    .vault-word-rotator span:first-child {
+      opacity: 1;
+    }
+  }
 }

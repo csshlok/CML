@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.database import connect, dict_from_row
-from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text, reindex_source_chunks
+from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text, reindex_source_chunks, require_embeddings_available
 from backend.app.schemas import SemanticSearchRequest, SemanticSearchResponse
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -9,6 +9,10 @@ router = APIRouter(prefix="/search", tags=["search"])
 
 @router.post("/semantic", response_model=SemanticSearchResponse)
 def semantic_search(payload: SemanticSearchRequest) -> dict:
+    try:
+        require_embeddings_available("Semantic search")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     query_vector = embed_text(payload.query)
     params: list[str] = [payload.vault_id]
     cluster_clause = ""
@@ -71,6 +75,10 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
 
 @router.post("/reindex/{vault_id}")
 def reindex_vault(vault_id: str) -> dict:
+    try:
+        require_embeddings_available("Reindexing")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     with connect() as conn:
         vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
         if vault is None:

@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from backend.app.core.clustering import assign_or_create_cluster
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.embeddings import content_hash
+from backend.app.core.embeddings import content_hash, require_embeddings_available
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path, extract_text_from_url
 from backend.app.core.memory_card import generate_tags, summarize_text
@@ -53,6 +53,11 @@ def create_source(payload: SourceCreate) -> dict:
 
 
 def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = None) -> dict:
+    if payload.raw_text:
+        try:
+            require_embeddings_available("Source ingestion")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     now = utc_now()
     raw_text = payload.raw_text
     if page_texts:

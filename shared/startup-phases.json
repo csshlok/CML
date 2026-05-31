@@ -1,0 +1,16 @@
+[
+  "starting",
+  "pre_vault_mode",
+  "vault_lock_acquiring",
+  "vault_lock_failed",
+  "database_initializing",
+  "integrity_check_running",
+  "integrity_check_failed",
+  "schema_check_running",
+  "schema_check_failed",
+  "job_recovery_running",
+  "reconciliation_queued",
+  "runtime_detection_running",
+  "ready",
+  "startup_failed"
+]

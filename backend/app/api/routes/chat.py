@@ -16,6 +16,7 @@ from backend.app.core.embeddings import (
     cosine_similarity,
     decode_embedding,
     embed_text,
+    require_embeddings_available,
     reindex_source_chunks,
 )
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
@@ -105,6 +106,50 @@ def get_chat_session(session_id: str) -> dict:
         ).fetchall()
         hydrated_messages = [_message_from_row(conn, message) for message in messages]
     return _session_from_row(row, hydrated_messages)
+
+
+@router.get("/sessions/{session_id}/timeline")
+def get_chat_timeline(session_id: str) -> dict:
+    with connect() as conn:
+        session = conn.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
+        if session is None:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+        messages = conn.execute(
+            "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC",
+            (session_id,),
+        ).fetchall()
+        generations = conn.execute(
+            """
+            SELECT * FROM chat_generations
+            WHERE session_id = ? AND state = 'retriable'
+            ORDER BY updated_at ASC
+            """,
+            (session_id,),
+        ).fetchall()
+        items = []
+        for message in messages:
+            hydrated = _message_from_row(conn, message)
+            items.append({
+                "message_type": f"{hydrated['role']}_message",
+                "sort_key": hydrated["created_at"],
+                **hydrated,
+            })
+        for generation in generations:
+            row = dict_from_row(generation)
+            items.append({
+                "message_type": "retriable_generation",
+                "id": row["id"],
+                "session_id": row["session_id"],
+                "prompt": row["prompt"],
+                "cluster_id": row["cluster_id"],
+                "state": row["state"],
+                "error": row["error"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "sort_key": row["updated_at"] or row["created_at"],
+            })
+        items.sort(key=lambda item: (item.get("sort_key") or "", item.get("id") or ""))
+    return {"session_id": session_id, "items": items}
 
 
 @router.patch("/sessions/{session_id}", response_model=ChatSessionRead)
@@ -344,7 +389,13 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         return _build_direct_chat_context(payload, runtime_state=runtime["state"], synthesize=synthesize)
 
     include_chat_transcripts = _should_include_chat_transcripts(payload.prompt)
-    effective_limit = 12 if payload.complete_analysis else payload.limit
+    if intent != "general_chat":
+        try:
+            require_embeddings_available("Vault retrieval chat")
+        except RuntimeError as exc:
+            return _build_embedding_unavailable_context(payload, intent=intent, detail=str(exc))
+
+    effective_limit = 12 if payload.expanded_analysis else payload.limit
     source_scores = _score_sources_for_query(
         vault_id=payload.vault_id,
         cluster_id=payload.cluster_id,
@@ -409,8 +460,8 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     ]
 
     warnings = []
-    if payload.complete_analysis:
-        warnings.append("Complete analysis mode: scored every indexed source in scope before selecting the analysis set.")
+    if payload.expanded_analysis:
+        warnings.append("Expanded analysis mode: scored every indexed source in scope before selecting the analysis set.")
     warnings.append(
         "Coverage ledger: considered "
         f"{coverage_ledger['sources_considered']} source(s), analyzed "
@@ -446,6 +497,26 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "intent": intent,
         "runtime_state": runtime["state"],
         "warnings": warnings,
+    }
+
+
+def _build_embedding_unavailable_context(payload: ChatContextRequest, *, intent: str, detail: str) -> dict:
+    coverage_ledger = _build_coverage_ledger(
+        vault_id=payload.vault_id,
+        cluster_id=payload.cluster_id,
+        analyzed_source_ids=[],
+    )
+    return {
+        "answer": (
+            "This question needs your local memory, but semantic search is unavailable because the embedding model "
+            "is missing or not configured. Set up the embedding model to get a sourced answer, or ask a general question."
+        ),
+        "clusters_used": [],
+        "citations": [],
+        "coverage_ledger": {**coverage_ledger, "sources_analyzed": 0, "sources_low_relevance": coverage_ledger["sources_considered"]},
+        "intent": intent,
+        "runtime_state": runtime_status()["state"],
+        "warnings": [detail],
     }
 
 
@@ -577,8 +648,8 @@ def _classify_chat_intent(payload: ChatContextRequest) -> str:
     prompt = payload.prompt.lower()
     if payload.attachments:
         return "attachment_ingestion"
-    if payload.complete_analysis:
-        return "complete_analysis"
+    if payload.expanded_analysis:
+        return "expanded_analysis"
     if payload.cluster_id:
         return "cluster_question"
     if _is_conversational_prompt(payload.prompt):
@@ -938,6 +1009,10 @@ def _ingest_chat_attachments(
     attachments: list,
     now: str,
 ) -> list[dict]:
+    try:
+        require_embeddings_available("Chat attachment ingestion")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     stored_sources: list[dict] = []
     for attachment in attachments:
         path = str(getattr(attachment, "path", "") or "").strip()

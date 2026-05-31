@@ -396,7 +396,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(response["citations"], [])
         self.assertIn("local LLM runtime", response["answer"])
 
-    def test_complete_analysis_sets_intent_and_expands_analysis_set(self) -> None:
+    def test_expanded_analysis_sets_intent_and_expands_analysis_set(self) -> None:
         from backend.app.api.routes.chat import build_chat_context
         from backend.app.api.routes.sources import create_source
         from backend.app.core.background_jobs import run_due_jobs_once
@@ -424,11 +424,11 @@ class SourcePageIndexingTests(unittest.TestCase):
             ChatContextRequest(
                 vault_id="vault-1",
                 prompt="complete analysis topic",
-                complete_analysis=True,
+                expanded_analysis=True,
             )
         )
 
-        self.assertEqual(response["intent"], "complete_analysis")
+        self.assertEqual(response["intent"], "expanded_analysis")
         self.assertEqual(response["coverage_ledger"]["sources_considered"], 3)
         self.assertGreaterEqual(response["coverage_ledger"]["sources_analyzed"], 1)
 

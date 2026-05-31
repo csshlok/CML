@@ -61,8 +61,9 @@ export interface CitationRef {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "retriable";
   content: string;
+  prompt?: string;
   clustersUsed?: { clusterId: string; reason: string }[];
   citations?: CitationRef[];
   useful?: boolean | null;

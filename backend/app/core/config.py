@@ -9,6 +9,8 @@ ROOT_DIR = Path(__file__).resolve().parents[3]
 class Settings(BaseSettings):
     data_dir: Path = Path("data")
     database_path: Path = Path("data/cml.sqlite3")
+    backend_mode: str = "full_vault"
+    startup_status_path: Path | None = None
     models_dir: Path | None = None
     api_prefix: str = "/api/v1"
     llm_provider: str = "none"

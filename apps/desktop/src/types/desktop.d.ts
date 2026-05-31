@@ -8,6 +8,7 @@ declare global {
       selectSourceFiles: () => Promise<string[]>;
       selectSourceFolders: () => Promise<string[]>;
       selectVaultFolder: () => Promise<string | null>;
+      setActiveVaultFolder: (targetPath: string) => Promise<string | null>;
       selectCoverImage: () => Promise<string | null>;
       getBackendUrl: () => Promise<string | null>;
       getBackendToken: () => Promise<string | null>;

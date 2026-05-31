@@ -251,7 +251,7 @@ class ChatContextRequest(BaseModel):
     session_id: str | None = None
     persist: bool = True
     limit: int = Field(default=6, ge=1, le=12)
-    complete_analysis: bool = False
+    expanded_analysis: bool = False
     attachments: list[ChatAttachmentInput] = Field(default_factory=list)
 
 
@@ -426,6 +426,8 @@ class AppJobRead(BaseModel):
     status_detail: str | None = None
     started_at: str | None = None
     completed_at: str | None = None
+    elapsed_seconds: int | None = None
+    estimated_remaining_seconds: int | None = None
     created_at: str
     updated_at: str
 
@@ -438,4 +440,5 @@ class JobQueueStatus(BaseModel):
     failed: int
     cancelled: int = 0
     manual_review: int = 0
+    running_jobs: list[AppJobRead] = []
     latest: list[AppJobRead]

@@ -314,6 +314,26 @@ export type ChatSessionRecord = {
   messages: ChatMessageRecord[];
 };
 
+export type ChatTimelineItem =
+  | (ChatMessageRecord & { message_type: "user_message" | "assistant_message"; sort_key: string })
+  | {
+      message_type: "retriable_generation";
+      id: string;
+      session_id: string;
+      prompt: string;
+      cluster_id: string | null;
+      state: string;
+      error: string;
+      created_at: string;
+      updated_at: string;
+      sort_key: string;
+    };
+
+export type ChatTimelineResponse = {
+  session_id: string;
+  items: ChatTimelineItem[];
+};
+
 export type ModelDownloadState = {
   model_id: string;
   status: string;
@@ -583,7 +603,7 @@ export async function buildChatContext(payload: {
   persist?: boolean;
   limit?: number;
   attachments?: Array<{ path: string; cluster_id?: string | null }>;
-  complete_analysis?: boolean;
+  expanded_analysis?: boolean;
 }) {
   return request<ChatContextResponse>("/api/v1/chat/context", {
     method: "POST",
@@ -600,7 +620,7 @@ export async function streamChatContext(
     persist?: boolean;
     limit?: number;
     attachments?: Array<{ path: string; cluster_id?: string | null }>;
-    complete_analysis?: boolean;
+    expanded_analysis?: boolean;
   },
   handlers: {
     onMeta?: (
@@ -685,6 +705,10 @@ export async function createChatSession(payload: {
 
 export async function getChatSession(id: string) {
   return request<ChatSessionRecord>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`);
+}
+
+export async function getChatTimeline(id: string) {
+  return request<ChatTimelineResponse>(`/api/v1/chat/sessions/${encodeURIComponent(id)}/timeline`);
 }
 
 export async function updateChatSession(

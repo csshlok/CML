@@ -27,7 +27,12 @@ const skippedFolderNames = new Set([".git", "node_modules", ".venv", "dist", "bu
 let mainWindow = null;
 
 async function createWindow() {
-  backendUrl = await ensureBackend();
+  let startupError = null;
+  try {
+    backendUrl = await ensureBackend();
+  } catch (error) {
+    startupError = error;
+  }
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -63,16 +68,70 @@ async function createWindow() {
   });
 
   if (isDev) {
+    if (startupError) {
+      await loadStartupFailure(window, startupError);
+      return;
+    }
     const url = new URL(devUrl);
     if (backendUrl) url.searchParams.set("backendUrl", backendUrl);
     window.loadURL(url.toString());
     window.webContents.openDevTools({ mode: "detach" });
   } else {
+    if (startupError) {
+      await loadStartupFailure(window, startupError);
+      return;
+    }
     rendererUrl = rendererUrl || await startPackagedRendererServer();
     const url = new URL(rendererUrl);
     if (backendUrl) url.searchParams.set("backendUrl", backendUrl);
     window.loadURL(url.toString());
   }
+}
+
+async function loadStartupFailure(window, error) {
+  const status = await readStartupStatus();
+  const detail = status?.message || error?.message || "Vault could not start its local backend.";
+  const phase = status?.phase || "startup_failed";
+  const html = `
+    <!doctype html>
+    <meta charset="utf-8" />
+    <title>Vault startup issue</title>
+    <body style="margin:0;font-family:Segoe UI,Arial,sans-serif;background:#fbfaf6;color:#1f1a17;">
+      <main style="max-width:680px;margin:12vh auto;padding:32px;">
+        <div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#8b7d72;">Vault</div>
+        <h1 style="font-size:28px;margin:12px 0;">Vault could not open this workspace.</h1>
+        <p style="line-height:1.6;color:#5f524b;">${escapeHtml(detail)}</p>
+        <dl style="margin-top:24px;padding:16px;border:1px solid #ded6cc;border-radius:8px;background:#fff;">
+          <dt style="font-size:12px;color:#8b7d72;">Startup phase</dt>
+          <dd style="margin:4px 0 12px;">${escapeHtml(phase)}</dd>
+          <dt style="font-size:12px;color:#8b7d72;">Data directory</dt>
+          <dd style="margin:4px 0 0;word-break:break-all;">${escapeHtml(status?.data_dir || "Unknown")}</dd>
+        </dl>
+        <p style="margin-top:20px;font-size:13px;color:#8b7d72;">Close Vault and try again. If this repeats, use Settings diagnostics after the backend can start.</p>
+      </main>
+    </body>`;
+  await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+}
+
+async function readStartupStatus() {
+  try {
+    const raw = await fs.readFile(getStartupStatusPath(), "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function getStartupStatusPath() {
+  return path.join(app.getPath("userData"), "startup-status.json");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -176,6 +235,12 @@ if (gotSingleInstanceLock) {
 
     ipcMain.handle("cml:get-backend-url", async () => backendUrl);
     ipcMain.handle("cml:get-backend-token", async () => getBackendApiToken());
+    ipcMain.handle("cml:set-active-vault-folder", async (_event, targetPath) => {
+      if (typeof targetPath !== "string" || targetPath.trim().length === 0) return null;
+      await setActiveVaultPath(targetPath);
+      await restartBackend();
+      return backendUrl;
+    });
 
     void createWindow();
 
@@ -188,10 +253,18 @@ if (gotSingleInstanceLock) {
 }
 
 async function ensureBackend() {
-  const existing = await findExistingCurrentBackend();
+  const explicitBackend = process.env.VITE_CML_BACKEND_URL || process.env.CML_BACKEND_URL;
+  const existing = explicitBackend ? await findExistingCurrentBackend() : null;
   if (existing) return existing;
 
   const token = await getBackendApiToken();
+  const activeVaultPath = await getActiveVaultPath();
+  const backendMode = activeVaultPath ? "full_vault" : "pre_vault";
+  const dataDir = activeVaultPath
+    ? path.join(activeVaultPath, ".vault")
+    : path.join(app.getPath("userData"), "pre-vault");
+  const databasePath = path.join(dataDir, "cml.sqlite3");
+  const startupStatusPath = getStartupStatusPath();
   const port = await findOpenPort(7343, 7355);
   const rootDir = isDev ? path.resolve(__dirname, "../../..") : process.resourcesPath;
   const pythonPath = isDev
@@ -207,6 +280,10 @@ async function ensureBackend() {
         ...process.env,
         CML_API_PREFIX: process.env.CML_API_PREFIX || "/api/v1",
         CML_API_TOKEN: token,
+        CML_BACKEND_MODE: backendMode,
+        CML_DATA_DIR: dataDir,
+        CML_DATABASE_PATH: databasePath,
+        CML_STARTUP_STATUS_PATH: startupStatusPath,
       },
       windowsHide: true,
       stdio: "ignore",
@@ -216,6 +293,43 @@ async function ensureBackend() {
   const startedUrl = `http://127.0.0.1:${port}`;
   await waitForBackend(startedUrl, 12000);
   return startedUrl;
+}
+
+async function restartBackend() {
+  if (backendProcess && !backendProcess.killed) {
+    backendProcess.kill();
+  }
+  backendProcess = null;
+  backendUrl = null;
+  backendUrl = await ensureBackend();
+  if (mainWindow && backendUrl) {
+    mainWindow.webContents.send("cml:backend-url-changed", backendUrl);
+  }
+}
+
+function getActiveVaultConfigPath() {
+  return path.join(app.getPath("userData"), "active-vault.json");
+}
+
+async function getActiveVaultPath() {
+  try {
+    const raw = await fs.readFile(getActiveVaultConfigPath(), "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.path === "string" && parsed.path.trim()) return parsed.path;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function setActiveVaultPath(targetPath) {
+  await fs.mkdir(path.dirname(getActiveVaultConfigPath()), { recursive: true });
+  await fs.mkdir(path.join(targetPath, ".vault"), { recursive: true });
+  await fs.writeFile(
+    getActiveVaultConfigPath(),
+    JSON.stringify({ path: targetPath, updated_at: new Date().toISOString() }, null, 2),
+    "utf8",
+  );
 }
 
 async function getBackendApiToken() {

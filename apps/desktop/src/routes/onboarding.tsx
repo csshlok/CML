@@ -1,23 +1,57 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import { Check, FileText, FolderOpen, Link2, Upload } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  Download,
+  FolderOpen,
+  HardDrive,
+  Loader2,
+  Mail,
+  PlugZap,
+  ShieldCheck,
+  Sparkles,
+  UserRound,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { Textarea } from "@/components/ui/textarea";
 import {
-  createSourceFromPath,
-  createSourceFromText,
-  createSourceFromUrl,
+  cancelModelDownload,
+  configureEmbeddingRuntime,
   createVault,
+  getEmbeddingRuntimeStatus,
+  listLocalModels,
+  startModelDownload,
+  type EmbeddingRuntimeStatus,
+  type LocalModelRecord,
   type VaultRecord,
 } from "@/lib/backend";
+import { cn } from "@/lib/utils";
 import { useStore } from "@/lib/mockStore";
 
-type Step = 0 | 1 | 2 | 3;
+type Step = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type SignupMethod = "email" | "google";
+type ModelChoice = "recommended" | "existing";
+type EmbeddingChoice = "recommended" | "existing";
+
+const steps = [
+  "Sign up",
+  "Name",
+  "Vault",
+  "Welcome",
+  "Location",
+  "Chat model",
+  "Memory search",
+  "Finish",
+] as const;
+
+const welcomeWords = ["local", "private", "searchable", "ready"];
 
 export const Route = createFileRoute("/onboarding")({
-  head: () => ({ meta: [{ title: "Set up CML" }] }),
+  head: () => ({ meta: [{ title: "Set up Vault" }] }),
   component: Onboarding,
 });
 
@@ -27,318 +61,720 @@ function Onboarding() {
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
 
   const [step, setStep] = useState<Step>(0);
-  const [userName, setUserName] = useState("");
-  const [vaultName, setVaultName] = useState("Local memory");
+  const [signupMethod, setSignupMethod] = useState<SignupMethod>("email");
+  const [email, setEmail] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [vaultName, setVaultName] = useState("My Vault");
   const [vaultPath, setVaultPath] = useState("");
   const [vault, setVault] = useState<VaultRecord | null>(null);
-  const [link, setLink] = useState("");
-  const [textTitle, setTextTitle] = useState("First note");
-  const [pastedText, setPastedText] = useState("");
-  const [isImporting, setIsImporting] = useState(false);
-  const [importMessage, setImportMessage] = useState("No content imported yet.");
-  const [importedCount, setImportedCount] = useState(0);
+  const [models, setModels] = useState<LocalModelRecord[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelChoice, setModelChoice] = useState<ModelChoice>("recommended");
+  const [selectedModelId, setSelectedModelId] = useState("qwen3-4b-q4_k_m");
+  const [existingRuntime, setExistingRuntime] = useState("http://127.0.0.1:8084/v1");
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [embeddingChoice, setEmbeddingChoice] = useState<EmbeddingChoice>("recommended");
+  const [embeddingCacheDir, setEmbeddingCacheDir] = useState("");
+  const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
+  const [embeddingSaving, setEmbeddingSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const selectedModel = useMemo(
+    () => models.find((model) => model.id === selectedModelId) ?? models[0] ?? null,
+    [models, selectedModelId],
+  );
+
+  const resolvedVaultPath = useMemo(() => {
+    const path = vaultPath.trim();
+    return path ? `${path.replace(/[\\/]+$/, "")}\\.vault` : "";
+  }, [vaultPath]);
+
   const canContinue = useMemo(() => {
-    if (step === 0) return userName.trim().length > 0;
-    if (step === 1) return vaultName.trim().length > 0;
-    if (step === 2) return vaultPath.trim().length > 0;
+    if (step === 0) {
+      if (signupMethod === "google") return true;
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+    }
+    if (step === 1) return displayName.trim().length >= 2;
+    if (step === 2) return vaultName.trim().length >= 2;
+    if (step === 4) return vaultPath.trim().length > 0;
+    if (step === 6) return Boolean(embeddingRuntime?.available);
     return true;
-  }, [step, userName, vaultName, vaultPath]);
+  }, [displayName, email, embeddingRuntime?.available, signupMethod, step, vaultName, vaultPath]);
+
+  useEffect(() => {
+    if (step !== 5 && step !== 6) return;
+    void refreshModels();
+    void refreshEmbeddingStatus();
+  }, [step]);
+
+  async function refreshModels() {
+    setModelsLoading(true);
+    try {
+      const rows = await listLocalModels();
+      setModels(rows);
+      if (!rows.some((row) => row.id === selectedModelId) && rows[0]) {
+        setSelectedModelId(rows[0].id);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load local models.");
+    } finally {
+      setModelsLoading(false);
+    }
+  }
+
+  async function refreshEmbeddingStatus() {
+    try {
+      const status = await getEmbeddingRuntimeStatus();
+      setEmbeddingRuntime(status);
+      if (status.available) setMessage("Memory search is ready.");
+    } catch (err) {
+      setEmbeddingRuntime(null);
+      setError(err instanceof Error ? err.message : "Could not check memory search.");
+    }
+  }
 
   async function chooseVaultFolder() {
     const selected = await desktop?.selectVaultFolder?.();
     if (selected) setVaultPath(selected);
   }
 
-  async function ensureVault() {
-    if (vault) return vault;
-    const path = vaultPath.trim();
-    const name = vaultName.trim();
-    if (!path || !name) throw new Error("Choose a vault name and location first.");
-
-    const created = await createVault({ name, path });
-    setVault(created);
-    store.setVault(created.path);
-    return created;
-  }
-
-  async function continueFromVaultLocation() {
+  async function createVaultAfterFolderSelection() {
     setError(null);
+    setMessage("Opening your vault folder...");
     try {
-      await ensureVault();
-      setStep(3);
+      await desktop?.setActiveVaultFolder?.(vaultPath.trim());
+      const created = await createVaultWithRetry(vaultName.trim(), vaultPath.trim());
+      setVault(created);
+      store.setVault(created.path);
+      setMessage("Vault folder is ready.");
+      setStep(5);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create the vault.");
+      setMessage(null);
     }
   }
 
-  async function importFiles(paths: string[]) {
-    const currentVault = await ensureVault();
-    setIsImporting(true);
-    setError(null);
-    let imported = 0;
-    let failed = 0;
-    let firstFailure = "";
-
-    for (const path of paths) {
+  async function createVaultWithRetry(name: string, path: string) {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
       try {
-        await createSourceFromPath({ vault_id: currentVault.id, path });
-        imported += 1;
+        return await createVault({ name, path });
       } catch (err) {
-        failed += 1;
-        if (!firstFailure) firstFailure = err instanceof Error ? err.message : path;
+        lastError = err;
+        await new Promise((resolve) => setTimeout(resolve, 650));
       }
     }
-
-    setImportedCount((count) => count + imported);
-    setImportMessage(
-      failed
-        ? `Imported ${imported}. ${failed} failed. First issue: ${firstFailure}`
-        : imported
-          ? `Imported ${imported} item${imported === 1 ? "" : "s"}.`
-          : "No supported files were found.",
-    );
-    setIsImporting(false);
+    throw lastError instanceof Error ? lastError : new Error("The backend did not reopen the vault in time.");
   }
 
-  async function addFiles() {
-    const paths = await desktop?.selectSourceFiles?.();
-    if (!paths?.length) return;
-    await importFiles(paths);
-  }
-
-  async function addFolder() {
-    const folders = await desktop?.selectSourceFolders?.();
-    if (!folders?.length) return;
-    const paths = desktop?.listSupportedFiles ? await desktop.listSupportedFiles(folders) : folders;
-    await importFiles(paths);
-  }
-
-  async function handleDrop(event: React.DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    const droppedPaths = desktop?.getDroppedFilePaths?.(event.dataTransfer.files) ?? [];
-    if (!droppedPaths.length) {
-      setImportMessage("Drop import is available in the desktop app.");
-      return;
-    }
-    const paths = desktop?.listSupportedFiles ? await desktop.listSupportedFiles(droppedPaths) : droppedPaths;
-    await importFiles(paths);
-  }
-
-  async function addLink() {
-    if (!link.trim()) return;
-    setIsImporting(true);
+  async function startDownload(modelId: string) {
     setError(null);
+    setDownloadingId(modelId);
     try {
-      const currentVault = await ensureVault();
-      await createSourceFromUrl({ vault_id: currentVault.id, url: link.trim() });
-      setImportedCount((count) => count + 1);
-      setImportMessage("Imported 1 link.");
-      setLink("");
+      await startModelDownload(modelId);
+      setMessage("Download started. You can continue setup while it resolves.");
+      await refreshModels();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not import the link.");
+      setError(err instanceof Error ? err.message : "Could not start model download.");
     } finally {
-      setIsImporting(false);
+      setDownloadingId(null);
     }
   }
 
-  async function addText() {
-    if (!pastedText.trim()) return;
-    setIsImporting(true);
+  async function cancelDownload(modelId: string) {
     setError(null);
     try {
-      const currentVault = await ensureVault();
-      await createSourceFromText({
-        vault_id: currentVault.id,
-        title: textTitle.trim() || "First note",
-        text: pastedText.trim(),
+      await cancelModelDownload(modelId);
+      await refreshModels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not cancel model download.");
+    }
+  }
+
+  async function saveEmbeddingRuntime() {
+    setEmbeddingSaving(true);
+    setError(null);
+    setMessage("Testing memory search...");
+    try {
+      const status = await configureEmbeddingRuntime({
+        provider: "sentence-transformers",
+        cache_dir: embeddingChoice === "existing" ? embeddingCacheDir.trim() || null : null,
       });
-      setImportedCount((count) => count + 1);
-      setImportMessage("Imported 1 note.");
-      setPastedText("");
+      setEmbeddingRuntime(status);
+      setMessage(status.available ? "Memory search is ready." : status.detail);
+      if (!status.available) {
+        setError(status.detail);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not import the note.");
+      setError(err instanceof Error ? err.message : "Could not configure memory search.");
     } finally {
-      setIsImporting(false);
+      setEmbeddingSaving(false);
     }
+  }
+
+  function next() {
+    setError(null);
+    setMessage(null);
+    if (step === 0 && signupMethod === "google") {
+      setMessage("Google OAuth is not connected in this local build; a local profile will be created.");
+    }
+    setStep(Math.min(step + 1, 7) as Step);
+  }
+
+  function back() {
+    setError(null);
+    setMessage(null);
+    setStep(Math.max(step - 1, 0) as Step);
   }
 
   function finish() {
     store.completeSetup();
     if (typeof window !== "undefined") {
       window.localStorage.setItem("ctx.onboarded", "1");
-      window.localStorage.setItem("ctx.userName", userName.trim());
+      window.localStorage.setItem("ctx.userName", displayName.trim());
+      window.localStorage.setItem("ctx.userEmail", email.trim());
+      window.localStorage.setItem("ctx.signupMethod", signupMethod);
       window.localStorage.setItem("ctx.vaultName", vaultName.trim());
+      window.localStorage.setItem("ctx.localRuntimeUrl", existingRuntime.trim());
+      window.localStorage.setItem("ctx.chatModelChoice", modelChoice);
+      window.localStorage.setItem("ctx.chatModelId", selectedModelId);
     }
     navigate({ to: "/search" });
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="mx-auto max-w-3xl px-6 py-12">
-        <SetupSteps step={step} />
+    <main className="vault-onboarding-shell min-h-screen overflow-hidden bg-background text-foreground">
+      <AnimatedBackground />
 
-        {step === 0 && (
-          <SetupSection title="What should CML call you?" sub="This is only used inside your local workspace.">
-            <Field label="Your name">
-              <Input value={userName} onChange={(event) => setUserName(event.target.value)} autoFocus />
-            </Field>
-            <Actions>
-              <Button onClick={() => setStep(1)} disabled={!canContinue}>Continue</Button>
-            </Actions>
-          </SetupSection>
-        )}
+      <div className="relative z-10 grid min-h-screen grid-cols-1 lg:grid-cols-[360px_1fr]">
+        <aside className="hidden border-r border-border/70 bg-background/45 px-10 py-10 backdrop-blur-sm lg:flex lg:flex-col">
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card">
+              <ShieldCheck className="h-4 w-4" />
+            </div>
+            <div>
+              <div className="text-sm font-semibold">Vault</div>
+              <div className="text-xs text-muted-foreground">Local memory setup</div>
+            </div>
+          </div>
 
-        {step === 1 && (
-          <SetupSection title="Name your vault." sub="A vault is the local memory space where your sources, clusters, and chats live.">
-            <Field label="Vault name">
-              <Input value={vaultName} onChange={(event) => setVaultName(event.target.value)} autoFocus />
-            </Field>
-            <Actions>
-              <Button variant="outline" onClick={() => setStep(0)}>Back</Button>
-              <Button onClick={() => setStep(2)} disabled={!canContinue}>Continue</Button>
-            </Actions>
-          </SetupSection>
-        )}
+          <div className="mt-16">
+            <div className="text-4xl font-semibold leading-tight">
+              Make your work
+              <span className="vault-word-rotator ml-2 inline-grid align-baseline">
+                {welcomeWords.map((word, index) => (
+                  <span key={word} style={{ animationDelay: `${index * 1.8}s` }}>
+                    {word}
+                  </span>
+                ))}
+              </span>
+            </div>
+            <p className="mt-5 max-w-[280px] text-sm leading-6 text-muted-foreground">
+              A private vault, a real memory-search model, and a calm place to start asking.
+            </p>
+          </div>
 
-        {step === 2 && (
-          <SetupSection title="Choose where the vault is stored." sub="CML keeps the vault on this device. You can use a normal folder or a synced folder.">
-            <Field label="Vault location">
-              <div className="flex gap-2">
-                <Input
-                  value={vaultPath}
-                  onChange={(event) => setVaultPath(event.target.value)}
-                  placeholder="C:\\Users\\You\\Documents\\CML Vault"
-                />
-                <Button variant="outline" onClick={chooseVaultFolder} disabled={!desktop?.selectVaultFolder}>
-                  <FolderOpen className="mr-1.5 h-4 w-4" />
-                  Browse
-                </Button>
-              </div>
-            </Field>
-            {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-            <Actions>
-              <Button variant="outline" onClick={() => setStep(1)}>Back</Button>
-              <Button onClick={() => void continueFromVaultLocation()} disabled={!canContinue}>Create vault</Button>
-            </Actions>
-          </SetupSection>
-        )}
+          <StepRail step={step} />
+        </aside>
 
-        {step === 3 && (
-          <SetupSection
-            title="Add your first context."
-            sub="Drop files, choose a folder, add a link, or paste text. CML can start searching immediately while local experts learn later."
-          >
-            <div
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={(event) => void handleDrop(event)}
-              className="flex min-h-40 items-center justify-center rounded-md border border-dashed border-border bg-card p-6 text-center"
-            >
-              <div>
-                <Upload className="mx-auto h-5 w-5 text-muted-foreground" />
-                <div className="mt-3 text-sm font-medium">Drop files or folders here</div>
-                <div className="mt-1 text-sm text-muted-foreground">TXT, Markdown, DOCX, and PDF are supported now.</div>
-                <div className="mt-4 flex justify-center gap-2">
-                  <Button variant="outline" onClick={() => void addFiles()} disabled={!desktop?.selectSourceFiles || isImporting}>Add files</Button>
-                  <Button variant="outline" onClick={() => void addFolder()} disabled={!desktop?.selectSourceFolders || isImporting}>Add folder</Button>
-                </div>
-              </div>
+        <section className="flex min-h-screen items-center justify-center px-5 py-8 sm:px-8">
+          <div className="vault-onboarding-card w-full max-w-[760px]">
+            <MobileHeader step={step} />
+
+            <div key={step} className="vault-step-enter">
+              {step === 0 && (
+                <SetupPanel
+                  icon={<Mail className="h-5 w-5" />}
+                  title="Sign up to Vault"
+                  sub="This creates a local profile for your device. Cloud accounts can be connected later."
+                >
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <ChoiceButton
+                      selected={signupMethod === "email"}
+                      title="Email"
+                      description="Use an email for your local profile."
+                      onClick={() => setSignupMethod("email")}
+                    />
+                    <ChoiceButton
+                      selected={signupMethod === "google"}
+                      title="Google"
+                      description="Reserved for OAuth; local profile now."
+                      onClick={() => setSignupMethod("google")}
+                      mark="G"
+                    />
+                  </div>
+                  {signupMethod === "email" && (
+                    <Field label="Email">
+                      <Input
+                        value={email}
+                        onChange={(event) => setEmail(event.target.value)}
+                        placeholder="you@example.com"
+                        autoFocus
+                      />
+                    </Field>
+                  )}
+                </SetupPanel>
+              )}
+
+              {step === 1 && (
+                <SetupPanel
+                  icon={<UserRound className="h-5 w-5" />}
+                  title="What should Vault call you?"
+                  sub="This name stays in your local profile and appears in your workspace."
+                >
+                  <Field label="Display name">
+                    <Input
+                      value={displayName}
+                      onChange={(event) => setDisplayName(event.target.value)}
+                      placeholder="Your name"
+                      autoFocus
+                    />
+                  </Field>
+                </SetupPanel>
+              )}
+
+              {step === 2 && (
+                <SetupPanel
+                  icon={<Sparkles className="h-5 w-5" />}
+                  title="Name your vault"
+                  sub="A vault is the local memory space where your files, links, notes, and chats live."
+                >
+                  <Field label="Vault name">
+                    <Input
+                      value={vaultName}
+                      onChange={(event) => setVaultName(event.target.value)}
+                      placeholder="My Vault"
+                      autoFocus
+                    />
+                  </Field>
+                </SetupPanel>
+              )}
+
+              {step === 3 && (
+                <SetupPanel
+                  icon={<ShieldCheck className="h-5 w-5" />}
+                  title={`Welcome${displayName.trim() ? `, ${displayName.trim()}` : ""}`}
+                  sub="Vault keeps the setup simple: choose a local folder, connect memory search, then start adding context."
+                >
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <MiniFact title="Private" body="Stored on this device." />
+                    <MiniFact title="Searchable" body="Powered by a local embedding model." />
+                    <MiniFact title="Ready" body="Chat can use your context after indexing." />
+                  </div>
+                </SetupPanel>
+              )}
+
+              {step === 4 && (
+                <SetupPanel
+                  icon={<FolderOpen className="h-5 w-5" />}
+                  title="Choose where Vault lives"
+                  sub="This folder becomes your real storage location. Vault data is written inside a hidden .vault folder there."
+                >
+                  <Field label="Vault location">
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Input
+                        value={vaultPath}
+                        onChange={(event) => setVaultPath(event.target.value)}
+                        placeholder="C:\\Users\\You\\Documents\\Vault"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={chooseVaultFolder}
+                        disabled={!desktop?.selectVaultFolder}
+                      >
+                        <FolderOpen className="h-4 w-4" />
+                        Browse
+                      </Button>
+                    </div>
+                  </Field>
+                  {resolvedVaultPath && (
+                    <div className="rounded-md border border-border bg-secondary/55 p-4 text-sm">
+                      <div className="flex items-center gap-2 font-medium">
+                        <HardDrive className="h-4 w-4" />
+                        Data path
+                      </div>
+                      <div className="mt-2 break-all font-mono text-xs text-muted-foreground">
+                        {resolvedVaultPath}
+                      </div>
+                    </div>
+                  )}
+                </SetupPanel>
+              )}
+
+              {step === 5 && (
+                <SetupPanel
+                  icon={<PlugZap className="h-5 w-5" />}
+                  title="Choose a local chat model"
+                  sub="Vault can download a recommended model, or you can connect an existing OpenAI-compatible local runtime."
+                >
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <ChoiceButton
+                      selected={modelChoice === "recommended"}
+                      title="Recommended model"
+                      description="Download one of Vault's local GGUF choices."
+                      onClick={() => setModelChoice("recommended")}
+                    />
+                    <ChoiceButton
+                      selected={modelChoice === "existing"}
+                      title="Existing runtime"
+                      description="Use llama-server, Ollama, or another local endpoint."
+                      onClick={() => setModelChoice("existing")}
+                    />
+                  </div>
+
+                  {modelChoice === "recommended" ? (
+                    <div className="grid gap-3">
+                      {modelsLoading && <p className="text-sm text-muted-foreground">Loading model options...</p>}
+                      {models.map((model) => (
+                        <ModelRow
+                          key={model.id}
+                          model={model}
+                          selected={selectedModelId === model.id}
+                          busy={downloadingId === model.id}
+                          onSelect={() => setSelectedModelId(model.id)}
+                          onDownload={() => void startDownload(model.id)}
+                          onCancel={() => void cancelDownload(model.id)}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <Field label="OpenAI-compatible endpoint">
+                      <Input
+                        value={existingRuntime}
+                        onChange={(event) => setExistingRuntime(event.target.value)}
+                        placeholder="http://127.0.0.1:8084/v1"
+                      />
+                    </Field>
+                  )}
+
+                  {selectedModel && modelChoice === "recommended" && (
+                    <p className="text-xs text-muted-foreground">
+                      Selected: {selectedModel.name}. You can finish setup while downloads continue.
+                    </p>
+                  )}
+                </SetupPanel>
+              )}
+
+              {step === 6 && (
+                <SetupPanel
+                  icon={<Sparkles className="h-5 w-5" />}
+                  title="Choose the memory-search model"
+                  sub="This step is required. Search, clusters, Bridge, and vault-grounded chat need a real local embedding model."
+                >
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <ChoiceButton
+                      selected={embeddingChoice === "recommended"}
+                      title="Vault recommended"
+                      description="Use sentence-transformers/all-MiniLM-L6-v2."
+                      onClick={() => setEmbeddingChoice("recommended")}
+                    />
+                    <ChoiceButton
+                      selected={embeddingChoice === "existing"}
+                      title="Existing cache"
+                      description="Point Vault at a local model cache folder."
+                      onClick={() => setEmbeddingChoice("existing")}
+                    />
+                  </div>
+
+                  {embeddingChoice === "existing" && (
+                    <Field label="Embedding cache folder">
+                      <Input
+                        value={embeddingCacheDir}
+                        onChange={(event) => setEmbeddingCacheDir(event.target.value)}
+                        placeholder="T:\\LLM\\embeddings"
+                      />
+                    </Field>
+                  )}
+
+                  <div className="rounded-md border border-border bg-card p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className="text-sm font-medium">
+                          {embeddingRuntime?.available ? "Memory search ready" : "Memory search needs setup"}
+                        </div>
+                        <div className="mt-1 text-sm text-muted-foreground">
+                          {embeddingRuntime?.detail ?? "Run a local test before entering Vault."}
+                        </div>
+                      </div>
+                      {embeddingRuntime?.available && <Check className="h-5 w-5 text-[var(--status-ready)]" />}
+                    </div>
+                    <Button
+                      className="mt-4"
+                      onClick={() => void saveEmbeddingRuntime()}
+                      disabled={embeddingSaving}
+                    >
+                      {embeddingSaving && <Loader2 className="h-4 w-4 animate-spin" />}
+                      Test memory search
+                    </Button>
+                  </div>
+                </SetupPanel>
+              )}
+
+              {step === 7 && (
+                <SetupPanel
+                  icon={<Check className="h-5 w-5" />}
+                  title="Welcome to Vault"
+                  sub="Your vault is ready. Add sources from the Mind workspace, or start with chat when you want to ask across everything."
+                >
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <SummaryRow label="Profile" value={displayName.trim() || "Local user"} />
+                    <SummaryRow label="Vault" value={vault?.name ?? vaultName.trim()} />
+                    <SummaryRow label="Storage" value={resolvedVaultPath || "Selected vault folder"} />
+                    <SummaryRow
+                      label="Memory search"
+                      value={embeddingRuntime?.available ? "Ready" : "Needs setup"}
+                    />
+                  </div>
+                </SetupPanel>
+              )}
             </div>
 
-            <div className="mt-4 grid gap-4 md:grid-cols-2">
-              <div className="rounded-md border border-border bg-card p-4">
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <Link2 className="h-4 w-4" />
-                  Add a link
-                </div>
-                <Input className="mt-3" value={link} onChange={(event) => setLink(event.target.value)} placeholder="https://..." />
-                <Button className="mt-3" variant="outline" onClick={() => void addLink()} disabled={!link.trim() || isImporting}>Import link</Button>
+            {(message || error) && (
+              <div
+                className={cn(
+                  "mt-5 rounded-md border px-4 py-3 text-sm",
+                  error
+                    ? "border-destructive/30 bg-destructive/5 text-destructive"
+                    : "border-[var(--status-ready)]/25 bg-[var(--status-ready)]/10 text-foreground",
+                )}
+              >
+                {error ?? message}
               </div>
+            )}
 
-              <div className="rounded-md border border-border bg-card p-4">
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <FileText className="h-4 w-4" />
-                  Paste text
+            <div className="mt-8 flex items-center justify-between gap-3 border-t border-border pt-5">
+              <Button variant="ghost" onClick={back} disabled={step === 0}>
+                <ArrowLeft className="h-4 w-4" />
+                Back
+              </Button>
+
+              <div className="flex items-center gap-3">
+                <div className="hidden text-xs text-muted-foreground sm:block">
+                  {step + 1} of {steps.length}
                 </div>
-                <Input className="mt-3" value={textTitle} onChange={(event) => setTextTitle(event.target.value)} placeholder="Note title" />
-                <Textarea className="mt-2" rows={4} value={pastedText} onChange={(event) => setPastedText(event.target.value)} placeholder="Paste a note, brief, chat transcript, or assignment..." />
-                <Button className="mt-3" variant="outline" onClick={() => void addText()} disabled={!pastedText.trim() || isImporting}>Import text</Button>
+                {step === 4 ? (
+                  <Button onClick={() => void createVaultAfterFolderSelection()} disabled={!canContinue}>
+                    Create vault
+                    <ArrowRight className="h-4 w-4" />
+                  </Button>
+                ) : step === 7 ? (
+                  <Button onClick={finish}>
+                    Open Vault
+                    <ArrowRight className="h-4 w-4" />
+                  </Button>
+                ) : (
+                  <Button onClick={next} disabled={!canContinue}>
+                    Continue
+                    <ArrowRight className="h-4 w-4" />
+                  </Button>
+                )}
               </div>
             </div>
-
-            <div className="mt-5 rounded-md border border-border bg-card p-4">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-sm font-medium">Learning starts with indexing</div>
-                  <div className="mt-1 text-sm text-muted-foreground">{importMessage}</div>
-                </div>
-                <div className="text-sm text-muted-foreground">{importedCount} imported</div>
-              </div>
-              {isImporting && <Progress value={70} className="mt-3 h-1.5" />}
-              {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-            </div>
-
-            <Actions>
-              <Button variant="outline" onClick={finish}>Skip for now</Button>
-              <Button onClick={finish}>{importedCount > 0 ? "Open CML" : "Open empty vault"}</Button>
-            </Actions>
-          </SetupSection>
-        )}
+          </div>
+        </section>
       </div>
+    </main>
+  );
+}
+
+function AnimatedBackground() {
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+      <div className="vault-bg-wash" />
+      <div className="vault-bg-lines" />
     </div>
   );
 }
 
-function SetupSteps({ step }: { step: Step }) {
-  const labels = ["Name", "Vault", "Location", "Content"];
+function MobileHeader({ step }: { step: Step }) {
   return (
-    <div className="mb-10 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-      {labels.map((label, index) => (
-        <div key={label} className="flex items-center gap-2">
+    <div className="mb-7 lg:hidden">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-semibold">Vault</div>
+        <div className="text-xs text-muted-foreground">
+          {step + 1} / {steps.length}
+        </div>
+      </div>
+      <Progress className="mt-3 h-1.5" value={((step + 1) / steps.length) * 100} />
+    </div>
+  );
+}
+
+function StepRail({ step }: { step: Step }) {
+  return (
+    <div className="mt-auto space-y-3">
+      {steps.map((label, index) => (
+        <div key={label} className="flex items-center gap-3 text-sm">
           <span
-            className={
-              "flex h-6 w-6 items-center justify-center rounded-full border text-xs " +
-              (index <= step ? "border-foreground text-foreground" : "border-border")
-            }
+            className={cn(
+              "flex h-6 w-6 items-center justify-center rounded-md border text-xs transition-colors",
+              index < step && "border-[var(--status-ready)] bg-[var(--status-ready)]/12 text-foreground",
+              index === step && "border-primary bg-primary text-primary-foreground",
+              index > step && "border-border bg-card/60 text-muted-foreground",
+            )}
           >
             {index < step ? <Check className="h-3.5 w-3.5" /> : index + 1}
           </span>
-          <span className={index === step ? "text-foreground" : ""}>{label}</span>
-          {index < labels.length - 1 && <span className="mx-1 h-px w-6 bg-border" />}
+          <span className={cn(index === step ? "font-medium text-foreground" : "text-muted-foreground")}>
+            {label}
+          </span>
         </div>
       ))}
     </div>
   );
 }
 
-function SetupSection({
+function SetupPanel({
+  icon,
   title,
   sub,
   children,
 }: {
+  icon: ReactNode;
   title: string;
   sub: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
-    <section>
-      <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-      <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{sub}</p>
-      <div className="mt-8">{children}</div>
-    </section>
+    <div>
+      <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-card text-primary">
+        {icon}
+      </div>
+      <h1 className="mt-6 text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">{title}</h1>
+      <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">{sub}</p>
+      <div className="mt-8 grid gap-4">{children}</div>
+    </div>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <label className="block rounded-md border border-border bg-card p-4">
+    <label className="block">
       <span className="text-sm font-medium">{label}</span>
       <div className="mt-2">{children}</div>
     </label>
   );
 }
 
-function Actions({ children }: { children: React.ReactNode }) {
-  return <div className="mt-6 flex justify-end gap-2">{children}</div>;
+function ChoiceButton({
+  selected,
+  title,
+  description,
+  mark,
+  onClick,
+}: {
+  selected: boolean;
+  title: string;
+  description: string;
+  mark?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-md border bg-card p-4 text-left transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        selected ? "border-primary bg-primary/7" : "border-border",
+      )}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm font-medium">{title}</div>
+        {mark ? (
+          <span className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-background text-xs font-semibold">
+            {mark}
+          </span>
+        ) : selected ? (
+          <Check className="h-4 w-4 text-primary" />
+        ) : null}
+      </div>
+      <div className="mt-2 text-sm leading-5 text-muted-foreground">{description}</div>
+    </button>
+  );
+}
+
+function MiniFact({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="rounded-md border border-border bg-card p-4">
+      <div className="text-sm font-medium">{title}</div>
+      <div className="mt-2 text-sm leading-5 text-muted-foreground">{body}</div>
+    </div>
+  );
+}
+
+function ModelRow({
+  model,
+  selected,
+  busy,
+  onSelect,
+  onDownload,
+  onCancel,
+}: {
+  model: LocalModelRecord;
+  selected: boolean;
+  busy: boolean;
+  onSelect: () => void;
+  onDownload: () => void;
+  onCancel: () => void;
+}) {
+  const downloading = model.download?.status === "resolving" || model.download?.status === "downloading";
+  const progress =
+    model.download?.bytes_downloaded && model.download.total_bytes
+      ? Math.round((model.download.bytes_downloaded / model.download.total_bytes) * 100)
+      : 0;
+
+  return (
+    <div
+      className={cn(
+        "rounded-md border bg-card p-4 transition-colors",
+        selected ? "border-primary bg-primary/7" : "border-border",
+      )}
+    >
+      <button type="button" className="block w-full text-left" onClick={onSelect}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium">{model.name}</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {model.role} / {model.quantization} / {model.approximate_download_gb} GB / {model.recommended_ram_gb} GB RAM
+            </div>
+          </div>
+          {selected && <Check className="h-4 w-4 text-primary" />}
+        </div>
+        <p className="mt-2 text-sm leading-5 text-muted-foreground">{model.notes}</p>
+        {model.local_path && <p className="mt-2 truncate font-mono text-xs text-muted-foreground">{model.local_path}</p>}
+      </button>
+
+      {downloading && (
+        <div className="mt-3">
+          <Progress value={progress || 12} className="h-1.5" />
+          <div className="mt-1 text-xs text-muted-foreground">{model.download?.status}</div>
+        </div>
+      )}
+
+      <div className="mt-3 flex justify-end gap-2">
+        {downloading ? (
+          <Button variant="outline" size="sm" onClick={onCancel}>
+            <X className="h-4 w-4" />
+            Cancel
+          </Button>
+        ) : (
+          <Button variant={model.installed ? "outline" : "secondary"} size="sm" onClick={onDownload} disabled={model.installed || busy}>
+            <Download className="h-4 w-4" />
+            {model.installed ? "Installed" : busy ? "Starting" : "Download"}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border bg-card p-4">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 break-words text-sm font-medium">{value}</div>
+    </div>
+  );
 }
