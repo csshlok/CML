@@ -12,6 +12,7 @@ from backend.app.core.embeddings import content_hash, require_embeddings_availab
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path, extract_text_from_url
 from backend.app.core.memory_card import generate_tags, summarize_text
+from backend.app.core.network_security import strip_url_credentials
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
     SourceCreate,
@@ -193,8 +194,9 @@ def create_source_from_text(payload: SourceTextCreate) -> dict:
 
 @router.post("/from-url", response_model=SourceRead)
 def create_source_from_url(payload: SourceUrlCreate) -> dict:
+    sanitized_url = strip_url_credentials(payload.url)
     try:
-        title, text, cover_image_url = extract_text_from_url(payload.url)
+        title, text, cover_image_url = extract_text_from_url(sanitized_url)
     except ExtractionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -204,7 +206,7 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
             cluster_id=payload.cluster_id,
             title=title,
             source_type="link",
-            url=payload.url,
+            url=sanitized_url,
             raw_text=text,
             cover_image_url=cover_image_url,
         )
@@ -342,9 +344,6 @@ def delete_source(source_id: str) -> None:
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Source not found")
-        conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
-        conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
-        conn.execute("DELETE FROM chat_attachments WHERE source_id = ?", (source_id,))
         conn.execute(
             """
             UPDATE retrieval_snapshot_items
@@ -357,11 +356,14 @@ def delete_source(source_id: str) -> None:
             """,
             (source_id, source_id, source_id),
         )
+        conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
+        conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
+        conn.execute("DELETE FROM chat_attachments WHERE source_id = ?", (source_id,))
         conn.execute(
             """
             UPDATE app_jobs
             SET status = 'cancelled', status_detail = 'Source was deleted.', completed_at = ?, updated_at = ?
-            WHERE status IN ('queued', 'blocked_by_dependency')
+            WHERE status IN ('queued', 'blocked_by_dependency', 'running')
                 AND (
                     scope_id = ?
                     OR payload LIKE ?

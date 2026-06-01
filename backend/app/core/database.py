@@ -150,6 +150,12 @@ def init_db() -> None:
                 base_model TEXT NOT NULL DEFAULT '',
                 hardware_tier TEXT NOT NULL DEFAULT '',
                 quality_score REAL,
+                dataset_hash TEXT NOT NULL DEFAULT '',
+                training_config_hash TEXT NOT NULL DEFAULT '',
+                metrics_json TEXT NOT NULL DEFAULT '{}',
+                active INTEGER NOT NULL DEFAULT 0,
+                rolled_back_at TEXT,
+                deleted_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,
@@ -448,6 +454,12 @@ def init_db() -> None:
         _add_column_if_missing(conn, "cluster_expert_jobs", "artifact_path", "TEXT")
         _add_column_if_missing(conn, "cluster_expert_jobs", "hardware_tier", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "extension_clients", "allowed_vault_ids", "TEXT NOT NULL DEFAULT '[]'")
+        _add_column_if_missing(conn, "expert_artifacts", "dataset_hash", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "expert_artifacts", "training_config_hash", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "expert_artifacts", "metrics_json", "TEXT NOT NULL DEFAULT '{}'")
+        _add_column_if_missing(conn, "expert_artifacts", "active", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "expert_artifacts", "rolled_back_at", "TEXT")
+        _add_column_if_missing(conn, "expert_artifacts", "deleted_at", "TEXT")
         conn.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_app_jobs_runnable
@@ -458,6 +470,8 @@ def init_db() -> None:
                 ON source_chunks(page_id);
             CREATE INDEX IF NOT EXISTS idx_sources_checksum
                 ON sources(vault_id, checksum);
+            CREATE INDEX IF NOT EXISTS idx_expert_artifacts_active
+                ON expert_artifacts(cluster_id, active, deleted_at);
             """
         )
 

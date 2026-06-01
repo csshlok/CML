@@ -29,6 +29,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         os.environ.pop("CML_DATA_DIR", None)
         os.environ.pop("CML_EMBEDDING_PROVIDER", None)
         os.environ.pop("CML_ALLOW_HASH_EMBEDDINGS", None)
+        os.environ.pop("CML_ALLOW_LORA_TEST_TRAINER", None)
         self.tmp.cleanup()
 
     def test_text_source_creates_page_and_page_linked_chunks(self) -> None:
@@ -124,6 +125,84 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIsNone(deleted["original_path"])
         self.assertIsNone(deleted["url"])
         self.assertIsNone(deleted["checksum"])
+
+    def test_delete_source_tombstones_retrieval_items_before_page_chunk_cleanup(self) -> None:
+        from backend.app.api.routes.sources import create_source, delete_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        source = create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Tombstone note",
+                source_type="note",
+                raw_text="retrieval tombstone chunk page cleanup " * 120,
+            )
+        )
+        run_due_jobs_once(limit=1)
+        with connect() as conn:
+            page = conn.execute("SELECT id FROM source_pages WHERE source_id = ?", (source["id"],)).fetchone()
+            chunk = conn.execute("SELECT id FROM source_chunks WHERE source_id = ?", (source["id"],)).fetchone()
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id, vault_id, title, scope_cluster_id, saved, memory_status,
+                    memory_updated_at, created_at, updated_at
+                )
+                VALUES ('chat-1', 'vault-1', 'Chat', NULL, 0, 'idle', NULL, ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("message-1", "chat-1", "assistant", "answer", now),
+            )
+            conn.execute(
+                """
+                INSERT INTO retrieval_snapshots (
+                    id, message_id, session_id, vault_id, query, retrieval_mode,
+                    embedding_model_id, token_budget, created_at
+                )
+                VALUES ('snapshot-1', 'message-1', 'chat-1', 'vault-1', 'query', 'semantic', 'hash-dev', NULL, ?)
+                """,
+                (now,),
+            )
+            conn.execute(
+                """
+                INSERT INTO retrieval_snapshot_items (
+                    id, snapshot_id, source_id, chunk_id, page_id,
+                    source_title_at_answer_time, page_number, snippet_hash,
+                    short_snippet_excerpt, relevance_score, item_rank, state, created_at
+                )
+                VALUES (
+                    'item-1', 'snapshot-1', ?, ?, ?, 'Tombstone note', 1,
+                    'hash', 'excerpt', 1.0, 1, 'current', ?
+                )
+                """,
+                (source["id"], chunk["id"], page["id"], now),
+            )
+
+        delete_source(source["id"])
+
+        with connect() as conn:
+            item = conn.execute("SELECT * FROM retrieval_snapshot_items LIMIT 1").fetchone()
+            queued_cleanup = conn.execute(
+                "SELECT * FROM app_jobs WHERE job_type = 'delete_source_cleanup' AND scope_id = ?",
+                (source["id"],),
+            ).fetchone()
+        self.assertEqual(item["state"], "source_deleted")
+        self.assertIsNone(item["source_id"])
+        self.assertIsNone(item["chunk_id"])
+        self.assertIsNone(item["page_id"])
+        self.assertIsNotNone(queued_cleanup)
 
     def test_vector_reconciliation_queues_missing_source_chunks(self) -> None:
         from backend.app.api.routes.sources import create_source
@@ -731,6 +810,46 @@ class SourcePageIndexingTests(unittest.TestCase):
             self.assertIn("manifest.json", bundle.namelist())
             self.assertIn("database-summary.json", bundle.namelist())
 
+    def test_diagnostic_bundle_excludes_source_text_and_redacts_logs(self) -> None:
+        from pathlib import Path
+        from zipfile import ZipFile
+
+        from backend.app.api.routes.diagnostics import create_diagnostic_bundle
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        secret = "my_secret_password_12345"
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Secret note",
+                source_type="note",
+                raw_text=f"diagnostic redaction {secret}",
+            )
+        )
+        log_dir = Path(self.tmp.name) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "backend.log").write_text(
+            f"authorization: Bearer abc.def\npassword={secret}\nC:\\Users\\alice\\vault\\file.txt",
+            encoding="utf-8",
+        )
+
+        response = create_diagnostic_bundle()
+
+        with ZipFile(response["bundle_path"]) as bundle:
+            payload = "\n".join(bundle.read(name).decode("utf-8") for name in bundle.namelist())
+        self.assertNotIn(secret, payload)
+        self.assertNotIn("abc.def", payload)
+        self.assertNotIn("alice", payload)
+        self.assertIn("[redacted]", payload)
+
     def test_startup_recovery_marks_in_flight_generations_retriable(self) -> None:
         from backend.app.core.database import connect, utc_now
         from backend.app.core.generation_recovery import recover_interrupted_generations
@@ -782,8 +901,10 @@ class SourcePageIndexingTests(unittest.TestCase):
             row = conn.execute(
                 "SELECT version, status FROM schema_migrations ORDER BY version DESC LIMIT 1"
             ).fetchone()
+            user_version = conn.execute("PRAGMA user_version").fetchone()[0]
         self.assertEqual(row["version"], 1)
         self.assertEqual(row["status"], "succeeded")
+        self.assertEqual(user_version, 1)
 
     def test_disk_preflight_reports_available_space(self) -> None:
         from backend.app.core.preflight import disk_preflight
@@ -1075,6 +1196,136 @@ class SourcePageIndexingTests(unittest.TestCase):
             run_due_jobs_once(limit=1)
             artifacts = list_expert_artifacts("cluster-1")
             self.assertGreaterEqual(len(artifacts), 1)
+
+    def test_verified_lora_training_creates_active_adapter_with_metrics(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes.clusters import (
+            get_expert_graduation_contract,
+            list_expert_artifacts,
+            queue_expert_retrain,
+        )
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.config import get_settings
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourceCreate
+
+        os.environ["CML_ALLOW_LORA_TEST_TRAINER"] = "1"
+        get_settings.cache_clear()
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', 'retrieval_ready', ?, ?)
+                """,
+                (now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                cluster_id="cluster-1",
+                title="LoRA source",
+                source_type="note",
+                raw_text="verified lora adapter training evidence " * 320,
+                summary="A sufficiently descriptive local source summary for adapter training.",
+            )
+        )
+
+        hardware = {
+            "training_supported": True,
+            "hardware_tier": "cpu_minimum_spec",
+            "detail": "test hardware",
+        }
+        with (
+            patch("backend.app.core.expert_lifecycle.hardware_status", return_value=hardware),
+            patch("backend.app.core.hardware.hardware_status", return_value=hardware),
+        ):
+            contract = get_expert_graduation_contract("cluster-1")
+            expert_job = queue_expert_retrain("cluster-1")
+            processed = run_due_jobs_once(limit=2)
+
+        self.assertIn("training_ready", contract["supported_statuses"])
+        self.assertEqual(expert_job["status"], "queued")
+        self.assertGreaterEqual(processed, 1)
+        artifacts = list_expert_artifacts("cluster-1")
+        self.assertEqual(len(artifacts), 1)
+        artifact = artifacts[0]
+        self.assertEqual(artifact["artifact_type"], "lora_adapter")
+        self.assertEqual(artifact["status"], "ready")
+        self.assertTrue(artifact["active"])
+        self.assertTrue(artifact["dataset_hash"])
+        self.assertTrue(artifact["training_config_hash"])
+        self.assertGreaterEqual(artifact["quality_score"], 60)
+        self.assertTrue((Path(artifact["local_path"]) / "adapter_config.json").exists())
+        self.assertTrue((Path(artifact["local_path"]) / "adapter_model.safetensors").exists())
+        with connect() as conn:
+            cluster = conn.execute("SELECT expert_status FROM clusters WHERE id = 'cluster-1'").fetchone()
+            job = conn.execute("SELECT status, failure_code, detail FROM cluster_expert_jobs WHERE id = ?", (expert_job["id"],)).fetchone()
+        self.assertEqual(cluster["expert_status"], "training_ready")
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["failure_code"], "")
+
+    def test_lora_adapter_rollback_and_delete_guardrails(self) -> None:
+        from backend.app.api.routes.clusters import (
+            activate_expert_artifact,
+            delete_expert_artifact,
+            rollback_expert_artifact,
+        )
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        adapter_a = Path(self.tmp.name) / "adapter-a"
+        adapter_b = Path(self.tmp.name) / "adapter-b"
+        for path in (adapter_a, adapter_b):
+            path.mkdir()
+            (path / "adapter_config.json").write_text("{}", encoding="utf-8")
+            (path / "adapter_model.safetensors").write_bytes(b"adapter")
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', 'training_ready', ?, ?)
+                """,
+                (now, now),
+            )
+            for artifact_id, path, active in (("artifact-a", adapter_a, 0), ("artifact-b", adapter_b, 1)):
+                conn.execute(
+                    """
+                    INSERT INTO expert_artifacts (
+                        id, cluster_id, vault_id, artifact_type, status, local_path,
+                        base_model, hardware_tier, quality_score, active,
+                        created_at, updated_at
+                    )
+                    VALUES (?, 'cluster-1', 'vault-1', 'lora_adapter', 'ready', ?, 'base', 'cpu', 80, ?, ?, ?)
+                    """,
+                    (artifact_id, str(path), active, now, now),
+                )
+
+        with self.assertRaises(Exception):
+            delete_expert_artifact("cluster-1", "artifact-b")
+        rolled_back = rollback_expert_artifact("cluster-1")
+        self.assertEqual(rolled_back["id"], "artifact-a")
+        self.assertTrue(rolled_back["active"])
+        deleted = activate_expert_artifact("cluster-1", "artifact-b")
+        self.assertTrue(deleted["active"])
+        delete_expert_artifact("cluster-1", "artifact-a")
+        with connect() as conn:
+            artifact_a = conn.execute("SELECT deleted_at FROM expert_artifacts WHERE id = 'artifact-a'").fetchone()
+        self.assertIsNotNone(artifact_a["deleted_at"])
 
     def test_vault_lock_audit_records_events(self) -> None:
         from backend.app.api.routes.system import list_vault_lock_audit

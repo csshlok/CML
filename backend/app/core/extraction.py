@@ -4,7 +4,7 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from backend.app.core.network_security import NetworkSecurityError, validate_public_http_url
+from backend.app.core.network_security import NetworkSecurityError, strip_url_credentials, validate_public_http_url
 from backend.app.core.ocr import OCRError, ocr_image, ocr_pdf_pages
 
 
@@ -260,6 +260,7 @@ class _TextHTMLParser(HTMLParser):
 
 
 def extract_text_from_url(url: str) -> tuple[str, str, str | None]:
+    url = strip_url_credentials(url)
     try:
         validate_public_http_url(url)
     except NetworkSecurityError as exc:
@@ -365,6 +366,7 @@ def _safe_open(request: Request, timeout: int):
             if not location:
                 raise ExtractionError("Link redirect did not include a target") from exc
             next_url = urljoin(current.full_url, location)
+            next_url = strip_url_credentials(next_url)
             try:
                 validate_public_http_url(next_url)
             except NetworkSecurityError as validation_exc:

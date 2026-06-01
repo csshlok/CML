@@ -209,8 +209,23 @@ export type ExpertArtifactRecord = {
   base_model: string;
   hardware_tier: string;
   quality_score: number | null;
+  dataset_hash: string;
+  training_config_hash: string;
+  metrics_json: string;
+  active: boolean;
+  rolled_back_at: string | null;
+  deleted_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type ExpertGraduationContractRecord = {
+  supported_statuses: string[];
+  minimum_sources: number;
+  minimum_quality_score: number;
+  required_artifact_files: string[];
+  failure_codes: string[];
+  rollback_behavior: string;
 };
 
 export type AppJobRecord = {
@@ -695,6 +710,33 @@ export async function listClusterExpertJobs(clusterId: string) {
 export async function listClusterExpertArtifacts(clusterId: string) {
   return request<ExpertArtifactRecord[]>(
     `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/artifacts`,
+  );
+}
+
+export async function getClusterExpertContract(clusterId: string) {
+  return request<ExpertGraduationContractRecord>(
+    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/contract`,
+  );
+}
+
+export async function activateClusterExpertArtifact(clusterId: string, artifactId: string) {
+  return request<ExpertArtifactRecord>(
+    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/artifacts/${encodeURIComponent(artifactId)}/activate`,
+    { method: "POST" },
+  );
+}
+
+export async function rollbackClusterExpert(clusterId: string) {
+  return request<ExpertArtifactRecord>(
+    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/rollback`,
+    { method: "POST" },
+  );
+}
+
+export async function deleteClusterExpertArtifact(clusterId: string, artifactId: string) {
+  return request<void>(
+    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/artifacts/${encodeURIComponent(artifactId)}`,
+    { method: "DELETE" },
   );
 }
 

@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from backend.app.core.cluster_suggestions import suggest_source_cluster_moves
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.expert_lifecycle import create_expert_job, latest_expert_jobs
+from backend.app.core.lora_training import graduation_contract, verify_adapter_artifact
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
     ClusterCreate,
@@ -14,6 +15,7 @@ from backend.app.schemas import (
     ClusterSuggestionRead,
     ClusterUpdate,
     ExpertArtifactRead,
+    ExpertGraduationContractRead,
 )
 
 router = APIRouter(prefix="/clusters", tags=["clusters"])
@@ -111,6 +113,15 @@ def list_expert_jobs(cluster_id: str) -> list[dict]:
         return latest_expert_jobs(conn, cluster_id)
 
 
+@router.get("/{cluster_id}/expert/contract", response_model=ExpertGraduationContractRead)
+def get_expert_graduation_contract(cluster_id: str) -> dict:
+    with connect() as conn:
+        existing = conn.execute("SELECT id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+    return graduation_contract()
+
+
 @router.get("/{cluster_id}/expert/artifacts", response_model=list[ExpertArtifactRead])
 def list_expert_artifacts(cluster_id: str) -> list[dict]:
     with connect() as conn:
@@ -120,7 +131,7 @@ def list_expert_artifacts(cluster_id: str) -> list[dict]:
         rows = conn.execute(
             """
             SELECT * FROM expert_artifacts
-            WHERE cluster_id = ?
+            WHERE cluster_id = ? AND deleted_at IS NULL
             ORDER BY updated_at DESC
             LIMIT 25
             """,
@@ -135,16 +146,99 @@ def queue_expert_retrain(cluster_id: str) -> dict:
         cluster = conn.execute("SELECT id, vault_id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
         if cluster is None:
             raise HTTPException(status_code=404, detail="Cluster not found")
-        conn.execute(
-            "UPDATE clusters SET expert_status = 'learning', updated_at = ? WHERE id = ?",
-            (utc_now(), cluster_id),
-        )
         return create_expert_job(
             conn,
             cluster_id=cluster_id,
             vault_id=cluster["vault_id"],
             action="retrain",
             detail="Manual local expert learning pass queued.",
+        )
+
+
+@router.post("/{cluster_id}/expert/artifacts/{artifact_id}/activate", response_model=ExpertArtifactRead)
+def activate_expert_artifact(cluster_id: str, artifact_id: str) -> dict:
+    now = utc_now()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM expert_artifacts
+            WHERE id = ? AND cluster_id = ? AND status = 'ready' AND deleted_at IS NULL
+            """,
+            (artifact_id, cluster_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Ready artifact not found")
+        artifact = dict_from_row(row)
+        try:
+            verify_adapter_artifact(artifact["local_path"])
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        conn.execute("UPDATE expert_artifacts SET active = 0, updated_at = ? WHERE cluster_id = ?", (now, cluster_id))
+        conn.execute(
+            "UPDATE expert_artifacts SET active = 1, rolled_back_at = NULL, updated_at = ? WHERE id = ?",
+            (now, artifact_id),
+        )
+        conn.execute(
+            "UPDATE clusters SET expert_status = 'training_ready', updated_at = ? WHERE id = ?",
+            (now, cluster_id),
+        )
+        updated = conn.execute("SELECT * FROM expert_artifacts WHERE id = ?", (artifact_id,)).fetchone()
+    return dict_from_row(updated)
+
+
+@router.post("/{cluster_id}/expert/rollback", response_model=ExpertArtifactRead)
+def rollback_expert_artifact(cluster_id: str) -> dict:
+    now = utc_now()
+    with connect() as conn:
+        active = conn.execute(
+            "SELECT id FROM expert_artifacts WHERE cluster_id = ? AND active = 1 AND deleted_at IS NULL",
+            (cluster_id,),
+        ).fetchone()
+        if active is not None:
+            conn.execute(
+                "UPDATE expert_artifacts SET active = 0, rolled_back_at = ?, updated_at = ? WHERE id = ?",
+                (now, now, active["id"]),
+            )
+        replacement = conn.execute(
+            """
+            SELECT * FROM expert_artifacts
+            WHERE cluster_id = ? AND status = 'ready' AND deleted_at IS NULL
+              AND (? IS NULL OR id != ?)
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (cluster_id, active["id"] if active else None, active["id"] if active else None),
+        ).fetchone()
+        if replacement is None:
+            conn.execute(
+                "UPDATE clusters SET expert_status = 'rollback_ready', updated_at = ? WHERE id = ?",
+                (now, cluster_id),
+            )
+            raise HTTPException(status_code=409, detail="No previous ready adapter is available for rollback")
+        conn.execute("UPDATE expert_artifacts SET active = 1, rolled_back_at = NULL, updated_at = ? WHERE id = ?", (now, replacement["id"]))
+        conn.execute(
+            "UPDATE clusters SET expert_status = 'training_ready', updated_at = ? WHERE id = ?",
+            (now, cluster_id),
+        )
+        updated = conn.execute("SELECT * FROM expert_artifacts WHERE id = ?", (replacement["id"],)).fetchone()
+    return dict_from_row(updated)
+
+
+@router.delete("/{cluster_id}/expert/artifacts/{artifact_id}", status_code=204)
+def delete_expert_artifact(cluster_id: str, artifact_id: str) -> None:
+    now = utc_now()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT active FROM expert_artifacts WHERE id = ? AND cluster_id = ? AND deleted_at IS NULL",
+            (artifact_id, cluster_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+        if int(row["active"] or 0) == 1:
+            raise HTTPException(status_code=409, detail="Active adapter must be rolled back before deletion")
+        conn.execute(
+            "UPDATE expert_artifacts SET deleted_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, artifact_id),
         )
 
 

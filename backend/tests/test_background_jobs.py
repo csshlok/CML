@@ -64,6 +64,49 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
             row = conn.execute("SELECT status FROM app_jobs WHERE id = 'job-b'").fetchone()
         self.assertEqual(row["status"], "cancelled")
 
+    def test_dependent_job_is_blocked_until_dependency_succeeds(self) -> None:
+        from backend.app.core.background_jobs import _refresh_blocked_dependencies, enqueue_job
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            parent = enqueue_job(conn, job_type="reindex_source", payload={"source_id": "source-1"})
+            child = enqueue_job(
+                conn,
+                job_type="reindex_source",
+                payload={"source_id": "source-2"},
+                depends_on_job_id=parent["id"],
+            )
+
+        self.assertEqual(child["status"], "blocked_by_dependency")
+        with connect() as conn:
+            conn.execute("UPDATE app_jobs SET status = 'succeeded' WHERE id = ?", (parent["id"],))
+
+        _refresh_blocked_dependencies()
+
+        with connect() as conn:
+            row = conn.execute("SELECT status FROM app_jobs WHERE id = ?", (child["id"],)).fetchone()
+        self.assertEqual(row["status"], "queued")
+
+    def test_missing_blocked_dependency_cancels_dependent_job(self) -> None:
+        from backend.app.core.background_jobs import _refresh_blocked_dependencies
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            self._insert_job(
+                conn,
+                "job-b",
+                status="blocked_by_dependency",
+                depends_on_job_id="missing-job",
+                dependency_failure_policy="cancel",
+            )
+
+        _refresh_blocked_dependencies()
+
+        with connect() as conn:
+            row = conn.execute("SELECT status, status_detail FROM app_jobs WHERE id = 'job-b'").fetchone()
+        self.assertEqual(row["status"], "cancelled")
+        self.assertIn("missing", row["status_detail"])
+
     def test_running_requeue_job_recovers_to_queued_on_startup(self) -> None:
         from backend.app.core.background_jobs import recover_interrupted_jobs
         from backend.app.core.database import connect

@@ -97,6 +97,8 @@ def _candidate_logs(data_dir: Path) -> list[tuple[str, Path]]:
 
 
 def _redact_log(text: str) -> str:
-    redacted = re.sub(r"(x-cml-api-token|x-cml-bridge-token|CML_BRIDGE_TOKEN)([=:]\s*)\\S+", r"\1\2[redacted]", text)
-    redacted = re.sub(r"[A-Za-z]:\\\\[^\\s\"']+", "[local-path]", redacted)
+    redacted = re.sub(r"(x-cml-api-token|x-cml-bridge-token|CML_BRIDGE_TOKEN)([=:]\s*)\S+", r"\1\2[redacted]", text)
+    redacted = re.sub(r"(?i)(authorization:\s*bearer\s+)[A-Za-z0-9._~+/-]+=*", r"\1[redacted]", redacted)
+    redacted = re.sub(r"(?i)(token|password|secret)([=:]\s*)[^\s\"']+", r"\1\2[redacted]", redacted)
+    redacted = re.sub(r"[A-Za-z]:\\[^\s\"']+", "[local-path]", redacted)
     return redacted[-200_000:]

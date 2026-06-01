@@ -334,6 +334,55 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(source["cover_image_url"], "https://example.com/images/thumb.png")
         self.assertEqual(source["source_type"], "link")
 
+    def test_url_ingestion_strips_credentials_before_fetch_and_storage(self) -> None:
+        from backend.app.api.routes.sources import create_source_from_url
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourceUrlCreate
+
+        class FakeHeaders(dict):
+            def get(self, key, default=None):
+                return super().get(key, default)
+
+        class FakeResponse:
+            headers = FakeHeaders({"content-type": "text/html"})
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return b"<html><head><title>Private</title></head><body>credential free content</body></html>"
+
+            def geturl(self):
+                return "https://example.com/private"
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+
+        seen_urls: list[str] = []
+
+        def fake_open(request, timeout):
+            seen_urls.append(request.full_url)
+            return FakeResponse(), "https://example.com/private"
+
+        with (
+            patch("backend.app.core.extraction._safe_open", side_effect=fake_open),
+            patch("backend.app.core.extraction.validate_public_http_url"),
+        ):
+            source = create_source_from_url(
+                SourceUrlCreate(vault_id="vault-1", url="https://user:secret@example.com/private")
+            )
+
+        self.assertEqual(seen_urls, ["https://example.com/private"])
+        self.assertEqual(source["url"], "https://example.com/private")
+        self.assertNotIn("secret", str(source))
+
     def test_url_ingestion_rejects_oversized_html_response(self) -> None:
         from fastapi import HTTPException
 

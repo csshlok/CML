@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     ocr_binary_path: Path | None = None
     ocrmypdf_binary_path: Path | None = None
     api_token: str | None = None
+    lora_trainer_command: str | None = None
+    lora_min_quality_score: float = 60.0
+    lora_min_sources: int = 1
+    allow_lora_test_trainer: bool = False
 
     model_config = SettingsConfigDict(env_prefix="CML_", env_file=ROOT_DIR / ".env", extra="ignore")
 

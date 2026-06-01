@@ -10,7 +10,7 @@ def mark_cluster_needs_update(conn, cluster_id: str | None, detail: str) -> None
     row = conn.execute("SELECT id, vault_id, expert_status FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
     if row is None:
         return
-    if row["expert_status"] not in {"learning", "setting-up"}:
+    if row["expert_status"] not in {"training_pending", "training_running"}:
         conn.execute(
             "UPDATE clusters SET expert_status = 'needs-update', updated_at = ? WHERE id = ?",
             (utc_now(), cluster_id),
@@ -54,6 +54,10 @@ def create_expert_job(conn, *, cluster_id: str, vault_id: str, action: str, deta
         job,
     )
     if action in {"retrain", "train"} and status == "queued":
+        conn.execute(
+            "UPDATE clusters SET expert_status = 'training_pending', updated_at = ? WHERE id = ?",
+            (utc_now(), cluster_id),
+        )
         from backend.app.core.background_jobs import enqueue_job
 
         enqueue_job(

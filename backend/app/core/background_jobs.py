@@ -8,9 +8,10 @@ from uuid import uuid4
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.embeddings import active_embedding_model_id, reindex_source_chunks, require_embeddings_available
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
-from backend.app.core.training_dataset import build_cluster_dataset
-from backend.app.core.training_evaluation import evaluate_cluster_dataset
-from backend.app.core.expert_profiles import create_expert_profile
+from backend.app.core.config import get_settings
+from backend.app.core.training_dataset import build_cluster_dataset, write_cluster_training_dataset
+from backend.app.core.training_evaluation import evaluate_adapter_quality, evaluate_cluster_dataset
+from backend.app.core.lora_training import new_artifact_dir, run_lora_training_process, training_config
 
 
 JOB_POLL_SECONDS = 1.0
@@ -215,10 +216,15 @@ def enqueue_job(
 
     policy = _job_policy(job_type)
     policy_values = _policy_row_values(policy)
+    status = "queued"
+    if depends_on_job_id:
+        dependency = conn.execute("SELECT status FROM app_jobs WHERE id = ?", (depends_on_job_id,)).fetchone()
+        if dependency is None or dependency["status"] != "succeeded":
+            status = "blocked_by_dependency"
     job = {
         "id": f"job-{uuid4()}",
         "job_type": job_type,
-        "status": "queued",
+        "status": status,
         "payload": json.dumps(payload, separators=(",", ":")),
         "dedupe_key": dedupe_key,
         **policy_values,
@@ -765,13 +771,89 @@ def _run_train_cluster_adapter(payload: dict) -> None:
 
             raise RuntimeError(hardware["detail"])
 
+        conn.execute(
+            """
+            UPDATE clusters
+            SET expert_status = 'training_running',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, cluster_id),
+        )
+        if expert_job_id:
+            conn.execute(
+                """
+                UPDATE cluster_expert_jobs
+                SET status = 'running',
+                    detail = 'LoRA adapter training is running.',
+                    hardware_tier = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (hardware["hardware_tier"], now, expert_job_id),
+            )
+
         dataset = build_cluster_dataset(cluster_id)
+        if int(dataset.get("source_count") or 0) < get_settings().lora_min_sources:
+            _mark_expert_training_failed(
+                conn,
+                cluster_id=cluster_id,
+                expert_job_id=expert_job_id,
+                failure_code="insufficient_dataset",
+                detail="Cluster does not have enough sources for LoRA graduation.",
+                hardware_tier=hardware["hardware_tier"],
+            )
+            raise RuntimeError("Cluster does not have enough sources for LoRA graduation.")
 
         quality_score = evaluate_cluster_dataset(dataset)
+        artifact_dir = new_artifact_dir(cluster_id)
+        dataset_manifest = write_cluster_training_dataset(dataset, artifact_dir / "dataset")
+        config = training_config(base_model=get_settings().llm_model, dataset_hash=dataset["dataset_hash"])
 
-        profile_path = create_expert_profile(dataset)
+        try:
+            train_result = run_lora_training_process(
+                dataset_manifest=dataset_manifest,
+                output_dir=artifact_dir,
+                config=config,
+            )
+        except Exception as exc:
+            _mark_expert_training_failed(
+                conn,
+                cluster_id=cluster_id,
+                expert_job_id=expert_job_id,
+                failure_code="trainer_failed",
+                detail=str(exc),
+                hardware_tier=hardware["hardware_tier"],
+            )
+            raise
+
+        metrics = evaluate_adapter_quality(
+            dataset_score=quality_score,
+            adapter_dir_exists=True,
+            validation_count=int(dataset_manifest["validation_count"]),
+        )
+        min_quality = get_settings().lora_min_quality_score
+        if float(metrics["adapter_score"]) < min_quality or float(metrics["quality_delta"]) <= 0:
+            _mark_expert_training_failed(
+                conn,
+                cluster_id=cluster_id,
+                expert_job_id=expert_job_id,
+                failure_code="quality_gate_failed",
+                detail=f"Adapter did not pass quality gate: {metrics}",
+                hardware_tier=hardware["hardware_tier"],
+            )
+            raise RuntimeError("Adapter did not pass the LoRA quality gate.")
 
         artifact_id = f"artifact-{uuid4()}"
+        conn.execute(
+            """
+            UPDATE expert_artifacts
+            SET active = 0,
+                updated_at = ?
+            WHERE cluster_id = ? AND active = 1
+            """,
+            (now, cluster_id),
+        )
 
         conn.execute(
             """
@@ -786,22 +868,30 @@ def _run_train_cluster_adapter(payload: dict) -> None:
                 base_model,
                 hardware_tier,
                 quality_score,
+                dataset_hash,
+                training_config_hash,
+                metrics_json,
+                active,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 artifact_id,
                 cluster_id,
                 vault_id,
                 expert_job_id or None,
-                "expert_profile",
+                "lora_adapter",
                 "ready",
-                profile_path,
-                "dataset-only",
+                train_result["adapter_path"],
+                config["base_model"],
                 hardware["hardware_tier"],
-                quality_score,
+                metrics["adapter_score"],
+                dataset["dataset_hash"],
+                config["training_config_hash"],
+                json.dumps(metrics, separators=(",", ":")),
+                1,
                 now,
                 now,
             ),
@@ -819,19 +909,12 @@ def _run_train_cluster_adapter(payload: dict) -> None:
                 """,
                 (
                     "completed",
-                    f"Expert profile created. Quality score={quality_score}",
+                    f"LoRA adapter trained and activated. Adapter score={metrics['adapter_score']}",
                     hardware["hardware_tier"],
                     now,
                     expert_job_id,
                 ),
             )
-
-        if quality_score >= 80:
-            cluster_status = "expert_ready"
-        elif quality_score >= 50:
-            cluster_status = "expert_learning"
-        else:
-            cluster_status = "expert_needs_more_data"
 
         conn.execute(
             """
@@ -841,10 +924,44 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             WHERE id = ?
             """,
             (
-                cluster_status,
+                "training_ready",
                 now,
                 cluster_id,
             ),
+        )
+
+
+def _mark_expert_training_failed(
+    conn,
+    *,
+    cluster_id: str,
+    expert_job_id: str,
+    failure_code: str,
+    detail: str,
+    hardware_tier: str,
+) -> None:
+    now = utc_now()
+    conn.execute(
+        """
+        UPDATE clusters
+        SET expert_status = 'training_failed',
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (now, cluster_id),
+    )
+    if expert_job_id:
+        conn.execute(
+            """
+            UPDATE cluster_expert_jobs
+            SET status = 'failed',
+                failure_code = ?,
+                detail = ?,
+                hardware_tier = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (failure_code, detail[:1000], hardware_tier, now, expert_job_id),
         )
 
 
@@ -898,6 +1015,18 @@ def _refresh_blocked_dependencies() -> None:
                 )
             elif dependency_status in TERMINAL_DEPENDENCY_STATUSES:
                 _apply_dependency_failure(conn, job, f"Dependency ended with status {dependency_status}.")
+        missing_rows = conn.execute(
+            """
+            SELECT blocked.*
+            FROM app_jobs blocked
+            LEFT JOIN app_jobs dependency ON dependency.id = blocked.depends_on_job_id
+            WHERE blocked.status = 'blocked_by_dependency'
+              AND blocked.depends_on_job_id IS NOT NULL
+              AND dependency.id IS NULL
+            """
+        ).fetchall()
+        for row in missing_rows:
+            _apply_dependency_failure(conn, dict_from_row(row), "Dependency job is missing.")
 
 
 def _job_policy(job_type: str) -> JobPolicy:

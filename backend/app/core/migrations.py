@@ -81,3 +81,4 @@ def run_migrations() -> None:
                 """,
                 (utc_now(), version),
             )
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

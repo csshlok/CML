@@ -1,4 +1,4 @@
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 import ipaddress
 import socket
 
@@ -27,6 +27,19 @@ def validate_public_http_url(url: str) -> None:
         ip = ipaddress.ip_address(address[4][0])
         if _is_blocked_ip(ip):
             raise NetworkSecurityError("Private, local, and reserved network URLs are not allowed")
+
+
+def strip_url_credentials(url: str) -> str:
+    parsed = urlparse(url)
+    if not parsed.username and not parsed.password:
+        return url
+    hostname = parsed.hostname or ""
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    netloc = hostname
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
 
 
 def validate_huggingface_url(url: str) -> None:

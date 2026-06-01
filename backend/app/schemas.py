@@ -88,8 +88,23 @@ class ExpertArtifactRead(BaseModel):
     base_model: str
     hardware_tier: str
     quality_score: float | None = None
+    dataset_hash: str = ""
+    training_config_hash: str = ""
+    metrics_json: str = "{}"
+    active: bool = False
+    rolled_back_at: str | None = None
+    deleted_at: str | None = None
     created_at: str
     updated_at: str
+
+
+class ExpertGraduationContractRead(BaseModel):
+    supported_statuses: list[str]
+    minimum_sources: int
+    minimum_quality_score: float
+    required_artifact_files: list[str]
+    failure_codes: list[str]
+    rollback_behavior: str
 
 
 class SourceCreate(BaseModel):
