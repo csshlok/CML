@@ -53,10 +53,16 @@ npm install
 Install backend dependencies if the virtual environment is new:
 
 ```bash
-pip install fastapi uvicorn pydantic pydantic-settings
+pip install -r requirements/contributors-backend.txt
 ```
 
 The backend reads local settings from the root `.env` file. Use `.env.example` as the committed template and keep machine-specific values in `.env`.
+
+Dependency reproducibility for contributors is tracked in `requirements/`. Any change to Python imports, OCR packages, trainer packages, or test dependencies must update the matching requirements file and `docs/PROJECT_CONTEXT.md`.
+
+```powershell
+.\scripts\dev\update-requirements.ps1
+```
 
 ## Quick start: local development
 
@@ -199,15 +205,42 @@ For NVIDIA CUDA testing on Windows:
 
 The current local test machine stores downloaded GGUFs under `T:\LLM` via `CML_MODELS_DIR`. Use `.\scripts\llm\benchmark-local-models.ps1` to compare the downloaded model ladder through llama.cpp.
 
-Every cluster must have a local expert lifecycle. For V1, the practical approach is:
+Every cluster must have a verified local LoRA expert lifecycle for public V1. The app currently has the backend contract for dataset export, trainer process handoff, adapter artifact validation, quality metrics, activation, rollback, and cleanup guardrails. The deterministic test trainer is for CI only; real public-V1 validation must run through a LLaMA-Factory-compatible trainer command.
 
-- Use retrieval and style profiles immediately so clusters are useful before fine-tuning.
-- Maintain expert status records for every cluster: Setting up, Learning, Ready, Needs update, Paused, Issue.
-- Treat fine-tuning as a queued background job, not a blocking chat dependency.
-- Start with lightweight adapter artifacts and reproducible local training experiments.
-- Feed expert outputs plus retrieved citations into a larger synthesis model.
+Contributor setup for the separate trainer environment:
 
-The riskiest project area is local fine-tuning under free, reproducible, lightweight constraints. Retrieval-backed bootstrapping keeps the product usable while that system matures.
+```powershell
+py -3.11 -m venv .venv-lora
+.\.venv-lora\Scripts\python -m pip install -r requirements\contributors-lora-trainer.txt
+$env:CML_LORA_TRAINER_COMMAND = ".\.venv-lora\Scripts\llamafactory-cli.exe train --config {config_path}"
+```
+
+Current expert states are:
+
+- `retrieval_ready`
+- `training_pending`
+- `training_running`
+- `training_ready`
+- `training_failed`
+- `hardware_unsupported`
+- `rollback_ready`
+
+Trainer status is visible through:
+
+```bash
+curl http://127.0.0.1:7343/api/v1/system/lora-trainer
+```
+
+Cluster-level expert surfaces:
+
+- `GET /api/v1/clusters/{cluster_id}/expert/contract`
+- `GET /api/v1/clusters/{cluster_id}/expert/artifacts`
+- `POST /api/v1/clusters/{cluster_id}/expert/retrain`
+- `POST /api/v1/clusters/{cluster_id}/expert/artifacts/{artifact_id}/activate`
+- `POST /api/v1/clusters/{cluster_id}/expert/rollback`
+- `DELETE /api/v1/clusters/{cluster_id}/expert/artifacts/{artifact_id}`
+
+The riskiest project area is still real local LoRA training and runtime adapter loading under free, reproducible, lightweight constraints. Retrieval-backed bootstrapping keeps the product usable while LoRA training is running, but public V1 should only claim a cluster expert is trained after an active adapter has metrics, version metadata, rollback support, and supported-hardware provenance.
 
 ## Notes and defaults
 

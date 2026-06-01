@@ -1,7 +1,10 @@
 import json
 import os
 import shlex
+import shutil
 import subprocess
+from importlib import metadata
+from importlib.util import find_spec
 from pathlib import Path
 from uuid import uuid4
 
@@ -37,6 +40,30 @@ def graduation_contract() -> dict:
         "required_artifact_files": list(REQUIRED_ADAPTER_FILES),
         "failure_codes": FAILURE_CODES,
         "rollback_behavior": "Only one active adapter is allowed per cluster; activating a new adapter deactivates previous adapters and rollback reactivates the latest non-deleted ready adapter.",
+    }
+
+
+def trainer_dependency_status() -> dict:
+    packages = {
+        name: _package_status(name)
+        for name in ("llamafactory", "peft", "trl", "gradio", "transformers", "torch")
+    }
+    settings = get_settings()
+    cli_path = _llamafactory_cli_path()
+    issues = []
+    if not packages["llamafactory"]["importable"]:
+        issues.append("llamafactory is not importable")
+    if not packages["peft"]["importable"]:
+        issues.append("peft is not importable")
+    if not cli_path and not settings.lora_trainer_command:
+        issues.append("No llamafactory-cli executable or CML_LORA_TRAINER_COMMAND is configured")
+    return {
+        "available": not issues,
+        "packages": packages,
+        "llamafactory_cli": cli_path,
+        "trainer_command_configured": bool(settings.lora_trainer_command),
+        "test_trainer_enabled": bool(settings.allow_lora_test_trainer),
+        "issues": issues,
     }
 
 
@@ -126,3 +153,29 @@ def _write_test_adapter(output_dir: Path, config: dict) -> None:
         encoding="utf-8",
     )
     (output_dir / "adapter_model.safetensors").write_bytes(b"CML test adapter placeholder\n")
+
+
+def _package_status(name: str) -> dict:
+    try:
+        version = metadata.version(name)
+    except metadata.PackageNotFoundError:
+        version = None
+    return {
+        "installed": version is not None,
+        "importable": find_spec(name.replace("-", "_")) is not None,
+        "version": version,
+    }
+
+
+def _llamafactory_cli_path() -> str | None:
+    resolved = shutil.which("llamafactory-cli")
+    if resolved:
+        return resolved
+    candidate = Path(sys_executable_dir()) / "llamafactory-cli.exe"
+    return str(candidate) if candidate.exists() else None
+
+
+def sys_executable_dir() -> Path:
+    import sys
+
+    return Path(sys.executable).resolve().parent

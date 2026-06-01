@@ -513,6 +513,15 @@ class HardwareStatusRead(BaseModel):
     detail: str
 
 
+class LoraTrainerStatusRead(BaseModel):
+    available: bool
+    packages: dict
+    llamafactory_cli: str | None = None
+    trainer_command_configured: bool
+    test_trainer_enabled: bool
+    issues: list[str]
+
+
 class LocalFolderScanRequest(BaseModel):
     path: str
     vault_id: str | None = None

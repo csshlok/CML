@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.hardware import hardware_status
+from backend.app.core.lora_training import trainer_dependency_status
 from backend.app.core.ocr import ocr_runtime_status
 from backend.app.core.preflight import disk_preflight
 from backend.app.core.startup_status import read_startup_status
@@ -10,6 +11,7 @@ from backend.app.schemas import (
     DiskPreflightRequest,
     DiskPreflightResponse,
     HardwareStatusRead,
+    LoraTrainerStatusRead,
     OCRRuntimeStatusRead,
     StartupStatusRead,
     VaultLockAuditRead,
@@ -48,6 +50,11 @@ def check_disk_preflight(payload: DiskPreflightRequest) -> dict:
 @router.get("/hardware", response_model=HardwareStatusRead)
 def get_hardware_status() -> dict:
     return hardware_status()
+
+
+@router.get("/lora-trainer", response_model=LoraTrainerStatusRead)
+def get_lora_trainer_status() -> dict:
+    return trainer_dependency_status()
 
 
 @router.get("/ocr", response_model=OCRRuntimeStatusRead)

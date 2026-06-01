@@ -1067,6 +1067,19 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIn("training_supported", result)
         self.assertIn(result["avx2"], {True, False, None})
 
+    def test_lora_trainer_status_reports_installed_dependencies(self) -> None:
+        from backend.app.api.routes.system import get_lora_trainer_status
+
+        result = get_lora_trainer_status()
+
+        self.assertIn("llamafactory", result["packages"])
+        self.assertIn("peft", result["packages"])
+        self.assertTrue(result["packages"]["llamafactory"]["installed"])
+        self.assertTrue(result["packages"]["peft"]["installed"])
+        self.assertTrue(result["packages"]["llamafactory"]["importable"])
+        self.assertTrue(result["packages"]["peft"]["importable"])
+        self.assertTrue(result["llamafactory_cli"] or result["trainer_command_configured"])
+
     def test_integration_scan_records_import_history(self) -> None:
         from backend.app.api.routes.integrations import (
             list_integration_imports,
