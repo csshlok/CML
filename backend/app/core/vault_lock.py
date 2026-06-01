@@ -33,13 +33,7 @@ def acquire_vault_lock() -> None:
         if owner_pid and owner_pid != current_pid:
             owner_state = _classify_lock_owner(owner_pid)
             if _lock_override_enabled():
-                _write_audit(
-                    "override_open_anyway",
-                    lock_path=lock_path,
-                    owner_pid=owner_pid,
-                    detail=f"User explicitly overrode {owner_state} lock owner.",
-                    user_choice="open_anyway",
-                )
+                _write_override_audit_sequence(lock_path=lock_path, owner_pid=owner_pid, owner_state=owner_state)
             elif owner_state == "vault_backend":
                 _write_audit("conflict_live_owner", lock_path=lock_path, owner_pid=owner_pid)
                 raise VaultLockError(
@@ -135,6 +129,35 @@ def _write_audit(
         return
 
 
+def _write_override_audit_sequence(*, lock_path: Path, owner_pid: int, owner_state: str) -> None:
+    _write_audit(
+        "lock_override_detection",
+        lock_path=lock_path,
+        owner_pid=owner_pid,
+        detail=f"Detected {owner_state} lock owner.",
+    )
+    _write_audit(
+        "dialog_shown",
+        lock_path=lock_path,
+        owner_pid=owner_pid,
+        detail="Override warning was shown before opening.",
+    )
+    _write_audit(
+        "user_choice",
+        lock_path=lock_path,
+        owner_pid=owner_pid,
+        detail="User explicitly chose to open once despite the lock.",
+        user_choice="open_anyway",
+    )
+    _write_audit(
+        "startup_result",
+        lock_path=lock_path,
+        owner_pid=owner_pid,
+        detail="Startup continued after one-time lock override.",
+        user_choice="open_anyway",
+    )
+
+
 def _parse_pid(value: object) -> int | None:
     try:
         pid = int(value)
@@ -152,7 +175,12 @@ def _classify_lock_owner(pid: int) -> str:
     if not command_line:
         return "unverified" if _is_process_alive(pid) else "dead"
     normalized = command_line.lower()
-    if "backend.app.main" in normalized or ("uvicorn" in normalized and "cml" in normalized):
+    if (
+        "backend.app.main:app" in normalized
+        or " -m backend.app.main" in normalized
+        or "\\backend.app.main" in normalized
+        or ("uvicorn" in normalized and "backend.app.main" in normalized)
+    ):
         return "vault_backend"
     return "other_process" if _is_process_alive(pid) else "dead"
 

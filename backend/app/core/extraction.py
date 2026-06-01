@@ -107,7 +107,10 @@ def _extract_plain_text(source_path: Path) -> str:
     try:
         text = source_path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        text = source_path.read_text(encoding="utf-8-sig", errors="replace")
+        try:
+            text = source_path.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            text = source_path.read_text(encoding="cp1252")
     except OSError as exc:
         raise ExtractionError(str(exc)) from exc
     return _clean_text_payload(source_path, text)

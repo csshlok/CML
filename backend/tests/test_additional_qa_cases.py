@@ -154,7 +154,7 @@ class AdditionalQACases(unittest.TestCase):
             response = client.options(
                 "/api/v1/system/hardware",
                 headers={
-                    "Origin": "http://127.0.0.1:5174",
+                    "Origin": "http://127.0.0.1:5191",
                     "Access-Control-Request-Method": "GET",
                 },
             )
@@ -518,7 +518,6 @@ class AdditionalQACases(unittest.TestCase):
         self.assertLess(payload.index("event: meta"), payload.index("event: token"))
         self.assertLess(payload.index("event: token"), payload.index("event: done"))
 
-    @unittest.expectedFailure
     def test_message_saved_flag_updates_session_saved_state(self) -> None:
         from backend.app.api.routes.chat import update_chat_message
         from backend.app.core.database import connect, utc_now
@@ -555,7 +554,6 @@ class AdditionalQACases(unittest.TestCase):
         self.assertTrue(message["saved"])
         self.assertTrue(session["saved"])
 
-    @unittest.expectedFailure
     def test_whitespace_only_text_ingestion_is_rejected_or_marked_no_content(self) -> None:
         from fastapi import HTTPException
 
@@ -579,7 +577,6 @@ class AdditionalQACases(unittest.TestCase):
                 )
             )
 
-    @unittest.expectedFailure
     def test_null_bytes_in_pasted_text_are_sanitized_or_rejected(self) -> None:
         from fastapi import HTTPException
 
@@ -614,7 +611,6 @@ class AdditionalQACases(unittest.TestCase):
         self.assertNotIn("\x00", row["raw_text"])
         self.assertNotIn("\x00", row["extracted_text"])
 
-    @unittest.expectedFailure
     def test_persisted_chat_failure_does_not_leave_in_flight_generation(self) -> None:
         from backend.app.api.routes.chat import build_chat_context
         from backend.app.core.database import connect, utc_now
@@ -659,7 +655,6 @@ class AdditionalQACases(unittest.TestCase):
                 create_source_from_url(SourceUrlCreate(vault_id="vault-1", url="https://example.com/missing"))
         self.assertEqual(raised.exception.status_code, 400)
 
-    @unittest.expectedFailure
     def test_delete_chat_session_cleans_up_attachment_sources(self) -> None:
         from backend.app.api.routes.chat import build_chat_context, delete_chat_session
         from backend.app.core.database import connect, utc_now
@@ -691,7 +686,6 @@ class AdditionalQACases(unittest.TestCase):
             ).fetchone()["count"]
         self.assertEqual(remaining_sources, 0)
 
-    @unittest.expectedFailure
     def test_chat_timeline_includes_retriable_generation_item(self) -> None:
         from backend.app.api.routes.chat import get_chat_timeline
         from backend.app.core.database import connect, utc_now
@@ -896,7 +890,6 @@ class AdditionalQACases(unittest.TestCase):
         with self.assertRaises(MigrationError):
             run_migrations()
 
-    @unittest.expectedFailure
     def test_source_cluster_must_belong_to_same_vault(self) -> None:
         from backend.app.api.routes.sources import create_source
         from backend.app.core.database import connect, utc_now
@@ -933,7 +926,6 @@ class AdditionalQACases(unittest.TestCase):
                 )
             )
 
-    @unittest.expectedFailure
     def test_packaged_loopback_origin_is_allowlisted_for_cors(self) -> None:
         client = self._client()
         try:
@@ -949,7 +941,6 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers.get("access-control-allow-origin"), "http://127.0.0.1:5174")
 
-    @unittest.expectedFailure
     def test_windows_1252_text_is_decoded_readably(self) -> None:
         from backend.app.core.extraction import extract_text_from_path
 
@@ -962,14 +953,50 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("—", text)
         self.assertIn("café", text)
 
-    @unittest.expectedFailure
+    def test_extension_capture_cluster_must_belong_to_same_vault(self) -> None:
+        from backend.app.api.routes.extension import capture_from_extension, create_extension_client
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ExtensionCaptureRequest, ExtensionClientCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-a", "A", self.tmp.name, now, now),
+            )
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-b", "B", self.tmp.name, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-b', 'vault-b', 'B cluster', '', 'sage', 'setting-up', ?, ?)
+                """,
+                (now, now),
+            )
+
+        client = create_extension_client(ExtensionClientCreate(name="browser", allowed_vault_ids=["vault-a"]))
+        with self.assertRaises(Exception):
+            capture_from_extension(
+                ExtensionCaptureRequest(
+                    vault_id="vault-a",
+                    cluster_id="cluster-b",
+                    capture_type="selection",
+                    title="cross vault",
+                    text="should fail",
+                ),
+                x_cml_extension_token=client["token"],
+            )
+
     def test_backend_token_is_not_stored_as_plaintext(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         store_path = repo_root / "apps" / "desktop" / "electron" / "token-store.cjs"
         source = store_path.read_text(encoding="utf-8")
         self.assertNotIn("writeFile(this.tokenPath, token", source)
 
-    @unittest.expectedFailure
     def test_bridge_error_code_registry_matches_spec_for_vault_not_found(self) -> None:
         from backend.app.bridge_mcp import app_error_code
 

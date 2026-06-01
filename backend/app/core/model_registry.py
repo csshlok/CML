@@ -5,6 +5,7 @@ from urllib.parse import quote
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 import json
+import shutil
 import threading
 
 from backend.app.core.config import get_settings
@@ -103,10 +104,11 @@ def model_status(model_id: str) -> dict[str, Any]:
     info = _model_to_dict(model)
     local_path = _find_local_model_file(model)
     state = _download_state.get(model_id)
+    state_installed_path = state.get("local_path") if state and state.get("status") == "installed" else None
     info.update(
         {
-            "installed": local_path is not None,
-            "local_path": str(local_path) if local_path else None,
+            "installed": local_path is not None or state_installed_path is not None,
+            "local_path": str(local_path) if local_path else state_installed_path,
             "download": state,
         }
     )
@@ -122,8 +124,39 @@ def start_model_download(model_id: str) -> dict[str, Any]:
     if existing["installed"]:
         return {"model_id": model_id, "status": "installed", "local_path": existing["local_path"]}
 
+    disk_check = _model_disk_preflight(model)
+    if not disk_check["ok"]:
+        state = {
+            "model_id": model_id,
+            "status": "failed",
+            "bytes_downloaded": 0,
+            "total_bytes": None,
+            "error": disk_check["message"],
+        }
+        with _download_lock:
+            _download_state[model_id] = state
+        return state
+
     with _download_lock:
         _cancelled_downloads.discard(model_id)
+        active_other = next(
+            (
+                item
+                for item in _download_state.values()
+                if item.get("model_id") != model_id and item.get("status") in {"resolving", "downloading", "cancelling"}
+            ),
+            None,
+        )
+        if active_other:
+            state = {
+                "model_id": model_id,
+                "status": "blocked",
+                "bytes_downloaded": 0,
+                "total_bytes": None,
+                "error": f"Another model download is already {active_other.get('status')}.",
+            }
+            _download_state[model_id] = state
+            return state
         state = _download_state.get(model_id)
         if state and state["status"] in {"resolving", "downloading"}:
             return state
@@ -146,6 +179,13 @@ def cancel_model_download(model_id: str) -> dict[str, Any]:
         raise KeyError(model_id)
     with _download_lock:
         state = _download_state.get(model_id)
+        if state and state.get("status") == "installed":
+            return state
+        local_path = _find_local_model_file(model)
+        if local_path is not None:
+            installed = {"model_id": model_id, "status": "installed", "local_path": str(local_path), "error": None}
+            _download_state[model_id] = installed
+            return installed
         if not state or state.get("status") not in {"resolving", "downloading"}:
             _download_state[model_id] = {
                 "model_id": model_id,
@@ -166,6 +206,32 @@ def _model_to_dict(model: LocalModel) -> dict[str, Any]:
     info = asdict(model)
     info["llama_cpp_ref"] = f"{model.hf_repo}:{model.quantization}"
     return info
+
+
+def _model_disk_preflight(model: LocalModel) -> dict[str, Any]:
+    target_dir = models_dir() / model.id
+    probe = target_dir if target_dir.exists() else _nearest_existing_parent(target_dir)
+    required_bytes = int(model.approximate_download_gb * 1024 * 1024 * 1024 * 1.075)
+    usage = shutil.disk_usage(probe)
+    ok = int(usage.free) >= required_bytes
+    return {
+        "ok": ok,
+        "message": (
+            "Enough disk space is available."
+            if ok
+            else f"Not enough disk space is available for {model.name}."
+        ),
+    }
+
+
+def _nearest_existing_parent(path: Path) -> Path:
+    current = path
+    while not current.exists():
+        parent = current.parent
+        if parent == current:
+            return Path.cwd()
+        current = parent
+    return current
 
 
 def _find_local_model_file(model: LocalModel) -> Path | None:

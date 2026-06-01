@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
 const http = require("node:http");
@@ -417,7 +417,7 @@ async function setActiveVaultPath(targetPath) {
 
 async function getBackendApiToken() {
   if (backendApiToken) return backendApiToken;
-  backendTokenStore = backendTokenStore || createTokenStore(app.getPath("userData"));
+  backendTokenStore = backendTokenStore || createTokenStore(app.getPath("userData"), safeStorage);
   backendApiToken = await getOrCreateToken(backendTokenStore);
   return backendApiToken;
 }

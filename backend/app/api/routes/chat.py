@@ -141,7 +141,7 @@ def get_chat_timeline(session_id: str) -> dict:
                 "id": row["id"],
                 "session_id": row["session_id"],
                 "prompt": row["prompt"],
-                "cluster_id": row["cluster_id"],
+                "cluster_id": row.get("cluster_id"),
                 "state": row["state"],
                 "error": row["error"],
                 "created_at": row["created_at"],
@@ -182,12 +182,21 @@ def update_chat_session(session_id: str, payload: ChatSessionUpdate) -> dict:
 @router.delete("/sessions/{session_id}", status_code=204)
 def delete_chat_session(session_id: str) -> None:
     with connect() as conn:
+        attachment_rows = conn.execute(
+            "SELECT source_id FROM chat_attachments WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
         transcript_rows = conn.execute(
             "SELECT id FROM sources WHERE id LIKE ?",
             (f"chat-source-{session_id}-%",),
         ).fetchall()
-        for row in transcript_rows:
-            conn.execute("DELETE FROM sources WHERE id = ?", (row["id"],))
+        source_ids = {row["source_id"] for row in attachment_rows}
+        source_ids.update(row["id"] for row in transcript_rows)
+        for source_id in source_ids:
+            conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
+            conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
+            conn.execute("DELETE FROM chat_attachments WHERE source_id = ?", (source_id,))
+            conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
         result = conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Chat session not found")
@@ -220,6 +229,12 @@ def update_chat_message(message_id: str, payload: ChatMessageUpdate) -> dict:
             raise HTTPException(status_code=404, detail="Chat message not found")
         conn.execute(f"UPDATE chat_messages SET {assignments} WHERE id = :id", {"id": message_id, **update_values})
         session_id = row["session_id"]
+        if update_values.get("saved") == 1:
+            now = utc_now()
+            conn.execute(
+                "UPDATE chat_sessions SET saved = 1, updated_at = ? WHERE id = ?",
+                (now, session_id),
+            )
     return get_chat_session(session_id)
 
 
@@ -234,7 +249,12 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
     ) if payload.persist else None
     if generation:
         payload = payload.model_copy(update={"session_id": generation["session_id"]})
-    context = _build_retrieval_context(payload)
+    try:
+        context = _build_retrieval_context(payload)
+    except Exception as exc:
+        if generation:
+            _mark_chat_generation_retriable(generation["generation_id"], str(exc))
+        raise
     citations = context["citations"]
     clusters_used = context["clusters_used"]
     warnings = context["warnings"]
@@ -977,6 +997,21 @@ def _complete_chat_generation(
             job_type="chat_transcript_memory",
             payload={"vault_id": vault_id, "session_id": session_id},
             dedupe_key=f"chat-memory:{session_id}",
+        )
+
+
+def _mark_chat_generation_retriable(generation_id: str, error: str) -> None:
+    now = utc_now()
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE chat_generations
+            SET state = 'retriable',
+                error = ?,
+                updated_at = ?
+            WHERE id = ? AND state = 'in_flight'
+            """,
+            (error[:1000], now, generation_id),
         )
 
 

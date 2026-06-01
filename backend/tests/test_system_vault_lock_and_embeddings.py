@@ -87,7 +87,6 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["provider"], "hash")
 
-    @unittest.expectedFailure
     def test_pre_vault_vault_lock_audit_route_is_blocked(self) -> None:
         os.environ["CML_BACKEND_MODE"] = "pre_vault"
         client = self._client()
@@ -317,7 +316,8 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
                     "SELECT event_type FROM vault_lock_audit ORDER BY created_at ASC"
                 ).fetchall()
             ]
-        self.assertIn("override_open_anyway", events)
+        self.assertIn("user_choice", events)
+        self.assertIn("startup_result", events)
         self.assertIn("acquired", events)
 
     def test_release_vault_lock_removes_file_and_writes_audit(self) -> None:
@@ -383,7 +383,6 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
                 proc.kill()
                 proc.wait()
 
-    @unittest.expectedFailure
     @unittest.skipUnless(os.name == "nt", "Windows process command-line probe")
     def test_classify_lock_owner_does_not_trust_backend_token_in_unrelated_process_argv(self) -> None:
         from backend.app.core import vault_lock
@@ -405,7 +404,6 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
                 proc.kill()
                 proc.wait()
 
-    @unittest.expectedFailure
     def test_full_startup_phase_sequence_matches_spec(self) -> None:
         import backend.app.main as main_module
 
@@ -417,7 +415,8 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
             patch.object(main_module, "acquire_vault_lock"),
             patch.object(main_module, "init_db"),
             patch.object(main_module, "run_migrations"),
-            patch.object(main_module, "run_startup_checks"),
+            patch.object(main_module, "verify_sqlite_integrity"),
+            patch.object(main_module, "verify_schema_version"),
             patch.object(main_module, "recover_interrupted_generations"),
             patch.object(main_module, "enqueue_startup_reconciliation_jobs"),
             patch.object(main_module, "start_background_worker"),
@@ -440,7 +439,6 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
             ],
         )
 
-    @unittest.expectedFailure
     def test_lock_override_audit_sequence_is_complete(self) -> None:
         import backend.app.core.vault_lock as vault_lock_module
         from backend.app.core.database import connect
@@ -574,7 +572,6 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertTrue(status["installed"])
         self.assertEqual(status["local_path"], str(expected))
 
-    @unittest.expectedFailure
     def test_large_model_download_checks_disk_preflight_before_starting(self) -> None:
         from backend.app.core import model_registry
         from backend.app.core.config import get_settings
@@ -600,7 +597,6 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
 
         self.assertNotEqual(result["status"], "resolving")
 
-    @unittest.expectedFailure
     def test_download_cancel_after_completion_does_not_mask_installed_model(self) -> None:
         from backend.app.core import model_registry
         from backend.app.core.config import get_settings
@@ -644,6 +640,24 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
 
         self.assertEqual(cancelled["status"], "installed")
         self.assertTrue(final["installed"])
+
+    def test_second_model_download_is_blocked_while_another_is_active(self) -> None:
+        from backend.app.core import model_registry
+
+        model_registry._download_state.clear()
+        model_registry._cancelled_downloads.clear()
+        model_registry._download_state["qwen3-8b-q4_k_m"] = {
+            "model_id": "qwen3-8b-q4_k_m",
+            "status": "downloading",
+            "bytes_downloaded": 1024,
+            "total_bytes": None,
+            "error": None,
+        }
+
+        result = model_registry.start_model_download("qwen3-4b-q4_k_m")
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("Another model download", result["error"])
 
     def _client(self) -> TestClient:
         from backend.app.core.config import get_settings

@@ -69,8 +69,8 @@ def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = 
         cluster_id = payload.cluster_id
         if cluster_id:
             cluster = conn.execute(
-                "SELECT id FROM clusters WHERE id = ?",
-                (cluster_id,),
+                "SELECT id FROM clusters WHERE id = ? AND vault_id = ?",
+                (cluster_id, payload.vault_id),
             ).fetchone()
             if cluster is None:
                 raise HTTPException(status_code=404, detail="Cluster not found")
@@ -177,13 +177,16 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
 
 @router.post("/from-text", response_model=SourceRead)
 def create_source_from_text(payload: SourceTextCreate) -> dict:
+    text = _sanitize_source_text(payload.text)
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="No readable text was provided")
     return create_source(
         SourceCreate(
             vault_id=payload.vault_id,
             cluster_id=payload.cluster_id,
             title=payload.title,
             source_type="note",
-            raw_text=payload.text,
+            raw_text=text,
         )
     )
 
@@ -277,8 +280,8 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
             raise HTTPException(status_code=404, detail="Source not found")
         if updates.get("cluster_id"):
             cluster = conn.execute(
-                "SELECT id FROM clusters WHERE id = ?",
-                (updates["cluster_id"],),
+                "SELECT id FROM clusters WHERE id = ? AND vault_id = ?",
+                (updates["cluster_id"], existing["vault_id"]),
             ).fetchone()
             if cluster is None:
                 raise HTTPException(status_code=404, detail="Cluster not found")
@@ -386,6 +389,10 @@ def source_from_row(row) -> dict:
         tags = []
     source["tags"] = tags if isinstance(tags, list) else []
     return source
+
+
+def _sanitize_source_text(text: str) -> str:
+    return text.replace("\x00", "")
 
 
 def _replace_source_pages(conn, *, source_id: str, vault_id: str, page_texts: list[str], now: str) -> None:

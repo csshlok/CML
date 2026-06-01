@@ -180,7 +180,7 @@ def app_error_code(detail: str) -> int:
         "bridge_token_invalid": 1003,
         "vault_not_allowed": 1004,
         "cluster_not_allowed": 1004,
-        "vault_not_found": 1006,
+        "vault_not_found": 1003,
         "cluster_not_found": 1007,
     }.get(detail, 1000)
 
