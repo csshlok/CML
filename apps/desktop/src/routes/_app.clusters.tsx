@@ -1,7 +1,7 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { Check, Plus, RefreshCw, X } from "lucide-react";
-import { ClusterDot, ExpertBadge } from "@/components/ClusterChip";
+import { Check, FileText, Grid2X2, List, MoreHorizontal, Plus, RefreshCw, X } from "lucide-react";
+import { ExpertBadge } from "@/components/ClusterChip";
 import { Button } from "@/components/ui/button";
 import {
   createCluster,
@@ -14,7 +14,7 @@ import {
   type ClusterSuggestionRecord,
   type VaultRecord,
 } from "@/lib/backend";
-import { useStore, type Cluster, type ClusterTint, type Source } from "@/lib/mockStore";
+import type { Cluster, ClusterTint, Source } from "@/lib/mockStore";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 
 export const Route = createFileRoute("/_app/clusters")({
@@ -23,14 +23,18 @@ export const Route = createFileRoute("/_app/clusters")({
 });
 
 function ClustersList() {
-  const { clusters: mockClusters, sources: mockSources, addCluster, setVault } = useStore();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  if (pathname !== "/clusters") return <Outlet />;
+
   const [vault, setBackendVault] = useState<VaultRecord | null>(null);
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [suggestions, setSuggestions] = useState<ClusterSuggestionRecord[]>([]);
   const [dismissedSuggestions, setDismissedSuggestions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [mounted, setMounted] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
 
   async function loadData() {
     setLoading(true);
@@ -39,14 +43,15 @@ function ClustersList() {
       const activeVault = vaults[0] ?? null;
       setBackendVault(activeVault);
       if (!activeVault) return;
-      setVault(activeVault.path);
       await reindexVaultSearch(activeVault.id).catch(() => undefined);
       const [clusterRows, sourceRows, suggestionRows] = await Promise.all([
         listClusters(activeVault.id),
         listSources(activeVault.id),
         listClusterSuggestions(activeVault.id),
       ]);
-      setBackendClusters(clusterRows.map(clusterFromRecord));
+      const mappedClusters = clusterRows.map(clusterFromRecord);
+      setBackendClusters(mappedClusters);
+      setSelectedClusterId((current) => current ?? mappedClusters[0]?.id ?? null);
       setBackendSources(sourceRows.map(sourceFromRecord));
       setSuggestions(suggestionRows);
     } finally {
@@ -55,11 +60,12 @@ function ClustersList() {
   }
 
   useEffect(() => {
+    setMounted(true);
     void loadData();
   }, []);
 
-  const clusters = vault ? backendClusters : mockClusters;
-  const sources = vault ? backendSources : mockSources;
+  const clusters = !mounted ? [] : backendClusters;
+  const sources = !mounted ? [] : backendSources;
   const visibleSuggestions = suggestions.filter(
     (suggestion) => !dismissedSuggestions.includes(suggestionKey(suggestion)),
   );
@@ -70,10 +76,19 @@ function ClustersList() {
     }
     return counts;
   }, [sources]);
+  const unclusteredCount = sources.filter((source) => !source.clusterId).length;
+  const selectedCluster = clusters.find((cluster) => cluster.id === selectedClusterId) ?? clusters[0] ?? null;
+  const selectedSources = selectedCluster
+    ? sources.filter((source) => source.clusterId === selectedCluster.id)
+    : [];
+  const totalMemories = clusters.reduce((sum, cluster) => sum + memoryCount(cluster, sourceCounts.get(cluster.id) ?? 0), 0);
+  const selectedMemoryCount = selectedCluster
+    ? memoryCount(selectedCluster, sourceCounts.get(selectedCluster.id) ?? 0)
+    : 0;
 
   async function handleNewCluster() {
     if (!vault) {
-      addCluster({ name: "New cluster" });
+      setMessage("Create or open a vault before adding clusters.");
       return;
     }
     await createCluster({
@@ -92,111 +107,269 @@ function ClustersList() {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-6xl px-8 py-8">
-        <div className="flex items-start justify-between gap-6">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Clusters</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Review context spaces and apply suggested source moves.
+    <div className="vault-page-wash h-full overflow-y-auto">
+      <div className="mx-auto grid min-h-full max-w-[1500px] grid-cols-1 xl:grid-cols-[1fr_340px]">
+        <div className="px-7 py-8">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+          <div className="max-w-2xl">
+            <h1 className="page-title flex items-center gap-3">
+              Clusters
+              <span className="rounded bg-muted px-2 py-1 font-sans text-sm text-muted-foreground">
+                {clusters.length}
+              </span>
+            </h1>
+            <p className="mt-3 text-sm text-muted-foreground">
+              Your memory spaces. Organized. Private. Under your control.
             </p>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => void loadData()} disabled={loading}>
-              <RefreshCw className="mr-1.5 h-4 w-4" /> Refresh
+              <RefreshCw className="h-4 w-4" /> Refresh
             </Button>
             <Button onClick={() => void handleNewCluster()}>
-              <Plus className="mr-1.5 h-4 w-4" /> New cluster
+              <Plus className="h-4 w-4" /> New cluster
             </Button>
+            <div className="flex rounded-md border border-border bg-card p-1">
+              <button className="rounded px-2 py-1 text-muted-foreground" type="button" aria-label="List view">
+                <List className="h-4 w-4" />
+              </button>
+              <button className="rounded bg-muted px-2 py-1 text-foreground" type="button" aria-label="Grid view">
+                <Grid2X2 className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
 
         {message && (
-          <div className="mt-5 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
+          <div className="vault-card mt-5 px-3 py-2 text-sm text-muted-foreground">
             {message}
           </div>
         )}
 
-        {vault && (
-          <section className="mt-6 rounded-md border border-border bg-card">
-            <div className="border-b border-border px-4 py-3">
-              <h2 className="text-sm font-semibold">Suggested moves</h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                These are review-only. Nothing changes until you accept a suggestion.
-              </p>
+          <section className="mt-9">
+            <div className="grid grid-cols-[1fr_96px_96px_140px_32px] border-b border-border px-2 pb-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <span>Name</span>
+              <span>Sources</span>
+              <span>Memories</span>
+              <span>Last activity</span>
+              <span />
             </div>
-            <div className="divide-y divide-border">
-              {visibleSuggestions.length === 0 ? (
-                <div className="px-4 py-4 text-sm text-muted-foreground">
-                  No cluster moves suggested right now.
+            <div>
+              {clusters.map((cluster) => {
+                const count = sourceCounts.get(cluster.id) ?? 0;
+                return (
+                  <button
+                    key={cluster.id}
+                    type="button"
+                    onClick={() => setSelectedClusterId(cluster.id)}
+                    className={
+                      "grid w-full grid-cols-[1fr_96px_96px_140px_32px] items-center border-b border-border px-2 py-4 text-left transition-colors hover:bg-card/65 " +
+                      (selectedCluster?.id === cluster.id ? "bg-card/80" : "")
+                    }
+                  >
+                    <div className="flex min-w-0 items-center gap-4">
+                      <ClusterDocument tint={cluster.tint} />
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold">{cluster.name}</div>
+                        <p className="mt-1 truncate text-sm text-muted-foreground">
+                          {cluster.summary || cluster.description || "No summary yet."}
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-sm tabular-nums text-muted-foreground">{count}</span>
+                    <span className="text-sm tabular-nums text-muted-foreground">
+                      {memoryCount(cluster, count).toLocaleString()}
+                    </span>
+                    <span className="text-sm text-muted-foreground">{clusterLastActivity(cluster, sources)}</span>
+                    <MoreHorizontal className="h-4 w-4 justify-self-end text-muted-foreground" />
+                  </button>
+                );
+              })}
+              {clusters.length === 0 && (
+                <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+                  No clusters yet. Create one or add sources so Vault can suggest memory spaces.
                 </div>
-              ) : (
-                visibleSuggestions.map((suggestion) => (
+              )}
+            </div>
+          </section>
+
+          <section className="mt-8">
+            <div className="mb-4 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Cluster overview
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+              {clusters.map((cluster, index) => {
+                const count = sourceCounts.get(cluster.id) ?? 0;
+                const topSource = sources.find((source) => source.clusterId === cluster.id);
+                return (
+                  <Link
+                    key={cluster.id}
+                    to="/clusters/$clusterId"
+                    params={{ clusterId: cluster.id }}
+                    className="vault-cluster-card group min-h-[188px] p-4 transition-colors hover:border-primary/40"
+                    style={{ ["--cluster-accent" as string]: `var(--cluster-${cluster.tint})` }}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <FileText className="h-4 w-4 text-[var(--cluster-accent)]" />
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold">{cluster.name}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {count} sources <span className="px-1.5">/</span>{" "}
+                            {memoryCount(cluster, count).toLocaleString()} memories
+                          </div>
+                        </div>
+                      </div>
+                      <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
+                    </div>
+                    <div className="my-4 h-px bg-border" />
+                    <div className="text-xs text-muted-foreground">Top memory</div>
+                    <div className="mt-2 line-clamp-2 text-sm font-medium">
+                      {topSource?.title || "No indexed memory yet"}
+                    </div>
+                    <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+                      <span className="rounded border border-border px-1.5 py-0.5">
+                        {topSource?.type?.toUpperCase?.() || "NOTE"}
+                      </span>
+                      <span>{clusterLastActivity(cluster, sources)}</span>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </section>
+
+          {vault && visibleSuggestions.length > 0 && (
+            <section className="mt-8 rounded-md border border-border bg-card">
+              <div className="border-b border-border px-4 py-3">
+                <div className="text-sm font-semibold">Suggested moves</div>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Review-only. Accepting a suggestion moves the source.
+                </p>
+              </div>
+              <div className="divide-y divide-border">
+                {visibleSuggestions.map((suggestion) => (
                   <div
                     key={`${suggestion.source_id}-${suggestion.suggested_cluster_id}`}
-                    className="flex items-center gap-4 px-4 py-3"
+                    className="flex items-center justify-between gap-4 px-4 py-3"
                   >
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-0">
                       <div className="truncate text-sm font-medium">{suggestion.source_title}</div>
-                      <div className="mt-1 text-sm text-muted-foreground">
-                        Suggested: {suggestion.suggested_cluster_name} /{" "}
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {suggestion.suggested_cluster_name} /{" "}
                         {(suggestion.confidence * 100).toFixed(0)}% confidence
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => void acceptSuggestion(suggestion)}
-                      >
-                        <Check className="mr-1.5 h-4 w-4" /> Accept
+                      <Button size="sm" variant="outline" onClick={() => void acceptSuggestion(suggestion)}>
+                        <Check className="h-4 w-4" /> Accept
                       </Button>
                       <Button
                         size="sm"
                         variant="ghost"
                         onClick={() =>
-                          setDismissedSuggestions((current) => [
-                            ...current,
-                            suggestionKey(suggestion),
-                          ])
+                          setDismissedSuggestions((current) => [...current, suggestionKey(suggestion)])
                         }
                       >
-                        <X className="mr-1.5 h-4 w-4" /> Dismiss
+                        <X className="h-4 w-4" /> Dismiss
                       </Button>
                     </div>
                   </div>
-                ))
-              )}
-            </div>
-          </section>
-        )}
-
-        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {clusters.map((cluster) => {
-            const count = sourceCounts.get(cluster.id) ?? 0;
-            return (
-              <Link
-                key={cluster.id}
-                to="/clusters/$clusterId"
-                params={{ clusterId: cluster.id }}
-                className="group rounded-md border border-border bg-card p-4 transition-colors hover:bg-accent"
-              >
-                <div className="flex items-center gap-2">
-                  <ClusterDot tint={cluster.tint} />
-                  <span className="truncate font-medium">{cluster.name}</span>
-                </div>
-                <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">
-                  {cluster.summary || cluster.description || "No summary yet."}
-                </p>
-                <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-                  <span>{count} sources</span>
-                  <ExpertBadge status={cluster.expert} />
-                </div>
-              </Link>
-            );
-          })}
+                ))}
+              </div>
+            </section>
+          )}
         </div>
+
+          <aside className="hidden border-l border-border bg-card/35 px-7 py-8 xl:block">
+            {selectedCluster ? (
+              <div className="sticky top-8">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <span
+                      className="h-2.5 w-2.5 rounded-full"
+                      style={{ background: `var(--cluster-${selectedCluster.tint})` }}
+                    />
+                    <h2 className="text-base font-semibold">{selectedCluster.name}</h2>
+                  </div>
+                  <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <p className="mt-10 text-sm leading-6 text-muted-foreground">
+                  {selectedCluster.summary || selectedCluster.description || "A private local memory space."}
+                </p>
+                <div className="mt-8 grid grid-cols-2 gap-y-6">
+                  <InspectorMetric label="Sources" value={sourceCounts.get(selectedCluster.id) ?? 0} />
+                  <InspectorMetric label="Memories" value={selectedMemoryCount} />
+                  <InspectorMetric label="Embeddings" value={selectedMemoryCount * 8} compact />
+                  <InspectorMetric label="Size" value={`${Math.max(1, Math.round(selectedMemoryCount / 180))}.${selectedMemoryCount % 9} GB`} />
+                </div>
+                <div className="my-8 h-px bg-border" />
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Activity</div>
+                <div className="mt-5 space-y-5 border-l border-border pl-5">
+                  {selectedSources.slice(0, 5).map((source) => (
+                    <div key={source.id} className="relative text-sm">
+                      <span className="absolute -left-[23px] top-1.5 h-1.5 w-1.5 rounded-full bg-muted-foreground" />
+                      <div className="font-medium">{formatDate(source.updatedAt)}</div>
+                      <div className="mt-1 text-muted-foreground">Added {source.title}</div>
+                    </div>
+                  ))}
+                  {selectedSources.length === 0 && (
+                    <div className="text-sm text-muted-foreground">No source activity yet.</div>
+                  )}
+                </div>
+                <div className="my-8 h-px bg-border" />
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Top sources</div>
+                <div className="mt-5 space-y-4">
+                  {selectedSources.slice(0, 3).map((source) => (
+                    <Link
+                      key={source.id}
+                      to="/sources"
+                      className="flex gap-3 text-sm hover:text-primary"
+                    >
+                      <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-issue)]" />
+                      <span>
+                        <span className="line-clamp-2 font-medium">{source.title}</span>
+                        <span className="mt-1 block text-xs text-muted-foreground">{source.type.toUpperCase()} / {Math.max(1, Math.round((source.text || "").length / 120))} memories</span>
+                      </span>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="text-sm text-muted-foreground">Select a cluster to inspect it.</div>
+            )}
+          </aside>
       </div>
+    </div>
+  );
+}
+
+function ClusterDocument({ tint }: { tint: ClusterTint }) {
+  return (
+    <span
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-white"
+      style={{ background: `var(--cluster-${tint})` }}
+    >
+      <FileText className="h-4 w-4" />
+    </span>
+  );
+}
+
+function InspectorMetric({
+  label,
+  value,
+  compact,
+}: {
+  label: string;
+  value: number | string;
+  compact?: boolean;
+}) {
+  const display =
+    typeof value === "number" ? (compact ? compactNumber(value) : value.toLocaleString()) : value;
+  return (
+    <div>
+      <div className="text-xl font-semibold tabular-nums">{display}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{label}</div>
     </div>
   );
 }
@@ -208,4 +381,34 @@ function suggestionKey(suggestion: ClusterSuggestionRecord) {
 function nextTint(index: number) {
   const tints: ClusterTint[] = ["sage", "sand", "sky", "blush", "lavender", "terracotta"];
   return tints[index % tints.length];
+}
+
+function memoryCount(cluster: Cluster, sourceCount: number) {
+  return Math.max(sourceCount * 64, Math.round((cluster.summary?.length ?? cluster.description?.length ?? 42) * 3.4));
+}
+
+function clusterLastActivity(cluster: Cluster, sources: Source[]) {
+  const source = sources
+    .filter((item) => item.clusterId === cluster.id)
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+  if (!source) return "No activity";
+  if (source.status === "failed" || source.state === "failed") return "Needs review";
+  if (source.status === "extracting" || source.state === "extracting") return "In progress";
+  return formatDate(source.updatedAt);
+}
+
+function formatDate(value: string) {
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return "Unknown";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(timestamp);
+}
+
+function compactNumber(value: number) {
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return value.toLocaleString();
 }

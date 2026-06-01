@@ -73,7 +73,7 @@ export interface ChatMessage {
 export interface Chat {
   id: string;
   title: string;
-  scopeClusterId: string | null; // null = global
+  scopeClusterId: string | null;
   messages: ChatMessage[];
   updatedAt: string;
   saved?: boolean;
@@ -85,7 +85,7 @@ interface State {
   clusters: Cluster[];
   sources: Source[];
   chats: Chat[];
-  indexingProgress: number; // 0-1
+  indexingProgress: number;
   isIndexing: boolean;
 
   setVault: (path: string) => void;
@@ -110,49 +110,78 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const seedClusters: Cluster[] = [
   {
     id: "c-design",
-    name: "Design Notes",
+    name: "Design Research",
     tint: "sage",
-    description: "Visual notes, references, and design principles.",
+    description: "Notes, case studies, and inspiration on product design.",
     expert: "ready",
     lastActive: now(),
-    summary:
-      "A collection of design observations leaning toward calm, editorial, type-led interfaces.",
-    styleProfile: "Measured, observational, references-heavy.",
+    summary: "A calm research space for interface principles, case studies, and visual systems.",
+    styleProfile: "Measured, observational, reference-heavy.",
   },
   {
-    id: "c-research",
-    name: "Research",
+    id: "c-strategy",
+    name: "Product Strategy",
+    tint: "terracotta",
+    description: "Roadmaps, positioning, GTM, and market insights.",
+    expert: "ready",
+    lastActive: now(),
+    summary: "Positioning notes, decision frameworks, and product-market signals.",
+    styleProfile: "Direct, decision-oriented, concise.",
+  },
+  {
+    id: "c-health",
+    name: "Health & Longevity",
     tint: "sky",
-    description: "Papers, articles, and saved findings.",
+    description: "Books, papers, and personal notes on health.",
+    expert: "ready",
+    lastActive: now(),
+    summary: "Health research, sleep notes, supplements, and longevity reading.",
+    styleProfile: "Careful, evidence-first, practical.",
+  },
+  {
+    id: "c-travel",
+    name: "Travel Japan 2025",
+    tint: "lavender",
+    description: "Plans, places, learnings from our Japan trip.",
+    expert: "needs-update",
+    lastActive: now(),
+    summary: "Kyoto cafes, Tokyo logistics, shrine notes, and travel planning.",
+    styleProfile: "Personal, compact, itinerary-aware.",
+  },
+  {
+    id: "c-meetings",
+    name: "Meeting Notes",
+    tint: "sand",
+    description: "Internal syncs, decisions, and action items.",
     expert: "learning",
     lastActive: now(),
-    summary: "Mixed scientific and product research clippings.",
-    styleProfile: "Concise, citation-first.",
-  },
-  {
-    id: "c-writing",
-    name: "Personal Writing",
-    tint: "blush",
-    description: "Drafts, essays, and journal entries.",
-    expert: "ready",
-    lastActive: now(),
-    summary: "Long-form personal writing with a warm narrative voice.",
-    styleProfile: "First-person, reflective, sentence-led.",
+    summary: "Weekly planning, product decisions, and follow-up tasks.",
+    styleProfile: "Action-oriented, crisp, chronological.",
   },
 ];
 
 const seedSources: Source[] = [
-  ["Type as Voice.pdf", "file", "c-design", "indexed"],
-  ["Editorial Grids — notes.md", "note", "c-design", "indexed"],
+  ["Aarron Walter - Designing for Emotion.pdf", "file", "c-design", "indexed"],
+  ["One Thing at a Time - Productivity.pdf", "file", "c-design", "indexed"],
+  ["IDEO - Field Guide to Human Centered Design.pdf", "file", "c-design", "indexed"],
+  ["Editorial Grids - notes.md", "note", "c-design", "indexed"],
   ["nngroup.com/articles/chunking", "link", "c-design", "indexed"],
   ["Calm Tech principles.txt", "note", "c-design", "needs-review"],
-  ["Attention is All You Need.pdf", "file", "c-research", "indexed"],
-  ["arXiv 2310.05217.pdf", "file", "c-research", "extracting"],
-  ["Anthropic — interpretability.html", "link", "c-research", "indexed"],
-  ["Field notes — March.md", "note", "c-writing", "indexed"],
-  ["Letter draft v3.docx", "file", "c-writing", "indexed"],
-  ["Morning pages.txt", "note", "c-writing", "indexed"],
+  ["North Star Metric framework.md", "note", "c-strategy", "indexed"],
+  ["Amplitude - Product Analytics Guide.pdf", "file", "c-strategy", "indexed"],
+  ["Market positioning teardown.html", "link", "c-strategy", "indexed"],
+  ["Roadmap review Q2.docx", "file", "c-strategy", "indexed"],
+  ["Why We Sleep - Matthew Walker.pdf", "file", "c-health", "indexed"],
+  ["Sleep is the multiplier.md", "note", "c-health", "indexed"],
+  ["Longevity protocols.csv", "file", "c-health", "indexed"],
+  ["Kyoto cafes list.md", "note", "c-travel", "indexed"],
+  ["Japan rail planning.pdf", "file", "c-travel", "indexed"],
+  ["Tokyo neighborhoods.png", "image", "c-travel", "indexed"],
+  ["Q2 Planning Decisions.md", "note", "c-meetings", "indexed"],
+  ["Weekly sync transcript.txt", "file", "c-meetings", "indexed"],
+  ["Action items - May 27.md", "note", "c-meetings", "needs-review"],
   ["screenshot-2026-05-12.png", "image", null, "waiting"],
+  ["voice-note-product-idea.m4a", "file", null, "waiting"],
   ["broken-link.html", "link", null, "failed"],
 ].map(([title, type, clusterId, state]) => ({
   id: uid(),
@@ -161,8 +190,7 @@ const seedSources: Source[] = [
   clusterId: clusterId as string | null,
   state: state as SourceState,
   updatedAt: now(),
-  preview:
-    "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vivamus luctus urna sed urna ultricies ac tempor dui sagittis…",
+  preview: "A short extracted preview from this source appears here with enough context for quick triage.",
   summary: "A short auto-generated summary of this source.",
   tags: [],
   coverImageUrl:
@@ -194,15 +222,41 @@ const seedChats: Chat[] = [
         id: uid(),
         role: "assistant",
         content:
-          "Your design notes lean toward calm, editorial interfaces — restrained color, generous spacing, and type-led hierarchy. There's a recurring emphasis on chunking and reading rhythm.",
-        clustersUsed: [
-          { clusterId: "c-design", reason: "style" },
-        ],
+          "Your design notes lean toward calm, editorial interfaces - restrained color, generous spacing, and type-led hierarchy. There's a recurring emphasis on chunking and reading rhythm.",
+        clustersUsed: [{ clusterId: "c-design", reason: "style" }],
         citations: [
           { sourceId: seedSources[0].id, snippet: "Type carries voice before color does." },
-          { sourceId: seedSources[1].id, snippet: "Editorial grids favor a primary column." },
+          { sourceId: seedSources[3].id, snippet: "Editorial grids favor a primary column." },
         ],
         useful: true,
+      },
+    ],
+  },
+  {
+    id: "chat-strategy",
+    title: "North Star Metric",
+    scopeClusterId: "c-strategy",
+    updatedAt: now(),
+    saved: true,
+    messages: [
+      {
+        id: uid(),
+        role: "user",
+        content: "Summarize the strongest product strategy notes.",
+      },
+    ],
+  },
+  {
+    id: "chat-health",
+    title: "Sleep protocol",
+    scopeClusterId: "c-health",
+    updatedAt: now(),
+    saved: true,
+    messages: [
+      {
+        id: uid(),
+        role: "user",
+        content: "What are the practical sleep takeaways?",
       },
     ],
   },
@@ -366,14 +420,13 @@ export const sourceStateLabel: Record<SourceState, string> = {
 
 export const newId = uid;
 
-// canned streaming for chat
 export async function* streamMockReply(
   prompt: string,
   cluster: Cluster | null,
 ): AsyncGenerator<string> {
   const opener = cluster
     ? `Drawing from ${cluster.name}: `
-    : `Across your vault: `;
+    : "Across your vault: ";
   const body =
     prompt.length < 30
       ? "here's a short answer based on what I've indexed so far. The most relevant notes are surfaced as citations below."

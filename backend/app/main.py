@@ -13,7 +13,7 @@ from backend.app.core.pre_vault import BackendModeMiddleware
 from backend.app.core.reserved_fields import ReservedChatFieldMiddleware
 from backend.app.core.startup_checks import StartupCheckError, run_startup_checks
 from backend.app.core.startup_status import write_startup_status
-from backend.app.core.vault_lock import acquire_vault_lock, release_vault_lock
+from backend.app.core.vault_lock import VaultLockError, acquire_vault_lock, release_vault_lock
 from backend.app.schemas import HealthResponse
 
 settings = get_settings()
@@ -44,7 +44,11 @@ def startup() -> None:
             write_startup_status("ready", status="ready", message="Pre-vault backend is ready.")
             return
         write_startup_status("vault_lock_acquiring")
-        acquire_vault_lock()
+        try:
+            acquire_vault_lock()
+        except VaultLockError as exc:
+            write_startup_status("vault_lock_failed", status="failed", message=str(exc), error_code=exc.__class__.__name__)
+            raise
         write_startup_status("database_initializing")
         init_db()
         write_startup_status("schema_check_running")

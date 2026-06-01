@@ -462,6 +462,12 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     warnings = []
     if payload.expanded_analysis:
         warnings.append("Expanded analysis mode: scored every indexed source in scope before selecting the analysis set.")
+        _queue_expanded_analysis_job(
+            vault_id=payload.vault_id,
+            cluster_id=payload.cluster_id,
+            query=payload.prompt,
+            limit=effective_limit,
+        )
     warnings.append(
         "Coverage ledger: considered "
         f"{coverage_ledger['sources_considered']} source(s), analyzed "
@@ -518,6 +524,30 @@ def _build_embedding_unavailable_context(payload: ChatContextRequest, *, intent:
         "runtime_state": runtime_status()["state"],
         "warnings": [detail],
     }
+
+
+def _queue_expanded_analysis_job(
+    *,
+    vault_id: str,
+    cluster_id: str | None,
+    query: str,
+    limit: int,
+) -> None:
+    fingerprint = content_hash(f"{vault_id}|{cluster_id or ''}|{query.strip().lower()}|{limit}")
+    with connect() as conn:
+        enqueue_job(
+            conn,
+            job_type="expanded_analysis",
+            payload={
+                "vault_id": vault_id,
+                "cluster_id": cluster_id,
+                "query": query,
+                "limit": limit,
+            },
+            dedupe_key=f"expanded-analysis:{fingerprint}",
+            scope_id=f"{vault_id}:{cluster_id or 'all'}",
+            user_initiated=True,
+        )
 
 
 def _build_direct_chat_context(payload: ChatContextRequest, *, runtime_state: str, synthesize: bool) -> dict:

@@ -20,6 +20,18 @@ Check backend health:
 Invoke-RestMethod -Uri http://127.0.0.1:7343/health
 ```
 
+Check OCR runtime health:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:7343/api/v1/system/ocr
+```
+
+Create a local vault database backup:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:7343/api/v1/system/vault-safety/backup
+```
+
 Stop the backend on port `7343`:
 
 ```powershell
@@ -81,11 +93,12 @@ print("startup-check-ok")
 
 ## Local OCR
 
-Vault's OCR path is local-only. The backend first looks for a bundled Tesseract binary under:
+Vault's OCR path is local-only. Scanned PDFs use OCRmyPDF + Tesseract when the local runtime is staged. Images use Tesseract directly. The backend first looks for bundled OCR binaries under:
 
 ```text
 backend/bin/ocr/tesseract.exe
 backend/bin/ocr/tessdata/eng.traineddata
+backend/bin/ocr/ocrmypdf.exe
 ```
 
-If that binary is not present, image ingestion stores metadata and scanned-PDF ingestion reports that bundled OCR is unavailable. Packaged builds include `backend/bin/**/*` so the OCR runtime ships with the installer once staged there.
+OCRmyPDF requires local Ghostscript and qpdf command dependencies. In development, the backend can also run `python -m ocrmypdf` if the package is installed in `.venv`. If OCRmyPDF is unavailable, scanned PDFs fall back to direct page rendering plus Tesseract. If Tesseract is not present, image ingestion stores metadata and scanned-PDF ingestion reports that bundled OCR is unavailable. Packaged builds include `backend/bin/**/*` so the OCR runtime ships with the installer once staged there.

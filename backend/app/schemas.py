@@ -241,6 +241,59 @@ class BridgeRequestRead(BaseModel):
     created_at: str
 
 
+class BridgeTokenRotationRead(BaseModel):
+    id: str
+    rotated_at: str
+    reason: str
+
+
+class BridgeClientCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    allowed_vault_ids: list[str] = []
+    allowed_cluster_ids: list[str] = []
+    allow_raw_snippets: bool = False
+    allow_style_profile: bool = False
+    allow_expert_calls: bool = False
+
+
+class BridgeClientUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    enabled: bool | None = None
+    allowed_vault_ids: list[str] | None = None
+    allowed_cluster_ids: list[str] | None = None
+    allow_raw_snippets: bool | None = None
+    allow_style_profile: bool | None = None
+    allow_expert_calls: bool | None = None
+    rotate_token: bool | None = None
+
+
+class BridgeClientCreateResponse(BaseModel):
+    id: str
+    name: str
+    token: str
+    enabled: bool
+    allowed_vault_ids: list[str] = []
+    allowed_cluster_ids: list[str] = []
+    allow_raw_snippets: bool = False
+    allow_style_profile: bool = False
+    allow_expert_calls: bool = False
+    created_at: str
+    updated_at: str
+
+
+class BridgeClientRead(BaseModel):
+    id: str
+    name: str
+    enabled: bool
+    allowed_vault_ids: list[str] = []
+    allowed_cluster_ids: list[str] = []
+    allow_raw_snippets: bool = False
+    allow_style_profile: bool = False
+    allow_expert_calls: bool = False
+    created_at: str
+    updated_at: str
+
+
 class DiagnosticBundleResponse(BaseModel):
     bundle_path: str
     bundle_format_version: int
@@ -418,6 +471,21 @@ class EmbeddingRuntimeConfigure(BaseModel):
     model: str | None = None
 
 
+class EmbeddingModelDownloadRequest(BaseModel):
+    cache_dir: str | None = None
+    model: str | None = None
+
+
+class EmbeddingModelDownloadState(BaseModel):
+    model_id: str
+    status: str
+    bytes_downloaded: int | None = None
+    total_bytes: int | None = None
+    file_name: str | None = None
+    local_path: str | None = None
+    error: str | None = None
+
+
 class HardwareStatusRead(BaseModel):
     os: str
     machine: str
@@ -556,6 +624,28 @@ class StartupStatusRead(BaseModel):
     data_dir: str = ""
     database_path: str = ""
     updated_at: str = ""
+
+
+class OCRRuntimeStatusRead(BaseModel):
+    available: bool
+    pdf_ocr_available: bool
+    image_ocr_available: bool
+    tesseract_path: str | None = None
+    ocrmypdf_command: str | None = None
+    tessdata_path: str | None = None
+    ghostscript_path: str | None = None
+    qpdf_path: str | None = None
+    missing: list[str]
+    detail: str
+
+
+class VaultSafetyRead(BaseModel):
+    database_path: str
+    integrity_ok: bool
+    integrity_result: list[str]
+    wal_checkpoint: str
+    backup_path: str | None = None
+    created_at: str
 
 
 class AppJobRead(BaseModel):

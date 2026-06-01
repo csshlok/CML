@@ -20,12 +20,16 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
   cancelModelDownload,
+  cancelEmbeddingDownload,
   checkDiskPreflight,
   configureEmbeddingRuntime,
   createVault,
+  getEmbeddingDownloadStatus,
   getEmbeddingRuntimeStatus,
   listLocalModels,
+  startEmbeddingDownload,
   startModelDownload,
+  type EmbeddingModelDownloadState,
   type EmbeddingRuntimeStatus,
   type DiskPreflightResponse,
   type LocalModelRecord,
@@ -49,8 +53,6 @@ const steps = [
   "Memory search",
   "Finish",
 ] as const;
-
-const welcomeWords = ["local", "private", "searchable", "ready"];
 
 export const Route = createFileRoute("/onboarding")({
   head: () => ({ meta: [{ title: "Set up Vault" }] }),
@@ -78,6 +80,7 @@ function Onboarding() {
   const [embeddingChoice, setEmbeddingChoice] = useState<EmbeddingChoice>("recommended");
   const [embeddingCacheDir, setEmbeddingCacheDir] = useState("");
   const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
+  const [embeddingDownload, setEmbeddingDownload] = useState<EmbeddingModelDownloadState | null>(null);
   const [diskPreflight, setDiskPreflight] = useState<DiskPreflightResponse | null>(null);
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -129,7 +132,9 @@ function Onboarding() {
   async function refreshEmbeddingStatus() {
     try {
       const status = await getEmbeddingRuntimeStatus();
+      const downloadStatus = await getEmbeddingDownloadStatus();
       setEmbeddingRuntime(status);
+      setEmbeddingDownload(downloadStatus);
       if (status.available) setMessage("Memory search is ready.");
     } catch (err) {
       setEmbeddingRuntime(null);
@@ -251,6 +256,39 @@ function Onboarding() {
     }
   }
 
+  async function chooseEmbeddingFolder() {
+    const selected = await desktop?.selectEmbeddingFolder?.();
+    if (selected) {
+      setEmbeddingCacheDir(selected);
+      setMessage("Embedding model folder selected. Test memory search to continue.");
+    }
+  }
+
+  async function startEmbeddingModelDownload() {
+    setError(null);
+    setMessage("Starting memory-search model download...");
+    try {
+      setEmbeddingDownload(
+        await startEmbeddingDownload({
+          cache_dir: embeddingCacheDir.trim() || null,
+        }),
+      );
+      setMessage("Memory-search model download started. Keep this setup window open to watch status.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start the memory-search download.");
+      setMessage(null);
+    }
+  }
+
+  async function cancelEmbeddingModelDownload() {
+    setError(null);
+    try {
+      setEmbeddingDownload(await cancelEmbeddingDownload());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not cancel the memory-search download.");
+    }
+  }
+
   function next() {
     setError(null);
     setMessage(null);
@@ -286,9 +324,9 @@ function Onboarding() {
       <AnimatedBackground />
 
       <div className="relative z-10 grid min-h-screen grid-cols-1 lg:grid-cols-[360px_1fr]">
-        <aside className="hidden border-r border-border/70 bg-background/45 px-10 py-10 backdrop-blur-sm lg:flex lg:flex-col">
+        <aside className="hidden border-r border-border bg-background px-10 py-10 lg:flex lg:flex-col">
           <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card">
+            <div className="vault-sidebar-mark flex h-8 w-8 items-center justify-center rounded-md">
               <ShieldCheck className="h-4 w-4" />
             </div>
             <div>
@@ -298,29 +336,29 @@ function Onboarding() {
           </div>
 
           <div className="mt-16">
-            <div className="text-4xl font-semibold leading-tight">
-              Make your work
-              <span className="vault-word-rotator ml-2 inline-grid align-baseline">
-                {welcomeWords.map((word, index) => (
-                  <span key={word} style={{ animationDelay: `${index * 1.8}s` }}>
-                    {word}
-                  </span>
-                ))}
-              </span>
+            <div className="max-w-[280px] text-[30px] font-semibold leading-tight">
+              Private memory starts here
             </div>
             <p className="mt-5 max-w-[280px] text-sm leading-6 text-muted-foreground">
-              A private vault, a real memory-search model, and a calm place to start asking.
+              Choose a real vault folder, connect local models, and keep setup honest before the app opens.
             </p>
           </div>
 
           <StepRail step={step} />
         </aside>
 
-        <section className="flex min-h-screen items-center justify-center px-5 py-8 sm:px-8">
-          <div className="vault-onboarding-card w-full max-w-[760px]">
+        <section className="flex min-h-screen items-center justify-center px-5 py-8 sm:px-10">
+          <div className="vault-onboarding-card w-full max-w-[880px]">
             <MobileHeader step={step} />
 
-            <div key={step} className="vault-step-enter">
+            <div className="border-b border-border pb-6">
+              <div className="text-sm font-semibold">Vault setup</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                Step {step + 1} of {steps.length} / {steps[step]}
+              </div>
+            </div>
+
+            <div key={step} className="vault-step-enter py-10">
               {step === 0 && (
                 <SetupPanel
                   icon={<Mail className="h-5 w-5" />}
@@ -531,15 +569,37 @@ function Onboarding() {
                   </div>
 
                   <Field label={embeddingChoice === "recommended" ? "Downloaded model folder" : "Embedding cache folder"}>
-                    <Input
-                      value={embeddingCacheDir}
-                      onChange={(event) => setEmbeddingCacheDir(event.target.value)}
-                      placeholder={
-                        embeddingChoice === "recommended"
-                          ? "T:\\Models\\all-MiniLM-L6-v2"
-                          : "T:\\LLM\\embeddings"
-                      }
-                    />
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Input
+                        value={embeddingCacheDir}
+                        onChange={(event) => setEmbeddingCacheDir(event.target.value)}
+                        placeholder={
+                          embeddingChoice === "recommended"
+                            ? "T:\\Models\\all-MiniLM-L6-v2"
+                            : "T:\\LLM\\embeddings"
+                        }
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void chooseEmbeddingFolder()}
+                        disabled={!desktop?.selectEmbeddingFolder}
+                      >
+                        <FolderOpen className="h-4 w-4" />
+                        Browse
+                      </Button>
+                      {embeddingChoice === "recommended" && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void startEmbeddingModelDownload()}
+                          disabled={embeddingDownload?.status === "queued" || embeddingDownload?.status === "downloading"}
+                        >
+                          <Download className="h-4 w-4" />
+                          Download
+                        </Button>
+                      )}
+                    </div>
                   </Field>
 
                   <div className="rounded-md border border-border bg-card p-4">
@@ -555,6 +615,30 @@ function Onboarding() {
                       </div>
                       {embeddingRuntime?.available && <Check className="h-5 w-5 text-[var(--status-ready)]" />}
                     </div>
+                    {embeddingDownload && embeddingDownload.status !== "idle" && (
+                      <div className="mt-3 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="truncate">{embeddingDownload.model_id}</span>
+                          <span className="text-foreground">{embeddingDownload.status}</span>
+                        </div>
+                        {embeddingDownload.local_path && (
+                          <div className="mt-1 truncate font-mono">{embeddingDownload.local_path}</div>
+                        )}
+                        {embeddingDownload.error && (
+                          <div className="mt-1 text-destructive">{embeddingDownload.error}</div>
+                        )}
+                      </div>
+                    )}
+                    {(embeddingDownload?.status === "queued" || embeddingDownload?.status === "downloading") && (
+                      <Button
+                        variant="outline"
+                        className="mt-3"
+                        onClick={() => void cancelEmbeddingModelDownload()}
+                      >
+                        <X className="h-4 w-4" />
+                        Cancel download
+                      </Button>
+                    )}
                     <Button
                       className="mt-4"
                       onClick={() => void saveEmbeddingRuntime()}
@@ -599,7 +683,7 @@ function Onboarding() {
               </div>
             )}
 
-            <div className="mt-8 flex items-center justify-between gap-3 border-t border-border pt-5">
+            <div className="flex items-center justify-between gap-3 border-t border-border pt-5">
               <Button variant="ghost" onClick={back} disabled={step === 0}>
                 <ArrowLeft className="h-4 w-4" />
                 Back
@@ -694,10 +778,10 @@ function SetupPanel({
 }) {
   return (
     <div>
-      <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-card text-primary">
+      <div className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-accent text-accent-foreground">
         {icon}
       </div>
-      <h1 className="mt-6 text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">{title}</h1>
+      <h1 className="mt-6 text-[30px] font-semibold text-foreground">{title}</h1>
       <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">{sub}</p>
       <div className="mt-8 grid gap-4">{children}</div>
     </div>
@@ -731,8 +815,8 @@ function ChoiceButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "rounded-md border bg-card p-4 text-left transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        selected ? "border-primary bg-primary/7" : "border-border",
+        "rounded-md border bg-card p-4 text-left shadow-none transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        selected ? "border-primary bg-accent/55" : "border-border",
       )}
     >
       <div className="flex items-center justify-between gap-3">
@@ -752,7 +836,7 @@ function ChoiceButton({
 
 function MiniFact({ title, body }: { title: string; body: string }) {
   return (
-    <div className="rounded-md border border-border bg-card p-4">
+    <div className="vault-card p-4">
       <div className="text-sm font-medium">{title}</div>
       <div className="mt-2 text-sm leading-5 text-muted-foreground">{body}</div>
     </div>
@@ -783,8 +867,8 @@ function ModelRow({
   return (
     <div
       className={cn(
-        "rounded-md border bg-card p-4 transition-colors",
-        selected ? "border-primary bg-primary/7" : "border-border",
+        "rounded-md border bg-card p-4 shadow-none transition-colors",
+        selected ? "border-primary bg-accent/55" : "border-border",
       )}
     >
       <button type="button" className="block w-full text-left" onClick={onSelect}>
@@ -827,7 +911,7 @@ function ModelRow({
 
 function SummaryRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-border bg-card p-4">
+    <div className="vault-card p-4">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 break-words text-sm font-medium">{value}</div>
     </div>

@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { HomeView } from "./_app.home";
 import { useEffect, useMemo, useState, type ComponentType, type DragEvent } from "react";
 import {
   ArrowUpDown,
@@ -23,7 +24,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  useStore,
   type Cluster,
   type Source,
   type SourceType,
@@ -48,11 +48,10 @@ type AddMode = "note" | "link" | null;
 
 export const Route = createFileRoute("/_app/search")({
   head: () => ({ meta: [{ title: "Mind" }] }),
-  component: MindView,
+  component: HomeView,
 });
 
 function MindView() {
-  const { sources: mockSources, clusters: mockClusters, setVault } = useStore();
   const [vault, setBackendVault] = useState<VaultRecord | null>(null);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
@@ -79,7 +78,6 @@ function MindView() {
       const activeVault = vaults[0] ?? null;
       if (!activeVault) return;
       setBackendVault(activeVault);
-      setVault(activeVault.path);
       void reindexVaultSearch(activeVault.id).catch(() => undefined);
       const [clusterRows, sourceRows] = await Promise.all([
         listClusters(activeVault.id),
@@ -130,8 +128,8 @@ function MindView() {
     };
   }, [backendReady, query, vault]);
 
-  const sources = !mounted ? [] : backendReady ? backendSources : mockSources;
-  const clusters = !mounted ? [] : backendReady ? backendClusters : mockClusters;
+  const sources = !mounted ? [] : backendReady ? backendSources : [];
+  const clusters = !mounted ? [] : backendReady ? backendClusters : [];
 
   const visibleSources = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -264,30 +262,30 @@ function MindView() {
         </div>
       )}
       <main className="min-w-0 overflow-y-auto">
-        <div className="border-b border-border bg-card px-6 py-5">
+        <div className="border-b border-border bg-background px-6 py-5">
           <div className="flex items-start justify-between gap-6">
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Mind</h1>
-              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                Search, inspect, and route the local memory in this vault.
+              <h1 className="page-title">Mind</h1>
+              <p className="mt-1 max-w-xl text-sm leading-6 text-muted-foreground">
+                Search saved sources, review unclustered items, and open the context you need.
               </p>
             </div>
             <div className="flex gap-2">
               <Button variant="outline" className="gap-2" onClick={() => setAddMode("note")}>
                 <NotebookText className="h-4 w-4" />
-                Note
+                Add note
               </Button>
               <Button variant="outline" className="gap-2" onClick={() => setAddMode("link")}>
                 <LinkIcon className="h-4 w-4" />
-                Link
+                Add link
               </Button>
               <Button className="gap-2" onClick={addFiles} disabled={!vault || !desktop?.selectSourceFiles}>
                 <Plus className="h-4 w-4" />
-                File
+                Add file
               </Button>
               <Button variant="outline" className="gap-2" onClick={addFolder} disabled={!vault || !desktop?.selectSourceFolders}>
                 <Folder className="h-4 w-4" />
-                Folder
+                Add folder
               </Button>
             </div>
           </div>
@@ -334,13 +332,24 @@ function MindView() {
               {importMessage}
             </div>
           )}
+          {!vault && (
+            <div className="mb-4 rounded-md border border-border bg-card px-4 py-3 text-sm">
+              <div className="font-medium">No active vault</div>
+              <div className="mt-1 text-muted-foreground">
+                Create or open a vault before adding files and using semantic search.
+              </div>
+              <Link to="/settings" className="mt-3 inline-block text-primary underline-offset-4 hover:underline">
+                Open storage settings
+              </Link>
+            </div>
+          )}
           <div className="mb-4 flex items-center justify-between text-sm">
             <div className="text-muted-foreground">
               {visibleSources.length} shown from {sources.length} sources
             </div>
             <Button variant="ghost" size="sm" className="gap-2" onClick={() => setSortMode(sortMode === "newest" ? "oldest" : "newest")}>
               <ArrowUpDown className="h-4 w-4" />
-              Toggle order
+              {sortMode === "newest" ? "Newest first" : sortMode === "oldest" ? "Oldest first" : "Alphabetical"}
             </Button>
           </div>
 
@@ -359,16 +368,27 @@ function MindView() {
           </div>
 
           {visibleSources.length === 0 && (
-            <div className="rounded-md border border-dashed border-border bg-card p-8 text-center text-sm text-muted-foreground">
-              No sources match this view.
+            <div className="rounded-md border border-dashed border-border bg-card p-8 text-sm">
+              <div className="font-medium">No sources match this view</div>
+              <div className="mt-1 text-muted-foreground">
+                Adjust the search or filters, or add a source to this vault.
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={() => setQuery("")}>
+                  Clear search
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setFilter("all")}>
+                  Show all types
+                </Button>
+              </div>
             </div>
           )}
         </div>
       </main>
 
       <aside className="hidden border-l border-border bg-card/55 p-5 lg:block">
-        <h2 className="text-sm font-semibold">Vault state</h2>
-        <div className="mt-4 space-y-3">
+        <h2 className="text-sm font-semibold">Current vault</h2>
+        <div className="mt-4 space-y-2">
           <StateRow label="Sources" value={sources.length.toString()} />
           <StateRow label="Clusters" value={clusters.length.toString()} />
           <StateRow label="Unclustered" value={unclusteredCount.toString()} />
@@ -377,7 +397,7 @@ function MindView() {
 
         <h2 className="mt-7 text-sm font-semibold">Clusters</h2>
         <div className="mt-3 space-y-2">
-          {clusters.map((cluster) => {
+          {clusters.slice(0, 8).map((cluster) => {
             const count = sources.filter((source) => source.clusterId === cluster.id).length;
             return (
               <Link
@@ -393,6 +413,11 @@ function MindView() {
               </Link>
             );
           })}
+          {clusters.length === 0 && (
+            <div className="rounded-md border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
+              Clusters will appear after sources are indexed.
+            </div>
+          )}
         </div>
       </aside>
 
@@ -439,7 +464,7 @@ function MindView() {
             <Input placeholder="https://..." value={linkUrl} onChange={(event) => setLinkUrl(event.target.value)} />
           </label>
           <div className="rounded-md border border-border bg-muted/45 p-3 text-sm">
-            Page title, readable text, tags, summary, cluster assignment, and preview image are generated after extraction.
+            Vault stores the readable text and queues it for indexing.
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setAddMode(null)}>Cancel</Button>

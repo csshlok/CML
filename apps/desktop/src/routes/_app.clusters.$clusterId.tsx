@@ -1,35 +1,32 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { MessageSquare } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  useStore,
-  expertLabel,
-  sourceStateLabel,
+  ArrowLeft,
+  ArrowRight,
+  CheckCircle2,
+  Clock3,
+  FileText,
+  MessageSquare,
+  MoreHorizontal,
+  Plus,
+  Search,
+  X,
+} from "lucide-react";
+import {
   type Cluster,
   type Source,
 } from "@/lib/mockStore";
-import { ClusterDot, ExpertBadge } from "@/components/ClusterChip";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ClusterMap } from "@/components/ClusterMap";
 import {
   createChatSession,
-  createCluster,
   getCluster,
-  listClusterExpertJobs,
-  listClusterExpertArtifacts,
   listChatSessions,
-  listClusters,
+  listClusterExpertArtifacts,
+  listClusterExpertJobs,
   listSources,
-  mergeClusterInto,
-  pauseClusterExpert,
-  retrainClusterExpert,
-  updateSource,
-  updateCluster,
+  type ChatSessionRecord,
   type ClusterExpertJobRecord,
   type ExpertArtifactRecord,
-  type ChatSessionRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 
@@ -38,75 +35,72 @@ export const Route = createFileRoute("/_app/clusters/$clusterId")({
   component: ClusterDetail,
 });
 
+const tabs = ["Overview", "Sources", "Chats", "Memory profile", "Map"] as const;
+
 function ClusterDetail() {
   const { clusterId } = Route.useParams();
   const navigate = useNavigate();
-  const { clusters, sources, chats, renameCluster, createChat } = useStore();
   const [backendCluster, setBackendCluster] = useState<Cluster | null>(null);
-  const [backendVaultId, setBackendVaultId] = useState<string | null>(null);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
-  const [allBackendClusters, setAllBackendClusters] = useState<Cluster[]>([]);
+  const [backendVaultId, setBackendVaultId] = useState<string | null>(null);
   const [expertJobs, setExpertJobs] = useState<ClusterExpertJobRecord[]>([]);
   const [expertArtifacts, setExpertArtifacts] = useState<ExpertArtifactRecord[]>([]);
-  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
-  const [mergeTargetId, setMergeTargetId] = useState("");
-  const [nameDraft, setNameDraft] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<(typeof tabs)[number]>("Overview");
+  const [mounted, setMounted] = useState(false);
 
-  const mockCluster = clusters.find((cluster) => cluster.id === clusterId) ?? null;
-  const cluster = backendCluster ?? mockCluster;
-  const usingBackend = Boolean(backendCluster);
-
-  async function loadBackendCluster() {
-    setLoading(true);
-    setError(null);
-    try {
-      const clusterRow = await getCluster(clusterId);
-      const nextCluster = clusterFromRecord(clusterRow);
-      setBackendVaultId(clusterRow.vault_id);
-      const [sourceRows, chatRows, clusterRows, jobRows, artifactRows] = await Promise.all([
-        listSources(clusterRow.vault_id),
-        listChatSessions(clusterRow.vault_id),
-        listClusters(clusterRow.vault_id),
-        listClusterExpertJobs(clusterRow.id).catch(() => []),
-        listClusterExpertArtifacts(clusterRow.id).catch(() => []),
-      ]);
-      setBackendCluster(nextCluster);
-      setNameDraft(nextCluster.name);
-      setBackendSources(sourceRows.map(sourceFromRecord));
-      setBackendChats(chatRows.filter((chat) => chat.scope_cluster_id === clusterRow.id));
-      setAllBackendClusters(clusterRows.map(clusterFromRecord));
-      setExpertJobs(jobRows);
-      setExpertArtifacts(artifactRows);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Could not load this cluster from the backend.",
-      );
-      setBackendCluster(null);
-      setBackendVaultId(null);
-      if (mockCluster) setNameDraft(mockCluster.name);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const cluster = backendCluster;
+  const activeSources = !mounted ? [] : backendSources;
+  const clusterSources = cluster
+    ? activeSources.filter((source) => source.clusterId === cluster.id)
+    : [];
+  const clusterChats = backendChats;
 
   useEffect(() => {
+    let cancelled = false;
+    setMounted(true);
+    async function loadBackendCluster() {
+      try {
+        const clusterRow = await getCluster(clusterId);
+        const nextCluster = clusterFromRecord(clusterRow);
+        const [sourceRows, chatRows, jobRows, artifactRows] = await Promise.all([
+          listSources(clusterRow.vault_id),
+          listChatSessions(clusterRow.vault_id),
+          listClusterExpertJobs(clusterRow.id).catch(() => []),
+          listClusterExpertArtifacts(clusterRow.id).catch(() => []),
+        ]);
+        if (cancelled) return;
+        setBackendVaultId(clusterRow.vault_id);
+        setBackendCluster(nextCluster);
+        setBackendSources(sourceRows.map(sourceFromRecord));
+        setBackendChats(chatRows.filter((chat) => chat.scope_cluster_id === clusterRow.id));
+        setExpertJobs(jobRows);
+        setExpertArtifacts(artifactRows);
+      } catch {
+        if (!cancelled) {
+          setBackendCluster(null);
+          setBackendVaultId(null);
+          setBackendSources([]);
+          setBackendChats([]);
+        }
+      }
+    }
+
     void loadBackendCluster();
+    return () => {
+      cancelled = true;
+    };
   }, [clusterId]);
 
-  useEffect(() => {
-    if (!backendCluster && mockCluster) setNameDraft(mockCluster.name);
-  }, [backendCluster, mockCluster?.name]);
-
-  if (loading && !cluster) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        Loading cluster...
-      </div>
-    );
-  }
+  const topMemories = useMemo(
+    () =>
+      clusterSources.slice(0, 5).map((source) => [
+        source.summary || source.preview || source.title,
+        source.title,
+        formatDate(source.updatedAt),
+      ]),
+    [clusterSources],
+  );
 
   if (!cluster) {
     return (
@@ -116,388 +110,539 @@ function ClusterDetail() {
     );
   }
 
-  const activeSources = usingBackend ? backendSources : sources;
-  const clusterSources = activeSources.filter((source) => source.clusterId === cluster.id);
-  const availableSources = activeSources.filter((source) => source.clusterId !== cluster.id);
-  const clusterChats = usingBackend
-    ? backendChats
-    : chats.filter((chat) => chat.scopeClusterId === cluster.id);
-
-  async function commitName() {
-    const nextName = nameDraft.trim();
-    if (!nextName || nextName === cluster.name) return;
-    if (usingBackend) {
-      try {
-        const updated = clusterFromRecord(await updateCluster(cluster.id, { name: nextName }));
-        setBackendCluster(updated);
-        setNameDraft(updated.name);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not rename this cluster.");
-        setNameDraft(cluster.name);
-      }
+  async function openClusterChat() {
+    if (backendCluster && backendVaultId) {
+      const session = await createChatSession({
+        vault_id: backendVaultId,
+        title: `${backendCluster.name} chat`,
+        scope_cluster_id: backendCluster.id,
+      });
+      navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
       return;
     }
-    renameCluster(cluster.id, nextName);
-  }
-
-  async function openClusterChat() {
-    if (usingBackend && backendCluster && backendVaultId) {
-      try {
-        const session = await createChatSession({
-          vault_id: backendVaultId,
-          title: `${backendCluster.name} chat`,
-          scope_cluster_id: backendCluster.id,
-        });
-        navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
-        return;
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not create a cluster chat.");
-      }
-    }
-    const chat = createChat(cluster.id);
-    navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
-  }
-
-  async function moveSource(sourceId: string, nextClusterId: string | null) {
-    if (!usingBackend) return;
-    await updateSource(sourceId, { cluster_id: nextClusterId });
-    await loadBackendCluster();
-  }
-
-  async function createClusterFromSelected() {
-    if (!backendVaultId || selectedSourceIds.length === 0) return;
-    const created = await createCluster({
-      vault_id: backendVaultId,
-      name: `${cluster.name} selection`,
-      description: `Created from ${selectedSourceIds.length} selected source(s).`,
-      color: cluster.tint,
-    });
-    await Promise.all(
-      selectedSourceIds.map((sourceId) => updateSource(sourceId, { cluster_id: created.id })),
-    );
-    setSelectedSourceIds([]);
-    navigate({ to: "/clusters/$clusterId", params: { clusterId: created.id } });
-  }
-
-  async function queueExpertLearning() {
-    if (!usingBackend) return;
-    await retrainClusterExpert(cluster.id);
-    await loadBackendCluster();
-  }
-
-  async function pauseExpertLearning() {
-    if (!usingBackend) return;
-    const updated = clusterFromRecord(await pauseClusterExpert(cluster.id));
-    setBackendCluster(updated);
-    setNameDraft(updated.name);
-  }
-
-  async function mergeIntoTarget() {
-    if (!usingBackend || !mergeTargetId || mergeTargetId === cluster.id) return;
-    try {
-      const target = await mergeClusterInto(cluster.id, mergeTargetId);
-      navigate({ to: "/clusters/$clusterId", params: { clusterId: target.id } });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not merge this cluster.");
-    }
+    navigate({ to: "/chat" });
   }
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-4xl px-8 py-8">
-        <div className="flex items-center gap-3">
-          <ClusterDot tint={cluster.tint} size={12} />
-          <Input
-            value={nameDraft}
-            onChange={(event) => setNameDraft(event.target.value)}
-            onBlur={() => void commitName()}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") event.currentTarget.blur();
-            }}
-            aria-label="Cluster name"
-            className="h-9 max-w-sm border-transparent bg-transparent px-1 text-2xl font-semibold tracking-tight shadow-none focus-visible:bg-card"
-          />
-          <div className="ml-auto flex items-center gap-2">
-            <ExpertBadge status={cluster.expert} />
-            <Button size="sm" onClick={() => void openClusterChat()}>
-              <MessageSquare className="mr-1.5 h-4 w-4" /> Chat with cluster
-            </Button>
-          </div>
-        </div>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {cluster.description || "No description yet."}
-        </p>
-        {usingBackend && (
-          <div className="mt-4 flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-3 py-2">
-            <span className="text-sm text-muted-foreground">Merge this cluster into</span>
-            <Select value={mergeTargetId} onValueChange={setMergeTargetId}>
-              <SelectTrigger className="h-8 w-56">
-                <SelectValue placeholder="Choose cluster" />
-              </SelectTrigger>
-              <SelectContent>
-                {allBackendClusters
-                  .filter((candidate) => candidate.id !== cluster.id)
-                  .map((candidate) => (
-                    <SelectItem key={candidate.id} value={candidate.id}>
-                      {candidate.name}
-                    </SelectItem>
-                  ))}
-              </SelectContent>
-            </Select>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!mergeTargetId}
-              onClick={() => void mergeIntoTarget()}
-            >
-              Merge
-            </Button>
-          </div>
-        )}
-        {error && (
-          <div className="mt-4 rounded-md border border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
-            {usingBackend ? error : `Using local fallback data: ${error}`}
-          </div>
-        )}
+    <div className="vault-page-wash grid h-full grid-cols-[minmax(0,1fr)_326px] overflow-hidden">
+      <main className="min-w-0 overflow-y-auto px-9 py-8">
+        <Link to="/clusters" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="h-4 w-4" />
+          Back to clusters
+        </Link>
 
-        <Tabs defaultValue="overview" className="mt-8">
-          <TabsList>
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="sources">Sources ({clusterSources.length})</TabsTrigger>
-            <TabsTrigger value="chats">Chats ({clusterChats.length})</TabsTrigger>
-            <TabsTrigger value="expert">Expert</TabsTrigger>
-            <TabsTrigger value="map">Map</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="overview" className="mt-6 space-y-4">
-            <Card title="Summary">{cluster.summary || "Summary pending."}</Card>
-            <Card title="Style profile">{cluster.styleProfile || "Style profile pending."}</Card>
-            <Card title="Recent activity">
-              <ul className="space-y-1.5 text-sm">
-                {clusterChats.slice(0, 4).map((chat) => (
-                  <li key={chat.id} className="text-muted-foreground">
-                    - {chat.title}
-                  </li>
-                ))}
-                {clusterChats.length === 0 && (
-                  <li className="text-muted-foreground">No chats yet.</li>
-                )}
-              </ul>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="sources" className="mt-6">
-            {usingBackend && (
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div className="text-sm text-muted-foreground">
-                  {selectedSourceIds.length} selected
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={selectedSourceIds.length === 0}
-                  onClick={() => void createClusterFromSelected()}
-                >
-                  New cluster from selected
-                </Button>
-              </div>
-            )}
-            <div className="rounded-md border border-border">
-              {clusterSources.map((source) => (
-                <div
-                  key={source.id}
-                  className="flex items-center justify-between gap-4 border-b border-border px-4 py-2.5 text-sm last:border-b-0"
-                >
-                  <label className="flex min-w-0 flex-1 items-center gap-2">
-                    {usingBackend && (
-                      <input
-                        type="checkbox"
-                        checked={selectedSourceIds.includes(source.id)}
-                        onChange={(event) => {
-                          setSelectedSourceIds((current) =>
-                            event.target.checked
-                              ? [...current, source.id]
-                              : current.filter((id) => id !== source.id),
-                          );
-                        }}
-                      />
-                    )}
-                    <span className="truncate">{source.title}</span>
-                  </label>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <span className="text-xs text-muted-foreground">
-                      {sourceStateLabel[source.state]}
-                    </span>
-                    {usingBackend && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => void moveSource(source.id, null)}
-                      >
-                        Remove
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ))}
-              {clusterSources.length === 0 && (
-                <div className="px-4 py-6 text-center text-sm text-muted-foreground">
-                  No sources in this cluster yet.
-                </div>
-              )}
+        <header className="mt-7 flex flex-wrap items-start justify-between gap-5">
+          <div>
+            <div className="flex items-center gap-3">
+              <h1 className="page-title">{cluster.name}</h1>
+              <span className={`h-2.5 w-2.5 rounded-full bg-[var(--cluster-${cluster.tint})]`} />
             </div>
-            {usingBackend && (
-              <div className="mt-4 rounded-md border border-border">
-                <div className="border-b border-border px-4 py-2 text-sm font-medium">
-                  Add from vault
-                </div>
-                {availableSources.slice(0, 8).map((source) => (
-                  <div
-                    key={source.id}
-                    className="flex items-center justify-between gap-3 border-b border-border px-4 py-2 text-sm last:border-b-0"
-                  >
-                    <span className="truncate text-muted-foreground">{source.title}</span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void moveSource(source.id, cluster.id)}
-                    >
-                      Add
-                    </Button>
-                  </div>
-                ))}
-                {availableSources.length === 0 && (
-                  <div className="px-4 py-4 text-sm text-muted-foreground">
-                    No other vault sources available.
-                  </div>
-                )}
-              </div>
-            )}
-          </TabsContent>
+            <p className="mt-2 text-sm text-muted-foreground">{cluster.description}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button className="gap-2 bg-primary text-primary-foreground" onClick={() => void openClusterChat()}>
+              <MessageSquare className="h-4 w-4" />
+              Chat with cluster
+            </Button>
+            <Button variant="outline" className="gap-2">
+              <Plus className="h-4 w-4" />
+              Add source
+            </Button>
+            <Button variant="outline" size="icon" aria-label="More cluster actions">
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </div>
+        </header>
 
-          <TabsContent value="chats" className="mt-6 space-y-1">
-            {clusterChats.map((chat) => (
-              <button
-                key={chat.id}
-                className="block w-full rounded-md border border-border bg-card px-4 py-3 text-left text-sm hover:bg-accent"
-                onClick={() => navigate({ to: "/chat/$chatId", params: { chatId: chat.id } })}
-                type="button"
-              >
-                {chat.title}
-              </button>
-            ))}
-            {clusterChats.length === 0 && (
-              <p className="text-sm text-muted-foreground">No chats yet for this cluster.</p>
-            )}
-          </TabsContent>
+        <nav className="mt-8 flex gap-8 border-b border-border text-sm">
+          {tabs.map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setActiveTab(tab)}
+              className={`relative pb-4 ${activeTab === tab ? "text-foreground" : "text-muted-foreground"}`}
+            >
+              {tab}
+              {activeTab === tab && (
+                <span className="absolute inset-x-0 bottom-[-1px] h-px bg-primary" />
+              )}
+            </button>
+          ))}
+        </nav>
 
-          <TabsContent value="expert" className="mt-6 space-y-4">
-            <Card title="Status">
-              <div className="flex items-center justify-between">
-                <ExpertBadge status={cluster.expert} />
-                <span className="text-xs text-muted-foreground">{expertLabel[cluster.expert]}</span>
-              </div>
-              <p className="mt-3 text-sm text-muted-foreground">{expertStatusCopy(cluster)}</p>
-              <div className="mt-4 flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!usingBackend}
-                  onClick={() => void queueExpertLearning()}
-                >
-                  Queue learning
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={!usingBackend}
-                  onClick={() => void pauseExpertLearning()}
-                >
-                  Pause
-                </Button>
-              </div>
-            </Card>
-            <details className="rounded-md border border-border bg-card px-4 py-3 text-sm">
-              <summary className="cursor-pointer text-muted-foreground">Advanced details</summary>
-              <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
-                <dt className="text-muted-foreground">Training data</dt>
-                <dd>{clusterSources.length} sources</dd>
-                <dt className="text-muted-foreground">Last trained</dt>
-                <dd>Pending</dd>
-                <dt className="text-muted-foreground">Version</dt>
-                <dd>Pending</dd>
-                <dt className="text-muted-foreground">Expert record</dt>
-                <dd className="truncate">{cluster.id}</dd>
-              </dl>
-            </details>
-            <Card title="Recent expert jobs">
-              <div className="space-y-2">
-                {expertJobs.slice(0, 5).map((job) => (
-                  <div key={job.id} className="grid gap-1 text-xs sm:grid-cols-[1fr_auto]">
-                    <span className="truncate">{job.action}</span>
-                    <span className="text-muted-foreground">
-                      {job.failure_code ? `${job.status} / ${job.failure_code}` : job.status}
-                    </span>
-                  </div>
-                ))}
-                {expertJobs.length === 0 && (
-                  <div className="text-sm text-muted-foreground">No expert jobs yet.</div>
-                )}
-              </div>
-            </Card>
-            <Card title="Adapter artifacts">
-              <div className="space-y-2">
-                {expertArtifacts.slice(0, 5).map((artifact) => (
-                  <div key={artifact.id} className="grid gap-1 text-xs sm:grid-cols-[1fr_auto]">
-                    <span className="truncate">
-                      {artifact.artifact_type} · {artifact.hardware_tier || "unknown hardware"}
-                    </span>
-                    <span className="text-muted-foreground">{artifact.status}</span>
-                  </div>
-                ))}
-                {expertArtifacts.length === 0 && (
-                  <div className="text-sm text-muted-foreground">
-                    No adapter artifacts yet. The LoRA runner is still scaffolded.
-                  </div>
-                )}
-              </div>
-            </Card>
-          </TabsContent>
+        {activeTab === "Overview" && (
+          <section className="mt-7">
+            <h2 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Summary</h2>
+            <p className="mt-4 max-w-3xl text-sm leading-7">
+              {cluster.summary || cluster.description || "This memory space is ready for sources, chats, and local context."}
+            </p>
 
-          <TabsContent value="map" className="mt-6">
-            <div className="h-[420px] rounded-md border border-border bg-card">
-              <ClusterMap
-                focusClusterId={cluster.id}
-                clusters={usingBackend ? [cluster] : undefined}
-                sources={usingBackend ? activeSources : undefined}
+            <div className="mt-8 grid gap-4 xl:grid-cols-2">
+              <ReferenceTable
+                title="Top memories"
+                columns={["Memory", "Source", "Last seen"]}
+                rows={topMemories}
+                action="View all memories"
+              />
+              <ReferenceTable
+                title="Recent sources"
+                columns={["Source", "Added", "Memories"]}
+                rows={clusterSources.slice(0, 5).map((source) => [
+                  source.title,
+                  formatDate(source.updatedAt),
+                  String(memoryEstimate(source)),
+                ])}
+                action={`View all ${clusterSources.length} sources`}
+                fileIcons
               />
             </div>
-          </TabsContent>
-        </Tabs>
-      </div>
+
+            <LearningStatus cluster={cluster} sourceCount={clusterSources.length} />
+
+            <div className="mt-4 grid gap-4 xl:grid-cols-2">
+              <RecentSources sources={clusterSources.slice(0, 3)} />
+              <RecentChats chats={clusterChats} />
+            </div>
+          </section>
+        )}
+
+        {activeTab === "Sources" && <ClusterSourcesPanel sources={clusterSources} />}
+        {activeTab === "Chats" && <ClusterChatsPanel chats={clusterChats} />}
+        {activeTab === "Memory profile" && (
+          <ClusterMemoryProfile cluster={cluster} sources={clusterSources} artifacts={expertArtifacts} jobs={expertJobs} />
+        )}
+        {activeTab === "Map" && <ClusterPointMap cluster={cluster} sources={clusterSources} />}
+      </main>
+
+      <ClusterDetailRail cluster={cluster} sources={clusterSources} jobs={expertJobs} artifacts={expertArtifacts} />
     </div>
   );
 }
 
-function expertStatusCopy(cluster: Cluster) {
-  if (cluster.expert === "ready")
-    return "This local expert is ready to inform answers in your voice.";
-  if (cluster.expert === "learning") {
-    return "This cluster is usable now. Its local expert is still learning in the background.";
-  }
-  if (cluster.expert === "needs-update")
-    return "New source changes are ready for the next learning pass.";
-  if (cluster.expert === "paused") return "Learning is paused for this cluster.";
-  if (cluster.expert === "issue")
-    return "This expert needs attention before it can continue learning.";
-  return "This local expert is being set up.";
-}
-
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function ReferenceTable({
+  title,
+  columns,
+  rows,
+  action,
+  fileIcons,
+}: {
+  title: string;
+  columns: string[];
+  rows: string[][];
+  action: string;
+  fileIcons?: boolean;
+}) {
   return (
-    <div className="rounded-md border border-border bg-card p-4">
-      <div className="text-xs font-medium text-muted-foreground">{title}</div>
-      <div className="mt-2 text-sm">{children}</div>
+    <section className="rounded-md border border-border bg-card">
+      <h3 className="px-4 pt-4 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{title}</h3>
+      <div className="mt-4 grid grid-cols-[1.4fr_1fr_72px] border-b border-border px-4 pb-3 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+        {columns.map((column) => <span key={column}>{column}</span>)}
+      </div>
+      <div className="divide-y divide-border">
+        {rows.map((row) => (
+          <div key={row.join(":")} className="grid grid-cols-[1.4fr_1fr_72px] items-center gap-4 px-4 py-3 text-sm">
+            <span className="flex min-w-0 items-center gap-2">
+              {fileIcons && <FileText className="h-4 w-4 shrink-0 text-[var(--status-issue)]" />}
+              <span className="truncate">{row[0]}</span>
+            </span>
+            <span className="truncate text-muted-foreground">{row[1]}</span>
+            <span className="text-right text-muted-foreground">{row[2]}</span>
+          </div>
+        ))}
+      </div>
+      <Link to="/sources" className="flex items-center gap-2 px-4 py-4 text-sm text-primary">
+        {action} <ArrowRight className="h-4 w-4" />
+      </Link>
+    </section>
+  );
+}
+
+function LearningStatus({ cluster, sourceCount }: { cluster: Cluster; sourceCount: number }) {
+  return (
+    <section className="mt-4 rounded-md border border-border bg-card px-5 py-5">
+      <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Learning status</h3>
+      <div className="mt-5 grid gap-5 md:grid-cols-4">
+        <StatusItem icon={<FileText className="h-6 w-6" />} label="Memory profile" value={sourceCount > 0 ? "Ready" : "Empty"} meta={`Updated ${formatDate(cluster.lastActive)}`} />
+        <StatusItem icon={<span className="h-7 w-7 rounded-full border-4 border-primary border-r-muted" />} label="Coverage" value={`${sourceCount} sources`} meta={`${sourceCount} linked sources`} />
+        <StatusItem icon={<Clock3 className="h-6 w-6" />} label="Last updated" value={formatDate(cluster.lastActive)} meta="Automatic sync on" />
+        <StatusItem icon={<Clock3 className="h-6 w-6" />} label="Next check" value="Queued by backend" meta="Background refresh" />
+      </div>
+      {cluster.expert === "learning" && (
+        <div className="mt-4 text-xs text-muted-foreground">A local memory profile pass is running in the background.</div>
+      )}
+    </section>
+  );
+}
+
+function StatusItem({ icon, label, value, meta }: { icon: ReactNode; label: string; value: string; meta: string }) {
+  return (
+    <div className="flex gap-4 border-r border-border pr-5 last:border-r-0">
+      <span className="text-muted-foreground">{icon}</span>
+      <span>
+        <span className="block text-sm text-muted-foreground">{label}</span>
+        <span className="mt-1 block text-base font-medium text-primary">{value}</span>
+        <span className="mt-1 block text-xs text-muted-foreground">{meta}</span>
+      </span>
     </div>
   );
+}
+
+function RecentSources({ sources }: { sources: Source[] }) {
+  return (
+    <section className="rounded-md border border-border bg-card">
+      <h3 className="px-4 pt-4 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Recent sources</h3>
+      <div className="mt-4 divide-y divide-border">
+        {sources.map((source) => (
+          <div key={source.id} className="grid grid-cols-[1fr_44px_92px_72px] items-center gap-4 px-4 py-3 text-sm">
+            <span className="flex min-w-0 items-center gap-3">
+              <FileText className="h-4 w-4 shrink-0 text-[var(--status-issue)]" />
+              <span className="truncate">{source.title}</span>
+            </span>
+            <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-center text-xs text-muted-foreground">{source.type.toUpperCase()}</span>
+            <span className="text-muted-foreground">{formatDate(source.updatedAt)}</span>
+            <span className="text-right text-xs text-muted-foreground">{memoryEstimate(source)} memories</span>
+          </div>
+        ))}
+        {sources.length === 0 && (
+          <div className="px-4 py-10 text-sm text-muted-foreground">No recent sources yet.</div>
+        )}
+      </div>
+      <Link to="/sources" className="flex items-center gap-2 px-4 py-4 text-sm text-primary">
+        View all sources <ArrowRight className="h-4 w-4" />
+      </Link>
+    </section>
+  );
+}
+
+function RecentChats({ chats }: { chats: Array<ChatSessionRecord | { id: string; title: string }> }) {
+  const rows = chats;
+  return (
+    <section className="rounded-md border border-border bg-card">
+      <h3 className="px-4 pt-4 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Recent chats</h3>
+      <div className="mt-4 divide-y divide-border">
+        {rows.slice(0, 3).map((chat) => (
+          <div key={chat.id} className="grid grid-cols-[1fr_48px_120px_20px] items-center gap-4 px-4 py-3 text-sm">
+            <span className="flex min-w-0 items-center gap-3">
+              <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="truncate">{chat.title}</span>
+            </span>
+            <span className="text-muted-foreground">You</span>
+            <span className="text-muted-foreground">{"updated_at" in chat ? formatDate(chat.updated_at) : ""}</span>
+            <ArrowRight className="h-4 w-4 text-muted-foreground" />
+          </div>
+        ))}
+        {rows.length === 0 && (
+          <div className="px-4 py-10 text-sm text-muted-foreground">No scoped chats yet.</div>
+        )}
+      </div>
+      <Link to="/chat" className="flex items-center gap-2 px-4 py-4 text-sm text-primary">
+        View all chats <ArrowRight className="h-4 w-4" />
+      </Link>
+    </section>
+  );
+}
+
+function ClusterSourcesPanel({ sources }: { sources: Source[] }) {
+  return (
+    <section className="mt-7">
+      <div className="flex items-center justify-between gap-4 border-b border-border pb-4">
+        <h2 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Sources</h2>
+        <div className="flex h-9 w-60 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm text-muted-foreground">
+          <Search className="h-4 w-4" />
+          Search sources
+        </div>
+      </div>
+      <div className="mt-5 grid gap-3">
+        {sources.map((source) => (
+          <Link
+            key={source.id}
+            to="/sources"
+            className="grid min-h-[74px] grid-cols-[minmax(0,1fr)_104px_112px] items-center gap-5 rounded-md border border-border bg-card px-4 py-3 text-sm hover:border-primary/40"
+          >
+            <span className="flex min-w-0 items-start gap-3">
+              <FileText className="mt-1 h-4 w-4 shrink-0 text-[var(--cluster-sky)]" />
+              <span className="min-w-0">
+                <span className="block truncate font-medium">{source.title}</span>
+                <span className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                  {source.summary || source.preview || "No extracted preview yet."}
+                </span>
+              </span>
+            </span>
+            <span className="text-muted-foreground">{source.type.toUpperCase()}</span>
+            <span className="text-right text-muted-foreground">{source.state}</span>
+          </Link>
+        ))}
+        {sources.length === 0 && (
+          <div className="py-10 text-sm text-muted-foreground">No sources are linked to this cluster yet.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ClusterChatsPanel({ chats }: { chats: Array<ChatSessionRecord | { id: string; title: string }> }) {
+  return (
+    <section className="mt-7">
+      <div className="border-b border-border pb-4">
+        <h2 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Chats</h2>
+      </div>
+      <div className="mt-5 grid gap-3">
+        {chats.map((chat) => (
+          <Link
+            key={chat.id}
+            to="/chat/$chatId"
+            params={{ chatId: chat.id }}
+            className="grid min-h-[62px] grid-cols-[minmax(0,1fr)_132px_20px] items-center gap-5 rounded-md border border-border bg-card px-4 py-3 text-sm hover:border-primary/40"
+          >
+            <span className="flex min-w-0 items-center gap-3">
+              <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="truncate font-medium">{chat.title}</span>
+            </span>
+            <span className="text-muted-foreground">{"updated_at" in chat ? formatDate(chat.updated_at) : ""}</span>
+            <ArrowRight className="h-4 w-4 text-muted-foreground" />
+          </Link>
+        ))}
+        {chats.length === 0 && <div className="py-10 text-sm text-muted-foreground">No scoped chats yet.</div>}
+      </div>
+    </section>
+  );
+}
+
+function ClusterMemoryProfile({
+  cluster,
+  sources,
+  artifacts,
+  jobs,
+}: {
+  cluster: Cluster;
+  sources: Source[];
+  artifacts: ExpertArtifactRecord[];
+  jobs: ClusterExpertJobRecord[];
+}) {
+  return (
+    <section className="mt-7">
+      <div className="border-b border-border pb-4">
+        <h2 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Memory profile</h2>
+      </div>
+      <div className="mt-5 grid gap-4 xl:grid-cols-2">
+        <section className="rounded-md border border-border bg-card p-5">
+          <h3 className="text-sm font-semibold">Profile state</h3>
+          <p className="mt-3 text-sm leading-6 text-muted-foreground">
+            {cluster.summary || cluster.description || "Vault has not generated a profile summary for this cluster yet."}
+          </p>
+          <div className="mt-5 grid grid-cols-3 gap-4">
+            <Metric value={sources.length.toLocaleString()} label="Sources" />
+            <Metric value={artifacts.length.toLocaleString()} label="Artifacts" />
+            <Metric value={jobs.length.toLocaleString()} label="Jobs" />
+          </div>
+        </section>
+        <section className="rounded-md border border-border bg-card p-5">
+          <h3 className="text-sm font-semibold">Recent profile inputs</h3>
+          <div className="mt-4 space-y-3">
+            {sources.slice(0, 5).map((source) => (
+              <div key={source.id} className="flex items-start gap-3 text-sm">
+                <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--cluster-sage)]" />
+                <span className="min-w-0">
+                  <span className="block truncate font-medium">{source.title}</span>
+                  <span className="mt-1 block text-xs text-muted-foreground">{formatDate(source.updatedAt)}</span>
+                </span>
+              </div>
+            ))}
+            {sources.length === 0 && <div className="text-sm text-muted-foreground">No profile inputs yet.</div>}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function ClusterPointMap({ cluster, sources }: { cluster: Cluster; sources: Source[] }) {
+  const visibleSources = sources.slice(0, 180);
+  const hiddenCount = Math.max(0, sources.length - visibleSources.length);
+  const points = visibleSources.map((source, index) => {
+    const angle = index * 2.399963;
+    const ring = Math.floor(index / 24) + 1;
+    const radius = Math.min(38, 8 + ring * 4.2);
+    return {
+      source,
+      x: 50 + Math.cos(angle) * radius,
+      y: 49 + Math.sin(angle) * Math.min(34, radius * 0.78),
+    };
+  });
+
+  return (
+    <section className="mt-7">
+      <div className="flex items-center justify-between gap-4 border-b border-border pb-4">
+        <h2 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Map</h2>
+        <span className="text-sm text-muted-foreground">{sources.length.toLocaleString()} data points</span>
+      </div>
+      <div className="mt-5 grid gap-5 2xl:grid-cols-[minmax(0,1fr)_300px]">
+        <div className="relative min-h-[620px] overflow-hidden rounded-md border border-border bg-card">
+          <div
+            className="absolute left-1/2 top-[49%] z-20 flex w-[190px] -translate-x-1/2 -translate-y-1/2 flex-col items-center rounded-md border bg-card px-5 py-4 text-center"
+            style={{ borderColor: `var(--cluster-${cluster.tint})` }}
+          >
+            <span className={`h-2.5 w-2.5 rounded-full bg-[var(--cluster-${cluster.tint})]`} />
+            <div className="mt-3 max-w-full truncate text-sm font-semibold">{cluster.name}</div>
+            <div className="mt-1 text-xs text-muted-foreground">{sources.length} sources</div>
+          </div>
+          <svg className="absolute inset-0 h-full w-full" role="presentation">
+            {points.map((point) => (
+              <line
+                key={point.source.id}
+                x1="50%"
+                y1="49%"
+                x2={`${point.x}%`}
+                y2={`${point.y}%`}
+                stroke="var(--border-default)"
+                strokeWidth="1"
+              />
+            ))}
+          </svg>
+          {points.map((point) => (
+            <Link
+              key={point.source.id}
+              to="/sources"
+              className="absolute z-30 block w-[164px] -translate-x-1/2 -translate-y-1/2 rounded-md border border-border bg-card px-3 py-2 text-left text-xs shadow-sm hover:border-primary/40"
+              style={{ left: `${point.x}%`, top: `${point.y}%` }}
+              title={point.source.title}
+            >
+              <span className="block truncate font-medium">{point.source.title}</span>
+              <span className="mt-1 block truncate text-[11px] text-muted-foreground">
+                {point.source.type} / {point.source.state}
+              </span>
+            </Link>
+          ))}
+          {sources.length === 0 && (
+            <div className="absolute left-1/2 top-[62%] -translate-x-1/2 text-sm text-muted-foreground">
+              This cluster has no linked data points yet.
+            </div>
+          )}
+        </div>
+        <aside className="max-h-[620px] overflow-y-auto rounded-md border border-border bg-card">
+          <div className="sticky top-0 border-b border-border bg-card px-4 py-3 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            Data points
+          </div>
+          <div className="divide-y divide-border">
+            {sources.map((source) => (
+              <Link key={source.id} to="/sources" className="block px-4 py-3 text-sm hover:bg-accent">
+                <span className="block truncate font-medium">{source.title}</span>
+                <span className="mt-1 block text-xs text-muted-foreground">{source.type} / {formatDate(source.updatedAt)}</span>
+              </Link>
+            ))}
+          </div>
+          {hiddenCount > 0 && (
+            <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
+              Map shows {visibleSources.length} points. The list includes all {sources.length} sources.
+            </div>
+          )}
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function ClusterDetailRail({
+  cluster,
+  sources,
+  jobs,
+  artifacts,
+}: {
+  cluster: Cluster;
+  sources: Source[];
+  jobs: ClusterExpertJobRecord[];
+  artifacts: ExpertArtifactRecord[];
+}) {
+  return (
+    <aside className="right-panel px-6 py-8">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold">Cluster details</h2>
+        <X className="h-4 w-4 text-muted-foreground" />
+      </div>
+      <MetricGrid className="mt-10" sources={sources.length} />
+      <Divider />
+      <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Activity</h3>
+      <div className="mt-5 space-y-5 border-l border-border pl-4">
+        {sources.slice(0, 5).map((source, index) => (
+          <div key={source.id} className="relative text-sm">
+            <span className={`absolute -left-[19px] top-1.5 h-2 w-2 rounded-full ${index < 4 ? "bg-primary" : "bg-muted-foreground"}`} />
+            <div className="text-muted-foreground">{formatDate(source.updatedAt)}</div>
+            <div className="mt-1">{source.state === "indexed" ? "Indexed" : source.state} {source.title}</div>
+          </div>
+        ))}
+        {sources.length === 0 && <div className="text-sm text-muted-foreground">No source activity yet.</div>}
+      </div>
+      <Link to="/timeline" className="mt-6 flex items-center gap-2 text-sm text-primary">View all activity <ArrowRight className="h-4 w-4" /></Link>
+
+      <Divider />
+      <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Top sources</h3>
+      <div className="mt-5 space-y-5">
+        {sources.slice(0, 3).map((source) => (
+          <div key={source.id} className="flex gap-3 text-sm">
+            <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-issue)]" />
+            <div>
+              <div className="leading-5">{source.title}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{memoryEstimate(source)} memories</div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <Link to="/sources" className="mt-6 flex items-center gap-2 text-sm text-primary">View all {sources.length} sources <ArrowRight className="h-4 w-4" /></Link>
+
+      <Divider />
+      <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Memory profile</h3>
+      <section className="mt-4 rounded-md border border-border bg-background p-4">
+        <div className="flex items-center gap-2 text-primary">
+          <CheckCircle2 className="h-4 w-4" />
+          <span className="font-medium">Ready</span>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">Last updated {formatDate(cluster.lastActive)}</p>
+        <Button variant="outline" className="mt-4 w-full">View profile</Button>
+      </section>
+      {(jobs.length > 0 || artifacts.length > 0) && (
+        <p className="mt-4 text-xs text-muted-foreground">
+          {jobs.length} jobs / {artifacts.length} artifacts tracked for this cluster.
+        </p>
+      )}
+    </aside>
+  );
+}
+
+function MetricGrid({ className = "", sources }: { className?: string; sources: number }) {
+  return (
+    <div className={`grid grid-cols-4 gap-4 ${className}`}>
+      <Metric value={sources.toLocaleString()} label="Sources" />
+      <Metric value={(sources * 64).toLocaleString()} label="Memories" />
+      <Metric value={compactNumber(sources * 512)} label="Embeddings" />
+      <Metric value={`${Math.max(1, Math.round(sources / 40))} MB`} label="Size" />
+    </div>
+  );
+}
+
+function Metric({ value, label }: { value: string; label: string }) {
+  return (
+    <div>
+      <div className="font-semibold">{value}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{label}</div>
+    </div>
+  );
+}
+
+function Divider() {
+  return <div className="my-8 h-px bg-border" />;
+}
+
+function memoryEstimate(source: Source) {
+  return Math.max(1, Math.round((source.preview || source.summary || source.title).length / 120));
+}
+
+function compactNumber(value: number) {
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return value.toLocaleString();
+}
+
+function formatDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date);
 }

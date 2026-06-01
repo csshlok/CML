@@ -1,10 +1,20 @@
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.hardware import hardware_status
+from backend.app.core.ocr import ocr_runtime_status
 from backend.app.core.preflight import disk_preflight
 from backend.app.core.startup_status import read_startup_status
 from backend.app.core.database import connect, dict_from_row
-from backend.app.schemas import DiskPreflightRequest, DiskPreflightResponse, HardwareStatusRead, StartupStatusRead, VaultLockAuditRead
+from backend.app.core.vault_safety import vault_safety_status
+from backend.app.schemas import (
+    DiskPreflightRequest,
+    DiskPreflightResponse,
+    HardwareStatusRead,
+    OCRRuntimeStatusRead,
+    StartupStatusRead,
+    VaultLockAuditRead,
+    VaultSafetyRead,
+)
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -38,6 +48,24 @@ def check_disk_preflight(payload: DiskPreflightRequest) -> dict:
 @router.get("/hardware", response_model=HardwareStatusRead)
 def get_hardware_status() -> dict:
     return hardware_status()
+
+
+@router.get("/ocr", response_model=OCRRuntimeStatusRead)
+def get_ocr_status() -> dict:
+    return ocr_runtime_status()
+
+
+@router.get("/vault-safety", response_model=VaultSafetyRead)
+def get_vault_safety_status() -> dict:
+    return vault_safety_status(create_backup=False)
+
+
+@router.post("/vault-safety/backup", response_model=VaultSafetyRead)
+def create_vault_backup() -> dict:
+    try:
+        return vault_safety_status(create_backup=True)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/vault-lock/audit", response_model=list[VaultLockAuditRead])

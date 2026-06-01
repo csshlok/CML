@@ -18,6 +18,42 @@ def ocr_available() -> bool:
     return _tesseract_executable() is not None
 
 
+def ocr_runtime_status() -> dict:
+    tesseract = _tesseract_executable()
+    ocrmypdf = _ocrmypdf_command()
+    tessdata = tesseract.parent / "tessdata" / "eng.traineddata" if tesseract else None
+    ghostscript = _find_bundled_tool("ghostscript", ("gswin64c.exe", "gswin32c.exe", "gs.exe"))
+    qpdf = _find_bundled_tool("qpdf", ("qpdf.exe",))
+    missing: list[str] = []
+    if tesseract is None:
+        missing.append("tesseract")
+    if tessdata is None or not tessdata.exists():
+        missing.append("eng.traineddata")
+    if ocrmypdf is None:
+        missing.append("ocrmypdf")
+    if ghostscript is None:
+        missing.append("ghostscript")
+    if qpdf is None:
+        missing.append("qpdf")
+    return {
+        "available": tesseract is not None and tessdata is not None and tessdata.exists(),
+        "pdf_ocr_available": (
+            tesseract is not None
+            and tessdata is not None
+            and tessdata.exists()
+            and ocrmypdf is not None
+        ),
+        "image_ocr_available": tesseract is not None and tessdata is not None and tessdata.exists(),
+        "tesseract_path": str(tesseract) if tesseract else None,
+        "ocrmypdf_command": " ".join(ocrmypdf) if ocrmypdf else None,
+        "tessdata_path": str(tessdata) if tessdata and tessdata.exists() else None,
+        "ghostscript_path": str(ghostscript) if ghostscript else None,
+        "qpdf_path": str(qpdf) if qpdf else None,
+        "missing": missing,
+        "detail": "OCR runtime ready." if not missing else f"Missing OCR component(s): {', '.join(missing)}.",
+    }
+
+
 def ocr_image(path: Path) -> str:
     executable = _require_tesseract()
     return _run_tesseract(executable, path)
@@ -163,6 +199,23 @@ def _ocrmypdf_command() -> list[str] | None:
             return [str(path)]
     if importlib.util.find_spec("ocrmypdf") is not None:
         return [sys.executable, "-m", "ocrmypdf"]
+    return None
+
+
+def _find_bundled_tool(folder_name: str, executable_names: tuple[str, ...]) -> Path | None:
+    roots = [
+        ROOT_DIR / "backend" / "bin" / "ocr",
+        ROOT_DIR / "apps" / "desktop" / "packaging" / "backend" / "bin" / "ocr",
+        Path(__file__).resolve().parents[2] / "bin" / "ocr",
+    ]
+    for root in roots:
+        for name in executable_names:
+            direct = root / name
+            nested = root / folder_name / name
+            if direct.exists() and direct.is_file():
+                return direct
+            if nested.exists() and nested.is_file():
+                return nested
     return None
 
 

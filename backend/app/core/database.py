@@ -91,6 +91,38 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS bridge_token_rotations (
+                id TEXT PRIMARY KEY,
+                rotated_at TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                previous_token_hash TEXT NOT NULL DEFAULT '',
+                new_token_hash TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS bridge_clients (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                token_hash TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                allowed_vault_ids TEXT NOT NULL DEFAULT '[]',
+                allowed_cluster_ids TEXT NOT NULL DEFAULT '[]',
+                allow_raw_snippets INTEGER NOT NULL DEFAULT 0,
+                allow_style_profile INTEGER NOT NULL DEFAULT 0,
+                allow_expert_calls INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS bridge_client_token_rotations (
+                id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                rotated_at TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                previous_token_hash TEXT NOT NULL DEFAULT '',
+                new_token_hash TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (client_id) REFERENCES bridge_clients(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS cluster_expert_jobs (
                 id TEXT PRIMARY KEY,
                 cluster_id TEXT NOT NULL,
@@ -336,6 +368,25 @@ def init_db() -> None:
                 FOREIGN KEY (page_id) REFERENCES source_pages(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS analysis_evidence_packets (
+                id TEXT PRIMARY KEY,
+                job_id TEXT,
+                vault_id TEXT NOT NULL,
+                cluster_id TEXT,
+                query TEXT NOT NULL,
+                source_id TEXT,
+                source_title TEXT NOT NULL DEFAULT '',
+                relevance_score REAL NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                read_error TEXT NOT NULL DEFAULT '',
+                evidence_excerpt TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (job_id) REFERENCES app_jobs(id) ON DELETE SET NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE SET NULL,
+                FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_source_chunks_vault_id ON source_chunks(vault_id);
             CREATE INDEX IF NOT EXISTS idx_source_chunks_cluster_id ON source_chunks(cluster_id);
             CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id ON source_chunks(source_id);
@@ -352,6 +403,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_integration_imports_vault ON integration_imports(vault_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_extension_captures_vault ON extension_captures(vault_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_expert_artifacts_cluster ON expert_artifacts(cluster_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_analysis_evidence_packets_job ON analysis_evidence_packets(job_id);
+            CREATE INDEX IF NOT EXISTS idx_analysis_evidence_packets_vault ON analysis_evidence_packets(vault_id, created_at);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_app_jobs_dedupe_active
                 ON app_jobs(dedupe_key)
                 WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running');

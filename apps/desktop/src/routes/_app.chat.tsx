@@ -1,6 +1,5 @@
 import { createFileRoute, Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { type DragEvent, useEffect, useState } from "react";
-import { useStore } from "@/lib/mockStore";
 import {
   listClusters,
   createChatSession,
@@ -11,7 +10,7 @@ import {
   type ClusterRecord,
   type VaultRecord,
 } from "@/lib/backend";
-import { MessageSquare, Paperclip, Plus, Send, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ArrowRight, FileText, MessageSquare, MoreHorizontal, Paperclip, Plus, Send, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -29,7 +28,6 @@ export const Route = createFileRoute("/_app/chat")({
 
 function ChatIndex() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const { chats, createChat } = useStore();
   const navigate = useNavigate();
   const [vault, setVault] = useState<VaultRecord | null>(null);
   const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
@@ -98,11 +96,8 @@ function ChatIndex() {
         navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
         return;
       }
-    } catch {
-      // Fall back to local mock chat below.
-    }
-    const chat = createChat(null);
-    navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
+    } catch {}
+    navigate({ to: "/settings" });
   }
 
   async function startPromptChat() {
@@ -126,16 +121,10 @@ function ChatIndex() {
         return;
       }
     } catch {
-      // Fall back to local mock chat below.
+      navigate({ to: "/settings" });
     } finally {
       setCreating(false);
     }
-    const chat = createChat(scopeClusterId);
-    window.sessionStorage.setItem(`cml.pendingPrompt.${chat.id}`, text);
-    if (attachments.length > 0) {
-      window.sessionStorage.setItem(`cml.pendingAttachments.${chat.id}`, JSON.stringify(attachments));
-    }
-    navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
   }
 
   async function removeChat(id: string) {
@@ -175,7 +164,7 @@ function ChatIndex() {
     addAttachmentPaths(paths);
   }
 
-  const visibleChats = backendReady ? backendChats : chats;
+  const visibleChats = backendReady ? backendChats : [];
 
   if (pathname !== "/chat") {
     return <Outlet />;
@@ -183,7 +172,7 @@ function ChatIndex() {
 
   return (
     <div
-      className="flex h-full"
+      className="vault-page-wash grid h-full grid-cols-[320px_minmax(0,1fr)_326px] overflow-hidden"
       onDragOver={(event) => {
         event.preventDefault();
         if (backendReady) setDragActive(true);
@@ -191,17 +180,17 @@ function ChatIndex() {
       onDragLeave={() => setDragActive(false)}
       onDrop={(event) => void handleDrop(event)}
     >
-      <div className="w-64 border-r border-border bg-card/40 p-2">
-        <Button variant="ghost" className="mb-2 w-full justify-start gap-2" onClick={newChat}>
+      <aside className="overflow-y-auto border-r border-border bg-card/35 px-5 py-6">
+        <Button variant="ghost" className="mb-5 w-full justify-start gap-2 text-base" onClick={newChat}>
           <Plus className="h-4 w-4" /> New chat
         </Button>
-        <div className="space-y-0.5">
+        <div className="space-y-1">
           {visibleChats.map((c) => (
-            <div key={c.id} className="group flex items-center gap-1 rounded-md hover:bg-accent">
+            <div key={c.id} className="group flex items-center gap-1 rounded-md hover:bg-accent/60">
               <Link
                 to="/chat/$chatId"
                 params={{ chatId: c.id }}
-                className="min-w-0 flex-1 truncate px-2.5 py-1.5 text-sm text-muted-foreground group-hover:text-foreground"
+                className="min-w-0 flex-1 truncate px-3 py-2 text-sm text-muted-foreground group-hover:text-foreground"
               >
                 {c.title}
               </Link>
@@ -219,9 +208,9 @@ function ChatIndex() {
             </div>
           ))}
         </div>
-      </div>
+      </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="border-b border-border px-8 py-5">
+        <header className="border-b border-border bg-card/35 px-10 py-7">
           <div className="flex items-center gap-3">
             <MessageSquare className="h-5 w-5 text-muted-foreground" />
             <div>
@@ -234,8 +223,8 @@ function ChatIndex() {
           </div>
         </header>
 
-        <main className="flex flex-1 items-center justify-center px-8">
-          <section className="w-full max-w-2xl">
+        <main className="flex flex-1 items-center justify-center overflow-y-auto px-10">
+          <section className="w-full max-w-[840px]">
             {dragActive && (
               <div className="mb-2 rounded-md border border-dashed border-primary/50 bg-primary/5 px-3 py-2 text-xs text-foreground">
                 Drop files to attach them to the first message.
@@ -246,13 +235,13 @@ function ChatIndex() {
                 {attachmentNotice}
               </div>
             )}
-            <div className="rounded-md border border-border bg-card p-3">
+            <div className="rounded-md border border-border bg-card/95 p-4">
               <Textarea
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
                 placeholder="Ask across your vault..."
                 rows={5}
-                className="min-h-32 resize-none border-0 bg-transparent p-0 shadow-none focus-visible:ring-0"
+                className="min-h-[150px] resize-none border-0 bg-transparent p-0 text-base shadow-none focus-visible:ring-0"
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
                     event.preventDefault();
@@ -260,7 +249,7 @@ function ChatIndex() {
                   }
                 }}
               />
-              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
                 <Button
                   variant="ghost"
                   size="icon"
@@ -290,7 +279,7 @@ function ChatIndex() {
                   </SelectContent>
                 </Select>
                 <span className="text-xs text-muted-foreground">
-                  {backendReady ? "Semantic retrieval ready" : "Local fallback"}
+                  {backendReady ? "Semantic retrieval ready" : "Create a vault to chat"}
                 </span>
                 <Button
                   className="ml-auto gap-2"
@@ -317,14 +306,66 @@ function ChatIndex() {
                 ))}
               </div>
             )}
-            {visibleChats.length > 0 && (
-              <div className="mt-5 text-sm text-muted-foreground">
-                Ctrl/Cmd Enter sends. Existing chats stay in the left list.
-              </div>
-            )}
+            <div className="mt-6 text-sm text-muted-foreground">
+              Ctrl/Cmd Enter sends. Existing chats stay in the left list.
+            </div>
           </section>
         </main>
       </div>
+      <aside className="overflow-y-auto border-l border-border bg-card/35 px-7 py-8">
+        <div className="flex items-center gap-3">
+          <span className="h-2.5 w-2.5 rounded-full bg-primary" />
+          <h2 className="text-lg font-semibold">Vault context</h2>
+          <MoreHorizontal className="ml-auto h-4 w-4 text-muted-foreground" />
+          <span className="h-6 w-px bg-border" />
+          <X className="h-4 w-4 text-muted-foreground" />
+        </div>
+        <p className="mt-8 text-sm leading-6 text-muted-foreground">
+          Start globally by default. Pick a cluster only when the question needs a narrower memory space.
+        </p>
+        <div className="my-8 h-px bg-border" />
+        <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Active memory</h3>
+        <div className="mt-5 grid grid-cols-2 gap-5">
+          <Metric value={backendReady ? String(backendChats.length) : "0"} label="Chats" />
+          <Metric value={backendReady ? String(backendClusters.length) : "5"} label="Clusters" />
+          <Metric value={attachments.length.toString()} label="Attachments" />
+          <Metric value={backendReady ? "Ready" : "No vault"} label="Status" />
+        </div>
+        <div className="my-8 h-px bg-border" />
+        <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Suggested prompts</h3>
+        <div className="mt-4 space-y-2">
+          {[
+            "Summarize my design research",
+            "What needs review today?",
+            "Compare strategy and meeting notes",
+          ].map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setPrompt(item)}
+              className="flex w-full items-center gap-3 rounded-md border border-border bg-background px-3 py-2 text-left text-sm hover:bg-accent/45"
+            >
+              <MessageSquare className="h-4 w-4 text-muted-foreground" />
+              <span className="flex-1">{item}</span>
+              <ArrowRight className="h-4 w-4 text-muted-foreground" />
+            </button>
+          ))}
+        </div>
+        <div className="my-8 h-px bg-border" />
+        <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Recent sources</h3>
+        <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
+          Recent indexed sources appear here after a vault is active.
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function Metric({ value, label }: { value: string; label: string }) {
+  return (
+    <div>
+      <div className="font-semibold">{value}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{label}</div>
     </div>
   );
 }

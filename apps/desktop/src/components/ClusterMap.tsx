@@ -15,12 +15,12 @@ import { expertLabel, useStore, type Cluster, type Source } from "@/lib/mockStor
 type Point = { x: number; y: number };
 
 const tintHex: Record<Cluster["tint"], string> = {
-  sage: "#7f9f79",
-  sand: "#b8a86f",
-  sky: "#759ab0",
-  blush: "#b78986",
-  lavender: "#9282aa",
-  terracotta: "#b17758",
+  sage: "var(--cluster-sage)",
+  sand: "var(--cluster-sand)",
+  sky: "var(--cluster-sky)",
+  blush: "var(--cluster-blush)",
+  lavender: "var(--cluster-lavender)",
+  terracotta: "var(--cluster-terracotta)",
 };
 
 const layoutSeeds = [
@@ -199,7 +199,7 @@ export function ClusterMap({
                   <span
                     className="absolute inset-0 rounded-full blur-lg"
                     style={{
-                      background: `radial-gradient(circle, ${tintHex[cluster.tint]} 0%, color-mix(in oklab, ${tintHex[cluster.tint]} 42%, white) 42%, transparent 74%)`,
+                      background: tintHex[cluster.tint],
                       animation:
                         cluster.expert === "learning" ? "cml-pulse-glow 3.2s ease-in-out infinite" : undefined,
                     }}
@@ -303,7 +303,7 @@ function ClusterDetailMap({
           top: center.y,
           width: 150,
           height: 150,
-          background: `radial-gradient(circle, ${tintHex[cluster.tint]} 0%, color-mix(in oklab, ${tintHex[cluster.tint]} 55%, white) 45%, transparent 74%)`,
+          background: tintHex[cluster.tint],
         }}
       />
       <div
@@ -328,12 +328,12 @@ function ClusterDetailMap({
             style={{
               background:
                 source.type === "link"
-                  ? "#65d3ec"
+                  ? "var(--badge-link-bg)"
                   : source.type === "image"
-                    ? "#ff886d"
+                    ? "var(--badge-img-bg)"
                     : index % 2
-                      ? "#f2f5ff"
-                      : "#ff8068",
+                      ? "var(--badge-doc-bg)"
+                      : "var(--badge-pdf-bg)",
             }}
             aria-label={source.title}
             type="button"

@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { type DragEvent, useEffect, useRef, useState } from "react";
-import { useStore, streamMockReply, newId, type Cluster, type Source } from "@/lib/mockStore";
+import type { ChatMessage, Cluster, Source } from "@/lib/mockStore";
 import {
   deleteChatSession,
   getModelRuntimeStatus,
@@ -56,9 +56,6 @@ export const Route = createFileRoute("/_app/chat/$chatId")({
 function ChatView() {
   const { chatId } = Route.useParams();
   const navigate = useNavigate();
-  const { chats, clusters, sources, appendMessage, setMessageUseful, saveChat, createChat } =
-    useStore();
-  const chat = chats.find((c) => c.id === chatId);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState("");
@@ -68,9 +65,7 @@ function ChatView() {
   const [backendReady, setBackendReady] = useState(false);
   const [backendSessionId, setBackendSessionId] = useState<string | null>(null);
   const [backendSession, setBackendSession] = useState<ChatSessionRecord | null>(null);
-  const [backendMessages, setBackendMessages] = useState<import("@/lib/mockStore").ChatMessage[]>(
-    [],
-  );
+  const [backendMessages, setBackendMessages] = useState<ChatMessage[]>([]);
   const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
   const [titleDraft, setTitleDraft] = useState("");
   const [memoryState, setMemoryState] = useState("idle");
@@ -130,7 +125,7 @@ function ChatView() {
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chat?.messages.length, backendMessages.length, streamText]);
+  }, [backendMessages.length, streamText]);
 
   useEffect(() => {
     void loadBackendContext();
@@ -159,8 +154,8 @@ function ChatView() {
   }, [backendReady]);
 
   useEffect(() => {
-    setTitleDraft(backendSession?.title ?? chat?.title ?? "New chat");
-  }, [backendSession?.title, chat?.title]);
+    setTitleDraft(backendSession?.title ?? "New chat");
+  }, [backendSession?.title]);
 
   useEffect(() => {
     if (loadingSession || streaming || consumedPendingPromptRef.current === chatId) return;
@@ -175,7 +170,7 @@ function ChatView() {
     void send(pendingPrompt ?? undefined, pendingAttachments);
   }, [chatId, loadingSession, streaming]);
 
-  if (loadingSession && !chat && !backendSession) {
+  if (loadingSession && !backendSession) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
         Loading chat...
@@ -183,19 +178,22 @@ function ChatView() {
     );
   }
 
-  if (!chat && !backendSession) {
+  if (!backendSession) {
     return (
-      <div className="flex h-full items-center justify-center text-muted-foreground">
-        Chat not found.
+      <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
+        <p>Chat not found in the active vault.</p>
+        <Button variant="outline" onClick={() => navigate({ to: "/chat" })}>
+          Back to chats
+        </Button>
       </div>
     );
   }
 
-  const activeClusters = backendReady ? backendClusters : clusters;
-  const activeSources = backendReady ? backendSources : sources;
-  const messages = backendSession ? backendMessages : (chat?.messages ?? []);
-  const scopeClusterId = backendSession?.scope_cluster_id ?? chat?.scopeClusterId ?? null;
-  const saved = backendSession?.saved ?? chat?.saved ?? false;
+  const activeClusters = backendClusters;
+  const activeSources = backendSources;
+  const messages = backendMessages;
+  const scopeClusterId = backendSession.scope_cluster_id ?? null;
+  const saved = backendSession.saved;
 
   const scope = scopeClusterId
     ? (activeClusters.find((c) => c.id === scopeClusterId) ?? null)
@@ -206,35 +204,26 @@ function ChatView() {
 
   const setScope = async (val: string) => {
     const nextScope = val === "global" ? null : val;
-    if (backendSession) {
-      try {
-        const updated = await updateChatSession(backendSession.id, {
-          scope_cluster_id: nextScope,
-        });
-        setBackendSession(updated);
-      } catch {
-        // Keep the current scope visible if the backend update fails.
-      }
-      return;
+    try {
+      const updated = await updateChatSession(backendSession.id, {
+        scope_cluster_id: nextScope,
+      });
+      setBackendSession(updated);
+    } catch {
+      setLastError("Could not update this chat's scope.");
     }
-    const c = createChat(val === "global" ? null : val);
-    navigate({ to: "/chat/$chatId", params: { chatId: c.id } });
   };
 
   const toggleSaved = async () => {
-    if (backendSession) {
-      try {
-        const updated = await updateChatSession(backendSession.id, {
-          saved: !backendSession.saved,
-        });
-        setBackendSession(updated);
-        window.dispatchEvent(new Event("vault:chats-changed"));
-      } catch {
-        // Preserve the current saved state if the backend update fails.
-      }
-      return;
+    try {
+      const updated = await updateChatSession(backendSession.id, {
+        saved: !backendSession.saved,
+      });
+      setBackendSession(updated);
+      window.dispatchEvent(new Event("vault:chats-changed"));
+    } catch {
+      setLastError("Could not update the saved state for this chat.");
     }
-    if (chat) saveChat(chat.id, !chat.saved);
   };
 
   const commitTitle = async () => {
@@ -264,12 +253,12 @@ function ChatView() {
       selectedAttachments.length > 0
         ? `\n\nAttachments:\n${selectedAttachments.map((path) => `- ${fileNameFromPath(path)}`).join("\n")}`
         : "";
-    const userMsg = { id: newId(), role: "user" as const, content: prompt + attachmentNote };
-    if (backendReady && vault) {
-      setBackendMessages((current) => [...current, userMsg]);
-    } else if (chat) {
-      appendMessage(chat.id, userMsg);
+    if (!backendReady || !vault || !backendSession) {
+      setLastError("Open a backend vault before sending chat messages.");
+      return;
     }
+    const userMsg = { id: crypto.randomUUID(), role: "user" as const, content: prompt + attachmentNote };
+    setBackendMessages((current) => [...current, userMsg]);
     if (!promptOverride) {
       setInput("");
       setAttachments([]);
@@ -284,7 +273,7 @@ function ChatView() {
         ? `Storing ${selectedAttachments.length} attachment${selectedAttachments.length === 1 ? "" : "s"} as vault source${selectedAttachments.length === 1 ? "" : "s"}...`
         : null,
     );
-    if (backendSession) setMemoryState("indexing");
+    setMemoryState("indexing");
     if (backendReady && vault) {
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
@@ -353,7 +342,7 @@ function ChatView() {
         setBackendSessionId(response.session_id);
         setMemoryState(response.memory_status ?? "indexed");
         const assistantMessage = {
-          id: newId(),
+          id: crypto.randomUUID(),
           role: "assistant",
           content: response.answer,
           clustersUsed: response.clusters_used.map((cluster) => ({
@@ -368,7 +357,7 @@ function ChatView() {
             title: citation.source_title,
           })),
           useful: null,
-        } satisfies import("@/lib/mockStore").ChatMessage;
+        } satisfies ChatMessage;
         if (response.session_id) {
           setBackendMessages((current) => [...current, assistantMessage]);
           try {
@@ -400,8 +389,6 @@ function ChatView() {
           } catch {
             // Optimistic messages above remain usable until the next refresh.
           }
-        } else if (chat) {
-          appendMessage(chat.id, assistantMessage);
         }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
@@ -419,19 +406,15 @@ function ChatView() {
           setAttachmentNotice("Attachment ingestion failed. The file was not saved as a source.");
         }
         const errorMessage = {
-          id: newId(),
+          id: crypto.randomUUID(),
           role: "assistant",
           content:
             error instanceof Error
               ? `I could not retrieve local context: ${error.message}`
               : "I could not retrieve local context.",
           useful: null,
-        } satisfies import("@/lib/mockStore").ChatMessage;
-        if (backendSession) {
-          setBackendMessages((current) => [...current, errorMessage]);
-        } else if (chat) {
-          appendMessage(chat.id, errorMessage);
-        }
+        } satisfies ChatMessage;
+        setBackendMessages((current) => [...current, errorMessage]);
       } finally {
         if (abortControllerRef.current === abortController) {
           abortControllerRef.current = null;
@@ -441,36 +424,6 @@ function ChatView() {
       }
       return;
     }
-    let full = "";
-    for await (const chunk of streamMockReply(prompt, scope)) {
-      full += chunk;
-      setStreamText(full);
-    }
-    // pick clusters used
-    const usedClusters = scope
-      ? [{ clusterId: scope.id, reason: "selected scope" }]
-      : activeClusters.slice(0, 2).map((c, i) => ({
-          clusterId: c.id,
-          reason: i === 0 ? "style" : "facts",
-        }));
-    const usedSources = activeSources
-      .filter((s) => usedClusters.some((u) => u.clusterId === s.clusterId) && s.state === "indexed")
-      .slice(0, 3)
-      .map((s) => ({
-        sourceId: s.id,
-        snippet: s.preview.slice(0, 80) + "...",
-      }));
-    if (chat)
-      appendMessage(chat.id, {
-        id: newId(),
-        role: "assistant",
-        content: full.trim(),
-        clustersUsed: usedClusters,
-        citations: usedSources,
-        useful: null,
-      });
-    setStreaming(false);
-    setStreamText("");
   };
 
   const stopStreaming = () => {
@@ -513,13 +466,9 @@ function ChatView() {
   };
 
   const setBackendMessageUseful = async (messageId: string, value: boolean) => {
-    if (backendSession) {
-      const updated = await updateChatMessage(messageId, { useful: value });
-      setBackendSession(updated);
-      setBackendMessages(updated.messages.map(messageFromRecord));
-      return;
-    }
-    if (chat) setMessageUseful(chat.id, messageId, value);
+    const updated = await updateChatMessage(messageId, { useful: value });
+    setBackendSession(updated);
+    setBackendMessages(updated.messages.map(messageFromRecord));
   };
 
   const toggleBackendMessageSaved = async (messageId: string, current: boolean) => {
@@ -642,7 +591,7 @@ function ChatView() {
               Delete
             </Button>
             <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-              {backendReady ? "Semantic context" : "Local fallback context"}
+              {backendReady ? "Semantic context" : "Backend unavailable"}
             </span>
             <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
               {runtime?.available ? `LLM ${runtime.state ?? runtime.provider}` : "LLM offline"}
@@ -827,7 +776,7 @@ function fileNameFromPath(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
-function messageFromRecord(record: ChatMessageRecord): import("@/lib/mockStore").ChatMessage {
+function messageFromRecord(record: ChatMessageRecord): ChatMessage {
   return {
     id: record.id,
     role: record.role,
@@ -848,7 +797,7 @@ function messageFromRecord(record: ChatMessageRecord): import("@/lib/mockStore")
   };
 }
 
-function messageFromTimelineItem(item: ChatTimelineItem): import("@/lib/mockStore").ChatMessage {
+function messageFromTimelineItem(item: ChatTimelineItem): ChatMessage {
   if (item.message_type === "retriable_generation") {
     return {
       id: item.id,
@@ -869,9 +818,9 @@ function Message({
   onRegenerate,
   onOpenSources,
 }: {
-  msg: import("@/lib/mockStore").ChatMessage;
+  msg: ChatMessage;
   clusters: Cluster[];
-  sources: import("@/lib/mockStore").Source[];
+  sources: Source[];
   onUseful: (v: boolean) => void;
   onSaved: () => void;
   onRegenerate: () => void;

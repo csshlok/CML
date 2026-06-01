@@ -9,8 +9,8 @@ import {
   CommandSeparator,
 } from "@/components/ui/command";
 import { useNavigate } from "@tanstack/react-router";
-import { useStore } from "@/lib/mockStore";
-import { createChatSession, listVaults } from "@/lib/backend";
+import { useEffect, useState } from "react";
+import { createChatSession, listClusters, listSources, listVaults, type ClusterRecord, type SourceRecord } from "@/lib/backend";
 import { MessageSquare, Layers, Files, Globe2, Settings, Plus, Link2, FolderOpen, Cable } from "lucide-react";
 
 interface PaletteState {
@@ -32,7 +32,42 @@ export function CommandPalette({
   onOpenChange: (v: boolean) => void;
 }) {
   const navigate = useNavigate();
-  const { clusters, sources, createChat } = useStore();
+  const [clusters, setClusters] = useState<ClusterRecord[]>([]);
+  const [sources, setSources] = useState<SourceRecord[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    async function load() {
+      try {
+        const vault = (await listVaults())[0] ?? null;
+        if (!vault) {
+          if (!cancelled) {
+            setClusters([]);
+            setSources([]);
+          }
+          return;
+        }
+        const [clusterRows, sourceRows] = await Promise.all([
+          listClusters(vault.id),
+          listSources(vault.id),
+        ]);
+        if (!cancelled) {
+          setClusters(clusterRows);
+          setSources(sourceRows);
+        }
+      } catch {
+        if (!cancelled) {
+          setClusters([]);
+          setSources([]);
+        }
+      }
+    }
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   const go = (fn: () => void | Promise<void>) => {
     void fn();
@@ -55,11 +90,8 @@ export function CommandPalette({
                     navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
                     return;
                   }
-                } catch {
-                  // Keep the command useful while the backend is unavailable.
-                }
-                const chat = createChat(null);
-                navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
+                } catch {}
+                navigate({ to: "/chat" });
               })
             }
           >
@@ -111,7 +143,7 @@ export function CommandPalette({
                 >
                   <span
                     className="mr-2 h-2.5 w-2.5 rounded-full"
-                    style={{ background: `var(--cluster-${c.tint})` }}
+                style={{ background: `var(--cluster-${c.color})` }}
                   />
                   {c.name}
                 </CommandItem>

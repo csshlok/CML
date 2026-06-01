@@ -248,7 +248,7 @@ class SourcePageIndexingTests(unittest.TestCase):
     def test_scanned_pdf_ocr_prefers_ocrmypdf_and_falls_back_to_tesseract_render(self) -> None:
         from unittest.mock import patch
 
-        from backend.app.core.ocr import OCRError, ocr_pdf_pages
+        from backend.app.core.ocr import OCRError, ocr_pdf_pages, ocr_runtime_status
 
         pdf_path = Path(self.tmp.name) / "scan.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 fake")
@@ -279,6 +279,49 @@ class SourcePageIndexingTests(unittest.TestCase):
         ):
             self.assertEqual(ocr_pdf_pages(pdf_path), ["page one from fallback"])
             fallback.assert_called_once()
+
+        with patch("backend.app.core.ocr._tesseract_executable", return_value=None):
+            status = ocr_runtime_status()
+        self.assertFalse(status["available"])
+        self.assertIn("tesseract", status["missing"])
+
+    def test_dynamic_link_extraction_uses_browser_text_when_static_text_is_thin(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.core.extraction import extract_text_from_url
+
+        class FakeHeaders(dict):
+            def get(self, key, default=None):
+                return super().get(key, default)
+
+        class FakeResponse:
+            headers = FakeHeaders({"content-type": "text/html"})
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return b"<html><head><title>Thin</title></head><body><div id='root'></div><script></script><script></script><script></script></body></html>"
+
+            def geturl(self):
+                return "https://example.com/app"
+
+        with (
+            patch("backend.app.core.extraction._safe_open", return_value=(FakeResponse(), "https://example.com/app")),
+            patch("backend.app.core.extraction.validate_public_http_url"),
+            patch(
+                "backend.app.core.extraction._extract_dynamic_text_from_url",
+                return_value=("Rendered", "Rendered application text " * 40, None),
+            ) as dynamic,
+        ):
+            title, text, _cover = extract_text_from_url("https://example.com/app")
+
+        self.assertEqual(title, "Rendered")
+        self.assertIn("Rendered application text", text)
+        dynamic.assert_called_once()
 
     def test_chat_answer_writes_generation_and_retrieval_snapshot(self) -> None:
         from backend.app.api.routes.chat import build_chat_context
@@ -468,6 +511,56 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(response["intent"], "expanded_analysis")
         self.assertEqual(response["coverage_ledger"]["sources_considered"], 3)
         self.assertGreaterEqual(response["coverage_ledger"]["sources_analyzed"], 1)
+        with connect() as conn:
+            job = conn.execute(
+                "SELECT * FROM app_jobs WHERE job_type = 'expanded_analysis'"
+            ).fetchone()
+        self.assertIsNotNone(job)
+
+    def test_expanded_analysis_job_writes_evidence_packets(self) -> None:
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+        from backend.app.api.routes.sources import create_source
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Evidence source",
+                source_type="note",
+                raw_text="expanded evidence packet context " * 100,
+            )
+        )
+        run_due_jobs_once(limit=1)
+        build_chat_context(
+            ChatContextRequest(
+                vault_id="vault-1",
+                prompt="expanded evidence packet context",
+                expanded_analysis=True,
+            )
+        )
+        run_due_jobs_once(limit=2)
+
+        with connect() as conn:
+            packets = conn.execute("SELECT * FROM analysis_evidence_packets").fetchall()
+        self.assertGreaterEqual(len(packets), 1)
+        self.assertEqual(packets[0]["status"], "ready")
+
+    def test_vault_safety_status_can_create_backup(self) -> None:
+        from backend.app.core.vault_safety import vault_safety_status
+
+        result = vault_safety_status(create_backup=True)
+
+        self.assertTrue(result["integrity_ok"])
+        self.assertTrue(result["backup_path"])
+        self.assertTrue(Path(result["backup_path"]).exists())
 
     def test_chat_attachment_is_ingested_as_cluster_source(self) -> None:
         from backend.app.api.routes.chat import build_chat_context
@@ -545,6 +638,75 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(status["allowed_vault_ids"], ["vault-1"])
         self.assertEqual(status["allowed_cluster_ids"], [])
         self.assertTrue(status["last_refreshed_at"])
+
+    def test_bridge_requires_explicit_allowed_vault_when_vault_omitted(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.bridge import build_context, update_bridge_settings
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import BridgeContextRequest, BridgeSettingsUpdate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        status = update_bridge_settings(BridgeSettingsUpdate(enabled=True, rotate_token=True))
+
+        with self.assertRaises(HTTPException) as raised:
+            build_context(
+                BridgeContextRequest(query="find context", client_name="test-client"),
+                x_cml_bridge_token=status["bridge_token"],
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail, "no_active_vault")
+
+    def test_bridge_token_rotation_history_is_recorded(self) -> None:
+        from backend.app.api.routes.bridge import list_bridge_token_rotations, update_bridge_settings
+        from backend.app.schemas import BridgeSettingsUpdate
+
+        update_bridge_settings(BridgeSettingsUpdate(rotate_token=True))
+        rotations = list_bridge_token_rotations()
+
+        self.assertGreaterEqual(len(rotations), 1)
+        self.assertEqual(rotations[0]["reason"], "manual_rotation")
+
+    def test_delete_source_marks_existing_citation_snapshot_deleted(self) -> None:
+        from backend.app.api.routes.chat import build_chat_context, get_chat_session
+        from backend.app.api.routes.sources import create_source, delete_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        source = create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Citation note",
+                source_type="note",
+                raw_text="citation deletion evidence " * 120,
+            )
+        )
+        run_due_jobs_once(limit=1)
+        response = build_chat_context(
+            ChatContextRequest(vault_id="vault-1", prompt="What evidence mentions citation deletion?")
+        )
+
+        delete_source(source["id"])
+        session = get_chat_session(response["session_id"])
+        assistant = [message for message in session["messages"] if message["role"] == "assistant"][0]
+
+        self.assertTrue(assistant["citations"])
+        self.assertEqual(assistant["citations"][0]["state"], "source_deleted")
 
     def test_diagnostic_bundle_exports_redacted_support_zip(self) -> None:
         from pathlib import Path
@@ -639,6 +801,126 @@ class SourcePageIndexingTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             configure_embedding_runtime("sentence-transformers", None)
+
+    def test_embedding_download_reports_missing_runtime_without_network(self) -> None:
+        import time
+        from unittest.mock import patch
+
+        from backend.app.core.embeddings import embedding_download_status, start_embedding_model_download
+
+        with patch("importlib.util.find_spec", return_value=None):
+            state = start_embedding_model_download(str(Path(self.tmp.name) / "embeddings"))
+            self.assertIn(state["status"], {"queued", "downloading"})
+            for _ in range(50):
+                current = embedding_download_status()
+                if current["status"] == "failed":
+                    break
+                time.sleep(0.01)
+
+        self.assertEqual(embedding_download_status()["status"], "failed")
+        self.assertIn("SentenceTransformers is not installed", embedding_download_status()["error"])
+
+    def test_bridge_client_token_has_independent_permissions(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.bridge import (
+            build_context,
+            create_bridge_client,
+            update_bridge_settings,
+        )
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import BridgeClientCreate, BridgeContextRequest, BridgeSettingsUpdate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Allowed", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-2", "Denied", str(self.db_path.parent), now, now),
+            )
+
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True, allowed_vault_ids=["vault-2"]))
+        client = create_bridge_client(
+            BridgeClientCreate(name="Scoped client", allowed_vault_ids=["vault-1"])
+        )
+
+        response = build_context(
+            BridgeContextRequest(query="anything", client_name="test-client"),
+            x_cml_bridge_token=client["token"],
+        )
+        self.assertEqual(response["query"], "anything")
+
+        with self.assertRaises(HTTPException) as raised:
+            build_context(
+                BridgeContextRequest(vault_id="vault-2", query="anything", client_name="test-client"),
+                x_cml_bridge_token=client["token"],
+            )
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(raised.exception.detail, "vault_not_allowed")
+
+    def test_deleting_chat_session_removes_transcript_sources_and_chunks(self) -> None:
+        from backend.app.api.routes.chat import build_chat_context, delete_chat_session
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', 'setting-up', ?, ?)
+                """,
+                (now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                cluster_id="cluster-1",
+                title="Original note",
+                source_type="note",
+                raw_text="transcript memory cleanup evidence " * 120,
+            )
+        )
+        run_due_jobs_once(limit=1)
+        response = build_chat_context(
+            ChatContextRequest(
+                vault_id="vault-1",
+                cluster_id="cluster-1",
+                prompt="What mentions transcript memory cleanup evidence?",
+            )
+        )
+        run_due_jobs_once(limit=1)
+
+        delete_chat_session(response["session_id"])
+
+        with connect() as conn:
+            transcript_sources = conn.execute(
+                "SELECT COUNT(*) AS count FROM sources WHERE id LIKE ?",
+                (f"chat-source-{response['session_id']}-%",),
+            ).fetchone()["count"]
+            transcript_chunks = conn.execute(
+                "SELECT COUNT(*) AS count FROM source_chunks WHERE source_id LIKE ?",
+                (f"chat-source-{response['session_id']}-%",),
+            ).fetchone()["count"]
+            messages = conn.execute(
+                "SELECT COUNT(*) AS count FROM chat_messages WHERE session_id = ?",
+                (response["session_id"],),
+            ).fetchone()["count"]
+
+        self.assertEqual(transcript_sources, 0)
+        self.assertEqual(transcript_chunks, 0)
+        self.assertEqual(messages, 0)
 
     def test_local_folder_scan_detects_obsidian_and_supported_files(self) -> None:
         from backend.app.core.local_integrations import scan_local_folder
