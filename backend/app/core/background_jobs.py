@@ -8,6 +8,10 @@ from uuid import uuid4
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.embeddings import active_embedding_model_id, reindex_source_chunks, require_embeddings_available
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
+from backend.app.core.training_dataset import build_cluster_dataset
+from backend.app.core.training_evaluation import evaluate_cluster_dataset
+from backend.app.core.expert_profiles import create_expert_profile
+
 
 JOB_POLL_SECONDS = 1.0
 ACTIVE_STATUSES = ("queued", "running", "blocked_by_dependency")
@@ -565,63 +569,123 @@ def _run_train_cluster_adapter(payload: dict) -> None:
     cluster_id = str(payload.get("cluster_id") or "")
     vault_id = str(payload.get("vault_id") or "")
     expert_job_id = str(payload.get("expert_job_id") or "")
+
     hardware = hardware_status()
     now = utc_now()
+
     with connect() as conn:
         if hardware["training_supported"] is not True:
             conn.execute(
                 """
-                UPDATE clusters SET expert_status = 'hardware_unsupported', updated_at = ?
+                UPDATE clusters
+                SET expert_status = 'hardware_unsupported',
+                    updated_at = ?
                 WHERE id = ?
                 """,
                 (now, cluster_id),
             )
+
             if expert_job_id:
                 conn.execute(
                     """
                     UPDATE cluster_expert_jobs
-                    SET status = 'manual_review', failure_code = 'hardware_unsupported',
-                        detail = ?, hardware_tier = ?, updated_at = ?
+                    SET status = 'manual_review',
+                        failure_code = 'hardware_unsupported',
+                        detail = ?,
+                        hardware_tier = ?,
+                        updated_at = ?
                     WHERE id = ?
                     """,
-                    (hardware["detail"], hardware["hardware_tier"], now, expert_job_id),
+                    (
+                        hardware["detail"],
+                        hardware["hardware_tier"],
+                        now,
+                        expert_job_id,
+                    ),
                 )
+
             raise RuntimeError(hardware["detail"])
+
+        dataset = build_cluster_dataset(cluster_id)
+
+        quality_score = evaluate_cluster_dataset(dataset)
+
+        profile_path = create_expert_profile(dataset)
+
+        artifact_id = f"artifact-{uuid4()}"
+
         conn.execute(
             """
             INSERT INTO expert_artifacts (
-                id, cluster_id, vault_id, job_id, artifact_type, status, local_path,
-                base_model, hardware_tier, quality_score, created_at, updated_at
+                id,
+                cluster_id,
+                vault_id,
+                job_id,
+                artifact_type,
+                status,
+                local_path,
+                base_model,
+                hardware_tier,
+                quality_score,
+                created_at,
+                updated_at
             )
-            VALUES (?, ?, ?, ?, 'lora_adapter', 'planned', NULL, '', ?, NULL, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                f"artifact-{uuid4()}",
+                artifact_id,
                 cluster_id,
                 vault_id,
                 expert_job_id or None,
+                "expert_profile",
+                "ready",
+                profile_path,
+                "dataset-only",
                 hardware["hardware_tier"],
+                quality_score,
                 now,
                 now,
             ),
         )
+
         if expert_job_id:
             conn.execute(
                 """
                 UPDATE cluster_expert_jobs
-                SET status = 'manual_review', failure_code = 'training_not_implemented',
-                    detail = 'Adapter training scaffold is ready, but the LoRA runner is not implemented yet.',
-                    hardware_tier = ?, updated_at = ?
+                SET status = ?,
+                    detail = ?,
+                    hardware_tier = ?,
+                    updated_at = ?
                 WHERE id = ?
                 """,
-                (hardware["hardware_tier"], now, expert_job_id),
+                (
+                    "completed",
+                    f"Expert profile created. Quality score={quality_score}",
+                    hardware["hardware_tier"],
+                    now,
+                    expert_job_id,
+                ),
             )
+
+        if quality_score >= 80:
+            cluster_status = "expert_ready"
+        elif quality_score >= 50:
+            cluster_status = "expert_learning"
+        else:
+            cluster_status = "expert_needs_more_data"
+
         conn.execute(
             """
-            UPDATE clusters SET expert_status = 'expert_training_pending', updated_at = ?
+            UPDATE clusters
+            SET expert_status = ?,
+                updated_at = ?
             WHERE id = ?
             """,
-            (now, cluster_id),
+            (
+                cluster_status,
+                now,
+                cluster_id,
+            ),
         )
 
 
