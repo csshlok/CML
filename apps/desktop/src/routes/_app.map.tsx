@@ -16,11 +16,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  useStore,
-  type Cluster,
-  type Source,
-} from "@/lib/mockStore";
+import type { Cluster, Source } from "@/lib/mockStore";
 import {
   listClusters,
   listSources,
@@ -43,11 +39,9 @@ type MapNode = {
 };
 
 function MapView() {
-  const { clusters: mockClusters, sources: mockSources, setVault } = useStore();
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
-  const [backendReady, setBackendReady] = useState(false);
-  const [selectedId, setSelectedId] = useState("c-design");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [drillClusterId, setDrillClusterId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -56,24 +50,25 @@ function MapView() {
         const vaults = await listVaults();
         const activeVault = vaults[0] ?? null;
         if (!activeVault) return;
-        setVault(activeVault.path);
         const [clusterRows, sourceRows] = await Promise.all([
           listClusters(activeVault.id),
           listSources(activeVault.id),
         ]);
-        setBackendClusters(clusterRows.map(clusterFromRecord));
+        const mappedClusters = clusterRows.map(clusterFromRecord);
+        setBackendClusters(mappedClusters);
         setBackendSources(sourceRows.map(sourceFromRecord));
-        setBackendReady(true);
+        setSelectedId((current) => current ?? mappedClusters[0]?.id ?? null);
       } catch {
-        setBackendReady(false);
+        setBackendClusters([]);
+        setBackendSources([]);
       }
     }
 
     void loadMapData();
-  }, [setVault]);
+  }, []);
 
-  const clusters = backendReady && backendClusters.length > 0 ? backendClusters : mockClusters;
-  const sources = backendReady && backendSources.length > 0 ? backendSources : mockSources;
+  const clusters = backendClusters;
+  const sources = backendSources;
   const selected = clusters.find((cluster) => cluster.id === selectedId) ?? clusters[0];
   const selectedSources = selected
     ? sources.filter((source) => source.clusterId === selected.id)
@@ -112,7 +107,16 @@ function MapView() {
     });
   }, [clusters, sourceCounts]);
 
-  if (!selected) return null;
+  if (!selected) {
+    return (
+      <div className="vault-page-wash h-full overflow-y-auto px-8 py-9">
+        <h1 className="page-title">Map</h1>
+        <div className="mt-8 rounded-md border border-border bg-card p-8 text-sm text-muted-foreground">
+          No cluster map is available yet. Create a vault, add sources, and index them to populate this view.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="vault-page-wash grid h-full grid-cols-[minmax(0,1fr)_326px] overflow-hidden">

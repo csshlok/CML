@@ -18,7 +18,6 @@ import {
   UserRound,
   LockKeyhole,
 } from "lucide-react";
-import { useStore } from "@/lib/mockStore";
 import { CommandPalette, useCommandPalette } from "@/components/CommandPalette";
 import { useEffect, useState } from "react";
 import {
@@ -31,6 +30,7 @@ import {
   type ChatSessionRecord,
   type ClusterRecord,
   type JobQueueStatus,
+  type VaultRecord,
 } from "@/lib/backend";
 
 type NavItem = {
@@ -68,9 +68,9 @@ const nav: NavItem[] = [
 export function AppShell() {
   const pathname = useRouterState({ select: (r) => r.location.pathname });
   const navigate = useNavigate();
-  const { vaultPath, chats, clusters: mockClusters } = useStore();
   const { open: openPalette, setOpen } = useCommandPalette();
   const backend = useBackendHealth();
+  const [vault, setVault] = useState<VaultRecord | null>(null);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
   const [backendSavedChats, setBackendSavedChats] = useState<ChatSessionRecord[]>([]);
   const [recentClusters, setRecentClusters] = useState<ClusterRecord[]>([]);
@@ -131,9 +131,11 @@ export function AppShell() {
       try {
         const vault = (await listVaults())[0] ?? null;
         if (!vault) {
+          if (!cancelled) setVault(null);
           if (!cancelled) setRecentClusters([]);
           return;
         }
+        if (!cancelled) setVault(vault);
         const rows = await listClusters(vault.id);
         if (!cancelled) setRecentClusters(rows.slice(0, 5));
       } catch {
@@ -177,14 +179,12 @@ export function AppShell() {
     };
   }, []);
 
-  const savedChats =
-    backend.status === "offline" || backendSavedChats.length === 0
-      ? chats.filter((c) => c.saved).slice(0, 6)
-      : backendSavedChats;
+  const vaultPath = vault?.path ?? null;
+  const savedChats = backendSavedChats;
   const sidebarClusters =
     recentClusters.length > 0
       ? recentClusters.map((cluster) => ({ id: cluster.id, name: cluster.name }))
-      : mockClusters.slice(0, 5).map((cluster) => ({ id: cluster.id, name: cluster.name }));
+      : [];
 
   async function newChat() {
     try {

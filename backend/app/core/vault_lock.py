@@ -32,18 +32,27 @@ def acquire_vault_lock() -> None:
         owner_pid = _parse_pid(existing.get("pid"))
         if owner_pid and owner_pid != current_pid:
             owner_state = _classify_lock_owner(owner_pid)
-            if owner_state == "vault_backend":
+            if _lock_override_enabled():
+                _write_audit(
+                    "override_open_anyway",
+                    lock_path=lock_path,
+                    owner_pid=owner_pid,
+                    detail=f"User explicitly overrode {owner_state} lock owner.",
+                    user_choice="open_anyway",
+                )
+            elif owner_state == "vault_backend":
                 _write_audit("conflict_live_owner", lock_path=lock_path, owner_pid=owner_pid)
                 raise VaultLockError(
                     "Vault is already open in another backend process. Close the current Vault instance before reopening it."
                 )
-            if owner_state == "unverified":
+            elif owner_state == "unverified":
                 _write_audit("conflict_unverified_owner", lock_path=lock_path, owner_pid=owner_pid)
                 raise VaultLockUnverifiedError(
                     "Vault lock owner is still running, but Vault could not verify the process identity. "
                     "Opening this vault anyway can permanently corrupt the database if another Vault process is writing."
                 )
-            _write_audit(f"reclaimed_{owner_state}", lock_path=lock_path, owner_pid=owner_pid)
+            else:
+                _write_audit(f"reclaimed_{owner_state}", lock_path=lock_path, owner_pid=owner_pid)
 
     _write_lock(lock_path, current_pid)
     _write_audit("acquired", lock_path=lock_path, owner_pid=owner_pid if existing else None)
@@ -93,7 +102,14 @@ def _write_lock(lock_path: Path, pid: int) -> None:
     )
 
 
-def _write_audit(event_type: str, *, lock_path: Path, owner_pid: int | None = None, detail: str = "") -> None:
+def _write_audit(
+    event_type: str,
+    *,
+    lock_path: Path,
+    owner_pid: int | None = None,
+    detail: str = "",
+    user_choice: str = "",
+) -> None:
     try:
         with connect() as conn:
             conn.execute(
@@ -101,7 +117,7 @@ def _write_audit(event_type: str, *, lock_path: Path, owner_pid: int | None = No
                 INSERT INTO vault_lock_audit (
                     id, event_type, pid, owner_pid, lock_path, detail, user_choice, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, '', ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     f"lock-audit-{uuid4()}",
@@ -110,6 +126,7 @@ def _write_audit(event_type: str, *, lock_path: Path, owner_pid: int | None = No
                     owner_pid,
                     str(lock_path),
                     detail,
+                    user_choice,
                     utc_now(),
                 ),
             )
@@ -124,6 +141,10 @@ def _parse_pid(value: object) -> int | None:
     except (TypeError, ValueError):
         return None
     return pid if pid > 0 else None
+
+
+def _lock_override_enabled() -> bool:
+    return os.getenv("CML_VAULT_LOCK_OVERRIDE", "").strip().lower() in {"1", "true", "yes", "open_anyway"}
 
 
 def _classify_lock_owner(pid: int) -> str:

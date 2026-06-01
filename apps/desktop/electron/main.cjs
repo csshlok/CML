@@ -14,6 +14,7 @@ let backendApiToken = process.env.CML_API_TOKEN || null;
 let backendTokenStore = null;
 let rendererServer = null;
 let rendererUrl = null;
+let vaultLockOverrideOnce = false;
 const supportedSourceExtensions = new Set([
   ".aac", ".asc", ".bat", ".bmp", ".c", ".cpp", ".cs", ".csv", ".css", ".docx",
   ".flac", ".gif", ".go", ".htm", ".html", ".java", ".jpeg", ".jpg", ".js",
@@ -94,6 +95,13 @@ async function loadStartupFailure(window, error) {
   const detail = status?.message || error?.message || "Vault could not start its local backend.";
   const phase = status?.phase || "startup_failed";
   const action = repairActionForPhase(phase);
+  const diagnosticText = [
+    `Phase: ${phase}`,
+    `Message: ${detail}`,
+    `Data directory: ${status?.data_dir || "Unknown"}`,
+    `Database: ${status?.database_path || "Unknown"}`,
+    `Startup status: ${getStartupStatusPath()}`,
+  ].join("\n");
   const html = `
     <!doctype html>
     <meta charset="utf-8" />
@@ -121,8 +129,10 @@ async function loadStartupFailure(window, error) {
           <dt style="font-size:12px;color:#8b7d72;">Database</dt>
           <dd style="margin:4px 0 0;word-break:break-all;">${escapeHtml(status?.database_path || "Unknown")}</dd>
         </dl>
-        <div style="display:flex;gap:10px;margin-top:22px;">
+        <div style="display:flex;gap:10px;margin-top:22px;flex-wrap:wrap;">
           <button onclick="location.reload()" style="height:36px;padding:0 14px;border:0;border-radius:8px;background:#765f4d;color:#fff;font-weight:600;">Try again</button>
+          ${phase === "vault_lock_failed" ? '<button onclick="window.cmlDesktop?.openVaultAnyway?.()" style="height:36px;padding:0 14px;border:1px solid #9b6a4f;border-radius:8px;background:#fff7ed;color:#7c2d12;font-weight:600;">Open anyway</button>' : ""}
+          <button onclick="navigator.clipboard?.writeText(${JSON.stringify(diagnosticText)}).then(()=>this.textContent='Copied details').catch(()=>this.textContent='Copy failed')" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Copy details</button>
           <button onclick="window.close()" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Close Vault</button>
         </div>
       </main>
@@ -242,6 +252,15 @@ if (gotSingleInstanceLock) {
       return result.filePaths;
     });
 
+    ipcMain.handle("cml:select-embedding-folder", async () => {
+      const result = await dialog.showOpenDialog({
+        title: "Choose embedding model folder",
+        properties: ["openDirectory"],
+      });
+      if (result.canceled) return null;
+      return result.filePaths[0] ?? null;
+    });
+
     ipcMain.handle("cml:select-vault-folder", async () => {
       const result = await dialog.showOpenDialog({
         title: "Choose vault location",
@@ -277,6 +296,26 @@ if (gotSingleInstanceLock) {
 
     ipcMain.handle("cml:get-backend-url", async () => backendUrl);
     ipcMain.handle("cml:get-backend-token", async () => getBackendApiToken());
+    ipcMain.handle("cml:open-vault-anyway", async () => {
+      const confirmation = await dialog.showMessageBox(mainWindow, {
+        type: "warning",
+        buttons: ["Cancel", "Open once"],
+        defaultId: 0,
+        cancelId: 0,
+        title: "Open locked vault?",
+        message: "Open this vault only if every other Vault window or backend process is closed.",
+        detail: "This bypasses the lock once. Opening the same vault from two processes can corrupt local data.",
+      });
+      if (confirmation.response !== 1) return null;
+      vaultLockOverrideOnce = true;
+      await restartBackend();
+      if (mainWindow && backendUrl) {
+        const url = isDev ? new URL(devUrl) : new URL(rendererUrl || await startPackagedRendererServer());
+        url.searchParams.set("backendUrl", backendUrl);
+        await mainWindow.loadURL(url.toString());
+      }
+      return backendUrl;
+    });
     ipcMain.handle("cml:set-active-vault-folder", async (_event, targetPath) => {
       if (typeof targetPath !== "string" || targetPath.trim().length === 0) return null;
       await setActiveVaultPath(targetPath);
@@ -326,11 +365,13 @@ async function ensureBackend() {
         CML_DATA_DIR: dataDir,
         CML_DATABASE_PATH: databasePath,
         CML_STARTUP_STATUS_PATH: startupStatusPath,
+        CML_VAULT_LOCK_OVERRIDE: vaultLockOverrideOnce ? "open_anyway" : "",
       },
       windowsHide: true,
       stdio: "ignore",
     },
   );
+  vaultLockOverrideOnce = false;
   backendProcess.unref();
   const startedUrl = `http://127.0.0.1:${port}`;
   await waitForBackend(startedUrl, 12000);

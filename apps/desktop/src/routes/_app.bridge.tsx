@@ -1,18 +1,26 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { Cable, Copy, ExternalLink, RefreshCw, Shield, Terminal } from "lucide-react";
+import { Cable, Copy, ExternalLink, Plus, RefreshCw, Shield, Terminal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
+  createBridgeClient,
+  deleteBridgeClient,
   getBridgeStatus,
+  listBridgeClients,
+  listBridgeTokenRotations,
   listClusters,
   listBridgeRequests,
   listVaults,
+  updateBridgeClient,
   updateBridgeSettings,
   useBackendHealth,
+  type BridgeClientRecord,
   type BridgeRequest,
   type BridgeStatus,
+  type BridgeTokenRotation,
   type ClusterRecord,
   type VaultRecord,
 } from "@/lib/backend";
@@ -26,6 +34,10 @@ function BridgeView() {
   const backend = useBackendHealth();
   const [status, setStatus] = useState<BridgeStatus | null>(null);
   const [requests, setRequests] = useState<BridgeRequest[]>([]);
+  const [rotations, setRotations] = useState<BridgeTokenRotation[]>([]);
+  const [clients, setClients] = useState<BridgeClientRecord[]>([]);
+  const [clientName, setClientName] = useState("Local MCP client");
+  const [clientToken, setClientToken] = useState<string | null>(null);
   const [vaults, setVaults] = useState<VaultRecord[]>([]);
   const [clusters, setClusters] = useState<ClusterRecord[]>([]);
   const [saving, setSaving] = useState(false);
@@ -33,9 +45,11 @@ function BridgeView() {
   async function loadBridgeState(options: { clearOnError?: boolean } = {}) {
     if (backend.status !== "online") return;
     try {
-      const [nextStatus, nextRequests, nextVaults, nextClusters] = await Promise.all([
+      const [nextStatus, nextRequests, nextRotations, nextClients, nextVaults, nextClusters] = await Promise.all([
         getBridgeStatus(),
         listBridgeRequests(),
+        listBridgeTokenRotations(),
+        listBridgeClients(),
         listVaults(),
         listClusters(),
       ]);
@@ -47,12 +61,16 @@ function BridgeView() {
         allowed_cluster_ids: nextStatus.allowed_cluster_ids.filter((id) => clusterIds.has(id)),
       });
       setRequests(nextRequests);
+      setRotations(nextRotations);
+      setClients(nextClients);
       setVaults(nextVaults);
       setClusters(nextClusters);
     } catch {
       if (options.clearOnError) {
         setStatus(null);
         setRequests([]);
+        setRotations([]);
+        setClients([]);
         setVaults([]);
         setClusters([]);
       }
@@ -100,6 +118,51 @@ function BridgeView() {
       ? status.allowed_cluster_ids.filter((clusterId) => clusterId !== id)
       : [...status.allowed_cluster_ids, id];
     void patchSettings({ allowed_cluster_ids: allowed });
+  }
+
+  async function addBridgeClient() {
+    const name = clientName.trim();
+    if (!name) return;
+    setSaving(true);
+    try {
+      const created = await createBridgeClient({
+        name,
+        allowed_vault_ids: status?.allowed_vault_ids ?? [],
+        allowed_cluster_ids: status?.allowed_cluster_ids ?? [],
+        allow_raw_snippets: Boolean(status?.allow_raw_snippets),
+        allow_style_profile: Boolean(status?.allow_style_profile),
+        allow_expert_calls: Boolean(status?.allow_expert_calls),
+      });
+      setClientToken(created.token);
+      setClientName("Local MCP client");
+      await loadBridgeState();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function patchClient(
+    client: BridgeClientRecord,
+    payload: Parameters<typeof updateBridgeClient>[1],
+  ) {
+    setSaving(true);
+    try {
+      const updated = await updateBridgeClient(client.id, payload);
+      if ("token" in updated) setClientToken(updated.token);
+      await loadBridgeState();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeClient(client: BridgeClientRecord) {
+    setSaving(true);
+    try {
+      await deleteBridgeClient(client.id);
+      await loadBridgeState();
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -187,6 +250,11 @@ function BridgeView() {
         </section>
 
         <section className="mt-4 rounded-md border border-border bg-card p-4">
+          {status?.enabled && status.allowed_vault_ids.length === 0 && (
+            <div className="mb-4 rounded-md border border-[var(--status-learning)]/40 bg-[var(--status-learning)]/10 px-3 py-2 text-sm">
+              Bridge is on, but no vault is allowed. MCP clients will receive no_active_vault until you allow one.
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <Shield className="h-4 w-4 text-muted-foreground" />
             <div className="font-medium">Permissions</div>
@@ -255,6 +323,89 @@ function BridgeView() {
               disabled={!status || saving}
               onChange={(checked) => void patchSettings({ allow_expert_calls: checked })}
             />
+          </div>
+        </section>
+
+        <section className="mt-4 rounded-md border border-border bg-card p-4">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                Client tokens
+              </div>
+              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                Give each external tool its own token and permission set. Newly created tokens are shown once.
+              </p>
+            </div>
+            <div className="flex min-w-0 gap-2">
+              <Input
+                value={clientName}
+                onChange={(event) => setClientName(event.target.value)}
+                className="h-8 w-52"
+                aria-label="Bridge client name"
+              />
+              <Button size="sm" className="gap-1" disabled={saving || !status} onClick={() => void addBridgeClient()}>
+                <Plus className="h-3.5 w-3.5" />
+                Add
+              </Button>
+            </div>
+          </div>
+          {clientToken && (
+            <div className="mt-4 rounded-md border border-[var(--status-ready)]/35 bg-[var(--status-ready)]/10 px-3 py-2 text-xs">
+              <div className="font-medium">New token</div>
+              <button
+                type="button"
+                className="mt-1 block max-w-full truncate font-mono text-left text-muted-foreground"
+                onClick={() => void navigator.clipboard.writeText(clientToken)}
+                title="Copy token"
+              >
+                {clientToken}
+              </button>
+            </div>
+          )}
+          <div className="mt-4 divide-y divide-border border-y border-border">
+            {clients.length > 0 ? (
+              clients.map((client) => (
+                <div key={client.id} className="grid gap-3 py-3 lg:grid-cols-[1fr_auto]">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="truncate text-sm font-medium">{client.name}</div>
+                      <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                        {client.enabled ? "enabled" : "disabled"}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {client.allowed_vault_ids.length || 0} vaults / {client.allowed_cluster_ids.length || 0} clusters / raw text {client.allow_raw_snippets ? "on" : "off"}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Switch
+                      checked={client.enabled}
+                      disabled={saving}
+                      onCheckedChange={(enabled) => void patchClient(client, { enabled })}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={saving}
+                      onClick={() => void patchClient(client, { rotate_token: true })}
+                    >
+                      Rotate
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      disabled={saving}
+                      aria-label={`Delete ${client.name}`}
+                      onClick={() => void removeClient(client)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="py-4 text-sm text-muted-foreground">No Bridge clients have dedicated tokens yet.</div>
+            )}
           </div>
         </section>
 
@@ -347,6 +498,19 @@ function BridgeView() {
               Rotate token
             </Button>
           </div>
+          {rotations.length > 0 && (
+            <div className="mt-4 border-t border-border pt-4">
+              <div className="text-xs font-medium text-muted-foreground">Token rotation history</div>
+              <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                {rotations.slice(0, 3).map((rotation) => (
+                  <div key={rotation.id} className="flex justify-between gap-3">
+                    <span>{rotation.reason.replace(/_/g, " ")}</span>
+                    <span>{new Date(rotation.rotated_at).toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
       </div>
     </div>

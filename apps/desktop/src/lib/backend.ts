@@ -132,6 +132,29 @@ export type BridgeRequest = {
   created_at: string;
 };
 
+export type BridgeTokenRotation = {
+  id: string;
+  rotated_at: string;
+  reason: string;
+};
+
+export type BridgeClientRecord = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  allowed_vault_ids: string[];
+  allowed_cluster_ids: string[];
+  allow_raw_snippets: boolean;
+  allow_style_profile: boolean;
+  allow_expert_calls: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BridgeClientCreateResponse = BridgeClientRecord & {
+  token: string;
+};
+
 export type VaultRecord = {
   id: string;
   name: string;
@@ -410,6 +433,8 @@ export type EmbeddingRuntimeStatus = {
   cache_dir: string | null;
 };
 
+export type EmbeddingModelDownloadState = ModelDownloadState;
+
 export type DiskPreflightResponse = {
   path: string;
   probe_path: string;
@@ -531,6 +556,58 @@ export async function getBridgeStatus() {
 
 export async function listBridgeRequests() {
   return request<BridgeRequest[]>("/api/v1/bridge/requests");
+}
+
+export async function listBridgeTokenRotations() {
+  return request<BridgeTokenRotation[]>("/api/v1/bridge/token-rotations");
+}
+
+export async function listBridgeClients() {
+  return request<BridgeClientRecord[]>("/api/v1/bridge/clients");
+}
+
+export async function createBridgeClient(payload: {
+  name: string;
+  allowed_vault_ids?: string[];
+  allowed_cluster_ids?: string[];
+  allow_raw_snippets?: boolean;
+  allow_style_profile?: boolean;
+  allow_expert_calls?: boolean;
+}) {
+  return request<BridgeClientCreateResponse>("/api/v1/bridge/clients", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateBridgeClient(
+  clientId: string,
+  payload: Partial<
+    Pick<
+      BridgeClientRecord,
+      | "name"
+      | "enabled"
+      | "allowed_vault_ids"
+      | "allowed_cluster_ids"
+      | "allow_raw_snippets"
+      | "allow_style_profile"
+      | "allow_expert_calls"
+    >
+  > & { rotate_token?: boolean },
+) {
+  return request<BridgeClientCreateResponse | BridgeClientRecord>(
+    `/api/v1/bridge/clients/${encodeURIComponent(clientId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function deleteBridgeClient(clientId: string) {
+  await request<void>(`/api/v1/bridge/clients/${encodeURIComponent(clientId)}`, {
+    method: "DELETE",
+  });
 }
 
 export async function updateBridgeSettings(
@@ -925,6 +1002,26 @@ export async function configureEmbeddingRuntime(payload: {
   return request<EmbeddingRuntimeStatus>("/api/v1/models/embeddings/configure", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function getEmbeddingDownloadStatus() {
+  return request<EmbeddingModelDownloadState>("/api/v1/models/embeddings/download");
+}
+
+export async function startEmbeddingDownload(payload: {
+  cache_dir?: string | null;
+  model?: string | null;
+}) {
+  return request<EmbeddingModelDownloadState>("/api/v1/models/embeddings/download", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function cancelEmbeddingDownload() {
+  return request<EmbeddingModelDownloadState>("/api/v1/models/embeddings/download/cancel", {
+    method: "POST",
   });
 }
 

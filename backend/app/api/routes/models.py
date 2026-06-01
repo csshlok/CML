@@ -1,6 +1,12 @@
 from fastapi import APIRouter, HTTPException
 
-from backend.app.core.embeddings import configure_embedding_runtime, embedding_status
+from backend.app.core.embeddings import (
+    cancel_embedding_model_download,
+    configure_embedding_runtime,
+    embedding_download_status,
+    embedding_status,
+    start_embedding_model_download,
+)
 from backend.app.core.llm_runtime import runtime_status
 from backend.app.core.model_registry import (
     cancel_model_download,
@@ -11,6 +17,8 @@ from backend.app.core.model_registry import (
 from backend.app.schemas import (
     EmbeddingRuntimeConfigure,
     EmbeddingRuntimeStatus,
+    EmbeddingModelDownloadRequest,
+    EmbeddingModelDownloadState,
     ModelDownloadStart,
     ModelRead,
     ModelRuntimeStatus,
@@ -40,6 +48,21 @@ def configure_embeddings(payload: EmbeddingRuntimeConfigure) -> dict:
         return configure_embedding_runtime(payload.provider, payload.cache_dir, payload.model)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/embeddings/download", response_model=EmbeddingModelDownloadState)
+def get_embedding_download_status() -> dict:
+    return embedding_download_status()
+
+
+@router.post("/embeddings/download", response_model=EmbeddingModelDownloadState)
+def download_embedding_model(payload: EmbeddingModelDownloadRequest) -> dict:
+    return start_embedding_model_download(payload.cache_dir, payload.model)
+
+
+@router.post("/embeddings/download/cancel", response_model=EmbeddingModelDownloadState)
+def cancel_embedding_download() -> dict:
+    return cancel_embedding_model_download()
 
 
 @router.get("/{model_id}", response_model=ModelRead)

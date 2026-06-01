@@ -14,7 +14,7 @@ import {
   type ClusterSuggestionRecord,
   type VaultRecord,
 } from "@/lib/backend";
-import { useStore, type Cluster, type ClusterTint, type Source } from "@/lib/mockStore";
+import type { Cluster, ClusterTint, Source } from "@/lib/mockStore";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 
 export const Route = createFileRoute("/_app/clusters")({
@@ -26,7 +26,6 @@ function ClustersList() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   if (pathname !== "/clusters") return <Outlet />;
 
-  const { clusters: mockClusters, sources: mockSources, addCluster, setVault } = useStore();
   const [vault, setBackendVault] = useState<VaultRecord | null>(null);
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
@@ -44,7 +43,6 @@ function ClustersList() {
       const activeVault = vaults[0] ?? null;
       setBackendVault(activeVault);
       if (!activeVault) return;
-      setVault(activeVault.path);
       await reindexVaultSearch(activeVault.id).catch(() => undefined);
       const [clusterRows, sourceRows, suggestionRows] = await Promise.all([
         listClusters(activeVault.id),
@@ -66,8 +64,8 @@ function ClustersList() {
     void loadData();
   }, []);
 
-  const clusters = !mounted ? [] : vault ? backendClusters : mockClusters;
-  const sources = !mounted ? [] : vault ? backendSources : mockSources;
+  const clusters = !mounted ? [] : backendClusters;
+  const sources = !mounted ? [] : backendSources;
   const visibleSuggestions = suggestions.filter(
     (suggestion) => !dismissedSuggestions.includes(suggestionKey(suggestion)),
   );
@@ -90,7 +88,7 @@ function ClustersList() {
 
   async function handleNewCluster() {
     if (!vault) {
-      addCluster({ name: "New cluster" });
+      setMessage("Create or open a vault before adding clusters.");
       return;
     }
     await createCluster({

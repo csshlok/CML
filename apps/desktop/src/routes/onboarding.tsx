@@ -20,12 +20,16 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
   cancelModelDownload,
+  cancelEmbeddingDownload,
   checkDiskPreflight,
   configureEmbeddingRuntime,
   createVault,
+  getEmbeddingDownloadStatus,
   getEmbeddingRuntimeStatus,
   listLocalModels,
+  startEmbeddingDownload,
   startModelDownload,
+  type EmbeddingModelDownloadState,
   type EmbeddingRuntimeStatus,
   type DiskPreflightResponse,
   type LocalModelRecord,
@@ -76,6 +80,7 @@ function Onboarding() {
   const [embeddingChoice, setEmbeddingChoice] = useState<EmbeddingChoice>("recommended");
   const [embeddingCacheDir, setEmbeddingCacheDir] = useState("");
   const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
+  const [embeddingDownload, setEmbeddingDownload] = useState<EmbeddingModelDownloadState | null>(null);
   const [diskPreflight, setDiskPreflight] = useState<DiskPreflightResponse | null>(null);
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -127,7 +132,9 @@ function Onboarding() {
   async function refreshEmbeddingStatus() {
     try {
       const status = await getEmbeddingRuntimeStatus();
+      const downloadStatus = await getEmbeddingDownloadStatus();
       setEmbeddingRuntime(status);
+      setEmbeddingDownload(downloadStatus);
       if (status.available) setMessage("Memory search is ready.");
     } catch (err) {
       setEmbeddingRuntime(null);
@@ -246,6 +253,39 @@ function Onboarding() {
       setError(err instanceof Error ? err.message : "Could not configure memory search.");
     } finally {
       setEmbeddingSaving(false);
+    }
+  }
+
+  async function chooseEmbeddingFolder() {
+    const selected = await desktop?.selectEmbeddingFolder?.();
+    if (selected) {
+      setEmbeddingCacheDir(selected);
+      setMessage("Embedding model folder selected. Test memory search to continue.");
+    }
+  }
+
+  async function startEmbeddingModelDownload() {
+    setError(null);
+    setMessage("Starting memory-search model download...");
+    try {
+      setEmbeddingDownload(
+        await startEmbeddingDownload({
+          cache_dir: embeddingCacheDir.trim() || null,
+        }),
+      );
+      setMessage("Memory-search model download started. Keep this setup window open to watch status.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start the memory-search download.");
+      setMessage(null);
+    }
+  }
+
+  async function cancelEmbeddingModelDownload() {
+    setError(null);
+    try {
+      setEmbeddingDownload(await cancelEmbeddingDownload());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not cancel the memory-search download.");
     }
   }
 
@@ -529,15 +569,37 @@ function Onboarding() {
                   </div>
 
                   <Field label={embeddingChoice === "recommended" ? "Downloaded model folder" : "Embedding cache folder"}>
-                    <Input
-                      value={embeddingCacheDir}
-                      onChange={(event) => setEmbeddingCacheDir(event.target.value)}
-                      placeholder={
-                        embeddingChoice === "recommended"
-                          ? "T:\\Models\\all-MiniLM-L6-v2"
-                          : "T:\\LLM\\embeddings"
-                      }
-                    />
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Input
+                        value={embeddingCacheDir}
+                        onChange={(event) => setEmbeddingCacheDir(event.target.value)}
+                        placeholder={
+                          embeddingChoice === "recommended"
+                            ? "T:\\Models\\all-MiniLM-L6-v2"
+                            : "T:\\LLM\\embeddings"
+                        }
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void chooseEmbeddingFolder()}
+                        disabled={!desktop?.selectEmbeddingFolder}
+                      >
+                        <FolderOpen className="h-4 w-4" />
+                        Browse
+                      </Button>
+                      {embeddingChoice === "recommended" && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void startEmbeddingModelDownload()}
+                          disabled={embeddingDownload?.status === "queued" || embeddingDownload?.status === "downloading"}
+                        >
+                          <Download className="h-4 w-4" />
+                          Download
+                        </Button>
+                      )}
+                    </div>
                   </Field>
 
                   <div className="rounded-md border border-border bg-card p-4">
@@ -553,6 +615,30 @@ function Onboarding() {
                       </div>
                       {embeddingRuntime?.available && <Check className="h-5 w-5 text-[var(--status-ready)]" />}
                     </div>
+                    {embeddingDownload && embeddingDownload.status !== "idle" && (
+                      <div className="mt-3 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="truncate">{embeddingDownload.model_id}</span>
+                          <span className="text-foreground">{embeddingDownload.status}</span>
+                        </div>
+                        {embeddingDownload.local_path && (
+                          <div className="mt-1 truncate font-mono">{embeddingDownload.local_path}</div>
+                        )}
+                        {embeddingDownload.error && (
+                          <div className="mt-1 text-destructive">{embeddingDownload.error}</div>
+                        )}
+                      </div>
+                    )}
+                    {(embeddingDownload?.status === "queued" || embeddingDownload?.status === "downloading") && (
+                      <Button
+                        variant="outline"
+                        className="mt-3"
+                        onClick={() => void cancelEmbeddingModelDownload()}
+                      >
+                        <X className="h-4 w-4" />
+                        Cancel download
+                      </Button>
+                    )}
                     <Button
                       className="mt-4"
                       onClick={() => void saveEmbeddingRuntime()}

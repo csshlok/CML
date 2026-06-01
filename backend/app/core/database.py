@@ -91,6 +91,38 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS bridge_token_rotations (
+                id TEXT PRIMARY KEY,
+                rotated_at TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                previous_token_hash TEXT NOT NULL DEFAULT '',
+                new_token_hash TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS bridge_clients (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                token_hash TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                allowed_vault_ids TEXT NOT NULL DEFAULT '[]',
+                allowed_cluster_ids TEXT NOT NULL DEFAULT '[]',
+                allow_raw_snippets INTEGER NOT NULL DEFAULT 0,
+                allow_style_profile INTEGER NOT NULL DEFAULT 0,
+                allow_expert_calls INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS bridge_client_token_rotations (
+                id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                rotated_at TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                previous_token_hash TEXT NOT NULL DEFAULT '',
+                new_token_hash TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (client_id) REFERENCES bridge_clients(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS cluster_expert_jobs (
                 id TEXT PRIMARY KEY,
                 cluster_id TEXT NOT NULL,

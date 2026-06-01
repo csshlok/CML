@@ -21,7 +21,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { ClusterDot } from "@/components/ClusterChip";
 import {
   sourceStateLabel,
-  useStore,
   type Cluster,
   type Source,
 } from "@/lib/mockStore";
@@ -61,14 +60,6 @@ const typeIcon = {
 };
 
 function SourcesView() {
-  const {
-    sources: mockSources,
-    clusters: mockClusters,
-    addSource,
-    reindexSource,
-    removeSource,
-    setVault: setStoreVault,
-  } = useStore();
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<Source | null>(null);
   const [selectedPages, setSelectedPages] = useState<SourcePageRecord[]>([]);
@@ -98,7 +89,6 @@ function SourcesView() {
         setBackendClusters([]);
         return;
       }
-      setStoreVault(activeVault.path);
       const [sourceRows, clusterRows] = await Promise.all([
         listSources(activeVault.id),
         listClusters(activeVault.id),
@@ -120,8 +110,8 @@ function SourcesView() {
   }, []);
 
   const usingBackend = Boolean(vault);
-  const sources = usingBackend ? backendSources : mockSources;
-  const clusters = usingBackend ? backendClusters : mockClusters;
+  const sources = usingBackend ? backendSources : [];
+  const clusters = usingBackend ? backendClusters : [];
 
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -165,7 +155,7 @@ function SourcesView() {
     setSubmitting(true);
     try {
       if (!vault) {
-        addSource({ title, type: "note", state: "indexed", preview: text });
+        setIngestMessage("Create or open a vault before adding text sources.");
       } else {
         await createSourceFromText({ vault_id: vault.id, title, text });
         await refreshBackendSources();
@@ -185,7 +175,7 @@ function SourcesView() {
     setSubmitting(true);
     try {
       if (!vault) {
-        addSource({ title: url, type: "link", state: "waiting", url });
+        setIngestMessage("Create or open a vault before adding links.");
       } else {
         setIngestMessage("Fetching link text...");
         await createSourceFromUrl({ vault_id: vault.id, url });
@@ -264,7 +254,7 @@ function SourcesView() {
 
   async function handleReindexSource(source: Source) {
     if (!usingBackend) {
-      reindexSource(source.id);
+      setIngestMessage("Create or open a vault before reindexing sources.");
       return;
     }
     await updateBackendSource(source.id, { state: "extracting" });
@@ -273,7 +263,7 @@ function SourcesView() {
 
   async function handleRemoveSource(source: Source) {
     if (!usingBackend) {
-      removeSource(source.id);
+      setIngestMessage("Create or open a vault before deleting sources.");
       return;
     }
     await deleteBackendSource(source.id);

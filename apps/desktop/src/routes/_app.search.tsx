@@ -24,7 +24,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  useStore,
   type Cluster,
   type Source,
   type SourceType,
@@ -53,7 +52,6 @@ export const Route = createFileRoute("/_app/search")({
 });
 
 function MindView() {
-  const { sources: mockSources, clusters: mockClusters, setVault } = useStore();
   const [vault, setBackendVault] = useState<VaultRecord | null>(null);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
@@ -80,7 +78,6 @@ function MindView() {
       const activeVault = vaults[0] ?? null;
       if (!activeVault) return;
       setBackendVault(activeVault);
-      setVault(activeVault.path);
       void reindexVaultSearch(activeVault.id).catch(() => undefined);
       const [clusterRows, sourceRows] = await Promise.all([
         listClusters(activeVault.id),
@@ -131,8 +128,8 @@ function MindView() {
     };
   }, [backendReady, query, vault]);
 
-  const sources = !mounted ? [] : backendReady ? backendSources : mockSources;
-  const clusters = !mounted ? [] : backendReady ? backendClusters : mockClusters;
+  const sources = !mounted ? [] : backendReady ? backendSources : [];
+  const clusters = !mounted ? [] : backendReady ? backendClusters : [];
 
   const visibleSources = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();

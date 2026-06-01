@@ -18,8 +18,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { ClusterDot } from "@/components/ClusterChip";
-import { useStore, type Cluster, type Source } from "@/lib/mockStore";
+import type { Cluster, Source } from "@/lib/mockStore";
 import {
   createChatSession,
   getJobStatus,
@@ -39,7 +38,6 @@ export const Route = createFileRoute("/_app/home")({
 });
 
 export function HomeView() {
-  const mock = useStore();
   const [vault, setVault] = useState<VaultRecord | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
   const [clusters, setClusters] = useState<Cluster[]>([]);
@@ -70,8 +68,9 @@ export function HomeView() {
         setChats(chatRows);
       } catch {
         if (!cancelled) {
-          setSources(mock.sources);
-          setClusters(mock.clusters);
+          setSources([]);
+          setClusters([]);
+          setChats([]);
         }
       }
     }
@@ -82,7 +81,7 @@ export function HomeView() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [mock.clusters, mock.sources]);
+  }, []);
 
   const recentSources = useMemo(
     () =>

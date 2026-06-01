@@ -3,6 +3,7 @@ import importlib.util
 import json
 import math
 import re
+import threading
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from backend.app.core.database import utc_now
 HASH_EMBEDDING_DIMENSIONS = 128
 CHUNK_SIZE_WORDS = 180
 CHUNK_OVERLAP_WORDS = 40
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 TOKEN_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{1,}")
 
@@ -52,6 +54,87 @@ def embedding_status() -> dict:
             status["setup_required"] = True
             status["detail"] = "SentenceTransformers is not installed in this Python runtime."
     return status
+
+
+_EMBEDDING_DOWNLOAD_LOCK = threading.Lock()
+_EMBEDDING_DOWNLOAD_STATE = {
+    "model_id": DEFAULT_EMBEDDING_MODEL,
+    "status": "idle",
+    "bytes_downloaded": None,
+    "total_bytes": None,
+    "file_name": None,
+    "local_path": None,
+    "error": None,
+}
+_EMBEDDING_DOWNLOAD_THREAD: threading.Thread | None = None
+
+
+def embedding_download_status() -> dict:
+    with _EMBEDDING_DOWNLOAD_LOCK:
+        return dict(_EMBEDDING_DOWNLOAD_STATE)
+
+
+def start_embedding_model_download(cache_dir: str | None = None, model: str | None = None) -> dict:
+    target_model = (model or get_settings().embedding_model or DEFAULT_EMBEDDING_MODEL).strip()
+    target_dir = Path(cache_dir).expanduser() if cache_dir and cache_dir.strip() else (
+        get_settings().data_dir / "models" / "embeddings"
+    )
+    with _EMBEDDING_DOWNLOAD_LOCK:
+        global _EMBEDDING_DOWNLOAD_THREAD
+        if _EMBEDDING_DOWNLOAD_STATE["status"] in {"queued", "downloading"}:
+            return dict(_EMBEDDING_DOWNLOAD_STATE)
+        _EMBEDDING_DOWNLOAD_STATE.update(
+            {
+                "model_id": target_model,
+                "status": "queued",
+                "bytes_downloaded": None,
+                "total_bytes": None,
+                "file_name": target_model,
+                "local_path": str(target_dir),
+                "error": None,
+            }
+        )
+        _EMBEDDING_DOWNLOAD_THREAD = threading.Thread(
+            target=_download_embedding_model,
+            args=(target_model, target_dir),
+            daemon=True,
+            name="cml-embedding-download",
+        )
+        _EMBEDDING_DOWNLOAD_THREAD.start()
+        return dict(_EMBEDDING_DOWNLOAD_STATE)
+
+
+def cancel_embedding_model_download() -> dict:
+    with _EMBEDDING_DOWNLOAD_LOCK:
+        if _EMBEDDING_DOWNLOAD_STATE["status"] in {"queued", "downloading"}:
+            _EMBEDDING_DOWNLOAD_STATE["status"] = "cancelled"
+            _EMBEDDING_DOWNLOAD_STATE["error"] = "Cancellation requested. The active Hugging Face request may finish before stopping."
+        return dict(_EMBEDDING_DOWNLOAD_STATE)
+
+
+def _download_embedding_model(model: str, cache_dir: Path) -> None:
+    with _EMBEDDING_DOWNLOAD_LOCK:
+        if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelled":
+            return
+        _EMBEDDING_DOWNLOAD_STATE["status"] = "downloading"
+    try:
+        if importlib.util.find_spec("sentence_transformers") is None:
+            raise RuntimeError("SentenceTransformers is not installed in this Python runtime.")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        from sentence_transformers import SentenceTransformer
+
+        SentenceTransformer(model, cache_folder=str(cache_dir))
+        with _EMBEDDING_DOWNLOAD_LOCK:
+            if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelled":
+                return
+        configure_embedding_runtime("sentence-transformers", str(cache_dir), model)
+        with _EMBEDDING_DOWNLOAD_LOCK:
+            _EMBEDDING_DOWNLOAD_STATE.update({"status": "installed", "error": None})
+    except Exception as exc:
+        with _EMBEDDING_DOWNLOAD_LOCK:
+            if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelled":
+                return
+            _EMBEDDING_DOWNLOAD_STATE.update({"status": "failed", "error": str(exc)})
 
 
 def require_embeddings_available(feature: str = "semantic memory") -> None:

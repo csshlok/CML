@@ -1,6 +1,5 @@
 import { createFileRoute, Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { type DragEvent, useEffect, useState } from "react";
-import { useStore } from "@/lib/mockStore";
 import {
   listClusters,
   createChatSession,
@@ -29,7 +28,6 @@ export const Route = createFileRoute("/_app/chat")({
 
 function ChatIndex() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const { chats, createChat } = useStore();
   const navigate = useNavigate();
   const [vault, setVault] = useState<VaultRecord | null>(null);
   const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
@@ -98,11 +96,8 @@ function ChatIndex() {
         navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
         return;
       }
-    } catch {
-      // Fall back to local mock chat below.
-    }
-    const chat = createChat(null);
-    navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
+    } catch {}
+    navigate({ to: "/settings" });
   }
 
   async function startPromptChat() {
@@ -126,16 +121,10 @@ function ChatIndex() {
         return;
       }
     } catch {
-      // Fall back to local mock chat below.
+      navigate({ to: "/settings" });
     } finally {
       setCreating(false);
     }
-    const chat = createChat(scopeClusterId);
-    window.sessionStorage.setItem(`cml.pendingPrompt.${chat.id}`, text);
-    if (attachments.length > 0) {
-      window.sessionStorage.setItem(`cml.pendingAttachments.${chat.id}`, JSON.stringify(attachments));
-    }
-    navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
   }
 
   async function removeChat(id: string) {
@@ -175,7 +164,7 @@ function ChatIndex() {
     addAttachmentPaths(paths);
   }
 
-  const visibleChats = backendReady ? backendChats : chats;
+  const visibleChats = backendReady ? backendChats : [];
 
   if (pathname !== "/chat") {
     return <Outlet />;
@@ -290,7 +279,7 @@ function ChatIndex() {
                   </SelectContent>
                 </Select>
                 <span className="text-xs text-muted-foreground">
-                  {backendReady ? "Semantic retrieval ready" : "Local fallback"}
+                  {backendReady ? "Semantic retrieval ready" : "Create a vault to chat"}
                 </span>
                 <Button
                   className="ml-auto gap-2"
@@ -337,10 +326,10 @@ function ChatIndex() {
         <div className="my-8 h-px bg-border" />
         <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Active memory</h3>
         <div className="mt-5 grid grid-cols-2 gap-5">
-          <Metric value={backendReady ? String(backendChats.length) : String(chats.length)} label="Chats" />
+          <Metric value={backendReady ? String(backendChats.length) : "0"} label="Chats" />
           <Metric value={backendReady ? String(backendClusters.length) : "5"} label="Clusters" />
           <Metric value={attachments.length.toString()} label="Attachments" />
-          <Metric value={backendReady ? "Ready" : "Fallback"} label="Status" />
+          <Metric value={backendReady ? "Ready" : "No vault"} label="Status" />
         </div>
         <div className="my-8 h-px bg-border" />
         <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Suggested prompts</h3>
@@ -364,16 +353,8 @@ function ChatIndex() {
         </div>
         <div className="my-8 h-px bg-border" />
         <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Recent sources</h3>
-        <div className="mt-5 space-y-5">
-          {["Aarron Walter - Designing for Emotion.pdf", "North Star Metric framework.md", "Why We Sleep - Matthew Walker.pdf"].map((item) => (
-            <div key={item} className="flex gap-3 text-sm">
-              <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-issue)]" />
-              <div>
-                <div className="leading-5">{item}</div>
-                <div className="mt-1 text-xs text-muted-foreground">Indexed source</div>
-              </div>
-            </div>
-          ))}
+        <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
+          Recent indexed sources appear here after a vault is active.
         </div>
       </aside>
     </div>

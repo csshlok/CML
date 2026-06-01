@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { Bot, Cable, CheckCircle2, Clock3, FileText, GitBranch, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { useStore, type Cluster, type Source } from "@/lib/mockStore";
+import type { Cluster, Source } from "@/lib/mockStore";
 import {
   getJobStatus,
   listBridgeRequests,
@@ -33,7 +33,6 @@ type ActivityItem = {
 };
 
 export function TimelineRoute() {
-  const mock = useStore();
   const [sources, setSources] = useState<Source[]>([]);
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [chats, setChats] = useState<ChatSessionRecord[]>([]);
@@ -65,8 +64,8 @@ export function TimelineRoute() {
         setJobs(jobRows?.latest ?? []);
       } catch {
         if (!cancelled) {
-          setSources(mock.sources);
-          setClusters(mock.clusters);
+          setSources([]);
+          setClusters([]);
           setJobs([]);
         }
       } finally {
@@ -77,7 +76,7 @@ export function TimelineRoute() {
     return () => {
       cancelled = true;
     };
-  }, [mock.clusters, mock.sources]);
+  }, []);
 
   const activities = useMemo(() => {
     const rows: ActivityItem[] = [

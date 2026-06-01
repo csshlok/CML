@@ -13,7 +13,6 @@ import {
   X,
 } from "lucide-react";
 import {
-  useStore,
   type Cluster,
   type Source,
 } from "@/lib/mockStore";
@@ -41,7 +40,6 @@ const tabs = ["Overview", "Sources", "Chats", "Memory profile", "Map"] as const;
 function ClusterDetail() {
   const { clusterId } = Route.useParams();
   const navigate = useNavigate();
-  const { clusters, sources, chats, createChat } = useStore();
   const [backendCluster, setBackendCluster] = useState<Cluster | null>(null);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
@@ -51,15 +49,12 @@ function ClusterDetail() {
   const [activeTab, setActiveTab] = useState<(typeof tabs)[number]>("Overview");
   const [mounted, setMounted] = useState(false);
 
-  const mockCluster = mounted ? clusters.find((cluster) => cluster.id === clusterId) ?? clusters[0] ?? null : null;
-  const cluster = backendCluster ?? mockCluster;
-  const activeSources = !mounted ? [] : backendCluster ? backendSources : sources;
+  const cluster = backendCluster;
+  const activeSources = !mounted ? [] : backendSources;
   const clusterSources = cluster
     ? activeSources.filter((source) => source.clusterId === cluster.id)
     : [];
-  const clusterChats = backendCluster
-    ? backendChats
-    : chats.filter((chat) => chat.scopeClusterId === cluster?.id);
+  const clusterChats = backendChats;
 
   useEffect(() => {
     let cancelled = false;
@@ -125,8 +120,7 @@ function ClusterDetail() {
       navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
       return;
     }
-    const chat = createChat(cluster.id);
-    navigate({ to: "/chat/$chatId", params: { chatId: chat.id } });
+    navigate({ to: "/chat" });
   }
 
   return (

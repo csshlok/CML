@@ -22,13 +22,14 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useStore } from "@/lib/mockStore";
 import {
   cancelModelDownload,
+  cancelEmbeddingDownload,
   configureEmbeddingRuntime,
   createDiagnosticBundle,
   createVault,
   getEmbeddingRuntimeStatus,
+  getEmbeddingDownloadStatus,
   getHardwareStatus,
   getJobStatus,
   getModelRuntimeStatus,
@@ -36,8 +37,10 @@ import {
   listLocalModels,
   listVaults,
   startModelDownload,
+  startEmbeddingDownload,
   updateVault,
   type EmbeddingRuntimeStatus,
+  type EmbeddingModelDownloadState,
   type HardwareStatusRead,
   type JobQueueStatus,
   type LocalModelRecord,
@@ -63,13 +66,14 @@ const settingsSections = [
 ] as const;
 
 function SettingsView() {
-  const { vaultPath, setVault } = useStore();
+  const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
   const [activeSection, setActiveSection] = useState("models");
   const [backendVault, setBackendVault] = useState<VaultRecord | null>(null);
-  const [pathDraft, setPathDraft] = useState(vaultPath ?? "");
+  const [pathDraft, setPathDraft] = useState("");
   const [models, setModels] = useState<LocalModelRecord[]>([]);
   const [runtime, setRuntime] = useState<ModelRuntimeStatus | null>(null);
   const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
+  const [embeddingDownload, setEmbeddingDownload] = useState<EmbeddingModelDownloadState | null>(null);
   const [embeddingCacheDraft, setEmbeddingCacheDraft] = useState("");
   const [ocrRuntime, setOcrRuntime] = useState<OCRRuntimeStatusRead | null>(null);
   const [hardware, setHardware] = useState<HardwareStatusRead | null>(null);
@@ -83,12 +87,13 @@ function SettingsView() {
 
     async function load() {
       try {
-        const [vaultRows, modelRows, runtimeStatus, embeddingStatus, ocrStatus, hardwareStatus, jobStatus] =
+        const [vaultRows, modelRows, runtimeStatus, embeddingStatus, embeddingDownloadStatus, ocrStatus, hardwareStatus, jobStatus] =
           await Promise.all([
             listVaults(),
             listLocalModels(),
             getModelRuntimeStatus(),
             getEmbeddingRuntimeStatus(),
+            getEmbeddingDownloadStatus(),
             getOCRRuntimeStatus(),
             getHardwareStatus(),
             getJobStatus(),
@@ -98,12 +103,12 @@ function SettingsView() {
         setBackendVault(firstVault);
         if (firstVault) {
           setPathDraft(firstVault.path);
-          setVault(firstVault.path);
         }
         setModels(modelRows);
         setRuntime(runtimeStatus);
         setEmbeddingRuntime(embeddingStatus);
         setEmbeddingCacheDraft(embeddingStatus.cache_dir ?? "");
+        setEmbeddingDownload(embeddingDownloadStatus);
         setOcrRuntime(ocrStatus);
         setHardware(hardwareStatus);
         setJobs(jobStatus);
@@ -120,7 +125,7 @@ function SettingsView() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [setVault]);
+  }, []);
 
   async function saveVaultPath() {
     const path = pathDraft.trim();
@@ -131,7 +136,6 @@ function SettingsView() {
         ? await updateVault(backendVault.id, { path })
         : await createVault({ name: "Local memory", path });
       setBackendVault(nextVault);
-      setVault(nextVault.path);
       setStatusMessage("Vault location saved.");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not save vault location.");
@@ -158,6 +162,37 @@ function SettingsView() {
       setStatusMessage(error instanceof Error ? error.message : "Could not update embedding settings.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function chooseEmbeddingFolder() {
+    const selected = await desktop?.selectEmbeddingFolder?.();
+    if (selected) {
+      setEmbeddingCacheDraft(selected);
+      setStatusMessage("Embedding model folder selected. Test it before using memory search.");
+    }
+  }
+
+  async function downloadEmbeddingModel() {
+    setSaving(true);
+    try {
+      const state = await startEmbeddingDownload({
+        cache_dir: embeddingCacheDraft.trim() || null,
+      });
+      setEmbeddingDownload(state);
+      setStatusMessage("Embedding model download started.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not start embedding download.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function cancelEmbeddingModelDownload() {
+    try {
+      setEmbeddingDownload(await cancelEmbeddingDownload());
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not cancel embedding download.");
     }
   }
 
@@ -232,7 +267,7 @@ function SettingsView() {
 
         <div className="mt-7 space-y-4">
           {activeSection === "profile" ? (
-            <ProfileSettings vaultPath={backendVault?.path ?? vaultPath ?? ""} />
+            <ProfileSettings vaultPath={backendVault?.path ?? ""} />
           ) : (
             <>
           {statusMessage && (
@@ -288,17 +323,51 @@ function SettingsView() {
             status={embeddingRuntime?.available ? "Ready" : "Required"}
             statusTone={embeddingRuntime?.available ? "ready" : "issue"}
           >
+            {!embeddingRuntime?.available && (
+              <div className="mt-5 rounded-md border border-[var(--status-learning)]/35 bg-[var(--status-learning)]/10 px-3 py-2 text-sm">
+                Semantic search, clustering, retrieval chat, Bridge retrieval, and new indexing are blocked until this local model test passes.
+              </div>
+            )}
             <label className="mt-5 block text-sm font-medium">Model path (required)</label>
-            <div className="mt-2 flex gap-2">
+            <div className="mt-2 flex flex-wrap gap-2">
               <Input
                 value={embeddingCacheDraft}
                 onChange={(event) => setEmbeddingCacheDraft(event.target.value)}
                 placeholder="C:\\AI_Models\\all-MiniLM-L6-v2"
               />
-              <Button variant="outline" onClick={() => void saveEmbeddingRuntime()} disabled={saving}>
-                Browse...
+              <Button variant="outline" onClick={() => void chooseEmbeddingFolder()} disabled={!desktop?.selectEmbeddingFolder}>
+                Browse
               </Button>
+              <Button variant="outline" onClick={() => void saveEmbeddingRuntime()} disabled={saving || !embeddingCacheDraft.trim()}>
+                Test
+              </Button>
+              <Button variant="outline" className="gap-2" onClick={() => void downloadEmbeddingModel()} disabled={saving}>
+                <Download className="h-4 w-4" />
+                Download recommended
+              </Button>
+              {embeddingDownload?.status === "queued" || embeddingDownload?.status === "downloading" ? (
+                <Button variant="ghost" onClick={() => void cancelEmbeddingModelDownload()}>
+                  Cancel
+                </Button>
+              ) : null}
             </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Choose the folder containing `modules.json` or `config.json` for the local SentenceTransformers model.
+            </p>
+            {embeddingDownload && embeddingDownload.status !== "idle" && (
+              <div className="mt-4 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                <div className="flex items-center justify-between gap-3">
+                  <span>{embeddingDownload.model_id}</span>
+                  <span className="text-foreground">{embeddingDownload.status}</span>
+                </div>
+                {embeddingDownload.local_path && (
+                  <div className="mt-1 truncate font-mono">{embeddingDownload.local_path}</div>
+                )}
+                {embeddingDownload.error && (
+                  <div className="mt-1 text-destructive">{embeddingDownload.error}</div>
+                )}
+              </div>
+            )}
           </SettingsCard>
 
           <SettingsCard
