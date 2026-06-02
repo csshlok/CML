@@ -257,7 +257,13 @@ CML does not call a remote OCR service. Windows packages stage local OCR tools u
 
 The expected local runtime is `tesseract.exe`, `tessdata\eng.traineddata`, qpdf, Ghostscript, and the packaged Python OCRmyPDF/PyMuPDF dependencies. Image OCR needs Tesseract plus tessdata. Scanned-PDF OCR prefers OCRmyPDF with qpdf/Ghostscript and falls back to PyMuPDF page rendering plus Tesseract when OCRmyPDF is incomplete.
 
-`package-windows.ps1` runs OCR staging by default; pass `-SkipOcrRuntimeDownload` only for dry package tests.
+`package-windows.ps1` runs OCR staging by default; pass `-SkipOcrRuntimeDownload` only for dry package tests. If Ghostscript is not staging cleanly yet, use `-SkipGhostscriptInstaller -AllowPartialOcrRuntime` to package the working Tesseract/PyMuPDF fallback path.
+
+For local OCR accuracy smoke tests:
+
+```powershell
+.\scripts\ocr\benchmark-ocr.ps1 -PdfPath .tmp\sample.pdf -ReferenceTextPath .tmp\reference.txt
+```
 
 ## Notes and defaults
 

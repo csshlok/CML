@@ -98,7 +98,20 @@ Vault's OCR path is local-only. Scanned PDFs use OCRmyPDF + Tesseract when the l
 ```text
 backend/bin/ocr/tesseract.exe
 backend/bin/ocr/tessdata/eng.traineddata
-backend/bin/ocr/ocrmypdf.exe
+backend/bin/ocr/qpdf/qpdf.exe
+backend/bin/ocr/ghostscript/.../gswin64c.exe
 ```
 
-OCRmyPDF requires local Ghostscript and qpdf command dependencies. In development, the backend can also run `python -m ocrmypdf` if the package is installed in `.venv`. If OCRmyPDF is unavailable, scanned PDFs fall back to direct page rendering plus Tesseract. If Tesseract is not present, image ingestion stores metadata and scanned-PDF ingestion reports that bundled OCR is unavailable. Packaged builds include `backend/bin/**/*` so the OCR runtime ships with the installer once staged there.
+Stage the local runtime:
+
+```powershell
+.\scripts\packaging\stage-ocr-runtime.ps1 -SkipGhostscriptInstaller -AllowPartial
+```
+
+Run an OCR accuracy smoke:
+
+```powershell
+.\scripts\ocr\benchmark-ocr.ps1 -PdfPath .tmp\sample.pdf -ReferenceTextPath .tmp\reference.txt
+```
+
+OCRmyPDF requires local Ghostscript and qpdf command dependencies. In development, the backend can also run `python -m ocrmypdf` if the package is installed in `.venv`. If OCRmyPDF is incomplete, scanned PDFs fall back to direct page rendering plus Tesseract. If Tesseract is not present, image ingestion stores metadata and scanned-PDF ingestion reports that bundled OCR is unavailable. Packaged builds include `backend/bin/**/*` so the OCR runtime ships with the installer once staged there.

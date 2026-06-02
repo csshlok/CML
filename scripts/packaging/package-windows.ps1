@@ -1,6 +1,9 @@
 param(
   [switch]$IncludeEmbeddingRuntime,
-  [switch]$SkipOcrRuntimeDownload
+  [switch]$SkipOcrRuntimeDownload,
+  [string]$TesseractExePath = "",
+  [switch]$SkipGhostscriptInstaller,
+  [switch]$AllowPartialOcrRuntime
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,7 +35,17 @@ New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
 
 if (-not $SkipOcrRuntimeDownload) {
   Write-Host "Staging OCR runtime..."
-  & $ocrStagingScript
+  $ocrArgs = @()
+  if ($TesseractExePath) {
+    $ocrArgs += @("-TesseractExePath", $TesseractExePath)
+  }
+  if ($SkipGhostscriptInstaller) {
+    $ocrArgs += "-SkipGhostscriptInstaller"
+  }
+  if ($AllowPartialOcrRuntime) {
+    $ocrArgs += "-AllowPartial"
+  }
+  & $ocrStagingScript @ocrArgs
 }
 
 Copy-Item -Recurse -Force (Join-Path $backendDir "app") (Join-Path $stagingDir "app")

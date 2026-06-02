@@ -83,6 +83,34 @@ function Copy-TreeContaining {
   return $true
 }
 
+function Find-InstalledTesseract {
+  $command = Get-Command tesseract -ErrorAction SilentlyContinue
+  if ($command -and $command.Source -and (Test-Path -LiteralPath $command.Source)) {
+    return $command.Source
+  }
+  $candidates = @(
+    "$env:LOCALAPPDATA\Programs\Tesseract-OCR\tesseract.exe",
+    "$env:ProgramFiles\Tesseract-OCR\tesseract.exe",
+    "${env:ProgramFiles(x86)}\Tesseract-OCR\tesseract.exe"
+  )
+  foreach ($candidate in $candidates) {
+    if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+      return $candidate
+    }
+  }
+  return ""
+}
+
+function Test-TesseractExecutable {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  try {
+    $process = Start-Process -FilePath $Path -ArgumentList @("--version") -Wait -PassThru -WindowStyle Hidden
+    return $process.ExitCode -eq 0
+  } catch {
+    return $false
+  }
+}
+
 $errors = New-Object System.Collections.Generic.List[string]
 
 try {
@@ -96,9 +124,18 @@ try {
 }
 
 try {
+  if (-not $TesseractExePath) {
+    $TesseractExePath = Find-InstalledTesseract
+    if ($TesseractExePath) {
+      Write-Host "Using installed Tesseract at $TesseractExePath"
+    }
+  }
   if ($TesseractExePath) {
     if (-not (Test-Path -LiteralPath $TesseractExePath)) {
       throw "TesseractExePath does not exist: $TesseractExePath"
+    }
+    if (-not (Test-TesseractExecutable -Path $TesseractExePath)) {
+      throw "TesseractExePath is not executable: $TesseractExePath"
     }
     $tesseractDir = Split-Path -Parent ([System.IO.Path]::GetFullPath($TesseractExePath))
     Copy-Item -Path (Join-Path $tesseractDir "*") -Destination $destinationPath -Recurse -Force
@@ -173,7 +210,7 @@ try {
 $manifest = [ordered]@{
   generated_at = (Get-Date).ToUniversalTime().ToString("o")
   destination = $destinationPath
-  tesseract = Test-Path -LiteralPath (Join-Path $destinationPath "tesseract.exe")
+  tesseract = (Test-Path -LiteralPath (Join-Path $destinationPath "tesseract.exe")) -and (Test-TesseractExecutable -Path (Join-Path $destinationPath "tesseract.exe"))
   eng_traineddata = Test-Path -LiteralPath (Join-Path $destinationPath "tessdata\eng.traineddata")
   qpdf = (Get-ChildItem -LiteralPath (Join-Path $destinationPath "qpdf") -Recurse -Filter "qpdf.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1) -ne $null
   ghostscript = (Get-ChildItem -LiteralPath (Join-Path $destinationPath "ghostscript") -Recurse -Filter "gswin64c.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1) -ne $null

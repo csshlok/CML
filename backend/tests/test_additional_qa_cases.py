@@ -872,12 +872,27 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("repos/qpdf/qpdf/releases/latest", stage_text)
         self.assertIn("repos/ArtifexSoftware/ghostpdl-downloads/releases/latest", stage_text)
         self.assertIn("TesseractExePath", stage_text)
+        self.assertIn("Find-InstalledTesseract", stage_text)
+        self.assertIn("Test-TesseractExecutable", stage_text)
         self.assertIn("SkipGhostscriptInstaller", stage_text)
         self.assertIn("GhostscriptInstallTimeoutSeconds", stage_text)
         self.assertIn('Copy-Item -Path (Join-Path $tesseractDir "*")', stage_text)
         self.assertIn("Staging OCR runtime", package_text)
+        self.assertIn("AllowPartialOcrRuntime", package_text)
+        self.assertIn("SkipGhostscriptInstaller", package_text)
+        self.assertIn("TesseractExePath", package_text)
         self.assertIn("ocrmypdf>=16.0.0", package_text)
         self.assertIn("scripts/packaging/stage-ocr-runtime.ps1", readme_text)
+
+    def test_ocr_benchmark_script_reports_similarity_metrics(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        benchmark_script = repo_root / "scripts" / "ocr" / "benchmark-ocr.ps1"
+        text = benchmark_script.read_text(encoding="utf-8")
+
+        self.assertIn("Normalized sequence similarity", text)
+        self.assertIn("Word recall", text)
+        self.assertIn("Word precision", text)
+        self.assertIn("extract_pages_from_path", text)
 
     def test_security_validator_blocks_localhost_and_private_targets(self) -> None:
         from backend.app.core.network_security import NetworkSecurityError, validate_public_http_url
