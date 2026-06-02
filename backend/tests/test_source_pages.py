@@ -1067,18 +1067,18 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIn("training_supported", result)
         self.assertIn(result["avx2"], {True, False, None})
 
-    def test_lora_trainer_status_reports_installed_dependencies(self) -> None:
+    def test_lora_trainer_status_reports_dependency_gate(self) -> None:
         from backend.app.api.routes.system import get_lora_trainer_status
 
         result = get_lora_trainer_status()
 
         self.assertIn("llamafactory", result["packages"])
         self.assertIn("peft", result["packages"])
-        self.assertTrue(result["packages"]["llamafactory"]["installed"])
-        self.assertTrue(result["packages"]["peft"]["installed"])
-        self.assertTrue(result["packages"]["llamafactory"]["importable"])
-        self.assertTrue(result["packages"]["peft"]["importable"])
-        self.assertTrue(result["llamafactory_cli"] or result["trainer_command_configured"])
+        self.assertIn(result["packages"]["llamafactory"]["installed"], {True, False})
+        self.assertIn(result["packages"]["peft"]["installed"], {True, False})
+        self.assertIn(result["packages"]["llamafactory"]["importable"], {True, False})
+        self.assertIn(result["packages"]["peft"]["importable"], {True, False})
+        self.assertEqual(result["available"], not result["issues"])
 
     def test_integration_scan_records_import_history(self) -> None:
         from backend.app.api.routes.integrations import (
@@ -1204,6 +1204,178 @@ class SourcePageIndexingTests(unittest.TestCase):
         with connect() as conn:
             rows = conn.execute("SELECT title FROM sources WHERE vault_id = 'vault-1'").fetchall()
         self.assertEqual([row["title"] for row in rows], ["good.md"])
+
+    def test_watched_integration_refresh_job_reconciles_due_import(self) -> None:
+        from backend.app.api.routes.integrations import scan_local_folder_integration, update_integration_import
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import IntegrationImportUpdate, LocalFolderScanRequest
+
+        now = utc_now()
+        folder = Path(self.tmp.name) / "Google Drive"
+        folder.mkdir()
+        (folder / "watched.md").write_text("watched import content " * 10, encoding="utf-8")
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        scan = scan_local_folder_integration(LocalFolderScanRequest(vault_id="vault-1", path=str(folder), max_files=10))
+        updated = update_integration_import(
+            scan["import_id"],
+            IntegrationImportUpdate(watch_enabled=True, watch_interval_seconds=60),
+        )
+
+        self.assertTrue(updated["watch_enabled"])
+        self.assertGreaterEqual(run_due_jobs_once(limit=5), 1)
+        with connect() as conn:
+            source_count = conn.execute("SELECT COUNT(*) AS count FROM sources WHERE vault_id = 'vault-1'").fetchone()
+            import_row = conn.execute("SELECT * FROM integration_imports WHERE id = ?", (scan["import_id"],)).fetchone()
+        self.assertEqual(source_count["count"], 1)
+        self.assertEqual(import_row["imported_count"], 1)
+        self.assertIsNotNone(import_row["next_watch_at"])
+
+    def test_obsidian_markdown_ingestion_extracts_frontmatter_links_and_attachments(self) -> None:
+        from backend.app.api.routes.sources import create_source_from_path
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourcePathCreate
+
+        now = utc_now()
+        folder = Path(self.tmp.name) / "Vault"
+        folder.mkdir()
+        note = folder / "note.md"
+        note.write_text(
+            "---\ntags: [alpha, beta]\naliases: [Memory note]\n---\n"
+            "Body with [[Linked Note]] and ![[diagram.png]] plus [site](https://example.com).",
+            encoding="utf-8",
+        )
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        source = create_source_from_path(SourcePathCreate(vault_id="vault-1", path=str(note)))
+
+        self.assertIn("Obsidian/frontmatter metadata", source["raw_text"])
+        self.assertIn("tags: [alpha, beta]", source["raw_text"])
+        self.assertIn("Wiki links: Linked Note", source["raw_text"])
+        self.assertIn("Embedded attachments: diagram.png", source["raw_text"])
+        self.assertIn("Markdown links: https://example.com", source["raw_text"])
+
+    def test_large_local_import_reports_batch_counts_without_crashing(self) -> None:
+        from backend.app.api.routes.integrations import refresh_integration_import, scan_local_folder_integration
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import LocalFolderScanRequest
+
+        now = utc_now()
+        folder = Path(self.tmp.name) / "bulk"
+        folder.mkdir()
+        for index in range(160):
+            (folder / f"note-{index:03}.md").write_text(f"bulk note {index} " * 20, encoding="utf-8")
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        scan = scan_local_folder_integration(LocalFolderScanRequest(vault_id="vault-1", path=str(folder), max_files=500))
+        result = refresh_integration_import(scan["import_id"], import_files=True)
+
+        self.assertEqual(result["supported_count"], 160)
+        self.assertEqual(result["imported_count"], 160)
+        self.assertEqual(result["failed_count"], 0)
+        with connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS count FROM sources WHERE vault_id = 'vault-1'").fetchone()
+        self.assertEqual(row["count"], 160)
+
+    def test_integration_tombstone_cleans_retrieval_items_jobs_pages_and_chunks(self) -> None:
+        from backend.app.api.routes.integrations import refresh_integration_import, scan_local_folder_integration
+        from backend.app.core.background_jobs import enqueue_job, run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import LocalFolderScanRequest
+
+        now = utc_now()
+        folder = Path(self.tmp.name) / "Dropbox"
+        folder.mkdir()
+        note = folder / "delete-me.md"
+        note.write_text("delete graph coverage content " * 20, encoding="utf-8")
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        scan = scan_local_folder_integration(LocalFolderScanRequest(vault_id="vault-1", path=str(folder), max_files=10))
+        refresh_integration_import(scan["import_id"], import_files=True)
+        run_due_jobs_once(limit=10)
+
+        with connect() as conn:
+            source = conn.execute("SELECT * FROM sources WHERE vault_id = 'vault-1'").fetchone()
+            page = conn.execute("SELECT * FROM source_pages WHERE source_id = ?", (source["id"],)).fetchone()
+            chunk = conn.execute("SELECT * FROM source_chunks WHERE source_id = ?", (source["id"],)).fetchone()
+            conn.execute(
+                "INSERT INTO chat_sessions (id, vault_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("session-1", "vault-1", "Session", now, now),
+            )
+            conn.execute(
+                "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("message-1", "session-1", "assistant", "answer", now),
+            )
+            conn.execute(
+                """
+                INSERT INTO retrieval_snapshots (id, message_id, session_id, vault_id, query, retrieval_mode, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("snapshot-1", "message-1", "session-1", "vault-1", "query", "semantic", now),
+            )
+            conn.execute(
+                """
+                INSERT INTO retrieval_snapshot_items (
+                    id, snapshot_id, source_id, chunk_id, page_id, source_title_at_answer_time,
+                    page_number, snippet_hash, short_snippet_excerpt, relevance_score, item_rank, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "item-1",
+                    "snapshot-1",
+                    source["id"],
+                    chunk["id"],
+                    page["id"],
+                    source["title"],
+                    1,
+                    "hash",
+                    "excerpt",
+                    1.0,
+                    1,
+                    now,
+                ),
+            )
+            enqueue_job(
+                conn,
+                job_type="reindex_source",
+                payload={"source_id": source["id"]},
+                dedupe_key="delete-graph-job",
+                scope_id=source["id"],
+            )
+
+        note.unlink()
+        result = refresh_integration_import(scan["import_id"], import_files=True, tombstone_missing=True)
+
+        self.assertEqual(result["tombstoned_count"], 1)
+        with connect() as conn:
+            source = conn.execute("SELECT * FROM sources WHERE id = ?", (source["id"],)).fetchone()
+            item = conn.execute("SELECT * FROM retrieval_snapshot_items WHERE id = 'item-1'").fetchone()
+            page_count = conn.execute("SELECT COUNT(*) AS count FROM source_pages WHERE source_id = ?", (source["id"],)).fetchone()
+            chunk_count = conn.execute("SELECT COUNT(*) AS count FROM source_chunks WHERE source_id = ?", (source["id"],)).fetchone()
+            job = conn.execute("SELECT * FROM app_jobs WHERE dedupe_key = 'delete-graph-job'").fetchone()
+        self.assertEqual(source["state"], "deleted")
+        self.assertEqual(item["state"], "source_deleted")
+        self.assertIsNone(item["source_id"])
+        self.assertEqual(page_count["count"], 0)
+        self.assertEqual(chunk_count["count"], 0)
+        self.assertEqual(job["status"], "cancelled")
 
     def test_extension_capture_creates_source_and_capture_record(self) -> None:
         from backend.app.api.routes.extension import (

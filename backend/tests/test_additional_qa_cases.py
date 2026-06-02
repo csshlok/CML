@@ -843,16 +843,17 @@ class AdditionalQACases(unittest.TestCase):
                 hits.append(path)
         self.assertEqual([path.name for path in hits], ["token-store.cjs"])
 
-    def test_contributor_requirements_cover_lora_stack_and_update_rule(self) -> None:
+    def test_contributor_requirements_keep_lora_stack_split_and_update_rule(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         backend_reqs = (repo_root / "requirements" / "contributors-backend.txt").read_text(encoding="utf-8")
         lora_reqs = (repo_root / "requirements" / "contributors-lora-trainer.txt").read_text(encoding="utf-8")
         req_readme = (repo_root / "requirements" / "README.md").read_text(encoding="utf-8")
         update_script = repo_root / "scripts" / "dev" / "update-requirements.ps1"
 
-        self.assertIn("llamafactory==0.9.5", backend_reqs)
-        self.assertIn("peft==0.18.1", backend_reqs)
+        self.assertNotIn("llamafactory==0.9.5", backend_reqs)
+        self.assertNotIn("gradio==5.50.0", backend_reqs)
         self.assertIn("llamafactory==0.9.5", lora_reqs)
+        self.assertIn("peft==0.18.1", lora_reqs)
         self.assertIn("CML_LORA_TRAINER_COMMAND", req_readme)
         self.assertIn("Continuous-update rule", req_readme)
         self.assertTrue(update_script.exists())

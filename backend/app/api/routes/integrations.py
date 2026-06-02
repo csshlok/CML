@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -18,7 +19,13 @@ from backend.app.core.embeddings import require_embeddings_available
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path
 from backend.app.core.memory_card import generate_tags, summarize_text
-from backend.app.schemas import IntegrationImportRead, LocalFolderScanRequest, LocalFolderScanResponse, SourceCreate
+from backend.app.schemas import (
+    IntegrationImportRead,
+    IntegrationImportUpdate,
+    LocalFolderScanRequest,
+    LocalFolderScanResponse,
+    SourceCreate,
+)
 from uuid import uuid4
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
@@ -46,6 +53,49 @@ def list_integration_imports(vault_id: str | None = None) -> list[dict]:
                 """
             ).fetchall()
     return [_import_from_row(row) for row in rows]
+
+
+@router.patch("/imports/{import_id}", response_model=IntegrationImportRead)
+def update_integration_import(import_id: str, payload: IntegrationImportUpdate) -> dict:
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        with connect() as conn:
+            row = conn.execute("SELECT * FROM integration_imports WHERE id = ?", (import_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Integration import not found")
+        return _import_from_row(row)
+
+    watch_enabled = updates.get("watch_enabled")
+    interval = updates.get("watch_interval_seconds")
+    now = utc_now()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM integration_imports WHERE id = ?", (import_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Integration import not found")
+        next_watch_at = None
+        if watch_enabled is True:
+            next_watch_at = now
+        elif watch_enabled is None and int(row["watch_enabled"] or 0) == 1:
+            next_watch_at = row["next_watch_at"] or now
+        conn.execute(
+            """
+            UPDATE integration_imports
+            SET watch_enabled = COALESCE(?, watch_enabled),
+                watch_interval_seconds = COALESCE(?, watch_interval_seconds),
+                next_watch_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                None if watch_enabled is None else int(watch_enabled),
+                interval,
+                next_watch_at,
+                now,
+                import_id,
+            ),
+        )
+        updated = conn.execute("SELECT * FROM integration_imports WHERE id = ?", (import_id,)).fetchone()
+    return _import_from_row(updated)
 
 
 @router.post("/imports/{import_id}/refresh", response_model=LocalFolderScanResponse)
@@ -84,6 +134,7 @@ def refresh_integration_import(
         )
 
     now = utc_now()
+    next_watch_at = _next_watch_at(row, now) if int(row["watch_enabled"] or 0) == 1 else None
     with connect() as conn:
         conn.execute(
             """
@@ -91,7 +142,8 @@ def refresh_integration_import(
             SET integration_type = ?, status = 'scanned', supported_count = ?, skipped_count = ?,
                 truncated = ?, imported_count = ?, updated_count = ?, moved_count = ?,
                 unchanged_count = ?, tombstoned_count = ?, failed_count = ?,
-                last_scan_at = ?, last_import_at = ?, updated_at = ?
+                last_failures = ?, last_scan_at = ?, last_import_at = ?,
+                next_watch_at = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -105,8 +157,10 @@ def refresh_integration_import(
                 reconcile["unchanged_count"],
                 reconcile["tombstoned_count"],
                 reconcile["failed_count"],
+                json.dumps(reconcile["failures"][:25]),
                 now,
                 now if import_files else row["last_import_at"],
+                next_watch_at,
                 now,
                 import_id,
             ),
@@ -155,6 +209,13 @@ def scan_local_folder_integration(payload: LocalFolderScanRequest) -> dict:
 def _import_from_row(row) -> dict:
     record = dict_from_row(row)
     record["truncated"] = bool(record["truncated"])
+    record["watch_enabled"] = bool(record.get("watch_enabled"))
+    raw_failures = record.get("last_failures") or "[]"
+    try:
+        failures = json.loads(raw_failures)
+    except json.JSONDecodeError:
+        failures = []
+    record["last_failures"] = failures if isinstance(failures, list) else []
     return record
 
 
@@ -338,3 +399,13 @@ def _failure_detail(exc: Exception) -> str:
     if isinstance(exc, HTTPException):
         return str(exc.detail)
     return str(exc)
+
+
+def _next_watch_at(row, now: str) -> str:
+    try:
+        interval = max(60, int(row["watch_interval_seconds"] or 900))
+        current = datetime.fromisoformat(now)
+    except (TypeError, ValueError):
+        current = datetime.now(UTC)
+        interval = 900
+    return (current + timedelta(seconds=interval)).isoformat()

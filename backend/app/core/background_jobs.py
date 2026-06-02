@@ -150,6 +150,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         soft_timeout_seconds=None,
         timeout_action="defer",
     ),
+    "integration_refresh": JobPolicy(
+        priority="normal",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="vault",
+        concurrency_group="integration_import",
+        resource_cost="medium",
+        can_run_during_synthesis=False,
+        user_visible=True,
+        user_initiated=False,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=1800,
+        soft_timeout_seconds=300,
+        timeout_action="defer",
+    ),
     "train_cluster_adapter": JobPolicy(
         priority="low",
         idempotency_class="reconcile_required",
@@ -319,6 +336,7 @@ def enqueue_startup_reconciliation_jobs() -> None:
 
 def run_due_jobs_once(limit: int = 5) -> int:
     _refresh_blocked_dependencies()
+    _enqueue_due_integration_refresh_jobs()
     processed = 0
     for _ in range(limit):
         job = _claim_next_job()
@@ -492,6 +510,8 @@ def _run_claimed_job(job: dict) -> None:
             _run_delete_source_cleanup(payload)
         elif job["job_type"] == "vector_reconcile_incremental":
             _run_vector_reconcile_incremental(payload)
+        elif job["job_type"] == "integration_refresh":
+            _run_integration_refresh(payload)
         elif job["job_type"] == "train_cluster_adapter":
             _run_train_cluster_adapter(payload)
         else:
@@ -692,6 +712,30 @@ def _run_delete_source_cleanup(payload: dict) -> None:
         )
 
 
+def _enqueue_due_integration_refresh_jobs() -> None:
+    now = utc_now()
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, vault_id
+            FROM integration_imports
+            WHERE watch_enabled = 1
+              AND vault_id IS NOT NULL
+              AND (next_watch_at IS NULL OR next_watch_at <= ?)
+            LIMIT 25
+            """,
+            (now,),
+        ).fetchall()
+        for row in rows:
+            enqueue_job(
+                conn,
+                job_type="integration_refresh",
+                payload={"import_id": row["id"], "vault_id": row["vault_id"]},
+                dedupe_key=f"integration-refresh:{row['id']}",
+                scope_id=row["vault_id"],
+            )
+
+
 def _run_vector_reconcile_incremental(payload: dict) -> None:
     require_embeddings_available("Vector reconciliation")
     vault_id = payload.get("vault_id")
@@ -726,6 +770,15 @@ def _run_vector_reconcile_incremental(payload: dict) -> None:
                 dedupe_key=f"reindex-source:{row['id']}",
                 scope_id=row["id"],
             )
+
+
+def _run_integration_refresh(payload: dict) -> None:
+    from backend.app.api.routes.integrations import refresh_integration_import
+
+    import_id = str(payload.get("import_id") or "")
+    if not import_id:
+        raise RuntimeError("Integration refresh job requires import_id.")
+    refresh_integration_import(import_id, import_files=True, tombstone_missing=True)
 
 
 def _run_train_cluster_adapter(payload: dict) -> None:

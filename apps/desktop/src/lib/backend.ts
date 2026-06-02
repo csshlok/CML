@@ -537,8 +537,12 @@ export type IntegrationImportRecord = {
   unchanged_count: number;
   tombstoned_count: number;
   failed_count: number;
+  last_failures: Array<{ path: string; error: string }>;
   last_scan_at: string;
   last_import_at: string | null;
+  watch_enabled: boolean;
+  watch_interval_seconds: number;
+  next_watch_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -1143,6 +1147,16 @@ export async function refreshIntegrationImport(
     `/api/v1/integrations/imports/${encodeURIComponent(importId)}/refresh${query}`,
     { method: "POST" },
   );
+}
+
+export async function updateIntegrationImport(
+  importId: string,
+  payload: { watch_enabled?: boolean; watch_interval_seconds?: number },
+) {
+  return request<IntegrationImportRecord>(`/api/v1/integrations/imports/${encodeURIComponent(importId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function listExtensionClients() {

@@ -40,6 +40,7 @@ import {
   refreshIntegrationImport,
   startModelDownload,
   startEmbeddingDownload,
+  updateIntegrationImport,
   updateVault,
   type EmbeddingRuntimeStatus,
   type EmbeddingModelDownloadState,
@@ -254,6 +255,19 @@ function SettingsView() {
     }
   }
 
+  async function toggleWatchedImport(record: IntegrationImportRecord) {
+    try {
+      const updated = await updateIntegrationImport(record.id, {
+        watch_enabled: !record.watch_enabled,
+        watch_interval_seconds: record.watch_interval_seconds || 900,
+      });
+      setIntegrationImports((rows) => rows.map((row) => (row.id === updated.id ? updated : row)));
+      setStatusMessage(updated.watch_enabled ? "Watched refresh enabled." : "Watched refresh disabled.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not update watched refresh.");
+    }
+  }
+
   const suggestedModel = models[0];
 
   return (
@@ -404,8 +418,13 @@ function SettingsView() {
             status={ocrRuntime?.available ? "Ready" : "Missing"}
             statusTone={ocrRuntime?.available ? "ready" : "issue"}
           >
-            <RuntimeRow label="OCRmyPDF" value={ocrRuntime?.ocrmypdf_available ? "Installed" : "Missing"} meta={ocrRuntime?.ocrmypdf_version ?? ""} />
-            <RuntimeRow label="Tesseract" value={ocrRuntime?.tesseract_available ? "Installed" : "Missing"} meta={ocrRuntime?.tesseract_version ?? ""} />
+            <RuntimeRow label="Image OCR" value={ocrRuntime?.image_ocr_available ? "Ready" : "Missing"} meta={ocrRuntime?.tesseract_path ?? ""} />
+            <RuntimeRow label="PDF OCR" value={ocrRuntime?.pdf_ocr_available ? "Ready" : "Missing"} meta={ocrRuntime?.ocrmypdf_command ?? ""} />
+            <RuntimeRow label="Ghostscript" value={ocrRuntime?.ghostscript_path ? "Installed" : "Missing"} meta={ocrRuntime?.ghostscript_path ?? ""} />
+            <RuntimeRow label="qpdf" value={ocrRuntime?.qpdf_path ? "Installed" : "Missing"} meta={ocrRuntime?.qpdf_path ?? ""} />
+            {ocrRuntime?.missing.length ? (
+              <p className="mt-4 text-xs text-muted-foreground">Missing: {ocrRuntime.missing.join(", ")}</p>
+            ) : null}
           </SettingsCard>
 
           <SettingsCard
@@ -443,16 +462,26 @@ function SettingsView() {
                         {record.imported_count} new · {record.updated_count} updated · {record.moved_count} moved ·{" "}
                         {record.tombstoned_count} removed · {record.failed_count} failed
                       </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        Watch: {record.watch_enabled ? "on" : "off"}
+                        {record.next_watch_at ? ` · next ${new Date(record.next_watch_at).toLocaleString()}` : ""}
+                        {record.last_failures.length ? ` · ${record.last_failures.length} recent failure(s)` : ""}
+                      </div>
                     </div>
-                    <Button
-                      variant="outline"
-                      className="gap-2"
-                      onClick={() => void refreshLocalImport(record.id)}
-                      disabled={refreshingImportId === record.id}
-                    >
-                      <RefreshCw className="h-4 w-4" />
-                      {refreshingImportId === record.id ? "Refreshing..." : "Refresh + import"}
-                    </Button>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="outline"
+                        className="gap-2"
+                        onClick={() => void refreshLocalImport(record.id)}
+                        disabled={refreshingImportId === record.id}
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                        {refreshingImportId === record.id ? "Refreshing..." : "Refresh + import"}
+                      </Button>
+                      <Button variant="outline" onClick={() => void toggleWatchedImport(record)}>
+                        {record.watch_enabled ? "Stop watch" : "Watch"}
+                      </Button>
+                    </div>
                   </div>
                 ))
               )}

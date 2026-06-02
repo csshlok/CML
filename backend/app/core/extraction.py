@@ -1,5 +1,6 @@
 from pathlib import Path
 import importlib.util
+import re
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -88,6 +89,8 @@ def extract_pages_from_path(path: str) -> tuple[str, list[str]]:
         raise ExtractionError("File does not exist or is not readable") from exc
 
     if suffix in SUPPORTED_TEXT_EXTENSIONS:
+        if suffix in {".md", ".markdown"}:
+            return source_path.name, [_extract_markdown_text(source_path)]
         return source_path.name, [_extract_plain_text(source_path)]
     if suffix in SUPPORTED_CODE_EXTENSIONS:
         return source_path.name, [_extract_code_text(source_path)]
@@ -119,6 +122,41 @@ def _extract_plain_text(source_path: Path) -> str:
 def _extract_code_text(source_path: Path) -> str:
     text = _extract_plain_text(source_path)
     return f"Code file: {source_path.name}\n\n{text}"
+
+
+def _extract_markdown_text(source_path: Path) -> str:
+    text = _extract_plain_text(source_path)
+    body, frontmatter = _split_frontmatter(text)
+    metadata: list[str] = []
+    if frontmatter:
+        metadata.append("Obsidian/frontmatter metadata:")
+        metadata.extend(f"- {line.strip()}" for line in frontmatter.splitlines() if line.strip())
+
+    wiki_links = sorted(set(re.findall(r"(?<!!)\[\[([^\]\n]+)\]\]", body)))
+    embeds = sorted(set(re.findall(r"!\[\[([^\]\n]+)\]\]", body)))
+    markdown_links = sorted(set(match[1] for match in re.findall(r"\[([^\]\n]+)\]\(([^)\n]+)\)", body)))
+
+    if wiki_links:
+        metadata.append("Wiki links: " + ", ".join(wiki_links[:50]))
+    if embeds:
+        metadata.append("Embedded attachments: " + ", ".join(embeds[:50]))
+    if markdown_links:
+        metadata.append("Markdown links: " + ", ".join(markdown_links[:50]))
+
+    if not metadata:
+        return text
+    return f"{body.strip()}\n\n" + "\n".join(metadata)
+
+
+def _split_frontmatter(text: str) -> tuple[str, str]:
+    if not text.startswith("---\n"):
+        return text, ""
+    end = text.find("\n---", 4)
+    if end == -1:
+        return text, ""
+    frontmatter = text[4:end].strip()
+    body = text[end + len("\n---"):].strip()
+    return body, frontmatter
 
 
 def _extract_docx_text(source_path: Path) -> str:

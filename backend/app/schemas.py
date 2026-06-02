@@ -560,10 +560,19 @@ class IntegrationImportRead(BaseModel):
     unchanged_count: int = 0
     tombstoned_count: int = 0
     failed_count: int = 0
+    last_failures: list[dict] = []
     last_scan_at: str
     last_import_at: str | None = None
+    watch_enabled: bool = False
+    watch_interval_seconds: int = 0
+    next_watch_at: str | None = None
     created_at: str
     updated_at: str
+
+
+class IntegrationImportUpdate(BaseModel):
+    watch_enabled: bool | None = None
+    watch_interval_seconds: int | None = Field(default=None, ge=60, le=86400)
 
 
 class ExtensionClientCreate(BaseModel):
