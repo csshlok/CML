@@ -363,13 +363,22 @@ def link_extraction_diagnostics(url: str) -> dict:
         "max_response_bytes": MAX_LINK_BYTES,
         "dynamic_fallback_available": False,
         "extraction_order": ["static_http", "browser_rendered_dynamic_fallback"],
+        "quality_classification": "unknown",
+        "quality_reason": "Fetch was not run during diagnostics.",
     }
     try:
         validate_public_http_url(sanitized_url)
         diagnostics["allowed"] = True
+        diagnostics["quality_classification"] = "diagnostic_only"
     except NetworkSecurityError as exc:
         diagnostics["security_error"] = str(exc)
+        diagnostics["quality_classification"] = "blocked_by_security"
+        diagnostics["quality_reason"] = str(exc)
     diagnostics["dynamic_fallback_available"] = importlib.util.find_spec("playwright") is not None
+    if diagnostics["allowed"] and diagnostics["dynamic_fallback_available"]:
+        diagnostics["quality_reason"] = "Static extraction is attempted first; browser fallback is available for thin dynamic pages."
+    elif diagnostics["allowed"]:
+        diagnostics["quality_reason"] = "Static extraction is available; browser fallback runtime is not installed."
     return diagnostics
 
 

@@ -797,6 +797,383 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertIn("repair_vectors", text)
         self.assertIn("compact_vectors", text)
 
+    def test_scoring_ledger_threshold_benchmark_and_eval_fixtures(self) -> None:
+        from backend.app.api.routes.search import get_retrieval_eval_fixtures
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.retrieval_scoring import scoring_ledger, threshold_benchmark
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="OCR packaging",
+                source_type="note",
+                raw_text="ocr packaging ghostscript tesseract qpdf scanned pdf " * 40,
+            )
+        )
+        run_due_jobs_once(limit=1)
+
+        ledger = scoring_ledger("vault-1", "ocr packaging scanned pdf", limit=5)
+        benchmark = threshold_benchmark(
+            "vault-1",
+            fixtures=[
+                {
+                    "query": "ocr packaging scanned pdf",
+                    "must_include_source_ids": [ledger["results"][0]["source_id"]],
+                }
+            ],
+            thresholds=[0.1, 0.5],
+        )
+        fixtures = get_retrieval_eval_fixtures()
+
+        self.assertGreater(ledger["results"][0]["bm25_score"], 0)
+        self.assertIn("semantic_score", ledger["results"][0])
+        self.assertEqual(benchmark["fixture_count"], 1)
+        self.assertTrue(any(row["passes_fixture"] for row in benchmark["rows"]))
+        self.assertTrue(fixtures["fixtures"])
+
+    def test_storage_accounting_reports_source_vector_and_chat_footprint(self) -> None:
+        from backend.app.api.routes.system import get_storage_accounting
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (id, vault_id, title, saved, created_at, updated_at)
+                VALUES ('chat-1', 'vault-1', 'Storage', 1, ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("msg-1", "chat-1", "user", "storage accounting message", now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Storage source",
+                source_type="note",
+                raw_text="storage accounting vector chunk " * 50,
+            )
+        )
+        run_due_jobs_once(limit=1)
+
+        accounting = get_storage_accounting("vault-1")
+
+        self.assertEqual(accounting["sources"]["count"], 1)
+        self.assertGreater(accounting["chunks"]["count"], 0)
+        self.assertEqual(accounting["chat"]["message_count"], 1)
+        self.assertTrue(accounting["estimate"])
+        self.assertIn("retrieval_snapshots", accounting)
+        self.assertIn("analysis_evidence_packets", accounting)
+        self.assertIn("external_captures", accounting)
+        self.assertIn("expert_artifacts", accounting)
+
+    def test_diagnostic_bundle_includes_policy_and_storage_accounting(self) -> None:
+        from zipfile import ZipFile
+
+        from backend.app.api.routes.diagnostics import create_diagnostic_bundle, log_rotation_policy
+
+        bundle = create_diagnostic_bundle()
+        policy = log_rotation_policy()
+        with ZipFile(bundle["bundle_path"]) as archive:
+            names = set(archive.namelist())
+
+        self.assertIn("log-rotation-policy.json", names)
+        self.assertIn("storage-accounting.json", names)
+        self.assertEqual(policy["max_log_file_bytes"], 5 * 1024 * 1024)
+        self.assertEqual(policy["retained_log_files"], 10)
+
+    def test_startup_repair_reports_interrupted_migrations(self) -> None:
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.startup_repair import startup_repair_summary
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    status TEXT NOT NULL,
+                    error TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, name, started_at, status)
+                VALUES (99, 'interrupted_test', ?, 'running')
+                """,
+                (now,),
+            )
+
+        summary = startup_repair_summary()
+
+        self.assertEqual(summary["interrupted_migrations"][0]["version"], 99)
+
+    def test_ocr_source_job_writes_page_progress_detail(self) -> None:
+        from backend.app.core.background_jobs import _run_ocr_source, enqueue_job
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        source_path = self.data_dir / "scan.pdf"
+        source_path.write_bytes(b"%PDF-1.4")
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO sources (
+                    id, vault_id, title, source_type, state, original_path, raw_text,
+                    extracted_text, created_at, updated_at
+                )
+                VALUES ('source-ocr', 'vault-1', 'Scan', 'pdf', 'waiting', ?, '', '', ?, ?)
+                """,
+                (str(source_path), now, now),
+            )
+            job = enqueue_job(conn, job_type="ocr_source", payload={"source_id": "source-ocr"})
+            conn.execute("UPDATE app_jobs SET status = 'running' WHERE id = ?", (job["id"],))
+
+        with patch(
+            "backend.app.core.extraction.extract_pages_from_path",
+            return_value=("Scan", ["page one ocr text " * 30, "page two ocr text " * 30]),
+        ):
+            _run_ocr_source({"source_id": "source-ocr"}, job["id"])
+
+        with connect() as conn:
+            row = conn.execute("SELECT status_detail FROM app_jobs WHERE id = ?", (job["id"],)).fetchone()
+        detail = json.loads(row["status_detail"])
+        self.assertEqual(detail["page_current"], 2)
+        self.assertEqual(detail["page_total"], 2)
+        self.assertEqual(detail["progress_percent"], 100.0)
+
+    def test_disposable_vault_delete_cleanup_removes_derived_data(self) -> None:
+        from backend.app.api.routes.sources import create_source, delete_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+        source = create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Disposable",
+                source_type="note",
+                raw_text="delete cleanup disposable vault evidence " * 60,
+            )
+        )
+        run_due_jobs_once(limit=1)
+
+        delete_source(source["id"])
+        run_due_jobs_once(limit=1)
+
+        with connect() as conn:
+            source_row = conn.execute("SELECT raw_text, extracted_text FROM sources WHERE id = ?", (source["id"],)).fetchone()
+            chunk_count = conn.execute("SELECT COUNT(*) AS count FROM source_chunks WHERE source_id = ?", (source["id"],)).fetchone()
+            page_count = conn.execute("SELECT COUNT(*) AS count FROM source_pages WHERE source_id = ?", (source["id"],)).fetchone()
+        self.assertEqual(source_row["raw_text"], "")
+        self.assertEqual(source_row["extracted_text"], "")
+        self.assertEqual(chunk_count["count"], 0)
+        self.assertEqual(page_count["count"], 0)
+
+    def test_download_cancel_smoke_script_exists_and_reports_cancellation_contract(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        script = repo_root / "scripts" / "backend" / "smoke-download-cancel.ps1"
+        text = script.read_text(encoding="utf-8")
+
+        self.assertIn("cancel_embedding_model_download", text)
+        self.assertIn("cancel_model_download", text)
+        self.assertIn("cancellation_observed", text)
+
+    def test_bridge_external_turn_capture_respects_permissions_and_indexes_source(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.bridge import create_bridge_client, log_external_turn, update_bridge_settings
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import BridgeClientCreate, BridgeExternalTurnCapture, BridgeSettingsUpdate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
+                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', 'retrieval_ready', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
+                VALUES ('cluster-2', 'vault-1', 'Private', '', 'sage', 'retrieval_ready', ?, ?)
+                """,
+                (now, now),
+            )
+
+        client = create_bridge_client(
+            BridgeClientCreate(
+                name="Claude Desktop",
+                allowed_vault_ids=["vault-1"],
+                allowed_cluster_ids=["cluster-1"],
+            )
+        )
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True))
+        result = log_external_turn(
+            BridgeExternalTurnCapture(
+                vault_id="vault-1",
+                cluster_id="cluster-1",
+                client_name="claude",
+                user_prompt="summarize my notes",
+                model_response="external model answer",
+                model_name="claude-test",
+            ),
+            x_cml_bridge_token=client["token"],
+        )
+        run_due_jobs_once(limit=1)
+
+        with connect() as conn:
+            source = conn.execute("SELECT * FROM sources WHERE id = ?", (result["source_id"],)).fetchone()
+            chunks = conn.execute("SELECT COUNT(*) AS count FROM source_chunks WHERE source_id = ?", (result["source_id"],)).fetchone()
+        self.assertEqual(source["source_type"], "external_transcript")
+        self.assertEqual(source["cluster_id"], "cluster-1")
+        self.assertGreater(chunks["count"], 0)
+
+        with self.assertRaises(HTTPException) as exc:
+            log_external_turn(
+                BridgeExternalTurnCapture(
+                    vault_id="vault-1",
+                    cluster_id="cluster-2",
+                    client_name="claude",
+                    user_prompt="blocked",
+                    model_response="blocked",
+                ),
+                x_cml_bridge_token=client["token"],
+            )
+        self.assertEqual(exc.exception.status_code, 403)
+
+    def test_bridge_mcp_exposes_external_capture_tools(self) -> None:
+        from backend.app.bridge_mcp import tools
+
+        names = {tool["name"] for tool in tools()}
+
+        self.assertIn("log_external_turn", names)
+        self.assertIn("capture_external_artifact", names)
+
+    def test_source_class_weighting_compare_and_report_export(self) -> None:
+        from backend.app.api.routes.search import create_benchmark_report
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.retrieval_scoring import compare_source_classes, scoring_ledger
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Product note",
+                source_type="note",
+                raw_text="shared retrieval benchmark product source " * 50,
+            )
+        )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="External model turn",
+                source_type="external_transcript",
+                raw_text="shared retrieval benchmark external transcript source " * 50,
+            )
+        )
+        for _ in range(2):
+            run_due_jobs_once(limit=1)
+
+        ledger = scoring_ledger("vault-1", "shared retrieval benchmark", limit=10)
+        classes = {item["source_class"]: item for item in ledger["results"]}
+        comparison = compare_source_classes("vault-1", "shared retrieval benchmark")
+        report = create_benchmark_report("vault-1")
+
+        self.assertIn("document", classes)
+        self.assertIn("external_transcript", classes)
+        self.assertGreater(classes["document"]["source_class_weight"], classes["external_transcript"]["source_class_weight"])
+        self.assertIn("document", comparison["groups"])
+        self.assertTrue(Path(report["json_path"]).exists())
+        self.assertTrue(Path(report["markdown_path"]).exists())
+
+    def test_failed_embedding_write_can_be_retried_without_partial_vectors(self) -> None:
+        from backend.app.core.background_jobs import enqueue_job, run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO sources (id, vault_id, title, source_type, state, raw_text, extracted_text, created_at, updated_at)
+                VALUES ('source-fail', 'vault-1', 'Fail', 'note', 'indexed', ?, ?, ?, ?)
+                """,
+                ("failed embedding write " * 50, "failed embedding write " * 50, now, now),
+            )
+            job = enqueue_job(conn, job_type="reindex_source", payload={"source_id": "source-fail"})
+
+        with patch("backend.app.core.background_jobs.reindex_source_chunks", side_effect=RuntimeError("disk full")):
+            run_due_jobs_once(limit=1)
+
+        with connect() as conn:
+            job_row = conn.execute("SELECT status, attempts, last_error FROM app_jobs WHERE id = ?", (job["id"],)).fetchone()
+            chunk_count = conn.execute("SELECT COUNT(*) AS count FROM source_chunks WHERE source_id = 'source-fail'").fetchone()
+        self.assertEqual(job_row["status"], "queued")
+        self.assertEqual(job_row["attempts"], 1)
+        self.assertIn("disk full", job_row["last_error"])
+        self.assertEqual(chunk_count["count"], 0)
+
+    def test_backend_smoke_scripts_cover_active_index_and_retrieval_benchmark(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        active_script = repo_root / "scripts" / "backend" / "smoke-active-index-transition.ps1"
+        benchmark_script = repo_root / "scripts" / "backend" / "benchmark-retrieval.ps1"
+
+        self.assertIn("activate_embedding_index", active_script.read_text(encoding="utf-8"))
+        benchmark_text = benchmark_script.read_text(encoding="utf-8")
+        self.assertIn("export_benchmark_report", benchmark_text)
+        self.assertIn("[int]$Sources = 100", benchmark_text)
+
     def _client(self) -> TestClient:
         from backend.app.core.config import get_settings
 

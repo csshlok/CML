@@ -7,6 +7,7 @@ from backend.app.core.preflight import disk_preflight
 from backend.app.core.startup_repair import startup_repair_summary
 from backend.app.core.startup_status import read_startup_status
 from backend.app.core.database import connect, dict_from_row
+from backend.app.core.storage_accounting import storage_accounting
 from backend.app.core.vault_safety import vault_safety_status
 from backend.app.schemas import (
     DiskPreflightRequest,
@@ -43,6 +44,11 @@ def get_startup_status() -> dict:
 @router.get("/startup-repair")
 def get_startup_repair_summary(apply_recovery: bool = False) -> dict:
     return startup_repair_summary(apply_recovery=apply_recovery)
+
+
+@router.get("/storage")
+def get_storage_accounting(vault_id: str | None = None) -> dict:
+    return storage_accounting(vault_id)
 
 
 @router.post("/preflight/disk", response_model=DiskPreflightResponse)

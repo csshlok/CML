@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.embeddings import reindex_source_chunks, require_embeddings_available
+from backend.app.core.embeddings import content_hash, reindex_source_chunks, require_embeddings_available
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.config import get_settings
 from backend.app.core.vector_maintenance import vector_repair_plan
@@ -504,7 +504,7 @@ def _run_claimed_job(job: dict) -> None:
         elif job["job_type"] == "chat_transcript_memory":
             _run_chat_transcript_memory(payload)
         elif job["job_type"] == "ocr_source":
-            _run_ocr_source(payload)
+            _run_ocr_source(payload, job["id"])
         elif job["job_type"] == "expanded_analysis":
             _run_expanded_analysis(payload, job["id"])
         elif job["job_type"] == "delete_source_cleanup":
@@ -567,7 +567,7 @@ def _run_chat_transcript_memory(payload: dict) -> None:
         )
 
 
-def _run_ocr_source(payload: dict) -> None:
+def _run_ocr_source(payload: dict, job_id: str) -> None:
     require_embeddings_available("OCR source indexing")
     from backend.app.core.extraction import extract_pages_from_path
 
@@ -583,11 +583,22 @@ def _run_ocr_source(payload: dict) -> None:
         text = "\n\n".join(page for page in pages if page.strip()).strip()
         if not text:
             raise RuntimeError("OCR produced no readable text.")
+        _update_job_progress(
+            conn,
+            job_id,
+            {
+                "phase": "pages_extracted",
+                "page_current": 0,
+                "page_total": len(pages),
+                "progress_percent": 0.0 if pages else 100.0,
+            },
+        )
         now = utc_now()
         conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
         for index, page_text in enumerate(pages, start=1):
             cleaned = (page_text or "").strip()
             if not cleaned:
+                _update_ocr_page_progress(conn, job_id, index, len(pages), skipped=True)
                 continue
             conn.execute(
                 """
@@ -608,6 +619,7 @@ def _run_ocr_source(payload: dict) -> None:
                     now,
                 ),
             )
+            _update_ocr_page_progress(conn, job_id, index, len(pages))
         conn.execute(
             """
             UPDATE sources
@@ -620,6 +632,28 @@ def _run_ocr_source(payload: dict) -> None:
         if row is not None:
             reindex_source_chunks(conn, dict_from_row(row))
             mark_cluster_needs_update(conn, row["cluster_id"], "OCR source text was indexed.")
+
+
+def _update_ocr_page_progress(conn, job_id: str, page_current: int, page_total: int, *, skipped: bool = False) -> None:
+    percent = round((page_current / max(page_total, 1)) * 100, 2)
+    _update_job_progress(
+        conn,
+        job_id,
+        {
+            "phase": "page_indexing",
+            "page_current": page_current,
+            "page_total": page_total,
+            "progress_percent": percent,
+            "last_page_skipped": skipped,
+        },
+    )
+
+
+def _update_job_progress(conn, job_id: str, detail: dict) -> None:
+    conn.execute(
+        "UPDATE app_jobs SET status_detail = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+        (json.dumps(detail, separators=(",", ":")), utc_now(), job_id),
+    )
 
 
 def _run_expanded_analysis(payload: dict, job_id: str) -> None:

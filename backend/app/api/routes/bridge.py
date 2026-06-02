@@ -8,13 +8,19 @@ from fastapi import APIRouter, Header, HTTPException
 from backend.app.api.routes.search import semantic_search
 from backend.app.api.routes.sources import source_from_row
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.background_jobs import enqueue_job
+from backend.app.core.embeddings import content_hash
+from backend.app.core.memory_card import summarize_text
 from backend.app.schemas import (
+    BridgeArtifactCapture,
     BridgeContextRequest,
     BridgeContextResponse,
+    BridgeCaptureResponse,
     BridgeClientCreate,
     BridgeClientCreateResponse,
     BridgeClientRead,
     BridgeClientUpdate,
+    BridgeExternalTurnCapture,
     BridgeRequestRead,
     BridgeSettingsUpdate,
     BridgeStatus,
@@ -206,6 +212,65 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
         "source_snippets": ordered_sources,
         "warnings": warnings,
     }
+
+
+@router.post("/external-turn", response_model=BridgeCaptureResponse)
+def log_external_turn(
+    payload: BridgeExternalTurnCapture,
+    x_cml_bridge_token: str | None = Header(default=None),
+) -> dict:
+    vault_id, cluster_id = _authorize_bridge_write_scope(payload.vault_id, payload.cluster_id, x_cml_bridge_token)
+    title = f"External model turn - {payload.client_name}"[:240]
+    body = "\n\n".join(
+        part
+        for part in (
+            f"External model transcript from {payload.client_name}",
+            f"Model: {payload.model_name or 'unknown'}",
+            f"Context request ID: {payload.context_request_id or 'none'}",
+            "User prompt:",
+            payload.user_prompt,
+            "Model response:",
+            payload.model_response,
+            f"Metadata: {json.dumps(payload.metadata, sort_keys=True)}" if payload.metadata else "",
+        )
+        if part
+    )
+    return _capture_bridge_source(
+        vault_id=vault_id,
+        cluster_id=cluster_id,
+        title=title,
+        source_type="external_transcript",
+        text=body,
+        client_name=payload.client_name,
+        mode="external_turn",
+    )
+
+
+@router.post("/artifacts", response_model=BridgeCaptureResponse)
+def capture_external_artifact(
+    payload: BridgeArtifactCapture,
+    x_cml_bridge_token: str | None = Header(default=None),
+) -> dict:
+    vault_id, cluster_id = _authorize_bridge_write_scope(payload.vault_id, payload.cluster_id, x_cml_bridge_token)
+    body = "\n\n".join(
+        part
+        for part in (
+            f"External artifact from {payload.client_name}",
+            f"Artifact type: {payload.artifact_type}",
+            f"Metadata: {json.dumps(payload.metadata, sort_keys=True)}" if payload.metadata else "",
+            payload.content,
+        )
+        if part
+    )
+    return _capture_bridge_source(
+        vault_id=vault_id,
+        cluster_id=cluster_id,
+        title=payload.title,
+        source_type="external_artifact",
+        text=body,
+        client_name=payload.client_name,
+        mode="external_artifact",
+    )
 
 
 @router.get("/requests", response_model=list[BridgeRequestRead])
@@ -491,6 +556,109 @@ def _bridge_client_from_mapping(client: dict) -> dict:
         "allow_expert_calls": bool(client.get("allow_expert_calls")),
         "created_at": client["created_at"],
         "updated_at": client["updated_at"],
+    }
+
+
+def _authorize_bridge_write_scope(
+    vault_id: str | None,
+    cluster_id: str | None,
+    token: str | None,
+) -> tuple[str, str | None]:
+    settings = _get_bridge_settings()
+    client_permissions = _bridge_client_for_token(token)
+    if not settings["enabled"]:
+        raise HTTPException(status_code=403, detail="bridge_disabled")
+    if client_permissions is None and not _token_matches(settings["bridge_token"], token):
+        raise HTTPException(status_code=401, detail="bridge_token_invalid")
+    permissions = client_permissions or settings
+    resolved_vault_id = vault_id
+    if not resolved_vault_id:
+        if len(permissions["allowed_vault_ids"]) == 1:
+            resolved_vault_id = permissions["allowed_vault_ids"][0]
+        else:
+            raise HTTPException(status_code=409, detail="no_active_vault")
+    if permissions["allowed_vault_ids"] and resolved_vault_id not in permissions["allowed_vault_ids"]:
+        raise HTTPException(status_code=403, detail="vault_not_allowed")
+    if cluster_id and permissions["allowed_cluster_ids"] and cluster_id not in permissions["allowed_cluster_ids"]:
+        raise HTTPException(status_code=403, detail="cluster_not_allowed")
+    with connect() as conn:
+        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (resolved_vault_id,)).fetchone()
+        if vault is None:
+            raise HTTPException(status_code=404, detail="vault_not_found")
+        if cluster_id:
+            cluster = conn.execute(
+                "SELECT id FROM clusters WHERE id = ? AND vault_id = ?",
+                (cluster_id, resolved_vault_id),
+            ).fetchone()
+            if cluster is None:
+                raise HTTPException(status_code=404, detail="cluster_not_found")
+    return resolved_vault_id, cluster_id
+
+
+def _capture_bridge_source(
+    *,
+    vault_id: str,
+    cluster_id: str | None,
+    title: str,
+    source_type: str,
+    text: str,
+    client_name: str,
+    mode: str,
+) -> dict:
+    now = utc_now()
+    source_id = f"bridge-capture-{uuid4()}"
+    page_id = f"page-{uuid4()}"
+    clean_text = text.strip()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO sources (
+                id, vault_id, cluster_id, title, source_type, state, original_path, url,
+                checksum, raw_text, extracted_text, summary, tags, cover_image_url, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'indexed', NULL, NULL, ?, ?, ?, ?, ?, NULL, ?, ?)
+            """,
+            (
+                source_id,
+                vault_id,
+                cluster_id,
+                title,
+                source_type,
+                content_hash(clean_text),
+                clean_text,
+                clean_text,
+                summarize_text(clean_text),
+                json.dumps(["BRIDGE", "EXTERNAL", source_type.upper(), client_name.upper()[:40]]),
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO source_pages (
+                id, source_id, vault_id, page_number, raw_text, extraction_version,
+                content_hash, created_at, updated_at
+            )
+            VALUES (?, ?, ?, 1, ?, 'bridge-capture-v1', ?, ?, ?)
+            """,
+            (page_id, source_id, vault_id, clean_text, content_hash(clean_text), now, now),
+        )
+        enqueue_job(
+            conn,
+            job_type="reindex_source",
+            payload={"source_id": source_id},
+            dedupe_key=f"reindex-source:{source_id}",
+            scope_id=source_id,
+            user_initiated=True,
+        )
+        _insert_bridge_request(conn, client_name, title, mode)
+    return {
+        "source_id": source_id,
+        "vault_id": vault_id,
+        "cluster_id": cluster_id,
+        "source_type": source_type,
+        "indexed": True,
+        "warnings": ["External model output was saved as derived transcript/artifact data."],
     }
 
 

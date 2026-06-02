@@ -248,6 +248,36 @@ class BridgeContextResponse(BaseModel):
     warnings: list[str]
 
 
+class BridgeExternalTurnCapture(BaseModel):
+    vault_id: str | None = None
+    cluster_id: str | None = None
+    client_name: str = "unknown"
+    user_prompt: str = Field(min_length=1)
+    model_response: str = Field(min_length=1)
+    context_request_id: str | None = None
+    model_name: str | None = None
+    metadata: dict = Field(default_factory=dict)
+
+
+class BridgeArtifactCapture(BaseModel):
+    vault_id: str | None = None
+    cluster_id: str | None = None
+    client_name: str = "unknown"
+    title: str = Field(min_length=1, max_length=240)
+    content: str = Field(min_length=1)
+    artifact_type: str = "generated_text"
+    metadata: dict = Field(default_factory=dict)
+
+
+class BridgeCaptureResponse(BaseModel):
+    source_id: str
+    vault_id: str
+    cluster_id: str | None = None
+    source_type: str
+    indexed: bool
+    warnings: list[str] = []
+
+
 class BridgeRequestRead(BaseModel):
     id: str
     client_name: str

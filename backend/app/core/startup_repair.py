@@ -11,6 +11,7 @@ def startup_repair_summary(*, apply_recovery: bool = False) -> dict:
         "database_integrity": "unknown",
         "schema": "unknown",
         "interrupted_jobs": {},
+        "interrupted_migrations": [],
         "vector_repair": {},
         "safe_degraded_mode": False,
         "issues": [],
@@ -26,6 +27,11 @@ def startup_repair_summary(*, apply_recovery: bool = False) -> dict:
         summary["safe_degraded_mode"] = True
         summary["issues"].append(f"database_or_schema_check_failed: {exc}")
         return summary
+
+    try:
+        summary["interrupted_migrations"] = _interrupted_migrations()
+    except Exception as exc:
+        summary["issues"].append(f"migration_status_check_failed: {exc}")
 
     try:
         if apply_recovery:
@@ -55,3 +61,29 @@ def _interrupted_job_counts() -> dict:
             """
         ).fetchall()
     return {str(row["restart_policy"] or "unknown"): int(row["count"]) for row in rows}
+
+
+def _interrupted_migrations() -> list[dict]:
+    with connect() as conn:
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+        ).fetchone()
+        if exists is None:
+            return []
+        rows = conn.execute(
+            """
+            SELECT version, name, started_at, error
+            FROM schema_migrations
+            WHERE status = 'running'
+            ORDER BY version ASC
+            """
+        ).fetchall()
+    return [
+        {
+            "version": int(row["version"]),
+            "name": row["name"],
+            "started_at": row["started_at"],
+            "error": row["error"],
+        }
+        for row in rows
+    ]

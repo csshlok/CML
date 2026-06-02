@@ -2,6 +2,13 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.core.database import connect, dict_from_row
 from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text, reindex_source_chunks, require_embeddings_available
+from backend.app.core.retrieval_scoring import (
+    compare_source_classes,
+    export_benchmark_report,
+    retrieval_eval_fixtures,
+    scoring_ledger,
+    threshold_benchmark,
+)
 from backend.app.core.vector_maintenance import (
     activate_embedding_index,
     begin_embedding_index_transition,
@@ -79,6 +86,51 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
         "query": payload.query,
         "results": scored[: payload.limit],
     }
+
+
+@router.get("/scoring-ledger")
+def get_scoring_ledger(vault_id: str, query: str, cluster_id: str | None = None, limit: int = 20) -> dict:
+    if not query.strip():
+        raise HTTPException(status_code=400, detail="query is required")
+    try:
+        require_embeddings_available("Scoring ledger")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return scoring_ledger(vault_id, query.strip(), cluster_id=cluster_id, limit=limit)
+
+
+@router.get("/eval-fixtures")
+def get_retrieval_eval_fixtures() -> dict:
+    return retrieval_eval_fixtures()
+
+
+@router.get("/threshold-benchmark")
+def get_threshold_benchmark(vault_id: str) -> dict:
+    try:
+        require_embeddings_available("Threshold benchmark")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return threshold_benchmark(vault_id)
+
+
+@router.get("/compare-source-classes")
+def get_compare_source_classes(vault_id: str, query: str, cluster_id: str | None = None) -> dict:
+    if not query.strip():
+        raise HTTPException(status_code=400, detail="query is required")
+    try:
+        require_embeddings_available("Source-class comparison")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return compare_source_classes(vault_id, query.strip(), cluster_id=cluster_id)
+
+
+@router.post("/benchmark-report")
+def create_benchmark_report(vault_id: str) -> dict:
+    try:
+        require_embeddings_available("Benchmark report")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return export_benchmark_report(vault_id)
 
 
 @router.post("/reindex/{vault_id}")
