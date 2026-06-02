@@ -120,6 +120,9 @@ The Electron shell opens the same local UI through `npm run dev`.
 - `DELETE /api/v1/sources/{source_id}` - remove a source.
 - `POST /api/v1/search/semantic` - search indexed source chunks by local semantic similarity.
 - `POST /api/v1/search/reindex/{vault_id}` - rebuild local search chunks for indexed sources.
+- `GET /api/v1/search/vectors/repair-plan` - inspect missing/stale vector index work.
+- `POST /api/v1/search/vectors/repair` - repair missing/stale vectors for indexed sources.
+- `POST /api/v1/search/vectors/compact` - remove deleted/orphaned vector chunks and optimize SQLite.
 - `GET /api/v1/clusters/suggestions` - review vector-based source-to-cluster move suggestions.
 - `POST /api/v1/chat/context` - build a retrieval-grounded chat draft with clusters used and citations.
 - `GET /api/v1/models` - list recommended local model options and install status.
@@ -129,6 +132,7 @@ The Electron shell opens the same local UI through `npm run dev`.
 - `GET /api/v1/models/{model_id}` - inspect one model option.
 - `POST /api/v1/models/{model_id}/download` - start an explicit GGUF model download into local app data.
 - `POST /api/v1/models/{model_id}/download/cancel` - cancel an active GGUF model download and clean up the partial file.
+- `GET /api/v1/system/startup-repair` - inspect startup integrity, interrupted jobs, and vector repair state.
 - `GET /api/v1/bridge/status` - Context Bridge status.
 - `POST /api/v1/bridge/context` - request selected context for an external local client.
 - `GET /api/v1/bridge/requests` - recent bridge request history.
@@ -210,6 +214,12 @@ For NVIDIA CUDA testing on Windows:
 
 The current local test machine stores downloaded GGUFs under `T:\LLM` via `CML_MODELS_DIR`. Use `.\scripts\llm\benchmark-local-models.ps1` to compare the downloaded model ladder through llama.cpp.
 
+Backend-only ingestion/search/vector repair benchmark:
+
+```powershell
+.\scripts\backend\benchmark-backend.ps1 -Sources 250 -WordsPerSource 240 -ReportPath .tmp\backend-benchmark-report.md
+```
+
 Every cluster must have a verified local LoRA expert lifecycle for public V1. The app currently has the backend contract for dataset export, trainer process handoff, adapter artifact validation, quality metrics, activation, rollback, and cleanup guardrails. The deterministic test trainer is for CI only; real public-V1 validation must run through a LLaMA-Factory-compatible trainer command.
 
 Contributor setup for the separate trainer environment:
@@ -257,7 +267,7 @@ CML does not call a remote OCR service. Windows packages stage local OCR tools u
 
 The expected local runtime is `tesseract.exe`, `tessdata\eng.traineddata`, qpdf, Ghostscript, and the packaged Python OCRmyPDF/PyMuPDF dependencies. Image OCR needs Tesseract plus tessdata. Scanned-PDF OCR prefers OCRmyPDF with qpdf/Ghostscript and falls back to PyMuPDF page rendering plus Tesseract when OCRmyPDF is incomplete.
 
-`package-windows.ps1` runs OCR staging by default; pass `-SkipOcrRuntimeDownload` only for dry package tests. If Ghostscript is not staging cleanly yet, use `-SkipGhostscriptInstaller -AllowPartialOcrRuntime` to package the working Tesseract/PyMuPDF fallback path.
+`package-windows.ps1` runs OCR staging by default; pass `-SkipOcrRuntimeDownload` only for dry package tests. If auto-detection misses a local tool install, pass `-TesseractExePath` or `-GhostscriptExePath`; use `-SkipGhostscriptInstaller -AllowPartialOcrRuntime` only when intentionally packaging the Tesseract/PyMuPDF fallback path.
 
 For local OCR accuracy smoke tests:
 

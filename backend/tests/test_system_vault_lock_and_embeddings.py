@@ -659,6 +659,144 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertIn("Another model download", result["error"])
 
+    def test_embedding_download_state_reports_progress_contract(self) -> None:
+        from backend.app.core.embeddings import embedding_download_status, start_embedding_model_download
+
+        with patch("threading.Thread.start", return_value=None):
+            state = start_embedding_model_download(str(self.data_dir / "embeddings"), "sentence-transformers/test-model")
+        current = embedding_download_status()
+
+        self.assertIn("bytes_downloaded", state)
+        self.assertIn("bytes_total", current)
+        self.assertIn("progress_percent", current)
+        self.assertIn("download_speed_bps", current)
+        self.assertIn("eta_seconds", current)
+        self.assertIn("updated_at", current)
+
+    def test_vector_repair_plan_repair_and_compaction_cover_stale_missing_orphans(self) -> None:
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.vector_maintenance import compact_vectors, repair_vectors, vector_repair_plan
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO sources (id, vault_id, title, source_type, state, raw_text, extracted_text, created_at, updated_at)
+                VALUES ('source-missing', 'vault-1', 'Missing', 'note', 'indexed', ?, ?, ?, ?)
+                """,
+                ("missing vector text " * 40, "missing vector text " * 40, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO sources (id, vault_id, title, source_type, state, raw_text, extracted_text, deleted_at, created_at, updated_at)
+                VALUES ('deleted-source', 'vault-1', 'Deleted', 'note', 'indexed', 'deleted', 'deleted', ?, ?, ?)
+                """,
+                (now, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO source_chunks (
+                    id, source_id, vault_id, chunk_index, text, embedding, embedding_model_id,
+                    content_hash, index_version, indexed_at, created_at
+                )
+                VALUES ('chunk-orphan', 'deleted-source', 'vault-1', 0, 'orphan', '[]', 'old-model', 'hash', 'old', NULL, ?)
+                """,
+                (now,),
+            )
+
+        plan = vector_repair_plan("vault-1")
+        self.assertIn("source-missing", plan["missing_vector_source_ids"])
+        self.assertEqual(plan["orphan_chunk_count"], 1)
+
+        repaired = repair_vectors("vault-1")
+        compacted = compact_vectors("vault-1")
+
+        self.assertEqual(repaired["sources_repaired"], 1)
+        self.assertGreater(repaired["chunks_indexed"], 0)
+        self.assertEqual(compacted["orphan_chunks_removed"], 1)
+
+    def test_vector_policy_transition_is_atomic_and_readable(self) -> None:
+        from backend.app.core.vector_maintenance import (
+            activate_embedding_index,
+            begin_embedding_index_transition,
+            embedding_index_policy,
+        )
+
+        building = begin_embedding_index_transition("sentence-transformers/new-model")
+        active = activate_embedding_index("sentence-transformers/new-model")
+        current = embedding_index_policy()
+
+        self.assertEqual(building["transition_state"], "building")
+        self.assertEqual(active["transition_state"], "active")
+        self.assertEqual(current["active_embedding_model_id"], "sentence-transformers/new-model")
+        self.assertIsNone(current["building_embedding_model_id"])
+
+    def test_startup_repair_summary_reports_running_jobs_without_mutating_by_default(self) -> None:
+        from backend.app.core.background_jobs import enqueue_job
+        from backend.app.core.database import connect
+        from backend.app.core.startup_repair import startup_repair_summary
+
+        with connect() as conn:
+            job = enqueue_job(conn, job_type="reindex_source", payload={"source_id": "source-1"})
+            conn.execute("UPDATE app_jobs SET status = 'running' WHERE id = ?", (job["id"],))
+
+        summary = startup_repair_summary()
+        self.assertEqual(summary["database_integrity"], "ok")
+        self.assertEqual(summary["interrupted_jobs"].get("requeue"), 1)
+        with connect() as conn:
+            row = conn.execute("SELECT status FROM app_jobs WHERE id = ?", (job["id"],)).fetchone()
+        self.assertEqual(row["status"], "running")
+
+        repaired = startup_repair_summary(apply_recovery=True)
+        self.assertEqual(repaired["interrupted_jobs"]["queued"], 1)
+
+    def test_diagnostic_bundle_includes_runtime_startup_and_vector_summaries(self) -> None:
+        from zipfile import ZipFile
+
+        from backend.app.api.routes.diagnostics import create_diagnostic_bundle
+
+        bundle = create_diagnostic_bundle()
+        with ZipFile(bundle["bundle_path"]) as archive:
+            names = set(archive.namelist())
+
+        self.assertIn("runtime-summary.json", names)
+        self.assertIn("startup-repair-summary.json", names)
+        self.assertIn("vector-summary.json", names)
+
+    def test_network_security_blocks_ipv4_mapped_loopback_and_bad_schemes(self) -> None:
+        from backend.app.core.network_security import NetworkSecurityError, validate_public_http_url
+
+        with self.assertRaises(NetworkSecurityError):
+            validate_public_http_url("http://[::ffff:127.0.0.1]/secret")
+        with self.assertRaises(NetworkSecurityError):
+            validate_public_http_url("file:///C:/secret.txt")
+
+    def test_link_diagnostics_reports_sanitization_security_and_dynamic_fallback(self) -> None:
+        from backend.app.core.extraction import link_extraction_diagnostics
+
+        with patch("socket.getaddrinfo", return_value=[(None, None, None, None, ("93.184.216.34", 443))]):
+            result = link_extraction_diagnostics("https://user:pass@example.com/article")
+
+        self.assertTrue(result["input_url_had_credentials"])
+        self.assertEqual(result["sanitized_url"], "https://example.com/article")
+        self.assertTrue(result["allowed"])
+        self.assertIn("static_http", result["extraction_order"])
+        self.assertIn("browser_rendered_dynamic_fallback", result["extraction_order"])
+
+    def test_backend_benchmark_script_exercises_search_and_vector_repair(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        script = repo_root / "scripts" / "backend" / "benchmark-backend.ps1"
+        text = script.read_text(encoding="utf-8")
+
+        self.assertIn("semantic_search", text)
+        self.assertIn("vector_repair_plan", text)
+        self.assertIn("repair_vectors", text)
+        self.assertIn("compact_vectors", text)
+
     def _client(self) -> TestClient:
         from backend.app.core.config import get_settings
 

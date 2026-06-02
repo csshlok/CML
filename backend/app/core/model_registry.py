@@ -7,8 +7,10 @@ from urllib.request import Request, urlopen
 import json
 import shutil
 import threading
+import time
 
 from backend.app.core.config import get_settings
+from backend.app.core.database import utc_now
 from backend.app.core.network_security import NetworkSecurityError, validate_huggingface_url
 
 
@@ -104,6 +106,8 @@ def model_status(model_id: str) -> dict[str, Any]:
     info = _model_to_dict(model)
     local_path = _find_local_model_file(model)
     state = _download_state.get(model_id)
+    if state:
+        state = _normalized_download_state(state)
     state_installed_path = state.get("local_path") if state and state.get("status") == "installed" else None
     info.update(
         {
@@ -130,8 +134,14 @@ def start_model_download(model_id: str) -> dict[str, Any]:
             "model_id": model_id,
             "status": "failed",
             "bytes_downloaded": 0,
+            "bytes_total": None,
             "total_bytes": None,
+            "progress_percent": None,
+            "download_speed_bps": None,
+            "eta_seconds": None,
             "error": disk_check["message"],
+            "started_at": utc_now(),
+            "updated_at": utc_now(),
         }
         with _download_lock:
             _download_state[model_id] = state
@@ -152,8 +162,14 @@ def start_model_download(model_id: str) -> dict[str, Any]:
                 "model_id": model_id,
                 "status": "blocked",
                 "bytes_downloaded": 0,
+                "bytes_total": None,
                 "total_bytes": None,
+                "progress_percent": None,
+                "download_speed_bps": None,
+                "eta_seconds": None,
                 "error": f"Another model download is already {active_other.get('status')}.",
+                "started_at": utc_now(),
+                "updated_at": utc_now(),
             }
             _download_state[model_id] = state
             return state
@@ -164,13 +180,19 @@ def start_model_download(model_id: str) -> dict[str, Any]:
             "model_id": model_id,
             "status": "resolving",
             "bytes_downloaded": 0,
+            "bytes_total": None,
             "total_bytes": None,
+            "progress_percent": None,
+            "download_speed_bps": None,
+            "eta_seconds": None,
             "error": None,
+            "started_at": utc_now(),
+            "updated_at": utc_now(),
         }
 
     thread = threading.Thread(target=_download_model, args=(model,), daemon=True)
     thread.start()
-    return _download_state[model_id]
+    return _normalized_download_state(_download_state[model_id])
 
 
 def cancel_model_download(model_id: str) -> dict[str, Any]:
@@ -183,7 +205,20 @@ def cancel_model_download(model_id: str) -> dict[str, Any]:
             return state
         local_path = _find_local_model_file(model)
         if local_path is not None:
-            installed = {"model_id": model_id, "status": "installed", "local_path": str(local_path), "error": None}
+            installed = {
+                "model_id": model_id,
+                "status": "installed",
+                "local_path": str(local_path),
+                "bytes_downloaded": local_path.stat().st_size,
+                "bytes_total": local_path.stat().st_size,
+                "total_bytes": local_path.stat().st_size,
+                "progress_percent": 100.0,
+                "download_speed_bps": None,
+                "eta_seconds": 0,
+                "error": None,
+                "started_at": None,
+                "updated_at": utc_now(),
+            }
             _download_state[model_id] = installed
             return installed
         if not state or state.get("status") not in {"resolving", "downloading"}:
@@ -191,14 +226,20 @@ def cancel_model_download(model_id: str) -> dict[str, Any]:
                 "model_id": model_id,
                 "status": "cancelled",
                 "bytes_downloaded": state.get("bytes_downloaded") if state else 0,
+                "bytes_total": state.get("bytes_total") if state else None,
                 "total_bytes": state.get("total_bytes") if state else None,
+                "progress_percent": state.get("progress_percent") if state else None,
+                "download_speed_bps": None,
+                "eta_seconds": None,
                 "file_name": state.get("file_name") if state else None,
                 "local_path": state.get("local_path") if state else None,
                 "error": None,
+                "started_at": state.get("started_at") if state else None,
+                "updated_at": utc_now(),
             }
             return _download_state[model_id]
         _cancelled_downloads.add(model_id)
-        state.update({"status": "cancelling"})
+        state.update({"status": "cancelling", "updated_at": utc_now()})
         return state
 
 
@@ -258,7 +299,12 @@ def _download_model(model: LocalModel) -> None:
 
         with _download_lock:
             _download_state[model.id].update(
-                {"status": "downloading", "file_name": safe_file_name, "local_path": str(target)}
+                {
+                    "status": "downloading",
+                    "file_name": safe_file_name,
+                    "local_path": str(target),
+                    "updated_at": utc_now(),
+                }
             )
 
         request = Request(url, headers={"User-Agent": "CML-local-backend/0.1"})
@@ -266,6 +312,7 @@ def _download_model(model: LocalModel) -> None:
             total = response.headers.get("Content-Length")
             total_bytes = int(total) if total and total.isdigit() else None
             downloaded = 0
+            started_monotonic = time.monotonic()
             with partial.open("wb") as file:
                 while True:
                     _raise_if_cancelled(model.id)
@@ -274,18 +321,20 @@ def _download_model(model: LocalModel) -> None:
                         break
                     file.write(chunk)
                     downloaded += len(chunk)
-                    with _download_lock:
-                        _download_state[model.id].update(
-                            {"bytes_downloaded": downloaded, "total_bytes": total_bytes}
-                        )
+                    _update_model_download_progress(model.id, downloaded, total_bytes, started_monotonic)
         partial.replace(target)
         with _download_lock:
             _download_state[model.id].update(
                 {
                     "status": "installed",
                     "bytes_downloaded": target.stat().st_size,
+                    "bytes_total": target.stat().st_size,
                     "total_bytes": target.stat().st_size,
+                    "progress_percent": 100.0,
+                    "download_speed_bps": None,
+                    "eta_seconds": 0,
                     "local_path": str(target),
+                    "updated_at": utc_now(),
                 }
             )
     except Exception as exc:
@@ -293,10 +342,49 @@ def _download_model(model: LocalModel) -> None:
             _cleanup_partial_download(model)
             with _download_lock:
                 _cancelled_downloads.discard(model.id)
-                _download_state[model.id].update({"status": "cancelled", "error": None})
+                _download_state[model.id].update({"status": "cancelled", "error": None, "updated_at": utc_now()})
             return
         with _download_lock:
-            _download_state[model.id].update({"status": "failed", "error": str(exc)})
+            _download_state[model.id].update({"status": "failed", "error": str(exc), "updated_at": utc_now()})
+
+
+def _update_model_download_progress(model_id: str, downloaded: int, total: int | None, started_monotonic: float) -> None:
+    elapsed = max(0.001, time.monotonic() - started_monotonic)
+    speed = int(downloaded / elapsed) if downloaded > 0 else None
+    percent = None
+    eta = None
+    if total and total > 0:
+        percent = round(min(100.0, (downloaded / total) * 100.0), 2)
+        if speed:
+            eta = max(0, int((total - downloaded) / speed))
+    with _download_lock:
+        _download_state[model_id].update(
+            {
+                "bytes_downloaded": downloaded,
+                "bytes_total": total,
+                "total_bytes": total,
+                "progress_percent": percent,
+                "download_speed_bps": speed,
+                "eta_seconds": eta,
+                "updated_at": utc_now(),
+            }
+        )
+
+
+def _normalized_download_state(state: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(state)
+    payload.setdefault("bytes_total", payload.get("total_bytes"))
+    payload.setdefault("total_bytes", payload.get("bytes_total"))
+    downloaded = payload.get("bytes_downloaded") or 0
+    total = payload.get("bytes_total") or payload.get("total_bytes")
+    payload["bytes_downloaded"] = downloaded
+    if total and payload.get("progress_percent") is None:
+        payload["progress_percent"] = round(min(100.0, (downloaded / total) * 100.0), 2)
+    payload.setdefault("download_speed_bps", None)
+    payload.setdefault("eta_seconds", None)
+    payload.setdefault("started_at", None)
+    payload.setdefault("updated_at", None)
+    return payload
 
 
 class DownloadCancelled(RuntimeError):

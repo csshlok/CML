@@ -99,7 +99,7 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
     if not settings["enabled"]:
         _log_bridge_request(payload, mode_suffix="blocked_disabled")
         raise HTTPException(status_code=403, detail="bridge_disabled")
-    if client_permissions is None and (not settings["bridge_token"] or x_cml_bridge_token != settings["bridge_token"]):
+    if client_permissions is None and not _token_matches(settings["bridge_token"], x_cml_bridge_token):
         _log_bridge_request(payload, mode_suffix="blocked_token")
         raise HTTPException(status_code=401, detail="bridge_token_invalid")
     permissions = client_permissions or settings
@@ -360,7 +360,7 @@ def list_bridge_clusters(x_cml_bridge_token: str | None = Header(default=None)) 
     client_permissions = _bridge_client_for_token(x_cml_bridge_token)
     if not settings["enabled"]:
         raise HTTPException(status_code=403, detail="bridge_disabled")
-    if client_permissions is None and (not settings["bridge_token"] or x_cml_bridge_token != settings["bridge_token"]):
+    if client_permissions is None and not _token_matches(settings["bridge_token"], x_cml_bridge_token):
         raise HTTPException(status_code=401, detail="bridge_token_invalid")
     permissions = client_permissions or settings
     if not permissions["allowed_vault_ids"]:
@@ -454,6 +454,8 @@ def _token_hash(token: str) -> str:
 
 
 def _bridge_client_for_token(token: str | None) -> dict | None:
+    if token and len(token) > 512:
+        return None
     token_hash = _token_hash(token or "")
     if not token_hash:
         return None
@@ -462,9 +464,15 @@ def _bridge_client_for_token(token: str | None) -> dict | None:
             "SELECT * FROM bridge_clients WHERE enabled = 1"
         ).fetchall()
     for row in rows:
-        if row["token_hash"] == token_hash:
+        if secrets.compare_digest(str(row["token_hash"]), token_hash):
             return _bridge_client_from_row(row)
     return None
+
+
+def _token_matches(expected: str, supplied: str | None) -> bool:
+    if not expected or not supplied or len(supplied) > 512:
+        return False
+    return secrets.compare_digest(expected, supplied)
 
 
 def _bridge_client_from_row(row) -> dict:

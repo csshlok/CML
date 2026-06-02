@@ -10,7 +10,7 @@ from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.embeddings import content_hash, require_embeddings_available
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
-from backend.app.core.extraction import ExtractionError, extract_pages_from_path, extract_text_from_url
+from backend.app.core.extraction import ExtractionError, extract_pages_from_path, extract_text_from_url, link_extraction_diagnostics
 from backend.app.core.memory_card import generate_tags, summarize_text
 from backend.app.core.network_security import strip_url_credentials
 from backend.app.core.sql import build_update_assignments
@@ -211,6 +211,11 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
             cover_image_url=cover_image_url,
         )
     )
+
+
+@router.get("/link-diagnostics")
+def get_link_diagnostics(url: str) -> dict:
+    return link_extraction_diagnostics(url)
 
 
 @router.get("/{source_id}", response_model=SourceRead)

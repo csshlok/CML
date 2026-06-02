@@ -4,6 +4,7 @@ from backend.app.core.hardware import hardware_status
 from backend.app.core.lora_training import trainer_dependency_status
 from backend.app.core.ocr import ocr_runtime_status
 from backend.app.core.preflight import disk_preflight
+from backend.app.core.startup_repair import startup_repair_summary
 from backend.app.core.startup_status import read_startup_status
 from backend.app.core.database import connect, dict_from_row
 from backend.app.core.vault_safety import vault_safety_status
@@ -37,6 +38,11 @@ def get_startup_status() -> dict:
             "updated_at": "",
         }
     return status
+
+
+@router.get("/startup-repair")
+def get_startup_repair_summary(apply_recovery: bool = False) -> dict:
+    return startup_repair_summary(apply_recovery=apply_recovery)
 
 
 @router.post("/preflight/disk", response_model=DiskPreflightResponse)

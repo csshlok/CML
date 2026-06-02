@@ -351,6 +351,28 @@ def extract_text_from_url(url: str) -> tuple[str, str, str | None]:
     return title or fallback_title, text, cover_image_url
 
 
+def link_extraction_diagnostics(url: str) -> dict:
+    sanitized_url = strip_url_credentials(url)
+    diagnostics = {
+        "input_url_had_credentials": sanitized_url != url,
+        "sanitized_url": sanitized_url,
+        "allowed": False,
+        "security_error": "",
+        "static_timeout_seconds": 12,
+        "dynamic_timeout_seconds": 12,
+        "max_response_bytes": MAX_LINK_BYTES,
+        "dynamic_fallback_available": False,
+        "extraction_order": ["static_http", "browser_rendered_dynamic_fallback"],
+    }
+    try:
+        validate_public_http_url(sanitized_url)
+        diagnostics["allowed"] = True
+    except NetworkSecurityError as exc:
+        diagnostics["security_error"] = str(exc)
+    diagnostics["dynamic_fallback_available"] = importlib.util.find_spec("playwright") is not None
+    return diagnostics
+
+
 def _needs_dynamic_extraction(text: str, html: str) -> bool:
     lowered = html.lower()
     script_count = lowered.count("<script")

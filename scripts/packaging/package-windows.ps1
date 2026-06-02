@@ -2,6 +2,7 @@ param(
   [switch]$IncludeEmbeddingRuntime,
   [switch]$SkipOcrRuntimeDownload,
   [string]$TesseractExePath = "",
+  [string]$GhostscriptExePath = "",
   [switch]$SkipGhostscriptInstaller,
   [switch]$AllowPartialOcrRuntime
 )
@@ -38,6 +39,9 @@ if (-not $SkipOcrRuntimeDownload) {
   $ocrArgs = @()
   if ($TesseractExePath) {
     $ocrArgs += @("-TesseractExePath", $TesseractExePath)
+  }
+  if ($GhostscriptExePath) {
+    $ocrArgs += @("-GhostscriptExePath", $GhostscriptExePath)
   }
   if ($SkipGhostscriptInstaller) {
     $ocrArgs += "-SkipGhostscriptInstaller"

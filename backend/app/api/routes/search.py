@@ -2,6 +2,14 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.core.database import connect, dict_from_row
 from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text, reindex_source_chunks, require_embeddings_available
+from backend.app.core.vector_maintenance import (
+    activate_embedding_index,
+    begin_embedding_index_transition,
+    compact_vectors,
+    embedding_index_policy,
+    repair_vectors,
+    vector_repair_plan,
+)
 from backend.app.schemas import SemanticSearchRequest, SemanticSearchResponse
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -100,3 +108,41 @@ def reindex_vault(vault_id: str) -> dict:
         "sources_indexed": len(rows),
         "chunks_indexed": chunk_count,
     }
+
+
+@router.get("/vectors/policy")
+def get_vector_policy() -> dict:
+    return embedding_index_policy()
+
+
+@router.post("/vectors/policy/begin-transition")
+def begin_vector_policy_transition(model_id: str) -> dict:
+    if not model_id.strip():
+        raise HTTPException(status_code=400, detail="model_id is required")
+    return begin_embedding_index_transition(model_id.strip())
+
+
+@router.post("/vectors/policy/activate")
+def activate_vector_policy(model_id: str, index_version: str = "v1") -> dict:
+    if not model_id.strip():
+        raise HTTPException(status_code=400, detail="model_id is required")
+    return activate_embedding_index(model_id.strip(), index_version.strip() or "v1")
+
+
+@router.get("/vectors/repair-plan")
+def get_vector_repair_plan(vault_id: str | None = None) -> dict:
+    return vector_repair_plan(vault_id)
+
+
+@router.post("/vectors/repair")
+def repair_vector_index(vault_id: str | None = None, limit: int = 100) -> dict:
+    try:
+        require_embeddings_available("Vector repair")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return repair_vectors(vault_id, limit=max(1, min(limit, 1000)))
+
+
+@router.post("/vectors/compact")
+def compact_vector_index(vault_id: str | None = None) -> dict:
+    return compact_vectors(vault_id)

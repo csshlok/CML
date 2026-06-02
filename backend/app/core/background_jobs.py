@@ -6,9 +6,10 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.embeddings import active_embedding_model_id, reindex_source_chunks, require_embeddings_available
+from backend.app.core.embeddings import reindex_source_chunks, require_embeddings_available
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.config import get_settings
+from backend.app.core.vector_maintenance import vector_repair_plan
 from backend.app.core.training_dataset import build_cluster_dataset, write_cluster_training_dataset
 from backend.app.core.training_evaluation import evaluate_adapter_quality, evaluate_cluster_dataset
 from backend.app.core.lora_training import new_artifact_dir, run_lora_training_process, training_config
@@ -739,36 +740,17 @@ def _enqueue_due_integration_refresh_jobs() -> None:
 def _run_vector_reconcile_incremental(payload: dict) -> None:
     require_embeddings_available("Vector reconciliation")
     vault_id = payload.get("vault_id")
-    model_id = active_embedding_model_id()
+    limit = int(payload.get("limit") or 100)
+    plan = vector_repair_plan(str(vault_id) if vault_id else None)
+    source_ids = [*plan["missing_vector_source_ids"], *plan["stale_vector_source_ids"]][:limit]
     with connect() as conn:
-        params: list[str] = []
-        vault_clause = ""
-        if vault_id:
-            vault_clause = "AND sources.vault_id = ?"
-            params.append(str(vault_id))
-        params.append(model_id)
-        rows = conn.execute(
-            f"""
-            SELECT sources.id
-            FROM sources
-            LEFT JOIN source_chunks chunks ON chunks.source_id = sources.id
-            WHERE sources.state = 'indexed'
-                AND sources.deleted_at IS NULL
-                {vault_clause}
-            GROUP BY sources.id
-            HAVING COUNT(chunks.id) = 0
-                OR SUM(CASE WHEN chunks.embedding_model_id != ? THEN 1 ELSE 0 END) > 0
-            LIMIT 100
-            """,
-            params,
-        ).fetchall()
-        for row in rows:
+        for source_id in source_ids:
             enqueue_job(
                 conn,
                 job_type="reindex_source",
-                payload={"source_id": row["id"]},
-                dedupe_key=f"reindex-source:{row['id']}",
-                scope_id=row["id"],
+                payload={"source_id": source_id},
+                dedupe_key=f"reindex-source:{source_id}",
+                scope_id=source_id,
             )
 
 
