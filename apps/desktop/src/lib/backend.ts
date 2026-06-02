@@ -513,6 +513,13 @@ export type LocalFolderScanResponse = {
   supported_count: number;
   skipped_count: number;
   truncated: boolean;
+  imported_count: number;
+  updated_count: number;
+  moved_count: number;
+  unchanged_count: number;
+  tombstoned_count: number;
+  failed_count: number;
+  failures: Array<{ path: string; error: string }>;
 };
 
 export type IntegrationImportRecord = {
@@ -524,7 +531,14 @@ export type IntegrationImportRecord = {
   supported_count: number;
   skipped_count: number;
   truncated: boolean;
+  imported_count: number;
+  updated_count: number;
+  moved_count: number;
+  unchanged_count: number;
+  tombstoned_count: number;
+  failed_count: number;
   last_scan_at: string;
+  last_import_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -1117,9 +1131,16 @@ export async function scanLocalFolderIntegration(payload: {
   });
 }
 
-export async function refreshIntegrationImport(importId: string) {
+export async function refreshIntegrationImport(
+  importId: string,
+  options?: { import_files?: boolean; tombstone_missing?: boolean },
+) {
+  const params = new URLSearchParams();
+  if (options?.import_files) params.set("import_files", "true");
+  if (options?.tombstone_missing) params.set("tombstone_missing", "true");
+  const query = params.toString() ? `?${params.toString()}` : "";
   return request<LocalFolderScanResponse>(
-    `/api/v1/integrations/imports/${encodeURIComponent(importId)}/refresh`,
+    `/api/v1/integrations/imports/${encodeURIComponent(importId)}/refresh${query}`,
     { method: "POST" },
   );
 }

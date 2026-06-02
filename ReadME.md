@@ -28,6 +28,8 @@ The core product contract is:
 
 Stage 1 is in progress. The repo currently has a working Electron/Vite desktop workspace, a local FastAPI backend, SQLite-backed CRUD routes for vaults/clusters/sources, TXT/Markdown/DOCX/PDF/pasted-text/link ingestion, drag-and-drop document import in the desktop shell, local synced-folder import for Drive/Dropbox/OneDrive/iCloud-style folders, per-file batch import failure reporting, generated source summaries/tags, link title/image metadata, local chunk/embedding storage, semantic search, vector-based cluster move suggestions, retrieval-grounded chat context routing with citations, persisted chat sessions, local model registry/runtime endpoints, a bridge status/request API, backend-aware Settings/Sources/Clusters/Chat screens, and a redesigned map prototype with cluster anchors, unlabeled data points, hover previews, and in-map cluster detail.
 
+Tracked local folder imports can be manually refreshed from Settings. Refresh reconciliation imports new files, updates changed files, detects moved files by checksum, tombstones deleted files when requested, and reports batch outcome counts.
+
 The next major build target is improving chat synthesis and wiring Context Bridge to semantic retrieval.
 
 ## Prerequisites
@@ -130,6 +132,8 @@ The Electron shell opens the same local UI through `npm run dev`.
 - `GET /api/v1/bridge/status` - Context Bridge status.
 - `POST /api/v1/bridge/context` - request selected context for an external local client.
 - `GET /api/v1/bridge/requests` - recent bridge request history.
+- `POST /api/v1/integrations/local-folder/scan` - scan a local/synced/Obsidian folder and optionally record import history.
+- `POST /api/v1/integrations/imports/{import_id}/refresh?import_files=true&tombstone_missing=true` - refresh a recorded folder and reconcile imported sources.
 
 ## Development workflow
 

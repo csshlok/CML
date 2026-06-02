@@ -1115,6 +1115,96 @@ class SourcePageIndexingTests(unittest.TestCase):
         refreshed = refresh_integration_import(result["import_id"])
         self.assertEqual(refreshed["supported_count"], 2)
 
+    def test_integration_refresh_imports_updates_moves_and_tombstones_sources(self) -> None:
+        from backend.app.api.routes.integrations import refresh_integration_import, scan_local_folder_integration
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import LocalFolderScanRequest
+
+        now = utc_now()
+        folder = Path(self.tmp.name) / "OneDrive"
+        folder.mkdir()
+        note = folder / "note.md"
+        note.write_text("first synced note content " * 10, encoding="utf-8")
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        result = scan_local_folder_integration(
+            LocalFolderScanRequest(vault_id="vault-1", path=str(folder), max_files=10)
+        )
+        imported = refresh_integration_import(result["import_id"], import_files=True)
+        run_due_jobs_once()
+
+        self.assertEqual(imported["imported_count"], 1)
+        self.assertEqual(imported["unchanged_count"], 0)
+        with connect() as conn:
+            source = conn.execute("SELECT * FROM sources WHERE vault_id = 'vault-1'").fetchone()
+            self.assertIsNotNone(source)
+            self.assertEqual(source["original_path"], str(note))
+            original_source_id = source["id"]
+            self.assertIn("first synced note", source["raw_text"])
+
+        note.write_text("updated synced note content " * 10, encoding="utf-8")
+        updated = refresh_integration_import(result["import_id"], import_files=True)
+        run_due_jobs_once()
+        self.assertEqual(updated["updated_count"], 1)
+        with connect() as conn:
+            source = conn.execute("SELECT * FROM sources WHERE id = ?", (original_source_id,)).fetchone()
+            self.assertIn("updated synced note", source["raw_text"])
+
+        moved_note = folder / "renamed.md"
+        note.rename(moved_note)
+        moved = refresh_integration_import(result["import_id"], import_files=True, tombstone_missing=True)
+        self.assertEqual(moved["moved_count"], 1)
+        self.assertEqual(moved["tombstoned_count"], 0)
+        with connect() as conn:
+            source = conn.execute("SELECT * FROM sources WHERE id = ?", (original_source_id,)).fetchone()
+            self.assertEqual(source["original_path"], str(moved_note))
+            self.assertIsNone(source["deleted_at"])
+
+        moved_note.unlink()
+        deleted = refresh_integration_import(result["import_id"], import_files=True, tombstone_missing=True)
+        self.assertEqual(deleted["tombstoned_count"], 1)
+        with connect() as conn:
+            source = conn.execute("SELECT * FROM sources WHERE id = ?", (original_source_id,)).fetchone()
+            self.assertEqual(source["state"], "deleted")
+            self.assertIsNotNone(source["deleted_at"])
+            self.assertEqual(source["raw_text"], "")
+
+    def test_integration_refresh_reports_failed_files_without_aborting_batch(self) -> None:
+        from backend.app.api.routes.integrations import refresh_integration_import, scan_local_folder_integration
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import LocalFolderScanRequest
+
+        now = utc_now()
+        folder = Path(self.tmp.name) / "Dropbox"
+        folder.mkdir()
+        (folder / "good.md").write_text("good synced note content " * 10, encoding="utf-8")
+        (folder / "empty.md").write_text("", encoding="utf-8")
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        result = scan_local_folder_integration(
+            LocalFolderScanRequest(vault_id="vault-1", path=str(folder), max_files=10)
+        )
+        imported = refresh_integration_import(result["import_id"], import_files=True)
+        run_due_jobs_once()
+
+        self.assertEqual(imported["imported_count"], 1)
+        self.assertEqual(imported["failed_count"], 1)
+        self.assertEqual(len(imported["failures"]), 1)
+        self.assertIn("empty.md", imported["failures"][0]["path"])
+        with connect() as conn:
+            rows = conn.execute("SELECT title FROM sources WHERE vault_id = 'vault-1'").fetchall()
+        self.assertEqual([row["title"] for row in rows], ["good.md"])
+
     def test_extension_capture_creates_source_and_capture_record(self) -> None:
         from backend.app.api.routes.extension import (
             capture_from_extension,

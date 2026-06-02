@@ -35,13 +35,16 @@ import {
   getModelRuntimeStatus,
   getOCRRuntimeStatus,
   listLocalModels,
+  listIntegrationImports,
   listVaults,
+  refreshIntegrationImport,
   startModelDownload,
   startEmbeddingDownload,
   updateVault,
   type EmbeddingRuntimeStatus,
   type EmbeddingModelDownloadState,
   type HardwareStatusRead,
+  type IntegrationImportRecord,
   type JobQueueStatus,
   type LocalModelRecord,
   type ModelRuntimeStatus,
@@ -78,6 +81,8 @@ function SettingsView() {
   const [ocrRuntime, setOcrRuntime] = useState<OCRRuntimeStatusRead | null>(null);
   const [hardware, setHardware] = useState<HardwareStatusRead | null>(null);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
+  const [integrationImports, setIntegrationImports] = useState<IntegrationImportRecord[]>([]);
+  const [refreshingImportId, setRefreshingImportId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -104,6 +109,8 @@ function SettingsView() {
         if (firstVault) {
           setPathDraft(firstVault.path);
         }
+        const importRows = firstVault ? await listIntegrationImports(firstVault.id) : [];
+        if (cancelled) return;
         setModels(modelRows);
         setRuntime(runtimeStatus);
         setEmbeddingRuntime(embeddingStatus);
@@ -112,6 +119,7 @@ function SettingsView() {
         setOcrRuntime(ocrStatus);
         setHardware(hardwareStatus);
         setJobs(jobStatus);
+        setIntegrationImports(importRows);
       } catch (error) {
         if (!cancelled) {
           setStatusMessage(error instanceof Error ? error.message : "Settings backend unavailable.");
@@ -224,6 +232,25 @@ function SettingsView() {
       setStatusMessage(`Diagnostic bundle saved to ${bundle.bundle_path}`);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not create diagnostic bundle.");
+    }
+  }
+
+  async function refreshLocalImport(importId: string) {
+    setRefreshingImportId(importId);
+    try {
+      const result = await refreshIntegrationImport(importId, {
+        import_files: true,
+        tombstone_missing: true,
+      });
+      setIntegrationImports(backendVault ? await listIntegrationImports(backendVault.id) : []);
+      setStatusMessage(
+        `Import refreshed: ${result.imported_count} new, ${result.updated_count} updated, ` +
+          `${result.moved_count} moved, ${result.tombstoned_count} removed, ${result.failed_count} failed.`,
+      );
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not refresh local import.");
+    } finally {
+      setRefreshingImportId(null);
     }
   }
 
@@ -389,6 +416,46 @@ function SettingsView() {
             <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
               Disk usage is not exposed by the backend yet. Vault storage is configured at{" "}
               <span className="text-foreground">{pathDraft || "No vault selected"}</span>.
+            </div>
+          </SettingsCard>
+
+          <SettingsCard
+            icon={<Folder className="h-4 w-4" />}
+            title="Local imports"
+            description="Manual refresh and reconciliation for local, synced-folder, and Obsidian imports."
+            status={integrationImports.length ? `${integrationImports.length} tracked` : "None"}
+          >
+            <div className="mt-5 space-y-2">
+              {integrationImports.length === 0 ? (
+                <div className="rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
+                  No local folder imports are tracked for this vault yet.
+                </div>
+              ) : (
+                integrationImports.map((record) => (
+                  <div
+                    key={record.id}
+                    className="grid gap-3 rounded-md border border-border bg-background px-3 py-3 text-sm md:grid-cols-[1fr_auto]"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{record.root_path}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {record.integration_type} · {record.supported_count} supported · {record.skipped_count} skipped ·{" "}
+                        {record.imported_count} new · {record.updated_count} updated · {record.moved_count} moved ·{" "}
+                        {record.tombstoned_count} removed · {record.failed_count} failed
+                      </div>
+                    </div>
+                    <Button
+                      variant="outline"
+                      className="gap-2"
+                      onClick={() => void refreshLocalImport(record.id)}
+                      disabled={refreshingImportId === record.id}
+                    >
+                      <RefreshCw className="h-4 w-4" />
+                      {refreshingImportId === record.id ? "Refreshing..." : "Refresh + import"}
+                    </Button>
+                  </div>
+                ))
+              )}
             </div>
           </SettingsCard>
 

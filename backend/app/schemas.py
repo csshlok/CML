@@ -536,6 +536,13 @@ class LocalFolderScanResponse(BaseModel):
     supported_count: int
     skipped_count: int
     truncated: bool
+    imported_count: int = 0
+    updated_count: int = 0
+    moved_count: int = 0
+    unchanged_count: int = 0
+    tombstoned_count: int = 0
+    failed_count: int = 0
+    failures: list[dict] = []
 
 
 class IntegrationImportRead(BaseModel):
@@ -547,7 +554,14 @@ class IntegrationImportRead(BaseModel):
     supported_count: int
     skipped_count: int
     truncated: bool
+    imported_count: int = 0
+    updated_count: int = 0
+    moved_count: int = 0
+    unchanged_count: int = 0
+    tombstoned_count: int = 0
+    failed_count: int = 0
     last_scan_at: str
+    last_import_at: str | None = None
     created_at: str
     updated_at: str
 
