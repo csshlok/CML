@@ -11,7 +11,7 @@ Electron is the first desktop shell choice because Node is already available in 
 - `apps/desktop`: Electron + React desktop app.
 - `backend`: local Python service for vault indexing, clustering, retrieval, expert training, model orchestration, and Context Bridge.
 - `docs`: product, UI, project context, and architecture documents.
-- `UI-CML-V0`: preserved reference copy of the initial UI prototype.
+- `UI-ref`: preserved UI reference material outside the production workspace.
 
 Key architecture references:
 

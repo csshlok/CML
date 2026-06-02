@@ -24,7 +24,7 @@ Target completion: **end of July 2026**.
 - Embedding product direction: deterministic/hash embeddings are a development fallback only. V1 should default to a real local LLM embedding model path, with user-selectable model configuration during setup/settings.
 - External integrations: Context Bridge via MCP, local HTTP API, CLI, and copy/export helpers.
 - Privacy: local-first by default.
-- Existing UI prototype: `UI-CML-V0/context-whisperer-suite-main`.
+- UI reference material: `UI-ref`.
 - First desktop shell: Electron, chosen because Node is available and Rust/Tauri tooling is not installed in the current environment.
 - Real app workspace: `apps/desktop`.
 - Local backend workspace: `backend`.
@@ -87,7 +87,7 @@ Goal: lock project direction and convert V0 into a usable local-app foundation p
 
 - Finalize product PRD and UI PRD.
 - Add this project context/progress document.
-- Review `UI-CML-V0` and identify UI cleanup requirements.
+- Review UI reference material and identify UI cleanup requirements.
 - Remove obvious Mac-only shortcut assumptions.
 - Decide Tauri vs Electron for the desktop shell.
 - Create architecture plan for desktop UI plus local backend.
@@ -267,6 +267,12 @@ Exit criteria:
 
 ## Current Completed Work
 
+- Completed the lean repository cleanup pass:
+  - removed the tracked stale `UI-CML-V0` prototype copy; `UI-ref/` remains the preserved reference folder
+  - removed the stale root `main.cjs` and replaced the duplicate root Node manifest with a lean workspace command shim; `apps/desktop/package.json` remains the live desktop manifest
+  - deleted ignored generated artifacts and runtime files from the workspace, including desktop `dist`, `release`, packaging output, Wrangler/TanStack/Lovable caches, Playwright logs, dev logs, and local runtime `data`
+  - updated README, architecture, working-command, requirements, and project-context docs so root npm commands forward to the real desktop workspace without duplicating dependencies
+  - preserved contributor dependency environments (`.venv`, root `node_modules`, and `apps/desktop/node_modules`) so local verification stays runnable
 - Completed the LoRA dependency/reproducibility pass plus README update:
   - installed `llamafactory==0.9.5`, `peft==0.18.1`, `trl==0.24.0`, and `gradio==5.50.0` into the active `.venv`
   - aligned `transformers` to `5.6.0` and `pydantic-core` to `2.46.4`; kept `pydantic==2.13.4` for backend/OCR compatibility
@@ -322,7 +328,7 @@ Exit criteria:
 - Created [UI_PRD.md](UI_PRD.md).
 - Created [ONBOARDING_PRD.md](ONBOARDING_PRD.md) for the minimal Apple-like first-run setup flow, current OKLCH color scheme, vault-path behavior, required embedding setup, local chat setup, startup repair states, and acceptance criteria.
 - Added Context Bridge requirements to both PRDs.
-- Reviewed `UI-CML-V0`.
+- Reviewed the initial UI reference material.
 - Updated visible shortcut labels from Mac-only to cross-platform wording.
 - Added cross-platform shortcut handlers in the V0 app shell for:
   - Ctrl/Cmd K: command palette
@@ -1295,10 +1301,10 @@ These items are not ordinary polish. If they are not implemented and verified, t
 - Packaged installs must move away from hash embeddings as the default. Until setup-time model selection is wired, hash embeddings are only an implementation fallback. The intended V1 path is a real local embedding model, with `sentence-transformers/all-MiniLM-L6-v2` as the current development candidate cached locally through `CML_EMBEDDING_CACHE_DIR`.
 - `sentence-transformers/all-MiniLM-L6-v2` is installed and cached locally at `T:\LLM\embeddings` for development testing. Windows may warn about Hugging Face cache symlinks unless Developer Mode/admin symlink privileges are enabled; the cache still works but can use more disk.
 - The local development `.env` is configured for SentenceTransformers/MiniLM, but the packaged backend currently starts without that local `.env` and can report the hash embedding provider. The setup flow needs to write packaged-user embedding settings before a real embedding model becomes the packaged default.
-- The Windows NSIS installer build now succeeds at `apps/desktop/release/CML Setup 0.1.0.exe`, and the unpacked packaged app starts its bundled backend successfully on `127.0.0.1:7343`.
+- The Windows NSIS installer build previously succeeded, but local `apps/desktop/release` artifacts were removed during the lean cleanup. Run `npm run package:win` only when a fresh installer artifact is needed.
 - Electron has been bumped to `39.8.10`; `npm audit` currently reports zero vulnerabilities.
 - Dev Electron launch now goes through `apps/desktop/scripts/start-electron.cjs` so `ELECTRON_RUN_AS_NODE` is removed before opening the window.
-- The current Windows installer artifact is `apps/desktop/release/CML-0.1.0-Setup.exe`. It uses electron-builder's one-click NSIS mode, which removes the old wizard-style path chooser and is the cleanest installer experience available without replacing NSIS with a custom installer.
+- The latest installer configuration uses electron-builder's one-click NSIS mode, which removes the old wizard-style path chooser and is the cleanest installer experience available without replacing NSIS with a custom installer.
 - Packaged launch smoke requires `ELECTRON_RUN_AS_NODE` to be unset. If that environment variable is set globally, packaged Electron exits as Node before the app can start.
 - Embedding provider selection is now runtime-configurable, but the product setup should not present deterministic/hash embeddings as a normal choice. Users should choose between CML's recommended embedding model download and their own compatible local embedding model/runtime.
 - Onboarding and Settings now have an Electron folder picker for local embedding model selection and test the chosen SentenceTransformers model before enabling memory search. This is still a select/test flow, not a managed embedding download.

@@ -44,25 +44,25 @@ if ($pidToStop) { Stop-Process -Id $pidToStop -Force }
 Start the desktop app in development mode:
 
 ```powershell
-npm run dev --workspace @cml/desktop
+npm run dev
 ```
 
 Start only the Vite renderer:
 
 ```powershell
-npm run dev:web --workspace @cml/desktop
+npm run dev:web
 ```
 
 Build the desktop app renderer:
 
 ```powershell
-npm run build --workspace @cml/desktop
+npm run build
 ```
 
 Build the Windows package:
 
 ```powershell
-npm run package:win --workspace @cml/desktop
+npm run package:win
 ```
 
 ## Tests And Checks

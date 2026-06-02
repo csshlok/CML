@@ -2,13 +2,13 @@ Context Management Layer: local-first desktop AI workspace for turning a user's 
 
 ## Repo map
 
-- `apps/desktop/` - Electron desktop shell and React/TanStack UI adapted from the V0 prototype.
+- `apps/desktop/` - Electron desktop shell and React/TanStack UI.
 - `backend/` - local FastAPI service for vaults, clusters, sources, bridge requests, and future ingestion/model jobs.
 - `docs/PRODUCT_PRD.md` - product requirements for the local Context Management Layer.
 - `docs/UI_PRD.md` - UI requirements for the chat-centered desktop workspace, map, sources, clusters, and bridge.
 - `docs/PROJECT_CONTEXT.md` - living progress file with phase progress bars, week-by-week goals, completed work, and open work.
 - `docs/ARCHITECTURE.md` - current architecture notes for the desktop app, backend, storage, bridge, and model lifecycle.
-- `UI-CML-V0/` - preserved first UI prototype/reference; useful for visual direction, not the production workspace.
+- `UI-ref/` - preserved UI reference material; not part of the production workspace.
 - `data/` - ignored local runtime data, SQLite database files, and development vault artifacts.
 
 ## Product shape
