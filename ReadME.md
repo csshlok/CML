@@ -247,6 +247,18 @@ Cluster-level expert surfaces:
 
 The riskiest project area is still real local LoRA training and runtime adapter loading under free, reproducible, lightweight constraints. Retrieval-backed bootstrapping keeps the product usable while LoRA training is running, but public V1 should only claim a cluster expert is trained after an active adapter has metrics, version metadata, rollback support, and supported-hardware provenance.
 
+## OCR runtime packaging
+
+CML does not call a remote OCR service. Windows packages stage local OCR tools under `backend/bin/ocr` before the backend is copied into the Electron resources:
+
+```powershell
+.\scripts\packaging\stage-ocr-runtime.ps1
+```
+
+The expected local runtime is `tesseract.exe`, `tessdata\eng.traineddata`, qpdf, Ghostscript, and the packaged Python OCRmyPDF/PyMuPDF dependencies. Image OCR needs Tesseract plus tessdata. Scanned-PDF OCR prefers OCRmyPDF with qpdf/Ghostscript and falls back to PyMuPDF page rendering plus Tesseract when OCRmyPDF is incomplete.
+
+`package-windows.ps1` runs OCR staging by default; pass `-SkipOcrRuntimeDownload` only for dry package tests.
+
 ## Notes and defaults
 
 - This is local-first and offline-first where possible.

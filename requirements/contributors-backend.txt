@@ -11,6 +11,7 @@ python-dotenv==1.2.2
 python-docx==1.2.0
 pypdf==6.12.2
 ocrmypdf==17.5.0
+PyMuPDF==1.26.7
 fpdf2==2.8.7
 pillow==12.2.0
 httpx==0.28.1

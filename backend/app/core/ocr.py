@@ -22,11 +22,17 @@ def ocr_runtime_status() -> dict:
     tesseract = _tesseract_executable()
     ocrmypdf = _ocrmypdf_command()
     tessdata = tesseract.parent / "tessdata" / "eng.traineddata" if tesseract else None
+    tesseract_usable = _tesseract_usable(tesseract) if tesseract else False
     ghostscript = _find_bundled_tool("ghostscript", ("gswin64c.exe", "gswin32c.exe", "gs.exe"))
     qpdf = _find_bundled_tool("qpdf", ("qpdf.exe",))
+    image_ready = tesseract is not None and tesseract_usable and tessdata is not None and tessdata.exists()
+    full_pdf_ready = image_ready and ocrmypdf is not None and ghostscript is not None and qpdf is not None
+    fallback_pdf_ready = image_ready and _pymupdf_available()
     missing: list[str] = []
     if tesseract is None:
         missing.append("tesseract")
+    elif not tesseract_usable:
+        missing.append("working tesseract")
     if tessdata is None or not tessdata.exists():
         missing.append("eng.traineddata")
     if ocrmypdf is None:
@@ -35,22 +41,27 @@ def ocr_runtime_status() -> dict:
         missing.append("ghostscript")
     if qpdf is None:
         missing.append("qpdf")
+    if not _pymupdf_available():
+        missing.append("pymupdf")
+    pdf_engine = None
+    if full_pdf_ready:
+        pdf_engine = "ocrmypdf"
+    elif fallback_pdf_ready:
+        pdf_engine = "tesseract-render-fallback"
     return {
-        "available": tesseract is not None and tessdata is not None and tessdata.exists(),
-        "pdf_ocr_available": (
-            tesseract is not None
-            and tessdata is not None
-            and tessdata.exists()
-            and ocrmypdf is not None
-        ),
-        "image_ocr_available": tesseract is not None and tessdata is not None and tessdata.exists(),
+        "available": image_ready,
+        "pdf_ocr_available": full_pdf_ready or fallback_pdf_ready,
+        "image_ocr_available": image_ready,
+        "pdf_ocr_engine": pdf_engine,
+        "full_pdf_ocr_available": full_pdf_ready,
+        "fallback_pdf_ocr_available": fallback_pdf_ready,
         "tesseract_path": str(tesseract) if tesseract else None,
         "ocrmypdf_command": " ".join(ocrmypdf) if ocrmypdf else None,
         "tessdata_path": str(tessdata) if tessdata and tessdata.exists() else None,
         "ghostscript_path": str(ghostscript) if ghostscript else None,
         "qpdf_path": str(qpdf) if qpdf else None,
         "missing": missing,
-        "detail": "OCR runtime ready." if not missing else f"Missing OCR component(s): {', '.join(missing)}.",
+        "detail": _ocr_status_detail(image_ready, full_pdf_ready, fallback_pdf_ready, missing),
     }
 
 
@@ -172,11 +183,12 @@ def _ocr_env(tesseract_executable: Path) -> dict[str, str]:
     if tessdata.exists():
         env["TESSDATA_PREFIX"] = str(tessdata)
     bin_dirs = [str(tesseract_executable.parent)]
-    bundled_root = tesseract_executable.parent.parent
-    for child in ("ghostscript", "qpdf"):
-        candidate = bundled_root / child
-        if candidate.exists():
-            bin_dirs.append(str(candidate))
+    for tool in (
+        _find_bundled_tool("ghostscript", ("gswin64c.exe", "gswin32c.exe", "gs.exe")),
+        _find_bundled_tool("qpdf", ("qpdf.exe",)),
+    ):
+        if tool is not None:
+            bin_dirs.append(str(tool.parent))
     env["PATH"] = os.pathsep.join(bin_dirs + [env.get("PATH", "")])
     return env
 
@@ -186,13 +198,7 @@ def _ocrmypdf_command() -> list[str] | None:
     candidates = []
     if settings.ocrmypdf_binary_path:
         candidates.append(settings.ocrmypdf_binary_path)
-    candidates.extend(
-        [
-            ROOT_DIR / "backend" / "bin" / "ocr" / "ocrmypdf.exe",
-            ROOT_DIR / "apps" / "desktop" / "packaging" / "backend" / "bin" / "ocr" / "ocrmypdf.exe",
-            Path(__file__).resolve().parents[2] / "bin" / "ocr" / "ocrmypdf.exe",
-        ]
-    )
+    candidates.extend(root / "ocrmypdf.exe" for root in _ocr_roots())
     for candidate in candidates:
         path = Path(candidate)
         if path.exists() and path.is_file():
@@ -203,11 +209,7 @@ def _ocrmypdf_command() -> list[str] | None:
 
 
 def _find_bundled_tool(folder_name: str, executable_names: tuple[str, ...]) -> Path | None:
-    roots = [
-        ROOT_DIR / "backend" / "bin" / "ocr",
-        ROOT_DIR / "apps" / "desktop" / "packaging" / "backend" / "bin" / "ocr",
-        Path(__file__).resolve().parents[2] / "bin" / "ocr",
-    ]
+    roots = _ocr_roots()
     for root in roots:
         for name in executable_names:
             direct = root / name
@@ -216,6 +218,18 @@ def _find_bundled_tool(folder_name: str, executable_names: tuple[str, ...]) -> P
                 return direct
             if nested.exists() and nested.is_file():
                 return nested
+            recursive = _find_child_file(root / folder_name, name)
+            if recursive is not None:
+                return recursive
+    return None
+
+
+def _find_child_file(root: Path, name: str) -> Path | None:
+    if not root.exists():
+        return None
+    for candidate in root.rglob(name):
+        if candidate.is_file():
+            return candidate
     return None
 
 
@@ -223,6 +237,8 @@ def _require_tesseract() -> Path:
     executable = _tesseract_executable()
     if executable is None:
         raise OCRError("Bundled OCR engine is not available.")
+    if not _tesseract_usable(executable):
+        raise OCRError("Bundled OCR engine is not executable.")
     return executable
 
 
@@ -231,15 +247,51 @@ def _tesseract_executable() -> Path | None:
     candidates = []
     if settings.ocr_binary_path:
         candidates.append(settings.ocr_binary_path)
-    candidates.extend(
-        [
-            ROOT_DIR / "backend" / "bin" / "ocr" / "tesseract.exe",
-            ROOT_DIR / "apps" / "desktop" / "packaging" / "backend" / "bin" / "ocr" / "tesseract.exe",
-            Path(__file__).resolve().parents[2] / "bin" / "ocr" / "tesseract.exe",
-        ]
-    )
+    candidates.extend(root / "tesseract.exe" for root in _ocr_roots())
     for candidate in candidates:
         path = Path(candidate)
         if path.exists() and path.is_file():
             return path
     return None
+
+
+def _tesseract_usable(executable: Path) -> bool:
+    try:
+        completed = subprocess.run(
+            [str(executable), "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=_ocr_env(executable),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def _ocr_roots() -> list[Path]:
+    return [
+        ROOT_DIR / "backend" / "bin" / "ocr",
+        ROOT_DIR / "apps" / "desktop" / "packaging" / "backend" / "bin" / "ocr",
+        Path(__file__).resolve().parents[2] / "bin" / "ocr",
+    ]
+
+
+def _pymupdf_available() -> bool:
+    return importlib.util.find_spec("fitz") is not None
+
+
+def _ocr_status_detail(
+    image_ready: bool,
+    full_pdf_ready: bool,
+    fallback_pdf_ready: bool,
+    missing: list[str],
+) -> str:
+    if full_pdf_ready:
+        return "OCR runtime ready with OCRmyPDF, Tesseract, Ghostscript, and qpdf."
+    if image_ready and fallback_pdf_ready:
+        return "OCR runtime ready for images and fallback scanned-PDF OCR; OCRmyPDF acceleration is incomplete."
+    if image_ready:
+        return "Image OCR runtime ready; scanned-PDF OCR needs PyMuPDF or OCRmyPDF dependencies."
+    return f"Missing OCR component(s): {', '.join(missing)}."

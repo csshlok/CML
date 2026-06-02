@@ -1,5 +1,6 @@
 param(
-  [switch]$IncludeEmbeddingRuntime
+  [switch]$IncludeEmbeddingRuntime,
+  [switch]$SkipOcrRuntimeDownload
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,6 +10,7 @@ $desktopDir = Join-Path $repoRoot "apps\desktop"
 $backendDir = Join-Path $repoRoot "backend"
 $stagingDir = Join-Path $desktopDir "packaging\backend"
 $runtimeDir = Join-Path $desktopDir "packaging\python-runtime"
+$ocrStagingScript = Join-Path $repoRoot "scripts\packaging\stage-ocr-runtime.ps1"
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
   $python = "python"
@@ -27,6 +29,12 @@ if (Test-Path $stagingDir) {
   Remove-Item -Recurse -Force $stagingDir
 }
 New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
+
+if (-not $SkipOcrRuntimeDownload) {
+  Write-Host "Staging OCR runtime..."
+  & $ocrStagingScript
+}
+
 Copy-Item -Recurse -Force (Join-Path $backendDir "app") (Join-Path $stagingDir "app")
 if (Test-Path (Join-Path $backendDir "bin")) {
   Copy-Item -Recurse -Force (Join-Path $backendDir "bin") (Join-Path $stagingDir "bin")
@@ -46,7 +54,8 @@ $runtimePython = Join-Path $runtimeDir "Scripts\python.exe"
   "pydantic-settings>=2.6.0" `
   "pypdf>=5.0.0" `
   "python-docx>=1.1.2" `
-  "PyMuPDF>=1.24.0"
+  "PyMuPDF>=1.24.0" `
+  "ocrmypdf>=16.0.0"
 
 if ($IncludeEmbeddingRuntime) {
   Write-Host "Installing optional embedding runtime dependencies..."

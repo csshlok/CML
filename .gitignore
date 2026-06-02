@@ -9,6 +9,9 @@ dist/
 dist-ssr/
 release/
 apps/desktop/packaging/
+backend/bin/ocr/**
+!backend/bin/ocr/
+!backend/bin/ocr/README.md
 out/
 .output/
 .vinxi/
@@ -29,6 +32,7 @@ logs/
 .env.*
 !.env.example
 *.local
+.tmp/
 .playwright-mcp/
 **/.playwright-mcp/
 

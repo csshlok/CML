@@ -419,7 +419,8 @@ function SettingsView() {
             statusTone={ocrRuntime?.available ? "ready" : "issue"}
           >
             <RuntimeRow label="Image OCR" value={ocrRuntime?.image_ocr_available ? "Ready" : "Missing"} meta={ocrRuntime?.tesseract_path ?? ""} />
-            <RuntimeRow label="PDF OCR" value={ocrRuntime?.pdf_ocr_available ? "Ready" : "Missing"} meta={ocrRuntime?.ocrmypdf_command ?? ""} />
+            <RuntimeRow label="PDF OCR" value={ocrRuntime?.pdf_ocr_available ? "Ready" : "Missing"} meta={ocrRuntime?.pdf_ocr_engine ?? ""} />
+            <RuntimeRow label="OCRmyPDF" value={ocrRuntime?.full_pdf_ocr_available ? "Ready" : "Fallback"} meta={ocrRuntime?.ocrmypdf_command ?? ""} />
             <RuntimeRow label="Ghostscript" value={ocrRuntime?.ghostscript_path ? "Installed" : "Missing"} meta={ocrRuntime?.ghostscript_path ?? ""} />
             <RuntimeRow label="qpdf" value={ocrRuntime?.qpdf_path ? "Installed" : "Missing"} meta={ocrRuntime?.qpdf_path ?? ""} />
             {ocrRuntime?.missing.length ? (

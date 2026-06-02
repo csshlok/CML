@@ -677,6 +677,9 @@ class OCRRuntimeStatusRead(BaseModel):
     available: bool
     pdf_ocr_available: bool
     image_ocr_available: bool
+    pdf_ocr_engine: str | None = None
+    full_pdf_ocr_available: bool = False
+    fallback_pdf_ocr_available: bool = False
     tesseract_path: str | None = None
     ocrmypdf_command: str | None = None
     tessdata_path: str | None = None

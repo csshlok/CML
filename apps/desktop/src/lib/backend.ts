@@ -487,6 +487,9 @@ export type OCRRuntimeStatusRead = {
   available: boolean;
   pdf_ocr_available: boolean;
   image_ocr_available: boolean;
+  pdf_ocr_engine: string | null;
+  full_pdf_ocr_available: boolean;
+  fallback_pdf_ocr_available: boolean;
   tesseract_path: string | null;
   ocrmypdf_command: string | null;
   tessdata_path: string | null;

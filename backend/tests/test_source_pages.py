@@ -364,6 +364,57 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertFalse(status["available"])
         self.assertIn("tesseract", status["missing"])
 
+    def test_ocr_status_reports_full_and_fallback_pdf_engines(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.core.ocr import _ocr_env, ocr_runtime_status
+
+        root = Path(self.tmp.name) / "ocr"
+        tessdata = root / "tessdata"
+        ghostscript = root / "ghostscript" / "bin"
+        qpdf = root / "qpdf" / "bin"
+        tessdata.mkdir(parents=True)
+        ghostscript.mkdir(parents=True)
+        qpdf.mkdir(parents=True)
+        tesseract = root / "tesseract.exe"
+        tesseract.write_text("fake", encoding="utf-8")
+        (tessdata / "eng.traineddata").write_text("fake", encoding="utf-8")
+        (ghostscript / "gswin64c.exe").write_text("fake", encoding="utf-8")
+        (qpdf / "qpdf.exe").write_text("fake", encoding="utf-8")
+
+        with (
+            patch("backend.app.core.ocr._ocr_roots", return_value=[root]),
+            patch("backend.app.core.ocr._tesseract_usable", return_value=True),
+            patch("backend.app.core.ocr._ocrmypdf_command", return_value=[str(root / "ocrmypdf.exe")]),
+            patch("backend.app.core.ocr._pymupdf_available", return_value=True),
+        ):
+            status = ocr_runtime_status()
+            env = _ocr_env(tesseract)
+
+        self.assertTrue(status["available"])
+        self.assertTrue(status["pdf_ocr_available"])
+        self.assertTrue(status["full_pdf_ocr_available"])
+        self.assertTrue(status["fallback_pdf_ocr_available"])
+        self.assertEqual(status["pdf_ocr_engine"], "ocrmypdf")
+        self.assertIn(str(ghostscript), env["PATH"])
+        self.assertIn(str(qpdf), env["PATH"])
+
+        (ghostscript / "gswin64c.exe").unlink()
+        (qpdf / "qpdf.exe").unlink()
+        with (
+            patch("backend.app.core.ocr._ocr_roots", return_value=[root]),
+            patch("backend.app.core.ocr._tesseract_usable", return_value=True),
+            patch("backend.app.core.ocr._ocrmypdf_command", return_value=[str(root / "ocrmypdf.exe")]),
+            patch("backend.app.core.ocr._pymupdf_available", return_value=True),
+        ):
+            status = ocr_runtime_status()
+
+        self.assertTrue(status["available"])
+        self.assertTrue(status["pdf_ocr_available"])
+        self.assertFalse(status["full_pdf_ocr_available"])
+        self.assertTrue(status["fallback_pdf_ocr_available"])
+        self.assertEqual(status["pdf_ocr_engine"], "tesseract-render-fallback")
+
     def test_dynamic_link_extraction_uses_browser_text_when_static_text_is_thin(self) -> None:
         from unittest.mock import patch
 

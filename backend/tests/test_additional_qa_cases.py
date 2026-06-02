@@ -858,6 +858,27 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("Continuous-update rule", req_readme)
         self.assertTrue(update_script.exists())
 
+    def test_packaging_scripts_stage_local_ocr_runtime(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        stage_script = repo_root / "scripts" / "packaging" / "stage-ocr-runtime.ps1"
+        package_script = repo_root / "scripts" / "packaging" / "package-windows.ps1"
+        ocr_readme = repo_root / "backend" / "bin" / "ocr" / "README.md"
+
+        stage_text = stage_script.read_text(encoding="utf-8")
+        package_text = package_script.read_text(encoding="utf-8")
+        readme_text = ocr_readme.read_text(encoding="utf-8")
+
+        self.assertIn("tessdata_fast/main/eng.traineddata", stage_text)
+        self.assertIn("repos/qpdf/qpdf/releases/latest", stage_text)
+        self.assertIn("repos/ArtifexSoftware/ghostpdl-downloads/releases/latest", stage_text)
+        self.assertIn("TesseractExePath", stage_text)
+        self.assertIn("SkipGhostscriptInstaller", stage_text)
+        self.assertIn("GhostscriptInstallTimeoutSeconds", stage_text)
+        self.assertIn('Copy-Item -Path (Join-Path $tesseractDir "*")', stage_text)
+        self.assertIn("Staging OCR runtime", package_text)
+        self.assertIn("ocrmypdf>=16.0.0", package_text)
+        self.assertIn("scripts/packaging/stage-ocr-runtime.ps1", readme_text)
+
     def test_security_validator_blocks_localhost_and_private_targets(self) -> None:
         from backend.app.core.network_security import NetworkSecurityError, validate_public_http_url
 
