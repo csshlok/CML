@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from backend.app.core.config import ROOT_DIR, get_settings
@@ -6,11 +7,23 @@ from backend.app.core.database import utc_now
 
 FALLBACK_PHASES = {
     "starting",
+    "pre_vault_mode",
+    "vault_lock_acquiring",
+    "vault_lock_acquired",
+    "database_initializing",
+    "integrity_check_running",
+    "integrity_check_failed",
+    "schema_check_running",
+    "schema_check_failed",
+    "job_recovery_running",
+    "reconciliation_queued",
+    "runtime_detection_running",
+    "vault_lock_failed",
     "startup_failed",
     "ready",
-    "integrity_check_failed",
-    "vault_lock_failed",
 }
+
+TERMINAL_STATUSES = {"ready", "failed"}
 
 
 def known_startup_phases() -> set[str]:
@@ -62,3 +75,55 @@ def read_startup_status() -> dict | None:
     except (OSError, json.JSONDecodeError):
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def validate_startup_phase_registry() -> dict:
+    phases = known_startup_phases()
+    required = {
+        "starting",
+        "pre_vault_mode",
+        "vault_lock_acquiring",
+        "database_initializing",
+        "integrity_check_running",
+        "schema_check_running",
+        "job_recovery_running",
+        "reconciliation_queued",
+        "runtime_detection_running",
+        "ready",
+        "startup_failed",
+    }
+    missing = sorted(required - phases)
+    unknown_fallbacks = sorted(FALLBACK_PHASES - phases)
+    return {
+        "ok": not missing,
+        "phase_count": len(phases),
+        "missing_required_phases": missing,
+        "fallbacks_not_in_registry": unknown_fallbacks,
+        "source": str(ROOT_DIR / "shared" / "startup-phases.json"),
+    }
+
+
+def startup_status_staleness(timeout_seconds: int = 30) -> dict:
+    status = read_startup_status()
+    if status is None:
+        return {"stale": False, "reason": "missing_status", "age_seconds": None, "phase": None}
+    phase = str(status.get("phase") or "")
+    state = str(status.get("status") or "")
+    updated_at = str(status.get("updated_at") or "")
+    if state in TERMINAL_STATUSES:
+        return {"stale": False, "reason": "terminal_status", "age_seconds": 0, "phase": phase}
+    try:
+        updated = datetime.fromisoformat(updated_at)
+    except ValueError:
+        return {"stale": True, "reason": "invalid_updated_at", "age_seconds": None, "phase": phase}
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=UTC)
+    age = datetime.now(UTC) - updated.astimezone(UTC)
+    stale = age > timedelta(seconds=max(1, timeout_seconds))
+    return {
+        "stale": stale,
+        "reason": "timeout" if stale else "fresh",
+        "age_seconds": int(age.total_seconds()),
+        "phase": phase,
+        "timeout_seconds": max(1, timeout_seconds),
+    }

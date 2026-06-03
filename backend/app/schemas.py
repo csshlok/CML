@@ -463,6 +463,15 @@ class ModelDownloadState(BaseModel):
     file_name: str | None = None
     local_path: str | None = None
     error: str | None = None
+    sha256: str | None = None
+    integrity_status: str | None = None
+
+
+class ModelIntegrityRead(BaseModel):
+    status: str
+    sha256: str | None = None
+    expected_sha256: str | None = None
+    detail: str | None = None
 
 
 class ModelRead(BaseModel):
@@ -478,6 +487,7 @@ class ModelRead(BaseModel):
     installed: bool = False
     local_path: str | None = None
     download: ModelDownloadState | None = None
+    integrity: ModelIntegrityRead | None = None
 
 
 class ModelDownloadStart(BaseModel):
@@ -492,6 +502,8 @@ class ModelDownloadStart(BaseModel):
     file_name: str | None = None
     local_path: str | None = None
     error: str | None = None
+    sha256: str | None = None
+    integrity_status: str | None = None
     started_at: str | None = None
     updated_at: str | None = None
 

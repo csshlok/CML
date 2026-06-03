@@ -406,6 +406,21 @@ def init_db() -> None:
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS cluster_merge_artifacts (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                source_cluster_id TEXT NOT NULL,
+                target_cluster_id TEXT NOT NULL,
+                source_cluster_snapshot TEXT NOT NULL DEFAULT '{}',
+                target_cluster_snapshot TEXT NOT NULL DEFAULT '{}',
+                moved_source_ids TEXT NOT NULL DEFAULT '[]',
+                moved_chat_session_ids TEXT NOT NULL DEFAULT '[]',
+                reversible INTEGER NOT NULL DEFAULT 1,
+                rolled_back_at TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS extension_pairing_sessions (
                 id TEXT PRIMARY KEY,
                 pairing_code TEXT NOT NULL,
@@ -446,6 +461,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_analysis_evidence_packets_job ON analysis_evidence_packets(job_id);
             CREATE INDEX IF NOT EXISTS idx_analysis_evidence_packets_vault ON analysis_evidence_packets(vault_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_query_evidence_cache_vault ON query_evidence_cache(vault_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_cluster_merge_artifacts_vault ON cluster_merge_artifacts(vault_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_extension_pairing_status ON extension_pairing_sessions(status, expires_at);
             CREATE INDEX IF NOT EXISTS idx_extension_permission_audit_client ON extension_permission_audit(client_id, created_at);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_app_jobs_dedupe_active
@@ -522,6 +538,8 @@ def init_db() -> None:
                 ON expert_artifacts(cluster_id, active, deleted_at);
             CREATE INDEX IF NOT EXISTS idx_query_evidence_cache_fingerprint
                 ON query_evidence_cache(vault_id, query_fingerprint, invalidated_at);
+            CREATE INDEX IF NOT EXISTS idx_cluster_merge_artifacts_target
+                ON cluster_merge_artifacts(target_cluster_id, created_at);
             """
         )
 

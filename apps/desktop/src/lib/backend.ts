@@ -405,6 +405,35 @@ export type ChatTimelineResponse = {
   items: ChatTimelineItem[];
 };
 
+export type ChatEvidenceRetentionPolicy = {
+  default_keep_latest_snapshots_per_message: number;
+  max_keep_latest_snapshots_per_message: number;
+  default_excerpt_chars: number;
+  deleted_source_state: string;
+  compacted_state: string;
+  query_cache_prune_endpoint: string;
+};
+
+export type ChatEvidenceRetentionResult = {
+  message_id: string | null;
+  keep_latest_per_message: number;
+  excerpt_chars: number;
+  compacted_snapshots: number;
+  deleted_source_tombstones: number;
+  trimmed_items: number;
+  retained_at: string;
+};
+
+export type QueryCachePruneResult = {
+  vault_id: string | null;
+  max_age_days: number;
+  max_items: number;
+  max_payload_bytes: number;
+  deleted_old_or_invalidated: number;
+  deleted_oversized: number;
+  deleted_over_limit: number;
+};
+
 export type ModelDownloadState = {
   model_id: string;
   status: string;
@@ -891,6 +920,25 @@ export async function reindexVaultSearch(vaultId: string) {
   );
 }
 
+export async function pruneQueryCache(payload?: {
+  vault_id?: string | null;
+  max_age_days?: number;
+  max_items?: number;
+  max_payload_bytes?: number;
+}) {
+  const params = new URLSearchParams();
+  if (payload?.vault_id) params.set("vault_id", payload.vault_id);
+  if (payload?.max_age_days !== undefined) params.set("max_age_days", String(payload.max_age_days));
+  if (payload?.max_items !== undefined) params.set("max_items", String(payload.max_items));
+  if (payload?.max_payload_bytes !== undefined) {
+    params.set("max_payload_bytes", String(payload.max_payload_bytes));
+  }
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return request<QueryCachePruneResult>(`/api/v1/search/query-cache/prune${query}`, {
+    method: "POST",
+  });
+}
+
 export async function buildChatContext(payload: {
   vault_id: string;
   prompt: string;
@@ -1029,6 +1077,29 @@ export async function updateChatMessage(
 
 export async function deleteChatSession(id: string) {
   await request<void>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function getChatEvidenceRetentionPolicy() {
+  return request<ChatEvidenceRetentionPolicy>("/api/v1/chat/evidence-retention/policy");
+}
+
+export async function enforceChatEvidenceRetention(payload?: {
+  message_id?: string | null;
+  keep_latest_per_message?: number;
+  excerpt_chars?: number;
+}) {
+  const params = new URLSearchParams();
+  if (payload?.message_id) params.set("message_id", payload.message_id);
+  if (payload?.keep_latest_per_message !== undefined) {
+    params.set("keep_latest_per_message", String(payload.keep_latest_per_message));
+  }
+  if (payload?.excerpt_chars !== undefined) {
+    params.set("excerpt_chars", String(payload.excerpt_chars));
+  }
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return request<ChatEvidenceRetentionResult>(`/api/v1/chat/evidence-retention/enforce${query}`, {
+    method: "POST",
+  });
 }
 
 export async function getJobStatus() {

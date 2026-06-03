@@ -35,6 +35,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "packaging/ms-playwright",
+        "to": "ms-playwright",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {

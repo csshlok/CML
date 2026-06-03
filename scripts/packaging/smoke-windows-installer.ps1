@@ -131,8 +131,13 @@ if (-not (Test-Path -LiteralPath $uninstaller)) {
 
 Write-Host "Uninstalling CML silently from $uninstaller"
 Invoke-SilentExecutable -Path $uninstaller -Arguments @("/S", "/currentuser") -Timeout $TimeoutSeconds
-Start-Sleep -Seconds 3
-Stop-CmlProcess
+for ($i = 0; $i -lt $TimeoutSeconds; $i++) {
+  Stop-CmlProcess
+  if (-not (Test-Path -LiteralPath $installedExe)) {
+    break
+  }
+  Start-Sleep -Seconds 1
+}
 
 if (Test-Path -LiteralPath $installedExe) {
   throw "Installed executable still exists after uninstall: $installedExe"

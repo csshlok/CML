@@ -66,22 +66,23 @@ Runtime boundary:
 | --- | --- | --- | --- |
 | Product definition | In progress | `[#########-] 97%` | Final installer/update policy and release cut line |
 | UI prototype cleanup | In progress | `[##########] 99%` | Dark QA, minimized/narrow desktop QA, packaged-flow polish |
-| Desktop app foundation | In progress | `[#########-] 95%` | Runtime process management and broader packaged startup repair QA |
+| Desktop app foundation | In progress | `[#########-] 96%` | Runtime process management and broader packaged startup repair QA |
 | Local backend foundation | In progress | `[##########] 99%` | Broader recovery drills and service-layer cleanup |
-| Vault ingestion | In progress | `[##########] 99%` | Packaged dynamic-link/browser-runtime QA |
-| Embeddings and clustering | In progress | `[##########] 96%` | Broader threshold tuning on real user vaults and merge artifact policy |
-| Chat/context routing | In progress | `[#########-] 94%` | Complete-scope map/reduce, token budgets, retention policy, runtime failure UX |
+| Vault ingestion | Complete for current scope | `[##########] 100%` | Clean VM confirmation only |
+| Embeddings and clustering | In progress | `[##########] 99%` | Broader threshold tuning on real user vaults |
+| Chat/context routing | In progress | `[##########] 96%` | Complete-scope map/reduce, token budgets, runtime failure UX |
 | Compulsory cluster experts | In progress | `[#####-----] 50%` | Real adapter smoke, runtime adapter loading, metrics, rollback, failure states |
-| Context Bridge | In progress | `[#########-] 92%` | Real Claude Desktop smoke and capture UX polish |
-| Packaging/install | In progress | `[########--] 78%` | Update/migration policy, Ghostscript licensing decision, packaged browser-runtime QA |
-| QA/hardening | In progress | `[##########] 95%` | Larger benchmarks on real user vaults, real Claude Desktop smoke, recovery drills |
+| Context Bridge | In progress | `[#########-] 93%` | Real Claude Desktop smoke and capture UX polish |
+| Packaging/install | In progress | `[##########] 96%` | Clean VM validation |
+| QA/hardening | In progress | `[##########] 99%` | Real Claude Desktop smoke, clean VM package validation |
 
 ## Current Critical Path
 
-- Finish remaining packaged app smoke: dynamic-link/browser runtime, full-vault vault selection path, diagnostics export, update/migration policy.
+- Execute clean Windows VM validation against the current package: no dev Python, no Node, no preinstalled OCR, cold first-run.
 - Keep public V1 public-only criteria. If gates fail, label the build private alpha/demo.
 - Verify real adapter training and runtime loading before any broad "trained expert" claim.
-- Continue retrieval threshold tuning beyond the new real user-shaped benchmark using larger user-owned vaults.
+- Keep the new written threat model current and treat it as a release gate checklist.
+- Continue retrieval threshold tuning beyond the benchmark harness using larger user-owned vaults.
 - Smoke Context Bridge against Claude Desktop before advertising MCP readiness.
 - Treat the Codex-style MCP smoke as a first client-path pass, not a substitute for Claude Desktop verification.
 - Keep project context concise enough for session continuity.
@@ -101,7 +102,7 @@ UI prototype cleanup:
 Desktop app foundation:
 
 - Done: Electron workspace, backend launch/token seams, vault lock override flow, file picker/open/reveal IPC, packaged pre-vault launch smoke, packaged main-process runtime logging.
-- Remaining: broader packaged startup repair QA, process lifecycle hardening, full-vault launch smoke.
+- Remaining: process lifecycle hardening and clean VM smoke.
 
 Local backend foundation:
 
@@ -110,18 +111,18 @@ Local backend foundation:
 
 Vault ingestion:
 
-- Done: files, folders, links, text, Markdown/Obsidian metadata, PDFs, images, OCR runtime health, OCR jobs, per-page OCR job progress, page/chunk storage, dynamic-link fallback.
-- Remaining: packaged browser-runtime smoke for dynamic links.
+- Done: files, folders, links, text, Markdown/Obsidian metadata, PDFs, images, OCR runtime health, OCR jobs, per-page OCR job progress, page/chunk storage, dynamic-link fallback, packaged generated image/PDF OCR smoke, packaged dynamic-link/browser-runtime smoke.
+- Remaining: clean VM confirmation only.
 
 Embeddings and clustering:
 
-- Done: default real embedding direction, hash dev fallback boundary, vector repair/compaction/policy endpoints, startup reconciliation, BM25 plus embedding scoring ledger, source-class weighting, threshold benchmark harness, retrieval eval fixtures, real T-drive cancellation smoke, 100-source benchmark script/report export, active-index transition smoke, real second-embedding cache smoke, user-shaped vault benchmark export.
-- Remaining: broader threshold tuning on user-owned vaults, merge artifact policy.
+- Done: default real embedding direction, hash dev fallback boundary, vector repair/compaction/policy endpoints, startup reconciliation, BM25 plus embedding scoring ledger, source-class weighting, threshold benchmark harness, retrieval eval fixtures, real T-drive cancellation smoke, 100-source benchmark script/report export, active-index transition smoke, real second-embedding cache smoke, user-shaped vault benchmark export, 1k benchmark script with timing targets, watched-folder back-pressure limits, cluster merge artifacts and rollback.
+- Remaining: broader threshold tuning on user-owned vaults.
 
 Chat/context routing:
 
-- Done: LLM-first routing, retrieval intent, degraded runtime states, citation snapshots, attachment ingestion, coverage ledger, expanded-analysis foundation, chat message pagination, retrieval snapshot compaction.
-- Remaining: real complete-scope map/reduce, partial-failure classification, token budgets, retention policy, evidence cache pruning.
+- Done: LLM-first routing, retrieval intent, degraded runtime states, citation snapshots, attachment ingestion, coverage ledger, expanded-analysis foundation, chat message pagination, retrieval snapshot compaction, query/evidence cache pruning, evidence retention policy/enforcement API.
+- Remaining: real complete-scope map/reduce, partial-failure classification, token budgets, runtime failure UX.
 
 Compulsory cluster experts:
 
@@ -135,13 +136,13 @@ Context Bridge:
 
 Packaging/install:
 
-- Done: Windows package scripts, contributor requirements, OCR runtime staging script, local staged OCR runtime, rebuilt NSIS installer, silent install/uninstall smoke, packaged OCR verification, packaged model/embedding setup smoke.
-- Remaining: update/migration policy, Ghostscript licensing decision, packaged dynamic browser-runtime QA.
+- Done: Windows package scripts, contributor requirements, OCR runtime staging script, local staged OCR runtime, valid rebuilt NSIS installer, silent install/uninstall smoke, packaged OCR verification, packaged model/embedding setup smoke, clean-machine validation script, generated-OCR full-vault packaged smoke, packaged dynamic-link/browser-runtime smoke, packaged interrupted-migration drill, AGPL-compatible Ghostscript release policy.
+- Remaining: clean VM execution.
 
 QA/hardening:
 
-- Done: broad backend regression coverage, OCR benchmarks, audits, diagnostic redaction/log-rotation policy, backend benchmark scripts, disposable-vault delete cleanup tests, failed embedding-write retry test, dynamic-link browser-runtime smoke with Playwright on `T:`, Codex-style MCP smoke, real second-embedding model/cache smoke, repeatable packaging/security smoke scripts, npm and Python vulnerability audits.
-- Remaining: larger user-vault benchmarks, real Claude Desktop smoke, recovery/failure drills.
+- Done: broad backend regression coverage, OCR benchmarks, audits, diagnostic redaction/log-rotation policy, backend benchmark scripts, disposable-vault delete cleanup tests, failed embedding-write retry test, dynamic-link browser-runtime smoke with Playwright on `T:`, Codex-style MCP smoke, real second-embedding model/cache smoke, repeatable packaging/security smoke scripts, npm and Python vulnerability audits, threat model, 1k benchmark harness, startup stale-phase validation tests, recovery drills endpoint, first-run readiness gate tests.
+- Remaining: larger user-owned vault benchmarks, real Claude Desktop smoke, clean VM package validation.
 
 ## Public V1 Blockers
 
@@ -153,50 +154,71 @@ These are release gates, not polish.
 - Migration durability: schema versioning exists, but interruption/recovery tests and real migration scripts must mature as schema changes continue.
 - Disk preflight: installer/model/OCR/indexing/ingestion flows need required/available space checks.
 - Local API auth: Electron-managed private APIs need token gate and renderer-origin validation; Bridge tokens stay separate.
+- Auth threat model: written in `docs/THREAT_MODEL.md`; keep it updated and enforce it through release-gate tests before public V1.
 - Embedding setup gate: production cannot silently use hash embeddings; semantic features must block/degrade explicitly when embeddings are unavailable.
+- Model integrity: managed model downloads record SHA-256 and verify real pinned expected hashes from `docs/model-integrity-manifest.json`.
 - Scheduler synthesis gate: background jobs that should not run during generation must respect active/retriable generation states.
 - Chat recovery: interrupted generations need durable timeline placeholders, retry actions, and no fake assistant messages.
 - Complete analysis: current broad rerun is `expanded_analysis`; reserve `complete_analysis` for future evidence-packet map/reduce and return `501` if requested before implementation.
 - Deletion graph: deleted sensitive content must disappear from retrieval/search immediately before async cleanup.
-- Diagnostics: log rotation policy exists; packaged-path diagnostics export smoke remains.
+- Diagnostics: log rotation policy exists and full-vault unpacked package smoke covers diagnostics export; clean VM execution remains.
 - MCP Bridge: Codex-style JSON-RPC smoke passed; real Claude Desktop smoke and clear app error codes are still required before advertising MCP readiness.
 - LoRA: public V1 requires verified real adapter training, adapter artifact, runtime load, rollback, supported hardware, failure codes, and quality win over retrieval baseline.
-- OCR/package: packaged OCR runtime and installer smoke pass, but Ghostscript licensing decision remains before shipping to users.
+- LoRA graduation framing: small or insufficient clusters should remain retrieval-backed with explicit status instead of pretending every cluster can graduate.
+- OCR/package: packaged OCR runtime, generated OCR fixture smoke, dynamic-link smoke, migration drill, and installer smoke pass; Ghostscript path is AGPL-compatible public release.
 
 ## Next Backend Build Steps
 
 Scope constraints for this list: no LoRA implementation, no UI work, no package rebuild unless explicitly requested.
 
-1. Run real Claude Desktop MCP smoke for context, external-turn logging, artifact capture, malformed calls, and notification silence.
-2. Expand retrieval threshold tuning from the 100-source user-shaped benchmark into a larger user-owned vault fixture.
-3. Add merge artifact policy for clustering: provenance, reversible merge metadata, and split/rollback behavior.
-4. Harden query/evidence cache lifecycle with age limits, max bytes, and stale citation cleanup.
-5. Add stable cursor semantics for chat pagination across equal timestamps and deleted-message gaps.
-6. Extend source-class weighting calibration to multi-turn chats, screenshots/OCR, and external captures.
-7. Move more route-level source/chat/search database logic into service modules with transaction boundaries.
-8. Add extension pairing expiry/replay hardening and audit filtering by client/source/vault.
-9. Add startup repair recovery cases for failed migrations once the next real migration exists.
-10. Add repeatable contributor dependency/security audit command for Python backend dependencies.
+1. Execute clean Windows VM package validation: no dev Python, no Node, no preinstalled OCR, cold first-run.
+2. Run `scripts/backend/benchmark-user-owned-vault.ps1` against a larger real user-owned fixture and record retrieval thresholds.
+3. Add model provenance display in first-run/setup using `/api/v1/models/integrity-manifest`.
+4. Add supported-OS/release-cut decision record for Windows-first public V1.
+5. Harden packaged startup repair UI around interrupted migrations and recovery drills.
+6. Continue backend service-layer extraction around raw route/database operations.
+7. Add complete-scope answering design and first evidence-packet map/reduce backend slice.
+8. Finish browser extension package and safer local pairing flow.
+9. Keep dependency/license manifests aligned with AGPL-compatible OCR release packaging.
+10. Run real Claude Desktop MCP smoke only when Claude is installed and the user explicitly resumes Claude work.
 
 ## Current Open Work
 
 - Decide first supported OS for downloadable public V1.
-- Finish first-run setup around vault path, model setup, embedding setup, OCR readiness, and startup repair states.
+- Add written public V1 decision record: Windows-first; public V1 only if verified LoRA passes, otherwise private alpha/demo.
+- Finish first-run setup UI around the new readiness gate: vault path, model setup, embedding setup, OCR readiness, startup repair states.
+- Make onboarding honest about local model/embedding download size, time, hardware requirements, and external Bridge privacy tradeoffs.
 - Add one-click local model/embedding dependency install or connect-existing-runtime flows.
+- Add model provenance display in setup/settings using `/api/v1/models/integrity-manifest`.
 - Continue backend service-layer extraction around raw route/database operations.
-- Finish packaged ingestion verification for scanned PDFs, image OCR, and dynamic links.
 - Add complete-scope answering in stages: coverage ledger, BM25/embedding scoring, threshold tuning, map packets, reduce/synthesis, cache pruning.
-- Add query/evidence cache retention limits beyond the new source-ID invalidation path.
-- Add chat retention policy and deleted/stale citation actions beyond the new pagination and snapshot compaction endpoints.
 - Finish local synced-folder import history and watched refresh polish where gaps remain.
 - Build actual browser extension package and safer pairing flow.
 - Add real Claude Desktop smoke before Bridge claims production readiness.
 - Smoke MCP external-turn capture tools against Claude Desktop after the Codex-style MCP smoke.
+- Execute the clean-machine package script and smoke sequence on a fresh Windows VM before public release claims.
 - Keep Python dependency CVE auditing in repeatable contributor QA.
+- Add LoRA readiness gates later: trainer audit, real adapter smoke, runtime load, quality harness, minimum cluster threshold, adapter staleness.
 - Keep LoRA untouched unless explicitly requested; public V1 still requires verified LoRA later.
 
 ## Recent Completed Work
 
+- Completed the non-Claude remainder of the current 10-step build list without touching LoRA: valid NSIS rebuild, generated OCR package smoke, packaged dynamic-link/browser runtime, real GGUF SHA-256 manifest pins, user-owned retrieval benchmark harness, Settings evidence-retention controls, update/migration policy, packaged interrupted-migration drill, AGPL-compatible Ghostscript policy, clean-machine validator hardening, and package/security verification.
+- Current package artifacts: `apps/desktop/release/win-unpacked` and `apps/desktop/release/CML-0.1.0-Setup.exe` are valid local artifacts from the 2026-06-03 rebuild; previous tiny `.partial` setup files remain explicitly non-distributable.
+- Verification for this pass: focused backend module ran 60 tests OK; frontend `npm run build` passed; package rebuild completed; full-vault packaged smoke generated and OCR-ingested image/PDF fixtures; packaged dynamic-link smoke reported browser runtime available; packaged migration drill reported interrupted migration; clean-machine validator passed on dev machine; packaged app launch passed; installer install/uninstall smoke passed after hardening async uninstall wait; `scripts/security/audit-app.ps1` passed npm audit, pip check, pip-audit, Electron behavior tests, token tests, and focused backend security tests.
+- Completed the non-Claude remainder of the latest 10-step list without touching LoRA: clean-machine validator enhancement, full-vault packaged smoke execution, trusted model integrity manifest ingestion, cluster merge rollback, 1k benchmark timing targets, chat evidence retention APIs, startup recovery drill API, and first-run readiness gate.
+- Packaged smoke result: refreshed `apps/desktop/release/win-unpacked` contains the current backend and `scripts/packaging/smoke-packaged-full-vault.ps1` passed against it: vault creation, text ingestion, reindex, semantic search, query-cache prune, startup phase validation, and diagnostics export. OCR fixture support is wired but no OCR fixture paths were provided.
+- Packaging caveat: `scripts/packaging/package-windows.ps1 -SkipOcrRuntimeDownload` exceeded the 15-minute timeout after refreshing `win-unpacked`; it left invalid small NSIS artifacts, which were moved to `.partial`, and the stale blockmap was moved to `.stale`.
+- Fixed packaged startup phase fallback: Python now has a full fallback startup phase vocabulary when `shared/startup-phases.json` is not packaged.
+- Verification for this pass: focused backend module ran 60 tests OK; full backend discovery ran 170 tests OK with 1 skipped; `python -m compileall backend/app` passed; PowerShell parser validation passed; small retrieval benchmark smoke passed; clean-machine package validation passed on dev machine but detected Python/Node on PATH, so clean VM remains required.
+- Completed backend steps 1, 2, 4, 5, 6, 8, 9, and 10 from the last list while explicitly skipping step 3 per user instruction: threat model, model SHA-256 integrity, clean-machine package validation, full-vault packaged smoke script, startup phase validation/staleness, 1k benchmark and watched-folder back-pressure, cluster merge artifacts/policy, and query/evidence cache pruning.
+- Added `docs/THREAT_MODEL.md` and `docs/CLUSTER_MERGE_POLICY.md`.
+- Added `scripts/packaging/validate-clean-machine-package.ps1`; rerun against `apps/desktop/release/win-unpacked` passed all checks after matching the real packaged OCR layout at `resources/backend/bin/ocr/manifest.json`.
+- Added `scripts/packaging/smoke-packaged-full-vault.ps1` and `scripts/backend/benchmark-1k-vault.ps1`; PowerShell parser validation passed.
+- Added backend support for local model integrity status/manifests, startup phase registry validation and stale timeout reporting, cluster merge artifact persistence/readback, watched-folder back-pressure reporting, and query/evidence cache pruning.
+- Verification for this pass: focused backend unittest module ran 56 tests OK; full backend unittest discovery ran 166 tests OK with 1 skipped; `python -m compileall backend/app` passed.
+- Added `docs/DEVILS_ADVOCATE_RESPONSES_2026-06-03.md` from the 100-question senior review, excluding Q100 as a decision driver per user instruction.
+- Converted the useful review conclusions into release-risk gates: verified LoRA, clean-machine package, written threat model, model integrity, real Claude Desktop smoke, full-vault repair drills, scale benchmarks, and honest onboarding.
 - Completed rebuild-dependent package work: rebuilt Windows NSIS package `apps/desktop/release/CML-0.1.0-Setup.exe`, added repeatable package smoke scripts, and verified silent install/uninstall.
 - Packaged launch result: `scripts/packaging/smoke-packaged-app-launch.ps1` launched `win-unpacked\CML.exe`, cleared inherited `ELECTRON_RUN_AS_NODE`, and verified packaged pre-vault startup reached `ready`.
 - Packaged runtime result: `scripts/packaging/smoke-packaged-runtime.ps1` verified packaged Python backend health, local API token enforcement, pre-vault route blocking, arbitrary CORS-origin rejection, model setup endpoints, embedding cache configuration, and production hash-embedding rejection.
@@ -229,11 +251,12 @@ Scope constraints for this list: no LoRA implementation, no UI work, no package 
 
 - Public V1 only: if there is a V1, it must be public-quality. Otherwise call it private alpha/demo.
 - Public V1 selling point is verified LoRA, but do not touch LoRA implementation right now unless explicitly requested.
+- Q100 from the devil's advocate review is non-actionable per user instruction; do not use it to drive project decisions.
 - User-facing "trained expert" language is allowed only after real adapter graduation.
-- No package rebuild work unless explicitly requested.
+- No package rebuild work unless explicitly requested; the current rebuild was explicitly requested and completed.
 - No UI implementation unless explicitly requested; dark version and minimized/narrow desktop version are noted future requirements.
 - Do not delete or alter `UI-ref/`.
-- Playwright browser runtime for local dynamic-link smoke is installed on `T:\CML-playwright-browsers`; contributor backend requirements now include `playwright==1.60.0`.
+- Playwright browser runtime for local dynamic-link smoke is installed on `T:\CML-playwright-browsers`; the packaged app now also stages `resources/ms-playwright`; contributor backend requirements include `playwright==1.60.0`.
 - Packaging smoke scripts clear inherited `ELECTRON_RUN_AS_NODE`; otherwise packaged Electron launches in Node mode and will not execute app startup.
 - Hash embeddings are development-only and must not be a silent production fallback.
 - SQLite is authoritative; vector indexes are derived and rebuildable.
@@ -245,7 +268,7 @@ Scope constraints for this list: no LoRA implementation, no UI work, no package 
 - MCP cannot automatically see outside model responses; external transcripts are capturable only when the MCP client explicitly sends them back through a logging/capture tool.
 - Codex-style MCP smoke passed for context and capture tools; Claude Desktop smoke is still required before claiming MCP production readiness.
 - OCR direction is fully local. Users should not manually install OCR dependencies for shipped builds.
-- OCR shipping caveat: Ghostscript licensing must be decided before proprietary distribution; package smoke alone is not enough.
+- OCR shipping caveat: Ghostscript is treated as an AGPL-compatible public-release dependency unless replaced or commercially licensed later; package smoke alone is not enough.
 - Tesseract is Apache 2.0; qpdf is acceptable for bundling review; Ghostscript needs AGPL/commercial decision.
 - Runtime crash during generation should mark active generation retriable or failed-runtime without touching vault lock state.
 - Background jobs need explicit restart policies: `requeue`, `reconcile_then_retry`, or `manual_review`.

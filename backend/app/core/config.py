@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     backend_mode: str = "full_vault"
     startup_status_path: Path | None = None
     models_dir: Path | None = None
+    model_integrity_manifest_path: Path | None = None
+    model_integrity_manifest_url: str | None = None
     api_prefix: str = "/api/v1"
     llm_provider: str = "none"
     llm_base_url: str = "http://127.0.0.1:8080/v1"

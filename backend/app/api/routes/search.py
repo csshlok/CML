@@ -9,7 +9,7 @@ from backend.app.core.retrieval_scoring import (
     scoring_ledger,
     threshold_benchmark,
 )
-from backend.app.core.retrieval_cache import list_query_cache, put_query_cache
+from backend.app.core.retrieval_cache import list_query_cache, prune_query_cache, put_query_cache
 from backend.app.core.vector_maintenance import (
     activate_embedding_index,
     begin_embedding_index_transition,
@@ -148,6 +148,21 @@ def create_query_cache(vault_id: str, query_fingerprint: str, source_ids: str = 
         vault_id=vault_id,
         query_fingerprint=query_fingerprint.strip(),
         contributing_source_ids=contributing,
+    )
+
+
+@router.post("/query-cache/prune")
+def prune_query_cache_route(
+    vault_id: str | None = None,
+    max_age_days: int = 30,
+    max_items: int = 500,
+    max_payload_bytes: int = 5_000_000,
+) -> dict:
+    return prune_query_cache(
+        vault_id=vault_id,
+        max_age_days=max_age_days,
+        max_items=max_items,
+        max_payload_bytes=max_payload_bytes,
     )
 
 

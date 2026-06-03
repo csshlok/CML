@@ -75,3 +75,88 @@ def compact_retrieval_snapshots(*, message_id: str | None = None, keep_latest_pe
                 )
                 compacted += 1
     return {"compacted_snapshots": compacted, "compacted_at": now}
+
+
+def chat_evidence_retention_policy() -> dict:
+    return {
+        "default_keep_latest_snapshots_per_message": 1,
+        "max_keep_latest_snapshots_per_message": 5,
+        "default_excerpt_chars": 240,
+        "deleted_source_state": "source_deleted",
+        "compacted_state": "compacted",
+        "query_cache_prune_endpoint": "/api/v1/search/query-cache/prune",
+    }
+
+
+def enforce_chat_evidence_retention(
+    *,
+    message_id: str | None = None,
+    keep_latest_per_message: int = 1,
+    excerpt_chars: int = 240,
+) -> dict:
+    safe_keep = max(1, min(keep_latest_per_message, 5))
+    safe_excerpt = max(80, min(excerpt_chars, 1000))
+    compacted = compact_retrieval_snapshots(
+        message_id=message_id,
+        keep_latest_per_message=safe_keep,
+    )
+    tombstoned = 0
+    trimmed = 0
+    now = utc_now()
+    message_clause = ""
+    params: list[object] = []
+    if message_id:
+        message_clause = "AND snapshots.message_id = ?"
+        params.append(message_id)
+    with connect() as conn:
+        tombstone_rows = conn.execute(
+            f"""
+            SELECT items.id
+            FROM retrieval_snapshot_items items
+            JOIN retrieval_snapshots snapshots ON snapshots.id = items.snapshot_id
+            LEFT JOIN sources ON sources.id = items.source_id
+            WHERE items.source_id IS NOT NULL
+              AND (sources.id IS NULL OR sources.deleted_at IS NOT NULL)
+              {message_clause}
+            """,
+            params,
+        ).fetchall()
+        for row in tombstone_rows:
+            conn.execute(
+                """
+                UPDATE retrieval_snapshot_items
+                SET state = 'source_deleted', source_id = NULL, chunk_id = NULL, page_id = NULL
+                WHERE id = ?
+                """,
+                (row["id"],),
+            )
+            tombstoned += 1
+        trim_rows = conn.execute(
+            f"""
+            SELECT items.id
+            FROM retrieval_snapshot_items items
+            JOIN retrieval_snapshots snapshots ON snapshots.id = items.snapshot_id
+            WHERE LENGTH(items.short_snippet_excerpt) > ?
+              {message_clause}
+            """,
+            [safe_excerpt, *params],
+        ).fetchall()
+        for row in trim_rows:
+            conn.execute(
+                """
+                UPDATE retrieval_snapshot_items
+                SET short_snippet_excerpt = SUBSTR(short_snippet_excerpt, 1, ?)
+                WHERE id = ?
+                """,
+                (safe_excerpt, row["id"]),
+            )
+            trimmed += 1
+    return {
+        "message_id": message_id,
+        "keep_latest_per_message": safe_keep,
+        "excerpt_chars": safe_excerpt,
+        "compacted_snapshots": compacted["compacted_snapshots"],
+        "deleted_source_tombstones": tombstoned,
+        "trimmed_items": trimmed,
+        "retained_at": now,
+    }

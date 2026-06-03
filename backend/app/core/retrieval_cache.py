@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from backend.app.core.database import connect, utc_now
@@ -93,6 +94,66 @@ def list_query_cache(vault_id: str | None = None) -> list[dict]:
         }
         for row in rows
     ]
+
+
+def prune_query_cache(
+    *,
+    vault_id: str | None = None,
+    max_age_days: int = 30,
+    max_items: int = 500,
+    max_payload_bytes: int = 5_000_000,
+) -> dict:
+    cutoff = (datetime.now(UTC) - timedelta(days=max(1, max_age_days))).isoformat()
+    params: list[object] = [cutoff]
+    vault_clause = ""
+    if vault_id:
+        vault_clause = "AND vault_id = ?"
+        params.append(vault_id)
+    with connect() as conn:
+        old_result = conn.execute(
+            f"""
+            DELETE FROM query_evidence_cache
+            WHERE (updated_at < ? OR invalidated_at IS NOT NULL) {vault_clause}
+            """,
+            params,
+        )
+        size_deleted = 0
+        payload_rows = conn.execute(
+            f"""
+            SELECT id, LENGTH(payload_json) AS size
+            FROM query_evidence_cache
+            WHERE LENGTH(payload_json) > ? {"AND vault_id = ?" if vault_id else ""}
+            """,
+            ([max(1, max_payload_bytes)] + ([vault_id] if vault_id else [])),
+        ).fetchall()
+        for row in payload_rows:
+            conn.execute("DELETE FROM query_evidence_cache WHERE id = ?", (row["id"],))
+            size_deleted += 1
+        extra_deleted = 0
+        scoped_clause = "WHERE vault_id = ?" if vault_id else ""
+        scoped_params = [vault_id] if vault_id else []
+        extra_rows = conn.execute(
+            f"""
+            SELECT id
+            FROM query_evidence_cache
+            {scoped_clause}
+            ORDER BY updated_at DESC
+            LIMIT -1 OFFSET ?
+            """,
+            scoped_params + [max(1, max_items)],
+        ).fetchall()
+        for row in extra_rows:
+            conn.execute("DELETE FROM query_evidence_cache WHERE id = ?", (row["id"],))
+            extra_deleted += 1
+    return {
+        "vault_id": vault_id,
+        "deleted_old_or_invalidated": old_result.rowcount,
+        "deleted_oversized": size_deleted,
+        "deleted_over_limit": extra_deleted,
+        "max_age_days": max(1, max_age_days),
+        "max_items": max(1, max_items),
+        "max_payload_bytes": max(1, max_payload_bytes),
+    }
 
 
 def _json_list(raw: str) -> list[str]:

@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.database import connect, utc_now
-from backend.app.core.local_integrations import scan_local_folder
+from backend.app.core.local_integrations import WATCHED_FOLDER_SCAN_LIMIT, scan_local_folder, watched_folder_limits
 from backend.app.core.database import dict_from_row
 from backend.app.api.routes.sources import (
     _create_source_record,
@@ -53,6 +53,11 @@ def list_integration_imports(vault_id: str | None = None) -> list[dict]:
                 """
             ).fetchall()
     return [_import_from_row(row) for row in rows]
+
+
+@router.get("/watched-folder/limits")
+def get_watched_folder_limits() -> dict:
+    return watched_folder_limits()
 
 
 @router.patch("/imports/{import_id}", response_model=IntegrationImportRead)
@@ -109,7 +114,7 @@ def refresh_integration_import(
     if row is None:
         raise HTTPException(status_code=404, detail="Integration import not found")
     try:
-        result = scan_local_folder(row["root_path"], 500)
+        result = scan_local_folder(row["root_path"], WATCHED_FOLDER_SCAN_LIMIT)
     except OSError as exc:
         now = utc_now()
         with connect() as conn:

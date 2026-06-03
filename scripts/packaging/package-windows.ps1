@@ -14,6 +14,7 @@ $desktopDir = Join-Path $repoRoot "apps\desktop"
 $backendDir = Join-Path $repoRoot "backend"
 $stagingDir = Join-Path $desktopDir "packaging\backend"
 $runtimeDir = Join-Path $desktopDir "packaging\python-runtime"
+$playwrightBrowserDir = Join-Path $desktopDir "packaging\ms-playwright"
 $ocrStagingScript = Join-Path $repoRoot "scripts\packaging\stage-ocr-runtime.ps1"
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
@@ -72,7 +73,13 @@ $runtimePython = Join-Path $runtimeDir "Scripts\python.exe"
   "pypdf>=5.0.0" `
   "python-docx>=1.1.2" `
   "PyMuPDF>=1.24.0" `
-  "ocrmypdf>=16.0.0"
+  "ocrmypdf>=16.0.0" `
+  "playwright==1.60.0"
+
+Write-Host "Staging Playwright Chromium runtime..."
+New-Item -ItemType Directory -Force -Path $playwrightBrowserDir | Out-Null
+$env:PLAYWRIGHT_BROWSERS_PATH = $playwrightBrowserDir
+& $runtimePython -m playwright install chromium
 
 if ($IncludeEmbeddingRuntime) {
   Write-Host "Installing optional embedding runtime dependencies..."

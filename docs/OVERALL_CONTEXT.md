@@ -6,7 +6,112 @@ Last updated: 2026-06-03
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
-Latest compact truth after the 2026-06-03 build passes lives in `docs/PROJECT_CONTEXT.md`. The latest passes completed the backend-only 10-step run, then the rebuild-dependent package work: rebuilt the Windows NSIS package, verified packaged pre-vault launch, packaged Python/OCR/model setup, local API auth/CORS/security behavior, and silent install/uninstall. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+Latest compact truth after the 2026-06-03 build passes lives in `docs/PROJECT_CONTEXT.md`. The latest passes completed the backend-only 10-step run, the rebuild-dependent package work, backend steps 1, 2, 4, 5, 6, 8, 9, and 10 from the post-review list, and then the non-Claude remainder of the next build list including the valid package rebuild. Claude Desktop smoke remains intentionally skipped per user instruction. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+
+## 2026-06-03 Package Gate Closure Snapshot
+
+Completed without touching LoRA:
+
+- Rebuilt valid Windows artifacts: `apps/desktop/release/win-unpacked` and `apps/desktop/release/CML-0.1.0-Setup.exe`.
+- Added packaged Playwright runtime staging under `resources/ms-playwright`; Electron sets `PLAYWRIGHT_BROWSERS_PATH` for packaged backend browser fallback.
+- Full-vault package smoke now generates its own image and scanned-image PDF OCR fixtures and fails if OCR text is not produced.
+- Packaged dynamic-link smoke passed against `https://example.com/` with browser runtime importable and dynamic fallback available.
+- `docs/model-integrity-manifest.json` now pins exact managed GGUF filenames, SHA-256 hashes, sizes, and repo commits.
+- Added `scripts/backend/benchmark-user-owned-vault.ps1` for larger real vault retrieval threshold tuning.
+- Settings now exposes user-facing evidence retention controls for chat retrieval snapshots and query evidence cache pruning.
+- Added `docs/UPDATE_MIGRATION_POLICY.md` and `scripts/packaging/smoke-packaged-migration-drill.ps1`; the packaged drill reports synthetic interrupted migrations without mutating recovery state.
+- Ghostscript release path is AGPL-compatible public release, documented in `docs/GHOSTSCRIPT_AGPL_RELEASE_POLICY.md`.
+- Hardened installer smoke to wait for asynchronous NSIS cleanup; silent install/uninstall now passes.
+
+Verification:
+
+- Focused backend module: 60 tests OK.
+- Frontend `npm run build`: passed.
+- Package rebuild: completed and produced a 537 MB setup exe plus blockmap.
+- Packaged generated OCR smoke: image and PDF fixture extraction passed.
+- Packaged dynamic-link smoke: passed with browser runtime available.
+- Packaged migration drill: passed.
+- Clean-machine validator: passed on dev machine, with Python/Node detected on PATH; clean VM remains required.
+- Packaged app launch smoke: passed, pre-vault startup reached ready.
+- Installer smoke: passed after hardening uninstall wait.
+- Security audit: npm production audit found 0 vulnerabilities; pip check passed; pip-audit reported no known third-party vulnerabilities; Electron behavior/token tests and focused backend security tests passed.
+
+Remaining gates:
+
+- Clean Windows VM package validation is still required before public clean-machine claims.
+- Real Claude Desktop MCP smoke remains deferred until Claude is installed and user resumes that path.
+- Verified LoRA remains untouched and still required for public V1 positioning.
+
+## 2026-06-03 Non-Claude Build Completion Snapshot
+
+Completed without touching LoRA:
+
+- Clean-machine validation now records host Python, Node, Tesseract, and Ghostscript PATH findings so clean VM validation can prove the package is not leaning on contributor-machine tools.
+- Full-vault packaged smoke was executed against refreshed `apps/desktop/release/win-unpacked` and passed vault creation, text ingestion, reindex, semantic search, query-cache pruning, startup phase validation, and diagnostics export.
+- Full-vault smoke now accepts optional OCR image/PDF fixture paths; fixture ingestion was not executed because no fixture paths were supplied.
+- Trusted model integrity manifest support exists through `CML_MODEL_INTEGRITY_MANIFEST_PATH`, `CML_MODEL_INTEGRITY_MANIFEST_URL`, `docs/model-integrity-manifest.json`, and `/api/v1/models/integrity-manifest`.
+- Cluster merge rollback exists through `POST /api/v1/clusters/merge-artifacts/{artifact_id}/rollback`, restoring the source cluster and moving recorded sources/chats back from `cluster_merge_artifacts`.
+- Retrieval benchmark output now includes 1k/low-spec target fields: index seconds, query latency, compact seconds, SQLite bytes, and target pass/fail.
+- Chat evidence retention now has a policy and enforce API for compacting snapshots, tombstoning deleted-source citations, and trimming excerpts.
+- Startup recovery drills now expose stale startup state, interrupted migrations/jobs, and interrupted generation recovery through `/api/v1/system/recovery-drills`.
+- First-run readiness now exposes explicit setup gates through `/api/v1/system/first-run/readiness`: vault path, non-hash embeddings, OCR runtime, model provenance, and startup phase registry.
+- Packaged fallback bug fixed: Python startup phase fallback now contains the full startup vocabulary when `shared/startup-phases.json` is absent from package resources.
+
+Historical package caveat now resolved:
+
+- An earlier 2026-06-03 package run timed out and produced only small `.partial` setup files.
+- The later package gate closure rebuilt a valid `apps/desktop/release/CML-0.1.0-Setup.exe`; keep `.partial` files treated as non-distributable leftovers.
+
+Verification:
+
+- Focused backend module: 60 tests OK.
+- Full backend discovery: 170 tests OK, 1 skipped.
+- `python -m compileall backend/app`: passed.
+- PowerShell parser validation for package/benchmark scripts: passed.
+- Small retrieval benchmark smoke: passed.
+- Dev-machine package validator: passed, with Python/Node detected on PATH; clean VM validation remains required.
+
+## 2026-06-03 Backend Gate Closure Snapshot
+
+Completed without touching LoRA:
+
+- Written security baseline: `docs/THREAT_MODEL.md` now covers local API, Bridge, extension/MCP clients, diagnostics, model downloads, local filesystem boundaries, and required security regressions.
+- Managed model integrity: local model downloads now compute SHA-256, write `integrity.json`, report integrity status, and fail when a configured expected SHA-256 mismatches.
+- Clean-machine package validation: `scripts/packaging/validate-clean-machine-package.ps1` checks package root, resources, packaged backend, packaged Python runtime, OCR manifest, and package smoke scripts. It passed against `apps/desktop/release/win-unpacked`.
+- Full-vault package smoke automation: `scripts/packaging/smoke-packaged-full-vault.ps1` starts packaged backend in full-vault mode and exercises vault creation, text ingestion, reindex, semantic search, query-cache pruning, startup phase validation, and diagnostics bundle export.
+- Startup status hardening: startup phases are validated from `shared/startup-phases.json`; non-terminal startup phases now report stale timeout state.
+- Scale/retrieval harness: `scripts/backend/benchmark-1k-vault.ps1` runs the retrieval benchmark at 1k sources by default and writes to `T:\CML-build-smoke\retrieval-1k`.
+- Watched-folder back-pressure: local folder scans now report scan limits, truncation, and `backpressure_required`; the integrations API exposes watched-folder limits.
+- Cluster merge provenance: `cluster_merge_artifacts` records source/target snapshots, moved source IDs, moved chat IDs, reversibility, and timestamp before destructive merge operations. Policy lives in `docs/CLUSTER_MERGE_POLICY.md`.
+- Query/evidence cache lifecycle: cache pruning removes old, invalidated, oversized, and over-limit entries through core logic and `POST /api/v1/search/query-cache/prune`.
+- Verification: focused backend unittest module ran 56 tests OK; full backend unittest discovery ran 166 tests OK with 1 skipped; `python -m compileall backend/app` passed; PowerShell parser validation passed for the new smoke/benchmark scripts.
+
+Still not completed:
+
+- Real Claude Desktop MCP smoke remains the main Bridge verification gap.
+- Clean Windows VM execution remains required before clean-machine package claims are public quality.
+- Full-vault packaged smoke passed for text/search/diagnostics, but OCR image/PDF fixture coverage still needs to be staged and executed against the package.
+- Model integrity supports local/HTTPS manifests, but release engineering still needs to pin real expected SHA-256 values for exact managed GGUF files.
+- Valid NSIS installer rebuild remains required after the timeout; do not treat `.partial` setup files as distributable.
+
+## 2026-06-03 Devil's Advocate Review Lessons
+
+Source response doc: `docs/DEVILS_ADVOCATE_RESPONSES_2026-06-03.md`.
+
+Q100 is intentionally excluded from decision-making per user instruction. The useful lesson from the review is not that CML is a bad idea; it is that the project must stop equating "prototype works" with "public V1 gate passed."
+
+Core lessons to preserve:
+
+- Public V1 remains conditional on verified LoRA. If real adapter training, artifact validation, runtime load, rollback, hardware support, and quality win over retrieval are not proven, the release must be private alpha/demo.
+- LoRA should be framed as graduated expertise, not blind success for every cluster. Small or low-evidence clusters should remain retrieval-backed with explicit status.
+- Clean-machine validation matters more than dev-machine confidence. Package smoke now passes locally, but a Windows VM without dev Python, Node, preinstalled OCR, or helpful environment variables is still required.
+- Security needs a written threat model. Local API tokens, Bridge tokens, extension tokens, MCP clients, diagnostics, model downloads, and local-attacker limits must be described in one attacker/mitigation matrix.
+- Managed model downloads need integrity verification. HTTPS plus domain validation is not enough; use SHA-256 or signed manifests before registering a model usable.
+- Bridge privacy language must be explicit: CML is local by default, but enabled Bridge clients can receive selected vault context and may send it to external providers.
+- Startup repair is not complete until full-vault repair drills, stale-phase timeout behavior, backup/export options, and packaged diagnostics are proven.
+- Scale claims need benchmarks: 1k-source indexing/retrieval, watched-folder limits, vector fragmentation/compaction, long chat histories, and low-spec query latency.
+- First-run onboarding must be honest about model sizes, embedding setup, hardware requirements, and degraded/context-only mode.
+- Context docs should remain compact and operational. Long reviews and history belong in dated docs, not the primary operating brief.
 
 ---
 # Project Context And Progress

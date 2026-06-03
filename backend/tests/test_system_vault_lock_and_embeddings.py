@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.data_dir = Path(self.tmp.name) / "data"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / "test.sqlite3"
@@ -52,6 +52,9 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
             "CML_BACKEND_MODE",
             "CML_API_TOKEN",
             "CML_VAULT_LOCK_OVERRIDE",
+            "CML_MODELS_DIR",
+            "CML_MODEL_INTEGRITY_MANIFEST_PATH",
+            "CML_MODEL_INTEGRITY_MANIFEST_URL",
         ):
             os.environ.pop(key, None)
         try:
@@ -577,6 +580,9 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         from backend.app.core.config import get_settings
 
         os.environ["CML_MODELS_DIR"] = str(self.data_dir / "models")
+        empty_manifest = self.data_dir / "empty-model-integrity.json"
+        empty_manifest.write_text(json.dumps({"version": 1, "models": {}}), encoding="utf-8")
+        os.environ["CML_MODEL_INTEGRITY_MANIFEST_PATH"] = str(empty_manifest)
         get_settings.cache_clear()
         model_registry._download_state.clear()
         model_registry._cancelled_downloads.clear()
@@ -602,6 +608,9 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         from backend.app.core.config import get_settings
 
         os.environ["CML_MODELS_DIR"] = str(self.data_dir / "models")
+        empty_manifest = self.data_dir / "empty-download-integrity.json"
+        empty_manifest.write_text(json.dumps({"version": 1, "models": {}}), encoding="utf-8")
+        os.environ["CML_MODEL_INTEGRITY_MANIFEST_PATH"] = str(empty_manifest)
         get_settings.cache_clear()
         model_registry._download_state.clear()
         model_registry._cancelled_downloads.clear()
@@ -654,7 +663,8 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
             "error": None,
         }
 
-        result = model_registry.start_model_download("qwen3-4b-q4_k_m")
+        with patch("backend.app.core.model_registry._find_local_model_file", return_value=None):
+            result = model_registry.start_model_download("qwen3-4b-q4_k_m")
 
         self.assertEqual(result["status"], "blocked")
         self.assertIn("Another model download", result["error"])
@@ -1269,6 +1279,296 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertIn("codex_style_jsonrpc", codex)
         self.assertIn("browser_runtime_available", dynamic)
         self.assertIn("real_second_cache_observed", second)
+
+    def test_model_integrity_manifest_reports_recorded_and_mismatch(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.model_registry import (
+            _model_integrity_status,
+            _sha256_file,
+            _write_integrity_manifest,
+            get_model,
+        )
+
+        os.environ["CML_MODELS_DIR"] = str(self.data_dir / "models")
+        empty_manifest = self.data_dir / "empty-model-integrity.json"
+        empty_manifest.write_text(json.dumps({"version": 1, "models": {}}), encoding="utf-8")
+        os.environ["CML_MODEL_INTEGRITY_MANIFEST_PATH"] = str(empty_manifest)
+        get_settings.cache_clear()
+        model = get_model("qwen3-4b-q4_k_m")
+        self.assertIsNotNone(model)
+        model_dir = self.data_dir / "models" / model.id
+        model_dir.mkdir(parents=True, exist_ok=True)
+        model_file = model_dir / "qwen3-test-Q4_K_M.gguf"
+        model_file.write_bytes(b"model-bytes")
+
+        digest = _sha256_file(model_file)
+        _write_integrity_manifest(model, model_file, digest)
+        recorded = _model_integrity_status(model, model_file)
+        self.assertEqual(recorded["status"], "recorded")
+        self.assertEqual(recorded["sha256"], digest)
+
+        manifest = model_dir / "integrity.json"
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        payload["expected_sha256"] = "0" * 64
+        manifest.write_text(json.dumps(payload), encoding="utf-8")
+        mismatch = _model_integrity_status(model, model_file)
+        self.assertEqual(mismatch["status"], "mismatch")
+
+    def test_trusted_model_integrity_manifest_supplies_expected_sha256(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.model_registry import _expected_model_sha256, get_model, model_integrity_manifest_status
+
+        manifest = self.data_dir / "model-integrity.json"
+        expected = "a" * 64
+        manifest.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "models": {
+                        "qwen3-4b-q4_k_m": {
+                            "sha256": expected,
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.environ["CML_MODEL_INTEGRITY_MANIFEST_PATH"] = str(manifest)
+        get_settings.cache_clear()
+        model = get_model("qwen3-4b-q4_k_m")
+
+        self.assertEqual(_expected_model_sha256(model), expected)
+        self.assertEqual(model_integrity_manifest_status()["model_count"], 1)
+
+    def test_startup_phase_registry_and_staleness_route(self) -> None:
+        from backend.app.core.startup_status import write_startup_status
+
+        write_startup_status("database_initializing", status="running")
+        old_status = json.loads(self.status_path.read_text(encoding="utf-8"))
+        old_status["updated_at"] = "2000-01-01T00:00:00+00:00"
+        self.status_path.write_text(json.dumps(old_status), encoding="utf-8")
+
+        client = self._client()
+        try:
+            response = client.get("/api/v1/system/startup-phases?timeout_seconds=1")
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["registry"]["ok"])
+        self.assertTrue(payload["staleness"]["stale"])
+        self.assertEqual(payload["staleness"]["reason"], "timeout")
+
+    def test_query_cache_prune_removes_invalidated_oversized_and_over_limit_rows(self) -> None:
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.retrieval_cache import prune_query_cache, put_query_cache
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+        first = put_query_cache(vault_id="vault-1", query_fingerprint="first", contributing_source_ids=[])
+        put_query_cache(vault_id="vault-1", query_fingerprint="second", contributing_source_ids=[], payload={"x": "y" * 200})
+        put_query_cache(vault_id="vault-1", query_fingerprint="third", contributing_source_ids=[])
+        with connect() as conn:
+            conn.execute("UPDATE query_evidence_cache SET invalidated_at = ? WHERE id = ?", (now, first["id"]))
+
+        result = prune_query_cache(vault_id="vault-1", max_age_days=30, max_items=1, max_payload_bytes=50)
+
+        self.assertEqual(result["deleted_old_or_invalidated"], 1)
+        self.assertEqual(result["deleted_oversized"], 1)
+        self.assertEqual(result["deleted_over_limit"], 0)
+
+    def test_cluster_merge_writes_artifact_before_source_cluster_delete(self) -> None:
+        from backend.app.api.routes.clusters import list_cluster_merge_artifacts, merge_cluster, rollback_cluster_merge_artifact
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ClusterMergeRequest
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
+                VALUES ('cluster-source', 'vault-1', 'Source', '', 'sage', 'retrieval_ready', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
+                VALUES ('cluster-target', 'vault-1', 'Target', '', 'amber', 'retrieval_ready', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO sources (id, vault_id, cluster_id, title, source_type, state, raw_text, extracted_text, created_at, updated_at)
+                VALUES ('source-1', 'vault-1', 'cluster-source', 'Source', 'note', 'indexed', 'text', 'text', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                "INSERT INTO chat_sessions (id, vault_id, title, scope_cluster_id, saved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("chat-1", "vault-1", "Scoped", "cluster-source", 1, now, now),
+            )
+
+        merged = merge_cluster("cluster-source", ClusterMergeRequest(target_cluster_id="cluster-target"))
+        artifacts = list_cluster_merge_artifacts("cluster-target")["items"]
+
+        self.assertEqual(merged["id"], "cluster-target")
+        self.assertEqual(artifacts[0]["source_cluster_id"], "cluster-source")
+        self.assertEqual(artifacts[0]["moved_source_ids"], ["source-1"])
+        self.assertEqual(artifacts[0]["moved_chat_session_ids"], ["chat-1"])
+
+        restored = rollback_cluster_merge_artifact(artifacts[0]["id"])
+        with connect() as conn:
+            source_row = conn.execute("SELECT cluster_id FROM sources WHERE id = 'source-1'").fetchone()
+            chat_row = conn.execute("SELECT scope_cluster_id FROM chat_sessions WHERE id = 'chat-1'").fetchone()
+            artifact_row = conn.execute("SELECT rolled_back_at FROM cluster_merge_artifacts WHERE id = ?", (artifacts[0]["id"],)).fetchone()
+
+        self.assertEqual(restored["id"], "cluster-source")
+        self.assertEqual(source_row["cluster_id"], "cluster-source")
+        self.assertEqual(chat_row["scope_cluster_id"], "cluster-source")
+        self.assertIsNotNone(artifact_row["rolled_back_at"])
+
+    def test_watched_folder_scan_reports_backpressure_and_policy(self) -> None:
+        from backend.app.core.local_integrations import WATCHED_FOLDER_SCAN_LIMIT, scan_local_folder, watched_folder_limits
+
+        folder = self.data_dir / "watch"
+        folder.mkdir()
+        for index in range(WATCHED_FOLDER_SCAN_LIMIT + 1):
+            (folder / f"note-{index:04d}.md").write_text("watched folder note", encoding="utf-8")
+
+        result = scan_local_folder(str(folder), WATCHED_FOLDER_SCAN_LIMIT)
+        limits = watched_folder_limits()
+
+        self.assertTrue(result["truncated"])
+        self.assertTrue(result["backpressure_required"])
+        self.assertEqual(result["scan_limit"], WATCHED_FOLDER_SCAN_LIMIT)
+        self.assertEqual(limits["watched_folder_scan_limit"], WATCHED_FOLDER_SCAN_LIMIT)
+
+    def test_backend_policy_docs_and_packaging_validation_scripts_exist(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        threat_model = (repo_root / "docs" / "THREAT_MODEL.md").read_text(encoding="utf-8")
+        merge_policy = (repo_root / "docs" / "CLUSTER_MERGE_POLICY.md").read_text(encoding="utf-8")
+        clean_machine = (repo_root / "scripts" / "packaging" / "validate-clean-machine-package.ps1").read_text(encoding="utf-8")
+        full_vault = (repo_root / "scripts" / "packaging" / "smoke-packaged-full-vault.ps1").read_text(encoding="utf-8")
+        benchmark_1k = (repo_root / "scripts" / "backend" / "benchmark-1k-vault.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("Bridge/MCP capture", threat_model)
+        self.assertIn("Every cluster merge must write a merge artifact", merge_policy)
+        self.assertIn("clean-machine validation plan", clean_machine)
+        self.assertIn("semantic search returned no results", full_vault)
+        self.assertIn("[int]$Sources = 1000", benchmark_1k)
+
+    def test_first_run_readiness_reports_setup_required_until_real_runtime_setup(self) -> None:
+        from backend.app.core.setup_readiness import first_run_readiness
+
+        readiness = first_run_readiness()
+
+        self.assertFalse(readiness["ready"])
+        check_ids = {check["id"] for check in readiness["checks"]}
+        self.assertIn("vault_path", check_ids)
+        self.assertIn("embedding_setup", check_ids)
+        self.assertIn("ocr_runtime", check_ids)
+        self.assertEqual(readiness["status"], "setup_required")
+
+    def test_startup_recovery_drills_reports_and_recovers_in_flight_generation(self) -> None:
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.recovery_drills import startup_recovery_drills
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+            conn.execute(
+                "INSERT INTO chat_sessions (id, vault_id, title, saved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("chat-1", "vault-1", "Recovery", 1, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_generations (
+                    id, session_id, user_message_id, assistant_message_id, vault_id, prompt,
+                    state, runtime_provider, runtime_model, error, heartbeat_at, created_at, updated_at, completed_at
+                )
+                VALUES ('gen-1', 'chat-1', NULL, NULL, 'vault-1', 'recover me', 'in_flight',
+                    '', '', '', NULL, ?, ?, NULL)
+                """,
+                (now, now),
+            )
+
+        dry_run = startup_recovery_drills(apply_recovery=False)
+        applied = startup_recovery_drills(apply_recovery=True)
+
+        self.assertEqual(dry_run["generation_counts_before"]["in_flight"], 1)
+        self.assertEqual(applied["generations_recovered"], 1)
+        self.assertEqual(applied["generation_counts_after"].get("in_flight", 0), 0)
+        self.assertEqual(applied["generation_counts_after"]["retriable"], 1)
+
+    def test_chat_evidence_retention_tombstones_deleted_sources_and_trims_excerpts(self) -> None:
+        from backend.app.core.chat_retention import chat_evidence_retention_policy, enforce_chat_evidence_retention
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+            conn.execute(
+                "INSERT INTO chat_sessions (id, vault_id, title, saved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("chat-1", "vault-1", "Evidence", 1, now, now),
+            )
+            conn.execute(
+                "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("msg-1", "chat-1", "assistant", "answer", now),
+            )
+            conn.execute(
+                """
+                INSERT INTO sources (id, vault_id, title, source_type, state, raw_text, extracted_text, deleted_at, created_at, updated_at)
+                VALUES ('source-deleted', 'vault-1', 'Deleted', 'note', 'deleted', '', '', ?, ?, ?)
+                """,
+                (now, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO retrieval_snapshots (
+                    id, message_id, session_id, vault_id, query, retrieval_mode, embedding_model_id, created_at
+                )
+                VALUES ('snapshot-1', 'msg-1', 'chat-1', 'vault-1', 'q', 'semantic', 'hash', ?)
+                """,
+                (now,),
+            )
+            conn.execute(
+                """
+                INSERT INTO retrieval_snapshot_items (
+                    id, snapshot_id, source_id, source_title_at_answer_time,
+                    short_snippet_excerpt, relevance_score, item_rank, created_at
+                )
+                VALUES ('item-1', 'snapshot-1', 'source-deleted', 'Deleted', ?, 1, 1, ?)
+                """,
+                ("x" * 500, now),
+            )
+
+        result = enforce_chat_evidence_retention(message_id="msg-1", excerpt_chars=120)
+        policy = chat_evidence_retention_policy()
+        with connect() as conn:
+            row = conn.execute("SELECT state, source_id, LENGTH(short_snippet_excerpt) AS length FROM retrieval_snapshot_items WHERE id = 'item-1'").fetchone()
+
+        self.assertEqual(policy["deleted_source_state"], "source_deleted")
+        self.assertEqual(result["deleted_source_tombstones"], 1)
+        self.assertEqual(row["state"], "source_deleted")
+        self.assertIsNone(row["source_id"])
+        self.assertLessEqual(row["length"], 120)
 
     def _client(self) -> TestClient:
         from backend.app.core.config import get_settings

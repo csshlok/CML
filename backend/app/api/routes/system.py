@@ -4,8 +4,10 @@ from backend.app.core.hardware import hardware_status
 from backend.app.core.lora_training import trainer_dependency_status
 from backend.app.core.ocr import ocr_runtime_status
 from backend.app.core.preflight import disk_preflight
+from backend.app.core.recovery_drills import startup_recovery_drills
+from backend.app.core.setup_readiness import first_run_readiness
 from backend.app.core.startup_repair import startup_repair_summary
-from backend.app.core.startup_status import read_startup_status
+from backend.app.core.startup_status import read_startup_status, startup_status_staleness, validate_startup_phase_registry
 from backend.app.core.database import connect, dict_from_row
 from backend.app.core.storage_accounting import storage_accounting
 from backend.app.core.vault_safety import vault_safety_status
@@ -41,9 +43,30 @@ def get_startup_status() -> dict:
     return status
 
 
+@router.get("/startup-phases")
+def get_startup_phase_registry(timeout_seconds: int = 30) -> dict:
+    return {
+        "registry": validate_startup_phase_registry(),
+        "staleness": startup_status_staleness(timeout_seconds=timeout_seconds),
+    }
+
+
 @router.get("/startup-repair")
 def get_startup_repair_summary(apply_recovery: bool = False) -> dict:
     return startup_repair_summary(apply_recovery=apply_recovery)
+
+
+@router.get("/recovery-drills")
+def get_startup_recovery_drills(apply_recovery: bool = False, stale_timeout_seconds: int = 30) -> dict:
+    return startup_recovery_drills(
+        apply_recovery=apply_recovery,
+        stale_timeout_seconds=stale_timeout_seconds,
+    )
+
+
+@router.get("/first-run/readiness")
+def get_first_run_readiness() -> dict:
+    return first_run_readiness()
 
 
 @router.get("/storage")

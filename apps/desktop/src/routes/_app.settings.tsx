@@ -28,12 +28,15 @@ import {
   configureEmbeddingRuntime,
   createDiagnosticBundle,
   createVault,
+  enforceChatEvidenceRetention,
+  getChatEvidenceRetentionPolicy,
   getEmbeddingRuntimeStatus,
   getEmbeddingDownloadStatus,
   getHardwareStatus,
   getJobStatus,
   getModelRuntimeStatus,
   getOCRRuntimeStatus,
+  pruneQueryCache,
   listLocalModels,
   listIntegrationImports,
   listVaults,
@@ -42,6 +45,8 @@ import {
   startEmbeddingDownload,
   updateIntegrationImport,
   updateVault,
+  type ChatEvidenceRetentionPolicy,
+  type ChatEvidenceRetentionResult,
   type EmbeddingRuntimeStatus,
   type EmbeddingModelDownloadState,
   type HardwareStatusRead,
@@ -83,7 +88,10 @@ function SettingsView() {
   const [hardware, setHardware] = useState<HardwareStatusRead | null>(null);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
   const [integrationImports, setIntegrationImports] = useState<IntegrationImportRecord[]>([]);
+  const [retentionPolicy, setRetentionPolicy] = useState<ChatEvidenceRetentionPolicy | null>(null);
+  const [retentionResult, setRetentionResult] = useState<ChatEvidenceRetentionResult | null>(null);
   const [refreshingImportId, setRefreshingImportId] = useState<string | null>(null);
+  const [retentionBusy, setRetentionBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -93,17 +101,27 @@ function SettingsView() {
 
     async function load() {
       try {
-        const [vaultRows, modelRows, runtimeStatus, embeddingStatus, embeddingDownloadStatus, ocrStatus, hardwareStatus, jobStatus] =
-          await Promise.all([
-            listVaults(),
-            listLocalModels(),
-            getModelRuntimeStatus(),
-            getEmbeddingRuntimeStatus(),
-            getEmbeddingDownloadStatus(),
-            getOCRRuntimeStatus(),
-            getHardwareStatus(),
-            getJobStatus(),
-          ]);
+        const [
+          vaultRows,
+          modelRows,
+          runtimeStatus,
+          embeddingStatus,
+          embeddingDownloadStatus,
+          ocrStatus,
+          hardwareStatus,
+          jobStatus,
+          evidencePolicy,
+        ] = await Promise.all([
+          listVaults(),
+          listLocalModels(),
+          getModelRuntimeStatus(),
+          getEmbeddingRuntimeStatus(),
+          getEmbeddingDownloadStatus(),
+          getOCRRuntimeStatus(),
+          getHardwareStatus(),
+          getJobStatus(),
+          getChatEvidenceRetentionPolicy(),
+        ]);
         if (cancelled) return;
         const firstVault = vaultRows[0] ?? null;
         setBackendVault(firstVault);
@@ -120,6 +138,7 @@ function SettingsView() {
         setOcrRuntime(ocrStatus);
         setHardware(hardwareStatus);
         setJobs(jobStatus);
+        setRetentionPolicy(evidencePolicy);
         setIntegrationImports(importRows);
       } catch (error) {
         if (!cancelled) {
@@ -265,6 +284,43 @@ function SettingsView() {
       setStatusMessage(updated.watch_enabled ? "Watched refresh enabled." : "Watched refresh disabled.");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not update watched refresh.");
+    }
+  }
+
+  async function compactEvidenceRetention() {
+    setRetentionBusy(true);
+    try {
+      const result = await enforceChatEvidenceRetention({
+        keep_latest_per_message: retentionPolicy?.default_keep_latest_snapshots_per_message ?? 1,
+        excerpt_chars: retentionPolicy?.default_excerpt_chars ?? 240,
+      });
+      setRetentionResult(result);
+      setStatusMessage(
+        `Evidence compacted: ${result.compacted_snapshots} snapshots, ${result.trimmed_items} excerpts, ${result.deleted_source_tombstones} tombstones.`,
+      );
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not compact chat evidence.");
+    } finally {
+      setRetentionBusy(false);
+    }
+  }
+
+  async function pruneStoredQueryEvidence() {
+    setRetentionBusy(true);
+    try {
+      const result = await pruneQueryCache({
+        vault_id: backendVault?.id ?? null,
+        max_age_days: 30,
+        max_items: 500,
+        max_payload_bytes: 5_000_000,
+      });
+      const removed =
+        result.deleted_old_or_invalidated + result.deleted_oversized + result.deleted_over_limit;
+      setStatusMessage(`Query evidence pruned: ${removed} entries removed.`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not prune query evidence.");
+    } finally {
+      setRetentionBusy(false);
     }
   }
 
@@ -437,6 +493,32 @@ function SettingsView() {
               Disk usage is not exposed by the backend yet. Vault storage is configured at{" "}
               <span className="text-foreground">{pathDraft || "No vault selected"}</span>.
             </div>
+          </SettingsCard>
+
+          <SettingsCard
+            icon={<Lock className="h-4 w-4" />}
+            title="Evidence retention"
+            description="Compact saved retrieval evidence without deleting chat messages."
+            status={retentionPolicy ? "Policy loaded" : "Unavailable"}
+            statusTone={retentionPolicy ? "ready" : "issue"}
+          >
+            <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
+              Keeps the latest {retentionPolicy?.default_keep_latest_snapshots_per_message ?? 1} retrieval snapshot per message and trims excerpts to{" "}
+              {retentionPolicy?.default_excerpt_chars ?? 240} characters. Deleted source references are tombstoned.
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => void compactEvidenceRetention()} disabled={retentionBusy || !retentionPolicy}>
+                Compact chat evidence
+              </Button>
+              <Button variant="outline" onClick={() => void pruneStoredQueryEvidence()} disabled={retentionBusy}>
+                Prune query cache
+              </Button>
+            </div>
+            {retentionResult && (
+              <p className="mt-3 text-xs text-muted-foreground">
+                Last run: {retentionResult.compacted_snapshots} snapshots compacted, {retentionResult.trimmed_items} excerpts trimmed.
+              </p>
+            )}
           </SettingsCard>
 
           <SettingsCard

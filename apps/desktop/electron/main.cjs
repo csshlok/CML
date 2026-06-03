@@ -393,6 +393,9 @@ async function ensureBackend() {
         CML_DATABASE_PATH: databasePath,
         CML_STARTUP_STATUS_PATH: startupStatusPath,
         CML_VAULT_LOCK_OVERRIDE: vaultLockOverrideOnce ? "open_anyway" : "",
+        PLAYWRIGHT_BROWSERS_PATH: isDev
+          ? process.env.PLAYWRIGHT_BROWSERS_PATH || ""
+          : path.join(process.resourcesPath, "ms-playwright"),
       },
       windowsHide: true,
       stdio: "ignore",

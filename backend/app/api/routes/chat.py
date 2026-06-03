@@ -30,7 +30,12 @@ from backend.app.core.llm_runtime import (
     stream_grounded_answer,
 )
 from backend.app.core.memory_card import generate_tags, summarize_text
-from backend.app.core.chat_retention import compact_retrieval_snapshots, paginated_messages
+from backend.app.core.chat_retention import (
+    chat_evidence_retention_policy,
+    compact_retrieval_snapshots,
+    enforce_chat_evidence_retention,
+    paginated_messages,
+)
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
     ChatContextRequest,
@@ -167,6 +172,24 @@ def compact_chat_retrieval_snapshots(message_id: str | None = None, keep_latest_
     return compact_retrieval_snapshots(
         message_id=message_id,
         keep_latest_per_message=keep_latest_per_message,
+    )
+
+
+@router.get("/evidence-retention/policy")
+def get_chat_evidence_retention_policy() -> dict:
+    return chat_evidence_retention_policy()
+
+
+@router.post("/evidence-retention/enforce")
+def enforce_chat_evidence_retention_route(
+    message_id: str | None = None,
+    keep_latest_per_message: int = 1,
+    excerpt_chars: int = 240,
+) -> dict:
+    return enforce_chat_evidence_retention(
+        message_id=message_id,
+        keep_latest_per_message=keep_latest_per_message,
+        excerpt_chars=excerpt_chars,
     )
 
 
