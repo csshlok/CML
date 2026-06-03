@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } = require("electron");
 const { spawn } = require("node:child_process");
+const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const net = require("node:net");
@@ -27,6 +28,24 @@ const supportedOpenExtensions = new Set([...supportedSourceExtensions, ".png", "
 const skippedFolderNames = new Set([".git", "node_modules", ".venv", "dist", "build"]);
 
 let mainWindow = null;
+
+function writeDesktopRuntimeLog(message, error = null) {
+  try {
+    const logPath = path.join(app.getPath("userData"), "desktop-runtime.log");
+    const detail = error && (error.stack || error.message) ? `\n${error.stack || error.message}` : "";
+    fsSync.appendFileSync(logPath, `${new Date().toISOString()} ${message}${detail}\n`, "utf8");
+  } catch {
+    // Startup logging must never become the reason the app fails to open.
+  }
+}
+
+process.on("uncaughtException", (error) => {
+  writeDesktopRuntimeLog("uncaughtException", error);
+});
+
+process.on("unhandledRejection", (error) => {
+  writeDesktopRuntimeLog("unhandledRejection", error instanceof Error ? error : new Error(String(error)));
+});
 
 async function createWindow() {
   let startupError = null;
@@ -187,8 +206,10 @@ function escapeHtml(value) {
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
+writeDesktopRuntimeLog(`main loaded; packaged=${app.isPackaged}; singleInstance=${gotSingleInstanceLock}`);
 
 if (!gotSingleInstanceLock) {
+  writeDesktopRuntimeLog("single-instance lock unavailable; quitting");
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
@@ -323,11 +344,17 @@ if (gotSingleInstanceLock) {
       return backendUrl;
     });
 
-    void createWindow();
+    void createWindow().catch((error) => {
+      writeDesktopRuntimeLog("createWindow failed", error);
+      app.quit();
+    });
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        void createWindow();
+        void createWindow().catch((error) => {
+          writeDesktopRuntimeLog("createWindow failed during activate", error);
+          app.quit();
+        });
       }
     });
   });

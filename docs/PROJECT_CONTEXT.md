@@ -66,19 +66,19 @@ Runtime boundary:
 | --- | --- | --- | --- |
 | Product definition | In progress | `[#########-] 97%` | Final installer/update policy and release cut line |
 | UI prototype cleanup | In progress | `[##########] 99%` | Dark QA, minimized/narrow desktop QA, packaged-flow polish |
-| Desktop app foundation | In progress | `[#########-] 93%` | Runtime process management, packaged startup repair QA, installer smoke |
+| Desktop app foundation | In progress | `[#########-] 95%` | Runtime process management and broader packaged startup repair QA |
 | Local backend foundation | In progress | `[##########] 99%` | Broader recovery drills and service-layer cleanup |
-| Vault ingestion | In progress | `[##########] 99%` | Packaged OCR smoke and packaged dynamic-link/browser-runtime QA |
+| Vault ingestion | In progress | `[##########] 99%` | Packaged dynamic-link/browser-runtime QA |
 | Embeddings and clustering | In progress | `[##########] 96%` | Broader threshold tuning on real user vaults and merge artifact policy |
 | Chat/context routing | In progress | `[#########-] 94%` | Complete-scope map/reduce, token budgets, retention policy, runtime failure UX |
 | Compulsory cluster experts | In progress | `[#####-----] 50%` | Real adapter smoke, runtime adapter loading, metrics, rollback, failure states |
 | Context Bridge | In progress | `[#########-] 92%` | Real Claude Desktop smoke and capture UX polish |
-| Packaging/install | In progress | `[#######---] 68%` | Install/uninstall smoke, packaged OCR/model verification, update/migration policy |
-| QA/hardening | In progress | `[#########-] 93%` | Packaged repair tests, larger benchmarks on real user vaults, real Claude Desktop smoke, recovery drills |
+| Packaging/install | In progress | `[########--] 78%` | Update/migration policy, Ghostscript licensing decision, packaged browser-runtime QA |
+| QA/hardening | In progress | `[##########] 95%` | Larger benchmarks on real user vaults, real Claude Desktop smoke, recovery drills |
 
 ## Current Critical Path
 
-- Finish packaged app smoke without rebuilding unless explicitly requested: startup, vault selection, OCR, dynamic links, model path, diagnostics.
+- Finish remaining packaged app smoke: dynamic-link/browser runtime, full-vault vault selection path, diagnostics export, update/migration policy.
 - Keep public V1 public-only criteria. If gates fail, label the build private alpha/demo.
 - Verify real adapter training and runtime loading before any broad "trained expert" claim.
 - Continue retrieval threshold tuning beyond the new real user-shaped benchmark using larger user-owned vaults.
@@ -100,8 +100,8 @@ UI prototype cleanup:
 
 Desktop app foundation:
 
-- Done: Electron workspace, backend launch/token seams, vault lock override flow, file picker/open/reveal IPC.
-- Remaining: packaged startup repair QA, process lifecycle hardening, clean installer smoke.
+- Done: Electron workspace, backend launch/token seams, vault lock override flow, file picker/open/reveal IPC, packaged pre-vault launch smoke, packaged main-process runtime logging.
+- Remaining: broader packaged startup repair QA, process lifecycle hardening, full-vault launch smoke.
 
 Local backend foundation:
 
@@ -111,7 +111,7 @@ Local backend foundation:
 Vault ingestion:
 
 - Done: files, folders, links, text, Markdown/Obsidian metadata, PDFs, images, OCR runtime health, OCR jobs, per-page OCR job progress, page/chunk storage, dynamic-link fallback.
-- Remaining: packaged scanned-PDF/image OCR smoke and packaged browser-runtime smoke.
+- Remaining: packaged browser-runtime smoke for dynamic links.
 
 Embeddings and clustering:
 
@@ -135,13 +135,13 @@ Context Bridge:
 
 Packaging/install:
 
-- Done: Windows package scripts, contributor requirements, OCR runtime staging script, local staged OCR runtime.
-- Remaining: fresh installer install/uninstall smoke, packaged OCR/model verification, update/migration policy, Ghostscript licensing decision.
+- Done: Windows package scripts, contributor requirements, OCR runtime staging script, local staged OCR runtime, rebuilt NSIS installer, silent install/uninstall smoke, packaged OCR verification, packaged model/embedding setup smoke.
+- Remaining: update/migration policy, Ghostscript licensing decision, packaged dynamic browser-runtime QA.
 
 QA/hardening:
 
-- Done: broad backend regression coverage, OCR benchmarks, audits, diagnostic redaction/log-rotation policy, backend benchmark scripts, disposable-vault delete cleanup tests, failed embedding-write retry test, dynamic-link browser-runtime smoke with Playwright on `T:`, Codex-style MCP smoke, real second-embedding model/cache smoke.
-- Remaining: larger user-vault benchmarks, package smoke, real Claude Desktop smoke, recovery/failure drills, dependency CVE audit as repeatable contributor workflow.
+- Done: broad backend regression coverage, OCR benchmarks, audits, diagnostic redaction/log-rotation policy, backend benchmark scripts, disposable-vault delete cleanup tests, failed embedding-write retry test, dynamic-link browser-runtime smoke with Playwright on `T:`, Codex-style MCP smoke, real second-embedding model/cache smoke, repeatable packaging/security smoke scripts, npm and Python vulnerability audits.
+- Remaining: larger user-vault benchmarks, real Claude Desktop smoke, recovery/failure drills.
 
 ## Public V1 Blockers
 
@@ -149,7 +149,7 @@ These are release gates, not polish.
 
 - Vault data path correctness: backend data and database must live under the selected vault folder in full-vault mode.
 - Pre-vault/full-vault lifecycle: restricted pre-vault backend must block vault/source/chat/search/bridge data routes until a vault is selected.
-- Startup repair: structured startup phases, status file, integrity/schema/migration checks, and visible repair UI must work in packaged app.
+- Startup repair: packaged pre-vault launch reaches ready; full-vault repair-path drills and visible repair UI still need broader packaged QA.
 - Migration durability: schema versioning exists, but interruption/recovery tests and real migration scripts must mature as schema changes continue.
 - Disk preflight: installer/model/OCR/indexing/ingestion flows need required/available space checks.
 - Local API auth: Electron-managed private APIs need token gate and renderer-origin validation; Bridge tokens stay separate.
@@ -158,10 +158,10 @@ These are release gates, not polish.
 - Chat recovery: interrupted generations need durable timeline placeholders, retry actions, and no fake assistant messages.
 - Complete analysis: current broad rerun is `expanded_analysis`; reserve `complete_analysis` for future evidence-packet map/reduce and return `501` if requested before implementation.
 - Deletion graph: deleted sensitive content must disappear from retrieval/search immediately before async cleanup.
-- Diagnostics: log rotation policy exists; packaged-path smoke remains.
+- Diagnostics: log rotation policy exists; packaged-path diagnostics export smoke remains.
 - MCP Bridge: Codex-style JSON-RPC smoke passed; real Claude Desktop smoke and clear app error codes are still required before advertising MCP readiness.
 - LoRA: public V1 requires verified real adapter training, adapter artifact, runtime load, rollback, supported hardware, failure codes, and quality win over retrieval baseline.
-- OCR/package: local runtime works, but fresh packaged install smoke and Ghostscript licensing decision remain before shipping to users.
+- OCR/package: packaged OCR runtime and installer smoke pass, but Ghostscript licensing decision remains before shipping to users.
 
 ## Next Backend Build Steps
 
@@ -192,11 +192,16 @@ Scope constraints for this list: no LoRA implementation, no UI work, no package 
 - Build actual browser extension package and safer pairing flow.
 - Add real Claude Desktop smoke before Bridge claims production readiness.
 - Smoke MCP external-turn capture tools against Claude Desktop after the Codex-style MCP smoke.
-- Add Python dependency CVE auditing to repeatable contributor QA.
+- Keep Python dependency CVE auditing in repeatable contributor QA.
 - Keep LoRA untouched unless explicitly requested; public V1 still requires verified LoRA later.
 
 ## Recent Completed Work
 
+- Completed rebuild-dependent package work: rebuilt Windows NSIS package `apps/desktop/release/CML-0.1.0-Setup.exe`, added repeatable package smoke scripts, and verified silent install/uninstall.
+- Packaged launch result: `scripts/packaging/smoke-packaged-app-launch.ps1` launched `win-unpacked\CML.exe`, cleared inherited `ELECTRON_RUN_AS_NODE`, and verified packaged pre-vault startup reached `ready`.
+- Packaged runtime result: `scripts/packaging/smoke-packaged-runtime.ps1` verified packaged Python backend health, local API token enforcement, pre-vault route blocking, arbitrary CORS-origin rejection, model setup endpoints, embedding cache configuration, and production hash-embedding rejection.
+- Packaged OCR result: packaged runtime resolved Tesseract, Ghostscript, and qpdf from `win-unpacked\resources\backend\bin\ocr`; image OCR and PDF OCR were available with `ocrmypdf`.
+- Security result: added `scripts/security/audit-app.ps1`; `npm audit --audit-level=moderate` found 0 vulnerabilities, `pip-audit` found no known third-party vulnerabilities, Electron token/external URL tests passed, and full backend unittest discovery ran 160 tests with 1 skipped.
 - Completed the requested 10 backend steps without LoRA, package rebuilds, or full UI rebuilds: user-shaped retrieval benchmark, real second-embedding cache smoke, query/evidence cache invalidation, dynamic-link browser smoke, Codex-style MCP capture smoke first, malformed MCP hardening, extension pairing/audit state, chat pagination/snapshot compaction, source-class calibration coverage, and initial service-layer extraction.
 - Codex app MCP-first result: `scripts/backend/smoke-codex-mcp.ps1` passed JSON-RPC tool listing, `get_context`, `log_external_turn`, `capture_external_artifact`, and malformed-call rejection through the Codex-style MCP path.
 - Runtime smoke result: Playwright Chromium was installed to `T:\CML-playwright-browsers`; dynamic-link smoke against `https://example.com/` reported browser runtime available and dynamic render completed.
@@ -229,6 +234,7 @@ Scope constraints for this list: no LoRA implementation, no UI work, no package 
 - No UI implementation unless explicitly requested; dark version and minimized/narrow desktop version are noted future requirements.
 - Do not delete or alter `UI-ref/`.
 - Playwright browser runtime for local dynamic-link smoke is installed on `T:\CML-playwright-browsers`; contributor backend requirements now include `playwright==1.60.0`.
+- Packaging smoke scripts clear inherited `ELECTRON_RUN_AS_NODE`; otherwise packaged Electron launches in Node mode and will not execute app startup.
 - Hash embeddings are development-only and must not be a silent production fallback.
 - SQLite is authoritative; vector indexes are derived and rebuildable.
 - Deleted sources must be excluded at SQLite/filter layer immediately, before async vector cleanup.

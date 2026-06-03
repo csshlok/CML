@@ -6,7 +6,7 @@ Last updated: 2026-06-03
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
-Latest compact truth after the 2026-06-03 backend build passes lives in `docs/PROJECT_CONTEXT.md`. The latest pass completed the backend-only 10-step run without LoRA, package rebuilds, or full UI rebuilds: user-shaped retrieval benchmarking, real second-embedding cache smoke, query/evidence cache invalidation, dynamic-link browser runtime smoke, Codex-style MCP context/capture smoke, malformed MCP hardening, extension pairing/audit state, chat pagination/snapshot compaction, source-class calibration coverage, and initial service-layer extraction. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+Latest compact truth after the 2026-06-03 build passes lives in `docs/PROJECT_CONTEXT.md`. The latest passes completed the backend-only 10-step run, then the rebuild-dependent package work: rebuilt the Windows NSIS package, verified packaged pre-vault launch, packaged Python/OCR/model setup, local API auth/CORS/security behavior, and silent install/uninstall. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
 
 ---
 # Project Context And Progress
