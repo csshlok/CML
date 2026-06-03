@@ -14,6 +14,7 @@ from backend.app.core.extraction import ExtractionError, extract_pages_from_path
 from backend.app.core.memory_card import generate_tags, summarize_text
 from backend.app.core.network_security import strip_url_credentials
 from backend.app.core.sql import build_update_assignments
+from backend.app.services.source_service import mark_source_changed, mark_source_deleted
 from backend.app.schemas import (
     SourceCreate,
     SourcePathCreate,
@@ -316,6 +317,7 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
                 conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
             mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
             mark_cluster_needs_update(conn, source["cluster_id"], "Source changed or moved.")
+            mark_source_changed(source_id, conn=conn)
     return source_from_row(row)
 
 
@@ -385,6 +387,7 @@ def delete_source(source_id: str) -> None:
             user_initiated=True,
         )
         mark_cluster_needs_update(conn, source["cluster_id"], "Source was deleted.")
+        mark_source_deleted(source_id, conn=conn)
 
 
 def source_from_row(row) -> dict:

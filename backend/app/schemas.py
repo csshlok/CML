@@ -678,6 +678,32 @@ class ExtensionCaptureRead(BaseModel):
     created_at: str
 
 
+class ExtensionPairingStartRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    allowed_vault_ids: list[str] = []
+    ttl_seconds: int = Field(default=600, ge=60, le=1800)
+
+
+class ExtensionPairingRead(BaseModel):
+    id: str
+    pairing_code: str
+    status: str
+    requested_name: str
+    allowed_vault_ids: list[str] = []
+    created_at: str
+    expires_at: str
+    completed_at: str | None = None
+
+
+class ExtensionPermissionAuditRead(BaseModel):
+    id: str
+    client_id: str | None = None
+    event_type: str
+    vault_id: str | None = None
+    detail: str
+    created_at: str
+
+
 class VaultLockAuditRead(BaseModel):
     id: str
     event_type: str

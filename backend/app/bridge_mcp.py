@@ -7,6 +7,7 @@ from urllib.request import Request, urlopen
 
 BACKEND_URL = os.getenv("CML_BACKEND_URL", "http://127.0.0.1:7343").rstrip("/")
 BRIDGE_TOKEN = os.getenv("CML_BRIDGE_TOKEN", "")
+MAX_TOOL_STRING_LENGTH = 50_000
 
 
 def main() -> int:
@@ -53,6 +54,9 @@ def handle_message(message: dict) -> dict:
         params = message.get("params") or {}
         name = params.get("name")
         arguments = params.get("arguments") or {}
+        validation_error = validate_tool_arguments(name, arguments)
+        if validation_error:
+            return error(request_id, -32602, validation_error)
         if name == "get_cluster_context":
             return result(request_id, call_get_cluster_context(arguments, request_id))
         if name == "list_clusters":
@@ -202,6 +206,29 @@ def call_capture_external_artifact(arguments: dict, request_id) -> dict:
         request_id=request_id,
     )
     return {"content": [{"type": "text", "text": json.dumps(data, indent=2)}]}
+
+
+def validate_tool_arguments(name, arguments) -> str | None:
+    if not isinstance(name, str) or not name:
+        return "Tool name is required."
+    if not isinstance(arguments, dict):
+        return "Tool arguments must be an object."
+    for key, value in arguments.items():
+        if isinstance(value, str) and len(value) > MAX_TOOL_STRING_LENGTH:
+            return f"Tool argument is too large: {key}"
+    if name == "get_cluster_context" and not str(arguments.get("query") or "").strip():
+        return "get_cluster_context requires query."
+    if name == "log_external_turn":
+        if not str(arguments.get("user_prompt") or "").strip():
+            return "log_external_turn requires user_prompt."
+        if not str(arguments.get("model_response") or "").strip():
+            return "log_external_turn requires model_response."
+    if name == "capture_external_artifact":
+        if not str(arguments.get("title") or "").strip():
+            return "capture_external_artifact requires title."
+        if not str(arguments.get("content") or "").strip():
+            return "capture_external_artifact requires content."
+    return None
 
 
 def http_json(

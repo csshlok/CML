@@ -1174,6 +1174,102 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertIn("export_benchmark_report", benchmark_text)
         self.assertIn("[int]$Sources = 100", benchmark_text)
 
+    def test_query_cache_invalidates_when_contributing_source_changes(self) -> None:
+        from backend.app.api.routes.search import create_query_cache, get_query_cache
+        from backend.app.api.routes.sources import create_source, update_source
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourceCreate, SourceUpdate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+        source = create_source(
+            SourceCreate(vault_id="vault-1", title="Cache", source_type="note", raw_text="cache invalidation source")
+        )
+        create_query_cache("vault-1", "query:fingerprint", source["id"])
+        update_source(source["id"], SourceUpdate(raw_text="cache invalidation source changed"))
+
+        items = get_query_cache("vault-1")["items"]
+
+        self.assertTrue(items[0]["invalidated"])
+
+    def test_chat_pagination_and_retrieval_snapshot_compaction(self) -> None:
+        from backend.app.api.routes.chat import compact_chat_retrieval_snapshots, get_chat_messages_page
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+            conn.execute(
+                "INSERT INTO chat_sessions (id, vault_id, title, saved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("chat-1", "vault-1", "Paged", 1, now, now),
+            )
+            for index in range(3):
+                conn.execute(
+                    "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (f"msg-{index}", "chat-1", "user", f"message {index}", f"{now}-{index}"),
+                )
+            for index in range(2):
+                conn.execute(
+                    """
+                    INSERT INTO retrieval_snapshots (
+                        id, message_id, session_id, vault_id, query, retrieval_mode, embedding_model_id, created_at
+                    )
+                    VALUES (?, 'msg-0', 'chat-1', 'vault-1', 'q', 'semantic', 'hash', ?)
+                    """,
+                    (f"snapshot-{index}", f"{now}-{index}"),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO retrieval_snapshot_items (
+                        id, snapshot_id, source_title_at_answer_time, short_snippet_excerpt,
+                        relevance_score, item_rank, created_at
+                    )
+                    VALUES (?, ?, 'Source', ?, 1, 1, ?)
+                    """,
+                    (f"snapshot-item-{index}", f"snapshot-{index}", "x" * 500, now),
+                )
+
+        page = get_chat_messages_page("chat-1", limit=2)
+        compacted = compact_chat_retrieval_snapshots(message_id="msg-0", keep_latest_per_message=1)
+
+        self.assertEqual(len(page["items"]), 2)
+        self.assertIsNotNone(page["next_cursor"])
+        self.assertEqual(compacted["compacted_snapshots"], 1)
+
+    def test_extension_pairing_and_permission_audit(self) -> None:
+        from backend.app.api.routes.extension import (
+            approve_extension_pairing,
+            list_extension_permission_audit,
+            start_extension_pairing,
+        )
+        from backend.app.schemas import ExtensionPairingStartRequest
+
+        pairing = start_extension_pairing(
+            ExtensionPairingStartRequest(name="Browser", allowed_vault_ids=["vault-1"])
+        )
+        client = approve_extension_pairing(pairing["id"])
+        audit = list_extension_permission_audit()
+
+        self.assertEqual(client["name"], "Browser")
+        self.assertTrue(any(row["event_type"] == "pairing_approved" for row in audit))
+
+    def test_new_smoke_scripts_are_codex_dynamic_and_second_embedding_aware(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        codex = (repo_root / "scripts" / "backend" / "smoke-codex-mcp.ps1").read_text(encoding="utf-8")
+        dynamic = (repo_root / "scripts" / "backend" / "smoke-dynamic-link.ps1").read_text(encoding="utf-8")
+        second = (repo_root / "scripts" / "backend" / "smoke-second-embedding-index.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("codex_style_jsonrpc", codex)
+        self.assertIn("browser_runtime_available", dynamic)
+        self.assertIn("real_second_cache_observed", second)
+
     def _client(self) -> TestClient:
         from backend.app.core.config import get_settings
 

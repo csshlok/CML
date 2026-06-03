@@ -1,12 +1,13 @@
 import hashlib
 import json
 import secrets
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException
 
 from backend.app.api.routes.sources import create_source
-from backend.app.core.database import connect, utc_now
+from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.schemas import (
     ExtensionCaptureRequest,
     ExtensionCaptureRead,
@@ -15,6 +16,9 @@ from backend.app.schemas import (
     ExtensionClientCreateResponse,
     ExtensionClientRead,
     ExtensionClientUpdate,
+    ExtensionPairingRead,
+    ExtensionPairingStartRequest,
+    ExtensionPermissionAuditRead,
     ExtensionStatusResponse,
     SourceCreate,
 )
@@ -59,6 +63,7 @@ def create_extension_client(payload: ExtensionClientCreate) -> dict:
             """,
             client,
         )
+        _insert_extension_audit(conn, client_id=client["id"], event_type="client_created", vault_id=None, detail="")
     return {
         "id": client["id"],
         "name": client["name"],
@@ -93,6 +98,13 @@ def update_extension_client(client_id: str, payload: ExtensionClientUpdate) -> d
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Extension client not found")
+        _insert_extension_audit(
+            conn,
+            client_id=client_id,
+            event_type="client_updated",
+            vault_id=None,
+            detail=json.dumps(updates),
+        )
     return _get_extension_client(client_id)
 
 
@@ -105,6 +117,94 @@ def revoke_extension_client(client_id: str) -> None:
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Extension client not found")
+        _insert_extension_audit(conn, client_id=client_id, event_type="client_revoked", vault_id=None, detail="")
+
+
+@router.post("/pairing/start", response_model=ExtensionPairingRead)
+def start_extension_pairing(payload: ExtensionPairingStartRequest) -> dict:
+    now_dt = datetime.now(UTC)
+    now = now_dt.isoformat()
+    session = {
+        "id": f"extension-pairing-{uuid4()}",
+        "pairing_code": secrets.token_urlsafe(8),
+        "status": "pending",
+        "requested_name": payload.name,
+        "allowed_vault_ids": json.dumps(payload.allowed_vault_ids),
+        "created_at": now,
+        "expires_at": (now_dt + timedelta(seconds=payload.ttl_seconds)).isoformat(),
+        "completed_at": None,
+    }
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO extension_pairing_sessions (
+                id, pairing_code, status, requested_name, allowed_vault_ids, created_at, expires_at, completed_at
+            )
+            VALUES (
+                :id, :pairing_code, :status, :requested_name, :allowed_vault_ids, :created_at, :expires_at, :completed_at
+            )
+            """,
+            session,
+        )
+        _insert_extension_audit(
+            conn,
+            client_id=None,
+            event_type="pairing_started",
+            vault_id=None,
+            detail=json.dumps({"pairing_id": session["id"]}),
+        )
+    return _pairing_from_mapping(session)
+
+
+@router.post("/pairing/{pairing_id}/approve", response_model=ExtensionClientCreateResponse)
+def approve_extension_pairing(pairing_id: str) -> dict:
+    with connect() as conn:
+        pairing = conn.execute("SELECT * FROM extension_pairing_sessions WHERE id = ?", (pairing_id,)).fetchone()
+        if pairing is None:
+            raise HTTPException(status_code=404, detail="Extension pairing not found")
+        if pairing["status"] != "pending":
+            raise HTTPException(status_code=409, detail="Extension pairing is not pending")
+        if pairing["expires_at"] <= utc_now():
+            conn.execute("UPDATE extension_pairing_sessions SET status = 'expired' WHERE id = ?", (pairing_id,))
+            raise HTTPException(status_code=409, detail="Extension pairing expired")
+    client = create_extension_client(
+        ExtensionClientCreate(
+            name=pairing["requested_name"],
+            allowed_vault_ids=_json_list(pairing["allowed_vault_ids"]),
+        )
+    )
+    with connect() as conn:
+        conn.execute(
+            "UPDATE extension_pairing_sessions SET status = 'approved', completed_at = ? WHERE id = ?",
+            (utc_now(), pairing_id),
+        )
+        _insert_extension_audit(
+            conn,
+            client_id=client["id"],
+            event_type="pairing_approved",
+            vault_id=None,
+            detail=json.dumps({"pairing_id": pairing_id}),
+        )
+    return client
+
+
+@router.get("/pairing", response_model=list[ExtensionPairingRead])
+def list_extension_pairings() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM extension_pairing_sessions ORDER BY created_at DESC LIMIT 50"
+        ).fetchall()
+    return [_pairing_from_row(row) for row in rows]
+
+
+@router.get("/permission-audit", response_model=list[ExtensionPermissionAuditRead])
+def list_extension_permission_audit(limit: int = 50) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM extension_permission_audit ORDER BY created_at DESC LIMIT ?",
+            (max(1, min(limit, 100)),),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 @router.get("/captures", response_model=list[ExtensionCaptureRead])
@@ -148,6 +248,14 @@ def capture_from_extension(
     if client is None:
         raise HTTPException(status_code=401, detail="Missing or invalid extension token")
     if not _client_allows_vault(client, payload.vault_id):
+        with connect() as conn:
+            _insert_extension_audit(
+                conn,
+                client_id=client["id"],
+                event_type="capture_denied",
+                vault_id=payload.vault_id,
+                detail="vault_not_allowed",
+            )
         raise HTTPException(status_code=403, detail="Extension client is not allowed to capture into this vault")
     source = create_source(
         SourceCreate(
@@ -179,6 +287,13 @@ def capture_from_extension(
                 payload.url,
                 now,
             ),
+        )
+        _insert_extension_audit(
+            conn,
+            client_id=client["id"],
+            event_type="capture_stored",
+            vault_id=payload.vault_id,
+            detail=json.dumps({"capture_id": capture_id, "source_id": source["id"]}),
         )
     return {"capture_id": capture_id, "source_id": source["id"], "status": "stored"}
 
@@ -228,12 +343,47 @@ def _client_from_row(row) -> dict:
     }
 
 
+def _pairing_from_row(row) -> dict:
+    return _pairing_from_mapping(dict_from_row(row))
+
+
+def _pairing_from_mapping(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "pairing_code": row["pairing_code"],
+        "status": row["status"],
+        "requested_name": row["requested_name"],
+        "allowed_vault_ids": _json_list(row.get("allowed_vault_ids")),
+        "created_at": row["created_at"],
+        "expires_at": row["expires_at"],
+        "completed_at": row.get("completed_at"),
+    }
+
+
 def _client_allows_vault(client, vault_id: str) -> bool:
     try:
         allowed = json.loads(client["allowed_vault_ids"] or "[]")
     except json.JSONDecodeError:
         allowed = []
     return not allowed or vault_id in allowed
+
+
+def _json_list(raw: str | None) -> list[str]:
+    try:
+        parsed = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return []
+    return [str(item) for item in parsed] if isinstance(parsed, list) else []
+
+
+def _insert_extension_audit(conn, *, client_id: str | None, event_type: str, vault_id: str | None, detail: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO extension_permission_audit (id, client_id, event_type, vault_id, detail, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (f"extension-audit-{uuid4()}", client_id, event_type, vault_id, detail[:1000], utc_now()),
+    )
 
 
 def _hash_token(token: str) -> str:

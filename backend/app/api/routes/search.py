@@ -9,6 +9,7 @@ from backend.app.core.retrieval_scoring import (
     scoring_ledger,
     threshold_benchmark,
 )
+from backend.app.core.retrieval_cache import list_query_cache, put_query_cache
 from backend.app.core.vector_maintenance import (
     activate_embedding_index,
     begin_embedding_index_transition,
@@ -131,6 +132,23 @@ def create_benchmark_report(vault_id: str) -> dict:
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return export_benchmark_report(vault_id)
+
+
+@router.get("/query-cache")
+def get_query_cache(vault_id: str | None = None) -> dict:
+    return {"items": list_query_cache(vault_id)}
+
+
+@router.post("/query-cache")
+def create_query_cache(vault_id: str, query_fingerprint: str, source_ids: str = "") -> dict:
+    contributing = [item.strip() for item in source_ids.split(",") if item.strip()]
+    if not query_fingerprint.strip():
+        raise HTTPException(status_code=400, detail="query_fingerprint is required")
+    return put_query_cache(
+        vault_id=vault_id,
+        query_fingerprint=query_fingerprint.strip(),
+        contributing_source_ids=contributing,
+    )
 
 
 @router.post("/reindex/{vault_id}")

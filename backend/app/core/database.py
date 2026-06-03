@@ -393,6 +393,40 @@ def init_db() -> None:
                 FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS query_evidence_cache (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                query_fingerprint TEXT NOT NULL,
+                artifact_type TEXT NOT NULL DEFAULT 'query_result',
+                contributing_source_ids TEXT NOT NULL DEFAULT '[]',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                invalidated_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS extension_pairing_sessions (
+                id TEXT PRIMARY KEY,
+                pairing_code TEXT NOT NULL,
+                status TEXT NOT NULL,
+                requested_name TEXT NOT NULL,
+                allowed_vault_ids TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS extension_permission_audit (
+                id TEXT PRIMARY KEY,
+                client_id TEXT,
+                event_type TEXT NOT NULL,
+                vault_id TEXT,
+                detail TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (client_id) REFERENCES extension_clients(id) ON DELETE SET NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_source_chunks_vault_id ON source_chunks(vault_id);
             CREATE INDEX IF NOT EXISTS idx_source_chunks_cluster_id ON source_chunks(cluster_id);
             CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id ON source_chunks(source_id);
@@ -411,6 +445,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_expert_artifacts_cluster ON expert_artifacts(cluster_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_analysis_evidence_packets_job ON analysis_evidence_packets(job_id);
             CREATE INDEX IF NOT EXISTS idx_analysis_evidence_packets_vault ON analysis_evidence_packets(vault_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_query_evidence_cache_vault ON query_evidence_cache(vault_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_extension_pairing_status ON extension_pairing_sessions(status, expires_at);
+            CREATE INDEX IF NOT EXISTS idx_extension_permission_audit_client ON extension_permission_audit(client_id, created_at);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_app_jobs_dedupe_active
                 ON app_jobs(dedupe_key)
                 WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running');
@@ -483,6 +520,8 @@ def init_db() -> None:
                 ON sources(vault_id, checksum);
             CREATE INDEX IF NOT EXISTS idx_expert_artifacts_active
                 ON expert_artifacts(cluster_id, active, deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_query_evidence_cache_fingerprint
+                ON query_evidence_cache(vault_id, query_fingerprint, invalidated_at);
             """
         )
 

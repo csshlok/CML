@@ -16,6 +16,7 @@ fpdf2==2.8.7
 pillow==12.2.0
 httpx==0.28.1
 requests==2.34.2
+playwright==1.60.0
 numpy==2.4.6
 scipy==1.17.1
 scikit-learn==1.8.0

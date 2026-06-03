@@ -69,21 +69,21 @@ Runtime boundary:
 | Desktop app foundation | In progress | `[#########-] 93%` | Runtime process management, packaged startup repair QA, installer smoke |
 | Local backend foundation | In progress | `[##########] 99%` | Broader recovery drills and service-layer cleanup |
 | Vault ingestion | In progress | `[##########] 99%` | Packaged OCR smoke and packaged dynamic-link/browser-runtime QA |
-| Embeddings and clustering | In progress | `[#########-] 94%` | Threshold tuning on real user-shaped vaults and merge artifact policy |
-| Chat/context routing | In progress | `[#########-] 93%` | Complete-scope map/reduce, token budgets, pagination/retention, runtime failure UX |
+| Embeddings and clustering | In progress | `[##########] 96%` | Broader threshold tuning on real user vaults and merge artifact policy |
+| Chat/context routing | In progress | `[#########-] 94%` | Complete-scope map/reduce, token budgets, retention policy, runtime failure UX |
 | Compulsory cluster experts | In progress | `[#####-----] 50%` | Real adapter smoke, runtime adapter loading, metrics, rollback, failure states |
-| Context Bridge | In progress | `[#########-] 90%` | Real MCP/Claude Desktop smoke, malformed-client hardening, capture UX polish |
+| Context Bridge | In progress | `[#########-] 92%` | Real Claude Desktop smoke and capture UX polish |
 | Packaging/install | In progress | `[#######---] 68%` | Install/uninstall smoke, packaged OCR/model verification, update/migration policy |
-| QA/hardening | In progress | `[#########-] 91%` | Packaged repair tests, larger benchmarks on real user-shaped vaults, real MCP smoke, recovery drills |
+| QA/hardening | In progress | `[#########-] 93%` | Packaged repair tests, larger benchmarks on real user vaults, real Claude Desktop smoke, recovery drills |
 
 ## Current Critical Path
 
 - Finish packaged app smoke without rebuilding unless explicitly requested: startup, vault selection, OCR, dynamic links, model path, diagnostics.
 - Keep public V1 public-only criteria. If gates fail, label the build private alpha/demo.
 - Verify real adapter training and runtime loading before any broad "trained expert" claim.
-- Tune retrieval thresholds on real user-shaped vault data using the new scoring ledger, source-class weighting, and benchmark report export.
-- Smoke Context Bridge against a real client before advertising MCP readiness.
-- Smoke the new MCP external-turn capture against a real MCP client before claiming production readiness.
+- Continue retrieval threshold tuning beyond the new real user-shaped benchmark using larger user-owned vaults.
+- Smoke Context Bridge against Claude Desktop before advertising MCP readiness.
+- Treat the Codex-style MCP smoke as a first client-path pass, not a substitute for Claude Desktop verification.
 - Keep project context concise enough for session continuity.
 
 ## Phase Snapshot
@@ -115,13 +115,13 @@ Vault ingestion:
 
 Embeddings and clustering:
 
-- Done: default real embedding direction, hash dev fallback boundary, vector repair/compaction/policy endpoints, startup reconciliation, BM25 plus embedding scoring ledger, source-class weighting, threshold benchmark harness, retrieval eval fixtures, real T-drive cancellation smoke, 100-source benchmark script/report export, active-index transition smoke.
-- Remaining: threshold tuning on real user-shaped vault data, active-index migration through a real embedding model transition, merge artifact policy.
+- Done: default real embedding direction, hash dev fallback boundary, vector repair/compaction/policy endpoints, startup reconciliation, BM25 plus embedding scoring ledger, source-class weighting, threshold benchmark harness, retrieval eval fixtures, real T-drive cancellation smoke, 100-source benchmark script/report export, active-index transition smoke, real second-embedding cache smoke, user-shaped vault benchmark export.
+- Remaining: broader threshold tuning on user-owned vaults, merge artifact policy.
 
 Chat/context routing:
 
-- Done: LLM-first routing, retrieval intent, degraded runtime states, citation snapshots, attachment ingestion, coverage ledger, expanded-analysis foundation.
-- Remaining: real complete-scope map/reduce, partial-failure classification, token budgets, pagination/retention, evidence cache pruning.
+- Done: LLM-first routing, retrieval intent, degraded runtime states, citation snapshots, attachment ingestion, coverage ledger, expanded-analysis foundation, chat message pagination, retrieval snapshot compaction.
+- Remaining: real complete-scope map/reduce, partial-failure classification, token budgets, retention policy, evidence cache pruning.
 
 Compulsory cluster experts:
 
@@ -130,8 +130,8 @@ Compulsory cluster experts:
 
 Context Bridge:
 
-- Done: bridge tokens, permissions, token rotation, stale allowlist pruning, no-active-vault errors, notification behavior, constant-time token compare, explicit external-turn/artifact capture tools with vault/cluster permission checks.
-- Remaining: full extension package, real MCP/Claude Desktop smoke, malformed-client hardening, capture UX polish.
+- Done: bridge tokens, permissions, token rotation, stale allowlist pruning, no-active-vault errors, notification behavior, constant-time token compare, explicit external-turn/artifact capture tools with vault/cluster permission checks, Codex-style MCP JSON-RPC smoke, malformed-client hardening.
+- Remaining: full extension package, real Claude Desktop smoke, capture UX polish.
 
 Packaging/install:
 
@@ -140,8 +140,8 @@ Packaging/install:
 
 QA/hardening:
 
-- Done: broad backend regression coverage, OCR benchmarks, audits, diagnostic redaction/log-rotation policy, backend benchmark scripts, disposable-vault delete cleanup tests, failed embedding-write retry test.
-- Remaining: large-scale benchmark, package smoke, real MCP smoke, recovery/failure drills, dependency CVE audit as repeatable contributor workflow.
+- Done: broad backend regression coverage, OCR benchmarks, audits, diagnostic redaction/log-rotation policy, backend benchmark scripts, disposable-vault delete cleanup tests, failed embedding-write retry test, dynamic-link browser-runtime smoke with Playwright on `T:`, Codex-style MCP smoke, real second-embedding model/cache smoke.
+- Remaining: larger user-vault benchmarks, package smoke, real Claude Desktop smoke, recovery/failure drills, dependency CVE audit as repeatable contributor workflow.
 
 ## Public V1 Blockers
 
@@ -159,7 +159,7 @@ These are release gates, not polish.
 - Complete analysis: current broad rerun is `expanded_analysis`; reserve `complete_analysis` for future evidence-packet map/reduce and return `501` if requested before implementation.
 - Deletion graph: deleted sensitive content must disappear from retrieval/search immediately before async cleanup.
 - Diagnostics: log rotation policy exists; packaged-path smoke remains.
-- MCP Bridge: real client smoke and clear app error codes are required before advertising MCP readiness.
+- MCP Bridge: Codex-style JSON-RPC smoke passed; real Claude Desktop smoke and clear app error codes are still required before advertising MCP readiness.
 - LoRA: public V1 requires verified real adapter training, adapter artifact, runtime load, rollback, supported hardware, failure codes, and quality win over retrieval baseline.
 - OCR/package: local runtime works, but fresh packaged install smoke and Ghostscript licensing decision remain before shipping to users.
 
@@ -167,36 +167,42 @@ These are release gates, not polish.
 
 Scope constraints for this list: no LoRA implementation, no UI work, no package rebuild unless explicitly requested.
 
-1. Run threshold tuning on a real user-shaped vault, not synthetic 100-source fixtures only.
-2. Add active-index migration through an actual second embedding model/cache, not policy-only transition.
-3. Add query/evidence cache invalidation keyed by contributing source IDs.
-4. Add dynamic-link smoke tests against real thin-client pages when browser runtime is installed.
-5. Add MCP malformed-client hardening and real Claude Desktop smoke for context plus capture tools.
-6. Add extension pairing flow backend state and permission audit events.
-7. Add chat pagination and retrieval snapshot compaction endpoints.
-8. Add source-class weighting calibration fixtures for docs vs chats vs external model captures.
+1. Run real Claude Desktop MCP smoke for context, external-turn logging, artifact capture, malformed calls, and notification silence.
+2. Expand retrieval threshold tuning from the 100-source user-shaped benchmark into a larger user-owned vault fixture.
+3. Add merge artifact policy for clustering: provenance, reversible merge metadata, and split/rollback behavior.
+4. Harden query/evidence cache lifecycle with age limits, max bytes, and stale citation cleanup.
+5. Add stable cursor semantics for chat pagination across equal timestamps and deleted-message gaps.
+6. Extend source-class weighting calibration to multi-turn chats, screenshots/OCR, and external captures.
+7. Move more route-level source/chat/search database logic into service modules with transaction boundaries.
+8. Add extension pairing expiry/replay hardening and audit filtering by client/source/vault.
 9. Add startup repair recovery cases for failed migrations once the next real migration exists.
-10. Add backend service-layer cleanup around route-level source/chat/search operations.
+10. Add repeatable contributor dependency/security audit command for Python backend dependencies.
 
 ## Current Open Work
 
 - Decide first supported OS for downloadable public V1.
 - Finish first-run setup around vault path, model setup, embedding setup, OCR readiness, and startup repair states.
 - Add one-click local model/embedding dependency install or connect-existing-runtime flows.
-- Add backend service layer around raw route/database operations.
+- Continue backend service-layer extraction around raw route/database operations.
 - Finish packaged ingestion verification for scanned PDFs, image OCR, and dynamic links.
 - Add complete-scope answering in stages: coverage ledger, BM25/embedding scoring, threshold tuning, map packets, reduce/synthesis, cache pruning.
-- Add query/evidence cache invalidation keyed by contributing documents.
-- Add chat pagination, retention, citation snapshot compaction, and deleted/stale citation actions.
+- Add query/evidence cache retention limits beyond the new source-ID invalidation path.
+- Add chat retention policy and deleted/stale citation actions beyond the new pagination and snapshot compaction endpoints.
 - Finish local synced-folder import history and watched refresh polish where gaps remain.
 - Build actual browser extension package and safer pairing flow.
-- Add real MCP client smoke before Bridge claims production readiness.
-- Smoke MCP external-turn capture tools against a real MCP client.
+- Add real Claude Desktop smoke before Bridge claims production readiness.
+- Smoke MCP external-turn capture tools against Claude Desktop after the Codex-style MCP smoke.
 - Add Python dependency CVE auditing to repeatable contributor QA.
 - Keep LoRA untouched unless explicitly requested; public V1 still requires verified LoRA later.
 
 ## Recent Completed Work
 
+- Completed the requested 10 backend steps without LoRA, package rebuilds, or full UI rebuilds: user-shaped retrieval benchmark, real second-embedding cache smoke, query/evidence cache invalidation, dynamic-link browser smoke, Codex-style MCP capture smoke first, malformed MCP hardening, extension pairing/audit state, chat pagination/snapshot compaction, source-class calibration coverage, and initial service-layer extraction.
+- Codex app MCP-first result: `scripts/backend/smoke-codex-mcp.ps1` passed JSON-RPC tool listing, `get_context`, `log_external_turn`, `capture_external_artifact`, and malformed-call rejection through the Codex-style MCP path.
+- Runtime smoke result: Playwright Chromium was installed to `T:\CML-playwright-browsers`; dynamic-link smoke against `https://example.com/` reported browser runtime available and dynamic render completed.
+- Embedding smoke result: real `sentence-transformers/all-MiniLM-L6-v2` and `sentence-transformers/paraphrase-MiniLM-L3-v2` caches were used under `T:\CML-embedding-index-smoke`; active index switched to the second model.
+- Retrieval benchmark result: 100-source user-shaped vault benchmark exported JSON and Markdown reports under `T:\CML-build-smoke\user-shaped-retrieval\benchmark-reports`.
+- Verification for this pass: full backend unittest discovery ran 160 tests with 1 skipped; `python -m compileall backend/app`, `python -m pip check`, `git diff --check`, and LoRA/training-file scope checks passed.
 - Completed the next 10 backend steps without LoRA or rebuild work: real T-drive model/embedding cancellation smoke, 100-source retrieval benchmark/report export, source-class weighting, `compare_source_classes`, MCP external-turn/artifact capture, capture permission checks, active-index transition smoke, failed embedding-write retry coverage, expanded storage accounting, and benchmark scripts.
 - Real download smoke result: embedding path reached `downloading` on `T:\CML-download-smoke` and cancelled cleanly; model path reached `downloading`, wrote 10 MB to `T:\CML-download-smoke\models`, reported 0.42% progress, and cancellation was observed.
 - Retrieval smoke result: 100-source benchmark produced JSON and Markdown reports under `T:\CML-build-smoke\retrieval\benchmark-reports`; active-index transition smoke reported atomic activation observed.
@@ -222,6 +228,7 @@ Scope constraints for this list: no LoRA implementation, no UI work, no package 
 - No package rebuild work unless explicitly requested.
 - No UI implementation unless explicitly requested; dark version and minimized/narrow desktop version are noted future requirements.
 - Do not delete or alter `UI-ref/`.
+- Playwright browser runtime for local dynamic-link smoke is installed on `T:\CML-playwright-browsers`; contributor backend requirements now include `playwright==1.60.0`.
 - Hash embeddings are development-only and must not be a silent production fallback.
 - SQLite is authoritative; vector indexes are derived and rebuildable.
 - Deleted sources must be excluded at SQLite/filter layer immediately, before async vector cleanup.
@@ -230,6 +237,7 @@ Scope constraints for this list: no LoRA implementation, no UI work, no package 
 - MCP Bridge must not respond to JSON-RPC notifications.
 - MCP Bridge must return explicit app errors like `1001 no_active_vault`; never silently choose the first vault.
 - MCP cannot automatically see outside model responses; external transcripts are capturable only when the MCP client explicitly sends them back through a logging/capture tool.
+- Codex-style MCP smoke passed for context and capture tools; Claude Desktop smoke is still required before claiming MCP production readiness.
 - OCR direction is fully local. Users should not manually install OCR dependencies for shipped builds.
 - OCR shipping caveat: Ghostscript licensing must be decided before proprietary distribution; package smoke alone is not enough.
 - Tesseract is Apache 2.0; qpdf is acceptable for bundling review; Ghostscript needs AGPL/commercial decision.
