@@ -2,11 +2,13 @@ import { useEffect, useState } from "react";
 
 const CONFIGURED_BACKEND_URL =
   (import.meta.env.VITE_CML_BACKEND_URL as string | undefined) || "http://127.0.0.1:7343";
+const CONFIGURED_BACKEND_TOKEN = import.meta.env.VITE_CML_API_TOKEN as string | undefined;
+const API_PREFIX = (import.meta.env.VITE_CML_API_PREFIX as string | undefined) || "/api/v1";
 const BACKEND_CANDIDATES = Array.from(
   new Set([CONFIGURED_BACKEND_URL, "http://127.0.0.1:7343", "http://127.0.0.1:7342"]),
 );
 let resolvedBackendUrl: string | null = null;
-let resolvedBackendToken: string | null = null;
+let resolvedBackendToken: string | null = CONFIGURED_BACKEND_TOKEN || null;
 
 if (typeof window !== "undefined") {
   const queryBackendUrl = new URLSearchParams(window.location.search).get("backendUrl");
@@ -33,8 +35,9 @@ export function useBackendHealth() {
 
     async function check() {
       let degradedCandidateSeen = false;
+      const token = await getBackendToken();
       for (const candidate of BACKEND_CANDIDATES) {
-        const probe = await probeBackend(candidate);
+        const probe = await probeBackend(candidate, token);
         if (probe.status === "online") {
           resolvedBackendUrl = candidate;
           if (!cancelled) {
@@ -69,23 +72,21 @@ export function useBackendHealth() {
   };
 }
 
-async function probeBackend(url: string): Promise<{ status: BackendHealthStatus }> {
+async function probeBackend(url: string, token?: string | null): Promise<{ status: BackendHealthStatus }> {
   try {
     const response = await fetch(`${url}/health`, {
       signal: AbortSignal.timeout(1000),
     });
     if (!response.ok) return { status: "offline" };
-    const openapi = await fetch(`${url}/openapi.json`, {
+    if (!token) return { status: "degraded" };
+    const identity = await fetch(`${url}${API_PREFIX}/system/backend-identity`, {
+      headers: { "x-cml-api-token": token },
       signal: AbortSignal.timeout(1500),
     });
-    if (!openapi.ok) return { status: "degraded" };
-    const spec = await openapi.json();
-    const paths = spec?.paths ?? {};
-    const hasChatRoutes =
-      Boolean(paths["/api/v1/chat/sessions"]) &&
-      Boolean(paths["/api/v1/chat/messages/{message_id}"]) &&
-      Boolean(paths["/api/v1/models/embeddings/configure"]);
-    return { status: hasChatRoutes ? "online" : "degraded" };
+    if (!identity.ok) return { status: "degraded" };
+    const payload = await identity.json();
+    const authenticated = payload?.service === "cml-backend" && payload?.api_prefix === API_PREFIX;
+    return { status: authenticated ? "online" : "degraded" };
   } catch {
     return { status: "offline" };
   }
@@ -93,8 +94,9 @@ async function probeBackend(url: string): Promise<{ status: BackendHealthStatus 
 
 async function getBackendUrl() {
   if (resolvedBackendUrl) return resolvedBackendUrl;
+  const token = await getBackendToken();
   for (const candidate of BACKEND_CANDIDATES) {
-    const probe = await probeBackend(candidate);
+    const probe = await probeBackend(candidate, token);
     if (probe.status === "online") {
       resolvedBackendUrl = candidate;
       return candidate;
@@ -222,10 +224,37 @@ export type ExpertArtifactRecord = {
 export type ExpertGraduationContractRecord = {
   supported_statuses: string[];
   minimum_sources: number;
+  minimum_unique_sources: number;
+  minimum_estimated_tokens: number;
+  minimum_validation_records: number;
   minimum_quality_score: number;
+  minimum_quality_delta: number;
+  maximum_duplicate_ratio: number;
   required_artifact_files: string[];
   failure_codes: string[];
+  graduation_gate: string;
   rollback_behavior: string;
+};
+
+export type ClusterExpertStatusRecord = {
+  cluster_id: string;
+  expert_status: string;
+  user_status: string;
+  searchable: boolean;
+  trained: boolean;
+  stale: boolean;
+  active_artifact_id: string | null;
+  active_dataset_hash: string | null;
+  current_dataset_hash: string | null;
+  runtime_load: {
+    available?: boolean;
+    runtime?: string;
+    base_model?: string;
+    adapter_path?: string;
+    detail?: string;
+  };
+  failure_code: string;
+  detail: string;
 };
 
 export type AppJobRecord = {
@@ -403,6 +432,35 @@ export type ChatTimelineItem =
 export type ChatTimelineResponse = {
   session_id: string;
   items: ChatTimelineItem[];
+};
+
+export type ChatEvidenceRetentionPolicy = {
+  default_keep_latest_snapshots_per_message: number;
+  max_keep_latest_snapshots_per_message: number;
+  default_excerpt_chars: number;
+  deleted_source_state: string;
+  compacted_state: string;
+  query_cache_prune_endpoint: string;
+};
+
+export type ChatEvidenceRetentionResult = {
+  message_id: string | null;
+  keep_latest_per_message: number;
+  excerpt_chars: number;
+  compacted_snapshots: number;
+  deleted_source_tombstones: number;
+  trimmed_items: number;
+  retained_at: string;
+};
+
+export type QueryCachePruneResult = {
+  vault_id: string | null;
+  max_age_days: number;
+  max_items: number;
+  max_payload_bytes: number;
+  deleted_old_or_invalidated: number;
+  deleted_oversized: number;
+  deleted_over_limit: number;
 };
 
 export type ModelDownloadState = {
@@ -740,6 +798,12 @@ export async function getClusterExpertContract(clusterId: string) {
   );
 }
 
+export async function getClusterExpertStatus(clusterId: string) {
+  return request<ClusterExpertStatusRecord>(
+    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/status`,
+  );
+}
+
 export async function activateClusterExpertArtifact(clusterId: string, artifactId: string) {
   return request<ExpertArtifactRecord>(
     `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/artifacts/${encodeURIComponent(artifactId)}/activate`,
@@ -891,6 +955,25 @@ export async function reindexVaultSearch(vaultId: string) {
   );
 }
 
+export async function pruneQueryCache(payload?: {
+  vault_id?: string | null;
+  max_age_days?: number;
+  max_items?: number;
+  max_payload_bytes?: number;
+}) {
+  const params = new URLSearchParams();
+  if (payload?.vault_id) params.set("vault_id", payload.vault_id);
+  if (payload?.max_age_days !== undefined) params.set("max_age_days", String(payload.max_age_days));
+  if (payload?.max_items !== undefined) params.set("max_items", String(payload.max_items));
+  if (payload?.max_payload_bytes !== undefined) {
+    params.set("max_payload_bytes", String(payload.max_payload_bytes));
+  }
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return request<QueryCachePruneResult>(`/api/v1/search/query-cache/prune${query}`, {
+    method: "POST",
+  });
+}
+
 export async function buildChatContext(payload: {
   vault_id: string;
   prompt: string;
@@ -1029,6 +1112,29 @@ export async function updateChatMessage(
 
 export async function deleteChatSession(id: string) {
   await request<void>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function getChatEvidenceRetentionPolicy() {
+  return request<ChatEvidenceRetentionPolicy>("/api/v1/chat/evidence-retention/policy");
+}
+
+export async function enforceChatEvidenceRetention(payload?: {
+  message_id?: string | null;
+  keep_latest_per_message?: number;
+  excerpt_chars?: number;
+}) {
+  const params = new URLSearchParams();
+  if (payload?.message_id) params.set("message_id", payload.message_id);
+  if (payload?.keep_latest_per_message !== undefined) {
+    params.set("keep_latest_per_message", String(payload.keep_latest_per_message));
+  }
+  if (payload?.excerpt_chars !== undefined) {
+    params.set("excerpt_chars", String(payload.excerpt_chars));
+  }
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return request<ChatEvidenceRetentionResult>(`/api/v1/chat/evidence-retention/enforce${query}`, {
+    method: "POST",
+  });
 }
 
 export async function getJobStatus() {

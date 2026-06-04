@@ -9,6 +9,7 @@ export type ClusterTint =
   | "terracotta";
 
 export type ExpertStatus =
+  | "searchable"
   | "setting-up"
   | "learning"
   | "ready"
@@ -402,6 +403,7 @@ export const useStore = create<State>((set, get) => ({
 export const tintVar = (t: ClusterTint) => `var(--cluster-${t})`;
 
 export const expertLabel: Record<ExpertStatus, string> = {
+  searchable: "Searchable now",
   "setting-up": "Setting up",
   learning: "Learning",
   ready: "Ready",

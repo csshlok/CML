@@ -35,6 +35,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "packaging/ms-playwright",
+        "to": "ms-playwright",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
@@ -63,7 +70,7 @@
     "package:win": "npm run build && npm exec electron-builder -- --win --x64",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
-    "lint": "eslint .",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" \"electron/**/*.cjs\" \"scripts/**/*.cjs\" \"vite.config.ts\"",
     "format": "prettier --write ."
   },
   "dependencies": {

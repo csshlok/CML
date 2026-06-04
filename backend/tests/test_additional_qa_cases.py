@@ -1,6 +1,7 @@
 import importlib
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,7 @@ class AdditionalQACases(unittest.TestCase):
         os.environ["CML_DATA_DIR"] = self.tmp.name
         os.environ["CML_EMBEDDING_PROVIDER"] = "hash"
         os.environ["CML_ALLOW_HASH_EMBEDDINGS"] = "1"
+        os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "1"
 
         from backend.app.core.config import get_settings
 
@@ -35,6 +37,10 @@ class AdditionalQACases(unittest.TestCase):
         os.environ.pop("CML_DATA_DIR", None)
         os.environ.pop("CML_EMBEDDING_PROVIDER", None)
         os.environ.pop("CML_ALLOW_HASH_EMBEDDINGS", None)
+        os.environ.pop("CML_ALLOW_UNAUTHENTICATED_API", None)
+        os.environ.pop("CML_LORA_MIN_QUALITY_DELTA", None)
+        os.environ.pop("CML_LORA_MIN_UNIQUE_SOURCES", None)
+        os.environ.pop("CML_LORA_MAX_DUPLICATE_RATIO", None)
         self.tmp.cleanup()
 
     def test_bridge_context_requires_token_when_enabled(self) -> None:
@@ -164,7 +170,17 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIsNone(response.headers.get("access-control-allow-origin"))
 
-    def test_local_api_auth_is_inactive_without_token(self) -> None:
+    def test_local_api_auth_requires_explicit_unauthenticated_opt_in_without_token(self) -> None:
+        os.environ.pop("CML_ALLOW_UNAUTHENTICATED_API", None)
+        client = self._client()
+        try:
+            response = client.get("/api/v1/vaults")
+        finally:
+            client.close()
+            os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "1"
+        self.assertEqual(response.status_code, 503)
+
+    def test_local_api_auth_allows_explicit_unauthenticated_opt_in_without_token(self) -> None:
         client = self._client()
         try:
             response = client.get("/api/v1/vaults")
@@ -184,6 +200,26 @@ class AdditionalQACases(unittest.TestCase):
 
         self.assertEqual(missing.status_code, 401)
         self.assertEqual(bearer.status_code, 200)
+
+    def test_backend_identity_requires_local_api_token_when_configured(self) -> None:
+        os.environ["CML_API_TOKEN"] = "identity-token"
+        os.environ.pop("CML_ALLOW_UNAUTHENTICATED_API", None)
+        client = self._client()
+        try:
+            missing = client.get("/api/v1/system/backend-identity")
+            valid = client.get(
+                "/api/v1/system/backend-identity",
+                headers={"x-cml-api-token": "identity-token"},
+            )
+        finally:
+            client.close()
+            os.environ.pop("CML_API_TOKEN", None)
+            os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "1"
+
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(valid.status_code, 200)
+        self.assertEqual(valid.json()["service"], "cml-backend")
+        self.assertTrue(valid.json()["authenticated"])
 
     def test_known_startup_phases_fall_back_when_shared_file_is_missing(self) -> None:
         from backend.app.core.startup_status import FALLBACK_PHASES, known_startup_phases
@@ -872,8 +908,12 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("repos/qpdf/qpdf/releases/latest", stage_text)
         self.assertIn("repos/ArtifexSoftware/ghostpdl-downloads/releases/latest", stage_text)
         self.assertIn("TesseractExePath", stage_text)
+        self.assertIn("GhostscriptExePath", stage_text)
         self.assertIn("Find-InstalledTesseract", stage_text)
+        self.assertIn("Find-InstalledGhostscript", stage_text)
         self.assertIn("Test-TesseractExecutable", stage_text)
+        self.assertIn("Test-GhostscriptExecutable", stage_text)
+        self.assertIn("Copy-GhostscriptRuntime", stage_text)
         self.assertIn("SkipGhostscriptInstaller", stage_text)
         self.assertIn("GhostscriptInstallTimeoutSeconds", stage_text)
         self.assertIn('Copy-Item -Path (Join-Path $tesseractDir "*")', stage_text)
@@ -881,6 +921,7 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("AllowPartialOcrRuntime", package_text)
         self.assertIn("SkipGhostscriptInstaller", package_text)
         self.assertIn("TesseractExePath", package_text)
+        self.assertIn("GhostscriptExePath", package_text)
         self.assertIn("ocrmypdf>=16.0.0", package_text)
         self.assertIn("scripts/packaging/stage-ocr-runtime.ps1", readme_text)
 
@@ -1096,6 +1137,172 @@ class AdditionalQACases(unittest.TestCase):
         store_path = repo_root / "apps" / "desktop" / "electron" / "token-store.cjs"
         source = store_path.read_text(encoding="utf-8")
         self.assertNotIn("writeFile(this.tokenPath, token", source)
+
+    def test_lora_trainer_json_argv_uses_env_paths_with_spaces(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.lora_training import run_lora_training_process
+
+        dataset_dir = Path(self.tmp.name) / "dataset with spaces"
+        output_dir = Path(self.tmp.name) / "adapter output with spaces"
+        dataset_dir.mkdir()
+        train_path = dataset_dir / "train data.jsonl"
+        validation_path = dataset_dir / "validation data.jsonl"
+        train_path.write_text("{}", encoding="utf-8")
+        validation_path.write_text("{}", encoding="utf-8")
+        script = (
+            "import os, pathlib; "
+            "out = pathlib.Path(os.environ['CML_LORA_OUTPUT_DIR']); "
+            "out.mkdir(parents=True, exist_ok=True); "
+            "(out / 'adapter_config.json').write_text('{\"peft_type\":\"LORA\",\"base_model_name_or_path\":\"test\"}', encoding='utf-8'); "
+            "(out / 'adapter_model.safetensors').write_bytes(b'ok'); "
+            "print(os.environ['CML_LORA_TRAIN_PATH'])"
+        )
+        os.environ["CML_LORA_TRAINER_COMMAND"] = json.dumps([sys.executable, "-c", script])
+        get_settings.cache_clear()
+        try:
+            result = run_lora_training_process(
+                dataset_manifest={
+                    "dataset_dir": dataset_dir,
+                    "train_path": train_path,
+                    "validation_path": validation_path,
+                },
+                output_dir=output_dir,
+                config={"base_model": "test-model"},
+            )
+        finally:
+            os.environ.pop("CML_LORA_TRAINER_COMMAND", None)
+            get_settings.cache_clear()
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertTrue((output_dir / "adapter_config.json").exists())
+        self.assertIn("train data.jsonl", (output_dir / "trainer.stdout.log").read_text(encoding="utf-8"))
+
+    def test_lora_adapter_validation_rejects_incomplete_or_malformed_artifacts(self) -> None:
+        from backend.app.core.lora_training import adapter_validation_report, verify_adapter_artifact
+
+        adapter_dir = Path(self.tmp.name) / "bad-adapter"
+        adapter_dir.mkdir()
+        (adapter_dir / "adapter_config.json").write_text("{}", encoding="utf-8")
+        (adapter_dir / "adapter_model.safetensors").write_bytes(b"")
+
+        report = adapter_validation_report(adapter_dir)
+
+        self.assertFalse(report["valid"])
+        self.assertTrue(any("peft_type=LORA" in item for item in report["errors"]))
+        self.assertTrue(any("empty" in item for item in report["errors"]))
+        with self.assertRaises(RuntimeError):
+            verify_adapter_artifact(adapter_dir)
+
+    def test_lora_dataset_graduation_report_enforces_source_token_and_validation_gates(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.lora_training import dataset_graduation_report, graduation_contract
+
+        os.environ["CML_LORA_MIN_SOURCES"] = "2"
+        os.environ["CML_LORA_MIN_UNIQUE_SOURCES"] = "2"
+        os.environ["CML_LORA_MIN_TOKENS"] = "100"
+        os.environ["CML_LORA_MIN_VALIDATION_RECORDS"] = "1"
+        os.environ["CML_LORA_MAX_DUPLICATE_RATIO"] = "0.10"
+        get_settings.cache_clear()
+        try:
+            contract = graduation_contract()
+            failing = dataset_graduation_report(
+                {
+                    "source_count": 2,
+                    "unique_content_hash_count": 1,
+                    "duplicate_content_ratio": 0.5,
+                    "estimated_token_count": 99,
+                },
+                validation_count=0,
+            )
+            passing = dataset_graduation_report(
+                {
+                    "source_count": 2,
+                    "unique_content_hash_count": 2,
+                    "duplicate_content_ratio": 0.0,
+                    "estimated_token_count": 120,
+                },
+                validation_count=1,
+            )
+        finally:
+            os.environ.pop("CML_LORA_MIN_SOURCES", None)
+            os.environ.pop("CML_LORA_MIN_UNIQUE_SOURCES", None)
+            os.environ.pop("CML_LORA_MIN_TOKENS", None)
+            os.environ.pop("CML_LORA_MIN_VALIDATION_RECORDS", None)
+            os.environ.pop("CML_LORA_MAX_DUPLICATE_RATIO", None)
+            get_settings.cache_clear()
+
+        self.assertEqual(contract["minimum_estimated_tokens"], 100)
+        self.assertEqual(contract["minimum_unique_sources"], 2)
+        self.assertEqual(contract["maximum_duplicate_ratio"], 0.10)
+        self.assertIn("adapter_invalid", contract["failure_codes"])
+        self.assertFalse(failing["passes"])
+        self.assertTrue(failing["checks"]["minimum_sources"])
+        self.assertFalse(failing["checks"]["minimum_unique_sources"])
+        self.assertFalse(failing["checks"]["minimum_estimated_tokens"])
+        self.assertFalse(failing["checks"]["maximum_duplicate_ratio"])
+        self.assertFalse(failing["checks"]["minimum_validation_records"])
+        self.assertTrue(passing["passes"])
+
+    def test_expert_evaluation_harness_covers_strict_categories_and_delta(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.expert_evaluation import (
+            EVALUATION_CATEGORIES,
+            build_expert_evaluation_plan,
+            compare_retrieval_vs_adapter,
+            score_expert_response,
+        )
+
+        os.environ["CML_LORA_MIN_QUALITY_DELTA"] = "2.5"
+        get_settings.cache_clear()
+        try:
+            dataset = {
+                "cluster_id": "cluster-1",
+                "dataset_hash": "hash",
+                "documents": [
+                    {
+                        "source_id": f"source-{index}",
+                        "title": f"Evaluation source {index}",
+                        "summary": "adapter retrieval grounded citation evidence strict benchmark",
+                        "text": "adapter retrieval grounded citation evidence strict benchmark",
+                    }
+                    for index in range(6)
+                ],
+            }
+            plan = build_expert_evaluation_plan(dataset)
+            scored = score_expert_response(
+                plan["cases"][0],
+                "According to source Evaluation source 0, adapter retrieval grounded evidence is present.",
+            )
+            passing = compare_retrieval_vs_adapter([60, 62, 61], [65, 67, 66])
+            failing = compare_retrieval_vs_adapter([60, 62, 61], [61, 62, 62])
+        finally:
+            os.environ.pop("CML_LORA_MIN_QUALITY_DELTA", None)
+            get_settings.cache_clear()
+
+        self.assertEqual(plan["categories"], list(EVALUATION_CATEGORIES))
+        self.assertEqual(plan["case_count"], 6)
+        self.assertGreater(scored["score"], 70)
+        self.assertTrue(scored["citation_present"])
+        self.assertTrue(passing["passes"])
+        self.assertFalse(failing["passes"])
+
+    def test_lora_mvp_policy_and_smoke_scripts_are_present(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        policy = repo_root / "docs" / "LORA_CLUSTER_EXPERT_MVP_POLICY.md"
+        expert_smoke = repo_root / "scripts" / "backend" / "smoke-lora-expert.ps1"
+        runtime_smoke = repo_root / "scripts" / "backend" / "smoke-lora-runtime.ps1"
+
+        policy_text = policy.read_text(encoding="utf-8")
+        expert_text = expert_smoke.read_text(encoding="utf-8")
+        runtime_text = runtime_smoke.read_text(encoding="utf-8")
+
+        self.assertIn("Graduation Gates", policy_text)
+        self.assertIn("retrieval-vs-adapter", policy_text.lower())
+        self.assertIn("CML_LORA_TRAINER_COMMAND", expert_text)
+        self.assertIn("AllowTestTrainer", expert_text)
+        self.assertIn("runtime_adapter_load_plan", runtime_text)
+        self.assertNotIn("<<'PY'", expert_text)
+        self.assertNotIn("<<'PY'", runtime_text)
 
     def test_bridge_error_code_registry_matches_spec_for_vault_not_found(self) -> None:
         from backend.app.bridge_mcp import app_error_code

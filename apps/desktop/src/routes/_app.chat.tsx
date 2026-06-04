@@ -96,7 +96,9 @@ function ChatIndex() {
         navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
         return;
       }
-    } catch {}
+    } catch {
+      // Fall back to settings when the backend cannot create a chat yet.
+    }
     navigate({ to: "/settings" });
   }
 

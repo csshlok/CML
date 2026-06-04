@@ -91,6 +91,12 @@ print("startup-check-ok")
 '@ | .venv\Scripts\python -
 ```
 
+Run backend ingestion/search/vector repair benchmark smoke:
+
+```powershell
+.\scripts\backend\benchmark-backend.ps1 -Sources 250 -WordsPerSource 240 -ReportPath .tmp\backend-benchmark-report.md
+```
+
 ## Local OCR
 
 Vault's OCR path is local-only. Scanned PDFs use OCRmyPDF + Tesseract when the local runtime is staged. Images use Tesseract directly. The backend first looks for bundled OCR binaries under:
@@ -105,7 +111,13 @@ backend/bin/ocr/ghostscript/.../gswin64c.exe
 Stage the local runtime:
 
 ```powershell
-.\scripts\packaging\stage-ocr-runtime.ps1 -SkipGhostscriptInstaller -AllowPartial
+.\scripts\packaging\stage-ocr-runtime.ps1
+```
+
+If auto-detection misses a local install, pass explicit paths:
+
+```powershell
+.\scripts\packaging\stage-ocr-runtime.ps1 -TesseractExePath "C:\path\to\tesseract.exe" -GhostscriptExePath "C:\path\to\gswin64c.exe"
 ```
 
 Run an OCR accuracy smoke:
@@ -114,4 +126,4 @@ Run an OCR accuracy smoke:
 .\scripts\ocr\benchmark-ocr.ps1 -PdfPath .tmp\sample.pdf -ReferenceTextPath .tmp\reference.txt
 ```
 
-OCRmyPDF requires local Ghostscript and qpdf command dependencies. In development, the backend can also run `python -m ocrmypdf` if the package is installed in `.venv`. If OCRmyPDF is incomplete, scanned PDFs fall back to direct page rendering plus Tesseract. If Tesseract is not present, image ingestion stores metadata and scanned-PDF ingestion reports that bundled OCR is unavailable. Packaged builds include `backend/bin/**/*` so the OCR runtime ships with the installer once staged there.
+OCRmyPDF requires local Ghostscript and qpdf command dependencies. In development, the backend can also run `python -m ocrmypdf` if the package is installed in `.venv`. If OCRmyPDF is incomplete, scanned PDFs fall back to direct page rendering plus Tesseract. If Tesseract is not present, image ingestion stores metadata and scanned-PDF ingestion reports that bundled OCR is unavailable. Packaged builds include `backend/bin/**/*` so the OCR runtime ships with the installer once staged there. Current local staged status is full OCRmyPDF ready with Tesseract, `eng.traineddata`, qpdf, and Ghostscript.

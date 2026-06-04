@@ -7,8 +7,16 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import APIRouter
 
+from backend.app.core.background_jobs import job_queue_status
 from backend.app.core.config import get_settings
 from backend.app.core.database import connect, utc_now
+from backend.app.core.embeddings import embedding_download_status, embedding_status
+from backend.app.core.model_registry import list_models
+from backend.app.core.ocr import ocr_runtime_status
+from backend.app.core.startup_repair import startup_repair_summary
+from backend.app.core.startup_status import read_startup_status
+from backend.app.core.storage_accounting import storage_accounting
+from backend.app.core.vector_maintenance import embedding_index_policy, vector_repair_plan
 from backend.app.schemas import DiagnosticBundleResponse
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
@@ -33,10 +41,23 @@ def create_diagnostic_bundle() -> dict:
         "schema_version": schema_version,
         "redaction": "Raw source text, extracted text, URLs, file paths, and tokens are not included.",
     }
-    included_files: list[str] = ["manifest.json", "database-summary.json"]
+    included_files: list[str] = [
+        "manifest.json",
+        "database-summary.json",
+        "runtime-summary.json",
+        "startup-repair-summary.json",
+        "vector-summary.json",
+        "log-rotation-policy.json",
+        "storage-accounting.json",
+    ]
     with ZipFile(bundle_path, "w", ZIP_DEFLATED) as bundle:
         bundle.writestr("manifest.json", json.dumps(manifest, indent=2))
         bundle.writestr("database-summary.json", json.dumps(_database_summary(), indent=2))
+        bundle.writestr("runtime-summary.json", json.dumps(_runtime_summary(), indent=2))
+        bundle.writestr("startup-repair-summary.json", json.dumps(startup_repair_summary(), indent=2))
+        bundle.writestr("vector-summary.json", json.dumps(_vector_summary(), indent=2))
+        bundle.writestr("log-rotation-policy.json", json.dumps(log_rotation_policy(), indent=2))
+        bundle.writestr("storage-accounting.json", json.dumps(storage_accounting(), indent=2))
         for name, path in _candidate_logs(settings.data_dir):
             if path.exists() and path.is_file():
                 bundle.writestr(f"logs/{name}", _redact_log(path.read_text(encoding="utf-8", errors="ignore")))
@@ -86,6 +107,48 @@ def _database_summary() -> dict:
             except sqlite3.Error:
                 summary[table] = None
     return summary
+
+
+def _runtime_summary() -> dict:
+    models = []
+    for model in list_models():
+        download = model.get("download") or {}
+        models.append(
+            {
+                "id": model["id"],
+                "role": model["role"],
+                "installed": model["installed"],
+                "download_status": download.get("status"),
+                "bytes_downloaded": download.get("bytes_downloaded"),
+                "bytes_total": download.get("bytes_total") or download.get("total_bytes"),
+            }
+        )
+    return {
+        "startup_status": read_startup_status(),
+        "ocr": ocr_runtime_status(),
+        "embedding": embedding_status(),
+        "embedding_download": embedding_download_status(),
+        "model_downloads": models,
+        "jobs": job_queue_status(),
+    }
+
+
+def _vector_summary() -> dict:
+    return {
+        "index_policy": embedding_index_policy(),
+        "repair_plan": vector_repair_plan(),
+    }
+
+
+def log_rotation_policy() -> dict:
+    return {
+        "backend_log_dir": str(get_settings().data_dir / "logs"),
+        "backend_log_name": "backend.log",
+        "max_log_file_bytes": 5 * 1024 * 1024,
+        "retained_log_files": 10,
+        "max_bundle_log_bytes_per_file": 200_000,
+        "redaction_required": True,
+    }
 
 
 def _candidate_logs(data_dir: Path) -> list[tuple[str, Path]]:

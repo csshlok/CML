@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } = require("electron");
 const { spawn } = require("node:child_process");
+const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const net = require("node:net");
@@ -8,6 +9,7 @@ const { createTokenStore, getOrCreateToken } = require("./token-store.cjs");
 
 const isDev = !app.isPackaged;
 const devUrl = process.env.CML_DESKTOP_DEV_URL || "http://127.0.0.1:5173";
+const apiPrefix = process.env.CML_API_PREFIX || "/api/v1";
 let backendProcess = null;
 let backendUrl = process.env.VITE_CML_BACKEND_URL || process.env.CML_BACKEND_URL || null;
 let backendApiToken = process.env.CML_API_TOKEN || null;
@@ -27,6 +29,24 @@ const supportedOpenExtensions = new Set([...supportedSourceExtensions, ".png", "
 const skippedFolderNames = new Set([".git", "node_modules", ".venv", "dist", "build"]);
 
 let mainWindow = null;
+
+function writeDesktopRuntimeLog(message, error = null) {
+  try {
+    const logPath = path.join(app.getPath("userData"), "desktop-runtime.log");
+    const detail = error && (error.stack || error.message) ? `\n${error.stack || error.message}` : "";
+    fsSync.appendFileSync(logPath, `${new Date().toISOString()} ${message}${detail}\n`, "utf8");
+  } catch {
+    // Startup logging must never become the reason the app fails to open.
+  }
+}
+
+process.on("uncaughtException", (error) => {
+  writeDesktopRuntimeLog("uncaughtException", error);
+});
+
+process.on("unhandledRejection", (error) => {
+  writeDesktopRuntimeLog("unhandledRejection", error instanceof Error ? error : new Error(String(error)));
+});
 
 async function createWindow() {
   let startupError = null;
@@ -187,8 +207,10 @@ function escapeHtml(value) {
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
+writeDesktopRuntimeLog(`main loaded; packaged=${app.isPackaged}; singleInstance=${gotSingleInstanceLock}`);
 
 if (!gotSingleInstanceLock) {
+  writeDesktopRuntimeLog("single-instance lock unavailable; quitting");
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
@@ -323,11 +345,17 @@ if (gotSingleInstanceLock) {
       return backendUrl;
     });
 
-    void createWindow();
+    void createWindow().catch((error) => {
+      writeDesktopRuntimeLog("createWindow failed", error);
+      app.quit();
+    });
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        void createWindow();
+        void createWindow().catch((error) => {
+          writeDesktopRuntimeLog("createWindow failed during activate", error);
+          app.quit();
+        });
       }
     });
   });
@@ -335,10 +363,10 @@ if (gotSingleInstanceLock) {
 
 async function ensureBackend() {
   const explicitBackend = process.env.VITE_CML_BACKEND_URL || process.env.CML_BACKEND_URL;
-  const existing = explicitBackend ? await findExistingCurrentBackend() : null;
+  const token = await getBackendApiToken();
+  const existing = explicitBackend ? await findExistingCurrentBackend(token) : null;
   if (existing) return existing;
 
-  const token = await getBackendApiToken();
   const activeVaultPath = await getActiveVaultPath();
   const backendMode = activeVaultPath ? "full_vault" : "pre_vault";
   const dataDir = activeVaultPath
@@ -359,13 +387,16 @@ async function ensureBackend() {
       cwd: rootDir,
       env: {
         ...process.env,
-        CML_API_PREFIX: process.env.CML_API_PREFIX || "/api/v1",
+        CML_API_PREFIX: apiPrefix,
         CML_API_TOKEN: token,
         CML_BACKEND_MODE: backendMode,
         CML_DATA_DIR: dataDir,
         CML_DATABASE_PATH: databasePath,
         CML_STARTUP_STATUS_PATH: startupStatusPath,
         CML_VAULT_LOCK_OVERRIDE: vaultLockOverrideOnce ? "open_anyway" : "",
+        PLAYWRIGHT_BROWSERS_PATH: isDev
+          ? process.env.PLAYWRIGHT_BROWSERS_PATH || ""
+          : path.join(process.resourcesPath, "ms-playwright"),
       },
       windowsHide: true,
       stdio: "ignore",
@@ -374,7 +405,7 @@ async function ensureBackend() {
   vaultLockOverrideOnce = false;
   backendProcess.unref();
   const startedUrl = `http://127.0.0.1:${port}`;
-  await waitForBackend(startedUrl, 12000);
+  await waitForBackend(startedUrl, token, 12000);
   return startedUrl;
 }
 
@@ -501,7 +532,7 @@ function pathToFileUrl(targetPath) {
   return `file:///${targetPath.replace(/\\/g, "/").replace(/^([a-zA-Z]):/, "$1:")}`;
 }
 
-async function findExistingCurrentBackend() {
+async function findExistingCurrentBackend(token) {
   const candidates = [
     process.env.VITE_CML_BACKEND_URL,
     process.env.CML_BACKEND_URL,
@@ -509,36 +540,35 @@ async function findExistingCurrentBackend() {
     "http://127.0.0.1:7342",
   ].filter(Boolean);
   for (const candidate of [...new Set(candidates)]) {
-    if (await isCurrentBackend(candidate)) return candidate;
+    if (await isCurrentBackend(candidate, token)) return candidate;
   }
   return null;
 }
 
-function isCurrentBackend(url) {
-  return httpJson(`${url}/openapi.json`, 1200)
-    .then((spec) => {
-      const paths = spec && spec.paths ? spec.paths : {};
-      return Boolean(
-        paths["/api/v1/chat/context/stream"] &&
-        paths["/api/v1/bridge/settings"] &&
-        paths["/api/v1/models/embeddings/configure"],
-      );
-    })
+function isCurrentBackend(url, token) {
+  if (!token) return Promise.resolve(false);
+  return httpJson(`${url}${apiPrefix}/system/backend-identity`, 1200, token)
+    .then((identity) => (
+      identity &&
+      identity.service === "cml-backend" &&
+      identity.api_prefix === apiPrefix
+    ))
     .catch(() => false);
 }
 
-async function waitForBackend(url, timeoutMs) {
+async function waitForBackend(url, token, timeoutMs) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    if (await isCurrentBackend(url)) return;
+    if (await isCurrentBackend(url, token)) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`Backend did not start at ${url}`);
 }
 
-function httpJson(url, timeoutMs) {
+function httpJson(url, timeoutMs, token = "") {
   return new Promise((resolve, reject) => {
-    const request = http.get(url, { timeout: timeoutMs }, (response) => {
+    const headers = token ? { "x-cml-api-token": token } : {};
+    const request = http.get(url, { timeout: timeoutMs, headers }, (response) => {
       let body = "";
       response.setEncoding("utf8");
       response.on("data", (chunk) => {

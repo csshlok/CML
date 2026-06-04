@@ -37,8 +37,11 @@ export function ExpertBadge({ status }: { status: ExpertStatus }) {
       ? "var(--status-issue)"
       : status === "paused"
       ? "var(--status-paused)"
+      : status === "searchable"
+      ? "var(--status-ready)"
       : "var(--status-learning)";
   const label = {
+    searchable: "Searchable now",
     "setting-up": "Setting up",
     learning: "Learning",
     ready: "Ready",

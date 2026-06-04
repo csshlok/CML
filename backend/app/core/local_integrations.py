@@ -10,12 +10,17 @@ SUPPORTED_SOURCE_EXTENSIONS = {
 }
 
 SKIPPED_FOLDER_NAMES = {".git", "node_modules", ".venv", "dist", "build"}
+DEFAULT_SCAN_LIMIT = 500
+MAX_SCAN_LIMIT = 5000
+WATCHED_FOLDER_SCAN_LIMIT = 1000
+WATCHED_FOLDER_BACKPRESSURE_THRESHOLD = 1000
 
 
-def scan_local_folder(path: str, max_files: int = 500) -> dict:
+def scan_local_folder(path: str, max_files: int = DEFAULT_SCAN_LIMIT) -> dict:
     root = Path(path).expanduser()
     if not root.exists() or not root.is_dir():
         raise FileNotFoundError(f"Folder does not exist: {root}")
+    max_files = max(1, min(int(max_files), MAX_SCAN_LIMIT))
     supported: list[str] = []
     skipped = 0
     truncated = False
@@ -36,6 +41,19 @@ def scan_local_folder(path: str, max_files: int = 500) -> dict:
         "supported_count": len(supported),
         "skipped_count": skipped,
         "truncated": truncated,
+        "backpressure_required": truncated or len(supported) >= WATCHED_FOLDER_BACKPRESSURE_THRESHOLD,
+        "scan_limit": max_files,
+    }
+
+
+def watched_folder_limits() -> dict:
+    return {
+        "default_scan_limit": DEFAULT_SCAN_LIMIT,
+        "max_scan_limit": MAX_SCAN_LIMIT,
+        "watched_folder_scan_limit": WATCHED_FOLDER_SCAN_LIMIT,
+        "backpressure_threshold": WATCHED_FOLDER_BACKPRESSURE_THRESHOLD,
+        "skipped_folder_names": sorted(SKIPPED_FOLDER_NAMES),
+        "policy": "Watched refreshes cap each pass and mark backpressure when a folder reaches the watched-folder threshold.",
     }
 
 

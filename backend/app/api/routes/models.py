@@ -11,6 +11,7 @@ from backend.app.core.llm_runtime import runtime_status
 from backend.app.core.model_registry import (
     cancel_model_download,
     list_models,
+    model_integrity_manifest_status,
     model_status,
     start_model_download,
 )
@@ -35,6 +36,11 @@ def list_local_models() -> list[dict]:
 @router.get("/runtime", response_model=ModelRuntimeStatus)
 def get_runtime_status() -> dict:
     return runtime_status()
+
+
+@router.get("/integrity-manifest")
+def get_model_integrity_manifest_status() -> dict:
+    return model_integrity_manifest_status()
 
 
 @router.get("/embeddings", response_model=EmbeddingRuntimeStatus)

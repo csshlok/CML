@@ -4,6 +4,7 @@ import json
 import math
 import re
 import threading
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -60,18 +61,24 @@ _EMBEDDING_DOWNLOAD_LOCK = threading.Lock()
 _EMBEDDING_DOWNLOAD_STATE = {
     "model_id": DEFAULT_EMBEDDING_MODEL,
     "status": "idle",
-    "bytes_downloaded": None,
+    "bytes_downloaded": 0,
+    "bytes_total": None,
     "total_bytes": None,
+    "progress_percent": None,
+    "download_speed_bps": None,
+    "eta_seconds": None,
     "file_name": None,
     "local_path": None,
     "error": None,
+    "started_at": None,
+    "updated_at": None,
 }
 _EMBEDDING_DOWNLOAD_THREAD: threading.Thread | None = None
 
 
 def embedding_download_status() -> dict:
     with _EMBEDDING_DOWNLOAD_LOCK:
-        return dict(_EMBEDDING_DOWNLOAD_STATE)
+        return _normalized_download_state(_EMBEDDING_DOWNLOAD_STATE)
 
 
 def start_embedding_model_download(cache_dir: str | None = None, model: str | None = None) -> dict:
@@ -87,11 +94,17 @@ def start_embedding_model_download(cache_dir: str | None = None, model: str | No
             {
                 "model_id": target_model,
                 "status": "queued",
-                "bytes_downloaded": None,
+                "bytes_downloaded": 0,
+                "bytes_total": None,
                 "total_bytes": None,
+                "progress_percent": None,
+                "download_speed_bps": None,
+                "eta_seconds": None,
                 "file_name": target_model,
                 "local_path": str(target_dir),
                 "error": None,
+                "started_at": utc_now(),
+                "updated_at": utc_now(),
             }
         )
         _EMBEDDING_DOWNLOAD_THREAD = threading.Thread(
@@ -101,7 +114,7 @@ def start_embedding_model_download(cache_dir: str | None = None, model: str | No
             name="cml-embedding-download",
         )
         _EMBEDDING_DOWNLOAD_THREAD.start()
-        return dict(_EMBEDDING_DOWNLOAD_STATE)
+        return _normalized_download_state(_EMBEDDING_DOWNLOAD_STATE)
 
 
 def cancel_embedding_model_download() -> dict:
@@ -109,7 +122,8 @@ def cancel_embedding_model_download() -> dict:
         if _EMBEDDING_DOWNLOAD_STATE["status"] in {"queued", "downloading"}:
             _EMBEDDING_DOWNLOAD_STATE["status"] = "cancelled"
             _EMBEDDING_DOWNLOAD_STATE["error"] = "Cancellation requested. The active Hugging Face request may finish before stopping."
-        return dict(_EMBEDDING_DOWNLOAD_STATE)
+            _EMBEDDING_DOWNLOAD_STATE["updated_at"] = utc_now()
+        return _normalized_download_state(_EMBEDDING_DOWNLOAD_STATE)
 
 
 def _download_embedding_model(model: str, cache_dir: Path) -> None:
@@ -117,10 +131,16 @@ def _download_embedding_model(model: str, cache_dir: Path) -> None:
         if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelled":
             return
         _EMBEDDING_DOWNLOAD_STATE["status"] = "downloading"
+        _EMBEDDING_DOWNLOAD_STATE["updated_at"] = utc_now()
     try:
         if importlib.util.find_spec("sentence_transformers") is None:
             raise RuntimeError("SentenceTransformers is not installed in this Python runtime.")
         cache_dir.mkdir(parents=True, exist_ok=True)
+        _update_embedding_download_progress(
+            bytes_downloaded=_directory_size(cache_dir),
+            bytes_total=None,
+            started_monotonic=time.monotonic(),
+        )
         from sentence_transformers import SentenceTransformer
 
         SentenceTransformer(model, cache_folder=str(cache_dir))
@@ -129,12 +149,80 @@ def _download_embedding_model(model: str, cache_dir: Path) -> None:
                 return
         configure_embedding_runtime("sentence-transformers", str(cache_dir), model)
         with _EMBEDDING_DOWNLOAD_LOCK:
-            _EMBEDDING_DOWNLOAD_STATE.update({"status": "installed", "error": None})
+            installed_size = _directory_size(cache_dir)
+            _EMBEDDING_DOWNLOAD_STATE.update(
+                {
+                    "status": "installed",
+                    "bytes_downloaded": installed_size,
+                    "bytes_total": installed_size,
+                    "total_bytes": installed_size,
+                    "progress_percent": 100.0,
+                    "download_speed_bps": None,
+                    "eta_seconds": 0,
+                    "error": None,
+                    "updated_at": utc_now(),
+                }
+            )
     except Exception as exc:
         with _EMBEDDING_DOWNLOAD_LOCK:
             if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelled":
                 return
-            _EMBEDDING_DOWNLOAD_STATE.update({"status": "failed", "error": str(exc)})
+            _EMBEDDING_DOWNLOAD_STATE.update({"status": "failed", "error": str(exc), "updated_at": utc_now()})
+
+
+def _update_embedding_download_progress(
+    *,
+    bytes_downloaded: int,
+    bytes_total: int | None,
+    started_monotonic: float,
+) -> None:
+    elapsed = max(0.001, time.monotonic() - started_monotonic)
+    speed = int(bytes_downloaded / elapsed) if bytes_downloaded > 0 else None
+    eta = None
+    percent = None
+    if bytes_total and bytes_total > 0:
+        percent = round(min(100.0, (bytes_downloaded / bytes_total) * 100.0), 2)
+        if speed:
+            eta = max(0, int((bytes_total - bytes_downloaded) / speed))
+    with _EMBEDDING_DOWNLOAD_LOCK:
+        _EMBEDDING_DOWNLOAD_STATE.update(
+            {
+                "bytes_downloaded": bytes_downloaded,
+                "bytes_total": bytes_total,
+                "total_bytes": bytes_total,
+                "progress_percent": percent,
+                "download_speed_bps": speed,
+                "eta_seconds": eta,
+                "updated_at": utc_now(),
+            }
+        )
+
+
+def _normalized_download_state(state: dict) -> dict:
+    payload = dict(state)
+    if "bytes_total" not in payload:
+        payload["bytes_total"] = payload.get("total_bytes")
+    if "total_bytes" not in payload:
+        payload["total_bytes"] = payload.get("bytes_total")
+    downloaded = payload.get("bytes_downloaded") or 0
+    total = payload.get("bytes_total") or payload.get("total_bytes")
+    payload["bytes_downloaded"] = downloaded
+    if total and not payload.get("progress_percent"):
+        payload["progress_percent"] = round(min(100.0, (downloaded / total) * 100.0), 2)
+    return payload
+
+
+def _directory_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    total = 0
+    for child in path.rglob("*"):
+        if child.is_file():
+            try:
+                total += child.stat().st_size
+            except OSError:
+                continue
+    return total
 
 
 def require_embeddings_available(feature: str = "semantic memory") -> None:

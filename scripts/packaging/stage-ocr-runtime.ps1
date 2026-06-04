@@ -2,6 +2,7 @@ param(
   [string]$Destination = "",
   [string]$CacheDir = "",
   [string]$TesseractExePath = "",
+  [string]$GhostscriptExePath = "",
   [switch]$SkipTesseractInstaller,
   [switch]$SkipGhostscriptInstaller,
   [int]$GhostscriptInstallTimeoutSeconds = 120,
@@ -83,6 +84,24 @@ function Copy-TreeContaining {
   return $true
 }
 
+function Copy-GhostscriptRuntime {
+  param(
+    [Parameter(Mandatory = $true)][string]$ExePath,
+    [Parameter(Mandatory = $true)][string]$TargetDir
+  )
+  $resolvedExe = [System.IO.Path]::GetFullPath($ExePath)
+  $binDir = Split-Path -Parent $resolvedExe
+  $runtimeRoot = Split-Path -Parent $binDir
+  if ((Split-Path -Leaf $binDir) -ne "bin") {
+    $runtimeRoot = $binDir
+  }
+  if (Test-Path -LiteralPath $TargetDir) {
+    Remove-Item -LiteralPath $TargetDir -Recurse -Force
+  }
+  New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+  Copy-Item -Path (Join-Path $runtimeRoot "*") -Destination $TargetDir -Recurse -Force
+}
+
 function Find-InstalledTesseract {
   $command = Get-Command tesseract -ErrorAction SilentlyContinue
   if ($command -and $command.Source -and (Test-Path -LiteralPath $command.Source)) {
@@ -101,7 +120,40 @@ function Find-InstalledTesseract {
   return ""
 }
 
+function Find-InstalledGhostscript {
+  $command = Get-Command gswin64c -ErrorAction SilentlyContinue
+  if ($command -and $command.Source -and (Test-Path -LiteralPath $command.Source)) {
+    return $command.Source
+  }
+  $roots = @(
+    "$env:ProgramFiles\gs",
+    "${env:ProgramFiles(x86)}\gs"
+  )
+  foreach ($root in $roots) {
+    if (-not $root -or -not (Test-Path -LiteralPath $root)) {
+      continue
+    }
+    $candidate = Get-ChildItem -LiteralPath $root -Recurse -Filter "gswin64c.exe" -File -ErrorAction SilentlyContinue |
+      Sort-Object FullName -Descending |
+      Select-Object -First 1
+    if ($candidate) {
+      return $candidate.FullName
+    }
+  }
+  return ""
+}
+
 function Test-TesseractExecutable {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  try {
+    $process = Start-Process -FilePath $Path -ArgumentList @("--version") -Wait -PassThru -WindowStyle Hidden
+    return $process.ExitCode -eq 0
+  } catch {
+    return $false
+  }
+}
+
+function Test-GhostscriptExecutable {
   param([Parameter(Mandatory = $true)][string]$Path)
   try {
     $process = Start-Process -FilePath $Path -ArgumentList @("--version") -Wait -PassThru -WindowStyle Hidden
@@ -171,41 +223,59 @@ try {
 }
 
 try {
-  if ($SkipGhostscriptInstaller) {
-    throw "Ghostscript staging skipped by -SkipGhostscriptInstaller."
-  }
-  $gsRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/ArtifexSoftware/ghostpdl-downloads/releases/latest"
-  $gsAsset = $gsRelease.assets |
-    Where-Object { $_.name -match "w64\.exe$" } |
-    Select-Object -First 1
-  if (-not $gsAsset) {
-    throw "No Ghostscript win64 installer asset found."
-  }
-  $gsInstaller = Join-Path $cachePath $gsAsset.name
-  Invoke-Download -Uri $gsAsset.browser_download_url -OutFile $gsInstaller
-  Copy-Item -LiteralPath $gsInstaller -Destination (Join-Path $destinationPath "ghostscript-installer.exe") -Force
-
-  $gsTarget = Join-Path $destinationPath "ghostscript"
-  $process = Start-Process -FilePath $gsInstaller -ArgumentList @("/S", "/D=$gsTarget") -PassThru -WindowStyle Hidden
-  if (-not $process.WaitForExit($GhostscriptInstallTimeoutSeconds * 1000)) {
-    try {
-      $process.Kill()
-    } catch {
-      Write-Warning "Could not terminate timed-out Ghostscript installer: $($_.Exception.Message)"
+  if (-not $GhostscriptExePath) {
+    $GhostscriptExePath = Find-InstalledGhostscript
+    if ($GhostscriptExePath) {
+      Write-Host "Using installed Ghostscript at $GhostscriptExePath"
     }
-    throw "Ghostscript installer timed out after $GhostscriptInstallTimeoutSeconds second(s)."
   }
-  if ($process.ExitCode -ne 0) {
-    throw "Ghostscript installer exited with $($process.ExitCode)."
-  }
-  $gsExe = Get-ChildItem -LiteralPath $gsTarget -Recurse -Filter "gswin64c.exe" -File -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-  if (-not $gsExe) {
-    throw "gswin64c.exe was not found after local install."
+  if ($GhostscriptExePath) {
+    if (-not (Test-Path -LiteralPath $GhostscriptExePath)) {
+      throw "GhostscriptExePath does not exist: $GhostscriptExePath"
+    }
+    if (-not (Test-GhostscriptExecutable -Path $GhostscriptExePath)) {
+      throw "GhostscriptExePath is not executable: $GhostscriptExePath"
+    }
+    Copy-GhostscriptRuntime -ExePath $GhostscriptExePath -TargetDir (Join-Path $destinationPath "ghostscript")
+  } elseif ($SkipGhostscriptInstaller) {
+    throw "Ghostscript staging skipped by -SkipGhostscriptInstaller."
+  } else {
+    $gsRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/ArtifexSoftware/ghostpdl-downloads/releases/latest"
+    $gsAsset = $gsRelease.assets |
+      Where-Object { $_.name -match "w64\.exe$" } |
+      Select-Object -First 1
+    if (-not $gsAsset) {
+      throw "No Ghostscript win64 installer asset found."
+    }
+    $gsInstaller = Join-Path $cachePath $gsAsset.name
+    Invoke-Download -Uri $gsAsset.browser_download_url -OutFile $gsInstaller
+    Copy-Item -LiteralPath $gsInstaller -Destination (Join-Path $destinationPath "ghostscript-installer.exe") -Force
+
+    $gsTarget = Join-Path $destinationPath "ghostscript"
+    $process = Start-Process -FilePath $gsInstaller -ArgumentList @("/S", "/D=$gsTarget") -PassThru -WindowStyle Hidden
+    if (-not $process.WaitForExit($GhostscriptInstallTimeoutSeconds * 1000)) {
+      try {
+        $process.Kill()
+      } catch {
+        Write-Warning "Could not terminate timed-out Ghostscript installer: $($_.Exception.Message)"
+      }
+      throw "Ghostscript installer timed out after $GhostscriptInstallTimeoutSeconds second(s)."
+    }
+    if ($process.ExitCode -ne 0) {
+      throw "Ghostscript installer exited with $($process.ExitCode)."
+    }
+    $gsExe = Get-ChildItem -LiteralPath $gsTarget -Recurse -Filter "gswin64c.exe" -File -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+    if (-not $gsExe) {
+      throw "gswin64c.exe was not found after local install."
+    }
   }
 } catch {
   $errors.Add("Could not stage Ghostscript: $($_.Exception.Message)")
 }
+
+$bundledGhostscript = Get-ChildItem -LiteralPath (Join-Path $destinationPath "ghostscript") -Recurse -Filter "gswin64c.exe" -File -ErrorAction SilentlyContinue |
+  Select-Object -First 1
 
 $manifest = [ordered]@{
   generated_at = (Get-Date).ToUniversalTime().ToString("o")
@@ -213,7 +283,7 @@ $manifest = [ordered]@{
   tesseract = (Test-Path -LiteralPath (Join-Path $destinationPath "tesseract.exe")) -and (Test-TesseractExecutable -Path (Join-Path $destinationPath "tesseract.exe"))
   eng_traineddata = Test-Path -LiteralPath (Join-Path $destinationPath "tessdata\eng.traineddata")
   qpdf = (Get-ChildItem -LiteralPath (Join-Path $destinationPath "qpdf") -Recurse -Filter "qpdf.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1) -ne $null
-  ghostscript = (Get-ChildItem -LiteralPath (Join-Path $destinationPath "ghostscript") -Recurse -Filter "gswin64c.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1) -ne $null
+  ghostscript = $bundledGhostscript -ne $null -and (Test-GhostscriptExecutable -Path $bundledGhostscript.FullName)
   errors = @($errors)
 }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $destinationPath "manifest.json") -Encoding UTF8

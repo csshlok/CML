@@ -69,12 +69,11 @@ export function normalizeTint(value: string): ClusterTint {
 }
 
 function normalizeExpertStatus(value: string): ExpertStatus {
-  return value === "setting-up" ||
-    value === "learning" ||
-    value === "ready" ||
-    value === "needs-update" ||
-    value === "paused" ||
-    value === "issue"
-    ? value
-    : "setting-up";
+  if (value === "retrieval_ready") return "searchable";
+  if (value === "training_pending" || value === "training_running" || value === "learning") return "learning";
+  if (value === "training_ready" || value === "ready") return "ready";
+  if (value === "needs-update" || value === "rollback_ready") return "needs-update";
+  if (value === "training_failed" || value === "hardware_unsupported" || value === "issue") return "issue";
+  if (value === "paused") return "paused";
+  return "setting-up";
 }

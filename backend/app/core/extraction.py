@@ -351,6 +351,37 @@ def extract_text_from_url(url: str) -> tuple[str, str, str | None]:
     return title or fallback_title, text, cover_image_url
 
 
+def link_extraction_diagnostics(url: str) -> dict:
+    sanitized_url = strip_url_credentials(url)
+    diagnostics = {
+        "input_url_had_credentials": sanitized_url != url,
+        "sanitized_url": sanitized_url,
+        "allowed": False,
+        "security_error": "",
+        "static_timeout_seconds": 12,
+        "dynamic_timeout_seconds": 12,
+        "max_response_bytes": MAX_LINK_BYTES,
+        "dynamic_fallback_available": False,
+        "extraction_order": ["static_http", "browser_rendered_dynamic_fallback"],
+        "quality_classification": "unknown",
+        "quality_reason": "Fetch was not run during diagnostics.",
+    }
+    try:
+        validate_public_http_url(sanitized_url)
+        diagnostics["allowed"] = True
+        diagnostics["quality_classification"] = "diagnostic_only"
+    except NetworkSecurityError as exc:
+        diagnostics["security_error"] = str(exc)
+        diagnostics["quality_classification"] = "blocked_by_security"
+        diagnostics["quality_reason"] = str(exc)
+    diagnostics["dynamic_fallback_available"] = importlib.util.find_spec("playwright") is not None
+    if diagnostics["allowed"] and diagnostics["dynamic_fallback_available"]:
+        diagnostics["quality_reason"] = "Static extraction is attempted first; browser fallback is available for thin dynamic pages."
+    elif diagnostics["allowed"]:
+        diagnostics["quality_reason"] = "Static extraction is available; browser fallback runtime is not installed."
+    return diagnostics
+
+
 def _needs_dynamic_extraction(text: str, html: str) -> bool:
     lowered = html.lower()
     script_count = lowered.count("<script")

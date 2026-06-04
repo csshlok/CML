@@ -101,10 +101,31 @@ class ExpertArtifactRead(BaseModel):
 class ExpertGraduationContractRead(BaseModel):
     supported_statuses: list[str]
     minimum_sources: int
+    minimum_unique_sources: int = 0
+    minimum_estimated_tokens: int = 0
+    minimum_validation_records: int = 0
     minimum_quality_score: float
+    minimum_quality_delta: float = 0
+    maximum_duplicate_ratio: float = 0
     required_artifact_files: list[str]
     failure_codes: list[str]
+    graduation_gate: str = ""
     rollback_behavior: str
+
+
+class ExpertStatusRead(BaseModel):
+    cluster_id: str
+    expert_status: str
+    user_status: str
+    searchable: bool
+    trained: bool
+    stale: bool
+    active_artifact_id: str | None = None
+    active_dataset_hash: str | None = None
+    current_dataset_hash: str | None = None
+    runtime_load: dict = {}
+    failure_code: str = ""
+    detail: str = ""
 
 
 class SourceCreate(BaseModel):
@@ -246,6 +267,36 @@ class BridgeContextResponse(BaseModel):
     selected_clusters: list[ClusterRead]
     source_snippets: list[SourceRead]
     warnings: list[str]
+
+
+class BridgeExternalTurnCapture(BaseModel):
+    vault_id: str | None = None
+    cluster_id: str | None = None
+    client_name: str = "unknown"
+    user_prompt: str = Field(min_length=1)
+    model_response: str = Field(min_length=1)
+    context_request_id: str | None = None
+    model_name: str | None = None
+    metadata: dict = Field(default_factory=dict)
+
+
+class BridgeArtifactCapture(BaseModel):
+    vault_id: str | None = None
+    cluster_id: str | None = None
+    client_name: str = "unknown"
+    title: str = Field(min_length=1, max_length=240)
+    content: str = Field(min_length=1)
+    artifact_type: str = "generated_text"
+    metadata: dict = Field(default_factory=dict)
+
+
+class BridgeCaptureResponse(BaseModel):
+    source_id: str
+    vault_id: str
+    cluster_id: str | None = None
+    source_type: str
+    indexed: bool
+    warnings: list[str] = []
 
 
 class BridgeRequestRead(BaseModel):
@@ -433,6 +484,15 @@ class ModelDownloadState(BaseModel):
     file_name: str | None = None
     local_path: str | None = None
     error: str | None = None
+    sha256: str | None = None
+    integrity_status: str | None = None
+
+
+class ModelIntegrityRead(BaseModel):
+    status: str
+    sha256: str | None = None
+    expected_sha256: str | None = None
+    detail: str | None = None
 
 
 class ModelRead(BaseModel):
@@ -448,16 +508,25 @@ class ModelRead(BaseModel):
     installed: bool = False
     local_path: str | None = None
     download: ModelDownloadState | None = None
+    integrity: ModelIntegrityRead | None = None
 
 
 class ModelDownloadStart(BaseModel):
     model_id: str
     status: str
     bytes_downloaded: int | None = None
+    bytes_total: int | None = None
     total_bytes: int | None = None
+    progress_percent: float | None = None
+    download_speed_bps: int | None = None
+    eta_seconds: int | None = None
     file_name: str | None = None
     local_path: str | None = None
     error: str | None = None
+    sha256: str | None = None
+    integrity_status: str | None = None
+    started_at: str | None = None
+    updated_at: str | None = None
 
 
 class ModelRuntimeStatus(BaseModel):
@@ -495,10 +564,16 @@ class EmbeddingModelDownloadState(BaseModel):
     model_id: str
     status: str
     bytes_downloaded: int | None = None
+    bytes_total: int | None = None
     total_bytes: int | None = None
+    progress_percent: float | None = None
+    download_speed_bps: int | None = None
+    eta_seconds: int | None = None
     file_name: str | None = None
     local_path: str | None = None
     error: str | None = None
+    started_at: str | None = None
+    updated_at: str | None = None
 
 
 class HardwareStatusRead(BaseModel):
@@ -633,6 +708,32 @@ class ExtensionCaptureRead(BaseModel):
     title: str
     url: str
     status: str
+    created_at: str
+
+
+class ExtensionPairingStartRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    allowed_vault_ids: list[str] = []
+    ttl_seconds: int = Field(default=600, ge=60, le=1800)
+
+
+class ExtensionPairingRead(BaseModel):
+    id: str
+    pairing_code: str
+    status: str
+    requested_name: str
+    allowed_vault_ids: list[str] = []
+    created_at: str
+    expires_at: str
+    completed_at: str | None = None
+
+
+class ExtensionPermissionAuditRead(BaseModel):
+    id: str
+    client_id: str | None = None
+    event_type: str
+    vault_id: str | None = None
+    detail: str
     created_at: str
 
 

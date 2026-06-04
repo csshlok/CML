@@ -30,6 +30,12 @@ from backend.app.core.llm_runtime import (
     stream_grounded_answer,
 )
 from backend.app.core.memory_card import generate_tags, summarize_text
+from backend.app.core.chat_retention import (
+    chat_evidence_retention_policy,
+    compact_retrieval_snapshots,
+    enforce_chat_evidence_retention,
+    paginated_messages,
+)
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
     ChatContextRequest,
@@ -150,6 +156,41 @@ def get_chat_timeline(session_id: str) -> dict:
             })
         items.sort(key=lambda item: (item.get("sort_key") or "", item.get("id") or ""))
     return {"session_id": session_id, "items": items}
+
+
+@router.get("/sessions/{session_id}/messages")
+def get_chat_messages_page(session_id: str, limit: int = 50, cursor: str | None = None) -> dict:
+    with connect() as conn:
+        session = conn.execute("SELECT id FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    return paginated_messages(session_id, limit=limit, cursor=cursor)
+
+
+@router.post("/retrieval-snapshots/compact")
+def compact_chat_retrieval_snapshots(message_id: str | None = None, keep_latest_per_message: int = 1) -> dict:
+    return compact_retrieval_snapshots(
+        message_id=message_id,
+        keep_latest_per_message=keep_latest_per_message,
+    )
+
+
+@router.get("/evidence-retention/policy")
+def get_chat_evidence_retention_policy() -> dict:
+    return chat_evidence_retention_policy()
+
+
+@router.post("/evidence-retention/enforce")
+def enforce_chat_evidence_retention_route(
+    message_id: str | None = None,
+    keep_latest_per_message: int = 1,
+    excerpt_chars: int = 240,
+) -> dict:
+    return enforce_chat_evidence_retention(
+        message_id=message_id,
+        keep_latest_per_message=keep_latest_per_message,
+        excerpt_chars=excerpt_chars,
+    )
 
 
 @router.patch("/sessions/{session_id}", response_model=ChatSessionRead)

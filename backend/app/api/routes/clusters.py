@@ -1,10 +1,11 @@
 from uuid import uuid4
+import json
 
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.cluster_suggestions import suggest_source_cluster_moves
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.expert_lifecycle import create_expert_job, latest_expert_jobs
+from backend.app.core.expert_lifecycle import create_expert_job, expert_status_report, latest_expert_jobs
 from backend.app.core.lora_training import graduation_contract, verify_adapter_artifact
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
@@ -16,6 +17,7 @@ from backend.app.schemas import (
     ClusterUpdate,
     ExpertArtifactRead,
     ExpertGraduationContractRead,
+    ExpertStatusRead,
 )
 
 router = APIRouter(prefix="/clusters", tags=["clusters"])
@@ -120,6 +122,15 @@ def get_expert_graduation_contract(cluster_id: str) -> dict:
         if existing is None:
             raise HTTPException(status_code=404, detail="Cluster not found")
     return graduation_contract()
+
+
+@router.get("/{cluster_id}/expert/status", response_model=ExpertStatusRead)
+def get_expert_status(cluster_id: str) -> dict:
+    with connect() as conn:
+        try:
+            return expert_status_report(conn, cluster_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Cluster not found") from None
 
 
 @router.get("/{cluster_id}/expert/artifacts", response_model=list[ExpertArtifactRead])
@@ -271,6 +282,35 @@ def merge_cluster(cluster_id: str, payload: ClusterMergeRequest) -> dict:
             raise HTTPException(status_code=404, detail="Cluster not found")
         if source["vault_id"] != target["vault_id"]:
             raise HTTPException(status_code=400, detail="Clusters must be in the same vault.")
+        moved_sources = [
+            row["id"]
+            for row in conn.execute("SELECT id FROM sources WHERE cluster_id = ?", (cluster_id,)).fetchall()
+        ]
+        moved_chats = [
+            row["id"]
+            for row in conn.execute("SELECT id FROM chat_sessions WHERE scope_cluster_id = ?", (cluster_id,)).fetchall()
+        ]
+        conn.execute(
+            """
+            INSERT INTO cluster_merge_artifacts (
+                id, vault_id, source_cluster_id, target_cluster_id, source_cluster_snapshot,
+                target_cluster_snapshot, moved_source_ids, moved_chat_session_ids, reversible,
+                rolled_back_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?)
+            """,
+            (
+                f"cluster-merge-{uuid4()}",
+                source["vault_id"],
+                cluster_id,
+                payload.target_cluster_id,
+                json.dumps(dict_from_row(source), separators=(",", ":")),
+                json.dumps(dict_from_row(target), separators=(",", ":")),
+                json.dumps(moved_sources, separators=(",", ":")),
+                json.dumps(moved_chats, separators=(",", ":")),
+                now,
+            ),
+        )
 
         conn.execute(
             "UPDATE sources SET cluster_id = ?, updated_at = ? WHERE cluster_id = ?",
@@ -289,9 +329,128 @@ def merge_cluster(cluster_id: str, payload: ClusterMergeRequest) -> dict:
     return dict_from_row(row)
 
 
+@router.get("/{cluster_id}/merge-artifacts")
+def list_cluster_merge_artifacts(cluster_id: str) -> dict:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM cluster_merge_artifacts
+            WHERE source_cluster_id = ? OR target_cluster_id = ?
+            ORDER BY created_at DESC
+            LIMIT 50
+            """,
+            (cluster_id, cluster_id),
+        ).fetchall()
+    return {
+        "cluster_id": cluster_id,
+        "items": [
+            {
+                "id": row["id"],
+                "vault_id": row["vault_id"],
+                "source_cluster_id": row["source_cluster_id"],
+                "target_cluster_id": row["target_cluster_id"],
+                "moved_source_ids": json.loads(row["moved_source_ids"] or "[]"),
+                "moved_chat_session_ids": json.loads(row["moved_chat_session_ids"] or "[]"),
+                "reversible": bool(row["reversible"]),
+                "rolled_back_at": row["rolled_back_at"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.post("/merge-artifacts/{artifact_id}/rollback", response_model=ClusterRead)
+def rollback_cluster_merge_artifact(artifact_id: str) -> dict:
+    now = utc_now()
+    with connect() as conn:
+        artifact = conn.execute("SELECT * FROM cluster_merge_artifacts WHERE id = ?", (artifact_id,)).fetchone()
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="Merge artifact not found")
+        if artifact["rolled_back_at"]:
+            raise HTTPException(status_code=409, detail="Merge artifact was already rolled back")
+        if int(artifact["reversible"] or 0) != 1:
+            raise HTTPException(status_code=409, detail="Merge artifact is not reversible")
+
+        source_snapshot = _json_object(artifact["source_cluster_snapshot"])
+        target = conn.execute("SELECT * FROM clusters WHERE id = ?", (artifact["target_cluster_id"],)).fetchone()
+        if target is None:
+            raise HTTPException(status_code=409, detail="Target cluster no longer exists")
+
+        source_cluster_id = artifact["source_cluster_id"]
+        existing_source_cluster = conn.execute("SELECT id FROM clusters WHERE id = ?", (source_cluster_id,)).fetchone()
+        if existing_source_cluster is None:
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_cluster_id,
+                    artifact["vault_id"],
+                    str(source_snapshot.get("name") or "Restored cluster"),
+                    str(source_snapshot.get("description") or ""),
+                    str(source_snapshot.get("color") or "sage"),
+                    "needs-update",
+                    str(source_snapshot.get("created_at") or now),
+                    now,
+                ),
+            )
+
+        moved_source_ids = _json_list(artifact["moved_source_ids"])
+        moved_chat_ids = _json_list(artifact["moved_chat_session_ids"])
+        for source_id in moved_source_ids:
+            conn.execute(
+                """
+                UPDATE sources
+                SET cluster_id = ?, updated_at = ?
+                WHERE id = ? AND vault_id = ? AND deleted_at IS NULL
+                """,
+                (source_cluster_id, now, source_id, artifact["vault_id"]),
+            )
+        for chat_id in moved_chat_ids:
+            conn.execute(
+                """
+                UPDATE chat_sessions
+                SET scope_cluster_id = ?, updated_at = ?
+                WHERE id = ? AND vault_id = ?
+                """,
+                (source_cluster_id, now, chat_id, artifact["vault_id"]),
+            )
+        conn.execute(
+            "UPDATE clusters SET expert_status = 'needs-update', updated_at = ? WHERE id IN (?, ?)",
+            (now, source_cluster_id, artifact["target_cluster_id"]),
+        )
+        conn.execute(
+            "UPDATE cluster_merge_artifacts SET rolled_back_at = ? WHERE id = ?",
+            (now, artifact_id),
+        )
+        row = conn.execute("SELECT * FROM clusters WHERE id = ?", (source_cluster_id,)).fetchone()
+    return dict_from_row(row)
+
+
 @router.delete("/{cluster_id}", status_code=204)
 def delete_cluster(cluster_id: str) -> None:
     with connect() as conn:
         result = conn.execute("DELETE FROM clusters WHERE id = ?", (cluster_id,))
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Cluster not found")
+
+
+def _json_list(raw: str) -> list[str]:
+    try:
+        parsed = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return []
+    return [str(item) for item in parsed] if isinstance(parsed, list) else []
+
+
+def _json_object(raw: str) -> dict:
+    try:
+        parsed = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}

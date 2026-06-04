@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     backend_mode: str = "full_vault"
     startup_status_path: Path | None = None
     models_dir: Path | None = None
+    model_integrity_manifest_path: Path | None = None
+    model_integrity_manifest_url: str | None = None
     api_prefix: str = "/api/v1"
     llm_provider: str = "none"
     llm_base_url: str = "http://127.0.0.1:8080/v1"
@@ -25,9 +27,15 @@ class Settings(BaseSettings):
     ocr_binary_path: Path | None = None
     ocrmypdf_binary_path: Path | None = None
     api_token: str | None = None
+    allow_unauthenticated_api: bool = False
     lora_trainer_command: str | None = None
     lora_min_quality_score: float = 60.0
+    lora_min_quality_delta: float = 1.0
     lora_min_sources: int = 1
+    lora_min_unique_sources: int = 1
+    lora_min_tokens: int = 1200
+    lora_min_validation_records: int = 1
+    lora_max_duplicate_ratio: float = 0.25
     allow_lora_test_trainer: bool = False
 
     model_config = SettingsConfigDict(env_prefix="CML_", env_file=ROOT_DIR / ".env", extra="ignore")

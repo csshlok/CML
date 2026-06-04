@@ -24,7 +24,6 @@ export const Route = createFileRoute("/_app/clusters")({
 
 function ClustersList() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  if (pathname !== "/clusters") return <Outlet />;
 
   const [vault, setBackendVault] = useState<VaultRecord | null>(null);
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
@@ -85,6 +84,8 @@ function ClustersList() {
   const selectedMemoryCount = selectedCluster
     ? memoryCount(selectedCluster, sourceCounts.get(selectedCluster.id) ?? 0)
     : 0;
+
+  if (pathname !== "/clusters") return <Outlet />;
 
   async function handleNewCluster() {
     if (!vault) {

@@ -32,6 +32,7 @@ def build_cluster_dataset(cluster_id: str) -> dict:
         ).fetchall()
 
     documents = []
+    total_text_chars = 0
 
     for row in source_rows:
         source = dict_from_row(row)
@@ -40,6 +41,7 @@ def build_cluster_dataset(cluster_id: str) -> dict:
         if not text.strip() or source.get("deleted_at"):
             continue
 
+        total_text_chars += len(text)
         documents.append(
             {
                 "source_id": source["id"],
@@ -49,6 +51,10 @@ def build_cluster_dataset(cluster_id: str) -> dict:
                 "content_hash": content_hash(text),
             }
         )
+
+    unique_hashes = {doc["content_hash"] for doc in documents}
+    duplicate_content_count = max(0, len(documents) - len(unique_hashes))
+    duplicate_content_ratio = duplicate_content_count / len(documents) if documents else 0.0
 
     dataset_hash = content_hash(
         "\n".join(
@@ -64,6 +70,11 @@ def build_cluster_dataset(cluster_id: str) -> dict:
         "cluster_id": cluster["id"],
         "cluster_name": cluster["name"],
         "source_count": len(documents),
+        "unique_content_hash_count": len(unique_hashes),
+        "duplicate_content_count": duplicate_content_count,
+        "duplicate_content_ratio": round(duplicate_content_ratio, 4),
+        "total_text_chars": total_text_chars,
+        "estimated_token_count": _estimate_tokens(total_text_chars),
         "dataset_hash": dataset_hash,
         "documents": documents,
     }
@@ -90,6 +101,11 @@ def write_cluster_training_dataset(dataset: dict, output_dir: Path) -> dict:
         "cluster_id": dataset["cluster_id"],
         "cluster_name": dataset["cluster_name"],
         "source_count": dataset["source_count"],
+        "unique_content_hash_count": int(dataset.get("unique_content_hash_count") or 0),
+        "duplicate_content_count": int(dataset.get("duplicate_content_count") or 0),
+        "duplicate_content_ratio": float(dataset.get("duplicate_content_ratio") or 0.0),
+        "total_text_chars": int(dataset.get("total_text_chars") or 0),
+        "estimated_token_count": int(dataset.get("estimated_token_count") or 0),
         "dataset_hash": dataset["dataset_hash"],
         "train_count": len(train_records),
         "validation_count": len(validation_records),
@@ -157,3 +173,8 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _estimate_tokens(text_chars: int) -> int:
+    # Conservative language-agnostic estimate for graduation gates.
+    return max(0, text_chars // 4)

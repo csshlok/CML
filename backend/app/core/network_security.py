@@ -17,6 +17,9 @@ def validate_public_http_url(url: str) -> None:
     hostname = parsed.hostname.rstrip(".").lower()
     if hostname in {"localhost"} or hostname.endswith(".localhost"):
         raise NetworkSecurityError("Localhost URLs are not allowed")
+    direct_ip = _parse_ip_literal(hostname)
+    if direct_ip is not None and _is_blocked_ip(direct_ip):
+        raise NetworkSecurityError("Private, local, and reserved network URLs are not allowed")
 
     try:
         addresses = socket.getaddrinfo(hostname, parsed.port or _default_port(parsed.scheme))
@@ -53,6 +56,8 @@ def _default_port(scheme: str) -> int:
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return _is_blocked_ip(ip.ipv4_mapped)
     return any(
         (
             ip.is_private,
@@ -63,3 +68,10 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
             ip.is_unspecified,
         )
     )
+
+
+def _parse_ip_literal(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(hostname)
+    except ValueError:
+        return None

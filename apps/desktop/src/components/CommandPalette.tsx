@@ -90,7 +90,9 @@ export function CommandPalette({
                     navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
                     return;
                   }
-                } catch {}
+                } catch {
+                  // Fall back to the chat index if backend chat creation is unavailable.
+                }
                 navigate({ to: "/chat" });
               })
             }

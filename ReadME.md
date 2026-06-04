@@ -6,6 +6,8 @@ Context Management Layer: local-first desktop AI workspace for turning a user's 
 - `backend/` - local FastAPI service for vaults, clusters, sources, bridge requests, and future ingestion/model jobs.
 - `docs/PRODUCT_PRD.md` - product requirements for the local Context Management Layer.
 - `docs/UI_PRD.md` - UI requirements for the chat-centered desktop workspace, map, sources, clusters, and bridge.
+- `docs/UI_ARCHITECTURE.md` - detailed UI architecture, visual system, color palette, tab requirements, and component contracts.
+- `docs/LORA_CLUSTER_EXPERT_MVP_POLICY.md` - strict LoRA cluster expert graduation, evaluation, runtime, staleness, and rollback gates.
 - `docs/PROJECT_CONTEXT.md` - living progress file with phase progress bars, week-by-week goals, completed work, and open work.
 - `docs/ARCHITECTURE.md` - current architecture notes for the desktop app, backend, storage, bridge, and model lifecycle.
 - `UI-ref/` - preserved UI reference material; not part of the production workspace.
@@ -26,17 +28,17 @@ The core product contract is:
 
 ## Current state
 
-Stage 1 is in progress. The repo currently has a working Electron/Vite desktop workspace, a local FastAPI backend, SQLite-backed CRUD routes for vaults/clusters/sources, TXT/Markdown/DOCX/PDF/pasted-text/link ingestion, drag-and-drop document import in the desktop shell, local synced-folder import for Drive/Dropbox/OneDrive/iCloud-style folders, per-file batch import failure reporting, generated source summaries/tags, link title/image metadata, local chunk/embedding storage, semantic search, vector-based cluster move suggestions, retrieval-grounded chat context routing with citations, persisted chat sessions, local model registry/runtime endpoints, a bridge status/request API, backend-aware Settings/Sources/Clusters/Chat screens, and a redesigned map prototype with cluster anchors, unlabeled data points, hover previews, and in-map cluster detail.
+Stage 1 is in progress. The repo currently has a working Electron/Vite desktop workspace, a token-gated local FastAPI backend, SQLite-backed CRUD routes for vaults/clusters/sources, TXT/Markdown/DOCX/PDF/pasted-text/link ingestion, drag-and-drop document import in the desktop shell, local synced-folder import for Drive/Dropbox/OneDrive/iCloud-style folders, per-file batch import failure reporting, generated source summaries/tags, link title/image metadata, local chunk/embedding storage, semantic search, vector-based cluster move suggestions, retrieval-grounded chat context routing with citations, persisted chat sessions, local model registry/runtime endpoints, a bridge status/request API, backend-aware Settings/Sources/Clusters/Chat screens, a redesigned map prototype with cluster anchors, and repeatable Windows package/smoke scripts.
 
 Tracked local folder imports can be manually refreshed or watch-refreshed from Settings. Refresh reconciliation imports new files, updates changed files, detects moved files by checksum, tombstones deleted files when requested, and reports batch outcome counts/failures.
 
-The next major build target is improving chat synthesis and wiring Context Bridge to semantic retrieval.
+The next major build targets are clean Windows VM package validation, verified real LoRA training/runtime loading, hardware-aware model recommendation for low/mid/high-spec users, larger real-vault retrieval threshold tuning, and complete-scope chat synthesis. Claude Desktop-specific Bridge smoke is deferred for now.
 
 ## Prerequisites
 
 - Node.js 18+.
 - Python 3.11+ recommended for future ML libraries. The current environment is using Python 3.14 for the lightweight backend.
-- Windows is the first development target.
+- Windows is the only public V1 target.
 - Optional later dependencies: local model runtime, embedding model, and OCR libraries.
 
 Recommended Python virtual environment:
@@ -74,6 +76,13 @@ Run the backend:
 npm run backend
 ```
 
+Private backend API routes fail closed unless a local API token is configured. `npm run backend` generates a per-process token for dev startup when `CML_API_TOKEN` is not already set. For direct curl testing, set your own token before starting the backend:
+
+```powershell
+$env:CML_API_TOKEN="dev-token"
+npm run backend
+```
+
 Run the desktop app:
 
 ```bash
@@ -84,9 +93,10 @@ Useful checks:
 
 ```bash
 curl http://127.0.0.1:7343/health
-curl http://127.0.0.1:7343/api/v1/vaults
-curl http://127.0.0.1:7343/api/v1/sources
-curl http://127.0.0.1:7343/api/v1/bridge/status
+curl -H "x-cml-api-token: dev-token" http://127.0.0.1:7343/api/v1/system/backend-identity
+curl -H "x-cml-api-token: dev-token" http://127.0.0.1:7343/api/v1/vaults
+curl -H "x-cml-api-token: dev-token" http://127.0.0.1:7343/api/v1/sources
+curl -H "x-cml-api-token: dev-token" http://127.0.0.1:7343/api/v1/bridge/status
 ```
 
 The Vite development view is available at:
@@ -120,6 +130,9 @@ The Electron shell opens the same local UI through `npm run dev`.
 - `DELETE /api/v1/sources/{source_id}` - remove a source.
 - `POST /api/v1/search/semantic` - search indexed source chunks by local semantic similarity.
 - `POST /api/v1/search/reindex/{vault_id}` - rebuild local search chunks for indexed sources.
+- `GET /api/v1/search/vectors/repair-plan` - inspect missing/stale vector index work.
+- `POST /api/v1/search/vectors/repair` - repair missing/stale vectors for indexed sources.
+- `POST /api/v1/search/vectors/compact` - remove deleted/orphaned vector chunks and optimize SQLite.
 - `GET /api/v1/clusters/suggestions` - review vector-based source-to-cluster move suggestions.
 - `POST /api/v1/chat/context` - build a retrieval-grounded chat draft with clusters used and citations.
 - `GET /api/v1/models` - list recommended local model options and install status.
@@ -129,6 +142,7 @@ The Electron shell opens the same local UI through `npm run dev`.
 - `GET /api/v1/models/{model_id}` - inspect one model option.
 - `POST /api/v1/models/{model_id}/download` - start an explicit GGUF model download into local app data.
 - `POST /api/v1/models/{model_id}/download/cancel` - cancel an active GGUF model download and clean up the partial file.
+- `GET /api/v1/system/startup-repair` - inspect startup integrity, interrupted jobs, and vector repair state.
 - `GET /api/v1/bridge/status` - Context Bridge status.
 - `POST /api/v1/bridge/context` - request selected context for an external local client.
 - `GET /api/v1/bridge/requests` - recent bridge request history.
@@ -210,6 +224,21 @@ For NVIDIA CUDA testing on Windows:
 
 The current local test machine stores downloaded GGUFs under `T:\LLM` via `CML_MODELS_DIR`. Use `.\scripts\llm\benchmark-local-models.ps1` to compare the downloaded model ladder through llama.cpp.
 
+Public V1 model setup must recommend a model tier from the user's actual machine conditions:
+
+- Low-spec: safe default for limited RAM/CPU and no usable GPU.
+- Standard: balanced model for normal 8-16 GB Windows machines.
+- Quality: larger model only when RAM/GPU/disk/runtime conditions support it.
+- Existing runtime: connect to Ollama, llama.cpp, LM Studio, or another OpenAI-compatible endpoint when already installed.
+
+The recommendation system must consider RAM, CPU threads, OS/architecture, AVX2 where available, GPU/CUDA where available, free disk, and whether a local runtime is already configured. LoRA expert-training recommendations are separate from normal synthesis model recommendations because training has stricter hardware constraints.
+
+Backend-only ingestion/search/vector repair benchmark:
+
+```powershell
+.\scripts\backend\benchmark-backend.ps1 -Sources 250 -WordsPerSource 240 -ReportPath .tmp\backend-benchmark-report.md
+```
+
 Every cluster must have a verified local LoRA expert lifecycle for public V1. The app currently has the backend contract for dataset export, trainer process handoff, adapter artifact validation, quality metrics, activation, rollback, and cleanup guardrails. The deterministic test trainer is for CI only; real public-V1 validation must run through a LLaMA-Factory-compatible trainer command.
 
 Contributor setup for the separate trainer environment:
@@ -239,6 +268,7 @@ curl http://127.0.0.1:7343/api/v1/system/lora-trainer
 Cluster-level expert surfaces:
 
 - `GET /api/v1/clusters/{cluster_id}/expert/contract`
+- `GET /api/v1/clusters/{cluster_id}/expert/status`
 - `GET /api/v1/clusters/{cluster_id}/expert/artifacts`
 - `POST /api/v1/clusters/{cluster_id}/expert/retrain`
 - `POST /api/v1/clusters/{cluster_id}/expert/artifacts/{artifact_id}/activate`
@@ -246,6 +276,13 @@ Cluster-level expert surfaces:
 - `DELETE /api/v1/clusters/{cluster_id}/expert/artifacts/{artifact_id}`
 
 The riskiest project area is still real local LoRA training and runtime adapter loading under free, reproducible, lightweight constraints. Retrieval-backed bootstrapping keeps the product usable while LoRA training is running, but public V1 should only claim a cluster expert is trained after an active adapter has metrics, version metadata, rollback support, and supported-hardware provenance.
+
+Repeatable expert smokes:
+
+```powershell
+.\scripts\backend\smoke-lora-expert.ps1
+.\scripts\backend\smoke-lora-runtime.ps1 -AdapterPath <adapter-dir> -BaseModel <base-model> -RuntimeUrl http://127.0.0.1:8080/v1
+```
 
 ## OCR runtime packaging
 
@@ -257,7 +294,7 @@ CML does not call a remote OCR service. Windows packages stage local OCR tools u
 
 The expected local runtime is `tesseract.exe`, `tessdata\eng.traineddata`, qpdf, Ghostscript, and the packaged Python OCRmyPDF/PyMuPDF dependencies. Image OCR needs Tesseract plus tessdata. Scanned-PDF OCR prefers OCRmyPDF with qpdf/Ghostscript and falls back to PyMuPDF page rendering plus Tesseract when OCRmyPDF is incomplete.
 
-`package-windows.ps1` runs OCR staging by default; pass `-SkipOcrRuntimeDownload` only for dry package tests. If Ghostscript is not staging cleanly yet, use `-SkipGhostscriptInstaller -AllowPartialOcrRuntime` to package the working Tesseract/PyMuPDF fallback path.
+`package-windows.ps1` runs OCR staging by default; pass `-SkipOcrRuntimeDownload` only for dry package tests. If auto-detection misses a local tool install, pass `-TesseractExePath` or `-GhostscriptExePath`; use `-SkipGhostscriptInstaller -AllowPartialOcrRuntime` only when intentionally packaging the Tesseract/PyMuPDF fallback path.
 
 For local OCR accuracy smoke tests:
 
@@ -271,4 +308,4 @@ For local OCR accuracy smoke tests:
 - V1 should avoid silent full-device scanning. Users explicitly choose vaults/folders/files.
 - `data/`, `.venv/`, generated build output, logs, and local databases should stay ignored.
 - Electron is the pragmatic first shell. Tauri can be reconsidered after the core flow is proven.
-- The first packaging target is Windows, then macOS/Linux.
+- The public V1 packaging target is Windows only. macOS/Linux can be reconsidered after Windows V1 is public-quality.

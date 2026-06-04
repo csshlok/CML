@@ -15,6 +15,7 @@ class TestingParametersDocCases(unittest.TestCase):
         os.environ["CML_DATA_DIR"] = self.tmp.name
         os.environ["CML_EMBEDDING_PROVIDER"] = "hash"
         os.environ["CML_ALLOW_HASH_EMBEDDINGS"] = "1"
+        os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "1"
 
         from backend.app.core.config import get_settings
 
@@ -33,6 +34,7 @@ class TestingParametersDocCases(unittest.TestCase):
         os.environ.pop("CML_DATA_DIR", None)
         os.environ.pop("CML_EMBEDDING_PROVIDER", None)
         os.environ.pop("CML_ALLOW_HASH_EMBEDDINGS", None)
+        os.environ.pop("CML_ALLOW_UNAUTHENTICATED_API", None)
         self.tmp.cleanup()
 
     def test_pre_vault_mode_blocks_private_routes_and_keeps_preflight_alive(self) -> None:
