@@ -6,6 +6,8 @@ Context Management Layer: local-first desktop AI workspace for turning a user's 
 - `backend/` - local FastAPI service for vaults, clusters, sources, bridge requests, and future ingestion/model jobs.
 - `docs/PRODUCT_PRD.md` - product requirements for the local Context Management Layer.
 - `docs/UI_PRD.md` - UI requirements for the chat-centered desktop workspace, map, sources, clusters, and bridge.
+- `docs/UI_ARCHITECTURE.md` - detailed UI architecture, visual system, color palette, tab requirements, and component contracts.
+- `docs/LORA_CLUSTER_EXPERT_MVP_POLICY.md` - strict LoRA cluster expert graduation, evaluation, runtime, staleness, and rollback gates.
 - `docs/PROJECT_CONTEXT.md` - living progress file with phase progress bars, week-by-week goals, completed work, and open work.
 - `docs/ARCHITECTURE.md` - current architecture notes for the desktop app, backend, storage, bridge, and model lifecycle.
 - `UI-ref/` - preserved UI reference material; not part of the production workspace.
@@ -257,6 +259,7 @@ curl http://127.0.0.1:7343/api/v1/system/lora-trainer
 Cluster-level expert surfaces:
 
 - `GET /api/v1/clusters/{cluster_id}/expert/contract`
+- `GET /api/v1/clusters/{cluster_id}/expert/status`
 - `GET /api/v1/clusters/{cluster_id}/expert/artifacts`
 - `POST /api/v1/clusters/{cluster_id}/expert/retrain`
 - `POST /api/v1/clusters/{cluster_id}/expert/artifacts/{artifact_id}/activate`
@@ -264,6 +267,13 @@ Cluster-level expert surfaces:
 - `DELETE /api/v1/clusters/{cluster_id}/expert/artifacts/{artifact_id}`
 
 The riskiest project area is still real local LoRA training and runtime adapter loading under free, reproducible, lightweight constraints. Retrieval-backed bootstrapping keeps the product usable while LoRA training is running, but public V1 should only claim a cluster expert is trained after an active adapter has metrics, version metadata, rollback support, and supported-hardware provenance.
+
+Repeatable expert smokes:
+
+```powershell
+.\scripts\backend\smoke-lora-expert.ps1
+.\scripts\backend\smoke-lora-runtime.ps1 -AdapterPath <adapter-dir> -BaseModel <base-model> -RuntimeUrl http://127.0.0.1:8080/v1
+```
 
 ## OCR runtime packaging
 

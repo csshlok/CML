@@ -31,7 +31,7 @@ Public V1 target: end of July 2026, only if public-quality gates pass. If blocke
 - V1 storage: local vault folder with `CML_DATA_DIR=<vault>/.vault` and `CML_DATABASE_PATH=<vault>/.vault/cml.sqlite3`.
 - V1 integrations: local synced folders first, including Google Drive Desktop, Dropbox, OneDrive, iCloud Drive, Obsidian folders, and normal folders.
 - Later integrations: OAuth/API connectors after local ingestion is stable.
-- UI direction: memory-board landing, visual map, chat workspace, Mindly-like organization, Obsidian-like graph/map.
+- UI direction: memory-board landing, visual map, chat workspace, Mindly-like organization, Obsidian-like graph/map; detailed UI rules live in `docs/UI_ARCHITECTURE.md`.
 - UI responsive scope: no dedicated mobile screen for public V1; dark version and minimized/narrow desktop window version are required.
 - UI reference folder: preserve `UI-ref/`; do not delete or refactor it.
 - Cluster experts: compulsory product pillar.
@@ -71,7 +71,7 @@ Runtime boundary:
 | Vault ingestion | Complete for current scope | `[##########] 100%` | Clean VM confirmation only |
 | Embeddings and clustering | In progress | `[##########] 99%` | Broader threshold tuning on real user vaults |
 | Chat/context routing | In progress | `[##########] 96%` | Complete-scope map/reduce, token budgets, runtime failure UX |
-| Compulsory cluster experts | In progress | `[#####-----] 52%` | Real adapter smoke, runtime adapter loading, quality benchmark |
+| Compulsory cluster experts | In progress | `[#######---] 70%` | Real LLaMA Factory smoke and live runtime adapter loading against a real local model |
 | Context Bridge | In progress | `[#########-] 94%` | Real Claude Desktop smoke and capture UX polish |
 | Packaging/install | In progress | `[##########] 98%` | Clean VM validation |
 | QA/hardening | In progress | `[##########] 99%` | Real Claude Desktop smoke, clean VM package validation |
@@ -81,6 +81,7 @@ Runtime boundary:
 - Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
 - Keep public V1 public-only criteria. If gates fail, label the build private alpha/demo.
 - Verify real adapter training and runtime loading before any broad "trained expert" claim.
+- Compulsory expert work now has stricter dataset/diversity/quality gates, evaluation harness, smoke scripts, and Expert tab visibility, but still needs a real trainer command/model path before public claims.
 - Keep the written threat model current and treat local API/Bridge auth regressions as release blockers.
 - Continue retrieval threshold tuning beyond the benchmark harness using larger user-owned vaults.
 - Smoke Context Bridge against Claude Desktop before advertising MCP readiness.
@@ -126,8 +127,8 @@ Chat/context routing:
 
 Compulsory cluster experts:
 
-- Done: verified-LoRA contract scaffold, dataset export, artifact schema, metrics, activation, rollback, delete guardrails, shell-free trainer process boundary, Windows-path trainer tests.
-- Remaining: do not touch for now unless requested; real LLaMA Factory smoke, runtime adapter loading, hardware matrix, quality benchmark.
+- Done: verified-LoRA contract scaffold, dataset export with source/token/diversity counts, duplicate-ratio gate, artifact schema, metrics, activation, rollback, delete guardrails, shell-free trainer process boundary, Windows-path trainer tests, stricter graduation contract, adapter config/weight validation, runtime-load plan metadata, deterministic expert evaluation harness, retrieval-vs-adapter delta gate, stale-adapter detection, Expert tab status UI, and repeatable LoRA expert/runtime smoke scripts.
+- Remaining: execute real LLaMA Factory smoke with a real base model, execute live runtime adapter loading against local inference, expand hardware matrix/time estimates, and run quality benchmark on real trained adapters.
 
 Context Bridge:
 
@@ -163,24 +164,24 @@ These are release gates, not polish.
 - Deletion graph: deleted sensitive content must disappear from retrieval/search immediately before async cleanup.
 - Diagnostics: log rotation policy exists and full-vault unpacked package smoke covers diagnostics export; clean VM execution remains.
 - MCP Bridge: Codex-style JSON-RPC smoke passed; real Claude Desktop smoke and clear app error codes are still required before advertising MCP readiness.
-- LoRA: public V1 requires verified real adapter training, adapter artifact, runtime load, rollback, supported hardware, failure codes, and quality win over retrieval baseline.
+- LoRA: public V1 requires verified real adapter training, adapter artifact validation, runtime load against a real local model, rollback, supported hardware, failure codes, and quality win over retrieval baseline.
 - LoRA graduation framing: small or insufficient clusters should remain retrieval-backed with explicit status instead of pretending every cluster can graduate.
 - OCR/package: packaged OCR runtime, generated OCR fixture smoke, dynamic-link smoke, migration drill, and installer smoke pass; Ghostscript path is AGPL-compatible public release.
 
 ## Next Backend Build Steps
 
-Scope constraints for this list: no LoRA implementation, no UI work, no package rebuild unless explicitly requested.
+Scope constraints for this list: compulsory cluster expert group only; no package rebuild unless explicitly requested.
 
-1. Execute clean Windows VM package validation: no dev Python, no Node, no preinstalled OCR, cold first-run.
-2. Run `scripts/backend/benchmark-user-owned-vault.ps1` against a larger real user-owned fixture and record retrieval thresholds.
-3. Add model provenance display in first-run/setup using `/api/v1/models/integrity-manifest`.
-4. Add supported-OS/release-cut decision record for Windows-first public V1.
-5. Harden packaged startup repair UI around interrupted migrations, stale startup phases, and recovery drills.
-6. Continue backend service-layer extraction around raw route/database operations.
-7. Add complete-scope answering design and first evidence-packet map/reduce backend slice.
-8. Finish browser extension package and safer local pairing flow.
-9. Keep dependency/license manifests aligned with AGPL-compatible OCR release packaging.
-10. Run real Claude Desktop MCP smoke only when Claude is installed and the user explicitly resumes Claude work.
+1. Run `scripts/backend/smoke-lora-expert.ps1` without `-AllowTestTrainer` using a real `CML_LORA_TRAINER_COMMAND` and record command, base model, dataset hash, and adapter path.
+2. Run `scripts/backend/smoke-lora-runtime.ps1` against the adapter and live local inference runtime; fail public expert claims until the runtime is reachable and adapter load contract passes.
+3. Replace deterministic adapter-score proxy with a live adapter-backed generation benchmark once the runtime can attach adapters.
+4. Add benchmark report export for strict categories: factual recall, summarization, citation grounding, contradiction handling, style transfer, and out-of-scope refusal.
+5. Expand hardware support reporting with estimated training time/cost, GPU/CPU mode, unsupported reasons, and safe retrieval-only fallback.
+6. Add source-change threshold controls for staleness policy beyond dataset-hash mismatch and test source edits/deletions explicitly.
+7. Harden rollback failure cases where the prior adapter path disappears or becomes invalid after training failure.
+8. Add route/API tests for every typed failure code: trainer missing, trainer failed, adapter invalid, quality gate failed, runtime load failed, dataset changed, and hardware unsupported.
+9. Add Expert tab actions for retrain, pause, activate, rollback, and delete while preserving the current honest status copy.
+10. Update release docs with real smoke/benchmark results and exact public-V1 expert claim rules.
 
 ## Current Open Work
 
@@ -198,11 +199,15 @@ Scope constraints for this list: no LoRA implementation, no UI work, no package 
 - Smoke MCP external-turn capture tools against Claude Desktop after the Codex-style MCP smoke.
 - Execute the clean-machine package script and smoke sequence on a fresh Windows VM before public release claims.
 - Keep Python dependency CVE auditing in repeatable contributor QA.
-- Add LoRA readiness gates later: trainer audit, real adapter smoke, runtime load, quality harness, minimum cluster threshold, adapter staleness.
-- Keep LoRA untouched unless explicitly requested; public V1 still requires verified LoRA later.
+- Continue LoRA readiness gates now that expert work is active: real trainer smoke, live runtime load, live adapter benchmark, hardware matrix, rollback edge cases, and Expert tab controls.
 
 ## Recent Completed Work
 
+- Continued the compulsory cluster expert build pass: added unique-source and duplicate-ratio dataset gates, minimum quality-delta config, deterministic expert evaluation harness, repeatable LoRA expert/runtime smoke scripts, strict LoRA MVP policy doc, and a backend-backed cluster Expert tab.
+- Started the compulsory cluster expert build pass: added stricter LoRA graduation gates for source count, estimated token count, validation records, adapter validation, runtime-load contract metadata, stale active-adapter detection, richer failure codes, and `/api/v1/clusters/{cluster_id}/expert/status`.
+- Updated cluster expert UI status mapping so backend states render as `Searchable now`, `Learning`, `Ready`, `Needs update`, or `Issue` instead of falling back to `Setting up`.
+- Expert validation for this pass: focused backend/source tests ran 102 OK with 1 skipped; full backend discovery ran 178 OK with 1 skipped; `ruff check backend` passed; `npm run lint` passed with existing warnings only; `npm run build` passed.
+- Added `docs/UI_ARCHITECTURE.md` as the detailed UI source of truth covering visual style, color tokens, tab requirements, component contracts, cross-cutting states, accessibility, responsive desktop behavior, and public V1 UI gates.
 - Completed the full post-review implementation pass: atomic background job claiming, concurrent `/jobs/run-once` tests, fail-closed local API auth, authenticated backend identity handshake for Electron/frontend probes, FastAPI lifespan migration, shell-free LoRA trainer execution, Windows-path trainer tests, Ruff cleanup, split desktop lint scope, and packaged Windows validation.
 - Current package artifacts: `apps/desktop/release/win-unpacked` and `apps/desktop/release/CML-0.1.0-Setup.exe` are valid local artifacts from the 2026-06-04 rebuild.
 - Verification for this pass: full backend discovery ran 175 tests OK with 1 skipped; Electron behavior tests ran 8 OK; Electron token-store tests ran 4 OK; `ruff check backend` passed; `npm run lint` passed with existing warnings only; `npm run build` passed; `scripts/packaging/package-windows.ps1` passed; packaged runtime, clean-machine structure, full-vault OCR, dynamic-link, migration-drill, and app-launch smokes passed against `apps/desktop/release/win-unpacked`.

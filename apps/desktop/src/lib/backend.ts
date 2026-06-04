@@ -224,10 +224,37 @@ export type ExpertArtifactRecord = {
 export type ExpertGraduationContractRecord = {
   supported_statuses: string[];
   minimum_sources: number;
+  minimum_unique_sources: number;
+  minimum_estimated_tokens: number;
+  minimum_validation_records: number;
   minimum_quality_score: number;
+  minimum_quality_delta: number;
+  maximum_duplicate_ratio: number;
   required_artifact_files: string[];
   failure_codes: string[];
+  graduation_gate: string;
   rollback_behavior: string;
+};
+
+export type ClusterExpertStatusRecord = {
+  cluster_id: string;
+  expert_status: string;
+  user_status: string;
+  searchable: boolean;
+  trained: boolean;
+  stale: boolean;
+  active_artifact_id: string | null;
+  active_dataset_hash: string | null;
+  current_dataset_hash: string | null;
+  runtime_load: {
+    available?: boolean;
+    runtime?: string;
+    base_model?: string;
+    adapter_path?: string;
+    detail?: string;
+  };
+  failure_code: string;
+  detail: string;
 };
 
 export type AppJobRecord = {
@@ -768,6 +795,12 @@ export async function listClusterExpertArtifacts(clusterId: string) {
 export async function getClusterExpertContract(clusterId: string) {
   return request<ExpertGraduationContractRecord>(
     `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/contract`,
+  );
+}
+
+export async function getClusterExpertStatus(clusterId: string) {
+  return request<ClusterExpertStatusRecord>(
+    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/status`,
   );
 }
 

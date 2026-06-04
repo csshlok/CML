@@ -101,10 +101,31 @@ class ExpertArtifactRead(BaseModel):
 class ExpertGraduationContractRead(BaseModel):
     supported_statuses: list[str]
     minimum_sources: int
+    minimum_unique_sources: int = 0
+    minimum_estimated_tokens: int = 0
+    minimum_validation_records: int = 0
     minimum_quality_score: float
+    minimum_quality_delta: float = 0
+    maximum_duplicate_ratio: float = 0
     required_artifact_files: list[str]
     failure_codes: list[str]
+    graduation_gate: str = ""
     rollback_behavior: str
+
+
+class ExpertStatusRead(BaseModel):
+    cluster_id: str
+    expert_status: str
+    user_status: str
+    searchable: bool
+    trained: bool
+    stale: bool
+    active_artifact_id: str | None = None
+    active_dataset_hash: str | None = None
+    current_dataset_hash: str | None = None
+    runtime_load: dict = {}
+    failure_code: str = ""
+    detail: str = ""
 
 
 class SourceCreate(BaseModel):

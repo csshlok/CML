@@ -12,7 +12,14 @@ from backend.app.core.config import get_settings
 from backend.app.core.vector_maintenance import vector_repair_plan
 from backend.app.core.training_dataset import build_cluster_dataset, write_cluster_training_dataset
 from backend.app.core.training_evaluation import evaluate_adapter_quality, evaluate_cluster_dataset
-from backend.app.core.lora_training import new_artifact_dir, run_lora_training_process, training_config
+from backend.app.core.lora_training import (
+    adapter_validation_report,
+    dataset_graduation_report,
+    new_artifact_dir,
+    run_lora_training_process,
+    runtime_adapter_load_plan,
+    training_config,
+)
 
 
 JOB_POLL_SECONDS = 1.0
@@ -865,20 +872,32 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             )
 
         dataset = build_cluster_dataset(cluster_id)
-        if int(dataset.get("source_count") or 0) < get_settings().lora_min_sources:
+        dataset_gate = dataset_graduation_report(dataset)
+        if not dataset_gate["passes"]:
             _mark_expert_training_failed(
                 conn,
                 cluster_id=cluster_id,
                 expert_job_id=expert_job_id,
                 failure_code="insufficient_dataset",
-                detail="Cluster does not have enough sources for LoRA graduation.",
+                detail=f"Cluster does not meet LoRA graduation dataset gates: {dataset_gate}",
                 hardware_tier=hardware["hardware_tier"],
             )
-            raise RuntimeError("Cluster does not have enough sources for LoRA graduation.")
+            raise RuntimeError("Cluster does not meet LoRA graduation dataset gates.")
 
         quality_score = evaluate_cluster_dataset(dataset)
         artifact_dir = new_artifact_dir(cluster_id)
         dataset_manifest = write_cluster_training_dataset(dataset, artifact_dir / "dataset")
+        dataset_gate = dataset_graduation_report(dataset, validation_count=int(dataset_manifest["validation_count"]))
+        if not dataset_gate["passes"]:
+            _mark_expert_training_failed(
+                conn,
+                cluster_id=cluster_id,
+                expert_job_id=expert_job_id,
+                failure_code="insufficient_dataset",
+                detail=f"Cluster does not meet LoRA graduation validation gates: {dataset_gate}",
+                hardware_tier=hardware["hardware_tier"],
+            )
+            raise RuntimeError("Cluster does not meet LoRA graduation validation gates.")
         config = training_config(base_model=get_settings().llm_model, dataset_hash=dataset["dataset_hash"])
 
         try:
@@ -898,13 +917,45 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             )
             raise
 
+        adapter_validation = adapter_validation_report(train_result["adapter_path"])
+        if not adapter_validation["valid"]:
+            _mark_expert_training_failed(
+                conn,
+                cluster_id=cluster_id,
+                expert_job_id=expert_job_id,
+                failure_code="adapter_invalid",
+                detail=f"Adapter artifact validation failed: {adapter_validation['errors']}",
+                hardware_tier=hardware["hardware_tier"],
+            )
+            raise RuntimeError("Adapter artifact validation failed.")
+
+        runtime_load = runtime_adapter_load_plan(
+            adapter_path=train_result["adapter_path"],
+            base_model=config["base_model"],
+        )
+        if not runtime_load["available"]:
+            _mark_expert_training_failed(
+                conn,
+                cluster_id=cluster_id,
+                expert_job_id=expert_job_id,
+                failure_code="runtime_load_failed",
+                detail=runtime_load["detail"],
+                hardware_tier=hardware["hardware_tier"],
+            )
+            raise RuntimeError("Adapter runtime load contract is unavailable.")
+
         metrics = evaluate_adapter_quality(
             dataset_score=quality_score,
             adapter_dir_exists=True,
+            adapter_valid=True,
             validation_count=int(dataset_manifest["validation_count"]),
         )
+        metrics["dataset_gate"] = dataset_gate
+        metrics["adapter_validation"] = adapter_validation
+        metrics["runtime_load"] = runtime_load
         min_quality = get_settings().lora_min_quality_score
-        if float(metrics["adapter_score"]) < min_quality or float(metrics["quality_delta"]) <= 0:
+        min_delta = get_settings().lora_min_quality_delta
+        if float(metrics["adapter_score"]) < min_quality or float(metrics["quality_delta"]) < min_delta:
             _mark_expert_training_failed(
                 conn,
                 cluster_id=cluster_id,

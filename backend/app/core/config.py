@@ -30,7 +30,12 @@ class Settings(BaseSettings):
     allow_unauthenticated_api: bool = False
     lora_trainer_command: str | None = None
     lora_min_quality_score: float = 60.0
+    lora_min_quality_delta: float = 1.0
     lora_min_sources: int = 1
+    lora_min_unique_sources: int = 1
+    lora_min_tokens: int = 1200
+    lora_min_validation_records: int = 1
+    lora_max_duplicate_ratio: float = 0.25
     allow_lora_test_trainer: bool = False
 
     model_config = SettingsConfigDict(env_prefix="CML_", env_file=ROOT_DIR / ".env", extra="ignore")

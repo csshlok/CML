@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.core.cluster_suggestions import suggest_source_cluster_moves
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.expert_lifecycle import create_expert_job, latest_expert_jobs
+from backend.app.core.expert_lifecycle import create_expert_job, expert_status_report, latest_expert_jobs
 from backend.app.core.lora_training import graduation_contract, verify_adapter_artifact
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
@@ -17,6 +17,7 @@ from backend.app.schemas import (
     ClusterUpdate,
     ExpertArtifactRead,
     ExpertGraduationContractRead,
+    ExpertStatusRead,
 )
 
 router = APIRouter(prefix="/clusters", tags=["clusters"])
@@ -121,6 +122,15 @@ def get_expert_graduation_contract(cluster_id: str) -> dict:
         if existing is None:
             raise HTTPException(status_code=404, detail="Cluster not found")
     return graduation_contract()
+
+
+@router.get("/{cluster_id}/expert/status", response_model=ExpertStatusRead)
+def get_expert_status(cluster_id: str) -> dict:
+    with connect() as conn:
+        try:
+            return expert_status_report(conn, cluster_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Cluster not found") from None
 
 
 @router.get("/{cluster_id}/expert/artifacts", response_model=list[ExpertArtifactRead])

@@ -34,8 +34,14 @@ def evaluate_cluster_dataset(dataset: dict) -> float:
     return min(score, 100.0)
 
 
-def evaluate_adapter_quality(*, dataset_score: float, adapter_dir_exists: bool, validation_count: int) -> dict:
-    adapter_bonus = 25.0 if adapter_dir_exists else 0.0
+def evaluate_adapter_quality(
+    *,
+    dataset_score: float,
+    adapter_dir_exists: bool,
+    adapter_valid: bool = False,
+    validation_count: int,
+) -> dict:
+    adapter_bonus = 25.0 if adapter_dir_exists and adapter_valid else 0.0
     validation_bonus = 15.0 if validation_count > 0 else 0.0
     score = min(100.0, (dataset_score * 0.6) + adapter_bonus + validation_bonus)
     return {
@@ -44,4 +50,5 @@ def evaluate_adapter_quality(*, dataset_score: float, adapter_dir_exists: bool, 
         "quality_delta": round(score - dataset_score, 2),
         "validation_count": validation_count,
         "adapter_dir_exists": adapter_dir_exists,
+        "adapter_valid": adapter_valid,
     }

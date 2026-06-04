@@ -1,8 +1,18 @@
 # Dependencies
 node_modules/
 .venv/
+.venv-*/
+venv/
+env/
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.tox/
+.nox/
+.hypothesis/
 
 # Build outputs
 dist/
@@ -17,13 +27,20 @@ out/
 .vinxi/
 .tanstack/
 .nitro/
+.vite/
+.vite-temp/
+.turbo/
 *.egg-info/
 **/*.egg-info/
+*.tsbuildinfo
 
 # Runtime app data
 data/
 *.sqlite
 *.sqlite3
+*.db
+*.db-shm
+*.db-wal
 
 # Logs and local env
 logs/
@@ -35,6 +52,20 @@ logs/
 .tmp/
 .playwright-mcp/
 **/.playwright-mcp/
+.wrangler/
+.dev.vars
+
+# Test, coverage, and audit reports
+.coverage
+.coverage.*
+coverage/
+coverage.xml
+htmlcov/
+junit*.xml
+test-results/
+playwright-report/
+blob-report/
+reports/
 
 # OS/editor
 .DS_Store

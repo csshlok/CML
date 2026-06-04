@@ -6,7 +6,39 @@ Last updated: 2026-06-04
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
-Latest compact truth after the 2026-06-04 implementation pass lives in `docs/PROJECT_CONTEXT.md`. The latest pass completed the full post-review build list: atomic job claiming, concurrent job tests, fail-closed local API auth, authenticated backend identity probes, FastAPI lifespan migration, shell-free LoRA trainer execution, Windows-path trainer tests, lint hardening, full backend regression, desktop build/lint, Windows package rebuild, and packaged smoke validation. Claude Desktop smoke and clean Windows VM validation remain the main external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+Latest compact truth after the 2026-06-04 implementation pass lives in `docs/PROJECT_CONTEXT.md`. The latest pass continued the compulsory cluster expert build: stricter dataset/diversity/quality-delta gates, adapter artifact validation, runtime-load plan metadata, stale-adapter detection, richer failure codes, expert status reporting, deterministic evaluation harness, repeatable LoRA smoke scripts, and an honest Expert tab. Claude Desktop smoke, clean Windows VM validation, and real LoRA trainer/runtime smoke remain the main external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+
+## 2026-06-04 Compulsory Cluster Expert Build Snapshot
+
+Completed:
+
+- LoRA graduation contract now includes source count, estimated token count, validation-record count, minimum quality, required adapter files, richer failure codes, and a plain graduation-gate statement.
+- Cluster datasets now report total text characters, estimated token count, unique-content count, duplicate count, and duplicate ratio.
+- Graduation now enforces unique-source/diversity, maximum duplicate ratio, and minimum adapter quality delta over retrieval.
+- Added deterministic expert evaluation categories and retrieval-vs-adapter delta scoring for repeatable benchmark scaffolding.
+- Added `scripts/backend/smoke-lora-expert.ps1`, `scripts/backend/smoke-lora-runtime.ps1`, and `docs/LORA_CLUSTER_EXPERT_MVP_POLICY.md`.
+- Adapter validation now rejects missing directories, missing files, malformed `adapter_config.json`, non-LoRA configs, missing base model metadata, and empty adapter weights.
+- Training jobs now fail with typed expert failure codes for insufficient dataset, invalid adapter, runtime-load contract failure, and quality-gate failure.
+- Successful training metrics now include dataset gate details, adapter validation details, and runtime-load plan metadata.
+- Added `/api/v1/clusters/{cluster_id}/expert/status` for UI-facing expert state: searchable, trained, stale, active artifact, dataset hash, runtime-load readiness, failure code, and user status.
+- Active adapters are marked stale when the current cluster dataset hash no longer matches the adapter's training dataset hash.
+- Desktop cluster expert status mapping now shows `Searchable now`, `Learning`, `Ready`, `Needs update`, and `Issue` instead of collapsing unknown backend states to `Setting up`.
+- Cluster detail now includes a backend-backed Expert tab showing searchable/trained/stale state, hashes, active artifact, runtime-load readiness, jobs, and artifacts.
+
+Verification:
+
+- Focused backend/source suites: 102 tests OK, 1 skipped.
+- Full backend unittest discovery: 178 tests OK, 1 skipped.
+- `ruff check backend`: passed.
+- `npm run lint`: passed with existing warnings only.
+- `npm run build`: passed.
+
+Still not completed:
+
+- Real LLaMA Factory trainer smoke needs an actual `CML_LORA_TRAINER_COMMAND` and local base model path.
+- Runtime adapter loading still needs a live local inference runtime smoke, not only the load-plan contract.
+- Live retrieval-vs-adapter quality benchmark remains to run against a real trained adapter.
+- Hardware matrix and training time/cost reporting remain to expand.
 
 ## 2026-06-04 Full Post-Review Implementation Snapshot
 
@@ -224,7 +256,7 @@ Use this section for fast status checks. Detailed historical notes remain in the
 | Vault ingestion | Complete for current scope | `[##########] 100%` | Clean VM confirmation only. |
 | Embeddings and clustering | In progress | `[##########] 99%` | Broader threshold tuning on real user vaults. |
 | Chat and context routing | In progress | `[##########] 96%` | Complete-scope map/reduce answering, token budgets, runtime failure UI. |
-| Compulsory cluster experts | In progress | `[#####-----] 52%` | Real adapter smoke, runtime adapter loading, quality benchmark. |
+| Compulsory cluster experts | In progress | `[#######---] 70%` | Real LLaMA Factory smoke and live runtime adapter loading against a real local model. |
 | Context Bridge | In progress | `[#########-] 94%` | Full extension package and real Claude Desktop smoke. |
 | Packaging and installer | In progress | `[##########] 98%` | Clean Windows VM validation. |
 | QA and hardening | In progress | `[##########] 99%` | Clean VM package validation, larger scale/performance benchmarks, real Claude Desktop smoke. |
@@ -233,7 +265,7 @@ Use this section for fast status checks. Detailed historical notes remain in the
 
 - Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
 - Keep public V1 scoped to public-only release criteria; if blockers remain, treat the build as private alpha/demo.
-- Verify real adapter training/loading before using "trained expert" language in user-facing surfaces.
+- Verify real adapter training/loading before using "trained expert" language in user-facing surfaces; current gates are stronger but still need real trainer/runtime proof.
 - Tune retrieval thresholds and run larger backend benchmarks on real vault-shaped data.
 - Smoke Context Bridge against Claude Desktop before advertising MCP readiness.
 
@@ -276,8 +308,8 @@ Chat and context routing:
 
 Compulsory cluster experts:
 
-- Done: expert lifecycle states, graduation contract API, deterministic dataset generation, train/validation split, dataset/config hashes, shell-free trainer process boundary, stdout/stderr capture, required adapter-file checks, metrics/quality-gate scaffold, active adapter selection, rollback support, delete guardrails, artifact version metadata, backend/Desktop surfaces, trainer dependency endpoint, contributor requirements, hardware gate, and Windows-path tests.
-- Remaining: real training smoke, real adapter artifact validation, runtime adapter loading, richer metrics/rollback/failure UI states, hardware matrix expansion, retrieval-vs-adapter quality benchmark, and packaging/runtime QA.
+- Done: expert lifecycle states, graduation contract API, deterministic dataset generation, source/token/validation/diversity gates, duplicate-ratio gate, train/validation split, dataset/config hashes, shell-free trainer process boundary, stdout/stderr capture, strict adapter config/weight validation, runtime-load plan metadata, metrics/quality-delta scaffold, deterministic evaluation harness, smoke scripts, active adapter selection, stale-adapter detection, rollback support, delete guardrails, artifact version metadata, backend/Desktop status surfaces, Expert tab, trainer dependency endpoint, contributor requirements, hardware gate, and Windows-path tests.
+- Remaining: real LLaMA Factory smoke, runtime adapter loading against a live local model, richer metrics/rollback/failure UI states, hardware matrix expansion, retrieval-vs-adapter quality benchmark, and packaging/runtime QA.
 
 Context Bridge:
 
@@ -292,7 +324,7 @@ Packaging and installer:
 QA and hardening:
 
 - Done: broad backend regression suite, atomic job concurrency tests, local API auth/identity tests, OCR preference/fallback/status tests, dynamic-link/security tests, IPv4-mapped URL blocking tests, vault-safety tests, deletion/search cleanup tests, citation tests, duplicate/reconciliation/retrieval snapshot tests, vector repair/compaction/policy tests, chat attachment/routing tests, Bridge/MCP/token tests, diagnostic redaction/runtime-summary tests, migration/startup repair tests, disk/model preflight tests, extension tests, cancellation/progress contract tests, expert lifecycle tests, vault-lock tests, hardware-gate smoke, backend benchmark script smoke, Electron token-store regression, desktop UI build verification, clean Python/npm audits, packaged smoke suite, and Playwright UI audits.
-- Remaining: real adapter smoke, adapter runtime-load smoke, clean VM package validation, larger scale/performance benchmarks, map benchmarks, real MCP client smoke, disposable-vault destructive UI tests, and more failure-state tests.
+- Remaining: real adapter smoke, adapter runtime-load smoke, retrieval-vs-adapter quality benchmark, clean VM package validation, larger scale/performance benchmarks, map benchmarks, real MCP client smoke, disposable-vault destructive UI tests, and more failure-state tests.
 
 ## Week-By-Week Goals
 

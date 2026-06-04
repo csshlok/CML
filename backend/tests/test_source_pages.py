@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -1488,7 +1489,6 @@ class SourcePageIndexingTests(unittest.TestCase):
 
     def test_expert_retrain_queues_adapter_job_or_hardware_gate(self) -> None:
         from backend.app.api.routes.clusters import list_expert_artifacts, queue_expert_retrain
-        from backend.app.core.background_jobs import run_due_jobs_once
         from backend.app.core.database import connect, utc_now
 
         now = utc_now()
@@ -1519,9 +1519,8 @@ class SourcePageIndexingTests(unittest.TestCase):
         else:
             self.assertIsNotNone(adapter_job)
             self.assertEqual(adapter_job["scope_id"], "cluster-1")
-            run_due_jobs_once(limit=1)
-            artifacts = list_expert_artifacts("cluster-1")
-            self.assertGreaterEqual(len(artifacts), 1)
+            self.assertEqual(adapter_job["status"], "queued")
+            self.assertEqual(list_expert_artifacts("cluster-1"), [])
 
     def test_verified_lora_training_creates_active_adapter_with_metrics(self) -> None:
         from unittest.mock import patch
@@ -1579,6 +1578,8 @@ class SourcePageIndexingTests(unittest.TestCase):
             processed = run_due_jobs_once(limit=2)
 
         self.assertIn("training_ready", contract["supported_statuses"])
+        self.assertIn("minimum_estimated_tokens", contract)
+        self.assertIn("runtime_load_failed", contract["failure_codes"])
         self.assertEqual(expert_job["status"], "queued")
         self.assertGreaterEqual(processed, 1)
         artifacts = list_expert_artifacts("cluster-1")
@@ -1592,12 +1593,21 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertGreaterEqual(artifact["quality_score"], 60)
         self.assertTrue((Path(artifact["local_path"]) / "adapter_config.json").exists())
         self.assertTrue((Path(artifact["local_path"]) / "adapter_model.safetensors").exists())
+        metrics = json.loads(artifact["metrics_json"])
+        self.assertTrue(metrics["adapter_validation"]["valid"])
+        self.assertTrue(metrics["runtime_load"]["available"])
         with connect() as conn:
             cluster = conn.execute("SELECT expert_status FROM clusters WHERE id = 'cluster-1'").fetchone()
             job = conn.execute("SELECT status, failure_code, detail FROM cluster_expert_jobs WHERE id = ?", (expert_job["id"],)).fetchone()
         self.assertEqual(cluster["expert_status"], "training_ready")
         self.assertEqual(job["status"], "completed")
         self.assertEqual(job["failure_code"], "")
+        from backend.app.api.routes.clusters import get_expert_status
+
+        status = get_expert_status("cluster-1")
+        self.assertEqual(status["user_status"], "Ready")
+        self.assertTrue(status["trained"])
+        self.assertTrue(status["runtime_load"]["available"])
 
     def test_lora_adapter_rollback_and_delete_guardrails(self) -> None:
         from backend.app.api.routes.clusters import (
@@ -1612,7 +1622,10 @@ class SourcePageIndexingTests(unittest.TestCase):
         adapter_b = Path(self.tmp.name) / "adapter-b"
         for path in (adapter_a, adapter_b):
             path.mkdir()
-            (path / "adapter_config.json").write_text("{}", encoding="utf-8")
+            (path / "adapter_config.json").write_text(
+                '{"peft_type":"LORA","base_model_name_or_path":"base"}',
+                encoding="utf-8",
+            )
             (path / "adapter_model.safetensors").write_bytes(b"adapter")
         with connect() as conn:
             conn.execute(
@@ -1652,6 +1665,78 @@ class SourcePageIndexingTests(unittest.TestCase):
         with connect() as conn:
             artifact_a = conn.execute("SELECT deleted_at FROM expert_artifacts WHERE id = 'artifact-a'").fetchone()
         self.assertIsNotNone(artifact_a["deleted_at"])
+
+    def test_expert_status_marks_active_adapter_stale_when_cluster_sources_change(self) -> None:
+        from backend.app.api.routes.clusters import get_expert_status
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.training_dataset import build_cluster_dataset
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        adapter_dir = Path(self.tmp.name) / "adapter-ready"
+        adapter_dir.mkdir()
+        (adapter_dir / "adapter_config.json").write_text(
+            '{"peft_type":"LORA","base_model_name_or_path":"base"}',
+            encoding="utf-8",
+        )
+        (adapter_dir / "adapter_model.safetensors").write_bytes(b"adapter")
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', 'training_ready', ?, ?)
+                """,
+                (now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                cluster_id="cluster-1",
+                title="Original",
+                source_type="note",
+                raw_text="original adapter source " * 240,
+                summary="A sufficiently descriptive local source summary for adapter training.",
+            )
+        )
+        trained_hash = build_cluster_dataset("cluster-1")["dataset_hash"]
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO expert_artifacts (
+                    id, cluster_id, vault_id, artifact_type, status, local_path,
+                    base_model, hardware_tier, quality_score, dataset_hash, active,
+                    created_at, updated_at
+                )
+                VALUES ('artifact-ready', 'cluster-1', 'vault-1', 'lora_adapter', 'ready', ?,
+                    'base', 'cpu', 80, ?, 1, ?, ?)
+                """,
+                (str(adapter_dir), trained_hash, now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                cluster_id="cluster-1",
+                title="New",
+                source_type="note",
+                raw_text="new source that changes the cluster adapter dataset " * 80,
+                summary="A sufficiently descriptive local source summary for adapter staleness.",
+            )
+        )
+
+        status = get_expert_status("cluster-1")
+
+        self.assertEqual(status["user_status"], "Needs update")
+        self.assertTrue(status["stale"])
+        self.assertFalse(status["trained"])
+        self.assertEqual(status["active_dataset_hash"], trained_hash)
+        self.assertNotEqual(status["current_dataset_hash"], trained_hash)
 
     def test_vault_lock_audit_records_events(self) -> None:
         from backend.app.api.routes.system import list_vault_lock_audit
