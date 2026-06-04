@@ -189,21 +189,9 @@ def dataset_graduation_report(dataset: dict, *, validation_count: int | None = N
 
 
 def runtime_adapter_load_plan(*, adapter_path: str | Path, base_model: str) -> dict:
-    adapter_dir = Path(adapter_path)
-    validation = adapter_validation_report(adapter_dir)
-    return {
-        "available": validation["valid"],
-        "runtime": "llama.cpp-compatible",
-        "base_model": base_model,
-        "adapter_path": str(adapter_dir),
-        "llama_cpp_args": ["--model", base_model, "--lora", str(adapter_dir)],
-        "detail": (
-            "Adapter is ready for runtime load smoke."
-            if validation["valid"]
-            else f"Adapter cannot be loaded: {', '.join(validation['errors'])}"
-        ),
-        "validation": validation,
-    }
+    from backend.app.core.expert_runtime import runtime_adapter_load_plan as build_runtime_adapter_load_plan
+
+    return build_runtime_adapter_load_plan(adapter_path=adapter_path, base_model=base_model)
 
 
 def new_artifact_dir(cluster_id: str) -> Path:

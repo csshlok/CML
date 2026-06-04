@@ -31,7 +31,40 @@ The benchmark must compare retrieval-vs-adapter behavior on the same cluster pro
 
 ```powershell
 .\scripts\backend\smoke-lora-expert.ps1
-.\scripts\backend\smoke-lora-runtime.ps1 -AdapterPath <adapter-dir> -BaseModel <base-model> -RuntimeUrl http://127.0.0.1:8080/v1
+.\scripts\backend\smoke-lora-runtime.ps1 -AdapterPath <adapter-dir> -BaseModel <base-model>
 ```
 
 `smoke-lora-expert.ps1 -AllowTestTrainer` is only for CI scaffold validation. Public V1 requires the same script without `-AllowTestTrainer`, using a real trainer command and real base model.
+
+## Expected Adapter Layout
+
+LLaMA-Factory-compatible adapter directories must contain:
+
+- `adapter_config.json`
+- `adapter_model.safetensors`
+
+The adapter config must declare:
+
+- `peft_type=LORA`
+- `base_model_name_or_path`
+
+The runtime smoke resolves the base model from:
+
+- a direct filesystem path passed as `-BaseModel`
+- `CML_LORA_MODEL_DIRS`
+- `CML_MODELS_DIR`
+- `CML_DATA_DIR\models`
+
+The base model directory must be a local Transformers model directory, typically containing `config.json` plus tokenizer files.
+
+## Runtime Notes
+
+- The current live adapter smoke targets a local Transformers + PEFT runtime, which matches LLaMA-Factory adapter exports directly.
+- The previous `llama.cpp`-style load-plan placeholder was not sufficient for real PEFT adapter validation. A PEFT adapter directory is not treated as a ready-to-attach `llama.cpp` LoRA artifact.
+- Use `CML_LORA_RUNTIME_PYTHON` when the backend interpreter does not have `torch`, `transformers`, and `peft` importable.
+
+## Known Limitations
+
+- Public V1 still needs a machine-level proof run with a real local base model installed, not only scaffolded tests.
+- Runtime smoke currently assumes a local Transformers-compatible base model directory, not a GGUF-only runtime.
+- Retrieval-vs-adapter quality scoring is still deterministic scaffolding until a live adapter-backed benchmark replaces it.

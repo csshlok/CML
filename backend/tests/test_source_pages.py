@@ -31,7 +31,21 @@ class SourcePageIndexingTests(unittest.TestCase):
         os.environ.pop("CML_EMBEDDING_PROVIDER", None)
         os.environ.pop("CML_ALLOW_HASH_EMBEDDINGS", None)
         os.environ.pop("CML_ALLOW_LORA_TEST_TRAINER", None)
+        os.environ.pop("CML_LORA_MODEL_DIRS", None)
+        os.environ.pop("CML_LLM_MODEL", None)
         self.tmp.cleanup()
+
+    def _write_fake_local_transformers_model(self, model_name: str = "smoke-base-model") -> str:
+        model_dir = Path(self.tmp.name) / "models" / model_name
+        model_dir.mkdir(parents=True, exist_ok=True)
+        (model_dir / "config.json").write_text('{"model_type":"llama"}', encoding="utf-8")
+        (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+        os.environ["CML_LORA_MODEL_DIRS"] = str(Path(self.tmp.name) / "models")
+        os.environ["CML_LLM_MODEL"] = model_name
+        from backend.app.core.config import get_settings
+
+        get_settings.cache_clear()
+        return model_name
 
     def test_text_source_creates_page_and_page_linked_chunks(self) -> None:
         from backend.app.api.routes.sources import create_source
@@ -1537,6 +1551,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         from backend.app.schemas import SourceCreate
 
         os.environ["CML_ALLOW_LORA_TEST_TRAINER"] = "1"
+        self._write_fake_local_transformers_model()
         get_settings.cache_clear()
         now = utc_now()
         with connect() as conn:

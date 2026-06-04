@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     lora_min_validation_records: int = 1
     lora_max_duplicate_ratio: float = 0.25
     allow_lora_test_trainer: bool = False
+    lora_model_dirs: str = ""
+    lora_runtime_python: str | None = None
+    lora_runtime_device: str = "auto"
+    lora_runtime_dtype: str = "auto"
+    lora_runtime_max_new_tokens: int = 48
+    lora_runtime_prompt: str = "Reply with the single word CML."
 
     model_config = SettingsConfigDict(env_prefix="CML_", env_file=ROOT_DIR / ".env", extra="ignore")
 

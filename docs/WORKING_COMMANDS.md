@@ -73,6 +73,31 @@ Run backend tests:
 .venv\Scripts\python -m unittest backend.tests.test_background_jobs backend.tests.test_source_pages -v
 ```
 
+Run the LoRA scaffold smoke:
+
+```powershell
+.\scripts\backend\smoke-lora-expert.ps1 -AllowTestTrainer
+```
+
+Run a real LoRA trainer smoke:
+
+```powershell
+$env:CML_LORA_TRAINER_COMMAND = ".\.venv-lora\Scripts\llamafactory-cli.exe train --config {config_path}"
+$env:CML_LORA_MODEL_DIRS = "D:\models\hf"
+$env:CML_LLM_MODEL = "Qwen2.5-3B-Instruct"
+.\scripts\backend\smoke-lora-expert.ps1
+```
+
+Run the live local adapter smoke against a real local model directory:
+
+```powershell
+$env:CML_LORA_MODEL_DIRS = "D:\models\hf"
+$env:CML_LORA_RUNTIME_PYTHON = "C:\Users\you\Desktop\CML\.venv-lora\Scripts\python.exe"
+.\scripts\backend\smoke-lora-runtime.ps1 -AdapterPath D:\cml\data\experts\cluster-1\adapter-1234 -BaseModel Qwen2.5-3B-Instruct
+```
+
+The runtime smoke expects a local Transformers model directory with `config.json` and tokenizer files. It loads the adapter with PEFT, runs a short prompt, and releases model resources before exiting.
+
 Compile backend Python files:
 
 ```powershell

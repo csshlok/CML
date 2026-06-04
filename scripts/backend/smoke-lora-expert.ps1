@@ -38,6 +38,14 @@ repo_report = Path(os.environ.get("REPORT_PATH", ".tmp/lora-expert-smoke-report.
 work = tempfile.TemporaryDirectory()
 os.environ["CML_DATA_DIR"] = work.name
 os.environ["CML_DATABASE_PATH"] = str(Path(work.name) / "smoke.sqlite3")
+if os.environ.get("CML_ALLOW_LORA_TEST_TRAINER") == "1":
+    model_root = Path(work.name) / "models"
+    model_dir = model_root / "smoke-base-model"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "config.json").write_text('{"model_type":"llama"}', encoding="utf-8")
+    (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+    os.environ["CML_LORA_MODEL_DIRS"] = str(model_root)
+    os.environ["CML_LLM_MODEL"] = "smoke-base-model"
 get_settings.cache_clear()
 
 from backend.app.api.routes.clusters import get_expert_status, list_expert_artifacts, queue_expert_retrain

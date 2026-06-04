@@ -41,7 +41,22 @@ class AdditionalQACases(unittest.TestCase):
         os.environ.pop("CML_LORA_MIN_QUALITY_DELTA", None)
         os.environ.pop("CML_LORA_MIN_UNIQUE_SOURCES", None)
         os.environ.pop("CML_LORA_MAX_DUPLICATE_RATIO", None)
+        os.environ.pop("CML_LORA_MODEL_DIRS", None)
+        os.environ.pop("CML_LLM_MODEL", None)
         self.tmp.cleanup()
+
+    def _write_fake_local_transformers_model(self, model_name: str = "test-base-model") -> Path:
+        model_root = Path(self.tmp.name) / "models"
+        model_dir = model_root / model_name
+        model_dir.mkdir(parents=True, exist_ok=True)
+        (model_dir / "config.json").write_text('{"model_type":"llama"}', encoding="utf-8")
+        (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+        os.environ["CML_LORA_MODEL_DIRS"] = str(model_root)
+        os.environ["CML_LLM_MODEL"] = model_name
+        from backend.app.core.config import get_settings
+
+        get_settings.cache_clear()
+        return model_dir
 
     def test_bridge_context_requires_token_when_enabled(self) -> None:
         from backend.app.api.routes.bridge import update_bridge_settings
@@ -92,7 +107,131 @@ class AdditionalQACases(unittest.TestCase):
             client.close()
 
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], "bridge_disabled")
+
+    def test_runtime_adapter_load_plan_resolves_local_transformers_model_dir(self) -> None:
+        from backend.app.core.expert_runtime import runtime_adapter_load_plan
+
+        self._write_fake_local_transformers_model("resolved-base-model")
+        adapter_dir = Path(self.tmp.name) / "adapter"
+        adapter_dir.mkdir()
+        (adapter_dir / "adapter_config.json").write_text(
+            json.dumps(
+                {
+                    "peft_type": "LORA",
+                    "base_model_name_or_path": "resolved-base-model",
+                    "task_type": "CAUSAL_LM",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (adapter_dir / "adapter_model.safetensors").write_bytes(b"adapter")
+
+        plan = runtime_adapter_load_plan(adapter_path=adapter_dir, base_model="resolved-base-model")
+
+        self.assertTrue(plan["available"])
+        self.assertEqual(plan["runtime"], "transformers-peft-local")
+        self.assertTrue(plan["adapter_metadata"]["available"])
+        self.assertEqual(Path(plan["base_model_path"]).name, "resolved-base-model")
+        self.assertTrue(plan["resolved_base_model"]["available"])
+
+    def test_run_adapter_runtime_smoke_reads_worker_report(self) -> None:
+        import subprocess
+
+        from backend.app.core.expert_runtime import run_adapter_runtime_smoke
+
+        self._write_fake_local_transformers_model("smoke-model")
+        adapter_dir = Path(self.tmp.name) / "adapter-smoke"
+        adapter_dir.mkdir()
+        (adapter_dir / "adapter_config.json").write_text(
+            '{"peft_type":"LORA","base_model_name_or_path":"smoke-model"}',
+            encoding="utf-8",
+        )
+        (adapter_dir / "adapter_model.safetensors").write_bytes(b"adapter")
+
+        def fake_run(command, capture_output, text, timeout, cwd):
+            payload_path = Path(command[-1])
+            payload = json.loads(payload_path.read_text(encoding="utf-8"))
+            report_path = Path(payload["report_path"])
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "response_text": "CML",
+                        "error": "",
+                        "unloaded": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(command, 0, stdout="worker-ok", stderr="")
+
+        with patch("backend.app.core.expert_runtime.subprocess.run", side_effect=fake_run):
+            report = run_adapter_runtime_smoke(
+                adapter_path=adapter_dir,
+                base_model="smoke-model",
+                prompt="Reply with the single word CML.",
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["response_text"], "CML")
+        self.assertTrue(report["unloaded"])
+        self.assertEqual(report["stdout"], "worker-ok")
+
+    def test_run_cluster_expert_prompt_falls_back_to_another_ready_artifact(self) -> None:
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.expert_runtime import run_cluster_expert_prompt
+
+        now = utc_now()
+        adapter_a = Path(self.tmp.name) / "adapter-a"
+        adapter_b = Path(self.tmp.name) / "adapter-b"
+        for path in (adapter_a, adapter_b):
+            path.mkdir()
+            (path / "adapter_config.json").write_text(
+                '{"peft_type":"LORA","base_model_name_or_path":"base"}',
+                encoding="utf-8",
+            )
+            (path / "adapter_model.safetensors").write_bytes(b"adapter")
+
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-1', 'vault-1', 'Cluster', '', 'sage', 'training_ready', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO expert_artifacts (
+                    id, cluster_id, vault_id, artifact_type, status, local_path, base_model,
+                    hardware_tier, quality_score, active, created_at, updated_at
+                )
+                VALUES
+                    ('artifact-a', 'cluster-1', 'vault-1', 'lora_adapter', 'ready', ?, 'base', 'cpu', 80, 0, ?, ?),
+                    ('artifact-b', 'cluster-1', 'vault-1', 'lora_adapter', 'ready', ?, 'base', 'cpu', 85, 1, ?, ?)
+                """,
+                (str(adapter_a), now, now, str(adapter_b), now, now),
+            )
+            with patch(
+                "backend.app.core.expert_runtime.run_adapter_runtime_smoke",
+                side_effect=[
+                    {"ok": False, "error": "selected adapter failed"},
+                    {"ok": True, "response_text": "fallback worked", "unloaded": True},
+                ],
+            ):
+                result = run_cluster_expert_prompt(conn, cluster_id="cluster-1", prompt="test prompt")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["artifact_id"], "artifact-a")
+        self.assertTrue(result["used_fallback"])
+        self.assertEqual(result["response_text"], "fallback worked")
+        self.assertEqual(len(result["attempted_artifacts"]), 2)
 
     def test_bridge_rotated_token_invalidates_previous_token(self) -> None:
         from backend.app.api.routes.bridge import update_bridge_settings

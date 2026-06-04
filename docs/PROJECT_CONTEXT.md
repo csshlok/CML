@@ -82,7 +82,7 @@ Runtime boundary:
 | Vault ingestion | Complete for current scope | `[##########] 100%` | Clean VM confirmation only |
 | Embeddings and clustering | In progress | `[##########] 99%` | Broader threshold tuning on real user vaults |
 | Chat/context routing | In progress | `[##########] 96%` | Complete-scope map/reduce, token budgets, runtime failure UX |
-| Compulsory cluster experts | In progress | `[#######---] 70%` | Real LLaMA Factory smoke and live runtime adapter loading against a real local model |
+| Compulsory cluster experts | In progress | `[#########-] 85%` | Real machine validation still required for LLaMA Factory smoke, live adapter prompt run, and live quality benchmark |
 | Context Bridge | In progress | `[#########-] 94%` | Capture UX polish and later external-client smoke |
 | Packaging/install | In progress | `[##########] 98%` | Clean VM validation |
 | QA/hardening | In progress | `[##########] 99%` | Clean VM package validation and larger user-owned vault benchmarks |
@@ -139,7 +139,7 @@ Chat/context routing:
 Compulsory cluster experts:
 
 - Done: verified-LoRA contract scaffold, dataset export with source/token/diversity counts, duplicate-ratio gate, artifact schema, metrics, activation, rollback, delete guardrails, shell-free trainer process boundary, Windows-path trainer tests, stricter graduation contract, adapter config/weight validation, runtime-load plan metadata, deterministic expert evaluation harness, retrieval-vs-adapter delta gate, stale-adapter detection, Expert tab status UI, and repeatable LoRA expert/runtime smoke scripts.
-- Remaining: execute real LLaMA Factory smoke with a real base model, execute live runtime adapter loading against local inference, expand hardware matrix/time estimates, and run quality benchmark on real trained adapters.
+- Remaining: execute the new Transformers/PEFT runtime smoke on a real machine with an installed local base model, record a real LLaMA Factory trainer run against that model, expand hardware matrix/time estimates, and replace deterministic adapter scoring with a live adapter-backed quality benchmark.
 
 Context Bridge:
 
