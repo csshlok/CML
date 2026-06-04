@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-06-03
+Last updated: 2026-06-04
 
 ## Operating Rule
 
@@ -64,24 +64,24 @@ Runtime boundary:
 
 | Phase | Status | Progress | Remaining gate |
 | --- | --- | --- | --- |
-| Product definition | In progress | `[#########-] 97%` | Final installer/update policy and release cut line |
+| Product definition | In progress | `[##########] 98%` | Supported-OS decision and public/private release cut line |
 | UI prototype cleanup | In progress | `[##########] 99%` | Dark QA, minimized/narrow desktop QA, packaged-flow polish |
-| Desktop app foundation | In progress | `[#########-] 96%` | Runtime process management and broader packaged startup repair QA |
-| Local backend foundation | In progress | `[##########] 99%` | Broader recovery drills and service-layer cleanup |
+| Desktop app foundation | In progress | `[##########] 98%` | Clean VM launch validation and broader startup repair QA |
+| Local backend foundation | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only |
 | Vault ingestion | Complete for current scope | `[##########] 100%` | Clean VM confirmation only |
 | Embeddings and clustering | In progress | `[##########] 99%` | Broader threshold tuning on real user vaults |
 | Chat/context routing | In progress | `[##########] 96%` | Complete-scope map/reduce, token budgets, runtime failure UX |
-| Compulsory cluster experts | In progress | `[#####-----] 50%` | Real adapter smoke, runtime adapter loading, metrics, rollback, failure states |
-| Context Bridge | In progress | `[#########-] 93%` | Real Claude Desktop smoke and capture UX polish |
-| Packaging/install | In progress | `[##########] 96%` | Clean VM validation |
+| Compulsory cluster experts | In progress | `[#####-----] 52%` | Real adapter smoke, runtime adapter loading, quality benchmark |
+| Context Bridge | In progress | `[#########-] 94%` | Real Claude Desktop smoke and capture UX polish |
+| Packaging/install | In progress | `[##########] 98%` | Clean VM validation |
 | QA/hardening | In progress | `[##########] 99%` | Real Claude Desktop smoke, clean VM package validation |
 
 ## Current Critical Path
 
-- Execute clean Windows VM validation against the current package: no dev Python, no Node, no preinstalled OCR, cold first-run.
+- Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
 - Keep public V1 public-only criteria. If gates fail, label the build private alpha/demo.
 - Verify real adapter training and runtime loading before any broad "trained expert" claim.
-- Keep the new written threat model current and treat it as a release gate checklist.
+- Keep the written threat model current and treat local API/Bridge auth regressions as release blockers.
 - Continue retrieval threshold tuning beyond the benchmark harness using larger user-owned vaults.
 - Smoke Context Bridge against Claude Desktop before advertising MCP readiness.
 - Treat the Codex-style MCP smoke as a first client-path pass, not a substitute for Claude Desktop verification.
@@ -101,13 +101,13 @@ UI prototype cleanup:
 
 Desktop app foundation:
 
-- Done: Electron workspace, backend launch/token seams, vault lock override flow, file picker/open/reveal IPC, packaged pre-vault launch smoke, packaged main-process runtime logging.
-- Remaining: process lifecycle hardening and clean VM smoke.
+- Done: Electron workspace, backend launch/token seams, authenticated backend identity probe, vault lock override flow, file picker/open/reveal IPC, packaged pre-vault launch smoke, packaged main-process runtime logging.
+- Remaining: clean VM smoke and broader packaged startup repair QA.
 
 Local backend foundation:
 
-- Done: FastAPI core, SQLite schema, auth/token hardening, diagnostics, startup repair summary, vector maintenance endpoints, storage accounting, interrupted-migration repair signal.
-- Remaining: service-layer cleanup and more packaged/recovery drills.
+- Done: FastAPI core, SQLite schema, fail-closed local API auth, authenticated backend identity endpoint, FastAPI lifespan migration, atomic job claiming, diagnostics, startup repair summary, vector maintenance endpoints, storage accounting, interrupted-migration repair signal.
+- Remaining: future service-layer cleanup and continued recovery drills as schema changes.
 
 Vault ingestion:
 
@@ -126,7 +126,7 @@ Chat/context routing:
 
 Compulsory cluster experts:
 
-- Done: verified-LoRA contract scaffold, dataset export, artifact schema, metrics, activation, rollback, delete guardrails, tests.
+- Done: verified-LoRA contract scaffold, dataset export, artifact schema, metrics, activation, rollback, delete guardrails, shell-free trainer process boundary, Windows-path trainer tests.
 - Remaining: do not touch for now unless requested; real LLaMA Factory smoke, runtime adapter loading, hardware matrix, quality benchmark.
 
 Context Bridge:
@@ -136,12 +136,12 @@ Context Bridge:
 
 Packaging/install:
 
-- Done: Windows package scripts, contributor requirements, OCR runtime staging script, local staged OCR runtime, valid rebuilt NSIS installer, silent install/uninstall smoke, packaged OCR verification, packaged model/embedding setup smoke, clean-machine validation script, generated-OCR full-vault packaged smoke, packaged dynamic-link/browser-runtime smoke, packaged interrupted-migration drill, AGPL-compatible Ghostscript release policy.
+- Done: Windows package scripts, contributor requirements, OCR runtime staging script, local staged OCR runtime, valid rebuilt NSIS installer, silent install/uninstall smoke, packaged OCR verification, packaged model/embedding setup smoke, clean-machine validation script, generated-OCR full-vault packaged smoke, packaged dynamic-link/browser-runtime smoke, packaged interrupted-migration drill, packaged app launch smoke, AGPL-compatible Ghostscript release policy.
 - Remaining: clean VM execution.
 
 QA/hardening:
 
-- Done: broad backend regression coverage, OCR benchmarks, audits, diagnostic redaction/log-rotation policy, backend benchmark scripts, disposable-vault delete cleanup tests, failed embedding-write retry test, dynamic-link browser-runtime smoke with Playwright on `T:`, Codex-style MCP smoke, real second-embedding model/cache smoke, repeatable packaging/security smoke scripts, npm and Python vulnerability audits, threat model, 1k benchmark harness, startup stale-phase validation tests, recovery drills endpoint, first-run readiness gate tests.
+- Done: broad backend regression coverage, atomic job concurrency tests, local API auth/identity tests, OCR benchmarks, audits, diagnostic redaction/log-rotation policy, backend benchmark scripts, disposable-vault delete cleanup tests, failed embedding-write retry test, dynamic-link browser-runtime smoke with Playwright on `T:`, Codex-style MCP smoke, real second-embedding model/cache smoke, repeatable packaging/security smoke scripts, npm and Python vulnerability audits, threat model, 1k benchmark harness, startup stale-phase validation tests, recovery drills endpoint, first-run readiness gate tests.
 - Remaining: larger user-owned vault benchmarks, real Claude Desktop smoke, clean VM package validation.
 
 ## Public V1 Blockers
@@ -150,10 +150,10 @@ These are release gates, not polish.
 
 - Vault data path correctness: backend data and database must live under the selected vault folder in full-vault mode.
 - Pre-vault/full-vault lifecycle: restricted pre-vault backend must block vault/source/chat/search/bridge data routes until a vault is selected.
-- Startup repair: packaged pre-vault launch reaches ready; full-vault repair-path drills and visible repair UI still need broader packaged QA.
+- Startup repair: packaged pre-vault launch reaches ready and packaged migration drill passes; visible repair UI still needs broader clean-VM/package QA.
 - Migration durability: schema versioning exists, but interruption/recovery tests and real migration scripts must mature as schema changes continue.
 - Disk preflight: installer/model/OCR/indexing/ingestion flows need required/available space checks.
-- Local API auth: Electron-managed private APIs need token gate and renderer-origin validation; Bridge tokens stay separate.
+- Local API auth: Electron-managed private APIs now fail closed without the local API token; renderer-origin validation and Bridge-token separation remain release gates.
 - Auth threat model: written in `docs/THREAT_MODEL.md`; keep it updated and enforce it through release-gate tests before public V1.
 - Embedding setup gate: production cannot silently use hash embeddings; semantic features must block/degrade explicitly when embeddings are unavailable.
 - Model integrity: managed model downloads record SHA-256 and verify real pinned expected hashes from `docs/model-integrity-manifest.json`.
@@ -175,7 +175,7 @@ Scope constraints for this list: no LoRA implementation, no UI work, no package 
 2. Run `scripts/backend/benchmark-user-owned-vault.ps1` against a larger real user-owned fixture and record retrieval thresholds.
 3. Add model provenance display in first-run/setup using `/api/v1/models/integrity-manifest`.
 4. Add supported-OS/release-cut decision record for Windows-first public V1.
-5. Harden packaged startup repair UI around interrupted migrations and recovery drills.
+5. Harden packaged startup repair UI around interrupted migrations, stale startup phases, and recovery drills.
 6. Continue backend service-layer extraction around raw route/database operations.
 7. Add complete-scope answering design and first evidence-packet map/reduce backend slice.
 8. Finish browser extension package and safer local pairing flow.
@@ -203,8 +203,11 @@ Scope constraints for this list: no LoRA implementation, no UI work, no package 
 
 ## Recent Completed Work
 
+- Completed the full post-review implementation pass: atomic background job claiming, concurrent `/jobs/run-once` tests, fail-closed local API auth, authenticated backend identity handshake for Electron/frontend probes, FastAPI lifespan migration, shell-free LoRA trainer execution, Windows-path trainer tests, Ruff cleanup, split desktop lint scope, and packaged Windows validation.
+- Current package artifacts: `apps/desktop/release/win-unpacked` and `apps/desktop/release/CML-0.1.0-Setup.exe` are valid local artifacts from the 2026-06-04 rebuild.
+- Verification for this pass: full backend discovery ran 175 tests OK with 1 skipped; Electron behavior tests ran 8 OK; Electron token-store tests ran 4 OK; `ruff check backend` passed; `npm run lint` passed with existing warnings only; `npm run build` passed; `scripts/packaging/package-windows.ps1` passed; packaged runtime, clean-machine structure, full-vault OCR, dynamic-link, migration-drill, and app-launch smokes passed against `apps/desktop/release/win-unpacked`.
 - Completed the non-Claude remainder of the current 10-step build list without touching LoRA: valid NSIS rebuild, generated OCR package smoke, packaged dynamic-link/browser runtime, real GGUF SHA-256 manifest pins, user-owned retrieval benchmark harness, Settings evidence-retention controls, update/migration policy, packaged interrupted-migration drill, AGPL-compatible Ghostscript policy, clean-machine validator hardening, and package/security verification.
-- Current package artifacts: `apps/desktop/release/win-unpacked` and `apps/desktop/release/CML-0.1.0-Setup.exe` are valid local artifacts from the 2026-06-03 rebuild; previous tiny `.partial` setup files remain explicitly non-distributable.
+- Previous tiny `.partial` setup files remain explicitly non-distributable.
 - Verification for this pass: focused backend module ran 60 tests OK; frontend `npm run build` passed; package rebuild completed; full-vault packaged smoke generated and OCR-ingested image/PDF fixtures; packaged dynamic-link smoke reported browser runtime available; packaged migration drill reported interrupted migration; clean-machine validator passed on dev machine; packaged app launch passed; installer install/uninstall smoke passed after hardening async uninstall wait; `scripts/security/audit-app.ps1` passed npm audit, pip check, pip-audit, Electron behavior tests, token tests, and focused backend security tests.
 - Completed the non-Claude remainder of the latest 10-step list without touching LoRA: clean-machine validator enhancement, full-vault packaged smoke execution, trusted model integrity manifest ingestion, cluster merge rollback, 1k benchmark timing targets, chat evidence retention APIs, startup recovery drill API, and first-run readiness gate.
 - Packaged smoke result: refreshed `apps/desktop/release/win-unpacked` contains the current backend and `scripts/packaging/smoke-packaged-full-vault.ps1` passed against it: vault creation, text ingestion, reindex, semantic search, query-cache prune, startup phase validation, and diagnostics export. OCR fixture support is wired but no OCR fixture paths were provided.
@@ -253,7 +256,7 @@ Scope constraints for this list: no LoRA implementation, no UI work, no package 
 - Public V1 selling point is verified LoRA, but do not touch LoRA implementation right now unless explicitly requested.
 - Q100 from the devil's advocate review is non-actionable per user instruction; do not use it to drive project decisions.
 - User-facing "trained expert" language is allowed only after real adapter graduation.
-- No package rebuild work unless explicitly requested; the current rebuild was explicitly requested and completed.
+- No package rebuild work unless explicitly requested; the latest requested rebuild was completed on 2026-06-04 and passed packaged smoke gates on this machine.
 - No UI implementation unless explicitly requested; dark version and minimized/narrow desktop version are noted future requirements.
 - Do not delete or alter `UI-ref/`.
 - Playwright browser runtime for local dynamic-link smoke is installed on `T:\CML-playwright-browsers`; the packaged app now also stages `resources/ms-playwright`; contributor backend requirements include `playwright==1.60.0`.

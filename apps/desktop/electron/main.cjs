@@ -9,6 +9,7 @@ const { createTokenStore, getOrCreateToken } = require("./token-store.cjs");
 
 const isDev = !app.isPackaged;
 const devUrl = process.env.CML_DESKTOP_DEV_URL || "http://127.0.0.1:5173";
+const apiPrefix = process.env.CML_API_PREFIX || "/api/v1";
 let backendProcess = null;
 let backendUrl = process.env.VITE_CML_BACKEND_URL || process.env.CML_BACKEND_URL || null;
 let backendApiToken = process.env.CML_API_TOKEN || null;
@@ -362,10 +363,10 @@ if (gotSingleInstanceLock) {
 
 async function ensureBackend() {
   const explicitBackend = process.env.VITE_CML_BACKEND_URL || process.env.CML_BACKEND_URL;
-  const existing = explicitBackend ? await findExistingCurrentBackend() : null;
+  const token = await getBackendApiToken();
+  const existing = explicitBackend ? await findExistingCurrentBackend(token) : null;
   if (existing) return existing;
 
-  const token = await getBackendApiToken();
   const activeVaultPath = await getActiveVaultPath();
   const backendMode = activeVaultPath ? "full_vault" : "pre_vault";
   const dataDir = activeVaultPath
@@ -386,7 +387,7 @@ async function ensureBackend() {
       cwd: rootDir,
       env: {
         ...process.env,
-        CML_API_PREFIX: process.env.CML_API_PREFIX || "/api/v1",
+        CML_API_PREFIX: apiPrefix,
         CML_API_TOKEN: token,
         CML_BACKEND_MODE: backendMode,
         CML_DATA_DIR: dataDir,
@@ -404,7 +405,7 @@ async function ensureBackend() {
   vaultLockOverrideOnce = false;
   backendProcess.unref();
   const startedUrl = `http://127.0.0.1:${port}`;
-  await waitForBackend(startedUrl, 12000);
+  await waitForBackend(startedUrl, token, 12000);
   return startedUrl;
 }
 
@@ -531,7 +532,7 @@ function pathToFileUrl(targetPath) {
   return `file:///${targetPath.replace(/\\/g, "/").replace(/^([a-zA-Z]):/, "$1:")}`;
 }
 
-async function findExistingCurrentBackend() {
+async function findExistingCurrentBackend(token) {
   const candidates = [
     process.env.VITE_CML_BACKEND_URL,
     process.env.CML_BACKEND_URL,
@@ -539,36 +540,35 @@ async function findExistingCurrentBackend() {
     "http://127.0.0.1:7342",
   ].filter(Boolean);
   for (const candidate of [...new Set(candidates)]) {
-    if (await isCurrentBackend(candidate)) return candidate;
+    if (await isCurrentBackend(candidate, token)) return candidate;
   }
   return null;
 }
 
-function isCurrentBackend(url) {
-  return httpJson(`${url}/openapi.json`, 1200)
-    .then((spec) => {
-      const paths = spec && spec.paths ? spec.paths : {};
-      return Boolean(
-        paths["/api/v1/chat/context/stream"] &&
-        paths["/api/v1/bridge/settings"] &&
-        paths["/api/v1/models/embeddings/configure"],
-      );
-    })
+function isCurrentBackend(url, token) {
+  if (!token) return Promise.resolve(false);
+  return httpJson(`${url}${apiPrefix}/system/backend-identity`, 1200, token)
+    .then((identity) => (
+      identity &&
+      identity.service === "cml-backend" &&
+      identity.api_prefix === apiPrefix
+    ))
     .catch(() => false);
 }
 
-async function waitForBackend(url, timeoutMs) {
+async function waitForBackend(url, token, timeoutMs) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    if (await isCurrentBackend(url)) return;
+    if (await isCurrentBackend(url, token)) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`Backend did not start at ${url}`);
 }
 
-function httpJson(url, timeoutMs) {
+function httpJson(url, timeoutMs, token = "") {
   return new Promise((resolve, reject) => {
-    const request = http.get(url, { timeout: timeoutMs }, (response) => {
+    const headers = token ? { "x-cml-api-token": token } : {};
+    const request = http.get(url, { timeout: timeoutMs, headers }, (response) => {
       let body = "";
       response.setEncoding("utf8");
       response.on("data", (chunk) => {

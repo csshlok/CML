@@ -1,7 +1,10 @@
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class BackgroundJobSchedulerTests(unittest.TestCase):
@@ -157,6 +160,43 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
         job = _claim_next_job()
 
         self.assertIsNone(job)
+
+    def test_concurrent_run_once_calls_do_not_execute_same_job_twice(self) -> None:
+        import backend.app.core.background_jobs as background_jobs
+        import backend.app.api.routes.jobs as job_routes
+        from backend.app.core.database import connect
+
+        calls: list[str] = []
+        started = threading.Event()
+
+        def fake_run_claimed_job(job: dict) -> None:
+            calls.append(job["id"])
+            started.set()
+            time.sleep(0.1)
+
+        with connect() as conn:
+            self._insert_job(conn, "job-a")
+
+        with patch.object(background_jobs, "_run_claimed_job", side_effect=fake_run_claimed_job):
+            first = threading.Thread(target=background_jobs.run_due_jobs_once, kwargs={"limit": 1})
+            first.start()
+            self.assertTrue(started.wait(timeout=2))
+            job_routes.run_jobs_once()
+            first.join(timeout=2)
+
+        self.assertEqual(calls, ["job-a"])
+
+    def test_claimed_job_returns_current_attempt_count(self) -> None:
+        from backend.app.core.background_jobs import _claim_next_job
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            self._insert_job(conn, "job-a")
+
+        job = _claim_next_job()
+
+        self.assertIsNotNone(job)
+        self.assertEqual(job["attempts"], 1)
 
     def _insert_job(self, conn, job_id: str, **overrides) -> None:
         from backend.app.core.database import utc_now

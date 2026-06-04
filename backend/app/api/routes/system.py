@@ -8,6 +8,7 @@ from backend.app.core.recovery_drills import startup_recovery_drills
 from backend.app.core.setup_readiness import first_run_readiness
 from backend.app.core.startup_repair import startup_repair_summary
 from backend.app.core.startup_status import read_startup_status, startup_status_staleness, validate_startup_phase_registry
+from backend.app.core.config import get_settings
 from backend.app.core.database import connect, dict_from_row
 from backend.app.core.storage_accounting import storage_accounting
 from backend.app.core.vault_safety import vault_safety_status
@@ -23,6 +24,19 @@ from backend.app.schemas import (
 )
 
 router = APIRouter(prefix="/system", tags=["system"])
+
+
+@router.get("/backend-identity")
+def get_backend_identity() -> dict:
+    settings = get_settings()
+    return {
+        "service": "cml-backend",
+        "api_prefix": settings.api_prefix,
+        "backend_mode": settings.backend_mode,
+        "data_dir": str(settings.data_dir),
+        "database_path": str(settings.database_path),
+        "authenticated": bool(settings.api_token),
+    }
 
 
 @router.get("/startup-status", response_model=StartupStatusRead)

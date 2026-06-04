@@ -26,11 +26,11 @@ The core product contract is:
 
 ## Current state
 
-Stage 1 is in progress. The repo currently has a working Electron/Vite desktop workspace, a local FastAPI backend, SQLite-backed CRUD routes for vaults/clusters/sources, TXT/Markdown/DOCX/PDF/pasted-text/link ingestion, drag-and-drop document import in the desktop shell, local synced-folder import for Drive/Dropbox/OneDrive/iCloud-style folders, per-file batch import failure reporting, generated source summaries/tags, link title/image metadata, local chunk/embedding storage, semantic search, vector-based cluster move suggestions, retrieval-grounded chat context routing with citations, persisted chat sessions, local model registry/runtime endpoints, a bridge status/request API, backend-aware Settings/Sources/Clusters/Chat screens, and a redesigned map prototype with cluster anchors, unlabeled data points, hover previews, and in-map cluster detail.
+Stage 1 is in progress. The repo currently has a working Electron/Vite desktop workspace, a token-gated local FastAPI backend, SQLite-backed CRUD routes for vaults/clusters/sources, TXT/Markdown/DOCX/PDF/pasted-text/link ingestion, drag-and-drop document import in the desktop shell, local synced-folder import for Drive/Dropbox/OneDrive/iCloud-style folders, per-file batch import failure reporting, generated source summaries/tags, link title/image metadata, local chunk/embedding storage, semantic search, vector-based cluster move suggestions, retrieval-grounded chat context routing with citations, persisted chat sessions, local model registry/runtime endpoints, a bridge status/request API, backend-aware Settings/Sources/Clusters/Chat screens, a redesigned map prototype with cluster anchors, and repeatable Windows package/smoke scripts.
 
 Tracked local folder imports can be manually refreshed or watch-refreshed from Settings. Refresh reconciliation imports new files, updates changed files, detects moved files by checksum, tombstones deleted files when requested, and reports batch outcome counts/failures.
 
-The next major build target is improving chat synthesis and wiring Context Bridge to semantic retrieval.
+The next major build targets are clean Windows VM package validation, real Claude Desktop Bridge smoke, larger real-vault retrieval threshold tuning, and complete-scope chat synthesis.
 
 ## Prerequisites
 
@@ -74,6 +74,13 @@ Run the backend:
 npm run backend
 ```
 
+Private backend API routes fail closed unless a local API token is configured. `npm run backend` generates a per-process token for dev startup when `CML_API_TOKEN` is not already set. For direct curl testing, set your own token before starting the backend:
+
+```powershell
+$env:CML_API_TOKEN="dev-token"
+npm run backend
+```
+
 Run the desktop app:
 
 ```bash
@@ -84,9 +91,10 @@ Useful checks:
 
 ```bash
 curl http://127.0.0.1:7343/health
-curl http://127.0.0.1:7343/api/v1/vaults
-curl http://127.0.0.1:7343/api/v1/sources
-curl http://127.0.0.1:7343/api/v1/bridge/status
+curl -H "x-cml-api-token: dev-token" http://127.0.0.1:7343/api/v1/system/backend-identity
+curl -H "x-cml-api-token: dev-token" http://127.0.0.1:7343/api/v1/vaults
+curl -H "x-cml-api-token: dev-token" http://127.0.0.1:7343/api/v1/sources
+curl -H "x-cml-api-token: dev-token" http://127.0.0.1:7343/api/v1/bridge/status
 ```
 
 The Vite development view is available at:

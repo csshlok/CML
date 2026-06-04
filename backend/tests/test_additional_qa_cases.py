@@ -1,6 +1,7 @@
 import importlib
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,7 @@ class AdditionalQACases(unittest.TestCase):
         os.environ["CML_DATA_DIR"] = self.tmp.name
         os.environ["CML_EMBEDDING_PROVIDER"] = "hash"
         os.environ["CML_ALLOW_HASH_EMBEDDINGS"] = "1"
+        os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "1"
 
         from backend.app.core.config import get_settings
 
@@ -35,6 +37,7 @@ class AdditionalQACases(unittest.TestCase):
         os.environ.pop("CML_DATA_DIR", None)
         os.environ.pop("CML_EMBEDDING_PROVIDER", None)
         os.environ.pop("CML_ALLOW_HASH_EMBEDDINGS", None)
+        os.environ.pop("CML_ALLOW_UNAUTHENTICATED_API", None)
         self.tmp.cleanup()
 
     def test_bridge_context_requires_token_when_enabled(self) -> None:
@@ -164,7 +167,17 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIsNone(response.headers.get("access-control-allow-origin"))
 
-    def test_local_api_auth_is_inactive_without_token(self) -> None:
+    def test_local_api_auth_requires_explicit_unauthenticated_opt_in_without_token(self) -> None:
+        os.environ.pop("CML_ALLOW_UNAUTHENTICATED_API", None)
+        client = self._client()
+        try:
+            response = client.get("/api/v1/vaults")
+        finally:
+            client.close()
+            os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "1"
+        self.assertEqual(response.status_code, 503)
+
+    def test_local_api_auth_allows_explicit_unauthenticated_opt_in_without_token(self) -> None:
         client = self._client()
         try:
             response = client.get("/api/v1/vaults")
@@ -184,6 +197,26 @@ class AdditionalQACases(unittest.TestCase):
 
         self.assertEqual(missing.status_code, 401)
         self.assertEqual(bearer.status_code, 200)
+
+    def test_backend_identity_requires_local_api_token_when_configured(self) -> None:
+        os.environ["CML_API_TOKEN"] = "identity-token"
+        os.environ.pop("CML_ALLOW_UNAUTHENTICATED_API", None)
+        client = self._client()
+        try:
+            missing = client.get("/api/v1/system/backend-identity")
+            valid = client.get(
+                "/api/v1/system/backend-identity",
+                headers={"x-cml-api-token": "identity-token"},
+            )
+        finally:
+            client.close()
+            os.environ.pop("CML_API_TOKEN", None)
+            os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "1"
+
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(valid.status_code, 200)
+        self.assertEqual(valid.json()["service"], "cml-backend")
+        self.assertTrue(valid.json()["authenticated"])
 
     def test_known_startup_phases_fall_back_when_shared_file_is_missing(self) -> None:
         from backend.app.core.startup_status import FALLBACK_PHASES, known_startup_phases
@@ -1101,6 +1134,45 @@ class AdditionalQACases(unittest.TestCase):
         store_path = repo_root / "apps" / "desktop" / "electron" / "token-store.cjs"
         source = store_path.read_text(encoding="utf-8")
         self.assertNotIn("writeFile(this.tokenPath, token", source)
+
+    def test_lora_trainer_json_argv_uses_env_paths_with_spaces(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.lora_training import run_lora_training_process
+
+        dataset_dir = Path(self.tmp.name) / "dataset with spaces"
+        output_dir = Path(self.tmp.name) / "adapter output with spaces"
+        dataset_dir.mkdir()
+        train_path = dataset_dir / "train data.jsonl"
+        validation_path = dataset_dir / "validation data.jsonl"
+        train_path.write_text("{}", encoding="utf-8")
+        validation_path.write_text("{}", encoding="utf-8")
+        script = (
+            "import os, pathlib; "
+            "out = pathlib.Path(os.environ['CML_LORA_OUTPUT_DIR']); "
+            "out.mkdir(parents=True, exist_ok=True); "
+            "(out / 'adapter_config.json').write_text('{}', encoding='utf-8'); "
+            "(out / 'adapter_model.safetensors').write_bytes(b'ok'); "
+            "print(os.environ['CML_LORA_TRAIN_PATH'])"
+        )
+        os.environ["CML_LORA_TRAINER_COMMAND"] = json.dumps([sys.executable, "-c", script])
+        get_settings.cache_clear()
+        try:
+            result = run_lora_training_process(
+                dataset_manifest={
+                    "dataset_dir": dataset_dir,
+                    "train_path": train_path,
+                    "validation_path": validation_path,
+                },
+                output_dir=output_dir,
+                config={"base_model": "test-model"},
+            )
+        finally:
+            os.environ.pop("CML_LORA_TRAINER_COMMAND", None)
+            get_settings.cache_clear()
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertTrue((output_dir / "adapter_config.json").exists())
+        self.assertIn("train data.jsonl", (output_dir / "trainer.stdout.log").read_text(encoding="utf-8"))
 
     def test_bridge_error_code_registry_matches_spec_for_vault_not_found(self) -> None:
         from backend.app.bridge_mcp import app_error_code

@@ -1,7 +1,6 @@
 import importlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +25,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         os.environ["CML_STARTUP_STATUS_PATH"] = str(self.status_path)
         os.environ["CML_EMBEDDING_PROVIDER"] = "hash"
         os.environ["CML_ALLOW_HASH_EMBEDDINGS"] = "1"
+        os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "1"
 
         from backend.app.core.config import get_settings
 
@@ -49,6 +49,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
             "CML_STARTUP_STATUS_PATH",
             "CML_EMBEDDING_PROVIDER",
             "CML_ALLOW_HASH_EMBEDDINGS",
+            "CML_ALLOW_UNAUTHENTICATED_API",
             "CML_BACKEND_MODE",
             "CML_API_TOKEN",
             "CML_VAULT_LOCK_OVERRIDE",

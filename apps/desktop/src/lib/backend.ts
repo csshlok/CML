@@ -2,11 +2,13 @@ import { useEffect, useState } from "react";
 
 const CONFIGURED_BACKEND_URL =
   (import.meta.env.VITE_CML_BACKEND_URL as string | undefined) || "http://127.0.0.1:7343";
+const CONFIGURED_BACKEND_TOKEN = import.meta.env.VITE_CML_API_TOKEN as string | undefined;
+const API_PREFIX = (import.meta.env.VITE_CML_API_PREFIX as string | undefined) || "/api/v1";
 const BACKEND_CANDIDATES = Array.from(
   new Set([CONFIGURED_BACKEND_URL, "http://127.0.0.1:7343", "http://127.0.0.1:7342"]),
 );
 let resolvedBackendUrl: string | null = null;
-let resolvedBackendToken: string | null = null;
+let resolvedBackendToken: string | null = CONFIGURED_BACKEND_TOKEN || null;
 
 if (typeof window !== "undefined") {
   const queryBackendUrl = new URLSearchParams(window.location.search).get("backendUrl");
@@ -33,8 +35,9 @@ export function useBackendHealth() {
 
     async function check() {
       let degradedCandidateSeen = false;
+      const token = await getBackendToken();
       for (const candidate of BACKEND_CANDIDATES) {
-        const probe = await probeBackend(candidate);
+        const probe = await probeBackend(candidate, token);
         if (probe.status === "online") {
           resolvedBackendUrl = candidate;
           if (!cancelled) {
@@ -69,23 +72,21 @@ export function useBackendHealth() {
   };
 }
 
-async function probeBackend(url: string): Promise<{ status: BackendHealthStatus }> {
+async function probeBackend(url: string, token?: string | null): Promise<{ status: BackendHealthStatus }> {
   try {
     const response = await fetch(`${url}/health`, {
       signal: AbortSignal.timeout(1000),
     });
     if (!response.ok) return { status: "offline" };
-    const openapi = await fetch(`${url}/openapi.json`, {
+    if (!token) return { status: "degraded" };
+    const identity = await fetch(`${url}${API_PREFIX}/system/backend-identity`, {
+      headers: { "x-cml-api-token": token },
       signal: AbortSignal.timeout(1500),
     });
-    if (!openapi.ok) return { status: "degraded" };
-    const spec = await openapi.json();
-    const paths = spec?.paths ?? {};
-    const hasChatRoutes =
-      Boolean(paths["/api/v1/chat/sessions"]) &&
-      Boolean(paths["/api/v1/chat/messages/{message_id}"]) &&
-      Boolean(paths["/api/v1/models/embeddings/configure"]);
-    return { status: hasChatRoutes ? "online" : "degraded" };
+    if (!identity.ok) return { status: "degraded" };
+    const payload = await identity.json();
+    const authenticated = payload?.service === "cml-backend" && payload?.api_prefix === API_PREFIX;
+    return { status: authenticated ? "online" : "degraded" };
   } catch {
     return { status: "offline" };
   }
@@ -93,8 +94,9 @@ async function probeBackend(url: string): Promise<{ status: BackendHealthStatus 
 
 async function getBackendUrl() {
   if (resolvedBackendUrl) return resolvedBackendUrl;
+  const token = await getBackendToken();
   for (const candidate of BACKEND_CANDIDATES) {
-    const probe = await probeBackend(candidate);
+    const probe = await probeBackend(candidate, token);
     if (probe.status === "online") {
       resolvedBackendUrl = candidate;
       return candidate;

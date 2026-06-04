@@ -12,7 +12,7 @@ import time
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import utc_now
-from backend.app.core.network_security import NetworkSecurityError, validate_huggingface_url
+from backend.app.core.network_security import validate_huggingface_url
 
 
 @dataclass(frozen=True)

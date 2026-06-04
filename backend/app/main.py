@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -18,26 +20,7 @@ from backend.app.schemas import HealthResponse
 
 settings = get_settings()
 
-app = FastAPI(title="CML Local Backend", version="0.1.0")
 
-app.add_middleware(ReservedChatFieldMiddleware)
-app.add_middleware(BackendModeMiddleware)
-app.add_middleware(LocalApiAuthMiddleware)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-        *[f"http://127.0.0.1:{port}" for port in range(5174, 5191)],
-    ],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.on_event("startup")
 def startup() -> None:
     write_startup_status("starting")
     failure_status_written = False
@@ -91,9 +74,36 @@ def startup() -> None:
         raise
 
 
-@app.on_event("shutdown")
 def shutdown() -> None:
     release_vault_lock()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    startup()
+    try:
+        yield
+    finally:
+        shutdown()
+
+
+app = FastAPI(title="CML Local Backend", version="0.1.0", lifespan=lifespan)
+
+app.add_middleware(ReservedChatFieldMiddleware)
+app.add_middleware(BackendModeMiddleware)
+app.add_middleware(LocalApiAuthMiddleware)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        *[f"http://127.0.0.1:{port}" for port in range(5174, 5191)],
+    ],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health", response_model=HealthResponse)

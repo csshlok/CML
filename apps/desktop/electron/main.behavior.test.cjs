@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
@@ -10,7 +11,7 @@ function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, setActiveVaultPath, getActiveVaultPath, collectSupportedFiles, findOpenPort, __setMainWindow: (value) => { mainWindow = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, setActiveVaultPath, getActiveVaultPath, collectSupportedFiles, findOpenPort, __setMainWindow: (value) => { mainWindow = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -183,6 +184,29 @@ test("findOpenPort skips an occupied port and returns the next free loopback por
   try {
     const port = await exported.findOpenPort(start, start + 2);
     assert.equal(port, start + 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("isCurrentBackend requires authenticated backend identity", async () => {
+  const { exported } = loadMainModule();
+  const server = http.createServer((request, response) => {
+    const authorized = request.headers["x-cml-api-token"] === "expected-token";
+    if (request.url !== "/api/v1/system/backend-identity" || !authorized) {
+      response.writeHead(401);
+      response.end();
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ service: "cml-backend", api_prefix: "/api/v1" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    assert.equal(await exported.isCurrentBackend(`http://127.0.0.1:${port}`, "wrong-token"), false);
+    assert.equal(await exported.isCurrentBackend(`http://127.0.0.1:${port}`, "expected-token"), true);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

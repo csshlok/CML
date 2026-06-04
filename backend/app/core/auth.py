@@ -15,9 +15,14 @@ PUBLIC_PATHS = {
 
 class LocalApiAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        token = get_settings().api_token
-        if not token or request.url.path in PUBLIC_PATHS:
+        settings = get_settings()
+        token = settings.api_token
+        if request.url.path in PUBLIC_PATHS:
             return await call_next(request)
+        if not token:
+            if settings.allow_unauthenticated_api:
+                return await call_next(request)
+            return JSONResponse({"detail": "Local API token is not configured"}, status_code=503)
 
         supplied = request.headers.get("x-cml-api-token", "")
         authorization = request.headers.get("authorization", "")

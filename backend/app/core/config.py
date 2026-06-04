@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     ocr_binary_path: Path | None = None
     ocrmypdf_binary_path: Path | None = None
     api_token: str | None = None
+    allow_unauthenticated_api: bool = False
     lora_trainer_command: str | None = None
     lora_min_quality_score: float = 60.0
     lora_min_sources: int = 1

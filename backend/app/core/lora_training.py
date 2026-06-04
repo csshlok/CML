@@ -104,13 +104,6 @@ def run_lora_training_process(*, dataset_manifest: dict, output_dir: Path, confi
     if not settings.lora_trainer_command:
         raise RuntimeError("LoRA trainer command is not configured.")
 
-    command = settings.lora_trainer_command.format(
-        dataset_dir=shlex.quote(str(dataset_manifest["dataset_dir"])),
-        train_path=shlex.quote(str(dataset_manifest["train_path"])),
-        validation_path=shlex.quote(str(dataset_manifest["validation_path"])),
-        output_dir=shlex.quote(str(output_dir)),
-        config_path=shlex.quote(str(config_path)),
-    )
     env = {
         **os.environ,
         "CML_LORA_DATASET_DIR": str(dataset_manifest["dataset_dir"]),
@@ -119,7 +112,8 @@ def run_lora_training_process(*, dataset_manifest: dict, output_dir: Path, confi
         "CML_LORA_OUTPUT_DIR": str(output_dir),
         "CML_LORA_CONFIG_PATH": str(config_path),
     }
-    result = subprocess.run(command, shell=True, capture_output=True, text=True, env=env, timeout=7200)
+    command = _trainer_command_argv(settings.lora_trainer_command, dataset_manifest, output_dir, config_path)
+    result = subprocess.run(command, shell=False, capture_output=True, text=True, env=env, timeout=7200)
     stdout_path.write_text(result.stdout[-200_000:], encoding="utf-8")
     stderr_path.write_text(result.stderr[-200_000:], encoding="utf-8")
     if result.returncode != 0:
@@ -153,6 +147,42 @@ def _write_test_adapter(output_dir: Path, config: dict) -> None:
         encoding="utf-8",
     )
     (output_dir / "adapter_model.safetensors").write_bytes(b"CML test adapter placeholder\n")
+
+
+def _trainer_command_argv(
+    command_template: str,
+    dataset_manifest: dict,
+    output_dir: Path,
+    config_path: Path,
+) -> list[str]:
+    values = {
+        "dataset_dir": str(dataset_manifest["dataset_dir"]),
+        "train_path": str(dataset_manifest["train_path"]),
+        "validation_path": str(dataset_manifest["validation_path"]),
+        "output_dir": str(output_dir),
+        "config_path": str(config_path),
+    }
+    stripped = command_template.strip()
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("CML_LORA_TRAINER_COMMAND JSON argv is invalid.") from exc
+        if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+            raise RuntimeError("CML_LORA_TRAINER_COMMAND JSON argv must be a list of strings.")
+        argv = [_replace_trainer_placeholders(item, values) for item in parsed]
+    else:
+        argv = shlex.split(_replace_trainer_placeholders(stripped, values), posix=os.name != "nt")
+    if not argv:
+        raise RuntimeError("LoRA trainer command is empty.")
+    return argv
+
+
+def _replace_trainer_placeholders(template: str, values: dict[str, str]) -> str:
+    result = template
+    for key, value in values.items():
+        result = result.replace(f"{{{key}}}", value)
+    return result
 
 
 def _package_status(name: str) -> dict:

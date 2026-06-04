@@ -1,12 +1,47 @@
 ﻿# Overall Context
 
-Last updated: 2026-06-03
+Last updated: 2026-06-04
 
 ## Fallback Context Rule
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
-Latest compact truth after the 2026-06-03 build passes lives in `docs/PROJECT_CONTEXT.md`. The latest passes completed the backend-only 10-step run, the rebuild-dependent package work, backend steps 1, 2, 4, 5, 6, 8, 9, and 10 from the post-review list, and then the non-Claude remainder of the next build list including the valid package rebuild. Claude Desktop smoke remains intentionally skipped per user instruction. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+Latest compact truth after the 2026-06-04 implementation pass lives in `docs/PROJECT_CONTEXT.md`. The latest pass completed the full post-review build list: atomic job claiming, concurrent job tests, fail-closed local API auth, authenticated backend identity probes, FastAPI lifespan migration, shell-free LoRA trainer execution, Windows-path trainer tests, lint hardening, full backend regression, desktop build/lint, Windows package rebuild, and packaged smoke validation. Claude Desktop smoke and clean Windows VM validation remain the main external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+
+## 2026-06-04 Full Post-Review Implementation Snapshot
+
+Completed:
+
+- Background jobs now claim queued work atomically with a status-guarded update, preventing concurrent `run-once` callers from executing the same job.
+- Local API auth now fails closed by default when no `CML_API_TOKEN` is configured; unauthenticated API startup is explicit opt-in via `CML_ALLOW_UNAUTHENTICATED_API=1`.
+- Added authenticated backend identity probing through `/api/v1/system/backend-identity`; Electron and frontend backend selection now verify token-authenticated identity instead of trusting health alone.
+- Root backend dev startup now uses `scripts/backend/start-dev-backend.ps1`, which generates a per-process local API token when one is not already supplied.
+- FastAPI startup/shutdown moved to lifespan while keeping callable startup/shutdown helpers for tests.
+- LoRA trainer launch no longer uses `shell=True`; commands use argv/env path passing and support Windows paths with spaces.
+- Desktop lint was narrowed to source/electron/script inputs so generated package output no longer dominates lint execution.
+- Ruff unused-import cleanup completed.
+
+Verification:
+
+- Full backend unittest discovery: 175 tests OK, 1 skipped.
+- Electron main behavior tests: 8 tests OK.
+- Electron token-store tests: 4 tests OK.
+- `ruff check backend`: passed.
+- `npm run lint`: passed with existing warnings only.
+- `npm run build`: passed.
+- `scripts/packaging/package-windows.ps1`: passed and produced `apps/desktop/release/win-unpacked` plus `apps/desktop/release/CML-0.1.0-Setup.exe`.
+- Packaged runtime smoke: passed, including local API token enforcement, pre-vault route blocking, OCR availability, and model/embedding setup endpoints.
+- Packaged full-vault smoke: passed, including vault creation, text ingestion, semantic search, generated image OCR, scanned-PDF OCR, cache prune, startup phase registry check, and diagnostics export.
+- Packaged dynamic-link smoke: passed with browser runtime available.
+- Packaged migration drill: passed.
+- Packaged app launch smoke: passed, pre-vault startup reached ready.
+- Clean-machine package structure validator: passed on the dev machine; a true clean VM run remains required because host Python/Node/Ghostscript were detected.
+
+Remaining gates:
+
+- Clean Windows VM validation with no dev Python, Node, preinstalled OCR, or helpful PATH tools.
+- Real Claude Desktop MCP smoke before Bridge production-readiness claims.
+- Real LoRA adapter training, runtime adapter loading, quality win over retrieval baseline, rollback, and supported-hardware proof before public V1 expert claims.
 
 ## 2026-06-03 Package Gate Closure Snapshot
 
@@ -116,7 +151,7 @@ Core lessons to preserve:
 ---
 # Project Context And Progress
 
-Last updated: 2026-06-02
+Last updated: 2026-06-04
 
 ## Document Map
 
@@ -182,25 +217,25 @@ Use this section for fast status checks. Detailed historical notes remain in the
 
 | Phase | Status | Progress | Main Remaining Blocker |
 | --- | --- | --- | --- |
-| Product definition | In progress | `[#########-] 97%` | Final installer/update policy and explicit public-V1/private-alpha cut line. |
+| Product definition | In progress | `[##########] 98%` | Supported-OS decision and explicit public-V1/private-alpha cut line. |
 | UI prototype cleanup | In progress | `[##########] 99%` | Minimized/narrow desktop shell repair, dark-version QA, packaged-flow polish, broader visual QA. |
-| Desktop app foundation | In progress | `[#########-] 93%` | Runtime process management, packaged startup repair QA, installer smoke. |
-| Local backend foundation | In progress | `[##########] 99%` | Broader recovery drills and service-layer cleanup. |
-| Vault ingestion | In progress | `[##########] 99%` | Packaged scanned-PDF/image OCR smoke and packaged dynamic-link/browser-runtime QA. |
-| Embeddings and clustering | In progress | `[#########-] 90%` | Network-backed download cancellation smoke, threshold benchmarks, merge artifact policy. |
-| Chat and context routing | In progress | `[#########-] 93%` | Complete-scope map/reduce answering, token budgets, pagination/retention, runtime failure UI. |
-| Compulsory cluster experts | In progress | `[#####-----] 50%` | Real adapter smoke, runtime adapter loading, richer metrics/rollback/failure states. |
-| Context Bridge | In progress | `[#########-] 88%` | Full extension package and real MCP/Claude Desktop smoke. |
-| Packaging and installer | In progress | `[#######---] 68%` | Install/uninstall smoke, packaged OCR/model verification, update/migration policy. |
-| QA and hardening | In progress | `[#########-] 89%` | Packaged repair tests, larger scale/performance benchmarks, real MCP smoke, recovery drills. |
+| Desktop app foundation | In progress | `[##########] 98%` | Clean VM launch validation and broader packaged startup repair QA. |
+| Local backend foundation | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only. |
+| Vault ingestion | Complete for current scope | `[##########] 100%` | Clean VM confirmation only. |
+| Embeddings and clustering | In progress | `[##########] 99%` | Broader threshold tuning on real user vaults. |
+| Chat and context routing | In progress | `[##########] 96%` | Complete-scope map/reduce answering, token budgets, runtime failure UI. |
+| Compulsory cluster experts | In progress | `[#####-----] 52%` | Real adapter smoke, runtime adapter loading, quality benchmark. |
+| Context Bridge | In progress | `[#########-] 94%` | Full extension package and real Claude Desktop smoke. |
+| Packaging and installer | In progress | `[##########] 98%` | Clean Windows VM validation. |
+| QA and hardening | In progress | `[##########] 99%` | Clean VM package validation, larger scale/performance benchmarks, real Claude Desktop smoke. |
 
 ### Current Critical Path
 
-- Finish packaged app smoke without rebuilding the whole package unless explicitly requested: startup, vault selection, OCR, dynamic links, model path, and diagnostics.
+- Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
 - Keep public V1 scoped to public-only release criteria; if blockers remain, treat the build as private alpha/demo.
 - Verify real adapter training/loading before using "trained expert" language in user-facing surfaces.
 - Tune retrieval thresholds and run larger backend benchmarks on real vault-shaped data.
-- Smoke Context Bridge against a real client.
+- Smoke Context Bridge against Claude Desktop before advertising MCP readiness.
 
 ### Phase Detail Snapshot
 
@@ -216,32 +251,32 @@ UI prototype cleanup:
 
 Desktop app foundation:
 
-- Done: Electron workspace, Vite dev server, build, file IPC, backend probing, dev backend process handling, single-instance handling, encrypted backend token store, active vault folder config, pre-vault/full-vault env wiring, onboarding vault activation, startup failure page, vault-lock override action, failure copy-details action, embedding folder picker, and unpacked packaged launch.
-- Remaining: robust runtime process management, full packaged startup repair QA, and installer smoke.
+- Done: Electron workspace, Vite dev server, build, file IPC, authenticated backend identity probing, dev backend process handling, single-instance handling, encrypted backend token store, active vault folder config, pre-vault/full-vault env wiring, onboarding vault activation, startup failure page, vault-lock override action, failure copy-details action, embedding folder picker, and unpacked packaged launch.
+- Remaining: clean VM launch validation and broader packaged startup repair QA.
 
 Local backend foundation:
 
-- Done: SQLite CRUD, ingestion routes, Bridge token auth, background worker, startup integrity/schema checks, migration tracking, vault ownership lock, token middleware, Electron token handoff, startup-status readback, pre-vault guard, vector reconciliation queueing, startup repair summary, scheduler synthesis gate, runtime reporting, local generation paths, retriable generation recovery, expanded diagnostics export, expert scaffold, system preflight routes, extension/integration/model/embedding routes, and Bridge token rotation history.
-- Remaining: broader recovery drills and service-layer cleanup around raw route/database operations.
+- Done: SQLite CRUD, ingestion routes, Bridge token auth, atomic background worker claim path, startup integrity/schema checks, migration tracking, vault ownership lock, fail-closed token middleware, authenticated backend identity route, Electron token handoff, startup-status readback, pre-vault guard, FastAPI lifespan migration, vector reconciliation queueing, startup repair summary, scheduler synthesis gate, runtime reporting, local generation paths, retriable generation recovery, expanded diagnostics export, expert scaffold, system preflight routes, extension/integration/model/embedding routes, and Bridge token rotation history.
+- Remaining: future service-layer cleanup around raw route/database operations and continued recovery drills as schema changes.
 
 Vault ingestion:
 
 - Done: text/DOCX/PDF/code/common structured file ingestion, Windows-1252 fallback, OCRmyPDF plus Tesseract scanned-PDF path, PyMuPDF fallback, OCR health checks, OCR job policy, image OCR hooks, audio/video metadata, pasted text validation, static/dynamic links, URL credential stripping, drag/drop, local folder import, Obsidian metadata extraction, watched refresh jobs, reconciliation, batch outcomes, extension capture scaffold, chat attachments as sources, indexing blocks when embeddings are unavailable, page/chunk schema, tombstones, deletion cleanup, checksum dedupe, large-batch regression coverage, fallback OCR smoke, and full local OCRmyPDF smoke with staged Ghostscript/qpdf/Tesseract.
-- Remaining: packaged scanned-PDF/image OCR smoke and packaged dynamic-link/browser-runtime QA.
+- Remaining: clean VM confirmation only.
 
 Embeddings and clustering:
 
 - Done: keyword clustering, chunking, required local embedding setup path, model/cache folder validation, folder picker, managed embedding download status/start/cancel API with byte/progress/speed/ETA fields, disk preflight, concurrent-download guard, local-only sentence-transformers attempts, MiniLM-first config, dev-only hash fallback, memory-search test UI, SQLite vector storage, semantic search, embedding health checks, broad-query scoring, vector repair plan/repair/compaction endpoints, active embedding-index transition policy, map search, suggestions, dismissals, merge controls, reconciliation job work, and chat coverage ledgers.
-- Remaining: network-backed download cancellation smoke, threshold benchmarks on real vault data, and merge artifact policy.
+- Remaining: broader threshold tuning on real user vault data.
 
 Chat and context routing:
 
 - Done: global-by-default chat, LLM-first intent routing, small-talk handling, direct local runtime chat, prompt-zero attachments, attachment-to-source ingestion, persisted sessions/messages, pending generation records, retriable startup recovery, combined timeline endpoint, retrieval snapshots/items, streaming, page-aware citations, stale/deleted citation labels, source actions, runtime status, coverage-ledger accounting, expanded-analysis evidence jobs, degraded-runtime notes, reserved `complete_analysis` rejection, answer actions, transcript indexing, and local runtime adapter.
-- Remaining: complete-scope map/reduce answering, token budgets, chat pagination/retention, richer runtime failure UI, and long-running analysis UI.
+- Remaining: complete-scope map/reduce answering, token budgets, richer runtime failure UI, and long-running analysis UI.
 
 Compulsory cluster experts:
 
-- Done: expert lifecycle states, graduation contract API, deterministic dataset generation, train/validation split, dataset/config hashes, trainer process boundary, stdout/stderr capture, required adapter-file checks, metrics/quality-gate scaffold, active adapter selection, rollback support, delete guardrails, artifact version metadata, backend/Desktop surfaces, trainer dependency endpoint, contributor requirements, hardware gate, and tests.
+- Done: expert lifecycle states, graduation contract API, deterministic dataset generation, train/validation split, dataset/config hashes, shell-free trainer process boundary, stdout/stderr capture, required adapter-file checks, metrics/quality-gate scaffold, active adapter selection, rollback support, delete guardrails, artifact version metadata, backend/Desktop surfaces, trainer dependency endpoint, contributor requirements, hardware gate, and Windows-path tests.
 - Remaining: real training smoke, real adapter artifact validation, runtime adapter loading, richer metrics/rollback/failure UI states, hardware matrix expansion, retrieval-vs-adapter quality benchmark, and packaging/runtime QA.
 
 Context Bridge:
@@ -251,13 +286,13 @@ Context Bridge:
 
 Packaging and installer:
 
-- Done: Windows packaging scaffold, Python runtime staging, NSIS build path, icon, unpacked launch smoke, post-install onboarding UI, disk preflight API/UI, non-bundled embedding setup direction, encrypted token-store abstraction, model download scripts, OCR runtime staging, auto-detected Tesseract staging, auto-detected Ghostscript staging, qpdf/tessdata verification, OCR benchmark command, OCRmyPDF/PyMuPDF packaged-runtime install, packaged loopback CORS allowlist, and OCR runtime status visibility.
-- Remaining: install/uninstall smoke, packaged embedding dependency decision, update/migration policy, diagnostic export packaging, packaged OCR/model staging verification, and fresh package rebuild/smoke when requested.
+- Done: Windows packaging scaffold, Python runtime staging, NSIS build path, icon, unpacked launch smoke, post-install onboarding UI, disk preflight API/UI, non-bundled embedding setup direction, encrypted token-store abstraction, model download scripts, OCR runtime staging, auto-detected Tesseract staging, auto-detected Ghostscript staging, qpdf/tessdata verification, OCR benchmark command, OCRmyPDF/PyMuPDF packaged-runtime install, packaged loopback CORS allowlist, OCR runtime status visibility, silent install/uninstall smoke, packaged OCR/model staging verification, dynamic-link smoke, full-vault OCR smoke, migration drill, and valid 2026-06-04 package rebuild.
+- Remaining: clean Windows VM validation.
 
 QA and hardening:
 
-- Done: broad backend regression suite, OCR preference/fallback/status tests, dynamic-link/security tests, IPv4-mapped URL blocking tests, vault-safety tests, deletion/search cleanup tests, citation tests, duplicate/reconciliation/retrieval snapshot tests, vector repair/compaction/policy tests, chat attachment/routing tests, Bridge/MCP/token tests, diagnostic redaction/runtime-summary tests, migration/startup repair tests, disk/model preflight tests, extension tests, cancellation/progress contract tests, expert lifecycle tests, vault-lock tests, hardware-gate smoke, backend benchmark script smoke, Electron token-store regression, desktop UI build verification, clean Python/npm audits, and Playwright UI audits.
-- Remaining: real adapter smoke, adapter runtime-load smoke, deeper migration interruption tests, full packaged startup repair tests, larger scale/performance benchmarks, map benchmarks, real MCP client smoke, disposable-vault destructive UI tests, more failure-state tests, and recovery drills.
+- Done: broad backend regression suite, atomic job concurrency tests, local API auth/identity tests, OCR preference/fallback/status tests, dynamic-link/security tests, IPv4-mapped URL blocking tests, vault-safety tests, deletion/search cleanup tests, citation tests, duplicate/reconciliation/retrieval snapshot tests, vector repair/compaction/policy tests, chat attachment/routing tests, Bridge/MCP/token tests, diagnostic redaction/runtime-summary tests, migration/startup repair tests, disk/model preflight tests, extension tests, cancellation/progress contract tests, expert lifecycle tests, vault-lock tests, hardware-gate smoke, backend benchmark script smoke, Electron token-store regression, desktop UI build verification, clean Python/npm audits, packaged smoke suite, and Playwright UI audits.
+- Remaining: real adapter smoke, adapter runtime-load smoke, clean VM package validation, larger scale/performance benchmarks, map benchmarks, real MCP client smoke, disposable-vault destructive UI tests, and more failure-state tests.
 
 ## Week-By-Week Goals
 

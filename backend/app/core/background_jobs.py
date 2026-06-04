@@ -446,16 +446,18 @@ def _claim_next_job() -> dict | None:
             if _has_scope_conflict(conn, job):
                 continue
             now = utc_now()
-            conn.execute(
+            claimed = conn.execute(
                 """
                 UPDATE app_jobs
                 SET status = 'running', attempts = attempts + 1, started_at = ?,
                     status_detail = '', updated_at = ?
                 WHERE id = ? AND status = 'queued'
+                RETURNING *
                 """,
                 (now, now, job["id"]),
-            )
-            return job
+            ).fetchone()
+            if claimed is not None:
+                return dict_from_row(claimed)
     return None
 
 
@@ -1035,19 +1037,23 @@ def _mark_expert_training_failed(
 
 
 def _mark_job_failed_or_retry(job: dict, error: str) -> None:
-    attempts = int(job.get("attempts") or 0) + 1
-    max_attempts = int(job.get("max_attempts") or 3)
-    status = "failed" if attempts >= max_attempts else "queued"
-    completed_at = utc_now() if status == "failed" else None
     with connect() as conn:
+        current = conn.execute(
+            "SELECT attempts, max_attempts FROM app_jobs WHERE id = ?",
+            (job["id"],),
+        ).fetchone()
+        attempts = int(current["attempts"] if current is not None else job.get("attempts") or 0)
+        max_attempts = int(current["max_attempts"] if current is not None else job.get("max_attempts") or 3)
+        status = "failed" if attempts >= max_attempts else "queued"
+        completed_at = utc_now() if status == "failed" else None
         conn.execute(
             """
             UPDATE app_jobs
-            SET status = ?, attempts = ?, last_error = ?, status_detail = ?,
+            SET status = ?, last_error = ?, status_detail = ?,
                 completed_at = ?, updated_at = ?
             WHERE id = ?
             """,
-            (status, attempts, error[:500], error[:500], completed_at, utc_now(), job["id"]),
+            (status, error[:500], error[:500], completed_at, utc_now(), job["id"]),
         )
 
 
