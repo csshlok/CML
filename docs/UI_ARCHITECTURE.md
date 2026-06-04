@@ -1482,6 +1482,604 @@ Follow these rules when editing UI:
 - Keep backend degraded/auth states explicit.
 - Add route-level QA notes when a tab gains new setup, diagnostic, or destructive behavior.
 
+## UI Workflow Architecture
+
+This section defines how the app should behave as a connected product, not only as separate tabs. Every workflow must keep the user oriented: what object they are acting on, what state it is in, what will happen after the action, and whether data stays local.
+
+### Global Navigation Workflow
+
+Entry points:
+
+- Fresh install opens `/onboarding`.
+- Existing usable vault opens the main shell at `/home` or `/search`, depending on the last active route.
+- Deep links to `/clusters/$clusterId` or `/chat/$chatId` should load the shell, then fetch the object. Missing objects show a clear not-found state with a back action.
+
+Navigation interactions:
+
+- Sidebar nav switches primary workspaces without opening a modal.
+- Command palette can create a chat, jump to routes, open a cluster, or find a source.
+- Recent cluster links open cluster detail.
+- Saved chat links open persisted chat detail.
+- Back links return to the parent list, not browser history if the parent is semantically clear.
+- Right inspectors should update when selection changes and should not clear the main tab context.
+
+Required route transitions:
+
+- Home quick actions can route to Chat, Sources, Clusters, Map, Bridge, Settings.
+- Mind/Search source selection opens source inspector or routes to Sources when full editing is needed.
+- Cluster card `Open` routes to `/clusters/$clusterId`.
+- Cluster detail `Chat with cluster` creates a scoped chat and routes to `/chat/$chatId`.
+- Citation/source chips in Chat route to Sources or open a source inspector.
+- Bridge client setup stays inside Bridge; it should not navigate to Settings unless advanced security settings are required.
+- Settings readiness cards route to the exact section needing setup, not a generic settings page.
+
+Navigation failure rules:
+
+- Backend unavailable: show degraded state in the current tab, keep sidebar usable.
+- Object missing: show not-found with one primary route back to parent list.
+- Auth degraded: show private API unavailable copy; do not silently fall back to mock data.
+- Vault not selected: redirect to onboarding or show a local vault setup card, depending on route.
+
+### First-Run And Vault Setup Workflow
+
+Goal: move from no vault to a usable local memory workspace.
+
+Steps and interactions:
+
+1. Welcome screen explains local-first behavior and asks the user to continue.
+2. Profile/name step captures a local display name only.
+3. Vault naming step asks for the vault name.
+4. Vault location step opens a folder picker, previews the exact `.vault` path, runs disk preflight, and blocks continue if the location is invalid.
+5. Memory search step selects or installs the embedding model. It must show size, cache path, and setup status.
+6. Local chat step lets the user connect an existing runtime, download a recommended model, or continue in context-only mode.
+7. OCR readiness step reports packaged OCR availability and explains limitations if partial.
+8. Summary step lists vault path, memory search, local chat, OCR, and unresolved setup.
+
+Button behavior:
+
+- `Continue` advances only after required fields are valid.
+- `Choose folder` opens native folder picker and does not mutate state until the user confirms.
+- `Start download` begins a measured download with bytes/progress/ETA when available.
+- `Cancel download` cancels the active download and preserves previous usable model state.
+- `Set up later` is allowed for local chat but not for production memory search unless the app clearly enters degraded mode.
+- `Open vault` restarts or switches backend into full-vault mode and then routes to the main shell.
+
+Failure states:
+
+- Vault lock conflict shows owner/process details and safe choices.
+- Disk preflight failure explains required and available space.
+- Embedding setup failure keeps vault creation possible only if the app is explicitly in degraded setup.
+- Backend restart failure shows copyable diagnostic detail.
+
+### Capture And Ingestion Workflow
+
+Goal: add material to the vault and make processing state visible.
+
+Entry points:
+
+- Mind quick actions: Add note, Add link, Add files, Add folder.
+- Sources header buttons.
+- Chat attachment button.
+- Bridge/extension capture tools.
+- Local folder import settings.
+
+Interactions:
+
+- `Add files` opens a native file picker, creates source records, queues extraction/indexing, and shows imported/failed counts.
+- `Add folder` opens a folder picker, scans supported files, records an import when a vault is selected, and can later refresh/tombstone missing files.
+- `Add note` or `Paste text` opens a dialog with title/body fields and optional cluster assignment.
+- `Add link` opens a URL dialog, fetches static readable text first, then dynamic browser extraction if the static page is too thin and the runtime is available.
+- Chat attachments create source records tied to the chat and optional cluster scope before generation.
+- Source rows update through states: created, extracting, indexed, failed, deleted/tombstoned.
+
+Required feedback:
+
+- Immediate optimistic source row may appear only after backend record creation succeeds.
+- Long extraction/indexing shows task state, not fake completion.
+- Partial OCR is visible on the source inspector.
+- Failed ingestion shows the file/link, reason, and retry/reveal/remove actions.
+
+Data safety:
+
+- Removing a source must explain whether CML removes only the vault record/indexed text or touches the original file.
+- Tombstoned folder files should disappear from search immediately while cleanup runs.
+
+### Search, Review, And Organization Workflow
+
+Goal: help users find memories and correct organization.
+
+Interactions:
+
+- Search input updates result list after debounce or explicit submit.
+- Filter chips constrain by state/type/cluster/review status.
+- Sort control changes ordering without resetting selection.
+- Source selection opens inspector and preserves list scroll.
+- Cluster chip opens cluster detail or filters by cluster depending on local context.
+- Suggested correction rows allow `Accept` and `Dismiss`.
+- Accepting a cluster suggestion moves the source, marks affected experts stale, and updates counts.
+- Dismissing a suggestion records the decision and removes the item from the visible queue.
+
+Required states:
+
+- Empty vault: suggest add files/link/note.
+- No results: show active query/filter and a clear reset action.
+- Memory search unavailable: show setup path and block semantic claims.
+- Index stale: show reindex action and affected count when available.
+
+### Cluster Expert Workflow
+
+Goal: keep every cluster searchable while making trained-local-expert state honest.
+
+Lifecycle:
+
+- `Searchable now`: retrieval-backed cluster context is available, but no verified active adapter exists.
+- `Learning`: training or refresh work is queued/running.
+- `Ready`: a verified active adapter exists and matches the current dataset hash.
+- `Needs update`: an adapter exists but source changes made it stale.
+- `Paused`: user paused learning.
+- `Issue`: training/runtime/quality/hardware failed.
+
+Interactions:
+
+- `Retrain` queues a local expert job after hardware and dataset gates.
+- `Pause` stops future automatic learning and keeps retrieval available.
+- `Activate` switches to a selected valid adapter and deactivates the previous one.
+- `Rollback` restores the latest valid prior adapter.
+- `Delete` soft-deletes a non-active adapter after confirmation.
+- Source edits/deletions update dataset hash and mark active adapter stale.
+
+Expert tab must show:
+
+- User status.
+- Retrieval availability.
+- Trained yes/no.
+- Stale yes/no.
+- Source count and dataset hash.
+- Active artifact ID and path if available.
+- Runtime load readiness.
+- Recent jobs and artifacts.
+- Failure code/detail when blocked.
+
+Copy constraints:
+
+- Retrieval-only clusters say `Searchable now. Local expert not trained yet.`
+- Stale adapters say `Needs update`; do not say `Ready`.
+- Runtime load plan is not the same as live runtime smoke. Public claims need live smoke.
+
+### Chat And Context Workflow
+
+Goal: answer using vault context with visible routing, citations, and degraded states.
+
+Interactions:
+
+- `New chat` creates a persisted session when a vault exists; otherwise routes to chat index with setup prompt.
+- Composer sends on button click or `Ctrl/Cmd Enter`.
+- Attachment button opens file picker and shows pending attachments before send.
+- Cluster scope selector changes routing from global vault to selected cluster.
+- On send, UI creates a user message, starts retrieval/context build, then streams or displays the answer.
+- Stop button cancels the active stream without deleting messages.
+- Retry/regenerate uses the last user prompt and preserves citation history.
+- Citation chips open source context and preserve chat scroll.
+- Save/useful/not useful actions update message metadata.
+
+Required answer states:
+
+- Local chat ready: stream generated answer with citations.
+- Local chat unavailable: show context-only answer and label it.
+- Memory search unavailable: block retrieval-backed claims and guide setup.
+- Runtime interrupted: show retriable placeholder.
+- Source deleted/stale: citation chip shows stale/deleted state.
+- Complete analysis unavailable: explain that expanded analysis exists but complete analysis is not ready.
+
+### Bridge Workflow
+
+Goal: let external local clients use selected context with explicit privacy boundaries.
+
+Interactions:
+
+- Bridge enable/disable toggle changes whether clients can connect.
+- Permission toggles update allowed vaults, clusters, raw snippets, style profiles, and expert calls.
+- `Add client` creates a client token and shows it once.
+- `Copy token` copies hidden token after explicit action.
+- `Rotate token` invalidates the old token.
+- `Revoke` disables the client after confirmation.
+- Recent requests show allowed/denied state and reason.
+- Copy context buttons generate MCP/CLI/local HTTP examples.
+
+Privacy rules:
+
+- Token values hidden by default.
+- UI must state that external AI apps may send received context to their provider.
+- Denied requests are visible in history.
+- Permission expansion uses direct copy, not vague toggles.
+
+### Tasks And Activity Workflow
+
+Goal: make background work and system events understandable.
+
+Task interactions:
+
+- `Run once` processes queued backend jobs in development/admin context.
+- Status filters show queued/running/done/failed/blocked/cancelled/manual review.
+- Selecting a job opens detail inspector.
+- `Cancel job` is enabled only when the job is cancellable.
+- Refresh reloads queue status without losing current selection.
+
+Activity interactions:
+
+- Timeline/Activity filters group by type and date.
+- Selecting an event opens related detail.
+- Related links route to source/cluster/chat/Bridge detail.
+
+Copy rules:
+
+- Use `Task` for user-visible work.
+- Use `Job ID`, payload, and failure code only in advanced detail.
+- Failed tasks explain user impact and next action.
+
+### Settings And Readiness Workflow
+
+Goal: configure local dependencies and expose device readiness.
+
+Interactions:
+
+- Settings section nav switches panels without leaving route.
+- Runtime cards support configure/test/copy path/open path where applicable.
+- Model download cards support start/cancel/status/integrity display.
+- Embedding setup supports provider/cache path/test/download/cancel.
+- OCR card reports packaged paths and missing components.
+- Local imports support refresh now, watched on/off, tombstone missing, and failure review.
+- Diagnostics supports export and copy support bundle path.
+- Evidence retention supports compact/prune actions with storage/privacy explanation.
+
+Readiness panel:
+
+- Shows Vault path, backend mode/auth, memory search, local chat, OCR, disk, Bridge, jobs.
+- Each failed item routes to exact setup section.
+- It should not use green checks for skipped/degraded states.
+
+## Titles And Button Inventory
+
+This inventory defines preferred visible titles and button copy. Existing implementation should converge toward these labels unless a route-specific reason exists.
+
+### Global Shell
+
+Titles:
+
+- App identity: `CML` or current vault name.
+- Sidebar groups: `Recent clusters`, `Saved chats`.
+- Footer labels: `Local`, `Backend`, `Tasks`, `Vault`.
+
+Buttons and interactions:
+
+| Control | Location | Action |
+| --- | --- | --- |
+| Search / command button | Sidebar | Opens command palette. |
+| New chat plus button | Saved chats group | Creates a new chat or routes to Chat. |
+| Sidebar nav item | Sidebar | Navigates to route and marks active state. |
+| Recent cluster row | Sidebar | Opens cluster detail. |
+| Saved chat row | Sidebar | Opens chat detail. |
+
+### Command Palette
+
+Titles:
+
+- Dialog title: `Command`.
+- Groups: `Actions`, `Go to`, `Clusters`, `Sources`.
+
+Commands:
+
+| Command | Action |
+| --- | --- |
+| `New chat` | Creates/renders new chat flow. |
+| `New cluster` | Routes to Clusters and focuses creation flow when implemented. |
+| `Add source` | Routes to Sources. |
+| `Go to Chat` | Routes to Chat. |
+| `Go to Clusters` | Routes to Clusters. |
+| `Go to Sources` | Routes to Sources. |
+| `Go to Map` | Routes to Map. |
+| `Go to Bridge` | Routes to Bridge. |
+| `Go to Settings` | Routes to Settings. |
+
+### Onboarding
+
+Titles:
+
+- `Welcome to CML`
+- `Create your local profile`
+- `Name your vault`
+- `Choose vault location`
+- `Set up memory search`
+- `Set up local chat`
+- `Check local OCR`
+- `Ready to open your vault`
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| `Continue` | Advances step after validation. |
+| `Back` | Returns to previous step. |
+| `Choose folder` | Opens native folder picker. |
+| `Use recommended model` | Selects default model path/download plan. |
+| `Connect existing runtime` | Opens runtime URL/model fields. |
+| `Set up later` | Enters explicit degraded mode where allowed. |
+| `Start download` | Starts model/embedding download. |
+| `Cancel download` | Cancels active download. |
+| `Open vault` | Enters full vault mode. |
+
+### Home
+
+Titles:
+
+- Page title: `Home`.
+- Sections: `Ask your vault`, `Recent memories`, `Recent clusters`, `Device readiness`, `Local status`.
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| `Ask` | Starts chat from composer. |
+| `Add source` | Routes to Sources or opens capture menu. |
+| `Open Mind` | Routes to Mind/Search. |
+| `New chat` | Creates chat. |
+| `Review setup` | Routes to Settings readiness section. |
+
+### Mind/Search
+
+Titles:
+
+- Page title: `Mind`.
+- Sections: `Quick capture`, `Memory results`, `Vault summary`, `Clusters`.
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| `Add note` | Opens text capture dialog. |
+| `Add link` | Opens link dialog. |
+| `Add files` | Opens file picker. |
+| `Add folder` | Opens folder picker/import scan. |
+| `Reset filters` | Clears active query/filter state. |
+| `Open source` | Opens inspector or source detail. |
+| `Move` | Opens cluster assignment. |
+| `Remove` | Starts delete confirmation. |
+
+### Sources
+
+Titles:
+
+- Page title: `Sources`.
+- Dialog titles: `Add text source`, `Add link`.
+- Inspector title: selected source title.
+- Sections: `All sources`, `Source detail`, `Actions`, `Extraction`, `Memory search`.
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| `Add files` | Opens file picker and imports selected files. |
+| `Paste text` | Opens text-source dialog. |
+| `Add link` | Opens link-source dialog. |
+| `Add folder` | Opens folder picker/import scan. |
+| `Cancel` | Closes dialog without saving. |
+| `Save text` | Creates text source. |
+| `Save link` | Creates link source. |
+| `Reveal in folder` | Opens local file location when available. |
+| `Open source` | Opens URL or local file. |
+| `Reindex` | Queues source reindex. |
+| `Remove source` | Starts safe delete/tombstone flow. |
+| `Prev` / `Next` | Paginates source list. |
+
+### Clusters Index
+
+Titles:
+
+- Page title: `Clusters`.
+- Sections: `Cluster spaces`, `Suggested corrections`, `Cluster detail`.
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| `Refresh` | Reloads clusters/suggestions. |
+| `New cluster` | Opens create cluster flow. |
+| `Open` | Routes to cluster detail. |
+| `Accept` | Applies suggested source move. |
+| `Dismiss` | Hides suggested correction. |
+| `Merge` | Starts cluster merge flow when implemented. |
+
+### Cluster Detail
+
+Titles:
+
+- Page title: cluster name.
+- Back link: `Back to clusters`.
+- Tabs: `Overview`, `Sources`, `Chats`, `Expert`, `Memory profile`, `Map`.
+- Sections: `Summary`, `Top memories`, `Recent sources`, `Recent chats`, `Learning status`, `Cluster expert`, `Graduation state`, `Runtime load`, `Recent jobs`, `Adapter artifacts`.
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| `Chat with cluster` | Creates scoped chat and routes to it. |
+| `Add source` | Opens source add/move flow for this cluster. |
+| `More cluster actions` | Opens action menu when implemented. |
+| `View all memories` | Routes to Sources/Mind filtered to cluster. |
+| `View all sources` | Routes to Sources filtered to cluster. |
+| `View all chats` | Routes to Chat list. |
+| `Retrain` | Queues local expert training. |
+| `Pause` | Pauses expert learning. |
+| `Activate` | Activates selected adapter. |
+| `Rollback` | Restores previous valid adapter. |
+| `Delete adapter` | Soft-deletes non-active adapter after confirmation. |
+| `View profile` | Opens Memory profile tab. |
+
+### Map
+
+Titles:
+
+- Page title: `Map`.
+- Toolbar/sections: `Legend`, `Cluster view`, `Data points`, `Selected source`, `Selected cluster`.
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| `Fit view` | Resets pan/zoom to useful bounds. |
+| `List` | Opens list fallback or side list. |
+| `Back to overview` | Leaves cluster drill-in. |
+| `Zoom in` | Increases canvas zoom. |
+| `Zoom out` | Decreases canvas zoom. |
+| `Reset zoom` | Restores default zoom. |
+| Cluster blob button | Selects/opens cluster. |
+| Source node button | Selects source preview. |
+| `Open file` | Opens selected local source. |
+| `Open location` | Reveals file or opens URL. |
+
+### Chat
+
+Titles:
+
+- Page title: `Chat`.
+- Detail title: chat title, editable.
+- Sections: `Recent chats`, `Saved chats`, `Context`, `Citations`, `Attachments`, `Runtime`.
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| `New chat` | Creates a new chat session. |
+| `Send` | Sends composer prompt. |
+| `Attach files` | Opens file picker for prompt-zero attachments. |
+| `Stop` | Stops active stream/generation. |
+| `Retry` | Retries failed or interrupted generation. |
+| `Regenerate` | Regenerates answer from same prompt/context. |
+| `Save` / `Saved` | Toggles saved state for chat/message. |
+| `Useful` | Marks answer useful. |
+| `Not useful` | Marks answer not useful. |
+| `Open sources` | Routes to Sources/citation detail. |
+| `Remove attachment` | Removes pending attachment before send. |
+| `Back to chats` | Returns to chat index. |
+
+### Bridge
+
+Titles:
+
+- Page title: `Bridge`.
+- Cards: `MCP`, `CLI`, `Copy context`.
+- Sections: `Permissions`, `Clients`, `Recent requests`, `Setup examples`.
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| `Refresh` | Reloads Bridge status/permissions. |
+| `Add client` | Creates tokenized Bridge client. |
+| `Copy token` | Copies visible one-time token. |
+| `Rotate` | Rotates client token. |
+| `Delete` / `Revoke` | Disables client after confirmation. |
+| `Copy MCP config` | Copies MCP setup snippet. |
+| `Copy CLI example` | Copies CLI command. |
+| `Copy HTTP example` | Copies local HTTP request. |
+| `Copy bridge token` | Copies current Bridge token after explicit action. |
+| Permission toggles | Update raw/style/expert access. |
+
+### Timeline
+
+Titles:
+
+- Page title: `Timeline`.
+- Sections: `Activity detail`, date group labels.
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| Filter chip | Changes visible activity type. |
+| Activity row | Selects detail. |
+| `Open related item` | Routes to source/cluster/chat/detail where available. |
+
+### Tasks
+
+Titles:
+
+- Page title: `Tasks`.
+- Sections: `Job detail`, `Queue`, `Running`, `Failed`, `Needs review`.
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| `Run once` | Processes due jobs once. |
+| Status filter | Filters task list. |
+| Job row | Selects job detail. |
+| `Refresh` | Reloads queue state. |
+| `Cancel job` | Cancels selected cancellable job. |
+
+### Activity
+
+Titles:
+
+- Page title: `Activity`.
+- Sections: `System status`, `Recent events`, `Warnings`, `Failures`.
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| Event filter | Filters by subsystem/type. |
+| Event row | Opens event detail. |
+| `Open related item` | Routes to source/cluster/chat/settings. |
+
+### Settings
+
+Titles:
+
+- Page title: `Settings`.
+- Sections: `Profile`, `Vault storage`, `Local chat`, `Memory search`, `Models and provenance`, `OCR`, `Local imports`, `Bridge and security`, `Evidence retention`, `Diagnostics`, `Advanced`.
+- Right panel: `Device readiness`.
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| Section nav item | Switches settings section. |
+| `Choose folder` | Opens path picker. |
+| `Test runtime` | Probes local chat runtime. |
+| `Start download` | Starts model/embedding download. |
+| `Cancel download` | Cancels active download. |
+| `Configure` | Saves provider/runtime settings. |
+| `Refresh now` | Runs watched-folder refresh. |
+| `Compact now` | Compacts evidence/snapshots. |
+| `Prune query cache` | Removes stale/oversized query evidence. |
+| `Export diagnostics` | Writes diagnostic bundle. |
+| `Create backup` | Creates SQLite/vault safety backup. |
+| `Copy path` | Copies file/folder/bundle path. |
+
+### Error And Not-Found Surfaces
+
+Titles:
+
+- `Page not found`
+- `Cluster not found`
+- `Chat not found`
+- `Backend unavailable`
+- `Setup needed`
+- `Vault locked`
+- `Something needs review`
+
+Buttons:
+
+| Button | Action |
+| --- | --- |
+| `Back to home` | Routes to Home. |
+| `Back to clusters` | Routes to Clusters. |
+| `Back to chats` | Routes to Chat. |
+| `Retry` | Repeats failed load/action. |
+| `Copy details` | Copies diagnostic-safe error text. |
+| `Open settings` | Routes to relevant setup section. |
+
 ## Route Acceptance Checklist
 
 Each route should pass this checklist:
@@ -1516,4 +2114,3 @@ The UI is public-V1 ready only when:
 - Dark mode and narrow desktop QA pass.
 - Clean packaged Windows visual QA passes.
 - No UI says a cluster expert is trained before verified LoRA adapter graduation.
-

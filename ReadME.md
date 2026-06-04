@@ -32,13 +32,13 @@ Stage 1 is in progress. The repo currently has a working Electron/Vite desktop w
 
 Tracked local folder imports can be manually refreshed or watch-refreshed from Settings. Refresh reconciliation imports new files, updates changed files, detects moved files by checksum, tombstones deleted files when requested, and reports batch outcome counts/failures.
 
-The next major build targets are clean Windows VM package validation, real Claude Desktop Bridge smoke, larger real-vault retrieval threshold tuning, and complete-scope chat synthesis.
+The next major build targets are clean Windows VM package validation, verified real LoRA training/runtime loading, hardware-aware model recommendation for low/mid/high-spec users, larger real-vault retrieval threshold tuning, and complete-scope chat synthesis. Claude Desktop-specific Bridge smoke is deferred for now.
 
 ## Prerequisites
 
 - Node.js 18+.
 - Python 3.11+ recommended for future ML libraries. The current environment is using Python 3.14 for the lightweight backend.
-- Windows is the first development target.
+- Windows is the only public V1 target.
 - Optional later dependencies: local model runtime, embedding model, and OCR libraries.
 
 Recommended Python virtual environment:
@@ -224,6 +224,15 @@ For NVIDIA CUDA testing on Windows:
 
 The current local test machine stores downloaded GGUFs under `T:\LLM` via `CML_MODELS_DIR`. Use `.\scripts\llm\benchmark-local-models.ps1` to compare the downloaded model ladder through llama.cpp.
 
+Public V1 model setup must recommend a model tier from the user's actual machine conditions:
+
+- Low-spec: safe default for limited RAM/CPU and no usable GPU.
+- Standard: balanced model for normal 8-16 GB Windows machines.
+- Quality: larger model only when RAM/GPU/disk/runtime conditions support it.
+- Existing runtime: connect to Ollama, llama.cpp, LM Studio, or another OpenAI-compatible endpoint when already installed.
+
+The recommendation system must consider RAM, CPU threads, OS/architecture, AVX2 where available, GPU/CUDA where available, free disk, and whether a local runtime is already configured. LoRA expert-training recommendations are separate from normal synthesis model recommendations because training has stricter hardware constraints.
+
 Backend-only ingestion/search/vector repair benchmark:
 
 ```powershell
@@ -299,4 +308,4 @@ For local OCR accuracy smoke tests:
 - V1 should avoid silent full-device scanning. Users explicitly choose vaults/folders/files.
 - `data/`, `.venv/`, generated build output, logs, and local databases should stay ignored.
 - Electron is the pragmatic first shell. Tauri can be reconsidered after the core flow is proven.
-- The first packaging target is Windows, then macOS/Linux.
+- The public V1 packaging target is Windows only. macOS/Linux can be reconsidered after Windows V1 is public-quality.

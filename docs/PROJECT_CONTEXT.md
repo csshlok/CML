@@ -20,11 +20,13 @@ The user creates a local vault, adds files, folders, links, notes, screenshots, 
 
 Target user: general second-brain users, not only developers.
 
-Public V1 target: end of July 2026, only if public-quality gates pass. If blockers remain, ship as private alpha/demo, not a public product for real user data.
+Public V1 target: end of July 2026 as a Windows-only public release. There is no private-demo fallback path; release slips until public-quality gates pass, including a working, high-quality verified LoRA cluster expert function.
 
 ## Current Product Decisions
 
 - Product form: local downloadable desktop app, not a web app.
+- Public V1 platform: Windows only.
+- Release stance: public release only; no private alpha/demo fallback. If verified LoRA or other public gates fail, delay release rather than ship a demo.
 - Desktop shell: Electron in `apps/desktop`.
 - Backend: FastAPI in `backend`.
 - V1 vault scope: explicit vault mode only; no full-device silent scanning.
@@ -41,7 +43,7 @@ Public V1 target: end of July 2026, only if public-quality gates pass. If blocke
 
 ## Model And Runtime Decisions
 
-Do not bundle LLM weights in the first installer. First-run setup should let users download CML-managed local models or connect existing local runtimes.
+Do not bundle LLM weights in the first installer. First-run setup should let users download CML-managed local models or connect existing local runtimes. Model choice must be recommended from the user's actual system conditions, not one default that assumes a high-end machine.
 
 | Role | Default / Option | ID | Repo | Approx size | Target RAM |
 | --- | --- | --- | --- | --- | --- |
@@ -50,6 +52,15 @@ Do not bundle LLM weights in the first installer. First-run setup should let use
 | Quality option | Qwen3 8B Q4_K_M | `qwen3-8b-q4_k_m` | `Qwen/Qwen3-8B-GGUF` | ~4.8 GB | 16+ GB |
 | Optional later | Gemma 3 4B IT Q4_K_M | `gemma-3-4b-it-q4_k_m` | `Aldaris/gemma-3-4b-it-Q4_K_M-GGUF` | ~2.5 GB | 8+ GB |
 | Optional later | Gemma 3 12B IT Q4_K_M | `gemma-3-12b-it-q4_k_m` | `nocturne23/gemma-3-12b-it-Q4_K_M-GGUF` | ~6.9 GB | 24+ GB |
+
+Required recommendation system:
+
+- Detect RAM, CPU threads, OS, architecture, AVX2, GPU/CUDA availability where possible, free disk, and currently configured local runtime.
+- Recommend a low-spec, standard, or quality model tier with plain-language reasoning.
+- Never recommend a model that is likely to make the app unusable on the current machine.
+- Offer `Connect existing runtime` for users who already run Ollama, llama.cpp, LM Studio, or another OpenAI-compatible local endpoint.
+- Keep retrieval/context-only mode available as an explicit degraded state, but not as the desired public V1 experience.
+- Treat LoRA training requirements separately from synthesis model selection; expert training may need stricter hardware guidance than normal chat.
 
 Runtime boundary:
 
@@ -64,7 +75,7 @@ Runtime boundary:
 
 | Phase | Status | Progress | Remaining gate |
 | --- | --- | --- | --- |
-| Product definition | In progress | `[##########] 98%` | Supported-OS decision and public/private release cut line |
+| Product definition | In progress | `[##########] 99%` | Windows-only public release decision record |
 | UI prototype cleanup | In progress | `[##########] 99%` | Dark QA, minimized/narrow desktop QA, packaged-flow polish |
 | Desktop app foundation | In progress | `[##########] 98%` | Clean VM launch validation and broader startup repair QA |
 | Local backend foundation | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only |
@@ -72,20 +83,20 @@ Runtime boundary:
 | Embeddings and clustering | In progress | `[##########] 99%` | Broader threshold tuning on real user vaults |
 | Chat/context routing | In progress | `[##########] 96%` | Complete-scope map/reduce, token budgets, runtime failure UX |
 | Compulsory cluster experts | In progress | `[#######---] 70%` | Real LLaMA Factory smoke and live runtime adapter loading against a real local model |
-| Context Bridge | In progress | `[#########-] 94%` | Real Claude Desktop smoke and capture UX polish |
+| Context Bridge | In progress | `[#########-] 94%` | Capture UX polish and later external-client smoke |
 | Packaging/install | In progress | `[##########] 98%` | Clean VM validation |
-| QA/hardening | In progress | `[##########] 99%` | Real Claude Desktop smoke, clean VM package validation |
+| QA/hardening | In progress | `[##########] 99%` | Clean VM package validation and larger user-owned vault benchmarks |
 
 ## Current Critical Path
 
 - Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
-- Keep public V1 public-only criteria. If gates fail, label the build private alpha/demo.
+- Keep Windows-only public V1 criteria. If verified LoRA or other public gates fail, delay release; do not ship a private demo fallback.
 - Verify real adapter training and runtime loading before any broad "trained expert" claim.
 - Compulsory expert work now has stricter dataset/diversity/quality gates, evaluation harness, smoke scripts, and Expert tab visibility, but still needs a real trainer command/model path before public claims.
+- Build hardware-aware model recommendation so low-spec users receive safe model/runtime choices instead of high-end defaults.
 - Keep the written threat model current and treat local API/Bridge auth regressions as release blockers.
 - Continue retrieval threshold tuning beyond the benchmark harness using larger user-owned vaults.
-- Smoke Context Bridge against Claude Desktop before advertising MCP readiness.
-- Treat the Codex-style MCP smoke as a first client-path pass, not a substitute for Claude Desktop verification.
+- Defer Claude Desktop-specific Bridge smoke for now; Codex-style MCP smoke remains a local protocol check, and external-client claims stay conservative.
 - Keep project context concise enough for session continuity.
 
 ## Phase Snapshot
@@ -93,7 +104,7 @@ Runtime boundary:
 Product definition:
 
 - Done: PRDs, local-first product boundary, public V1 quality bar, public-only release stance.
-- Remaining: final release cut line, supported OS decision, installer/update policy.
+- Remaining: Windows-only public V1 decision record, installer/update policy.
 
 UI prototype cleanup:
 
@@ -133,7 +144,7 @@ Compulsory cluster experts:
 Context Bridge:
 
 - Done: bridge tokens, permissions, token rotation, stale allowlist pruning, no-active-vault errors, notification behavior, constant-time token compare, explicit external-turn/artifact capture tools with vault/cluster permission checks, Codex-style MCP JSON-RPC smoke, malformed-client hardening.
-- Remaining: full extension package, real Claude Desktop smoke, capture UX polish.
+- Remaining: full extension package, capture UX polish, later external-client smoke when reprioritized.
 
 Packaging/install:
 
@@ -143,7 +154,7 @@ Packaging/install:
 QA/hardening:
 
 - Done: broad backend regression coverage, atomic job concurrency tests, local API auth/identity tests, OCR benchmarks, audits, diagnostic redaction/log-rotation policy, backend benchmark scripts, disposable-vault delete cleanup tests, failed embedding-write retry test, dynamic-link browser-runtime smoke with Playwright on `T:`, Codex-style MCP smoke, real second-embedding model/cache smoke, repeatable packaging/security smoke scripts, npm and Python vulnerability audits, threat model, 1k benchmark harness, startup stale-phase validation tests, recovery drills endpoint, first-run readiness gate tests.
-- Remaining: larger user-owned vault benchmarks, real Claude Desktop smoke, clean VM package validation.
+- Remaining: larger user-owned vault benchmarks, clean VM package validation, hardware-aware model recommendation QA.
 
 ## Public V1 Blockers
 
@@ -163,9 +174,10 @@ These are release gates, not polish.
 - Complete analysis: current broad rerun is `expanded_analysis`; reserve `complete_analysis` for future evidence-packet map/reduce and return `501` if requested before implementation.
 - Deletion graph: deleted sensitive content must disappear from retrieval/search immediately before async cleanup.
 - Diagnostics: log rotation policy exists and full-vault unpacked package smoke covers diagnostics export; clean VM execution remains.
-- MCP Bridge: Codex-style JSON-RPC smoke passed; real Claude Desktop smoke and clear app error codes are still required before advertising MCP readiness.
+- MCP Bridge: Codex-style JSON-RPC smoke passed; keep external-client readiness claims conservative while Claude Desktop-specific smoke is deferred.
 - LoRA: public V1 requires verified real adapter training, adapter artifact validation, runtime load against a real local model, rollback, supported hardware, failure codes, and quality win over retrieval baseline.
 - LoRA graduation framing: small or insufficient clusters should remain retrieval-backed with explicit status instead of pretending every cluster can graduate.
+- Model recommendation: public V1 must recommend safe synthesis/embedding/expert setup by detected system tier, because many users will not have high-end hardware.
 - OCR/package: packaged OCR runtime, generated OCR fixture smoke, dynamic-link smoke, migration drill, and installer smoke pass; Ghostscript path is AGPL-compatible public release.
 
 ## Next Backend Build Steps
@@ -185,18 +197,16 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 
 ## Current Open Work
 
-- Decide first supported OS for downloadable public V1.
-- Add written public V1 decision record: Windows-first; public V1 only if verified LoRA passes, otherwise private alpha/demo.
+- Add written public V1 decision record: Windows-only; public release only; release slips until verified LoRA and other public gates pass.
 - Finish first-run setup UI around the new readiness gate: vault path, model setup, embedding setup, OCR readiness, startup repair states.
 - Make onboarding honest about local model/embedding download size, time, hardware requirements, and external Bridge privacy tradeoffs.
+- Build model recommendation system based on detected system specs: RAM, CPU, GPU/CUDA, disk, runtime availability, and low/mid/high-spec user tiers.
 - Add one-click local model/embedding dependency install or connect-existing-runtime flows.
 - Add model provenance display in setup/settings using `/api/v1/models/integrity-manifest`.
 - Continue backend service-layer extraction around raw route/database operations.
 - Add complete-scope answering in stages: coverage ledger, BM25/embedding scoring, threshold tuning, map packets, reduce/synthesis, cache pruning.
 - Finish local synced-folder import history and watched refresh polish where gaps remain.
 - Build actual browser extension package and safer pairing flow.
-- Add real Claude Desktop smoke before Bridge claims production readiness.
-- Smoke MCP external-turn capture tools against Claude Desktop after the Codex-style MCP smoke.
 - Execute the clean-machine package script and smoke sequence on a fresh Windows VM before public release claims.
 - Keep Python dependency CVE auditing in repeatable contributor QA.
 - Continue LoRA readiness gates now that expert work is active: real trainer smoke, live runtime load, live adapter benchmark, hardware matrix, rollback edge cases, and Expert tab controls.
@@ -226,7 +236,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Added backend support for local model integrity status/manifests, startup phase registry validation and stale timeout reporting, cluster merge artifact persistence/readback, watched-folder back-pressure reporting, and query/evidence cache pruning.
 - Verification for this pass: focused backend unittest module ran 56 tests OK; full backend unittest discovery ran 166 tests OK with 1 skipped; `python -m compileall backend/app` passed.
 - Added `docs/DEVILS_ADVOCATE_RESPONSES_2026-06-03.md` from the 100-question senior review, excluding Q100 as a decision driver per user instruction.
-- Converted the useful review conclusions into release-risk gates: verified LoRA, clean-machine package, written threat model, model integrity, real Claude Desktop smoke, full-vault repair drills, scale benchmarks, and honest onboarding.
+- Converted the useful review conclusions into release-risk gates: verified LoRA, clean-machine package, written threat model, model integrity, full-vault repair drills, scale benchmarks, and honest onboarding.
 - Completed rebuild-dependent package work: rebuilt Windows NSIS package `apps/desktop/release/CML-0.1.0-Setup.exe`, added repeatable package smoke scripts, and verified silent install/uninstall.
 - Packaged launch result: `scripts/packaging/smoke-packaged-app-launch.ps1` launched `win-unpacked\CML.exe`, cleared inherited `ELECTRON_RUN_AS_NODE`, and verified packaged pre-vault startup reached `ready`.
 - Packaged runtime result: `scripts/packaging/smoke-packaged-runtime.ps1` verified packaged Python backend health, local API token enforcement, pre-vault route blocking, arbitrary CORS-origin rejection, model setup endpoints, embedding cache configuration, and production hash-embedding rejection.
@@ -257,8 +267,9 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 
 ## Running Notes
 
-- Public V1 only: if there is a V1, it must be public-quality. Otherwise call it private alpha/demo.
-- Public V1 selling point is verified LoRA, but do not touch LoRA implementation right now unless explicitly requested.
+- Public V1 is Windows-only and public-release-only. If it is not public-quality, delay release; do not rename it private alpha/demo.
+- Public V1 selling point is verified, high-quality LoRA cluster experts; release requires this to work well.
+- Model setup must be hardware-aware. Low-spec users need safe recommendations, not default high-end model assumptions.
 - Q100 from the devil's advocate review is non-actionable per user instruction; do not use it to drive project decisions.
 - User-facing "trained expert" language is allowed only after real adapter graduation.
 - No package rebuild work unless explicitly requested; the latest requested rebuild was completed on 2026-06-04 and passed packaged smoke gates on this machine.
@@ -274,7 +285,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - MCP Bridge must not respond to JSON-RPC notifications.
 - MCP Bridge must return explicit app errors like `1001 no_active_vault`; never silently choose the first vault.
 - MCP cannot automatically see outside model responses; external transcripts are capturable only when the MCP client explicitly sends them back through a logging/capture tool.
-- Codex-style MCP smoke passed for context and capture tools; Claude Desktop smoke is still required before claiming MCP production readiness.
+- Codex-style MCP smoke passed for context and capture tools; Claude Desktop-specific smoke is deferred and not part of the immediate build plan.
 - OCR direction is fully local. Users should not manually install OCR dependencies for shipped builds.
 - OCR shipping caveat: Ghostscript is treated as an AGPL-compatible public-release dependency unless replaced or commercially licensed later; package smoke alone is not enough.
 - Tesseract is Apache 2.0; qpdf is acceptable for bundling review; Ghostscript needs AGPL/commercial decision.

@@ -6,7 +6,7 @@ Last updated: 2026-06-04
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
-Latest compact truth after the 2026-06-04 implementation pass lives in `docs/PROJECT_CONTEXT.md`. The latest pass continued the compulsory cluster expert build: stricter dataset/diversity/quality-delta gates, adapter artifact validation, runtime-load plan metadata, stale-adapter detection, richer failure codes, expert status reporting, deterministic evaluation harness, repeatable LoRA smoke scripts, and an honest Expert tab. Claude Desktop smoke, clean Windows VM validation, and real LoRA trainer/runtime smoke remain the main external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+Latest compact truth after the 2026-06-04 implementation pass lives in `docs/PROJECT_CONTEXT.md`. Current product decision: V1 is Windows-only, public-release-only, and must include a working high-quality verified LoRA function; there is no private-demo fallback. The latest pass continued the compulsory cluster expert build: stricter dataset/diversity/quality-delta gates, adapter artifact validation, runtime-load plan metadata, stale-adapter detection, richer failure codes, expert status reporting, deterministic evaluation harness, repeatable LoRA smoke scripts, and an honest Expert tab. Claude Desktop-specific smoke is deferred for now; clean Windows VM validation, real LoRA trainer/runtime smoke, and hardware-aware model recommendations are current external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
 
 ## 2026-06-04 Compulsory Cluster Expert Build Snapshot
 
@@ -72,7 +72,8 @@ Verification:
 Remaining gates:
 
 - Clean Windows VM validation with no dev Python, Node, preinstalled OCR, or helpful PATH tools.
-- Real Claude Desktop MCP smoke before Bridge production-readiness claims.
+- Hardware-aware model recommendation by detected RAM/CPU/GPU/disk/runtime conditions.
+- Claude Desktop MCP smoke is deferred; keep external-client claims conservative until resumed.
 - Real LoRA adapter training, runtime adapter loading, quality win over retrieval baseline, rollback, and supported-hardware proof before public V1 expert claims.
 
 ## 2026-06-03 Package Gate Closure Snapshot
@@ -167,9 +168,16 @@ Source response doc: `docs/DEVILS_ADVOCATE_RESPONSES_2026-06-03.md`.
 
 Q100 is intentionally excluded from decision-making per user instruction. The useful lesson from the review is not that CML is a bad idea; it is that the project must stop equating "prototype works" with "public V1 gate passed."
 
+Current decision overriding earlier fallback language:
+
+- V1 is Windows-only.
+- V1 is public-release-only; if verified LoRA or other public gates are not ready, delay release rather than ship a private demo.
+- Model setup must recommend safe choices for low-, mid-, and high-spec machines based on actual system conditions.
+- Claude Desktop-specific Bridge smoke is deferred for now.
+
 Core lessons to preserve:
 
-- Public V1 remains conditional on verified LoRA. If real adapter training, artifact validation, runtime load, rollback, hardware support, and quality win over retrieval are not proven, the release must be private alpha/demo.
+- Public V1 remains conditional on verified LoRA. If real adapter training, artifact validation, runtime load, rollback, hardware support, and quality win over retrieval are not proven, the release must slip.
 - LoRA should be framed as graduated expertise, not blind success for every cluster. Small or low-evidence clusters should remain retrieval-backed with explicit status.
 - Clean-machine validation matters more than dev-machine confidence. Package smoke now passes locally, but a Windows VM without dev Python, Node, preinstalled OCR, or helpful environment variables is still required.
 - Security needs a written threat model. Local API tokens, Bridge tokens, extension tokens, MCP clients, diagnostics, model downloads, and local-attacker limits must be described in one attacker/mitigation matrix.
@@ -206,6 +214,8 @@ Target completion: **end of July 2026**.
 ## Current Product Decisions
 
 - App type: local downloadable desktop app, not a web app.
+- Public V1 platform: Windows only.
+- Release stance: public release only; no private alpha/demo fallback. If verified LoRA or other public gates fail, delay release.
 - V1 data mode: vault mode only. No full-device silent scanning.
 - V1 cloud storage mode: import from local synced folders such as Google Drive Desktop, Dropbox, OneDrive, and iCloud Drive. OAuth/API connectors are later.
 - UI direction: memory-board landing page, welcoming visual map, and chat as a core workspace rather than the first tab.
@@ -215,6 +225,7 @@ Target completion: **end of July 2026**.
 - Local synthesis model ladder: Qwen3-4B Q4_K_M as the default recommended model, Phi-4-mini-instruct Q4_K_M as the low-spec fallback, Qwen3-8B Q4_K_M as the higher-quality option, and Gemma 3 4B/12B as optional later long-context/vision-adjacent candidates.
 - Model packaging: do not bundle LLM weights in the first installer. Ship CML smaller and let users download/select local models during setup.
 - First-run model setup: after Vault is installed, users should be able to either use CML's recommended local model set or connect their own already-installed local models for synthesis, embeddings, clustering, and later expert workflows.
+- Model recommendation: CML must recommend models from detected system conditions, including RAM, CPU, GPU/CUDA availability, free disk, and runtime availability, so low-spec users are not pushed into high-end defaults.
 - Embedding product direction: deterministic/hash embeddings are a development fallback only. V1 should default to a real local LLM embedding model path, with user-selectable model configuration during setup/settings.
 - External integrations: Context Bridge via MCP, local HTTP API, CLI, and copy/export helpers.
 - Privacy: local-first by default.
@@ -242,6 +253,7 @@ Runtime boundary:
 - Ollama can be used if it exposes an OpenAI-compatible local API for the selected model.
 - Retrieval-backed extractive drafts remain the fallback when no local synthesis runtime is available.
 - Cluster experts are still a separate lifecycle; these synthesis models are the larger answer-composition layer, not the per-cluster expert adapters.
+- Recommendations must separate normal chat requirements from LoRA expert-training requirements.
 
 ## Phase Progress
 
@@ -249,7 +261,7 @@ Use this section for fast status checks. Detailed historical notes remain in the
 
 | Phase | Status | Progress | Main Remaining Blocker |
 | --- | --- | --- | --- |
-| Product definition | In progress | `[##########] 98%` | Supported-OS decision and explicit public-V1/private-alpha cut line. |
+| Product definition | In progress | `[##########] 99%` | Windows-only public release decision record. |
 | UI prototype cleanup | In progress | `[##########] 99%` | Minimized/narrow desktop shell repair, dark-version QA, packaged-flow polish, broader visual QA. |
 | Desktop app foundation | In progress | `[##########] 98%` | Clean VM launch validation and broader packaged startup repair QA. |
 | Local backend foundation | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only. |
@@ -257,17 +269,18 @@ Use this section for fast status checks. Detailed historical notes remain in the
 | Embeddings and clustering | In progress | `[##########] 99%` | Broader threshold tuning on real user vaults. |
 | Chat and context routing | In progress | `[##########] 96%` | Complete-scope map/reduce answering, token budgets, runtime failure UI. |
 | Compulsory cluster experts | In progress | `[#######---] 70%` | Real LLaMA Factory smoke and live runtime adapter loading against a real local model. |
-| Context Bridge | In progress | `[#########-] 94%` | Full extension package and real Claude Desktop smoke. |
+| Context Bridge | In progress | `[#########-] 94%` | Full extension package, capture UX polish, and later external-client smoke. |
 | Packaging and installer | In progress | `[##########] 98%` | Clean Windows VM validation. |
-| QA and hardening | In progress | `[##########] 99%` | Clean VM package validation, larger scale/performance benchmarks, real Claude Desktop smoke. |
+| QA and hardening | In progress | `[##########] 99%` | Clean VM package validation, larger scale/performance benchmarks, model recommendation QA. |
 
 ### Current Critical Path
 
 - Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
-- Keep public V1 scoped to public-only release criteria; if blockers remain, treat the build as private alpha/demo.
+- Keep Windows-only public V1 criteria; if blockers remain, delay release rather than ship a private demo.
 - Verify real adapter training/loading before using "trained expert" language in user-facing surfaces; current gates are stronger but still need real trainer/runtime proof.
+- Build hardware-aware model recommendation for low-, mid-, and high-spec users.
 - Tune retrieval thresholds and run larger backend benchmarks on real vault-shaped data.
-- Smoke Context Bridge against Claude Desktop before advertising MCP readiness.
+- Defer Claude Desktop-specific Bridge smoke for now; keep external-client claims conservative.
 
 ### Phase Detail Snapshot
 
@@ -314,7 +327,7 @@ Compulsory cluster experts:
 Context Bridge:
 
 - Done: Bridge UI, settings/history, HTTP context endpoint, token-gated access, constant-time token checks, per-client Bridge tokens, permission allowlists, permission refresh, semantic retrieval, denied-request logging, token rotation history, explicit no-active-vault behavior, MCP notification correctness, app error-code registry, extension token/capture scaffold, same-vault validation, and first CLI/MCP prototypes.
-- Remaining: full extension package and real Claude Desktop smoke.
+- Remaining: full extension package, capture UX polish, later external-client smoke when reprioritized.
 
 Packaging and installer:
 
@@ -1274,14 +1287,14 @@ Exit criteria:
   - require Bridge permission freshness, saved-chat refresh, and cluster/map visual/data-point fixes
   - mark deterministic/hash embeddings as development fallback only, with real local embedding setup as the product default
 - Captured the final production-risk review in project context:
-  - public V1 now has an explicit blocker list; if these are not complete, the July build is a private alpha/demo and must not be treated as a public user-data product
+  - public V1 now has an explicit blocker list; if these are not complete, the release slips and must not be treated as public-ready
   - vault data path correctness is a product blocker: user-selected vault folders must own the real SQLite database and derived local data, not only a metadata display path
   - pre-vault backend mode must be route-restricted and must not create real vault/source/chat/cluster records before the full vault backend starts
   - startup failure reporting needs a shared startup phase registry, startup-status file, and Electron repair/startup error surface
   - scheduler synthesis gating must account for active/retriable generations and expose running job detail before the UI promises background work will pause
   - current "complete analysis" behavior must be renamed to "expanded analysis"; `complete_analysis` is reserved for future map/reduce and must be rejected if requested
   - expert/training language must remain honest: public V1 requires verified LoRA adapter training, metrics, rollback, and supported-hardware language before claiming a cluster expert is trained
-  - MCP bridge needs strict JSON-RPC notification handling, app error code registry, no-active-vault errors, and real Claude Desktop smoke before being advertised
+  - MCP bridge needs strict JSON-RPC notification handling, app error code registry, no-active-vault errors, and later external-client smoke before broad advertising
   - transcript memory retrieval needs source-class weighting and separate compare-source-classes handling, not only keyword inclusion/exclusion
 - Completed the first public-V1 blocker implementation pass:
   - added canonical startup phase data at `shared/startup-phases.json`
@@ -1362,7 +1375,7 @@ Exit criteria:
 
 ## Public V1 Blockers
 
-These items are not ordinary polish. If they are not implemented and verified, the July build should be labeled private alpha/demo only and should not be positioned as a public product for real user data.
+These items are not ordinary polish. If they are not implemented and verified, the release slips and should not be positioned as a public product for real user data.
 
 - Vault data location correctness:
   - Electron must set the full-vault backend data paths from the user-selected vault folder: `CML_DATA_DIR=<vault>/.vault` and `CML_DATABASE_PATH=<vault>/.vault/cml.sqlite3`.
@@ -1415,14 +1428,14 @@ These items are not ordinary polish. If they are not implemented and verified, t
   - JSON-RPC notifications must not emit responses.
   - Define app error codes such as `1001 no_active_vault`, `1002 permission_denied`, `1003 vault_not_found`, `1004 cluster_not_allowed`, `1005 cml_backend_unreachable`, and `1006 invalid_bridge_configuration`.
   - Distinguish dead stdio bridge process from live bridge with unreachable CML HTTP backend.
-  - Add real Claude Desktop end-to-end smoke before advertising MCP.
+  - Add external-client end-to-end smoke before broad Bridge/MCP advertising; Claude Desktop-specific smoke is deferred for now.
 - Expert/product claim hardening:
   - V1 user-facing language may claim trained cluster experts only after the verified LoRA graduation criteria pass for that cluster.
   - Adapter graduation requires supported hardware matrix, AVX2 detection, reliable failure codes, rollback/versioning, cleanup, quality win over retrieval baseline, and verified runtime on supported tiers.
 
 ## Current Open Work
 
-- Decide first supported OS for downloadable app.
+- Preserve Windows-only public V1 as the first downloadable target.
 - Run installer install/uninstall smoke on a clean path, not only the unpacked packaged app.
 - Decide whether release builds should include optional embedding dependencies by default or keep them behind `-IncludeEmbeddingRuntime`.
 - Replace user-facing deterministic/hash embedding selection with real local embedding setup. Hash embeddings may remain a hidden development fallback, but the product default must be an LLM embedding model.
@@ -1582,7 +1595,7 @@ These items are not ordinary polish. If they are not implemented and verified, t
 - Electron launch note: if the window does not open but Vite is reachable, check `ELECTRON_RUN_AS_NODE`. It must be unset for the Electron shell process.
 - UI audit risk reduced: Bridge controls, chat attachment/save/regenerate actions, cluster expert controls, cluster source-picker actions, and command palette new chat are no longer misleading production-looking dead controls. Cluster detail now uses backend data. Chat answer feedback/save/delete/regenerate controls now have backend behavior. Remaining risk is backend completeness, especially Bridge permissions, MCP/CLI setup, and direct source move controls inside cluster detail.
 - Chat transcript memory now uses the background job queue. Persisted chat turns are stored immediately, then transcript sources/chunks are indexed by the worker and the session moves from `indexing` to `indexed`.
-- Context Bridge HTTP retrieval is now semantic, local, and permission-gated by enabled state, token auth, vault/cluster allowlists, and raw-text redaction. Token rotations are recorded, missing/ambiguous vault scope returns `no_active_vault`, and MCP notifications now correctly produce no response. Before exposing it to external clients beyond trusted local testing, add per-client permissions, malformed-client hardening, and real Claude Desktop smoke.
+- Context Bridge HTTP retrieval is now semantic, local, and permission-gated by enabled state, token auth, vault/cluster allowlists, and raw-text redaction. Token rotations are recorded, missing/ambiguous vault scope returns `no_active_vault`, and MCP notifications now correctly produce no response. Before exposing it to external clients beyond trusted local testing, keep claims conservative and add external-client smoke when reprioritized; Claude Desktop-specific smoke is deferred for now.
 - Current-code backend is running on `http://127.0.0.1:7343` because `7342` is occupied by stale Windows listeners with non-existent PIDs. The `7343` backend exposes the new chat session/message routes, Bridge settings route, and semantic Bridge routes.
 - Chat streaming now uses `/api/v1/chat/context/stream`. When a local OpenAI-compatible runtime is available, CML parses runtime SSE chunks; otherwise retrieval fallback text is streamed in local chunks.
 - Expert lifecycle now has a verified LoRA training foundation. The deterministic test trainer can produce adapter-shaped artifacts for CI, while public V1 still requires a real LLaMA Factory run and runtime adapter-loading smoke before claiming production training.
@@ -1600,7 +1613,7 @@ These items are not ordinary polish. If they are not implemented and verified, t
 - Embedding provider selection is now runtime-configurable, but the product setup should not present deterministic/hash embeddings as a normal choice. Users should choose between CML's recommended embedding model download and their own compatible local embedding model/runtime.
 - Onboarding and Settings now have an Electron folder picker for local embedding model selection and test the chosen SentenceTransformers model before enabling memory search. This is still a select/test flow, not a managed embedding download.
 - Onboarding and Settings now also expose a managed recommended embedding model download action. The backend can start/cancel/report the download, but byte-level progress and packaged dependency validation still need QA.
-- The first Bridge MCP server is a prototype stdio JSON-RPC bridge around the existing local HTTP permissions model. Dedicated Bridge client tokens and permissions now exist, but real Claude Desktop smoke and malformed-client hardening are still needed.
+- The first Bridge MCP server is a prototype stdio JSON-RPC bridge around the existing local HTTP permissions model. Dedicated Bridge client tokens and permissions now exist; Claude Desktop-specific smoke is deferred for now.
 - The 2026-06-01 Playwright UI audit found the current desktop layout is usable, but narrow desktop/minimized-window behavior is broken on `/search` because the shell/content retain full-width assumptions. Do not build a dedicated mobile screen for public V1; treat minimized/narrow desktop shell repair and the dark version as the UI hardening target.
 - Vault lock contention now has a first Electron override path: the startup repair screen can trigger a one-shot `CML_VAULT_LOCK_OVERRIDE=open_anyway` backend restart, and the backend writes a structured override audit sequence. This still needs packaged visual QA and clearer user-facing corruption copy before public release.
 - Packaged Electron now serves the production TanStack renderer through an internal loopback server because the build is SSR-shaped and does not emit a normal `dist/client/index.html`.
@@ -1663,8 +1676,8 @@ These items are not ordinary polish. If they are not implemented and verified, t
 - MCP `list_clusters` and context calls must not silently choose the first vault. If no active/allowed vault is configured, return a JSON-RPC application error such as `1001 no_active_vault`, not a successful text response or empty list.
 - Expert/product-language rule: public V1 keeps verified LoRA as the main selling point, but the UI must only call a cluster expert "trained" after that cluster has a ready active adapter with metrics, versioning, rollback, and supported-hardware provenance.
 - Adapter graduation criteria: publish a hardware matrix with AVX2 requirement, GPU tier, CPU high-spec tier, and CPU minimum tier. Training must meet reliability, quality, runtime, recovery, storage, and failure-code criteria on supported tiers before leaving experimental status. If AVX2 detection fails, mark hardware as `unknown`, allow one explicit warned attempt, and convert illegal-instruction/runtime failure into `hardware_unsupported`.
-- Public V1 gate: auth hardening, vault-lock override UX, packaged startup repair QA, vault data path correctness, embedding setup polish, deletion graph edge cases, scheduler synthesis gate, diagnostic packaging/log-rotation policy, and MCP smoke are blockers. If incomplete, the July build is private alpha/demo only.
-- Expanded V1 scope now explicitly includes LoRA, cloud connectors, and a full browser extension. This makes the earlier tight-MVP step count obsolete; the roadmap must be treated as a broader public-V1 build unless the release is split into private alpha and public V1.
+- Public V1 gate: auth hardening, vault-lock override UX, packaged startup repair QA, vault data path correctness, embedding setup polish, deletion graph edge cases, scheduler synthesis gate, diagnostic packaging/log-rotation policy, hardware-aware model recommendation, and verified LoRA are blockers. If incomplete, release slips.
+- Expanded V1 scope now explicitly includes LoRA, cloud connectors, and a full browser extension. This makes the earlier tight-MVP step count obsolete; the roadmap must be treated as a broader Windows-only public-V1 build.
 - Token storage now has an Electron interface seam, Electron `safeStorage` support, encrypted fallback storage, and plaintext regression coverage.
 - Vault lock reclaim is now safer for unverifiable live processes, and the Electron-facing Open-anyway override plus backend user-choice/startup-result audit sequence exist. Remaining work is packaged visual QA and the interrupted-before-choice edge case.
 - Vault lock audit rows now exist for backend lock events and override flow events.
