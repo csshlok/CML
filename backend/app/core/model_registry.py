@@ -14,7 +14,7 @@ import time
 from backend.app.core.config import get_settings
 from backend.app.core.database import utc_now
 from backend.app.core.expert_runtime import _is_transformers_model_dir, runtime_dependency_status
-from backend.app.core.hardware import hardware_status
+from backend.app.core import hardware as hardware_module
 from backend.app.core.network_security import validate_huggingface_url
 
 
@@ -102,6 +102,15 @@ MODEL_REGISTRY: tuple[LocalModel, ...] = (
 )
 
 APPROVED_MODEL_FAMILIES: tuple[ApprovedModelFamily, ...] = (
+    ApprovedModelFamily(
+        id="llama",
+        name="Llama",
+        repo_prefixes=("meta-llama", "llama",),
+        model_type_prefixes=("llama",),
+        architecture_keywords=("llama",),
+        minimum_hardware_tier="cpu_minimum_spec",
+        detail="Accepted when a local Llama Transformers checkpoint is present and expert runtime dependencies are available.",
+    ),
     ApprovedModelFamily(
         id="qwen",
         name="Qwen",
@@ -311,7 +320,7 @@ def active_model_status() -> dict[str, Any] | None:
 
 
 def model_recommendations() -> dict[str, Any]:
-    hardware = hardware_status()
+    hardware = hardware_module.hardware_status()
     tier = hardware.get("hardware_tier") or "unknown"
     if tier == "gpu_or_high_spec_candidate":
         preferred_id = "qwen3-8b-q4_k_m"
@@ -509,7 +518,7 @@ def _missing_model_compatibility(family_id: str, notes: str = "") -> dict[str, A
         "registered_family": family_id,
         "local_path": "",
         "runtime_dependencies": runtime_dependency_status(),
-        "hardware": hardware_status(),
+        "hardware": hardware_module.hardware_status(),
         "reasons": [
             "No compatible local Transformers checkpoint is installed for this model family."
         ],
@@ -524,7 +533,7 @@ def _default_model_compatibility(model: LocalModel, local_path: Path | None) -> 
             **_missing_model_compatibility(model.family, model.notes),
             "detail": "Download this local chat model to use it in the chat role.",
         }
-    hardware = hardware_status()
+    hardware = hardware_module.hardware_status()
     family = approved_family(model.family)
     return {
         "status": "accepted",
@@ -549,7 +558,7 @@ def _default_model_compatibility(model: LocalModel, local_path: Path | None) -> 
 def model_compatibility_report(model_path: str | Path, *, registered_family: str = "") -> dict[str, Any]:
     target = Path(model_path) if str(model_path).strip() else Path("")
     runtime = runtime_dependency_status()
-    hardware = hardware_status()
+    hardware = hardware_module.hardware_status()
     reasons: list[str] = []
     config = _read_transformers_config(target)
     family = _detect_approved_family(config, registered_family=registered_family, model_path=str(target))
@@ -633,9 +642,33 @@ def import_model_checkpoint(source_path: str | Path, *, name: str | None = None)
 
 def preferred_expert_base_model() -> dict[str, Any] | None:
     active = active_expert_model_status()
-    if active and active.get("compatibility", {}).get("accepted"):
+    if active and (active.get("compatibility") or {}).get("accepted"):
         return active
-    return next((item for item in imported_model_statuses() if item.get("compatibility", {}).get("accepted")), None)
+
+    for item in imported_model_statuses():
+        if (item.get("compatibility") or {}).get("accepted"):
+            return item
+
+    from backend.app.core.expert_runtime import local_model_search_roots
+
+    for root in local_model_search_roots():
+        if not root.exists():
+            continue
+        for candidate in sorted(root.glob("*")):
+            if not candidate.is_dir():
+                continue
+            compatibility = model_compatibility_report(candidate)
+            if compatibility.get("accepted"):
+                return {
+                    "id": candidate.name,
+                    "name": candidate.name,
+                    "family": compatibility.get("family") or "",
+                    "local_path": str(candidate.resolve()),
+                    "compatibility": compatibility,
+                    "source_kind": "local_search_root",
+                }
+
+    return None
 
 
 def _model_disk_preflight(model: LocalModel) -> dict[str, Any]:

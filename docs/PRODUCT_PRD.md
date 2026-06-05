@@ -179,7 +179,7 @@ The final answer must make it clear when it is using local context.
 
 The app should expose the local context layer to other LLM tools. This lets a user keep their vault, clusters, source retrieval, and local experts in this app while using an external LLM interface such as Claude terminal, Claude Desktop, local agents, IDE assistants, or other MCP-compatible tools.
 
-The product should not depend on fragile app-specific hacks. It should expose clean local interfaces that other tools can call.
+The product should not depend on fragile app-specific workarounds. It should expose clean local interfaces that other tools can call.
 
 Required bridge interfaces:
 

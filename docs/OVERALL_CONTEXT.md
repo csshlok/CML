@@ -261,6 +261,7 @@ Core lessons to preserve:
 - Context docs should remain compact and operational. Long reviews and history belong in dated docs, not the primary operating brief.
 
 ---
+
 # Project Context And Progress
 
 Last updated: 2026-06-04
@@ -331,19 +332,19 @@ Runtime boundary:
 
 Use this section for fast status checks. Detailed historical notes remain in the later "Completed Work", "Open Work", and "Running Notes" sections.
 
-| Phase | Status | Progress | Main Remaining Blocker |
-| --- | --- | --- | --- |
-| Product definition | In progress | `[##########] 99%` | Windows-only public release decision record. |
-| UI prototype cleanup | In progress | `[##########] 99%` | Minimized/narrow desktop shell repair, dark-version QA, packaged-flow polish, broader visual QA. |
-| Desktop app foundation | In progress | `[##########] 98%` | Clean VM launch validation and broader packaged startup repair QA. |
-| Local backend foundation | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only. |
-| Vault ingestion | Complete for current scope | `[##########] 100%` | Clean VM confirmation only. |
-| Embeddings and clustering | In progress | `[##########] 99%` | Broader threshold tuning on real user vaults. |
-| Chat and context routing | In progress | `[##########] 96%` | Complete-scope map/reduce answering, token budgets, runtime failure UI. |
-| Compulsory cluster experts | In progress | `[#######---] 70%` | Real LLaMA Factory smoke and live runtime adapter loading against a real local model. |
-| Context Bridge | In progress | `[#########-] 94%` | Full extension package, capture UX polish, and later external-client smoke. |
-| Packaging and installer | In progress | `[##########] 98%` | Clean Windows VM validation. |
-| QA and hardening | In progress | `[##########] 99%` | Clean VM package validation, larger scale/performance benchmarks, model recommendation QA. |
+| Phase                      | Status                     | Progress            | Main Remaining Blocker                                                                           |
+| -------------------------- | -------------------------- | ------------------- | ------------------------------------------------------------------------------------------------ |
+| Product definition         | In progress                | `[##########] 99%`  | Windows-only public release decision record.                                                     |
+| UI prototype cleanup       | In progress                | `[##########] 99%`  | Minimized/narrow desktop shell repair, dark-version QA, packaged-flow polish, broader visual QA. |
+| Desktop app foundation     | In progress                | `[##########] 98%`  | Clean VM launch validation and broader packaged startup repair QA.                               |
+| Local backend foundation   | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only.                                                               |
+| Vault ingestion            | Complete for current scope | `[##########] 100%` | Clean VM confirmation only.                                                                      |
+| Embeddings and clustering  | In progress                | `[##########] 99%`  | Broader threshold tuning on real user vaults.                                                    |
+| Chat and context routing   | In progress                | `[##########] 96%`  | Complete-scope map/reduce answering, token budgets, runtime failure UI.                          |
+| Compulsory cluster experts | In progress                | `[#######---] 70%`  | Real LLaMA Factory smoke and live runtime adapter loading against a real local model.            |
+| Context Bridge             | In progress                | `[#########-] 94%`  | Full extension package, capture UX polish, and later external-client smoke.                      |
+| Packaging and installer    | In progress                | `[##########] 98%`  | Clean Windows VM validation.                                                                     |
+| QA and hardening           | In progress                | `[##########] 99%`  | Clean VM package validation, larger scale/performance benchmarks, model recommendation QA.       |
 
 ### Current Critical Path
 
@@ -911,7 +912,7 @@ Exit criteria:
   - added backend tests for stale Bridge permissions and diagnostic bundle creation
 - Repository hygiene:
   - removed `codex-skills` from Git tracking and added it to `.gitignore` so local Codex skill material does not publish to GitHub
-- Audio/video transcription remains a V1 todo. Current audio/video ingestion intentionally stores metadata only until a local transcription runtime is selected and benchmarked.
+- Audio/video transcription remains a future V1 stretch item. Current audio/video ingestion intentionally stores metadata only until a local transcription runtime is selected and benchmarked.
 - Added first-pass keyword-based automatic cluster assignment during indexed source creation.
 - Added conservative automatic cluster creation when a new indexed source does not match an existing cluster.
 - Updated the map to render unclustered sources as standalone loose data points.
@@ -1770,4 +1771,3 @@ At the end of every task:
 3. Add completed work to `Current Completed Work`.
 4. Add or remove items from `Current Open Work`.
 5. Add important decisions or risks to `Running Notes`.
-
