@@ -9,6 +9,7 @@ from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.embeddings import content_hash, reindex_source_chunks, require_embeddings_available
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.config import get_settings
+from backend.app.core.model_registry import preferred_expert_base_model
 from backend.app.core.vector_maintenance import vector_repair_plan
 from backend.app.core.training_dataset import build_cluster_dataset, write_cluster_training_dataset
 from backend.app.core.training_evaluation import evaluate_adapter_quality, evaluate_cluster_dataset
@@ -898,7 +899,21 @@ def _run_train_cluster_adapter(payload: dict) -> None:
                 hardware_tier=hardware["hardware_tier"],
             )
             raise RuntimeError("Cluster does not meet LoRA graduation validation gates.")
-        config = training_config(base_model=get_settings().llm_model, dataset_hash=dataset["dataset_hash"])
+        preferred_model = preferred_expert_base_model()
+        if preferred_model is None:
+            _mark_expert_training_failed(
+                conn,
+                cluster_id=cluster_id,
+                expert_job_id=expert_job_id,
+                failure_code="runtime_load_failed",
+                detail="No accepted local base model is active for expert training.",
+                hardware_tier=hardware["hardware_tier"],
+            )
+            raise RuntimeError("No accepted local base model is active for expert training.")
+        config = training_config(
+            base_model=str(preferred_model.get("local_path") or preferred_model.get("id") or get_settings().llm_model),
+            dataset_hash=dataset["dataset_hash"],
+        )
 
         try:
             train_result = run_lora_training_process(

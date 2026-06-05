@@ -1,6 +1,6 @@
 from backend.app.core.config import get_settings
 from backend.app.core.embeddings import embedding_status
-from backend.app.core.model_registry import model_integrity_manifest_status, list_models
+from backend.app.core.model_registry import active_model_status, model_integrity_manifest_status, list_models
 from backend.app.core.ocr import ocr_runtime_status
 from backend.app.core.startup_status import startup_status_staleness, validate_startup_phase_registry
 
@@ -11,6 +11,7 @@ def first_run_readiness() -> dict:
     ocr = ocr_runtime_status()
     manifest = model_integrity_manifest_status()
     installed_models = [model for model in list_models() if model.get("installed")]
+    active_model = active_model_status()
     checks = [
         {
             "id": "vault_path",
@@ -33,6 +34,15 @@ def first_run_readiness() -> dict:
             "detail": (
                 f"manifest_models={manifest.get('model_count', 0)}; "
                 f"installed_models={len(installed_models)}"
+            ),
+        },
+        {
+            "id": "approved_model",
+            "ok": bool(active_model and active_model.get("compatibility", {}).get("accepted")),
+            "detail": (
+                active_model.get("compatibility", {}).get("detail", "")
+                if active_model
+                else "No active approved model is configured."
             ),
         },
         {

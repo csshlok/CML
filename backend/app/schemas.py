@@ -495,11 +495,27 @@ class ModelIntegrityRead(BaseModel):
     detail: str | None = None
 
 
+class ModelCompatibilityRead(BaseModel):
+    status: str
+    accepted: bool
+    family: str
+    family_name: str
+    model_type: str
+    architecture: str
+    registered_family: str = ""
+    local_path: str
+    runtime_dependencies: dict
+    hardware: dict
+    reasons: list[str]
+    detail: str
+
+
 class ModelRead(BaseModel):
     id: str
     name: str
     role: str
     hf_repo: str
+    family: str = ""
     quantization: str
     approximate_download_gb: float
     recommended_ram_gb: str
@@ -509,6 +525,21 @@ class ModelRead(BaseModel):
     local_path: str | None = None
     download: ModelDownloadState | None = None
     integrity: ModelIntegrityRead | None = None
+    active: bool = False
+    compatibility: ModelCompatibilityRead | None = None
+    source_kind: str = "default_choice"
+
+
+class ModelCompatibilityRequest(BaseModel):
+    path: str
+    name: str | None = None
+
+
+class ModelRecommendationRead(BaseModel):
+    hardware: dict
+    recommended_model_id: str
+    models: list[ModelRead]
+    detail: str
 
 
 class ModelDownloadStart(BaseModel):

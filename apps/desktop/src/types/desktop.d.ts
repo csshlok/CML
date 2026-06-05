@@ -8,6 +8,7 @@ declare global {
       selectSourceFiles: () => Promise<string[]>;
       selectSourceFolders: () => Promise<string[]>;
       selectEmbeddingFolder: () => Promise<string | null>;
+      selectModelFolder: () => Promise<string | null>;
       selectVaultFolder: () => Promise<string | null>;
       setActiveVaultFolder: (targetPath: string) => Promise<string | null>;
       selectCoverImage: () => Promise<string | null>;

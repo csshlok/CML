@@ -1,6 +1,7 @@
 from dataclasses import asdict, dataclass
 import hashlib
 from pathlib import Path
+import re
 from typing import Any
 from urllib.parse import quote
 from urllib.error import URLError
@@ -12,6 +13,8 @@ import time
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import utc_now
+from backend.app.core.expert_runtime import _is_transformers_model_dir, runtime_dependency_status
+from backend.app.core.hardware import hardware_status
 from backend.app.core.network_security import validate_huggingface_url
 
 
@@ -21,11 +24,23 @@ class LocalModel:
     name: str
     role: str
     hf_repo: str
+    family: str
     quantization: str
     approximate_download_gb: float
     recommended_ram_gb: str
     notes: str
     expected_sha256: str = ""
+
+
+@dataclass(frozen=True)
+class ApprovedModelFamily:
+    id: str
+    name: str
+    repo_prefixes: tuple[str, ...]
+    model_type_prefixes: tuple[str, ...]
+    architecture_keywords: tuple[str, ...]
+    minimum_hardware_tier: str
+    detail: str
 
 
 MODEL_REGISTRY: tuple[LocalModel, ...] = (
@@ -34,6 +49,7 @@ MODEL_REGISTRY: tuple[LocalModel, ...] = (
         name="Qwen3 4B Q4_K_M",
         role="default",
         hf_repo="Qwen/Qwen3-4B-GGUF",
+        family="qwen",
         quantization="Q4_K_M",
         approximate_download_gb=2.5,
         recommended_ram_gb="8+",
@@ -44,6 +60,7 @@ MODEL_REGISTRY: tuple[LocalModel, ...] = (
         name="Phi-4 Mini Instruct Q4_K_M",
         role="low-spec-fallback",
         hf_repo="unsloth/Phi-4-mini-instruct-GGUF",
+        family="phi",
         quantization="Q4_K_M",
         approximate_download_gb=2.5,
         recommended_ram_gb="8+",
@@ -54,6 +71,7 @@ MODEL_REGISTRY: tuple[LocalModel, ...] = (
         name="Qwen3 8B Q4_K_M",
         role="quality-option",
         hf_repo="Qwen/Qwen3-8B-GGUF",
+        family="qwen",
         quantization="Q4_K_M",
         approximate_download_gb=4.8,
         recommended_ram_gb="16+",
@@ -64,6 +82,7 @@ MODEL_REGISTRY: tuple[LocalModel, ...] = (
         name="Gemma 3 4B IT Q4_K_M",
         role="optional",
         hf_repo="Aldaris/gemma-3-4b-it-Q4_K_M-GGUF",
+        family="gemma",
         quantization="Q4_K_M",
         approximate_download_gb=2.5,
         recommended_ram_gb="8+",
@@ -74,10 +93,41 @@ MODEL_REGISTRY: tuple[LocalModel, ...] = (
         name="Gemma 3 12B IT Q4_K_M",
         role="optional-large",
         hf_repo="nocturne23/gemma-3-12b-it-Q4_K_M-GGUF",
+        family="gemma",
         quantization="Q4_K_M",
         approximate_download_gb=6.9,
         recommended_ram_gb="24+",
         notes="Optional larger candidate for later experiments.",
+    ),
+)
+
+APPROVED_MODEL_FAMILIES: tuple[ApprovedModelFamily, ...] = (
+    ApprovedModelFamily(
+        id="qwen",
+        name="Qwen",
+        repo_prefixes=("qwen/",),
+        model_type_prefixes=("qwen",),
+        architecture_keywords=("qwen",),
+        minimum_hardware_tier="cpu_minimum_spec",
+        detail="Accepted when a local Qwen Transformers checkpoint is present and expert runtime dependencies are available.",
+    ),
+    ApprovedModelFamily(
+        id="phi",
+        name="Phi",
+        repo_prefixes=("microsoft/phi-", "unsloth/phi-"),
+        model_type_prefixes=("phi",),
+        architecture_keywords=("phi",),
+        minimum_hardware_tier="cpu_minimum_spec",
+        detail="Accepted when a local Phi Transformers checkpoint is present and expert runtime dependencies are available.",
+    ),
+    ApprovedModelFamily(
+        id="gemma",
+        name="Gemma",
+        repo_prefixes=("google/gemma", "gemma", "aldaris/gemma"),
+        model_type_prefixes=("gemma",),
+        architecture_keywords=("gemma",),
+        minimum_hardware_tier="cpu_minimum_spec",
+        detail="Accepted when a local Gemma Transformers checkpoint is present and expert runtime dependencies are available.",
     ),
 )
 
@@ -93,17 +143,74 @@ def models_dir() -> Path:
     return path
 
 
+def imported_models_dir() -> Path:
+    path = models_dir() / "imported"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def registry_state_path() -> Path:
+    return models_dir() / "registry-state.json"
+
+
+def approved_family(family_id: str) -> ApprovedModelFamily | None:
+    return next((family for family in APPROVED_MODEL_FAMILIES if family.id == family_id), None)
+
+
 def list_models() -> list[dict[str, Any]]:
-    return [model_status(model.id) for model in MODEL_REGISTRY]
+    rows = [model_status(model.id) for model in MODEL_REGISTRY]
+    rows.extend(imported_model_statuses())
+    return rows
 
 
 def get_model(model_id: str) -> LocalModel | None:
     return next((model for model in MODEL_REGISTRY if model.id == model_id), None)
 
 
+def imported_model_statuses() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for metadata_path in sorted(imported_models_dir().glob("*/cml-model.json")):
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        model_id = str(payload.get("id") or "")
+        local_path = str(payload.get("local_path") or "")
+        family = str(payload.get("family") or "")
+        compatibility = model_compatibility_report(local_path, registered_family=family)
+        state = registry_state()
+        rows.append(
+            {
+                "id": model_id,
+                "name": str(payload.get("name") or model_id),
+                "role": "custom-import",
+                "family": family,
+                "hf_repo": str(payload.get("hf_repo") or ""),
+                "quantization": "",
+                "approximate_download_gb": 0.0,
+                "recommended_ram_gb": payload.get("recommended_ram_gb") or "",
+                "notes": str(payload.get("notes") or "Imported local checkpoint."),
+                "llama_cpp_ref": "",
+                "installed": True,
+                "local_path": local_path,
+                "download": None,
+                "integrity": {"status": "imported", "sha256": None, "expected_sha256": None},
+                "active": state.get("active_model_id") == model_id,
+                "compatibility": compatibility,
+                "source_kind": "custom_import",
+            }
+        )
+    return rows
+
+
 def model_status(model_id: str) -> dict[str, Any]:
     model = get_model(model_id)
     if model is None:
+        imported = next((item for item in imported_model_statuses() if item["id"] == model_id), None)
+        if imported is not None:
+            return imported
         raise KeyError(model_id)
     info = _model_to_dict(model)
     local_path = _find_local_model_file(model)
@@ -117,6 +224,13 @@ def model_status(model_id: str) -> dict[str, Any]:
             "local_path": str(local_path) if local_path else state_installed_path,
             "download": state,
             "integrity": _model_integrity_status(model, local_path),
+            "active": registry_state().get("active_model_id") == model_id,
+            "compatibility": (
+                model_compatibility_report(str(local_path), registered_family=model.family)
+                if local_path is not None
+                else _missing_model_compatibility(model.family, model.notes)
+            ),
+            "source_kind": "default_choice",
         }
     )
     return info
@@ -130,6 +244,59 @@ def model_integrity_manifest_status() -> dict[str, Any]:
         "source": manifest.get("source") or "",
         "model_count": len(entries) if isinstance(entries, dict) else 0,
         "updated_at": manifest.get("updated_at") or "",
+    }
+
+
+def registry_state() -> dict[str, Any]:
+    path = registry_state_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"active_model_id": ""}
+    if not isinstance(payload, dict):
+        return {"active_model_id": ""}
+    payload.setdefault("active_model_id", "")
+    return payload
+
+
+def set_active_model(model_id: str) -> dict[str, Any]:
+    if not any(item["id"] == model_id for item in list_models()):
+        raise KeyError(model_id)
+    state = {"active_model_id": model_id, "updated_at": utc_now()}
+    registry_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
+    for row in list_models():
+        if row["id"] == model_id:
+            return row
+    raise KeyError(model_id)
+
+
+def active_model_status() -> dict[str, Any] | None:
+    active_model_id = str(registry_state().get("active_model_id") or "")
+    if not active_model_id:
+        return None
+    return next((item for item in list_models() if item["id"] == active_model_id), None)
+
+
+def model_recommendations() -> dict[str, Any]:
+    hardware = hardware_status()
+    tier = hardware.get("hardware_tier") or "unknown"
+    if tier == "gpu_or_high_spec_candidate":
+        preferred_id = "qwen3-8b-q4_k_m"
+    elif tier == "cpu_minimum_spec":
+        preferred_id = "qwen3-4b-q4_k_m"
+    elif tier == "cpu_high_spec":
+        preferred_id = "qwen3-8b-q4_k_m"
+    else:
+        preferred_id = "phi-4-mini-instruct-q4_k_m"
+    ordered = sorted(
+        list_models(),
+        key=lambda item: (0 if item["id"] == preferred_id else 1, item["role"], item["name"]),
+    )
+    return {
+        "hardware": hardware,
+        "recommended_model_id": preferred_id,
+        "models": ordered,
+        "detail": f"Recommended model family selection for hardware tier {tier}.",
     }
 
 
@@ -263,6 +430,109 @@ def _model_to_dict(model: LocalModel) -> dict[str, Any]:
     return info
 
 
+def _missing_model_compatibility(family_id: str, notes: str = "") -> dict[str, Any]:
+    family = approved_family(family_id)
+    return {
+        "status": "rejected",
+        "accepted": False,
+        "family": family_id,
+        "family_name": family.name if family else family_id,
+        "model_type": "",
+        "architecture": "",
+        "registered_family": family_id,
+        "local_path": "",
+        "runtime_dependencies": runtime_dependency_status(),
+        "hardware": hardware_status(),
+        "reasons": [
+            "No compatible local Transformers checkpoint is installed for this model family."
+        ],
+        "detail": notes or "Install or import a compatible local Transformers checkpoint to enable expert features.",
+    }
+
+
+def model_compatibility_report(model_path: str | Path, *, registered_family: str = "") -> dict[str, Any]:
+    target = Path(model_path) if str(model_path).strip() else Path("")
+    runtime = runtime_dependency_status()
+    hardware = hardware_status()
+    reasons: list[str] = []
+    config = _read_transformers_config(target)
+    family = _detect_approved_family(config, registered_family=registered_family, model_path=str(target))
+    model_type = str(config.get("model_type") or "")
+    architectures = config.get("architectures") or []
+    architecture = str(architectures[0] if isinstance(architectures, list) and architectures else "")
+
+    if not model_path or not str(model_path).strip():
+        reasons.append("Model path is required.")
+    elif not target.exists():
+        reasons.append("Model path does not exist.")
+    elif not target.is_dir():
+        reasons.append("Model path must point to a local Transformers checkpoint directory.")
+    elif not _is_transformers_model_dir(target):
+        reasons.append("Checkpoint directory is missing config/tokenizer files required by the expert runtime.")
+    if not family:
+        reasons.append("Model family is not in the approved Qwen/Phi/Gemma set.")
+    if not _runtime_ready(runtime):
+        reasons.append("Expert runtime dependencies are not available.")
+    if family and not _hardware_supports_family(family, hardware):
+        reasons.append(f"Current hardware tier does not satisfy the minimum contract for the {family.name} family.")
+
+    accepted = not reasons
+    return {
+        "status": "accepted" if accepted else "rejected",
+        "accepted": accepted,
+        "family": family.id if family else "",
+        "family_name": family.name if family else "",
+        "model_type": model_type,
+        "architecture": architecture,
+        "registered_family": registered_family,
+        "local_path": str(target) if str(model_path).strip() else "",
+        "runtime_dependencies": runtime,
+        "hardware": hardware,
+        "reasons": reasons,
+        "detail": (
+            f"Accepted local {family.name} checkpoint for Vault and LoRA expert runtime."
+            if accepted and family
+            else "; ".join(reasons)
+        ),
+    }
+
+
+def import_model_checkpoint(source_path: str | Path, *, name: str | None = None) -> dict[str, Any]:
+    source_dir = Path(source_path).resolve()
+    report = model_compatibility_report(source_dir)
+    if not report["accepted"]:
+        raise ValueError(report["detail"])
+    family = report["family"]
+    destination_name = _safe_import_dir_name(name or source_dir.name or family)
+    destination = imported_models_dir() / destination_name
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(source_dir, destination)
+    model_id = f"custom-{destination_name}"
+    metadata = {
+        "id": model_id,
+        "name": name or source_dir.name or destination_name,
+        "family": family,
+        "local_path": str(destination),
+        "source_path": str(source_dir),
+        "hf_repo": "",
+        "notes": "Imported local checkpoint.",
+        "recommended_ram_gb": "",
+        "created_at": utc_now(),
+    }
+    (destination / "cml-model.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    if not active_model_status():
+        set_active_model(model_id)
+    return next(item for item in imported_model_statuses() if item["id"] == model_id)
+
+
+def preferred_expert_base_model() -> dict[str, Any] | None:
+    active = active_model_status()
+    if active and active.get("compatibility", {}).get("accepted"):
+        return active
+    return next((item for item in imported_model_statuses() if item.get("compatibility", {}).get("accepted")), None)
+
+
 def _model_disk_preflight(model: LocalModel) -> dict[str, Any]:
     target_dir = models_dir() / model.id
     probe = target_dir if target_dir.exists() else _nearest_existing_parent(target_dir)
@@ -277,6 +547,51 @@ def _model_disk_preflight(model: LocalModel) -> dict[str, Any]:
             else f"Not enough disk space is available for {model.name}."
         ),
     }
+
+
+def _runtime_ready(runtime: dict[str, Any]) -> bool:
+    return bool(
+        runtime.get("available")
+        or any("Will defer live smoke" in str(issue) for issue in runtime.get("issues", []))
+    )
+
+
+def _read_transformers_config(path: Path) -> dict[str, Any]:
+    config_path = path / "config.json"
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _detect_approved_family(config: dict[str, Any], *, registered_family: str, model_path: str) -> ApprovedModelFamily | None:
+    if registered_family:
+        family = approved_family(registered_family)
+        if family:
+            return family
+    repo_hint = str(config.get("_name_or_path") or config.get("name_or_path") or model_path).lower()
+    model_type = str(config.get("model_type") or "").lower()
+    architectures = [str(item).lower() for item in (config.get("architectures") or []) if item]
+    for family in APPROVED_MODEL_FAMILIES:
+        if any(repo_hint.startswith(prefix) or prefix in repo_hint for prefix in family.repo_prefixes):
+            return family
+        if any(model_type.startswith(prefix) for prefix in family.model_type_prefixes):
+            return family
+        if any(any(keyword in architecture for keyword in family.architecture_keywords) for architecture in architectures):
+            return family
+    return None
+
+
+def _hardware_supports_family(family: ApprovedModelFamily, hardware: dict[str, Any]) -> bool:
+    tier = str(hardware.get("hardware_tier") or "unknown")
+    rank = {"unsupported": 0, "unknown": 0, "cpu_minimum_spec": 1, "cpu_high_spec": 2, "gpu_or_high_spec_candidate": 3}
+    return rank.get(tier, 0) >= rank.get(family.minimum_hardware_tier, 99)
+
+
+def _safe_import_dir_name(name: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", name.strip()).strip("-_.").lower()
+    return slug or "imported-model"
 
 
 def _nearest_existing_parent(path: Path) -> Path:

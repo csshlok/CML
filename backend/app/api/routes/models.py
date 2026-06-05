@@ -10,9 +10,13 @@ from backend.app.core.embeddings import (
 from backend.app.core.llm_runtime import runtime_status
 from backend.app.core.model_registry import (
     cancel_model_download,
+    import_model_checkpoint,
     list_models,
+    model_compatibility_report,
     model_integrity_manifest_status,
+    model_recommendations,
     model_status,
+    set_active_model,
     start_model_download,
 )
 from backend.app.schemas import (
@@ -20,7 +24,10 @@ from backend.app.schemas import (
     EmbeddingRuntimeStatus,
     EmbeddingModelDownloadRequest,
     EmbeddingModelDownloadState,
+    ModelCompatibilityRead,
+    ModelCompatibilityRequest,
     ModelDownloadStart,
+    ModelRecommendationRead,
     ModelRead,
     ModelRuntimeStatus,
 )
@@ -31,6 +38,11 @@ router = APIRouter(prefix="/models", tags=["models"])
 @router.get("", response_model=list[ModelRead])
 def list_local_models() -> list[dict]:
     return list_models()
+
+
+@router.get("/recommendations", response_model=ModelRecommendationRead)
+def get_model_recommendations() -> dict:
+    return model_recommendations()
 
 
 @router.get("/runtime", response_model=ModelRuntimeStatus)
@@ -75,6 +87,27 @@ def cancel_embedding_download() -> dict:
 def get_local_model(model_id: str) -> dict:
     try:
         return model_status(model_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Model not found") from exc
+
+
+@router.post("/compatibility/report", response_model=ModelCompatibilityRead)
+def get_model_compatibility_report(payload: ModelCompatibilityRequest) -> dict:
+    return model_compatibility_report(payload.path)
+
+
+@router.post("/import", response_model=ModelRead)
+def import_local_model(payload: ModelCompatibilityRequest) -> dict:
+    try:
+        return import_model_checkpoint(payload.path, name=payload.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{model_id}/activate", response_model=ModelRead)
+def activate_local_model(model_id: str) -> dict:
+    try:
+        return set_active_model(model_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Model not found") from exc
 
