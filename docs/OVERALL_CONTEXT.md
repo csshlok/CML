@@ -1,12 +1,38 @@
 ﻿# Overall Context
 
-Last updated: 2026-06-04
+Last updated: 2026-06-05
 
 ## Fallback Context Rule
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
-Latest compact truth after the 2026-06-04 implementation pass lives in `docs/PROJECT_CONTEXT.md`. Current product decision: V1 is Windows-only, public-release-only, and must include a working high-quality verified LoRA function; there is no private-demo fallback. The latest pass continued the compulsory cluster expert build: stricter dataset/diversity/quality-delta gates, adapter artifact validation, runtime-load plan metadata, stale-adapter detection, richer failure codes, expert status reporting, deterministic evaluation harness, repeatable LoRA smoke scripts, and an honest Expert tab. Claude Desktop-specific smoke is deferred for now; clean Windows VM validation, real LoRA trainer/runtime smoke, and hardware-aware model recommendations are current external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+Latest compact truth after the 2026-06-05 decision pass lives in `docs/PROJECT_CONTEXT.md`. Current product decision: V1 is Windows-only, public-release-only, and must include a working high-quality verified LoRA function; there is no private-demo fallback. Model policy is now explicit: one approved model family contract for both chat and expert workflows, current Qwen/Phi/Gemma defaults remain the default recommendations, custom models are only `accepted` or `rejected`, and expert-capable onboarding requires one app-managed approved local checkpoint rather than a loose runtime alias. Claude Desktop-specific smoke is deferred for now; clean Windows VM validation, real LoRA trainer/runtime smoke, and hardware-aware model recommendations remain current external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+
+## 2026-06-05 Approved Model Policy Snapshot
+
+Completed decision:
+
+- Public V1 will use a single approved model family contract across normal chat and LoRA expert workflows.
+- Current default families remain the current Qwen/Phi/Gemma defaults for recommendation purposes.
+- Setup must require one approved model download or import before expert-capable onboarding is complete.
+- Custom model registration has only two outcomes: `accepted` or `rejected`.
+- Acceptance requires a real app-managed local checkpoint that passes both Vault runtime and LoRA runtime compatibility checks on the current machine.
+- A connected OpenAI-compatible endpoint, GGUF-only alias, Ollama name, or llama.cpp runtime alone is not enough for LoRA acceptance.
+
+Current compatibility research baseline:
+
+- Hugging Face Transformers integrates directly with PEFT for non-prompt-learning methods including LoRA, and adapters are loaded onto `PreTrainedModel` classes rather than arbitrary runtime endpoints.
+- Qwen3 official Hugging Face checkpoints are documented for `transformers` use and also separately exposed through local-app quantizations; that means CML should distinguish direct-checkpoint acceptance from endpoint-only usage.
+- Microsoft Phi-4-mini-instruct official Hugging Face assets expose both `Transformers` usage and quantized local-app variants, so the same direct-checkpoint-versus-quantized-runtime distinction applies.
+- Google Gemma 3 official Hugging Face checkpoints are documented for `Transformers` usage and also have quantized local-app paths; acceptance for LoRA must require the compatible checkpoint path, not only the quantized runtime.
+- Additional official compatible families worth evaluating later include Qwen2.5, Llama 3.x, and Mistral Nemo, but the current product defaults remain the existing Qwen/Phi/Gemma ladder unless explicitly changed.
+
+Implementation status after the 2026-06-05 pass:
+
+- Backend now has a formal model compatibility report, approved-family detection, active approved-model selection, custom checkpoint import, and readiness gating for accepted models.
+- Expert training now chooses an accepted local base model instead of blindly using the generic runtime alias.
+- Onboarding and Settings now expose accepted/rejected model validation and custom checkpoint import flows instead of treating runtime aliases as sufficient for expert setup.
+- Packaging now stages a separate bundled expert Python runtime and package validation expects that runtime to exist.
 
 ## 2026-06-04 Compulsory Cluster Expert Build Snapshot
 

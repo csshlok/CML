@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-06-04
+Last updated: 2026-06-05
 
 ## Operating Rule
 
@@ -43,7 +43,7 @@ Public V1 target: end of July 2026 as a Windows-only public release. There is no
 
 ## Model And Runtime Decisions
 
-Do not bundle LLM weights in the first installer. First-run setup should let users download CML-managed local models or connect existing local runtimes. Model choice must be recommended from the user's actual system conditions, not one default that assumes a high-end machine.
+Do not bundle LLM weights in the first installer. First-run setup must require one CML-managed approved model download or import before normal expert-capable use. Model choice must be recommended from the user's actual system conditions, not one default that assumes a high-end machine.
 
 | Role | Default / Option | ID | Repo | Approx size | Target RAM |
 | --- | --- | --- | --- | --- | --- |
@@ -53,14 +53,25 @@ Do not bundle LLM weights in the first installer. First-run setup should let use
 | Optional later | Gemma 3 4B IT Q4_K_M | `gemma-3-4b-it-q4_k_m` | `Aldaris/gemma-3-4b-it-Q4_K_M-GGUF` | ~2.5 GB | 8+ GB |
 | Optional later | Gemma 3 12B IT Q4_K_M | `gemma-3-12b-it-q4_k_m` | `nocturne23/gemma-3-12b-it-Q4_K_M-GGUF` | ~6.9 GB | 24+ GB |
 
+Approved-model policy:
+
+- Public V1 uses a single approved model family contract for both normal chat and LoRA expert workflows.
+- Current default choices remain the current Qwen/Phi/Gemma defaults, but expert-capable setup must use app-managed compatible checkpoints, not arbitrary runtime aliases.
+- Custom models have only two outcomes: `accepted` or `rejected`.
+- A custom model is accepted only if CML proves it is compatible with both Vault runtime expectations and LoRA expert runtime expectations on the current machine.
+- Connected OpenAI-compatible runtimes, GGUF-only aliases, Ollama names, and llama.cpp endpoints are not sufficient by themselves for LoRA acceptance.
+- The app must own or import the actual compatible local checkpoint under an app-managed path before expert training/runtime is enabled.
+- Setup must require one approved model before expert-capable onboarding completes. Retrieval-only degraded mode may still exist explicitly, but it does not satisfy the intended V1 setup path.
+
 Required recommendation system:
 
 - Detect RAM, CPU threads, OS, architecture, AVX2, GPU/CUDA availability where possible, free disk, and currently configured local runtime.
 - Recommend a low-spec, standard, or quality model tier with plain-language reasoning.
 - Never recommend a model that is likely to make the app unusable on the current machine.
-- Offer `Connect existing runtime` for users who already run Ollama, llama.cpp, LM Studio, or another OpenAI-compatible local endpoint.
+- Current default choices remain the default recommended families unless hardware or licensing constraints force a smaller approved option.
+- If the user imports their own model, run a compatibility report before registration and reject it with explicit reasons when it fails the approved contract.
 - Keep retrieval/context-only mode available as an explicit degraded state, but not as the desired public V1 experience.
-- Treat LoRA training requirements separately from synthesis model selection; expert training may need stricter hardware guidance than normal chat.
+- Treat LoRA training requirements separately from synthesis model selection for sizing guidance, but not for model-family compatibility; the approved family must satisfy both contracts.
 
 Runtime boundary:
 
@@ -68,7 +79,7 @@ Runtime boundary:
 - Support llama.cpp via `llama-server`.
 - Support Ollama only when OpenAI-compatible behavior is confirmed.
 - If no synthesis runtime is configured, use explicit degraded/context-only responses; do not silently pretend local chat works.
-- Cluster experts are separate from the general synthesis model.
+- Cluster experts are not allowed to rely on arbitrary connected runtime identities; expert runtime must resolve an accepted local checkpoint directly.
 - Hash embeddings are development-only. Public/product setup must require a real local embedding backend or explicit degraded mode.
 
 ## Phase Progress
@@ -82,9 +93,9 @@ Runtime boundary:
 | Vault ingestion | Complete for current scope | `[##########] 100%` | Clean VM confirmation only |
 | Embeddings and clustering | In progress | `[##########] 99%` | Broader threshold tuning on real user vaults |
 | Chat/context routing | In progress | `[##########] 96%` | Complete-scope map/reduce, token budgets, runtime failure UX |
-| Compulsory cluster experts | In progress | `[#########-] 85%` | Real machine validation still required for LLaMA Factory smoke, live adapter prompt run, and live quality benchmark |
+| Compulsory cluster experts | In progress | `[#########-] 88%` | Real machine validation still required for LLaMA Factory smoke, live adapter prompt run, and live quality benchmark |
 | Context Bridge | In progress | `[#########-] 94%` | Capture UX polish and later external-client smoke |
-| Packaging/install | In progress | `[##########] 98%` | Clean VM validation |
+| Packaging/install | In progress | `[##########] 99%` | Clean VM validation of bundled expert runtime |
 | QA/hardening | In progress | `[##########] 99%` | Clean VM package validation and larger user-owned vault benchmarks |
 
 ## Current Critical Path
@@ -93,7 +104,7 @@ Runtime boundary:
 - Keep Windows-only public V1 criteria. If verified LoRA or other public gates fail, delay release; do not ship a private demo fallback.
 - Verify real adapter training and runtime loading before any broad "trained expert" claim.
 - Compulsory expert work now has stricter dataset/diversity/quality gates, evaluation harness, smoke scripts, and Expert tab visibility, but still needs a real trainer command/model path before public claims.
-- Build hardware-aware model recommendation so low-spec users receive safe model/runtime choices instead of high-end defaults.
+- Validate the new accepted/rejected model contract on a clean Windows machine with the bundled expert runtime and one imported approved checkpoint.
 - Keep the written threat model current and treat local API/Bridge auth regressions as release blockers.
 - Continue retrieval threshold tuning beyond the benchmark harness using larger user-owned vaults.
 - Defer Claude Desktop-specific Bridge smoke for now; Codex-style MCP smoke remains a local protocol check, and external-client claims stay conservative.
@@ -139,7 +150,7 @@ Chat/context routing:
 Compulsory cluster experts:
 
 - Done: verified-LoRA contract scaffold, dataset export with source/token/diversity counts, duplicate-ratio gate, artifact schema, metrics, activation, rollback, delete guardrails, shell-free trainer process boundary, Windows-path trainer tests, stricter graduation contract, adapter config/weight validation, runtime-load plan metadata, deterministic expert evaluation harness, retrieval-vs-adapter delta gate, stale-adapter detection, Expert tab status UI, and repeatable LoRA expert/runtime smoke scripts.
-- Remaining: execute the new Transformers/PEFT runtime smoke on a real machine with an installed local base model, record a real LLaMA Factory trainer run against that model, expand hardware matrix/time estimates, and replace deterministic adapter scoring with a live adapter-backed quality benchmark.
+- Remaining: execute the new Transformers/PEFT runtime smoke on a real machine with an installed accepted local base model, record a real LLaMA Factory trainer run against that model, expand hardware matrix/time estimates, and replace deterministic adapter scoring with a live adapter-backed quality benchmark.
 
 Context Bridge:
 
@@ -177,7 +188,7 @@ These are release gates, not polish.
 - MCP Bridge: Codex-style JSON-RPC smoke passed; keep external-client readiness claims conservative while Claude Desktop-specific smoke is deferred.
 - LoRA: public V1 requires verified real adapter training, adapter artifact validation, runtime load against a real local model, rollback, supported hardware, failure codes, and quality win over retrieval baseline.
 - LoRA graduation framing: small or insufficient clusters should remain retrieval-backed with explicit status instead of pretending every cluster can graduate.
-- Model recommendation: public V1 must recommend safe synthesis/embedding/expert setup by detected system tier, because many users will not have high-end hardware.
+- Model recommendation: public V1 must recommend safe synthesis/embedding/expert setup by detected system tier, enforce one approved model family contract, and reject incompatible custom imports explicitly.
 - OCR/package: packaged OCR runtime, generated OCR fixture smoke, dynamic-link smoke, migration drill, and installer smoke pass; Ghostscript path is AGPL-compatible public release.
 
 ## Next Backend Build Steps
@@ -200,8 +211,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Add written public V1 decision record: Windows-only; public release only; release slips until verified LoRA and other public gates pass.
 - Finish first-run setup UI around the new readiness gate: vault path, model setup, embedding setup, OCR readiness, startup repair states.
 - Make onboarding honest about local model/embedding download size, time, hardware requirements, and external Bridge privacy tradeoffs.
-- Build model recommendation system based on detected system specs: RAM, CPU, GPU/CUDA, disk, runtime availability, and low/mid/high-spec user tiers.
-- Add one-click local model/embedding dependency install or connect-existing-runtime flows.
+- Add real checkpoint-family download/import UX for the approved model contract, beyond the current runtime/GGUF default downloads.
 - Add model provenance display in setup/settings using `/api/v1/models/integrity-manifest`.
 - Continue backend service-layer extraction around raw route/database operations.
 - Add complete-scope answering in stages: coverage ledger, BM25/embedding scoring, threshold tuning, map packets, reduce/synthesis, cache pruning.
@@ -213,6 +223,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 
 ## Recent Completed Work
 
+- Implemented the approved-model contract end to end: backend model compatibility reports, custom checkpoint import, active-model selection, readiness gating, expert-training base-model selection, onboarding/settings accepted-or-rejected model flows, bundled expert runtime packaging, and focused regression coverage.
 - Continued the compulsory cluster expert build pass: added unique-source and duplicate-ratio dataset gates, minimum quality-delta config, deterministic expert evaluation harness, repeatable LoRA expert/runtime smoke scripts, strict LoRA MVP policy doc, and a backend-backed cluster Expert tab.
 - Started the compulsory cluster expert build pass: added stricter LoRA graduation gates for source count, estimated token count, validation records, adapter validation, runtime-load contract metadata, stale active-adapter detection, richer failure codes, and `/api/v1/clusters/{cluster_id}/expert/status`.
 - Updated cluster expert UI status mapping so backend states render as `Searchable now`, `Learning`, `Ready`, `Needs update`, or `Issue` instead of falling back to `Setting up`.
@@ -270,6 +281,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Public V1 is Windows-only and public-release-only. If it is not public-quality, delay release; do not rename it private alpha/demo.
 - Public V1 selling point is verified, high-quality LoRA cluster experts; release requires this to work well.
 - Model setup must be hardware-aware. Low-spec users need safe recommendations, not default high-end model assumptions.
+- Model policy is now explicit: single approved family contract, current Qwen/Phi/Gemma defaults remain the default choices, and custom models are only accepted or rejected after compatibility validation.
 - Q100 from the devil's advocate review is non-actionable per user instruction; do not use it to drive project decisions.
 - User-facing "trained expert" language is allowed only after real adapter graduation.
 - No package rebuild work unless explicitly requested; the latest requested rebuild was completed on 2026-06-04 and passed packaged smoke gates on this machine.
