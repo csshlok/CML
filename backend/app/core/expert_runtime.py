@@ -23,7 +23,10 @@ def runtime_adapter_load_plan(*, adapter_path: str | Path, base_model: str) -> d
     metadata_report = adapter_metadata_report(adapter_dir)
     resolved_model = resolve_local_base_model(base_model, adapter_dir=adapter_dir)
     dependency_status = runtime_dependency_status()
-    available = bool(validation["valid"] and resolved_model["available"])
+    dependency_ready = bool(
+        dependency_status["available"] or dependency_status["runtime_python"] != sys.executable
+    )
+    available = bool(validation["valid"] and resolved_model["available"] and dependency_ready)
     detail_parts: list[str] = []
     if validation["valid"]:
         detail_parts.append("Adapter artifacts validated.")
@@ -35,7 +38,7 @@ def runtime_adapter_load_plan(*, adapter_path: str | Path, base_model: str) -> d
         detail_parts.append(resolved_model["detail"])
     if dependency_status["available"]:
         detail_parts.append("Runtime dependencies are importable in the active backend environment.")
-    elif dependency_status["runtime_python"]:
+    elif dependency_ready:
         detail_parts.append(f"Live runtime smoke can use {dependency_status['runtime_python']}.")
     else:
         detail_parts.append("Install peft, transformers, and torch or configure CML_LORA_RUNTIME_PYTHON.")
@@ -240,13 +243,22 @@ def run_adapter_runtime_smoke(
             adapter_dir,
             plan["resolved_base_model"]["base_model_path"],
         )
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=1800,
-            cwd=str(ROOT_DIR),
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+                cwd=str(ROOT_DIR),
+            )
+        except Exception as exc:
+            report["error"] = str(exc)
+            LOGGER.warning(
+                "Cluster expert runtime smoke failed to launch for adapter=%s: %s",
+                adapter_dir,
+                report["error"],
+            )
+            return report
         report["stdout"] = completed.stdout[-50_000:]
         report["stderr"] = completed.stderr[-50_000:]
         if report_path.exists():

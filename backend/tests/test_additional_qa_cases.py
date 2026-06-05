@@ -134,6 +134,27 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(Path(plan["base_model_path"]).name, "resolved-base-model")
         self.assertTrue(plan["resolved_base_model"]["available"])
 
+    def test_runtime_adapter_load_plan_requires_deps_without_separate_runtime_python(self) -> None:
+        from backend.app.core.expert_runtime import runtime_adapter_load_plan
+
+        self._write_fake_local_transformers_model("deps-model")
+        adapter_dir = Path(self.tmp.name) / "adapter-deps"
+        adapter_dir.mkdir()
+        (adapter_dir / "adapter_config.json").write_text(
+            '{"peft_type":"LORA","base_model_name_or_path":"deps-model"}',
+            encoding="utf-8",
+        )
+        (adapter_dir / "adapter_model.safetensors").write_bytes(b"adapter")
+
+        with (
+            patch("backend.app.core.expert_runtime._package_status", return_value={"importable": False}),
+            patch("backend.app.core.expert_runtime.runtime_python_executable", return_value=sys.executable),
+        ):
+            plan = runtime_adapter_load_plan(adapter_path=adapter_dir, base_model="deps-model")
+
+        self.assertFalse(plan["available"])
+        self.assertIn("Install peft, transformers, and torch", plan["detail"])
+
     def test_run_adapter_runtime_smoke_reads_worker_report(self) -> None:
         import subprocess
 
@@ -176,6 +197,29 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(report["response_text"], "CML")
         self.assertTrue(report["unloaded"])
         self.assertEqual(report["stdout"], "worker-ok")
+
+    def test_run_adapter_runtime_smoke_reports_worker_launch_failure(self) -> None:
+        from backend.app.core.expert_runtime import run_adapter_runtime_smoke
+
+        self._write_fake_local_transformers_model("launch-model")
+        adapter_dir = Path(self.tmp.name) / "adapter-launch"
+        adapter_dir.mkdir()
+        (adapter_dir / "adapter_config.json").write_text(
+            '{"peft_type":"LORA","base_model_name_or_path":"launch-model"}',
+            encoding="utf-8",
+        )
+        (adapter_dir / "adapter_model.safetensors").write_bytes(b"adapter")
+
+        with patch(
+            "backend.app.core.expert_runtime.subprocess.run",
+            side_effect=FileNotFoundError("runtime python missing"),
+        ):
+            report = run_adapter_runtime_smoke(adapter_path=adapter_dir, base_model="launch-model")
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["error"], "runtime python missing")
+        self.assertEqual(report["stdout"], "")
+        self.assertEqual(report["stderr"], "")
 
     def test_run_cluster_expert_prompt_falls_back_to_another_ready_artifact(self) -> None:
         from backend.app.core.database import connect, utc_now
