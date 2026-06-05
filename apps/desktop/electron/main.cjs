@@ -283,6 +283,15 @@ if (gotSingleInstanceLock) {
       return result.filePaths[0] ?? null;
     });
 
+    ipcMain.handle("cml:select-model-folder", async () => {
+      const result = await dialog.showOpenDialog({
+        title: "Choose model checkpoint folder",
+        properties: ["openDirectory"],
+      });
+      if (result.canceled) return null;
+      return result.filePaths[0] ?? null;
+    });
+
     ipcMain.handle("cml:select-vault-folder", async () => {
       const result = await dialog.showOpenDialog({
         title: "Choose vault location",
@@ -379,7 +388,11 @@ async function ensureBackend() {
   const pythonPath = isDev
     ? path.join(rootDir, ".venv", "Scripts", "python.exe")
     : path.join(process.resourcesPath, "python-runtime", "Scripts", "python.exe");
+  const expertPythonPath = isDev
+    ? path.join(rootDir, ".venv-lora", "Scripts", "python.exe")
+    : path.join(process.resourcesPath, "expert-python-runtime", "Scripts", "python.exe");
   const pythonCommand = await pathExists(pythonPath) ? pythonPath : "python";
+  const expertPythonCommand = await pathExists(expertPythonPath) ? expertPythonPath : pythonCommand;
   backendProcess = spawn(
     pythonCommand,
     ["-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", String(port)],
@@ -394,6 +407,7 @@ async function ensureBackend() {
         CML_DATABASE_PATH: databasePath,
         CML_STARTUP_STATUS_PATH: startupStatusPath,
         CML_VAULT_LOCK_OVERRIDE: vaultLockOverrideOnce ? "open_anyway" : "",
+        CML_LORA_RUNTIME_PYTHON: expertPythonCommand,
         PLAYWRIGHT_BROWSERS_PATH: isDev
           ? process.env.PLAYWRIGHT_BROWSERS_PATH || ""
           : path.join(process.resourcesPath, "ms-playwright"),

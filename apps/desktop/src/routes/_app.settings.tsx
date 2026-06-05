@@ -23,6 +23,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  activateLocalModel,
   cancelModelDownload,
   cancelEmbeddingDownload,
   configureEmbeddingRuntime,
@@ -33,6 +34,8 @@ import {
   getEmbeddingRuntimeStatus,
   getEmbeddingDownloadStatus,
   getHardwareStatus,
+  getModelCompatibilityReport,
+  importLocalModel,
   getJobStatus,
   getModelRuntimeStatus,
   getOCRRuntimeStatus,
@@ -53,6 +56,7 @@ import {
   type IntegrationImportRecord,
   type JobQueueStatus,
   type LocalModelRecord,
+  type ModelCompatibilityRecord,
   type ModelRuntimeStatus,
   type OCRRuntimeStatusRead,
   type VaultRecord,
@@ -95,6 +99,10 @@ function SettingsView() {
   const [saving, setSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [activatingId, setActivatingId] = useState<string | null>(null);
+  const [customModelPath, setCustomModelPath] = useState("");
+  const [customModelName, setCustomModelName] = useState("");
+  const [customModelReport, setCustomModelReport] = useState<ModelCompatibilityRecord | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -236,6 +244,54 @@ function SettingsView() {
     }
   }
 
+  async function activateModel(modelId: string) {
+    setActivatingId(modelId);
+    try {
+      await activateLocalModel(modelId);
+      setModels(await listLocalModels());
+      setStatusMessage("Approved model activated.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not activate model.");
+    } finally {
+      setActivatingId(null);
+    }
+  }
+
+  async function chooseModelFolder() {
+    const selected = await desktop?.selectModelFolder?.();
+    if (selected) {
+      setCustomModelPath(selected);
+      setCustomModelReport(null);
+    }
+  }
+
+  async function validateCustomModel() {
+    try {
+      const report = await getModelCompatibilityReport({
+        path: customModelPath.trim(),
+        name: customModelName.trim() || null,
+      });
+      setCustomModelReport(report);
+      setStatusMessage(report.detail);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not validate model.");
+    }
+  }
+
+  async function importApprovedModel() {
+    try {
+      const imported = await importLocalModel({
+        path: customModelPath.trim(),
+        name: customModelName.trim() || null,
+      });
+      setModels(await listLocalModels());
+      setCustomModelReport(imported.compatibility);
+      setStatusMessage(`${imported.name} imported.`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not import model.");
+    }
+  }
+
   async function cancelDownload(modelId: string) {
     try {
       await cancelModelDownload(modelId);
@@ -325,6 +381,7 @@ function SettingsView() {
   }
 
   const suggestedModel = models[0];
+  const activeModel = models.find((model) => model.active) ?? null;
 
   return (
     <div className="vault-page-wash grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[205px_1fr_326px]">
@@ -382,35 +439,90 @@ function SettingsView() {
           >
             <label className="mt-5 block text-sm font-medium">Endpoint (required)</label>
             <div className="mt-2 flex gap-2">
-              <Input value={runtime?.endpoint ?? "http://localhost:11434"} readOnly />
+              <Input value={runtime?.base_url ?? "http://localhost:11434"} readOnly />
               <Button variant="outline" className="gap-2">Test <Play className="h-4 w-4" /></Button>
             </div>
           </SettingsCard>
 
           <SettingsCard
             icon={<MessageSquare className="h-4 w-4" />}
-            title="Chat model"
-            description="Model used to generate assistant responses."
-            status={runtime?.available ? "Ready" : "Missing"}
-            statusTone={runtime?.available ? "ready" : "issue"}
+            title="Approved model"
+            description="One active approved Qwen, Phi, or Gemma checkpoint is required for expert features."
+            status={activeModel?.compatibility?.accepted ? "Accepted" : "Required"}
+            statusTone={activeModel?.compatibility?.accepted ? "ready" : "issue"}
           >
-            <label className="mt-5 block text-sm font-medium">Model</label>
-            <div className="mt-2 flex gap-2">
-              <Input value={suggestedModel?.name ?? "mistral-nemo-instruct-2407:q4_k_m"} readOnly />
-              <Button
-                variant="outline"
-                className="gap-2"
-                disabled={!suggestedModel || downloadingId === suggestedModel.id}
-                onClick={() => suggestedModel && void downloadModel(suggestedModel.id)}
-              >
-                {downloadingId === suggestedModel?.id ? "Starting..." : "Download"}
-              </Button>
-              {suggestedModel?.download_status === "downloading" && (
-                <Button variant="outline" onClick={() => void cancelDownload(suggestedModel.id)}>
-                  Cancel
-                </Button>
-              )}
+            <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
+              {activeModel?.compatibility?.accepted
+                ? `${activeModel.name} is active for expert workflows.`
+                : "No active approved checkpoint is configured. Downloads of GGUF runtime files do not satisfy expert compatibility by themselves."}
             </div>
+            <div className="mt-5 space-y-3">
+              {models.map((model) => {
+                const downloading = model.download?.status === "resolving" || model.download?.status === "downloading";
+                return (
+                  <div key={model.id} className="rounded-md border border-border bg-background px-3 py-3 text-sm">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="font-medium">{model.name}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {model.role} / {model.family || "unclassified"} / {model.approximate_download_gb} GB
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {model.compatibility?.accepted ? "Accepted" : model.compatibility?.detail || "Not validated"}
+                        </div>
+                      </div>
+                      {model.active ? <span className="text-primary">Active</span> : null}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {!model.installed ? (
+                        <Button variant="outline" onClick={() => void downloadModel(model.id)} disabled={downloadingId === model.id}>
+                          {downloadingId === model.id ? "Starting..." : "Download default"}
+                        </Button>
+                      ) : null}
+                      {downloading ? (
+                        <Button variant="outline" onClick={() => void cancelDownload(model.id)}>
+                          Cancel
+                        </Button>
+                      ) : null}
+                      {model.compatibility?.accepted && !model.active ? (
+                        <Button variant="outline" onClick={() => void activateModel(model.id)} disabled={activatingId === model.id}>
+                          {activatingId === model.id ? "Activating..." : "Use model"}
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-5 grid gap-3 md:grid-cols-[1fr_220px_auto_auto]">
+              <Input
+                value={customModelPath}
+                onChange={(event) => setCustomModelPath(event.target.value)}
+                placeholder="D:\\Models\\Qwen3-4B"
+              />
+              <Input
+                value={customModelName}
+                onChange={(event) => setCustomModelName(event.target.value)}
+                placeholder="Imported checkpoint"
+              />
+              <Button variant="outline" onClick={() => void chooseModelFolder()}>
+                Browse
+              </Button>
+              <Button variant="outline" onClick={() => void validateCustomModel()} disabled={!customModelPath.trim()}>
+                Validate
+              </Button>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button onClick={() => void importApprovedModel()} disabled={!customModelReport?.accepted}>
+                Import approved model
+              </Button>
+            </div>
+            {customModelReport && (
+              <div className="mt-4 rounded-md border border-border bg-background px-3 py-3 text-sm">
+                <div className="font-medium">{customModelReport.accepted ? "Accepted" : "Rejected"}</div>
+                <div className="mt-1 text-muted-foreground">{customModelReport.detail}</div>
+              </div>
+            )}
           </SettingsCard>
 
           <SettingsCard
@@ -588,10 +700,14 @@ function SettingsView() {
       <aside className="hidden overflow-y-auto border-l border-border bg-card/35 px-6 py-9 xl:block">
         <h2 className="text-lg font-semibold">Device readiness</h2>
         <div className="mt-7 space-y-6">
-          <ReadinessRow label="CPU" value={hardware?.avx2 ? "AVX2" : "Unknown"} meta={hardware?.cpu_name ?? "Capability check"} />
-          <ReadinessRow label="RAM" value={hardware?.ram_gb ? `${hardware.ram_gb} GB` : "Unknown"} meta="Available locally" />
-          <ReadinessRow label="GPU" value={hardware?.gpu_name ?? "Not detected"} meta={hardware?.cuda_available ? "CUDA available" : "Optional"} />
-          <ReadinessRow label="Backend" value="Online" meta={runtime?.endpoint ?? "http://localhost:7343"} />
+          <ReadinessRow label="CPU" value={hardware?.avx2 ? "AVX2" : "Unknown"} meta={hardware?.processor ?? "Capability check"} />
+          <ReadinessRow
+            label="RAM"
+            value={hardware?.total_memory_bytes ? `${Math.round(hardware.total_memory_bytes / 1024 / 1024 / 1024)} GB` : "Unknown"}
+            meta="Available locally"
+          />
+          <ReadinessRow label="GPU" value="Optional" meta={hardware?.detail ?? "No dedicated GPU check yet"} />
+          <ReadinessRow label="Backend" value="Online" meta={runtime?.base_url ?? "http://localhost:7343"} />
           <ReadinessRow label="Model runtime" value={runtime?.available ? "Ready" : "Missing"} meta={runtime?.available ? "Local runtime ready." : "Start a model server to chat."} warning={!runtime?.available} />
         </div>
 

@@ -19,13 +19,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
+  activateLocalModel,
   cancelModelDownload,
   cancelEmbeddingDownload,
   checkDiskPreflight,
   configureEmbeddingRuntime,
   createVault,
   getEmbeddingDownloadStatus,
+  getModelCompatibilityReport,
   getEmbeddingRuntimeStatus,
+  importLocalModel,
   listLocalModels,
   startEmbeddingDownload,
   startModelDownload,
@@ -33,6 +36,7 @@ import {
   type EmbeddingRuntimeStatus,
   type DiskPreflightResponse,
   type LocalModelRecord,
+  type ModelCompatibilityRecord,
   type VaultRecord,
 } from "@/lib/backend";
 import { cn } from "@/lib/utils";
@@ -40,7 +44,7 @@ import { useStore } from "@/lib/mockStore";
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 type SignupMethod = "email" | "google";
-type ModelChoice = "recommended" | "existing";
+type ModelChoice = "recommended" | "custom";
 type EmbeddingChoice = "recommended" | "existing";
 
 const steps = [
@@ -75,8 +79,11 @@ function Onboarding() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelChoice, setModelChoice] = useState<ModelChoice>("recommended");
   const [selectedModelId, setSelectedModelId] = useState("qwen3-4b-q4_k_m");
-  const [existingRuntime, setExistingRuntime] = useState("http://127.0.0.1:8084/v1");
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [activatingId, setActivatingId] = useState<string | null>(null);
+  const [customModelPath, setCustomModelPath] = useState("");
+  const [customModelName, setCustomModelName] = useState("");
+  const [customModelReport, setCustomModelReport] = useState<ModelCompatibilityRecord | null>(null);
   const [embeddingChoice, setEmbeddingChoice] = useState<EmbeddingChoice>("recommended");
   const [embeddingCacheDir, setEmbeddingCacheDir] = useState("");
   const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
@@ -104,9 +111,10 @@ function Onboarding() {
     if (step === 1) return displayName.trim().length >= 2;
     if (step === 2) return vaultName.trim().length >= 2;
     if (step === 4) return vaultPath.trim().length > 0;
+    if (step === 5) return Boolean(models.some((model) => model.active && model.compatibility?.accepted));
     if (step === 6) return Boolean(embeddingRuntime?.available);
     return true;
-  }, [displayName, email, embeddingRuntime?.available, signupMethod, step, vaultName, vaultPath]);
+  }, [displayName, email, embeddingRuntime?.available, models, signupMethod, step, vaultName, vaultPath]);
 
   useEffect(() => {
     if (step !== 5 && step !== 6) return;
@@ -126,6 +134,63 @@ function Onboarding() {
       setError(err instanceof Error ? err.message : "Could not load local models.");
     } finally {
       setModelsLoading(false);
+    }
+  }
+
+  async function chooseModelFolder() {
+    const selected = await desktop?.selectModelFolder?.();
+    if (selected) {
+      setCustomModelPath(selected);
+      setCustomModelReport(null);
+    }
+  }
+
+  async function validateCustomModel() {
+    setError(null);
+    setMessage("Checking model compatibility...");
+    try {
+      const report = await getModelCompatibilityReport({
+        path: customModelPath.trim(),
+        name: customModelName.trim() || null,
+      });
+      setCustomModelReport(report);
+      setMessage(report.accepted ? "Model accepted." : report.detail);
+      if (!report.accepted) setError(report.detail);
+    } catch (err) {
+      setCustomModelReport(null);
+      setError(err instanceof Error ? err.message : "Could not validate the model.");
+      setMessage(null);
+    }
+  }
+
+  async function importApprovedModel() {
+    setError(null);
+    setMessage("Importing approved model...");
+    try {
+      const imported = await importLocalModel({
+        path: customModelPath.trim(),
+        name: customModelName.trim() || null,
+      });
+      setMessage(`${imported.name} imported and ready.`);
+      setCustomModelReport(imported.compatibility);
+      await refreshModels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not import the model.");
+      setMessage(null);
+    }
+  }
+
+  async function activateModel(modelId: string) {
+    setError(null);
+    setActivatingId(modelId);
+    try {
+      await activateLocalModel(modelId);
+      await refreshModels();
+      setMessage("Approved model activated.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not activate the model.");
+    } finally {
+      setActivatingId(null);
     }
   }
 
@@ -312,7 +377,6 @@ function Onboarding() {
       window.localStorage.setItem("ctx.userEmail", email.trim());
       window.localStorage.setItem("ctx.signupMethod", signupMethod);
       window.localStorage.setItem("ctx.vaultName", vaultName.trim());
-      window.localStorage.setItem("ctx.localRuntimeUrl", existingRuntime.trim());
       window.localStorage.setItem("ctx.chatModelChoice", modelChoice);
       window.localStorage.setItem("ctx.chatModelId", selectedModelId);
     }
@@ -502,20 +566,23 @@ function Onboarding() {
                   <div className="grid gap-3 sm:grid-cols-2">
                     <ChoiceButton
                       selected={modelChoice === "recommended"}
-                      title="Recommended model"
-                      description="Download one of Vault's local GGUF choices."
+                      title="Vault defaults"
+                      description="Use the current default Qwen, Phi, or Gemma family choices."
                       onClick={() => setModelChoice("recommended")}
                     />
                     <ChoiceButton
-                      selected={modelChoice === "existing"}
-                      title="Existing runtime"
-                      description="Use llama-server, Ollama, or another local endpoint."
-                      onClick={() => setModelChoice("existing")}
+                      selected={modelChoice === "custom"}
+                      title="Import checkpoint"
+                      description="Validate a local Transformers checkpoint and accept or reject it."
+                      onClick={() => setModelChoice("custom")}
                     />
                   </div>
 
                   {modelChoice === "recommended" ? (
                     <div className="grid gap-3">
+                      <div className="rounded-md border border-border bg-secondary/55 p-4 text-sm text-muted-foreground">
+                        Expert setup only accepts app-managed Qwen, Phi, or Gemma checkpoints that pass validation. Runtime aliases and GGUF-only files do not satisfy this step by themselves.
+                      </div>
                       {modelsLoading && <p className="text-sm text-muted-foreground">Loading model options...</p>}
                       {models.map((model) => (
                         <ModelRow
@@ -523,27 +590,65 @@ function Onboarding() {
                           model={model}
                           selected={selectedModelId === model.id}
                           busy={downloadingId === model.id}
+                          activating={activatingId === model.id}
                           onSelect={() => setSelectedModelId(model.id)}
                           onDownload={() => void startDownload(model.id)}
                           onCancel={() => void cancelDownload(model.id)}
+                          onActivate={() => void activateModel(model.id)}
                         />
                       ))}
                     </div>
                   ) : (
-                    <Field label="OpenAI-compatible endpoint">
-                      <Input
-                        value={existingRuntime}
-                        onChange={(event) => setExistingRuntime(event.target.value)}
-                        placeholder="http://127.0.0.1:8084/v1"
-                      />
-                    </Field>
+                    <div className="grid gap-4">
+                      <Field label="Checkpoint folder">
+                        <div className="flex flex-col gap-2 sm:flex-row">
+                          <Input
+                            value={customModelPath}
+                            onChange={(event) => setCustomModelPath(event.target.value)}
+                            placeholder="D:\\Models\\Qwen3-4B"
+                          />
+                          <Button type="button" variant="outline" onClick={() => void chooseModelFolder()} disabled={!desktop?.selectModelFolder}>
+                            <FolderOpen className="h-4 w-4" />
+                            Browse
+                          </Button>
+                        </div>
+                      </Field>
+                      <Field label="Display name">
+                        <Input
+                          value={customModelName}
+                          onChange={(event) => setCustomModelName(event.target.value)}
+                          placeholder="My local Qwen checkpoint"
+                        />
+                      </Field>
+                      <div className="flex flex-wrap gap-2">
+                        <Button variant="outline" onClick={() => void validateCustomModel()} disabled={!customModelPath.trim()}>
+                          Test model
+                        </Button>
+                        <Button onClick={() => void importApprovedModel()} disabled={!customModelReport?.accepted}>
+                          Import approved model
+                        </Button>
+                      </div>
+                      {customModelReport && (
+                        <div className="rounded-md border border-border bg-card p-4 text-sm">
+                          <div className="font-medium">
+                            {customModelReport.accepted ? "Accepted" : "Rejected"}
+                          </div>
+                          <div className="mt-2 text-muted-foreground">{customModelReport.detail}</div>
+                          {!!customModelReport.reasons.length && (
+                            <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+                              {customModelReport.reasons.map((reason) => (
+                                <li key={reason}>{reason}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   )}
 
-                  {selectedModel && modelChoice === "recommended" && (
-                    <p className="text-xs text-muted-foreground">
-                      Selected: {selectedModel.name}. You can finish setup while downloads continue.
-                    </p>
-                  )}
+                  <p className="text-xs text-muted-foreground">
+                    Continue is enabled only after one approved model is active.
+                  </p>
                 </SetupPanel>
               )}
 
@@ -847,16 +952,20 @@ function ModelRow({
   model,
   selected,
   busy,
+  activating,
   onSelect,
   onDownload,
   onCancel,
+  onActivate,
 }: {
   model: LocalModelRecord;
   selected: boolean;
   busy: boolean;
+  activating: boolean;
   onSelect: () => void;
   onDownload: () => void;
   onCancel: () => void;
+  onActivate: () => void;
 }) {
   const downloading = model.download?.status === "resolving" || model.download?.status === "downloading";
   const progress =
@@ -878,11 +987,17 @@ function ModelRow({
             <div className="mt-1 text-xs text-muted-foreground">
               {model.role} / {model.quantization} / {model.approximate_download_gb} GB / {model.recommended_ram_gb} GB RAM
             </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {model.compatibility?.accepted ? "Expert compatible" : model.compatibility?.status === "rejected" ? "Rejected for expert runtime" : "Not validated"}
+            </div>
           </div>
-          {selected && <Check className="h-4 w-4 text-primary" />}
+          {(selected || model.active) && <Check className="h-4 w-4 text-primary" />}
         </div>
         <p className="mt-2 text-sm leading-5 text-muted-foreground">{model.notes}</p>
         {model.local_path && <p className="mt-2 truncate font-mono text-xs text-muted-foreground">{model.local_path}</p>}
+        {model.compatibility && !model.compatibility.accepted && (
+          <p className="mt-2 text-xs text-destructive">{model.compatibility.detail}</p>
+        )}
       </button>
 
       {downloading && (
@@ -893,6 +1008,11 @@ function ModelRow({
       )}
 
       <div className="mt-3 flex justify-end gap-2">
+        {model.compatibility?.accepted && !model.active ? (
+          <Button variant="outline" size="sm" onClick={onActivate} disabled={activating}>
+            {activating ? "Activating" : "Use model"}
+          </Button>
+        ) : null}
         {downloading ? (
           <Button variant="outline" size="sm" onClick={onCancel}>
             <X className="h-4 w-4" />
@@ -901,7 +1021,7 @@ function ModelRow({
         ) : (
           <Button variant={model.installed ? "outline" : "secondary"} size="sm" onClick={onDownload} disabled={model.installed || busy}>
             <Download className="h-4 w-4" />
-            {model.installed ? "Installed" : busy ? "Starting" : "Download"}
+            {model.active ? "Active" : model.installed ? "Installed" : busy ? "Starting" : "Download"}
           </Button>
         )}
       </div>

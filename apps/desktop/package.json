@@ -37,6 +37,13 @@
         ]
       },
       {
+        "from": "packaging/expert-python-runtime",
+        "to": "expert-python-runtime",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
         "from": "packaging/ms-playwright",
         "to": "ms-playwright",
         "filter": [

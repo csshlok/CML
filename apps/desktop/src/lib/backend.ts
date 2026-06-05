@@ -468,9 +468,29 @@ export type ModelDownloadState = {
   status: string;
   bytes_downloaded: number | null;
   total_bytes: number | null;
+  progress_percent?: number | null;
+  download_speed_bps?: number | null;
+  eta_seconds?: number | null;
   file_name: string | null;
   local_path: string | null;
   error: string | null;
+  sha256?: string | null;
+  integrity_status?: string | null;
+};
+
+export type ModelCompatibilityRecord = {
+  status: "accepted" | "rejected";
+  accepted: boolean;
+  family: string;
+  family_name: string;
+  model_type: string;
+  architecture: string;
+  registered_family: string;
+  local_path: string;
+  runtime_dependencies: Record<string, unknown>;
+  hardware: Record<string, unknown>;
+  reasons: string[];
+  detail: string;
 };
 
 export type LocalModelRecord = {
@@ -478,6 +498,7 @@ export type LocalModelRecord = {
   name: string;
   role: string;
   hf_repo: string;
+  family: string;
   quantization: string;
   approximate_download_gb: number;
   recommended_ram_gb: string;
@@ -486,6 +507,16 @@ export type LocalModelRecord = {
   installed: boolean;
   local_path: string | null;
   download: ModelDownloadState | null;
+  active: boolean;
+  compatibility: ModelCompatibilityRecord | null;
+  source_kind: string;
+};
+
+export type ModelRecommendationsRecord = {
+  hardware: Record<string, unknown>;
+  recommended_model_id: string;
+  models: LocalModelRecord[];
+  detail: string;
 };
 
 export type ModelRuntimeStatus = {
@@ -1153,6 +1184,30 @@ export async function cancelJob(jobId: string) {
 
 export async function listLocalModels() {
   return request<LocalModelRecord[]>("/api/v1/models");
+}
+
+export async function getModelRecommendations() {
+  return request<ModelRecommendationsRecord>("/api/v1/models/recommendations");
+}
+
+export async function getModelCompatibilityReport(payload: { path: string; name?: string | null }) {
+  return request<ModelCompatibilityRecord>("/api/v1/models/compatibility/report", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function importLocalModel(payload: { path: string; name?: string | null }) {
+  return request<LocalModelRecord>("/api/v1/models/import", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function activateLocalModel(modelId: string) {
+  return request<LocalModelRecord>(`/api/v1/models/${encodeURIComponent(modelId)}/activate`, {
+    method: "POST",
+  });
 }
 
 export async function getModelRuntimeStatus() {
