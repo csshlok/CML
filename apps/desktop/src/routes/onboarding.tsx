@@ -53,7 +53,7 @@ const steps = [
   "Vault",
   "Welcome",
   "Location",
-  "Chat model",
+  "Models",
   "Memory search",
   "Finish",
 ] as const;
@@ -111,7 +111,11 @@ function Onboarding() {
     if (step === 1) return displayName.trim().length >= 2;
     if (step === 2) return vaultName.trim().length >= 2;
     if (step === 4) return vaultPath.trim().length > 0;
-    if (step === 5) return Boolean(models.some((model) => model.active && model.compatibility?.accepted));
+    if (step === 5) {
+      const chatReady = models.some((model) => model.active_chat && model.compatibility?.chat_role_accepted);
+      const expertReady = models.some((model) => model.active_expert && model.compatibility?.expert_role_accepted);
+      return chatReady && expertReady;
+    }
     if (step === 6) return Boolean(embeddingRuntime?.available);
     return true;
   }, [displayName, email, embeddingRuntime?.available, models, signupMethod, step, vaultName, vaultPath]);
@@ -180,13 +184,13 @@ function Onboarding() {
     }
   }
 
-  async function activateModel(modelId: string) {
+  async function activateModel(modelId: string, role: "chat" | "expert" | "pair") {
     setError(null);
     setActivatingId(modelId);
     try {
-      await activateLocalModel(modelId);
+      await activateLocalModel(modelId, role);
       await refreshModels();
-      setMessage("Approved model activated.");
+      setMessage(role === "chat" ? "Chat model activated." : role === "expert" ? "Expert checkpoint activated." : "Chat/expert model activated.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not activate the model.");
     } finally {
@@ -560,20 +564,20 @@ function Onboarding() {
               {step === 5 && (
                 <SetupPanel
                   icon={<PlugZap className="h-5 w-5" />}
-                  title="Choose a local chat model"
-                  sub="Vault can download a recommended model, or you can connect an existing OpenAI-compatible local runtime."
+                  title="Choose the chat model and expert checkpoint"
+                  sub="Chat uses a local runtime model. Expert workflows use a separate accepted local checkpoint. Retrieval remains the source of citations for both."
                 >
                   <div className="grid gap-3 sm:grid-cols-2">
                     <ChoiceButton
                       selected={modelChoice === "recommended"}
-                      title="Vault defaults"
-                      description="Use the current default Qwen, Phi, or Gemma family choices."
+                      title="Chat + expert"
+                      description="Download a chat model, then pair it with an accepted expert checkpoint."
                       onClick={() => setModelChoice("recommended")}
                     />
                     <ChoiceButton
                       selected={modelChoice === "custom"}
-                      title="Import checkpoint"
-                      description="Validate a local Transformers checkpoint and accept or reject it."
+                      title="Import expert checkpoint"
+                      description="Validate a local Transformers checkpoint and accept or reject it for expert use."
                       onClick={() => setModelChoice("custom")}
                     />
                   </div>
@@ -581,22 +585,49 @@ function Onboarding() {
                   {modelChoice === "recommended" ? (
                     <div className="grid gap-3">
                       <div className="rounded-md border border-border bg-secondary/55 p-4 text-sm text-muted-foreground">
-                        Expert setup only accepts app-managed Qwen, Phi, or Gemma checkpoints that pass validation. Runtime aliases and GGUF-only files do not satisfy this step by themselves.
+                        Downloaded GGUF/runtime models satisfy the chat role only. Expert setup still requires an accepted local Transformers checkpoint. Vault citations still come from retrieval, not model memory.
                       </div>
-                      {modelsLoading && <p className="text-sm text-muted-foreground">Loading model options...</p>}
-                      {models.map((model) => (
-                        <ModelRow
-                          key={model.id}
-                          model={model}
-                          selected={selectedModelId === model.id}
-                          busy={downloadingId === model.id}
-                          activating={activatingId === model.id}
-                          onSelect={() => setSelectedModelId(model.id)}
-                          onDownload={() => void startDownload(model.id)}
-                          onCancel={() => void cancelDownload(model.id)}
-                          onActivate={() => void activateModel(model.id)}
-                        />
-                      ))}
+                      <div className="grid gap-3">
+                        <div className="text-sm font-medium">Chat model</div>
+                        {modelsLoading && <p className="text-sm text-muted-foreground">Loading model options...</p>}
+                        {models
+                          .filter((model) => model.compatibility?.chat_role_accepted || model.source_kind === "default_choice")
+                          .map((model) => (
+                            <ModelRow
+                              key={`chat-${model.id}`}
+                              model={model}
+                              selected={selectedModelId === model.id}
+                              busy={downloadingId === model.id}
+                              activating={activatingId === model.id}
+                              roleLabel="chat"
+                              roleActive={Boolean(model.active_chat)}
+                              onSelect={() => setSelectedModelId(model.id)}
+                              onDownload={() => void startDownload(model.id)}
+                              onCancel={() => void cancelDownload(model.id)}
+                              onActivate={() => void activateModel(model.id, "chat")}
+                            />
+                          ))}
+                      </div>
+                      <div className="grid gap-3">
+                        <div className="text-sm font-medium">Expert checkpoint</div>
+                        {models
+                          .filter((model) => model.compatibility?.expert_role_accepted)
+                          .map((model) => (
+                            <ModelRow
+                              key={`expert-${model.id}`}
+                              model={model}
+                              selected={selectedModelId === model.id}
+                              busy={downloadingId === model.id}
+                              activating={activatingId === model.id}
+                              roleLabel="expert"
+                              roleActive={Boolean(model.active_expert)}
+                              onSelect={() => setSelectedModelId(model.id)}
+                              onDownload={() => void startDownload(model.id)}
+                              onCancel={() => void cancelDownload(model.id)}
+                              onActivate={() => void activateModel(model.id, "expert")}
+                            />
+                          ))}
+                      </div>
                     </div>
                   ) : (
                     <div className="grid gap-4">
@@ -634,6 +665,7 @@ function Onboarding() {
                             {customModelReport.accepted ? "Accepted" : "Rejected"}
                           </div>
                           <div className="mt-2 text-muted-foreground">{customModelReport.detail}</div>
+                          <div className="mt-2 text-xs text-muted-foreground">{customModelReport.pairing_detail}</div>
                           {!!customModelReport.reasons.length && (
                             <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
                               {customModelReport.reasons.map((reason) => (
@@ -647,7 +679,7 @@ function Onboarding() {
                   )}
 
                   <p className="text-xs text-muted-foreground">
-                    Continue is enabled only after one approved model is active.
+                    Continue is enabled only after one accepted chat model and one accepted expert checkpoint are active.
                   </p>
                 </SetupPanel>
               )}
@@ -953,6 +985,8 @@ function ModelRow({
   selected,
   busy,
   activating,
+  roleLabel,
+  roleActive,
   onSelect,
   onDownload,
   onCancel,
@@ -962,6 +996,8 @@ function ModelRow({
   selected: boolean;
   busy: boolean;
   activating: boolean;
+  roleLabel: "chat" | "expert";
+  roleActive: boolean;
   onSelect: () => void;
   onDownload: () => void;
   onCancel: () => void;
@@ -988,14 +1024,20 @@ function ModelRow({
               {model.role} / {model.quantization} / {model.approximate_download_gb} GB / {model.recommended_ram_gb} GB RAM
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
-              {model.compatibility?.accepted ? "Expert compatible" : model.compatibility?.status === "rejected" ? "Rejected for expert runtime" : "Not validated"}
+              {roleLabel === "chat"
+                ? model.compatibility?.chat_role_accepted
+                  ? "Accepted for chat"
+                  : "Not accepted for chat"
+                : model.compatibility?.expert_role_accepted
+                  ? "Accepted for expert"
+                  : "Rejected for expert runtime"}
             </div>
           </div>
-          {(selected || model.active) && <Check className="h-4 w-4 text-primary" />}
+          {(selected || roleActive) && <Check className="h-4 w-4 text-primary" />}
         </div>
         <p className="mt-2 text-sm leading-5 text-muted-foreground">{model.notes}</p>
         {model.local_path && <p className="mt-2 truncate font-mono text-xs text-muted-foreground">{model.local_path}</p>}
-        {model.compatibility && !model.compatibility.accepted && (
+        {model.compatibility && roleLabel === "expert" && !model.compatibility.expert_role_accepted && (
           <p className="mt-2 text-xs text-destructive">{model.compatibility.detail}</p>
         )}
       </button>
@@ -1008,9 +1050,11 @@ function ModelRow({
       )}
 
       <div className="mt-3 flex justify-end gap-2">
-        {model.compatibility?.accepted && !model.active ? (
+        {((roleLabel === "chat" && model.compatibility?.chat_role_accepted) ||
+          (roleLabel === "expert" && model.compatibility?.expert_role_accepted)) &&
+        !roleActive ? (
           <Button variant="outline" size="sm" onClick={onActivate} disabled={activating}>
-            {activating ? "Activating" : "Use model"}
+            {activating ? "Activating" : roleLabel === "chat" ? "Use for chat" : "Use for expert"}
           </Button>
         ) : null}
         {downloading ? (
@@ -1021,7 +1065,7 @@ function ModelRow({
         ) : (
           <Button variant={model.installed ? "outline" : "secondary"} size="sm" onClick={onDownload} disabled={model.installed || busy}>
             <Download className="h-4 w-4" />
-            {model.active ? "Active" : model.installed ? "Installed" : busy ? "Starting" : "Download"}
+            {roleActive ? "Active" : model.installed ? "Installed" : busy ? "Starting" : "Download"}
           </Button>
         )}
       </div>

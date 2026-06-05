@@ -30,6 +30,14 @@ def embedding_index_policy() -> dict:
     return payload
 
 
+def active_embedding_selector() -> dict:
+    policy = embedding_index_policy()
+    return {
+        "embedding_model_id": str(policy["active_embedding_model_id"]),
+        "index_version": str(policy["active_index_version"]),
+    }
+
+
 def begin_embedding_index_transition(model_id: str) -> dict:
     payload = embedding_index_policy()
     payload.update(

@@ -141,6 +141,38 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIsNone(deleted["url"])
         self.assertIsNone(deleted["checksum"])
 
+    def test_semantic_search_filters_to_active_embedding_model_and_index_version(self) -> None:
+        from backend.app.api.routes.search import semantic_search
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.vector_maintenance import activate_embedding_index
+        from backend.app.schemas import SemanticSearchRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Indexed note",
+                source_type="note",
+                raw_text="alpha beta gamma " * 120,
+            )
+        )
+        run_due_jobs_once(limit=1)
+
+        baseline = semantic_search(SemanticSearchRequest(vault_id="vault-1", query="alpha beta"))
+        self.assertGreater(len(baseline["results"]), 0)
+
+        activate_embedding_index("sentence-transformers/new-model", "v2")
+        filtered = semantic_search(SemanticSearchRequest(vault_id="vault-1", query="alpha beta"))
+        self.assertEqual(filtered["results"], [])
+
     def test_delete_source_tombstones_retrieval_items_before_page_chunk_cleanup(self) -> None:
         from backend.app.api.routes.sources import create_source, delete_source
         from backend.app.core.background_jobs import run_due_jobs_once

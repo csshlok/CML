@@ -6,13 +6,58 @@ Last updated: 2026-06-05
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
-Latest compact truth after the 2026-06-05 decision pass lives in `docs/PROJECT_CONTEXT.md`. Current product decision: V1 is Windows-only, public-release-only, and must include a working high-quality verified LoRA function; there is no private-demo fallback. Model policy is now explicit: one approved model family contract for both chat and expert workflows, current Qwen/Phi/Gemma defaults remain the default recommendations, custom models are only `accepted` or `rejected`, and expert-capable onboarding requires one app-managed approved local checkpoint rather than a loose runtime alias. Claude Desktop-specific smoke is deferred for now; clean Windows VM validation, real LoRA trainer/runtime smoke, and hardware-aware model recommendations remain current external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+Latest compact truth after the 2026-06-05 decision pass lives in `docs/PROJECT_CONTEXT.md`. Current product decision: V1 is Windows-only, public-release-only, and must include a working high-quality verified LoRA function; there is no private-demo fallback. Model policy is now explicit: strict `accepted` / `rejected` compatibility remains, but runtime architecture is now understood as dual-role rather than one lightweight unified path. Current Qwen/Phi/Gemma defaults remain the default recommendations, expert-capable onboarding still requires an app-managed approved local checkpoint, retrieval remains the citation authority, and public docs must stop implying that one approved family automatically means one cheap runtime path. Claude Desktop-specific smoke is deferred for now; clean Windows VM validation, real LoRA trainer/runtime smoke, live quality benchmarking, mixed-embedding correctness fixes, and hardware-aware model recommendations remain current external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+
+## 2026-06-05 Dual-Model Decision Snapshot
+
+Completed decision:
+
+- Keep strict `accepted` / `rejected` model compatibility outcomes.
+- Move product architecture from "single approved model setup" language toward a dual-role runtime structure.
+- Chat/runtime role and expert/base-model role are different and must not be treated as interchangeable.
+- Retrieval remains the evidence and citation authority for both roles.
+- Expert models may assist with cluster-specific reasoning, routing, or answer drafting, but they must not become the source of proof.
+- Public UI/docs must stop implying that one approved family gives one lightweight runtime process. Current code still implies a heavier separate expert runtime.
+
+Current architectural reading from the codebase:
+
+- Normal chat still runs through an OpenAI-compatible local runtime path such as llama.cpp.
+- Expert runtime still loads a real local Transformers checkpoint through `transformers` + `peft`.
+- The current expert worker is a separate process and loads a real checkpoint rather than a quantized GGUF-style runtime artifact.
+- This means expert mode is a materially heavier feature than normal chat and should not be promised on 8 GB machines without real profiling.
+
+Current unresolved gaps made explicit by the review:
+
+- LoRA expert quality is still not empirically proven on a real release-like machine; deterministic scaffolding is not enough.
+- Current training thresholds are scaffolding values, not benchmark-backed public gates.
+- Changing embedding models on a live vault currently risks mixed-space retrieval unless search/retrieval are hotfixed to respect the active embedding model/index.
+- Bridge uses tokens and vault/cluster scoping, but it is not a meaningful anti-exfiltration throttle against repeated corpus walking by a trusted client.
+- Dynamic browser fallback currently uses Playwright/Chromium without a documented hardened release posture.
+- Diagnostics bundle redaction is regex-based and does not yet justify a strong "no secret leakage" claim.
+- Vault-path safety against cloud-synced folders is not robustly enforced today.
+
+Immediate response actions from the review:
+
+- Define an approved chat-role / expert-role compatibility matrix instead of relying on single-family wording alone.
+- Hotfix retrieval/search to filter by active embedding model and index version.
+- Update threat/privacy docs so Bridge is described honestly as trusted-client scoped access, not a throttled anti-exfiltration boundary.
+- Browser-render fallback decision is now explicit: keep it enabled for extraction quality, accept the current security risk, and document that it is not yet a hardened release boundary.
+- Publish honest hardware guidance for expert mode only after real profiling; until then, do not promise expert mode on 8 GB machines.
+- Run the LoRA quality benchmark before public "verified" claims; otherwise downgrade the feature framing to experimental.
+
+Implementation status after this pass:
+
+- Core retrieval paths now filter by the active embedding model and index version, closing the live mixed-embedding correctness bug in semantic search, scoring, expanded analysis, and cluster suggestions.
+- Model registry state is now dual-role aware with separate active chat and active expert selections instead of one ambiguous active-model flag.
+- Onboarding and Settings now reflect the dual-role setup more honestly: downloaded runtime models satisfy chat, imported approved checkpoints satisfy expert, and both are required for the intended expert-capable path.
+- Threat-model language now explicitly states that Bridge is token/scoped but not meaningfully throttled against repeated corpus walking by a trusted client.
+- Threat-model language now explicitly states that dynamic browser fallback remains enabled by product decision even though it is not yet a proven hardened boundary.
 
 ## 2026-06-05 Approved Model Policy Snapshot
 
 Completed decision:
 
-- Public V1 will use a single approved model family contract across normal chat and LoRA expert workflows.
+- Public V1 will keep a strict approved compatibility contract across normal chat and LoRA expert workflows.
 - Current default families remain the current Qwen/Phi/Gemma defaults for recommendation purposes.
 - Setup must require one approved model download or import before expert-capable onboarding is complete.
 - Custom model registration has only two outcomes: `accepted` or `rejected`.
@@ -33,6 +78,7 @@ Implementation status after the 2026-06-05 pass:
 - Expert training now chooses an accepted local base model instead of blindly using the generic runtime alias.
 - Onboarding and Settings now expose accepted/rejected model validation and custom checkpoint import flows instead of treating runtime aliases as sufficient for expert setup.
 - Packaging now stages a separate bundled expert Python runtime and package validation expects that runtime to exist.
+- The current codebase still does not have a finished approved chat/expert pairing matrix; that is the next architecture/documentation step after the review.
 
 ## 2026-06-04 Compulsory Cluster Expert Build Snapshot
 

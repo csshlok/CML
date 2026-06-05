@@ -67,6 +67,13 @@ class AdditionalQACases(unittest.TestCase):
         get_settings.cache_clear()
         return model_dir
 
+    def _install_default_chat_model(self, model_id: str = "qwen3-4b-q4_k_m") -> Path:
+        model_dir = Path(self.tmp.name) / "models" / model_id
+        model_dir.mkdir(parents=True, exist_ok=True)
+        gguf_path = model_dir / "qwen3-4b-q4_k_m.gguf"
+        gguf_path.write_bytes(b"gguf")
+        return gguf_path
+
     def test_model_compatibility_report_accepts_supported_transformers_checkpoint(self) -> None:
         from backend.app.core.model_registry import model_compatibility_report
 
@@ -95,7 +102,15 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("checkpoint directory", report["detail"].lower())
 
     def test_import_and_activate_custom_model(self) -> None:
-        from backend.app.core.model_registry import active_model_status, import_model_checkpoint, set_active_model
+        from backend.app.core.model_registry import (
+            active_chat_model_status,
+            active_expert_model_status,
+            import_model_checkpoint,
+            set_active_model,
+        )
+
+        self._install_default_chat_model()
+        set_active_model("qwen3-4b-q4_k_m", role="chat")
 
         imported = import_model_checkpoint(
             self._write_fake_local_transformers_model(
@@ -108,18 +123,22 @@ class AdditionalQACases(unittest.TestCase):
 
         self.assertEqual(imported["source_kind"], "custom_import")
         self.assertTrue(imported["compatibility"]["accepted"])
-        self.assertEqual(active_model_status()["id"], imported["id"])
+        self.assertEqual(active_chat_model_status()["id"], "qwen3-4b-q4_k_m")
+        self.assertEqual(active_expert_model_status()["id"], imported["id"])
 
-        activated = set_active_model(imported["id"])
+        activated = set_active_model(imported["id"], role="expert")
         self.assertEqual(activated["id"], imported["id"])
 
     def test_first_run_readiness_requires_active_approved_model(self) -> None:
-        from backend.app.core.model_registry import import_model_checkpoint
+        from backend.app.core.model_registry import import_model_checkpoint, set_active_model
         from backend.app.core.setup_readiness import first_run_readiness
 
         readiness = first_run_readiness()
-        approved = next(check for check in readiness["checks"] if check["id"] == "approved_model")
-        self.assertFalse(approved["ok"])
+        pair_check = next(check for check in readiness["checks"] if check["id"] == "approved_model_pair")
+        self.assertFalse(pair_check["ok"])
+
+        self._install_default_chat_model()
+        set_active_model("qwen3-4b-q4_k_m", role="chat")
 
         import_model_checkpoint(
             self._write_fake_local_transformers_model(
@@ -131,8 +150,12 @@ class AdditionalQACases(unittest.TestCase):
         )
 
         readiness = first_run_readiness()
-        approved = next(check for check in readiness["checks"] if check["id"] == "approved_model")
-        self.assertTrue(approved["ok"])
+        chat_check = next(check for check in readiness["checks"] if check["id"] == "chat_model")
+        expert_check = next(check for check in readiness["checks"] if check["id"] == "expert_model")
+        pair_check = next(check for check in readiness["checks"] if check["id"] == "approved_model_pair")
+        self.assertTrue(chat_check["ok"])
+        self.assertTrue(expert_check["ok"])
+        self.assertTrue(pair_check["ok"])
 
     def test_bridge_context_requires_token_when_enabled(self) -> None:
         from backend.app.api.routes.bridge import update_bridge_settings

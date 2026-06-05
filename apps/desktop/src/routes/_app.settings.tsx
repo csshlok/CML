@@ -244,12 +244,12 @@ function SettingsView() {
     }
   }
 
-  async function activateModel(modelId: string) {
+  async function activateModel(modelId: string, role: "chat" | "expert" | "pair") {
     setActivatingId(modelId);
     try {
-      await activateLocalModel(modelId);
+      await activateLocalModel(modelId, role);
       setModels(await listLocalModels());
-      setStatusMessage("Approved model activated.");
+      setStatusMessage(role === "chat" ? "Chat model activated." : role === "expert" ? "Expert checkpoint activated." : "Chat/expert model activated.");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not activate model.");
     } finally {
@@ -381,7 +381,8 @@ function SettingsView() {
   }
 
   const suggestedModel = models[0];
-  const activeModel = models.find((model) => model.active) ?? null;
+  const activeChatModel = models.find((model) => model.active_chat) ?? null;
+  const activeExpertModel = models.find((model) => model.active_expert) ?? null;
 
   return (
     <div className="vault-page-wash grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[205px_1fr_326px]">
@@ -446,15 +447,15 @@ function SettingsView() {
 
           <SettingsCard
             icon={<MessageSquare className="h-4 w-4" />}
-            title="Approved model"
-            description="One active approved Qwen, Phi, or Gemma checkpoint is required for expert features."
-            status={activeModel?.compatibility?.accepted ? "Accepted" : "Required"}
-            statusTone={activeModel?.compatibility?.accepted ? "ready" : "issue"}
+            title="Chat and expert models"
+            description="Chat uses a local runtime model. Expert workflows use a separate accepted checkpoint."
+            status={activeChatModel && activeExpertModel ? "Configured" : "Required"}
+            statusTone={activeChatModel && activeExpertModel ? "ready" : "issue"}
           >
             <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
-              {activeModel?.compatibility?.accepted
-                ? `${activeModel.name} is active for expert workflows.`
-                : "No active approved checkpoint is configured. Downloads of GGUF runtime files do not satisfy expert compatibility by themselves."}
+              {activeChatModel && activeExpertModel
+                ? `Chat: ${activeChatModel.name}. Expert: ${activeExpertModel.name}. Retrieval remains the citation source.`
+                : "Pick one accepted chat model and one accepted expert checkpoint. GGUF/runtime downloads satisfy the chat role only."}
             </div>
             <div className="mt-5 space-y-3">
               {models.map((model) => {
@@ -468,10 +469,18 @@ function SettingsView() {
                           {model.role} / {model.family || "unclassified"} / {model.approximate_download_gb} GB
                         </div>
                         <div className="mt-1 text-xs text-muted-foreground">
-                          {model.compatibility?.accepted ? "Accepted" : model.compatibility?.detail || "Not validated"}
+                          chat: {model.compatibility?.chat_role_accepted ? "accepted" : "not accepted"} / expert: {model.compatibility?.expert_role_accepted ? "accepted" : "not accepted"}
                         </div>
                       </div>
-                      {model.active ? <span className="text-primary">Active</span> : null}
+                      {model.active_chat || model.active_expert ? (
+                        <span className="text-primary">
+                          {model.active_chat && model.active_expert
+                            ? "Chat + Expert"
+                            : model.active_chat
+                              ? "Chat"
+                              : "Expert"}
+                        </span>
+                      ) : null}
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       {!model.installed ? (
@@ -484,9 +493,14 @@ function SettingsView() {
                           Cancel
                         </Button>
                       ) : null}
-                      {model.compatibility?.accepted && !model.active ? (
-                        <Button variant="outline" onClick={() => void activateModel(model.id)} disabled={activatingId === model.id}>
-                          {activatingId === model.id ? "Activating..." : "Use model"}
+                      {model.compatibility?.chat_role_accepted && !model.active_chat ? (
+                        <Button variant="outline" onClick={() => void activateModel(model.id, "chat")} disabled={activatingId === model.id}>
+                          {activatingId === model.id ? "Activating..." : "Use for chat"}
+                        </Button>
+                      ) : null}
+                      {model.compatibility?.expert_role_accepted && !model.active_expert ? (
+                        <Button variant="outline" onClick={() => void activateModel(model.id, "expert")} disabled={activatingId === model.id}>
+                          {activatingId === model.id ? "Activating..." : "Use for expert"}
                         </Button>
                       ) : null}
                     </div>
@@ -521,6 +535,7 @@ function SettingsView() {
               <div className="mt-4 rounded-md border border-border bg-background px-3 py-3 text-sm">
                 <div className="font-medium">{customModelReport.accepted ? "Accepted" : "Rejected"}</div>
                 <div className="mt-1 text-muted-foreground">{customModelReport.detail}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{customModelReport.pairing_detail}</div>
               </div>
             )}
           </SettingsCard>

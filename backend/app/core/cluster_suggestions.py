@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 from backend.app.core.embeddings import cosine_similarity, decode_embedding
+from backend.app.core.vector_maintenance import active_embedding_selector
 
 
 def suggest_source_cluster_moves(conn, vault_id: str, limit: int = 12) -> list[dict]:
@@ -69,10 +70,15 @@ def suggest_source_cluster_moves(conn, vault_id: str, limit: int = 12) -> list[d
 
 
 def _source_vectors(conn, vault_id: str) -> dict[str, list[float]]:
+    selector = active_embedding_selector()
     grouped: dict[str, list[list[float]]] = defaultdict(list)
     rows = conn.execute(
-        "SELECT source_id, embedding FROM source_chunks WHERE vault_id = ?",
-        (vault_id,),
+        """
+        SELECT source_id, embedding
+        FROM source_chunks
+        WHERE vault_id = ? AND embedding_model_id = ? AND index_version = ?
+        """,
+        (vault_id, selector["embedding_model_id"], selector["index_version"]),
     ).fetchall()
     for row in rows:
         vector = decode_embedding(row["embedding"])
@@ -82,14 +88,16 @@ def _source_vectors(conn, vault_id: str) -> dict[str, list[float]]:
 
 
 def _cluster_vectors(conn, vault_id: str, exclude_source_id: str) -> dict[str, list[float]]:
+    selector = active_embedding_selector()
     grouped: dict[str, list[list[float]]] = defaultdict(list)
     rows = conn.execute(
         """
         SELECT cluster_id, embedding
         FROM source_chunks
         WHERE vault_id = ? AND source_id != ? AND cluster_id IS NOT NULL
+          AND embedding_model_id = ? AND index_version = ?
         """,
-        (vault_id, exclude_source_id),
+        (vault_id, exclude_source_id, selector["embedding_model_id"], selector["index_version"]),
     ).fetchall()
     for row in rows:
         vector = decode_embedding(row["embedding"])

@@ -26,6 +26,7 @@ from backend.app.schemas import (
     EmbeddingModelDownloadState,
     ModelCompatibilityRead,
     ModelCompatibilityRequest,
+    ModelActivateRequest,
     ModelDownloadStart,
     ModelRecommendationRead,
     ModelRead,
@@ -105,11 +106,14 @@ def import_local_model(payload: ModelCompatibilityRequest) -> dict:
 
 
 @router.post("/{model_id}/activate", response_model=ModelRead)
-def activate_local_model(model_id: str) -> dict:
+def activate_local_model(model_id: str, payload: ModelActivateRequest | None = None) -> dict:
     try:
-        return set_active_model(model_id)
+        role = payload.role if payload is not None else "chat"
+        return set_active_model(model_id, role=role)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Model not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/{model_id}/download", response_model=ModelDownloadStart)

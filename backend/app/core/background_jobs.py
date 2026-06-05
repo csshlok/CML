@@ -10,7 +10,7 @@ from backend.app.core.embeddings import content_hash, reindex_source_chunks, req
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.config import get_settings
 from backend.app.core.model_registry import preferred_expert_base_model
-from backend.app.core.vector_maintenance import vector_repair_plan
+from backend.app.core.vector_maintenance import active_embedding_selector, vector_repair_plan
 from backend.app.core.training_dataset import build_cluster_dataset, write_cluster_training_dataset
 from backend.app.core.training_evaluation import evaluate_adapter_quality, evaluate_cluster_dataset
 from backend.app.core.lora_training import (
@@ -677,6 +677,7 @@ def _run_expanded_analysis(payload: dict, job_id: str) -> None:
     from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text
 
     query_embedding = embed_text(query)
+    selector = active_embedding_selector()
     params: list[str] = [vault_id]
     cluster_clause = ""
     if cluster_id:
@@ -691,9 +692,11 @@ def _run_expanded_analysis(payload: dict, job_id: str) -> None:
             WHERE chunks.vault_id = ?
               AND sources.state = 'indexed'
               AND sources.deleted_at IS NULL
+              AND chunks.embedding_model_id = ?
+              AND chunks.index_version = ?
               {cluster_clause}
             """,
-            params,
+            [params[0], selector["embedding_model_id"], selector["index_version"], *params[1:]],
         ).fetchall()
         best: dict[str, dict] = {}
         for row in rows:

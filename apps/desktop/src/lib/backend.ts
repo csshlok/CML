@@ -481,6 +481,9 @@ export type ModelDownloadState = {
 export type ModelCompatibilityRecord = {
   status: "accepted" | "rejected";
   accepted: boolean;
+  chat_role_accepted: boolean;
+  expert_role_accepted: boolean;
+  accepted_roles: string[];
   family: string;
   family_name: string;
   model_type: string;
@@ -490,6 +493,7 @@ export type ModelCompatibilityRecord = {
   runtime_dependencies: Record<string, unknown>;
   hardware: Record<string, unknown>;
   reasons: string[];
+  pairing_detail: string;
   detail: string;
 };
 
@@ -508,6 +512,8 @@ export type LocalModelRecord = {
   local_path: string | null;
   download: ModelDownloadState | null;
   active: boolean;
+  active_chat: boolean;
+  active_expert: boolean;
   compatibility: ModelCompatibilityRecord | null;
   source_kind: string;
 };
@@ -515,6 +521,9 @@ export type LocalModelRecord = {
 export type ModelRecommendationsRecord = {
   hardware: Record<string, unknown>;
   recommended_model_id: string;
+  recommended_chat_model_id: string;
+  recommended_expert_family: string;
+  active_pair: Record<string, unknown>;
   models: LocalModelRecord[];
   detail: string;
 };
@@ -1204,9 +1213,10 @@ export async function importLocalModel(payload: { path: string; name?: string | 
   });
 }
 
-export async function activateLocalModel(modelId: string) {
+export async function activateLocalModel(modelId: string, role: "chat" | "expert" | "pair" = "chat") {
   return request<LocalModelRecord>(`/api/v1/models/${encodeURIComponent(modelId)}/activate`, {
     method: "POST",
+    body: JSON.stringify({ role }),
   });
 }
 

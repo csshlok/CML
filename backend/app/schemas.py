@@ -498,6 +498,9 @@ class ModelIntegrityRead(BaseModel):
 class ModelCompatibilityRead(BaseModel):
     status: str
     accepted: bool
+    chat_role_accepted: bool = False
+    expert_role_accepted: bool = False
+    accepted_roles: list[str] = []
     family: str
     family_name: str
     model_type: str
@@ -507,6 +510,7 @@ class ModelCompatibilityRead(BaseModel):
     runtime_dependencies: dict
     hardware: dict
     reasons: list[str]
+    pairing_detail: str = ""
     detail: str
 
 
@@ -526,6 +530,8 @@ class ModelRead(BaseModel):
     download: ModelDownloadState | None = None
     integrity: ModelIntegrityRead | None = None
     active: bool = False
+    active_chat: bool = False
+    active_expert: bool = False
     compatibility: ModelCompatibilityRead | None = None
     source_kind: str = "default_choice"
 
@@ -535,9 +541,16 @@ class ModelCompatibilityRequest(BaseModel):
     name: str | None = None
 
 
+class ModelActivateRequest(BaseModel):
+    role: str = "chat"
+
+
 class ModelRecommendationRead(BaseModel):
     hardware: dict
     recommended_model_id: str
+    recommended_chat_model_id: str = ""
+    recommended_expert_family: str = ""
+    active_pair: dict = {}
     models: list[ModelRead]
     detail: str
 

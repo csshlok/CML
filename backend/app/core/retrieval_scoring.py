@@ -7,6 +7,7 @@ from uuid import uuid4
 from backend.app.core.config import get_settings
 from backend.app.core.database import connect, utc_now
 from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text, tokenize
+from backend.app.core.vector_maintenance import active_embedding_selector
 
 
 BM25_K1 = 1.5
@@ -160,6 +161,7 @@ def retrieval_eval_fixtures() -> dict:
 
 
 def _chunk_rows(vault_id: str, cluster_id: str | None) -> list[dict]:
+    selector = active_embedding_selector()
     params: list[str] = [vault_id]
     cluster_clause = ""
     if cluster_id:
@@ -186,9 +188,11 @@ def _chunk_rows(vault_id: str, cluster_id: str | None) -> list[dict]:
             WHERE chunks.vault_id = ?
               AND sources.deleted_at IS NULL
               AND sources.state = 'indexed'
+              AND chunks.embedding_model_id = ?
+              AND chunks.index_version = ?
               {cluster_clause}
             """,
-            params,
+            [params[0], selector["embedding_model_id"], selector["index_version"], *params[1:]],
         ).fetchall()
     return [dict(row) for row in rows]
 

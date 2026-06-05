@@ -55,13 +55,27 @@ Do not bundle LLM weights in the first installer. First-run setup must require o
 
 Approved-model policy:
 
-- Public V1 uses a single approved model family contract for both normal chat and LoRA expert workflows.
-- Current default choices remain the current Qwen/Phi/Gemma defaults, but expert-capable setup must use app-managed compatible checkpoints, not arbitrary runtime aliases.
-- Custom models have only two outcomes: `accepted` or `rejected`.
-- A custom model is accepted only if CML proves it is compatible with both Vault runtime expectations and LoRA expert runtime expectations on the current machine.
+- Public V1 now uses a dual-model runtime structure with strict acceptance rules.
+- Chat/runtime models and expert-base models are different roles and must not be treated as interchangeable, even when they come from the same family.
+- Current default choices remain the current Qwen/Phi/Gemma defaults for recommendation purposes.
+- Custom models still have only two outcomes: `accepted` or `rejected`.
+- Acceptance must become role-aware: a model or model pair is accepted only if CML proves it is compatible with the intended chat role, expert role, or approved pairing on the current machine.
 - Connected OpenAI-compatible runtimes, GGUF-only aliases, Ollama names, and llama.cpp endpoints are not sufficient by themselves for LoRA acceptance.
-- The app must own or import the actual compatible local checkpoint under an app-managed path before expert training/runtime is enabled.
-- Setup must require one approved model before expert-capable onboarding completes. Retrieval-only degraded mode may still exist explicitly, but it does not satisfy the intended V1 setup path.
+- Expert training/runtime must use an app-managed compatible local checkpoint under an app-managed path.
+- Setup must require an accepted configuration before expert-capable onboarding completes. Retrieval-only degraded mode may still exist explicitly, but it does not satisfy the intended V1 setup path.
+- Citation authority must remain Vault retrieval, not model memory. Expert models may assist with cluster-specific reasoning, but citations must be produced from retrieved source records.
+- Public docs and UI must stop implying that one approved family automatically means one lightweight runtime path. Current code still implies separate chat and expert runtime costs.
+
+Dual-model runtime decision:
+
+- Chat role: user-facing synthesis model for normal conversation and final answer writing.
+- Expert role: cluster-specialized LoRA-capable model/runtime used only when expert routing is justified.
+- Retrieval layer: source of truth for evidence, snippets, and citations for both roles.
+- Routing order: user query -> intent/routing -> retrieval -> optional expert assist -> final chat answer with citations from retrieval.
+- Do not design the system so the expert model becomes the authority that later receives citations as decoration.
+- Approved model support must move toward an approved compatibility matrix of chat role, expert role, and approved pairings rather than a single loose runtime identity.
+- Current code path still uses llama.cpp or another OpenAI-compatible local runtime for chat and a separate Transformers/PEFT runtime for expert work. Treat this as the current architecture unless explicitly refactored.
+- Because the current expert runtime loads a real Transformers checkpoint, expert mode should be treated as a higher-spec feature. Provisional public stance: do not promise expert mode on 8 GB machines; require real profiling before publishing a lower bound.
 
 Required recommendation system:
 
@@ -71,7 +85,9 @@ Required recommendation system:
 - Current default choices remain the default recommended families unless hardware or licensing constraints force a smaller approved option.
 - If the user imports their own model, run a compatibility report before registration and reject it with explicit reasons when it fails the approved contract.
 - Keep retrieval/context-only mode available as an explicit degraded state, but not as the desired public V1 experience.
-- Treat LoRA training requirements separately from synthesis model selection for sizing guidance, but not for model-family compatibility; the approved family must satisfy both contracts.
+- Treat chat-runtime sizing and expert-runtime sizing separately in user guidance and setup validation.
+- Recommend only approved compatible chat/expert pairings once the pairing matrix exists; do not allow arbitrary pair combinations.
+- On rejected custom model imports, provide an explicit replacement recommendation for the current hardware tier.
 
 Runtime boundary:
 
@@ -92,9 +108,9 @@ Runtime boundary:
 | Local backend foundation | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only |
 | Vault ingestion | Complete for current scope | `[##########] 100%` | Clean VM confirmation only |
 | Embeddings and clustering | In progress | `[##########] 99%` | Broader threshold tuning on real user vaults |
-| Chat/context routing | In progress | `[##########] 96%` | Complete-scope map/reduce, token budgets, runtime failure UX |
-| Compulsory cluster experts | In progress | `[#########-] 88%` | Real machine validation still required for LLaMA Factory smoke, live adapter prompt run, and live quality benchmark |
-| Context Bridge | In progress | `[#########-] 94%` | Capture UX polish and later external-client smoke |
+| Chat/context routing | In progress | `[##########] 97%` | Complete-scope map/reduce, token budgets, runtime failure UX |
+| Compulsory cluster experts | In progress | `[#########-] 89%` | Real machine validation still required for LLaMA Factory smoke, live adapter prompt run, and live quality benchmark |
+| Context Bridge | In progress | `[#########-] 95%` | Capture UX polish, clearer privacy copy, and later external-client smoke |
 | Packaging/install | In progress | `[##########] 99%` | Clean VM validation of bundled expert runtime |
 | QA/hardening | In progress | `[##########] 99%` | Clean VM package validation and larger user-owned vault benchmarks |
 
@@ -105,6 +121,8 @@ Runtime boundary:
 - Verify real adapter training and runtime loading before any broad "trained expert" claim.
 - Compulsory expert work now has stricter dataset/diversity/quality gates, evaluation harness, smoke scripts, and Expert tab visibility, but still needs a real trainer command/model path before public claims.
 - Validate the new accepted/rejected model contract on a clean Windows machine with the bundled expert runtime and one imported approved checkpoint.
+- Update threat/privacy docs so Bridge is described honestly as token/scoped but not meaningfully throttled against repeated corpus walking by a trusted client.
+- Dynamic link browser fallback remains enabled by explicit product decision; keep the accepted risk and non-hardened posture documented plainly in security/privacy docs.
 - Keep the written threat model current and treat local API/Bridge auth regressions as release blockers.
 - Continue retrieval threshold tuning beyond the benchmark harness using larger user-owned vaults.
 - Defer Claude Desktop-specific Bridge smoke for now; Codex-style MCP smoke remains a local protocol check, and external-client claims stay conservative.
@@ -139,28 +157,28 @@ Vault ingestion:
 
 Embeddings and clustering:
 
-- Done: default real embedding direction, hash dev fallback boundary, vector repair/compaction/policy endpoints, startup reconciliation, BM25 plus embedding scoring ledger, source-class weighting, threshold benchmark harness, retrieval eval fixtures, real T-drive cancellation smoke, 100-source benchmark script/report export, active-index transition smoke, real second-embedding cache smoke, user-shaped vault benchmark export, 1k benchmark script with timing targets, watched-folder back-pressure limits, cluster merge artifacts and rollback.
+- Done: default real embedding direction, hash dev fallback boundary, vector repair/compaction/policy endpoints, startup reconciliation, BM25 plus embedding scoring ledger, source-class weighting, threshold benchmark harness, retrieval eval fixtures, real T-drive cancellation smoke, 100-source benchmark script/report export, active-index transition smoke, real second-embedding cache smoke, user-shaped vault benchmark export, 1k benchmark script with timing targets, watched-folder back-pressure limits, cluster merge artifacts and rollback, and active-embedding filtering across retrieval/search paths so mixed embedding spaces are not ranked together.
 - Remaining: broader threshold tuning on user-owned vaults.
 
 Chat/context routing:
 
-- Done: LLM-first routing, retrieval intent, degraded runtime states, citation snapshots, attachment ingestion, coverage ledger, expanded-analysis foundation, chat message pagination, retrieval snapshot compaction, query/evidence cache pruning, evidence retention policy/enforcement API.
-- Remaining: real complete-scope map/reduce, partial-failure classification, token budgets, runtime failure UX.
+- Done: LLM-first routing, retrieval intent, degraded runtime states, citation snapshots, attachment ingestion, coverage ledger, expanded-analysis foundation, chat message pagination, retrieval snapshot compaction, query/evidence cache pruning, evidence retention policy/enforcement API, and explicit product framing that retrieval remains citation authority while expert models assist with reasoning.
+- Remaining: real complete-scope map/reduce, partial-failure classification, token budgets, runtime failure UX, and deeper expert-assisted routing beyond the current contract/state split.
 
 Compulsory cluster experts:
 
 - Done: verified-LoRA contract scaffold, dataset export with source/token/diversity counts, duplicate-ratio gate, artifact schema, metrics, activation, rollback, delete guardrails, shell-free trainer process boundary, Windows-path trainer tests, stricter graduation contract, adapter config/weight validation, runtime-load plan metadata, deterministic expert evaluation harness, retrieval-vs-adapter delta gate, stale-adapter detection, Expert tab status UI, and repeatable LoRA expert/runtime smoke scripts.
-- Remaining: execute the new Transformers/PEFT runtime smoke on a real machine with an installed accepted local base model, record a real LLaMA Factory trainer run against that model, expand hardware matrix/time estimates, and replace deterministic adapter scoring with a live adapter-backed quality benchmark.
+- Remaining: execute the new Transformers/PEFT runtime smoke on a real machine with an installed accepted local base model, record a real LLaMA Factory trainer run against that model, expand hardware matrix/time estimates, replace deterministic adapter scoring with a live adapter-backed quality benchmark, and convert the model story from one-family wording to an explicit approved chat/expert pairing matrix.
 
 Context Bridge:
 
-- Done: bridge tokens, permissions, token rotation, stale allowlist pruning, no-active-vault errors, notification behavior, constant-time token compare, explicit external-turn/artifact capture tools with vault/cluster permission checks, Codex-style MCP JSON-RPC smoke, malformed-client hardening.
+- Done: bridge tokens, permissions, token rotation, stale allowlist pruning, no-active-vault errors, notification behavior, constant-time token compare, explicit external-turn/artifact capture tools with vault/cluster permission checks, Codex-style MCP JSON-RPC smoke, malformed-client hardening, and explicit threat-model wording that Bridge is trusted-client scoped access rather than a meaningful anti-exfiltration throttle.
 - Remaining: full extension package, capture UX polish, later external-client smoke when reprioritized.
 
 Packaging/install:
 
 - Done: Windows package scripts, contributor requirements, OCR runtime staging script, local staged OCR runtime, valid rebuilt NSIS installer, silent install/uninstall smoke, packaged OCR verification, packaged model/embedding setup smoke, clean-machine validation script, generated-OCR full-vault packaged smoke, packaged dynamic-link/browser-runtime smoke, packaged interrupted-migration drill, packaged app launch smoke, AGPL-compatible Ghostscript release policy.
-- Remaining: clean VM execution.
+- Remaining: clean VM execution. Current contributor environment does not have a VM installed, so this gate is still unproven rather than silently assumed complete.
 
 QA/hardening:
 
@@ -179,6 +197,7 @@ These are release gates, not polish.
 - Local API auth: Electron-managed private APIs now fail closed without the local API token; renderer-origin validation and Bridge-token separation remain release gates.
 - Auth threat model: written in `docs/THREAT_MODEL.md`; keep it updated and enforce it through release-gate tests before public V1.
 - Embedding setup gate: production cannot silently use hash embeddings; semantic features must block/degrade explicitly when embeddings are unavailable.
+- Embedding transition correctness: retrieval/search must not silently mix vectors from different embedding models. The core filter hotfix is now in place; keep regression coverage and any remaining retrieval paths aligned with the same selector.
 - Model integrity: managed model downloads record SHA-256 and verify real pinned expected hashes from `docs/model-integrity-manifest.json`.
 - Scheduler synthesis gate: background jobs that should not run during generation must respect active/retriable generation states.
 - Chat recovery: interrupted generations need durable timeline placeholders, retry actions, and no fake assistant messages.
@@ -186,10 +205,16 @@ These are release gates, not polish.
 - Deletion graph: deleted sensitive content must disappear from retrieval/search immediately before async cleanup.
 - Diagnostics: log rotation policy exists and full-vault unpacked package smoke covers diagnostics export; clean VM execution remains.
 - MCP Bridge: Codex-style JSON-RPC smoke passed; keep external-client readiness claims conservative while Claude Desktop-specific smoke is deferred.
+- Bridge privacy boundary: current Bridge auth/scope model is not a meaningful anti-exfiltration throttle once a trusted client has a valid token for an allowed vault/cluster set. Threat-model wording and UI privacy language must say this plainly.
 - LoRA: public V1 requires verified real adapter training, adapter artifact validation, runtime load against a real local model, rollback, supported hardware, failure codes, and quality win over retrieval baseline.
 - LoRA graduation framing: small or insufficient clusters should remain retrieval-backed with explicit status instead of pretending every cluster can graduate.
+- LoRA threshold honesty: current token/source defaults are scaffolding values, not benchmark-backed public gates. Raise or replace them before public claims.
+- Expert runtime sizing: current expert runtime is a separate Transformers/PEFT load path, not a lightweight extension of the chat runtime. Public expert-mode hardware requirements must be measured and stated honestly.
 - Model recommendation: public V1 must recommend safe synthesis/embedding/expert setup by detected system tier, enforce one approved model family contract, and reject incompatible custom imports explicitly.
 - OCR/package: packaged OCR runtime, generated OCR fixture smoke, dynamic-link smoke, migration drill, and installer smoke pass; Ghostscript path is AGPL-compatible public release.
+- Dynamic-link browser fallback: current Playwright/Chromium fallback remains enabled by explicit product decision even though it is not yet a hardened release boundary. The accepted risk must stay documented plainly in the threat model and user-facing privacy/security language.
+- Cloud-synced vault path safety: selecting a OneDrive/iCloud/other synced vault path is currently not robustly warned/blocked. Treat this as a storage-integrity gap for public V1.
+- Diagnostics redaction: current bundle redaction is regex-based and does not yet amount to a rigorous "no secrets can leak" guarantee.
 
 ## Next Backend Build Steps
 
@@ -212,6 +237,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Finish first-run setup UI around the new readiness gate: vault path, model setup, embedding setup, OCR readiness, startup repair states.
 - Make onboarding honest about local model/embedding download size, time, hardware requirements, and external Bridge privacy tradeoffs.
 - Add real checkpoint-family download/import UX for the approved model contract, beyond the current runtime/GGUF default downloads.
+- Define and implement the approved chat-role / expert-role pairing matrix, including hardware tiers and explicit rejected-pair reasons.
 - Add model provenance display in setup/settings using `/api/v1/models/integrity-manifest`.
 - Continue backend service-layer extraction around raw route/database operations.
 - Add complete-scope answering in stages: coverage ledger, BM25/embedding scoring, threshold tuning, map packets, reduce/synthesis, cache pruning.
@@ -219,10 +245,15 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Build actual browser extension package and safer pairing flow.
 - Execute the clean-machine package script and smoke sequence on a fresh Windows VM before public release claims.
 - Keep Python dependency CVE auditing in repeatable contributor QA.
-- Continue LoRA readiness gates now that expert work is active: real trainer smoke, live runtime load, live adapter benchmark, hardware matrix, rollback edge cases, and Expert tab controls.
+- Continue LoRA readiness gates now that expert work is active: real trainer smoke, live runtime load, live adapter benchmark, hardware matrix, rollback edge cases, Expert tab controls, and benchmark-backed training eligibility thresholds.
+- Update docs/UI wording so retrieval remains the citation authority and expert models are described as reasoning assistants, not as the source of proof.
+- Add robust vault-location warnings or blocks for cloud-synced paths used as the main vault location.
 
 ## Recent Completed Work
 
+- Implemented the first dual-model setup pass: active chat/expert model roles in the registry, role-aware activation APIs, pair-aware onboarding/settings wording, retrieval-as-citation-authority wording, and role-aware readiness checks.
+- Hotfixed mixed-embedding correctness across core retrieval paths: semantic search, scoring ledger, expanded analysis, and cluster suggestion reads now filter by the active embedding model and index version instead of silently mixing vector spaces.
+- Updated security documentation to explicitly accept and document the current dynamic-link browser fallback risk and the trusted-client Bridge exfiltration boundary instead of implying stronger hardening than the code currently provides.
 - Implemented the approved-model contract end to end: backend model compatibility reports, custom checkpoint import, active-model selection, readiness gating, expert-training base-model selection, onboarding/settings accepted-or-rejected model flows, bundled expert runtime packaging, and focused regression coverage.
 - Continued the compulsory cluster expert build pass: added unique-source and duplicate-ratio dataset gates, minimum quality-delta config, deterministic expert evaluation harness, repeatable LoRA expert/runtime smoke scripts, strict LoRA MVP policy doc, and a backend-backed cluster Expert tab.
 - Started the compulsory cluster expert build pass: added stricter LoRA graduation gates for source count, estimated token count, validation records, adapter validation, runtime-load contract metadata, stale active-adapter detection, richer failure codes, and `/api/v1/clusters/{cluster_id}/expert/status`.

@@ -30,6 +30,7 @@ from backend.app.core.llm_runtime import (
     stream_grounded_answer,
 )
 from backend.app.core.memory_card import generate_tags, summarize_text
+from backend.app.core.vector_maintenance import active_embedding_selector
 from backend.app.core.chat_retention import (
     chat_evidence_retention_policy,
     compact_retrieval_snapshots,
@@ -679,6 +680,7 @@ def _score_sources_for_query(
     include_chat_transcripts: bool = False,
 ) -> list[dict]:
     query_vector = embed_text(query)
+    selector = active_embedding_selector()
     params: list[str] = [vault_id]
     cluster_clause = ""
     if cluster_id:
@@ -693,9 +695,11 @@ def _score_sources_for_query(
             WHERE chunks.vault_id = ?
               AND sources.state = 'indexed'
               AND sources.deleted_at IS NULL
+              AND chunks.embedding_model_id = ?
+              AND chunks.index_version = ?
               {cluster_clause}
             """,
-            params,
+            [params[0], selector["embedding_model_id"], selector["index_version"], *params[1:]],
         ).fetchall()
     best_by_source: dict[str, float] = {}
     for row in rows:

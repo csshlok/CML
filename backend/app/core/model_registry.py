@@ -169,6 +169,7 @@ def get_model(model_id: str) -> LocalModel | None:
 
 def imported_model_statuses() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    state = registry_state()
     for metadata_path in sorted(imported_models_dir().glob("*/cml-model.json")):
         try:
             payload = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -180,7 +181,6 @@ def imported_model_statuses() -> list[dict[str, Any]]:
         local_path = str(payload.get("local_path") or "")
         family = str(payload.get("family") or "")
         compatibility = model_compatibility_report(local_path, registered_family=family)
-        state = registry_state()
         rows.append(
             {
                 "id": model_id,
@@ -197,7 +197,9 @@ def imported_model_statuses() -> list[dict[str, Any]]:
                 "local_path": local_path,
                 "download": None,
                 "integrity": {"status": "imported", "sha256": None, "expected_sha256": None},
-                "active": state.get("active_model_id") == model_id,
+                "active": state.get("active_chat_model_id") == model_id or state.get("active_expert_model_id") == model_id,
+                "active_chat": state.get("active_chat_model_id") == model_id,
+                "active_expert": state.get("active_expert_model_id") == model_id,
                 "compatibility": compatibility,
                 "source_kind": "custom_import",
             }
@@ -218,18 +220,17 @@ def model_status(model_id: str) -> dict[str, Any]:
     if state:
         state = _normalized_download_state(state)
     state_installed_path = state.get("local_path") if state and state.get("status") == "installed" else None
+    registry = registry_state()
     info.update(
         {
             "installed": local_path is not None or state_installed_path is not None,
             "local_path": str(local_path) if local_path else state_installed_path,
             "download": state,
             "integrity": _model_integrity_status(model, local_path),
-            "active": registry_state().get("active_model_id") == model_id,
-            "compatibility": (
-                model_compatibility_report(str(local_path), registered_family=model.family)
-                if local_path is not None
-                else _missing_model_compatibility(model.family, model.notes)
-            ),
+            "active": registry.get("active_chat_model_id") == model_id or registry.get("active_expert_model_id") == model_id,
+            "active_chat": registry.get("active_chat_model_id") == model_id,
+            "active_expert": registry.get("active_expert_model_id") == model_id,
+            "compatibility": _default_model_compatibility(model, local_path),
             "source_kind": "default_choice",
         }
     )
@@ -252,17 +253,38 @@ def registry_state() -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"active_model_id": ""}
+        return {"active_chat_model_id": "", "active_expert_model_id": ""}
     if not isinstance(payload, dict):
-        return {"active_model_id": ""}
-    payload.setdefault("active_model_id", "")
+        return {"active_chat_model_id": "", "active_expert_model_id": ""}
+    legacy_active = str(payload.get("active_model_id") or "")
+    payload.setdefault("active_chat_model_id", legacy_active)
+    payload.setdefault("active_expert_model_id", legacy_active)
     return payload
 
 
-def set_active_model(model_id: str) -> dict[str, Any]:
+def set_active_model(model_id: str, role: str = "chat") -> dict[str, Any]:
     if not any(item["id"] == model_id for item in list_models()):
         raise KeyError(model_id)
-    state = {"active_model_id": model_id, "updated_at": utc_now()}
+    row = next(item for item in list_models() if item["id"] == model_id)
+    compatibility = row.get("compatibility") or {}
+    role = (role or "chat").strip().lower()
+    state = registry_state()
+    if role == "chat":
+        if not compatibility.get("chat_role_accepted"):
+            raise ValueError("Model is not accepted for the chat role.")
+        state["active_chat_model_id"] = model_id
+    elif role == "expert":
+        if not compatibility.get("expert_role_accepted"):
+            raise ValueError("Model is not accepted for the expert role.")
+        state["active_expert_model_id"] = model_id
+    elif role == "pair":
+        if not compatibility.get("chat_role_accepted") or not compatibility.get("expert_role_accepted"):
+            raise ValueError("Model is not accepted for both chat and expert roles.")
+        state["active_chat_model_id"] = model_id
+        state["active_expert_model_id"] = model_id
+    else:
+        raise ValueError("Unknown model activation role.")
+    state["updated_at"] = utc_now()
     registry_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
     for row in list_models():
         if row["id"] == model_id:
@@ -270,11 +292,22 @@ def set_active_model(model_id: str) -> dict[str, Any]:
     raise KeyError(model_id)
 
 
-def active_model_status() -> dict[str, Any] | None:
-    active_model_id = str(registry_state().get("active_model_id") or "")
+def active_chat_model_status() -> dict[str, Any] | None:
+    active_model_id = str(registry_state().get("active_chat_model_id") or "")
     if not active_model_id:
         return None
     return next((item for item in list_models() if item["id"] == active_model_id), None)
+
+
+def active_expert_model_status() -> dict[str, Any] | None:
+    active_model_id = str(registry_state().get("active_expert_model_id") or "")
+    if not active_model_id:
+        return None
+    return next((item for item in list_models() if item["id"] == active_model_id), None)
+
+
+def active_model_status() -> dict[str, Any] | None:
+    return active_expert_model_status() or active_chat_model_status()
 
 
 def model_recommendations() -> dict[str, Any]:
@@ -292,11 +325,42 @@ def model_recommendations() -> dict[str, Any]:
         list_models(),
         key=lambda item: (0 if item["id"] == preferred_id else 1, item["role"], item["name"]),
     )
+    preferred_chat = next((item for item in ordered if item["id"] == preferred_id), None)
+    current_pair = active_model_pair_status()
     return {
         "hardware": hardware,
         "recommended_model_id": preferred_id,
+        "recommended_chat_model_id": preferred_id,
+        "recommended_expert_family": preferred_chat.get("family") if preferred_chat else "",
+        "active_pair": current_pair,
         "models": ordered,
-        "detail": f"Recommended model family selection for hardware tier {tier}.",
+        "detail": (
+            f"Recommended chat model selection for hardware tier {tier}. "
+            "Expert mode still requires a separate accepted local checkpoint."
+        ),
+    }
+
+
+def active_model_pair_status() -> dict[str, Any]:
+    chat_model = active_chat_model_status()
+    expert_model = active_expert_model_status()
+    chat_ok = bool(chat_model and (chat_model.get("compatibility") or {}).get("chat_role_accepted"))
+    expert_ok = bool(expert_model and (expert_model.get("compatibility") or {}).get("expert_role_accepted"))
+    accepted = chat_ok and expert_ok
+    detail = (
+        "Accepted chat/expert model pair is active."
+        if accepted
+        else "Select an accepted chat model and an accepted expert checkpoint to complete dual-model setup."
+    )
+    if accepted and chat_model and expert_model and chat_model.get("family") != expert_model.get("family"):
+        detail = (
+            "Accepted cross-family chat/expert pair is active. This is allowed because retrieval, not model memory, remains the citation authority."
+        )
+    return {
+        "accepted": accepted,
+        "chat_model_id": chat_model.get("id") if chat_model else "",
+        "expert_model_id": expert_model.get("id") if expert_model else "",
+        "detail": detail,
     }
 
 
@@ -435,6 +499,9 @@ def _missing_model_compatibility(family_id: str, notes: str = "") -> dict[str, A
     return {
         "status": "rejected",
         "accepted": False,
+        "chat_role_accepted": False,
+        "expert_role_accepted": False,
+        "accepted_roles": [],
         "family": family_id,
         "family_name": family.name if family else family_id,
         "model_type": "",
@@ -446,7 +513,36 @@ def _missing_model_compatibility(family_id: str, notes: str = "") -> dict[str, A
         "reasons": [
             "No compatible local Transformers checkpoint is installed for this model family."
         ],
+        "pairing_detail": "A separate approved expert checkpoint is required for expert workflows.",
         "detail": notes or "Install or import a compatible local Transformers checkpoint to enable expert features.",
+    }
+
+
+def _default_model_compatibility(model: LocalModel, local_path: Path | None) -> dict[str, Any]:
+    if local_path is None:
+        return {
+            **_missing_model_compatibility(model.family, model.notes),
+            "detail": "Download this local chat model to use it in the chat role.",
+        }
+    hardware = hardware_status()
+    family = approved_family(model.family)
+    return {
+        "status": "accepted",
+        "accepted": True,
+        "chat_role_accepted": True,
+        "expert_role_accepted": False,
+        "accepted_roles": ["chat"],
+        "family": model.family,
+        "family_name": family.name if family else model.family,
+        "model_type": "gguf",
+        "architecture": "",
+        "registered_family": model.family,
+        "local_path": str(local_path),
+        "runtime_dependencies": runtime_dependency_status(),
+        "hardware": hardware,
+        "reasons": [],
+        "pairing_detail": "Accepted for chat. Pair this with an approved expert checkpoint for expert workflows.",
+        "detail": "Accepted local chat runtime model. A separate approved expert checkpoint is still required for expert workflows.",
     }
 
 
@@ -476,10 +572,14 @@ def model_compatibility_report(model_path: str | Path, *, registered_family: str
     if family and not _hardware_supports_family(family, hardware):
         reasons.append(f"Current hardware tier does not satisfy the minimum contract for the {family.name} family.")
 
-    accepted = not reasons
+    expert_role_accepted = not reasons
+    accepted_roles = ["expert"] if expert_role_accepted else []
     return {
-        "status": "accepted" if accepted else "rejected",
-        "accepted": accepted,
+        "status": "accepted" if expert_role_accepted else "rejected",
+        "accepted": expert_role_accepted,
+        "chat_role_accepted": False,
+        "expert_role_accepted": expert_role_accepted,
+        "accepted_roles": accepted_roles,
         "family": family.id if family else "",
         "family_name": family.name if family else "",
         "model_type": model_type,
@@ -489,9 +589,14 @@ def model_compatibility_report(model_path: str | Path, *, registered_family: str
         "runtime_dependencies": runtime,
         "hardware": hardware,
         "reasons": reasons,
+        "pairing_detail": (
+            "Accepted for the expert role. Pair this checkpoint with any accepted chat runtime model; retrieval remains the citation authority."
+            if expert_role_accepted and family
+            else "Rejected for the expert role."
+        ),
         "detail": (
             f"Accepted local {family.name} checkpoint for Vault and LoRA expert runtime."
-            if accepted and family
+            if expert_role_accepted and family
             else "; ".join(reasons)
         ),
     }
@@ -521,13 +626,13 @@ def import_model_checkpoint(source_path: str | Path, *, name: str | None = None)
         "created_at": utc_now(),
     }
     (destination / "cml-model.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    if not active_model_status():
-        set_active_model(model_id)
+    if not active_expert_model_status():
+        set_active_model(model_id, role="expert")
     return next(item for item in imported_model_statuses() if item["id"] == model_id)
 
 
 def preferred_expert_base_model() -> dict[str, Any] | None:
-    active = active_model_status()
+    active = active_expert_model_status()
     if active and active.get("compatibility", {}).get("accepted"):
         return active
     return next((item for item in imported_model_statuses() if item.get("compatibility", {}).get("accepted")), None)

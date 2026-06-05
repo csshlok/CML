@@ -12,6 +12,7 @@ from backend.app.core.retrieval_scoring import (
 from backend.app.core.retrieval_cache import list_query_cache, prune_query_cache, put_query_cache
 from backend.app.core.vector_maintenance import (
     activate_embedding_index,
+    active_embedding_selector,
     begin_embedding_index_transition,
     compact_vectors,
     embedding_index_policy,
@@ -30,6 +31,7 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     query_vector = embed_text(payload.query)
+    selector = active_embedding_selector()
     params: list[str] = [payload.vault_id]
     cluster_clause = ""
     if payload.cluster_id:
@@ -58,8 +60,10 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
             JOIN sources ON sources.id = chunks.source_id
             LEFT JOIN source_pages pages ON pages.id = chunks.page_id
             WHERE chunks.vault_id = ? AND sources.deleted_at IS NULL {cluster_clause}
+              AND chunks.embedding_model_id = ?
+              AND chunks.index_version = ?
             """,
-            params,
+            [*params, selector["embedding_model_id"], selector["index_version"]],
         ).fetchall()
 
     scored = []
