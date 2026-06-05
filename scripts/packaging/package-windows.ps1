@@ -14,6 +14,7 @@ $desktopDir = Join-Path $repoRoot "apps\desktop"
 $backendDir = Join-Path $repoRoot "backend"
 $stagingDir = Join-Path $desktopDir "packaging\backend"
 $runtimeDir = Join-Path $desktopDir "packaging\python-runtime"
+$expertRuntimeDir = Join-Path $desktopDir "packaging\expert-python-runtime"
 $playwrightBrowserDir = Join-Path $desktopDir "packaging\ms-playwright"
 $ocrStagingScript = Join-Path $repoRoot "scripts\packaging\stage-ocr-runtime.ps1"
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
@@ -85,6 +86,18 @@ if ($IncludeEmbeddingRuntime) {
   Write-Host "Installing optional embedding runtime dependencies..."
   & $runtimePython -m pip install "sentence-transformers>=3.0.0"
 }
+
+Write-Host "Building packaged expert Python runtime..."
+if (Test-Path $expertRuntimeDir) {
+  Remove-Item -Recurse -Force $expertRuntimeDir
+}
+& $python -m venv $expertRuntimeDir
+$expertRuntimePython = Join-Path $expertRuntimeDir "Scripts\python.exe"
+& $expertRuntimePython -m pip install --upgrade pip
+& $expertRuntimePython -m pip install `
+  "torch>=2.4.0" `
+  "transformers>=4.55.0" `
+  "peft>=0.17.0"
 
 Write-Host "Packaging Windows app with electron-builder..."
 $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"

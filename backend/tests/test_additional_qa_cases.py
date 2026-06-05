@@ -17,6 +17,7 @@ class AdditionalQACases(unittest.TestCase):
         self.db_path = Path(self.tmp.name) / "test.sqlite3"
         os.environ["CML_DATABASE_PATH"] = str(self.db_path)
         os.environ["CML_DATA_DIR"] = self.tmp.name
+        os.environ["CML_MODELS_DIR"] = str(Path(self.tmp.name) / "models")
         os.environ["CML_EMBEDDING_PROVIDER"] = "hash"
         os.environ["CML_ALLOW_HASH_EMBEDDINGS"] = "1"
         os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "1"
@@ -42,14 +43,22 @@ class AdditionalQACases(unittest.TestCase):
         os.environ.pop("CML_LORA_MIN_UNIQUE_SOURCES", None)
         os.environ.pop("CML_LORA_MAX_DUPLICATE_RATIO", None)
         os.environ.pop("CML_LORA_MODEL_DIRS", None)
+        os.environ.pop("CML_MODELS_DIR", None)
         os.environ.pop("CML_LLM_MODEL", None)
         self.tmp.cleanup()
 
-    def _write_fake_local_transformers_model(self, model_name: str = "test-base-model") -> Path:
+    def _write_fake_local_transformers_model(
+        self,
+        model_name: str = "test-base-model",
+        *,
+        model_type: str = "qwen2",
+        repo_hint: str | None = None,
+    ) -> Path:
         model_root = Path(self.tmp.name) / "models"
         model_dir = model_root / model_name
         model_dir.mkdir(parents=True, exist_ok=True)
-        (model_dir / "config.json").write_text('{"model_type":"llama"}', encoding="utf-8")
+        payload = {"model_type": model_type, "_name_or_path": repo_hint or f"Qwen/{model_name}"}
+        (model_dir / "config.json").write_text(json.dumps(payload), encoding="utf-8")
         (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
         os.environ["CML_LORA_MODEL_DIRS"] = str(model_root)
         os.environ["CML_LLM_MODEL"] = model_name
@@ -57,6 +66,73 @@ class AdditionalQACases(unittest.TestCase):
 
         get_settings.cache_clear()
         return model_dir
+
+    def test_model_compatibility_report_accepts_supported_transformers_checkpoint(self) -> None:
+        from backend.app.core.model_registry import model_compatibility_report
+
+        model_dir = self._write_fake_local_transformers_model(
+            "accepted-qwen",
+            model_type="qwen2",
+            repo_hint="Qwen/Qwen3-4B",
+        )
+
+        report = model_compatibility_report(model_dir)
+
+        self.assertTrue(report["accepted"])
+        self.assertEqual(report["status"], "accepted")
+        self.assertEqual(report["family"], "qwen")
+
+    def test_model_compatibility_report_rejects_non_checkpoint_path(self) -> None:
+        from backend.app.core.model_registry import model_compatibility_report
+
+        file_path = Path(self.tmp.name) / "model.gguf"
+        file_path.write_bytes(b"gguf")
+
+        report = model_compatibility_report(file_path)
+
+        self.assertFalse(report["accepted"])
+        self.assertEqual(report["status"], "rejected")
+        self.assertIn("checkpoint directory", report["detail"].lower())
+
+    def test_import_and_activate_custom_model(self) -> None:
+        from backend.app.core.model_registry import active_model_status, import_model_checkpoint, set_active_model
+
+        imported = import_model_checkpoint(
+            self._write_fake_local_transformers_model(
+                "custom-gemma",
+                model_type="gemma3",
+                repo_hint="google/gemma-3-4b-it",
+            ),
+            name="Gemma Local",
+        )
+
+        self.assertEqual(imported["source_kind"], "custom_import")
+        self.assertTrue(imported["compatibility"]["accepted"])
+        self.assertEqual(active_model_status()["id"], imported["id"])
+
+        activated = set_active_model(imported["id"])
+        self.assertEqual(activated["id"], imported["id"])
+
+    def test_first_run_readiness_requires_active_approved_model(self) -> None:
+        from backend.app.core.model_registry import import_model_checkpoint
+        from backend.app.core.setup_readiness import first_run_readiness
+
+        readiness = first_run_readiness()
+        approved = next(check for check in readiness["checks"] if check["id"] == "approved_model")
+        self.assertFalse(approved["ok"])
+
+        import_model_checkpoint(
+            self._write_fake_local_transformers_model(
+                "phi-local",
+                model_type="phi3",
+                repo_hint="microsoft/Phi-4-mini-instruct",
+            ),
+            name="Phi Local",
+        )
+
+        readiness = first_run_readiness()
+        approved = next(check for check in readiness["checks"] if check["id"] == "approved_model")
+        self.assertTrue(approved["ok"])
 
     def test_bridge_context_requires_token_when_enabled(self) -> None:
         from backend.app.api.routes.bridge import update_bridge_settings

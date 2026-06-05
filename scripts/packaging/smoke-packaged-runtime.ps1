@@ -13,6 +13,7 @@ if (-not $PackageRoot) {
 $packagePath = [System.IO.Path]::GetFullPath($PackageRoot)
 $resourcesPath = Join-Path $packagePath "resources"
 $python = Join-Path $resourcesPath "python-runtime\Scripts\python.exe"
+$expertPython = Join-Path $resourcesPath "expert-python-runtime\Scripts\python.exe"
 $backendRoot = Join-Path $resourcesPath "backend"
 $ocrManifest = Join-Path $backendRoot "bin\ocr\manifest.json"
 
@@ -21,6 +22,9 @@ if (-not (Test-Path -LiteralPath $packagePath)) {
 }
 if (-not (Test-Path -LiteralPath $python)) {
   throw "Packaged Python runtime not found: $python"
+}
+if (-not (Test-Path -LiteralPath $expertPython)) {
+  throw "Packaged expert Python runtime not found: $expertPython"
 }
 if (-not (Test-Path -LiteralPath (Join-Path $backendRoot "app\main.py"))) {
   throw "Packaged backend source not found under $backendRoot"
@@ -59,6 +63,26 @@ if ($LASTEXITCODE -ne 0) {
   throw "Packaged OCR probe failed."
 }
 $ocrStatus = $ocrJson | ConvertFrom-Json
+
+$expertProbePath = Join-Path $smokeRoot "expert_probe.py"
+@'
+import importlib.util
+import json
+result = {
+    "torch": importlib.util.find_spec("torch") is not None,
+    "transformers": importlib.util.find_spec("transformers") is not None,
+    "peft": importlib.util.find_spec("peft") is not None,
+}
+print(json.dumps(result, sort_keys=True))
+if not all(result.values()):
+    raise SystemExit("Packaged expert runtime is missing required dependencies.")
+'@ | Set-Content -LiteralPath $expertProbePath -Encoding UTF8
+
+$expertJson = & $expertPython $expertProbePath
+if ($LASTEXITCODE -ne 0) {
+  throw "Packaged expert runtime probe failed."
+}
+$expertStatus = $expertJson | ConvertFrom-Json
 
 $process = Start-Process `
   -FilePath $python `
@@ -177,6 +201,7 @@ try {
   [ordered]@{
     package_root = $packagePath
     python_runtime = $python
+    expert_python_runtime = $expertPython
     backend_healthy = $true
     private_api_requires_token = $true
     pre_vault_routes_blocked = $true
@@ -186,6 +211,7 @@ try {
     embedding_setup_status_available = $true
     hash_embeddings_blocked_without_dev_mode = $true
     embedding_cache_configurable = $true
+    expert_runtime_available = [bool]($expertStatus.torch -and $expertStatus.transformers -and $expertStatus.peft)
     image_ocr_available = [bool]$ocrStatus.image_ocr_available
     pdf_ocr_available = [bool]$ocrStatus.pdf_ocr_available
     pdf_ocr_engine = $ocrStatus.pdf_ocr_engine

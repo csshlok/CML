@@ -19,6 +19,7 @@ function Test-PathPresent([string]$PathValue) {
 $packageRootPath = [System.IO.Path]::GetFullPath($PackageRoot)
 $resources = Join-Path $packageRootPath "resources"
 $runtimePython = Join-Path $resources "python-runtime\Scripts\python.exe"
+$expertRuntimePython = Join-Path $resources "expert-python-runtime\Scripts\python.exe"
 $backend = Join-Path $resources "backend"
 $ocrManifest = Join-Path $backend "bin\ocr\manifest.json"
 $playwrightRuntime = Join-Path $resources "ms-playwright"
@@ -27,6 +28,7 @@ $checks = @(
   @{ name = "resources_exists"; ok = Test-PathPresent $resources; path = $resources },
   @{ name = "backend_exists"; ok = Test-PathPresent $backend; path = $backend },
   @{ name = "python_runtime_exists"; ok = Test-PathPresent $runtimePython; path = $runtimePython },
+  @{ name = "expert_python_runtime_exists"; ok = Test-PathPresent $expertRuntimePython; path = $expertRuntimePython },
   @{ name = "playwright_runtime_exists"; ok = Test-PathPresent $playwrightRuntime; path = $playwrightRuntime },
   @{ name = "ocr_manifest_exists"; ok = Test-PathPresent $ocrManifest; path = $ocrManifest },
   @{ name = "app_launch_smoke_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\smoke-packaged-app-launch.ps1"); path = "scripts/packaging/smoke-packaged-app-launch.ps1" },
