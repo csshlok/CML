@@ -989,7 +989,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(row["state"], "retriable")
         self.assertIn("interrupted", row["error"])
 
-    def test_schema_migration_baseline_is_recorded(self) -> None:
+    def test_schema_migration_security_metadata_is_recorded(self) -> None:
         from backend.app.core.database import connect
         from backend.app.core.migrations import run_migrations
 
@@ -1000,9 +1000,13 @@ class SourcePageIndexingTests(unittest.TestCase):
                 "SELECT version, status FROM schema_migrations ORDER BY version DESC LIMIT 1"
             ).fetchone()
             user_version = conn.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(row["version"], 1)
+            security_table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vault_security_metadata'"
+            ).fetchone()
+        self.assertEqual(row["version"], 2)
         self.assertEqual(row["status"], "succeeded")
-        self.assertEqual(user_version, 1)
+        self.assertEqual(user_version, 2)
+        self.assertIsNotNone(security_table)
 
     def test_disk_preflight_reports_available_space(self) -> None:
         from backend.app.core.preflight import disk_preflight
