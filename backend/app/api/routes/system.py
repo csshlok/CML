@@ -11,6 +11,17 @@ from backend.app.core.startup_status import read_startup_status, startup_status_
 from backend.app.core.config import get_settings
 from backend.app.core.database import connect, dict_from_row
 from backend.app.core.storage_accounting import storage_accounting
+from backend.app.core.unlock_state import (
+    RepairRequiredError,
+    current_unlock_state,
+    initialize_security_and_unlock,
+    lock,
+    reset_passphrase,
+    unlock_with_passphrase,
+    unlock_with_recovery,
+    update_unlock_settings,
+    verify_sensitive_action,
+)
 from backend.app.core.vault_safety import vault_safety_status
 from backend.app.schemas import (
     DiskPreflightRequest,
@@ -18,7 +29,16 @@ from backend.app.schemas import (
     HardwareStatusRead,
     LoraTrainerStatusRead,
     OCRRuntimeStatusRead,
+    SensitiveActionVerifyRead,
+    SensitiveActionVerifyRequest,
     StartupStatusRead,
+    UnlockInitializeRequest,
+    UnlockInitializeResponse,
+    UnlockPassphraseRequest,
+    UnlockRecoveryRequest,
+    UnlockRecoveryResetRequest,
+    UnlockSettingsUpdate,
+    UnlockStatusRead,
     VaultLockAuditRead,
     VaultSafetyRead,
 )
@@ -76,6 +96,93 @@ def get_startup_recovery_drills(apply_recovery: bool = False, stale_timeout_seco
         apply_recovery=apply_recovery,
         stale_timeout_seconds=stale_timeout_seconds,
     )
+
+
+@router.get("/unlock/status", response_model=UnlockStatusRead)
+def get_unlock_status() -> dict:
+    return current_unlock_state()
+
+
+@router.post("/unlock/initialize", response_model=UnlockInitializeResponse)
+def initialize_unlock(payload: UnlockInitializeRequest) -> dict:
+    try:
+        return initialize_security_and_unlock(payload.vault_id, payload.passphrase, payload.unlock_mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RepairRequiredError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _unlock_http_exception(exc) from exc
+
+
+@router.post("/unlock/passphrase", response_model=UnlockStatusRead)
+def unlock_passphrase(payload: UnlockPassphraseRequest) -> dict:
+    try:
+        return unlock_with_passphrase(payload.vault_id, payload.passphrase)
+    except RepairRequiredError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _unlock_http_exception(exc) from exc
+
+
+@router.post("/unlock/recovery", response_model=UnlockStatusRead)
+def unlock_recovery(payload: UnlockRecoveryRequest) -> dict:
+    try:
+        return unlock_with_recovery(payload.vault_id, payload.recovery_key)
+    except RepairRequiredError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _unlock_http_exception(exc) from exc
+
+
+@router.post("/unlock/recovery/reset", response_model=UnlockStatusRead)
+def reset_unlock_passphrase(payload: UnlockRecoveryResetRequest) -> dict:
+    try:
+        return reset_passphrase(payload.vault_id, payload.recovery_key, payload.new_passphrase)
+    except RepairRequiredError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _unlock_http_exception(exc) from exc
+
+
+@router.post("/unlock/lock", response_model=UnlockStatusRead)
+def lock_unlock(vault_id: str | None = None) -> dict:
+    return lock(vault_id)
+
+
+@router.patch("/unlock/settings")
+def patch_unlock_settings(payload: UnlockSettingsUpdate) -> dict:
+    try:
+        return update_unlock_settings(
+            payload.vault_id,
+            unlock_mode=payload.unlock_mode,
+            pin_enabled=payload.pin_enabled,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _unlock_http_exception(exc) from exc
+
+
+@router.post("/unlock/sensitive-action", response_model=SensitiveActionVerifyRead)
+def verify_unlock_sensitive_action(payload: SensitiveActionVerifyRequest) -> dict:
+    try:
+        return verify_sensitive_action(payload.vault_id, payload.passphrase)
+    except Exception as exc:
+        raise _unlock_http_exception(exc) from exc
+
+
+def _unlock_http_exception(exc: Exception) -> HTTPException:
+    detail = str(exc) or exc.__class__.__name__
+    if detail == "invalid_vault_secret" or exc.__class__.__name__ == "InvalidVaultSecretError":
+        return HTTPException(status_code=401, detail="invalid_vault_secret")
+    if detail == "vault_security_already_initialized" or exc.__class__.__name__ == "VaultSecurityExistsError":
+        return HTTPException(status_code=409, detail="vault_security_already_initialized")
+    if detail == "vault_security_not_initialized" or exc.__class__.__name__ == "VaultSecurityNotInitializedError":
+        return HTTPException(status_code=409, detail="vault_security_not_initialized")
+    if detail == "vault_not_found":
+        return HTTPException(status_code=404, detail="vault_not_found")
+    return HTTPException(status_code=409, detail=detail)
 
 
 @router.get("/first-run/readiness")

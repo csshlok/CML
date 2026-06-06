@@ -792,6 +792,63 @@ class VaultLockAuditRead(BaseModel):
     created_at: str
 
 
+class UnlockStatusRead(BaseModel):
+    state: str
+    vault_id: str | None = None
+    unlock_mode: str = "convenience"
+    pin_enabled: bool = False
+    message: str = ""
+    verification_error: str = ""
+    updated_at: str = ""
+    ready: bool = False
+    secured_vault_count: int = 0
+    secured_vault_ids: list[str] = []
+    has_vendor_recovery: bool = False
+
+
+class UnlockInitializeRequest(BaseModel):
+    vault_id: str
+    passphrase: str = Field(min_length=1)
+    unlock_mode: str = "convenience"
+
+
+class UnlockInitializeResponse(UnlockStatusRead):
+    recovery_key: str
+
+
+class UnlockPassphraseRequest(BaseModel):
+    vault_id: str
+    passphrase: str = Field(min_length=1)
+
+
+class UnlockRecoveryRequest(BaseModel):
+    vault_id: str
+    recovery_key: str = Field(min_length=1)
+
+
+class UnlockRecoveryResetRequest(BaseModel):
+    vault_id: str
+    recovery_key: str = Field(min_length=1)
+    new_passphrase: str = Field(min_length=1)
+
+
+class UnlockSettingsUpdate(BaseModel):
+    vault_id: str
+    unlock_mode: str | None = None
+    pin_enabled: bool | None = None
+
+
+class SensitiveActionVerifyRequest(BaseModel):
+    vault_id: str
+    passphrase: str = Field(min_length=1)
+
+
+class SensitiveActionVerifyRead(BaseModel):
+    ok: bool
+    vault_id: str
+    verified_at: str
+
+
 class DiskPreflightRequest(BaseModel):
     path: str
     required_bytes: int | None = None

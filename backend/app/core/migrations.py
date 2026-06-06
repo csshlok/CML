@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 from backend.app.core.database import connect, utc_now
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class MigrationError(RuntimeError):
@@ -18,8 +18,36 @@ def _migration_001_baseline(conn) -> None:
     conn.execute("SELECT 1")
 
 
+def _migration_002_vault_security_metadata(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vault_security_metadata (
+            vault_id TEXT PRIMARY KEY,
+            security_version INTEGER NOT NULL,
+            kdf_algorithm TEXT NOT NULL,
+            kdf_params_json TEXT NOT NULL,
+            passphrase_salt TEXT NOT NULL,
+            passphrase_wrapped_vmk TEXT NOT NULL,
+            recovery_salt TEXT NOT NULL,
+            recovery_wrapped_vmk TEXT NOT NULL,
+            unlock_mode TEXT NOT NULL DEFAULT 'convenience',
+            pin_enabled INTEGER NOT NULL DEFAULT 0,
+            pin_salt TEXT NOT NULL DEFAULT '',
+            pin_wrapped_unlock_secret TEXT NOT NULL DEFAULT '',
+            active_derived_state_tuple TEXT NOT NULL DEFAULT '{}',
+            previous_verified_tuple TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_security_unlock_mode ON vault_security_metadata(unlock_mode)")
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migration_001_baseline,
+    2: _migration_002_vault_security_metadata,
 }
 
 

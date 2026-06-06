@@ -14,6 +14,7 @@ from backend.app.core.migrations import run_migrations
 from backend.app.core.pre_vault import BackendModeMiddleware
 from backend.app.core.reserved_fields import ReservedChatFieldMiddleware
 from backend.app.core.startup_checks import StartupCheckError, verify_schema_version, verify_sqlite_integrity
+from backend.app.core.unlock_middleware import UnlockGateMiddleware
 from backend.app.core.startup_status import write_startup_status
 from backend.app.core.vault_lock import VaultLockError, acquire_vault_lock, release_vault_lock
 from backend.app.schemas import HealthResponse
@@ -90,6 +91,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="CML Local Backend", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(ReservedChatFieldMiddleware)
+app.add_middleware(UnlockGateMiddleware)
 app.add_middleware(BackendModeMiddleware)
 app.add_middleware(LocalApiAuthMiddleware)
 

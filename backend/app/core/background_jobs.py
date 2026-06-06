@@ -13,6 +13,7 @@ from backend.app.core.model_registry import preferred_expert_base_model
 from backend.app.core.vector_maintenance import active_embedding_selector, vector_repair_plan
 from backend.app.core.training_dataset import build_cluster_dataset, write_cluster_training_dataset
 from backend.app.core.training_evaluation import evaluate_adapter_quality, evaluate_cluster_dataset
+from backend.app.core.unlock_state import should_pause_vault_job
 from backend.app.core.lora_training import (
     adapter_validation_report,
     dataset_graduation_report,
@@ -448,6 +449,8 @@ def _claim_next_job() -> dict | None:
             job = dict_from_row(row)
             dependency_ready = _resolve_dependency(conn, job)
             if not dependency_ready:
+                continue
+            if should_pause_vault_job(job.get("write_scope")):
                 continue
             if _synthesis_conflict(conn, job):
                 continue

@@ -36,6 +36,26 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS vault_security_metadata (
+                vault_id TEXT PRIMARY KEY,
+                security_version INTEGER NOT NULL,
+                kdf_algorithm TEXT NOT NULL,
+                kdf_params_json TEXT NOT NULL,
+                passphrase_salt TEXT NOT NULL,
+                passphrase_wrapped_vmk TEXT NOT NULL,
+                recovery_salt TEXT NOT NULL,
+                recovery_wrapped_vmk TEXT NOT NULL,
+                unlock_mode TEXT NOT NULL DEFAULT 'convenience',
+                pin_enabled INTEGER NOT NULL DEFAULT 0,
+                pin_salt TEXT NOT NULL DEFAULT '',
+                pin_wrapped_unlock_secret TEXT NOT NULL DEFAULT '',
+                active_derived_state_tuple TEXT NOT NULL DEFAULT '{}',
+                previous_verified_tuple TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS clusters (
                 id TEXT PRIMARY KEY,
                 vault_id TEXT NOT NULL,
@@ -464,6 +484,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_cluster_merge_artifacts_vault ON cluster_merge_artifacts(vault_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_extension_pairing_status ON extension_pairing_sessions(status, expires_at);
             CREATE INDEX IF NOT EXISTS idx_extension_permission_audit_client ON extension_permission_audit(client_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_vault_security_unlock_mode ON vault_security_metadata(unlock_mode);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_app_jobs_dedupe_active
                 ON app_jobs(dedupe_key)
                 WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running');
@@ -524,6 +545,7 @@ def init_db() -> None:
         _add_column_if_missing(conn, "expert_artifacts", "active", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "expert_artifacts", "rolled_back_at", "TEXT")
         _add_column_if_missing(conn, "expert_artifacts", "deleted_at", "TEXT")
+        _ensure_vault_security_metadata_schema(conn)
         conn.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_app_jobs_runnable
@@ -540,6 +562,8 @@ def init_db() -> None:
                 ON query_evidence_cache(vault_id, query_fingerprint, invalidated_at);
             CREATE INDEX IF NOT EXISTS idx_cluster_merge_artifacts_target
                 ON cluster_merge_artifacts(target_cluster_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_vault_security_unlock_mode
+                ON vault_security_metadata(unlock_mode);
             """
         )
 
@@ -553,6 +577,50 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, de
     }
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _ensure_vault_security_metadata_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vault_security_metadata (
+            vault_id TEXT PRIMARY KEY,
+            security_version INTEGER NOT NULL,
+            kdf_algorithm TEXT NOT NULL,
+            kdf_params_json TEXT NOT NULL,
+            passphrase_salt TEXT NOT NULL,
+            passphrase_wrapped_vmk TEXT NOT NULL,
+            recovery_salt TEXT NOT NULL,
+            recovery_wrapped_vmk TEXT NOT NULL,
+            unlock_mode TEXT NOT NULL DEFAULT 'convenience',
+            pin_enabled INTEGER NOT NULL DEFAULT 0,
+            pin_salt TEXT NOT NULL DEFAULT '',
+            pin_wrapped_unlock_secret TEXT NOT NULL DEFAULT '',
+            active_derived_state_tuple TEXT NOT NULL DEFAULT '{}',
+            previous_verified_tuple TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+        )
+        """
+    )
+    for column, definition in {
+        "security_version": "INTEGER NOT NULL DEFAULT 1",
+        "kdf_algorithm": "TEXT NOT NULL DEFAULT 'argon2id'",
+        "kdf_params_json": "TEXT NOT NULL DEFAULT '{}'",
+        "passphrase_salt": "TEXT NOT NULL DEFAULT ''",
+        "passphrase_wrapped_vmk": "TEXT NOT NULL DEFAULT ''",
+        "recovery_salt": "TEXT NOT NULL DEFAULT ''",
+        "recovery_wrapped_vmk": "TEXT NOT NULL DEFAULT ''",
+        "unlock_mode": "TEXT NOT NULL DEFAULT 'convenience'",
+        "pin_enabled": "INTEGER NOT NULL DEFAULT 0",
+        "pin_salt": "TEXT NOT NULL DEFAULT ''",
+        "pin_wrapped_unlock_secret": "TEXT NOT NULL DEFAULT ''",
+        "active_derived_state_tuple": "TEXT NOT NULL DEFAULT '{}'",
+        "previous_verified_tuple": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+        "updated_at": "TEXT NOT NULL DEFAULT ''",
+    }.items():
+        _add_column_if_missing(conn, "vault_security_metadata", column, definition)
 
 
 @contextmanager
