@@ -212,14 +212,26 @@ class VaultCryptoPhase1Tests(unittest.TestCase):
             encrypted_table = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'encrypted_content'"
             ).fetchone()
+            derived_table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derived_state_publications'"
+            ).fetchone()
+            quarantine_table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'source_quarantine_records'"
+            ).fetchone()
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             migration = conn.execute("SELECT status FROM schema_migrations WHERE version = 2").fetchone()
             encrypted_migration = conn.execute("SELECT status FROM schema_migrations WHERE version = 3").fetchone()
+            derived_migration = conn.execute("SELECT status FROM schema_migrations WHERE version = 4").fetchone()
+            quarantine_migration = conn.execute("SELECT status FROM schema_migrations WHERE version = 5").fetchone()
         self.assertIsNotNone(table)
         self.assertIsNotNone(encrypted_table)
-        self.assertEqual(version, 3)
+        self.assertIsNotNone(derived_table)
+        self.assertIsNotNone(quarantine_table)
+        self.assertEqual(version, 5)
         self.assertEqual(migration["status"], "succeeded")
         self.assertEqual(encrypted_migration["status"], "succeeded")
+        self.assertEqual(derived_migration["status"], "succeeded")
+        self.assertEqual(quarantine_migration["status"], "succeeded")
 
 
 if __name__ == "__main__":

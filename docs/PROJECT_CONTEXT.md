@@ -118,20 +118,19 @@ Runtime boundary:
 | Context Bridge | In progress | `[#########-] 95%` | Capture UX polish, clearer privacy copy, and later external-client smoke |
 | Packaging/install | In progress | `[##########] 99%` | Clean VM validation of bundled expert runtime |
 | QA/hardening | In progress | `[##########] 99%` | Clean VM package validation and larger user-owned vault benchmarks |
-| Security | In progress | `[######----] 60%` | Encrypted storage/blob boundary complete; next gate is derived-state tuple publication |
+| Security | In progress | `[#########-] 90%` | Renderer hardening complete; next gate is Bridge approval and identity |
 
 ## Current Critical Path
 
 - Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
-- Implement the derived-state publication model at scale: compound tuple versioning, query snapshot epochs, staging namespace, copy-on-write publication, disk preflight, and staged-artifact cleanup.
-- Implement hostile-content defenses for public V1: encrypted quarantine, structural validation, parser/browser isolation, trust tiers, degraded retrieval gates, and renderer HTML-safety audit.
+- Implement remaining public V1 security gates: Bridge approval/identity, reconciliation logging, packaging hardening, and large-vault security QA.
 - Implement Bridge and LoRA hardening for public V1: approval/identity model, locked-state behavior, dataset manifest review, runtime hash verification, and trustworthy expert graduation.
 - Keep Windows-only public V1 criteria. If verified LoRA or other public gates fail, delay release; do not ship a private demo fallback.
 - Verify real adapter training and runtime loading before any broad "trained expert" claim.
 - Compulsory expert work now has stricter dataset/diversity/quality gates, evaluation harness, smoke scripts, and Expert tab visibility, but still needs a real trainer command/model path before public claims.
 - Validate the new accepted/rejected model contract on a clean Windows machine with the bundled expert runtime and one imported approved checkpoint.
 - Update threat/privacy docs so Bridge is described honestly as token/scoped but not meaningfully throttled against repeated corpus walking by a trusted client.
-- Dynamic link browser fallback remains enabled by explicit product decision; keep the accepted risk and non-hardened posture documented plainly in security/privacy docs.
+- Dynamic link browser fallback now runs through an isolated worker boundary and browser-derived content is gated as low-trust before synthesis; keep validating packaged/clean-VM behavior before public claims.
 - Keep the written threat model current and treat local API/Bridge auth regressions as release blockers.
 - Continue retrieval threshold tuning beyond the benchmark harness using larger user-owned vaults.
 - Defer Claude Desktop-specific Bridge smoke for now; Codex-style MCP smoke remains a local protocol check, and external-client claims stay conservative.
@@ -196,8 +195,8 @@ QA/hardening:
 
 Security:
 
-- Done: local-only security architecture, unlock state machine, derived-state/migration rules, build-plan specs, Phase 0 baseline audit, Phase 1 crypto/metadata foundation, Phase 2 unlock/API gating, and Phase 3 encrypted storage/blob boundary. Phase 3 added app-level encrypted source/page/chunk content storage, streaming encrypted blob files, SQLite temp/delete hardening, diagnostics redaction, storage accounting, and focused regression tests.
-- Remaining: implement derived-state publication, parser/browser isolation, retrieval trust gates, renderer audit, Bridge approval/identity, LoRA manifest/hash verification, reconciliation logging, packaging hardening, and large-vault security QA.
+- Done: local-only security architecture, unlock state machine, derived-state/migration rules, build-plan specs, Phase 0 baseline audit, Phase 1 crypto/metadata foundation, Phase 2 unlock/API gating, Phase 3 encrypted storage/blob boundary, Phase 4 derived-state tuple publication, Phase 5 migration planner/staging GC, Phase 6 quarantine/parser worker isolation, Phase 7 Playwright/link isolation, and Phase 8 retrieval trust gate/prompt safety. Phase 8 adds trust metadata to retrieval candidates, trust-aware ranking, final-evidence classification before synthesis, sensitive low-trust refusal, all-low-trust degraded extractive output, low-trust synthesis caps, and quoted evidence prompts.
+- Remaining: implement Bridge approval/identity, reconciliation logging, packaging hardening, and large-vault security QA. Phase 11 LoRA-specific hardening remains intentionally skipped until LoRA itself is finished enough to patch against.
 
 ## Public V1 Blockers
 
@@ -223,7 +222,7 @@ These are release gates, not polish.
 - MCP Bridge: Codex-style JSON-RPC smoke passed; keep external-client readiness claims conservative while Claude Desktop-specific smoke is deferred.
 - Bridge privacy boundary: current Bridge auth/scope model is not a meaningful anti-exfiltration throttle once a trusted client has a valid token for an allowed vault/cluster set. Threat-model wording and UI privacy language must say this plainly.
 - Bridge approval boundary: public V1 requires locked-state disablement, short-lived/rate-limited approval requests, explicit claimed-vs-verified identity UI, and approval history stored inside the encrypted vault boundary.
-- Renderer safety: public V1 requires an explicit audit and enforcement that LLM and document output are rendered as escaped text, not raw HTML.
+- Renderer safety: Phase 9 now enforces escaped text rendering for model/document output through a static renderer sink audit, hostile output fixture, packaged CSP headers, and Electron behavior coverage.
 - LoRA: public V1 requires verified real adapter training, adapter artifact validation, runtime load against a real local model, rollback, supported hardware, failure codes, and quality win over retrieval baseline.
 - LoRA graduation framing: small or insufficient clusters should remain retrieval-backed with explicit status instead of pretending every cluster can graduate.
 - LoRA threshold honesty: current token/source defaults are scaffolding values, not benchmark-backed public gates. Raise or replace them before public claims.
@@ -231,7 +230,7 @@ These are release gates, not polish.
 - Expert runtime sizing: current expert runtime is a separate Transformers/PEFT load path, not a lightweight extension of the chat runtime. Public expert-mode hardware requirements must be measured and stated honestly.
 - Model recommendation: public V1 must recommend safe synthesis/embedding/expert setup by detected system tier, enforce one approved model family contract, and reject incompatible custom imports explicitly.
 - OCR/package: packaged OCR runtime, generated OCR fixture smoke, dynamic-link smoke, migration drill, and installer smoke pass; Ghostscript path is AGPL-compatible public release.
-- Dynamic-link browser fallback: current Playwright/Chromium fallback remains enabled by explicit product decision even though it is not yet a hardened release boundary. The accepted risk must stay documented plainly in the threat model and user-facing privacy/security language.
+- Dynamic-link browser fallback: Playwright/Chromium fallback now uses an isolated worker with request budgets, private/local/file blocking, download disabling, parent-side output validation, browser-derived low-trust provenance, and pre-synthesis retrieval trust gates. Remaining public-V1 work is packaged/clean-VM verification.
 - Cloud-synced vault path safety: selecting a OneDrive/iCloud/other synced vault path is currently not robustly warned/blocked. Treat this as a storage-integrity gap for public V1.
 - Diagnostics redaction: current bundle redaction is regex-based and does not yet amount to a rigorous "no secrets can leak" guarantee.
 
@@ -256,8 +255,8 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Continue hardening the Phase 3 storage boundary where later phases add new sensitive artifacts: retrieval snapshots, analysis packets, adapter artifacts, staged derived-state artifacts, and quarantine payloads must use encrypted content/blob storage instead of plaintext fields.
 - Finish first-run setup UI around the new readiness gate: vault path, model setup, embedding setup, OCR readiness, startup repair states.
 - Make onboarding honest about local model/embedding download size, time, hardware requirements, and external Bridge privacy tradeoffs.
-- Implement the derived-state migration framework at scale: query epoch snapshots, compound tuple activation, staged publication, rollback, disk-space preflight, and staging garbage collection.
-- Implement encrypted quarantine, parser/browser worker isolation, and source trust-tier assignment before public V1.
+- Continue validating Phase 5 migration safety on large real vaults, but core disk-preflight, staged-publication start, bounded GC, and disk-full old-tuple preservation are implemented.
+- Implement Phase 10 Bridge approval and identity: locked-state disablement, short-lived/rate-limited approval requests, explicit claimed-vs-verified identity UI, scoped grants, encrypted approval history, revocation, and audit events.
 - Implement post-unlock reconciliation summary/detail logging inside the encrypted vault boundary and keep locked mode externally opaque by default.
 - Add real checkpoint-family download/import UX for the approved model contract, beyond the current runtime/GGUF default downloads.
 - Define and implement the approved chat-role / expert-role pairing matrix, including hardware tiers and explicit rejected-pair reasons.
@@ -279,6 +278,12 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Completed Security Phase 1 crypto and vault metadata foundation: added compact vault security metadata schema/migration, Argon2id wrapping primitives, offline recovery-key unlock/reset, sensitive-action passphrase verification, redacted public metadata, process-memory-only key state, and focused backend tests.
 - Completed Security Phase 2 unlock state machine and API gating: protected routes reject until `ready`, unlock/recovery/lock/settings/sensitive-action endpoints exist, secured-vault restart returns locked, vault-bound jobs pause while locked, and Settings exposes convenience/strict/PIN controls.
 - Completed Security Phase 3 encrypted storage and blob boundary: secured-vault source/page/chunk text now lands in encrypted content records instead of plaintext columns, search/training/indexing decrypt only while unlocked, large blobs stream into encrypted chunked files, diagnostics redact passphrase/recovery material, storage accounting reports encrypted footprint, and backend tests cover offline plaintext inspection.
+- Completed Security Phase 4 derived-state tuple and publication framework: chunk rows and retrieval snapshots now carry normalization/extraction/embedding/index/epoch metadata, query paths snapshot the active tuple before retrieval, stale tuple chunks are excluded, staged publication records verify before atomic tuple flip, rollback restores the previous verified tuple, and regression tests cover tuple races/failures.
+- Completed Security Phase 5 migration planner, disk preflight, and staging GC: planned tuple migrations estimate coexistence storage, refuse before publication when disk preflight fails, preserve the old tuple on mid-migration failure, expose bounded staging summaries/GC, include staging counts in diagnostics, and regression tests cover disk-full and GC safety.
+- Completed Security Phase 6 quarantine, structural validation, and parser worker isolation: local file ingestion creates quarantine records, rejects symlinks/reparse points/unsupported types/oversized files/container bombs before parsing, stores encrypted quarantine blobs for secured vaults, parses through a subprocess worker with parent-side caps, records Defender as advisory, and persists source trust/provenance metadata.
+- Completed Security Phase 7 Playwright/link isolation: dynamic browser extraction now runs in an isolated subprocess worker, validates every requested URL against public-network rules, disables downloads, enforces time/request/output budgets, preserves static HTTP-first behavior, and stores browser-derived sources as low-trust with `lora_excluded` labels.
+- Completed Security Phase 8 retrieval trust gate and prompt safety: semantic search and chat retrieval now carry trust metadata, penalize low-trust candidates, classify the final evidence set before synthesis, refuse sensitive low-trust-only answers, avoid synthesis for all-low-trust evidence, cap low-trust mixed synthesis input, expose trust warnings/coverage, and quote evidence in LLM prompts.
+- Completed Security Phase 9 renderer hardening: app model/document output paths render through escaped text nodes, raw HTML sinks are blocked by `npm run security:renderer`, the chart style sink remains the only sanitizer-guarded allowlist, hostile HTML/markdown fixtures stay inert, and packaged renderer responses carry CSP, `nosniff`, and `no-referrer` headers.
 - Implemented the first dual-model setup pass: active chat/expert model roles in the registry, role-aware activation APIs, pair-aware onboarding/settings wording, retrieval-as-citation-authority wording, and role-aware readiness checks.
 - Hotfixed mixed-embedding correctness across core retrieval paths: semantic search, scoring ledger, expanded analysis, and cluster suggestion reads now filter by the active embedding model and index version instead of silently mixing vector spaces.
 - Updated security documentation to explicitly accept and document the current dynamic-link browser fallback risk and the trusted-client Bridge exfiltration boundary instead of implying stronger hardening than the code currently provides.

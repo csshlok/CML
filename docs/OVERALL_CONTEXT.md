@@ -28,6 +28,12 @@ Implementation baseline:
 - Phase 2 is complete: the backend has the locked/unlocking/verifying/repair-required/ready state manager, unlock/recovery/lock/settings/sensitive-action endpoints, protected-route middleware, locked background-job pause, restart-to-locked behavior for secured vaults, and Settings controls for convenience/strict/PIN visibility.
 - Phase 3 is complete: secured-vault source/page/chunk content now uses app-level AES-GCM encrypted content records keyed from the unlocked vault master key, large blobs use streaming encrypted chunk files, diagnostics redact passphrase/recovery material, storage accounting reports encrypted footprint, and backend tests inspect DB/blob files for plaintext leakage.
 - Phase 3 deliberately does not claim whole SQLite-file encryption. SQLite routing metadata remains plaintext until a SQLCipher-backed driver replaces the current standard SQLite driver.
+- Phase 4 is complete: retrieval-side chunks and snapshots carry the compound normalization/extraction/embedding/index/epoch tuple, queries snapshot the active tuple before retrieval, stale tuple chunks are excluded, publication records verify staged artifacts before atomic active-tuple flip, and rollback restores the previous verified tuple.
+- Phase 5 is complete: planned tuple migrations estimate coexistence storage and safety margin before creating publication records, disk-preflight failure refuses early, mid-migration failure marks staging failed while preserving the old active tuple, bounded staging GC keeps live heartbeat-owned artifacts, and diagnostics expose staging counts only.
+- Phase 6 is complete: local file ingestion creates quarantine records, rejects symlinks/reparse points/unsupported types/oversized files/malformed containers before parsing, secured unlocked vaults stream-copy candidate files into encrypted quarantine blobs, parsing runs through a subprocess worker with scrubbed CML tokens/config, parent-side output caps validate worker JSON/text, Defender is recorded as advisory only, and sources receive provenance/trust/security metadata.
+- Phase 7 is complete: dynamic browser extraction now runs through an isolated subprocess worker, static HTTP remains first, every browser request is validated against public-network rules, downloads are disabled, request/time/output budgets are enforced, and browser-derived sources are stored as low-trust with `lora_excluded` metadata.
+- Phase 8 is complete: retrieval candidates carry trust metadata, low-trust evidence is penalized during ranking, final evidence sets are classified before synthesis, sensitive low-trust-only requests are refused, all-low-trust evidence uses degraded extractive output, mixed low-trust synthesis input is capped, and LLM prompts quote source text as hostile evidence.
+- Phase 9 is complete: model/document output paths render as escaped text, raw renderer HTML sinks are blocked by `npm run security:renderer`, the chart style sink remains the only sanitizer-guarded allowlist, hostile output fixtures stay inert, and packaged renderer responses carry CSP, `nosniff`, and `no-referrer` headers.
 - `docs/PROJECT_CONTEXT.md` is the compact source of truth for the approved decisions and now includes a Security progress row.
 
 ## 2026-06-05 Dual-Model Decision Snapshot
@@ -54,7 +60,7 @@ Current unresolved gaps made explicit by the review:
 - Current training thresholds are scaffolding values, not benchmark-backed public gates.
 - Changing embedding models on a live vault currently risks mixed-space retrieval unless search/retrieval are hotfixed to respect the active embedding model/index.
 - Bridge uses tokens and vault/cluster scoping, but it is not a meaningful anti-exfiltration throttle against repeated corpus walking by a trusted client.
-- Dynamic browser fallback currently uses Playwright/Chromium without a documented hardened release posture.
+- Dynamic browser fallback now uses an isolated worker boundary, and ingested browser-derived content is gated as low-trust before synthesis. Remaining risk is packaged/clean-VM verification.
 - Diagnostics bundle redaction is regex-based and does not yet justify a strong "no secret leakage" claim.
 - Vault-path safety against cloud-synced folders is not robustly enforced today.
 
@@ -63,7 +69,7 @@ Immediate response actions from the review:
 - Define an approved chat-role / expert-role compatibility matrix instead of relying on single-family wording alone.
 - Hotfix retrieval/search to filter by active embedding model and index version.
 - Update threat/privacy docs so Bridge is described honestly as trusted-client scoped access, not a throttled anti-exfiltration boundary.
-- Browser-render fallback decision is now explicit: keep it enabled for extraction quality, accept the current security risk, and document that it is not yet a hardened release boundary.
+- Browser-render fallback decision is now explicit: keep it enabled for extraction quality, run it through an isolated worker boundary, and treat browser-derived content as low-trust evidence.
 - Publish honest hardware guidance for expert mode only after real profiling; until then, do not promise expert mode on 8 GB machines.
 - Run the LoRA quality benchmark before public "verified" claims; otherwise downgrade the feature framing to experimental.
 
@@ -73,7 +79,7 @@ Implementation status after this pass:
 - Model registry state is now dual-role aware with separate active chat and active expert selections instead of one ambiguous active-model flag.
 - Onboarding and Settings now reflect the dual-role setup more honestly: downloaded runtime models satisfy chat, imported approved checkpoints satisfy expert, and both are required for the intended expert-capable path.
 - Threat-model language now explicitly states that Bridge is token/scoped but not meaningfully throttled against repeated corpus walking by a trusted client.
-- Threat-model language now explicitly states that dynamic browser fallback remains enabled by product decision even though it is not yet a proven hardened boundary.
+- Threat-model language now describes dynamic browser fallback as isolated-worker based with low-trust provenance; retrieval trust gates handle synthesis risk and renderer hardening now covers displayed hostile content.
 
 ## 2026-06-05 Approved Model Policy Snapshot
 
@@ -367,12 +373,12 @@ Use this section for fast status checks. Detailed historical notes remain in the
 | Context Bridge             | In progress                | `[#########-] 94%`  | Full extension package, capture UX polish, and later external-client smoke.                      |
 | Packaging and installer    | In progress                | `[##########] 98%`  | Clean Windows VM validation.                                                                     |
 | QA and hardening           | In progress                | `[##########] 99%`  | Clean VM package validation, larger scale/performance benchmarks, model recommendation QA.       |
-| Security                   | In progress                | `[######----] 60%`  | Encrypted storage/blob boundary complete; next gate is derived-state tuple publication.          |
+| Security                   | In progress                | `[#########-] 90%`  | Renderer hardening complete; next gate is Bridge approval and identity.                         |
 
 ### Current Critical Path
 
 - Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
-- Implement the remaining public V1 security build plan: encrypted storage boundary, parser/browser isolation, renderer hardening, Bridge approval, LoRA integrity, and large-vault security QA.
+- Implement the remaining public V1 security build plan: Bridge approval, LoRA integrity, reconciliation logging, packaging hardening, and large-vault security QA.
 - Keep Windows-only public V1 criteria; if blockers remain, delay release rather than ship a private demo.
 - Verify real adapter training/loading before using "trained expert" language in user-facing surfaces; current gates are stronger but still need real trainer/runtime proof.
 - Build hardware-aware model recommendation for low-, mid-, and high-spec users.

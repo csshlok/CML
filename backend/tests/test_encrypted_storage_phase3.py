@@ -13,6 +13,7 @@ class EncryptedStoragePhase3Tests(unittest.TestCase):
         os.environ["CML_DATABASE_PATH"] = str(self.db_path)
         os.environ["CML_DATA_DIR"] = str(self.data_dir)
         os.environ["CML_EMBEDDING_PROVIDER"] = "hash"
+        os.environ["CML_ALLOW_HASH_EMBEDDINGS"] = "1"
 
         from backend.app.core.config import get_settings
 
@@ -56,6 +57,7 @@ class EncryptedStoragePhase3Tests(unittest.TestCase):
         os.environ.pop("CML_DATABASE_PATH", None)
         os.environ.pop("CML_DATA_DIR", None)
         os.environ.pop("CML_EMBEDDING_PROVIDER", None)
+        os.environ.pop("CML_ALLOW_HASH_EMBEDDINGS", None)
         self.tmp.cleanup()
 
     def test_secured_source_pages_and_chunks_do_not_store_plaintext(self) -> None:

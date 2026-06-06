@@ -3,6 +3,7 @@ from pathlib import Path
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.derived_state import query_epoch_snapshot_conn
 from backend.app.core.embeddings import active_embedding_model_id, reindex_source_chunks
 
 
@@ -74,6 +75,25 @@ def vector_repair_plan(vault_id: str | None = None) -> dict:
         params.append(vault_id)
     active_model = embedding_index_policy()["active_embedding_model_id"]
     with connect() as conn:
+        tuple_stale_clause = ""
+        tuple_params: list = []
+        if vault_id:
+            tuple_snapshot = query_epoch_snapshot_conn(
+                conn,
+                vault_id,
+                embedding_model_id=str(active_model),
+                index_version=ACTIVE_INDEX_VERSION,
+            )
+            tuple_stale_clause = """
+                OR chunks.normalization_version != ?
+                OR chunks.extraction_version != ?
+                OR chunks.derived_state_epoch != ?
+            """
+            tuple_params = [
+                tuple_snapshot["normalization_version"],
+                tuple_snapshot["extraction_version"],
+                tuple_snapshot["epoch"],
+            ]
         missing_rows = conn.execute(
             f"""
             SELECT sources.id
@@ -100,10 +120,11 @@ def vector_repair_plan(vault_id: str | None = None) -> dict:
                 OR chunks.indexed_at IS NULL
                 OR chunks.embedding_model_id != ?
                 OR chunks.index_version != ?
+                {tuple_stale_clause}
               )
             ORDER BY sources.updated_at DESC
             """,
-            [*params, active_model, ACTIVE_INDEX_VERSION],
+            [*params, active_model, ACTIVE_INDEX_VERSION, *tuple_params],
         ).fetchall()
         orphan_chunks = conn.execute(
             """

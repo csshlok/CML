@@ -796,7 +796,10 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(result["sanitized_url"], "https://example.com/article")
         self.assertTrue(result["allowed"])
         self.assertIn("static_http", result["extraction_order"])
-        self.assertIn("browser_rendered_dynamic_fallback", result["extraction_order"])
+        self.assertIn("isolated_browser_rendered_dynamic_fallback", result["extraction_order"])
+        self.assertTrue(result["browser_isolation"]["isolated_worker"])
+        self.assertFalse(result["browser_isolation"]["downloads_allowed"])
+        self.assertGreater(result["browser_isolation"]["request_budget"], 0)
 
     def test_backend_benchmark_script_exercises_search_and_vector_repair(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
