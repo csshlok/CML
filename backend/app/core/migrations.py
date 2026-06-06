@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 from backend.app.core.database import connect, utc_now
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class MigrationError(RuntimeError):
@@ -45,9 +45,33 @@ def _migration_002_vault_security_metadata(conn) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_security_unlock_mode ON vault_security_metadata(unlock_mode)")
 
 
+def _migration_003_encrypted_content(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS encrypted_content (
+            id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            field_name TEXT NOT NULL,
+            nonce TEXT NOT NULL,
+            ciphertext TEXT NOT NULL,
+            content_hash TEXT NOT NULL DEFAULT '',
+            byte_length INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+            UNIQUE(entity_type, entity_id, field_name)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_encrypted_content_vault ON encrypted_content(vault_id, entity_type, entity_id)")
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migration_001_baseline,
     2: _migration_002_vault_security_metadata,
+    3: _migration_003_encrypted_content,
 }
 
 

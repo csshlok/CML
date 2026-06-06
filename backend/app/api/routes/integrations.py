@@ -16,6 +16,7 @@ from backend.app.api.routes.sources import (
 )
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.embeddings import require_embeddings_available
+from backend.app.core.encrypted_storage import update_source_content_fields
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path
 from backend.app.core.memory_card import generate_tags, summarize_text
@@ -350,6 +351,18 @@ def _update_source_from_local_file(existing, *, file_path: str, checksum: str) -
     now = utc_now()
     tags = generate_tags(title, text, _source_type_for_suffix(Path(file_path).suffix.lower()))
     with connect() as conn:
+        stored_updates = update_source_content_fields(
+            conn,
+            vault_id=existing["vault_id"],
+            source_id=existing["id"],
+            updates={
+                "raw_text": text,
+                "extracted_text": text,
+                "summary": summarize_text(text),
+                "tags": json.dumps(tags),
+            },
+            now=now,
+        )
         conn.execute(
             """
             UPDATE sources
@@ -363,10 +376,10 @@ def _update_source_from_local_file(existing, *, file_path: str, checksum: str) -
                 _source_type_for_suffix(Path(file_path).suffix.lower()),
                 file_path,
                 checksum,
-                text,
-                text,
-                summarize_text(text),
-                json.dumps(tags),
+                stored_updates["raw_text"],
+                stored_updates["extracted_text"],
+                stored_updates["summary"],
+                stored_updates["tags"],
                 now,
                 existing["id"],
             ),

@@ -118,12 +118,11 @@ Runtime boundary:
 | Context Bridge | In progress | `[#########-] 95%` | Capture UX polish, clearer privacy copy, and later external-client smoke |
 | Packaging/install | In progress | `[##########] 99%` | Clean VM validation of bundled expert runtime |
 | QA/hardening | In progress | `[##########] 99%` | Clean VM package validation and larger user-owned vault benchmarks |
-| Security | In progress | `[#####-----] 50%` | Unlock/API gating complete; next gate is encrypted storage and blob boundary |
+| Security | In progress | `[######----] 60%` | Encrypted storage/blob boundary complete; next gate is derived-state tuple publication |
 
 ## Current Critical Path
 
 - Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
-- Implement the encrypted storage and blob boundary for public V1: SQLCipher or equivalent encrypted database layer, encrypted blob store, WAL/temp behavior, diagnostics/log redaction, and import/reference policy.
 - Implement the derived-state publication model at scale: compound tuple versioning, query snapshot epochs, staging namespace, copy-on-write publication, disk preflight, and staged-artifact cleanup.
 - Implement hostile-content defenses for public V1: encrypted quarantine, structural validation, parser/browser isolation, trust tiers, degraded retrieval gates, and renderer HTML-safety audit.
 - Implement Bridge and LoRA hardening for public V1: approval/identity model, locked-state behavior, dataset manifest review, runtime hash verification, and trustworthy expert graduation.
@@ -197,8 +196,8 @@ QA/hardening:
 
 Security:
 
-- Done: local-only security architecture, unlock state machine, derived-state/migration rules, build-plan specs, Phase 0 baseline audit, Phase 1 crypto/metadata foundation, and Phase 2 unlock/API gating. Phase 2 added the backend unlock state manager, lock/unlock/recovery/settings/sensitive-action endpoints, protected-route middleware, locked background-job pause, and Settings lock controls.
-- Remaining: implement encrypted storage/blob boundary, derived-state publication, parser/browser isolation, retrieval trust gates, renderer audit, Bridge approval/identity, LoRA manifest/hash verification, reconciliation logging, packaging hardening, and large-vault security QA.
+- Done: local-only security architecture, unlock state machine, derived-state/migration rules, build-plan specs, Phase 0 baseline audit, Phase 1 crypto/metadata foundation, Phase 2 unlock/API gating, and Phase 3 encrypted storage/blob boundary. Phase 3 added app-level encrypted source/page/chunk content storage, streaming encrypted blob files, SQLite temp/delete hardening, diagnostics redaction, storage accounting, and focused regression tests.
+- Remaining: implement derived-state publication, parser/browser isolation, retrieval trust gates, renderer audit, Bridge approval/identity, LoRA manifest/hash verification, reconciliation logging, packaging hardening, and large-vault security QA.
 
 ## Public V1 Blockers
 
@@ -254,7 +253,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 ## Current Open Work
 
 - Add written public V1 decision record: Windows-only; public release only; release slips until verified LoRA and other public gates pass.
-- Implement Phase 3 encrypted storage/blob boundary end to end: encrypted DB/key handoff, encrypted blobs, WAL/temp-file policy, diagnostics/log handling, and import/reference confidentiality labels.
+- Continue hardening the Phase 3 storage boundary where later phases add new sensitive artifacts: retrieval snapshots, analysis packets, adapter artifacts, staged derived-state artifacts, and quarantine payloads must use encrypted content/blob storage instead of plaintext fields.
 - Finish first-run setup UI around the new readiness gate: vault path, model setup, embedding setup, OCR readiness, startup repair states.
 - Make onboarding honest about local model/embedding download size, time, hardware requirements, and external Bridge privacy tradeoffs.
 - Implement the derived-state migration framework at scale: query epoch snapshots, compound tuple activation, staged publication, rollback, disk-space preflight, and staging garbage collection.
@@ -279,6 +278,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Completed Security Phase 0 baseline audit: route classifications, renderer raw-HTML audit, helper executable/runtime-writable directory map, ingestion/parser/browser surface list, and security build-freeze rule are written in a local-only ignored document.
 - Completed Security Phase 1 crypto and vault metadata foundation: added compact vault security metadata schema/migration, Argon2id wrapping primitives, offline recovery-key unlock/reset, sensitive-action passphrase verification, redacted public metadata, process-memory-only key state, and focused backend tests.
 - Completed Security Phase 2 unlock state machine and API gating: protected routes reject until `ready`, unlock/recovery/lock/settings/sensitive-action endpoints exist, secured-vault restart returns locked, vault-bound jobs pause while locked, and Settings exposes convenience/strict/PIN controls.
+- Completed Security Phase 3 encrypted storage and blob boundary: secured-vault source/page/chunk text now lands in encrypted content records instead of plaintext columns, search/training/indexing decrypt only while unlocked, large blobs stream into encrypted chunked files, diagnostics redact passphrase/recovery material, storage accounting reports encrypted footprint, and backend tests cover offline plaintext inspection.
 - Implemented the first dual-model setup pass: active chat/expert model roles in the registry, role-aware activation APIs, pair-aware onboarding/settings wording, retrieval-as-citation-authority wording, and role-aware readiness checks.
 - Hotfixed mixed-embedding correctness across core retrieval paths: semantic search, scoring ledger, expanded analysis, and cluster suggestion reads now filter by the active embedding model and index version instead of silently mixing vector spaces.
 - Updated security documentation to explicitly accept and document the current dynamic-link browser fallback risk and the trusted-client Bridge exfiltration boundary instead of implying stronger hardening than the code currently provides.

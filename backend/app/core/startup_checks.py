@@ -25,6 +25,7 @@ def verify_schema_version() -> None:
         "chat_messages",
         "app_jobs",
         "vault_security_metadata",
+        "encrypted_content",
     }
     with connect() as conn:
         rows = conn.execute(

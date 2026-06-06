@@ -7,8 +7,17 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.core.clustering import assign_or_create_cluster
 from backend.app.core.background_jobs import enqueue_job
-from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.database import connect, utc_now
 from backend.app.core.embeddings import content_hash, require_embeddings_available
+from backend.app.core.encrypted_storage import (
+    delete_source_encrypted_content,
+    delete_source_derived_encrypted_content,
+    page_from_encrypted_row,
+    plaintext_column_for_text,
+    source_from_encrypted_row,
+    store_source_content_fields,
+    update_source_content_fields,
+)
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path, extract_text_from_url, link_extraction_diagnostics
 from backend.app.core.memory_card import generate_tags, summarize_text
@@ -46,7 +55,7 @@ def list_sources(vault_id: str | None = None, cluster_id: str | None = None) -> 
             f"SELECT * FROM sources {where} ORDER BY updated_at DESC",
             params,
         ).fetchall()
-        return [source_from_row(row) for row in rows]
+        return [source_from_row(row, conn=conn) for row in rows]
 
 
 @router.post("", response_model=SourceRead)
@@ -89,7 +98,7 @@ def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = 
                 (payload.vault_id, checksum),
             ).fetchone()
             if existing is not None:
-                return source_from_row(existing)
+                return source_from_row(existing, conn=conn)
         if cluster_id is None and raw_text:
             cluster_id = assign_or_create_cluster(
                 conn,
@@ -122,6 +131,7 @@ def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = 
             "created_at": now,
             "updated_at": now,
         }
+        stored_source = store_source_content_fields(conn, source, now=now)
         conn.execute(
             """
             INSERT INTO sources (
@@ -133,7 +143,7 @@ def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = 
                 :checksum, :raw_text, :extracted_text, :summary, :tags, :cover_image_url, :created_at, :updated_at
             )
             """,
-            source,
+            stored_source,
         )
         if page_texts:
             _replace_source_pages(
@@ -226,9 +236,9 @@ def get_source(source_id: str) -> dict:
             "SELECT * FROM sources WHERE id = ? AND deleted_at IS NULL",
             (source_id,),
         ).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Source not found")
-    return source_from_row(row)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        return source_from_row(row, conn=conn)
 
 
 @router.get("/{source_id}/pages", response_model=list[SourcePageRead])
@@ -248,7 +258,7 @@ def list_source_pages(source_id: str) -> list[dict]:
             """,
             (source_id,),
         ).fetchall()
-    return [dict_from_row(row) for row in rows]
+        return [page_from_encrypted_row(conn, row) for row in rows]
 
 
 @router.patch("/{source_id}", response_model=SourceRead)
@@ -264,21 +274,6 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
         return get_source(source_id)
 
     updates["updated_at"] = utc_now()
-    assignments = build_update_assignments(
-        updates,
-        {
-            "cluster_id",
-            "title",
-            "state",
-            "raw_text",
-            "extracted_text",
-            "summary",
-            "tags",
-            "cover_image_url",
-            "updated_at",
-        },
-    )
-    params = {"id": source_id, **updates}
     with connect() as conn:
         existing = conn.execute(
             "SELECT id, vault_id, cluster_id FROM sources WHERE id = ? AND deleted_at IS NULL",
@@ -293,6 +288,28 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
             ).fetchone()
             if cluster is None:
                 raise HTTPException(status_code=404, detail="Cluster not found")
+        stored_updates = update_source_content_fields(
+            conn,
+            vault_id=existing["vault_id"],
+            source_id=source_id,
+            updates=updates,
+            now=updates["updated_at"],
+        )
+        assignments = build_update_assignments(
+            stored_updates,
+            {
+                "cluster_id",
+                "title",
+                "state",
+                "raw_text",
+                "extracted_text",
+                "summary",
+                "tags",
+                "cover_image_url",
+                "updated_at",
+            },
+        )
+        params = {"id": source_id, **stored_updates}
         conn.execute(f"UPDATE sources SET {assignments} WHERE id = :id", params)
         if "raw_text" in updates or "extracted_text" in updates:
             text = str(updates.get("extracted_text") or updates.get("raw_text") or "")
@@ -305,7 +322,7 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
             )
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
         if row is not None and any(key in updates for key in {"cluster_id", "raw_text", "extracted_text", "state"}):
-            source = dict_from_row(row)
+            source = source_from_encrypted_row(conn, row)
             if source["state"] == "indexed":
                 enqueue_job(
                     conn,
@@ -318,7 +335,7 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
             mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
             mark_cluster_needs_update(conn, source["cluster_id"], "Source changed or moved.")
             mark_source_changed(source_id, conn=conn)
-    return source_from_row(row)
+        return source_from_row(row, conn=conn)
 
 
 @router.delete("/{source_id}", status_code=204)
@@ -326,11 +343,12 @@ def delete_source(source_id: str) -> None:
     now = utc_now()
     with connect() as conn:
         source = conn.execute(
-            "SELECT id, cluster_id FROM sources WHERE id = ? AND deleted_at IS NULL",
+            "SELECT id, vault_id, cluster_id FROM sources WHERE id = ? AND deleted_at IS NULL",
             (source_id,),
         ).fetchone()
         if source is None:
             raise HTTPException(status_code=404, detail="Source not found")
+        delete_source_encrypted_content(conn, source_id=source_id, vault_id=source["vault_id"])
         result = conn.execute(
             """
             UPDATE sources
@@ -390,8 +408,12 @@ def delete_source(source_id: str) -> None:
         mark_source_deleted(source_id, conn=conn)
 
 
-def source_from_row(row) -> dict:
-    source = dict_from_row(row)
+def source_from_row(row, conn=None) -> dict:
+    if conn is not None:
+        source = source_from_encrypted_row(conn, row)
+    else:
+        with connect() as local_conn:
+            source = source_from_encrypted_row(local_conn, row)
     raw_tags = source.get("tags") or "[]"
     try:
         tags = json.loads(raw_tags)
@@ -406,11 +428,13 @@ def _sanitize_source_text(text: str) -> str:
 
 
 def _replace_source_pages(conn, *, source_id: str, vault_id: str, page_texts: list[str], now: str) -> None:
+    delete_source_derived_encrypted_content(conn, source_id=source_id, vault_id=vault_id)
     conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
     for index, text in enumerate(page_texts, start=1):
         page_text = (text or "").strip()
         if not page_text:
             continue
+        page_id = f"page-{uuid4()}"
         conn.execute(
             """
             INSERT INTO source_pages (
@@ -423,11 +447,19 @@ def _replace_source_pages(conn, *, source_id: str, vault_id: str, page_texts: li
             )
             """,
             {
-                "id": f"page-{uuid4()}",
+                "id": page_id,
                 "source_id": source_id,
                 "vault_id": vault_id,
                 "page_number": index,
-                "raw_text": page_text,
+                "raw_text": plaintext_column_for_text(
+                    conn,
+                    vault_id=vault_id,
+                    entity_type="source_page",
+                    entity_id=page_id,
+                    field_name="raw_text",
+                    text=page_text,
+                    now=now,
+                ),
                 "extraction_version": "v1",
                 "content_hash": content_hash(page_text),
                 "created_at": now,

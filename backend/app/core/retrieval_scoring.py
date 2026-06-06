@@ -7,6 +7,7 @@ from uuid import uuid4
 from backend.app.core.config import get_settings
 from backend.app.core.database import connect, utc_now
 from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text, tokenize
+from backend.app.core.encrypted_storage import chunk_from_encrypted_row
 from backend.app.core.vector_maintenance import active_embedding_selector
 
 
@@ -173,6 +174,7 @@ def _chunk_rows(vault_id: str, cluster_id: str | None) -> list[dict]:
             SELECT
                 chunks.id AS chunk_id,
                 chunks.source_id,
+                chunks.vault_id,
                 chunks.page_id,
                 chunks.cluster_id,
                 chunks.chunk_index,
@@ -194,7 +196,7 @@ def _chunk_rows(vault_id: str, cluster_id: str | None) -> list[dict]:
             """,
             [params[0], selector["embedding_model_id"], selector["index_version"], *params[1:]],
         ).fetchall()
-    return [dict(row) for row in rows]
+        return [chunk_from_encrypted_row(conn, row) for row in rows]
 
 
 def _bm25_scores(query_tokens: list[str], rows: list[dict]) -> dict[str, float]:

@@ -26,6 +26,8 @@ Implementation baseline:
 - Phase 0 is complete: backend route classification, renderer raw-HTML audit, helper executable/writable-directory map, ingestion/parser/browser surface list, and the security build-freeze rule are written down before implementation starts.
 - Phase 1 is complete: the backend now has compact vault security metadata, Argon2id passphrase/recovery wrapping primitives, random vault master keys, derived subkeys, recovery unlock/reset, sensitive-action passphrase verification, public metadata redaction, and process-memory-only unlocked key state.
 - Phase 2 is complete: the backend has the locked/unlocking/verifying/repair-required/ready state manager, unlock/recovery/lock/settings/sensitive-action endpoints, protected-route middleware, locked background-job pause, restart-to-locked behavior for secured vaults, and Settings controls for convenience/strict/PIN visibility.
+- Phase 3 is complete: secured-vault source/page/chunk content now uses app-level AES-GCM encrypted content records keyed from the unlocked vault master key, large blobs use streaming encrypted chunk files, diagnostics redact passphrase/recovery material, storage accounting reports encrypted footprint, and backend tests inspect DB/blob files for plaintext leakage.
+- Phase 3 deliberately does not claim whole SQLite-file encryption. SQLite routing metadata remains plaintext until a SQLCipher-backed driver replaces the current standard SQLite driver.
 - `docs/PROJECT_CONTEXT.md` is the compact source of truth for the approved decisions and now includes a Security progress row.
 
 ## 2026-06-05 Dual-Model Decision Snapshot
@@ -365,7 +367,7 @@ Use this section for fast status checks. Detailed historical notes remain in the
 | Context Bridge             | In progress                | `[#########-] 94%`  | Full extension package, capture UX polish, and later external-client smoke.                      |
 | Packaging and installer    | In progress                | `[##########] 98%`  | Clean Windows VM validation.                                                                     |
 | QA and hardening           | In progress                | `[##########] 99%`  | Clean VM package validation, larger scale/performance benchmarks, model recommendation QA.       |
-| Security                   | In progress                | `[#####-----] 50%`  | Unlock/API gating complete; next gate is encrypted storage and blob boundary.                    |
+| Security                   | In progress                | `[######----] 60%`  | Encrypted storage/blob boundary complete; next gate is derived-state tuple publication.          |
 
 ### Current Critical Path
 

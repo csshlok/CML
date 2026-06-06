@@ -56,6 +56,22 @@ def init_db() -> None:
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS encrypted_content (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                field_name TEXT NOT NULL,
+                nonce TEXT NOT NULL,
+                ciphertext TEXT NOT NULL,
+                content_hash TEXT NOT NULL DEFAULT '',
+                byte_length INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                UNIQUE(entity_type, entity_id, field_name)
+            );
+
             CREATE TABLE IF NOT EXISTS clusters (
                 id TEXT PRIMARY KEY,
                 vault_id TEXT NOT NULL,
@@ -485,6 +501,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_extension_pairing_status ON extension_pairing_sessions(status, expires_at);
             CREATE INDEX IF NOT EXISTS idx_extension_permission_audit_client ON extension_permission_audit(client_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_vault_security_unlock_mode ON vault_security_metadata(unlock_mode);
+            CREATE INDEX IF NOT EXISTS idx_encrypted_content_vault ON encrypted_content(vault_id, entity_type, entity_id);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_app_jobs_dedupe_active
                 ON app_jobs(dedupe_key)
                 WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running');
@@ -546,6 +563,7 @@ def init_db() -> None:
         _add_column_if_missing(conn, "expert_artifacts", "rolled_back_at", "TEXT")
         _add_column_if_missing(conn, "expert_artifacts", "deleted_at", "TEXT")
         _ensure_vault_security_metadata_schema(conn)
+        _ensure_encrypted_content_schema(conn)
         conn.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_app_jobs_runnable
@@ -564,6 +582,8 @@ def init_db() -> None:
                 ON cluster_merge_artifacts(target_cluster_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_vault_security_unlock_mode
                 ON vault_security_metadata(unlock_mode);
+            CREATE INDEX IF NOT EXISTS idx_encrypted_content_vault
+                ON encrypted_content(vault_id, entity_type, entity_id);
             """
         )
 
@@ -623,12 +643,49 @@ def _ensure_vault_security_metadata_schema(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "vault_security_metadata", column, definition)
 
 
+def _ensure_encrypted_content_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS encrypted_content (
+            id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            field_name TEXT NOT NULL,
+            nonce TEXT NOT NULL,
+            ciphertext TEXT NOT NULL,
+            content_hash TEXT NOT NULL DEFAULT '',
+            byte_length INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+            UNIQUE(entity_type, entity_id, field_name)
+        )
+        """
+    )
+    for column, definition in {
+        "vault_id": "TEXT NOT NULL DEFAULT ''",
+        "entity_type": "TEXT NOT NULL DEFAULT ''",
+        "entity_id": "TEXT NOT NULL DEFAULT ''",
+        "field_name": "TEXT NOT NULL DEFAULT ''",
+        "nonce": "TEXT NOT NULL DEFAULT ''",
+        "ciphertext": "TEXT NOT NULL DEFAULT ''",
+        "content_hash": "TEXT NOT NULL DEFAULT ''",
+        "byte_length": "INTEGER NOT NULL DEFAULT 0",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+        "updated_at": "TEXT NOT NULL DEFAULT ''",
+    }.items():
+        _add_column_if_missing(conn, "encrypted_content", column, definition)
+
+
 @contextmanager
 def connect(path: Path | None = None) -> Iterator[sqlite3.Connection]:
     database_path = path or get_settings().database_path
     conn = sqlite3.connect(database_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA temp_store = MEMORY")
+    conn.execute("PRAGMA secure_delete = ON")
     try:
         yield conn
         conn.commit()

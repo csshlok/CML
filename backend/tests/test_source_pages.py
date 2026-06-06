@@ -1003,10 +1003,14 @@ class SourcePageIndexingTests(unittest.TestCase):
             security_table = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vault_security_metadata'"
             ).fetchone()
-        self.assertEqual(row["version"], 2)
+            encrypted_table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'encrypted_content'"
+            ).fetchone()
+        self.assertEqual(row["version"], 3)
         self.assertEqual(row["status"], "succeeded")
-        self.assertEqual(user_version, 2)
+        self.assertEqual(user_version, 3)
         self.assertIsNotNone(security_table)
+        self.assertIsNotNone(encrypted_table)
 
     def test_disk_preflight_reports_available_space(self) -> None:
         from backend.app.core.preflight import disk_preflight

@@ -57,6 +57,11 @@ class VaultSecurityNotInitializedError(VaultCryptoError):
     pass
 
 
+class VaultLockedError(VaultCryptoError):
+    def __init__(self) -> None:
+        super().__init__("vault_locked")
+
+
 class InvalidVaultSecretError(VaultCryptoError):
     def __init__(self) -> None:
         super().__init__("invalid_vault_secret")
@@ -243,6 +248,13 @@ def lock_all_vaults() -> None:
 
 def is_vault_unlocked(vault_id: str) -> bool:
     return vault_id in _ACTIVE_KEYS
+
+
+def require_unlocked_key_material(vault_id: str) -> VaultKeyMaterial:
+    material = _ACTIVE_KEYS.get(vault_id)
+    if material is None:
+        raise VaultLockedError()
+    return material
 
 
 def active_key_count() -> int:

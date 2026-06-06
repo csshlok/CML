@@ -7,6 +7,11 @@ from uuid import uuid4
 
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.embeddings import content_hash, reindex_source_chunks, require_embeddings_available
+from backend.app.core.encrypted_storage import (
+    delete_source_derived_encrypted_content,
+    plaintext_column_for_text,
+    update_source_content_fields,
+)
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.config import get_settings
 from backend.app.core.model_registry import preferred_expert_base_model
@@ -607,12 +612,14 @@ def _run_ocr_source(payload: dict, job_id: str) -> None:
             },
         )
         now = utc_now()
+        delete_source_derived_encrypted_content(conn, source_id=source_id, vault_id=source["vault_id"])
         conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
         for index, page_text in enumerate(pages, start=1):
             cleaned = (page_text or "").strip()
             if not cleaned:
                 _update_ocr_page_progress(conn, job_id, index, len(pages), skipped=True)
                 continue
+            page_id = f"page-{uuid4()}"
             conn.execute(
                 """
                 INSERT INTO source_pages (
@@ -622,24 +629,39 @@ def _run_ocr_source(payload: dict, job_id: str) -> None:
                 VALUES (?, ?, ?, ?, ?, 'ocrmypdf-tesseract-v1', ?, ?, ?)
                 """,
                 (
-                    f"page-{uuid4()}",
+                    page_id,
                     source_id,
                     source["vault_id"],
                     index,
-                    cleaned,
+                    plaintext_column_for_text(
+                        conn,
+                        vault_id=source["vault_id"],
+                        entity_type="source_page",
+                        entity_id=page_id,
+                        field_name="raw_text",
+                        text=cleaned,
+                        now=now,
+                    ),
                     content_hash(cleaned),
                     now,
                     now,
                 ),
             )
             _update_ocr_page_progress(conn, job_id, index, len(pages))
+        stored_updates = update_source_content_fields(
+            conn,
+            vault_id=source["vault_id"],
+            source_id=source_id,
+            updates={"raw_text": text, "extracted_text": text},
+            now=now,
+        )
         conn.execute(
             """
             UPDATE sources
             SET title = ?, raw_text = ?, extracted_text = ?, state = 'indexed', updated_at = ?
             WHERE id = ?
             """,
-            (title or source["title"], text, text, now, source_id),
+            (title or source["title"], stored_updates["raw_text"], stored_updates["extracted_text"], now, source_id),
         )
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
         if row is not None:

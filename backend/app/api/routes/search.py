@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.core.database import connect, dict_from_row
 from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text, reindex_source_chunks, require_embeddings_available
+from backend.app.core.encrypted_storage import chunk_from_encrypted_row
 from backend.app.core.retrieval_scoring import (
     compare_source_classes,
     export_benchmark_report,
@@ -48,6 +49,7 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
             SELECT
                 chunks.id AS chunk_id,
                 chunks.source_id,
+                chunks.vault_id,
                 chunks.page_id,
                 chunks.cluster_id,
                 chunks.chunk_index,
@@ -65,6 +67,7 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
             """,
             [*params, selector["embedding_model_id"], selector["index_version"]],
         ).fetchall()
+        rows = [chunk_from_encrypted_row(conn, row) for row in rows]
 
     scored = []
     for row in rows:

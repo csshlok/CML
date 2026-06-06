@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from backend.app.core.database import dict_from_row, utc_now
 from backend.app.core.embeddings import reindex_source_chunks
+from backend.app.core.encrypted_storage import store_source_content_fields, update_source_content_fields
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.memory_card import summarize_text
 
@@ -50,6 +51,13 @@ def upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> N
             "updated_at": now,
         }
         if existing:
+            stored_payload = update_source_content_fields(
+                conn,
+                vault_id=vault_id,
+                source_id=source_id,
+                updates=payload,
+                now=now,
+            )
             conn.execute(
                 """
                 UPDATE sources
@@ -63,9 +71,10 @@ def upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> N
                     updated_at = :updated_at
                 WHERE id = :id
                 """,
-                payload,
+                stored_payload,
             )
         else:
+            stored_payload = store_source_content_fields(conn, payload, now=now)
             conn.execute(
                 """
                 INSERT INTO sources (
@@ -77,7 +86,7 @@ def upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> N
                     :raw_text, :extracted_text, :summary, :tags, NULL, :updated_at, :updated_at
                 )
                 """,
-                payload,
+                stored_payload,
             )
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
         if row is not None:

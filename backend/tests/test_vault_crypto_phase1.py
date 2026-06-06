@@ -209,11 +209,17 @@ class VaultCryptoPhase1Tests(unittest.TestCase):
             table = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vault_security_metadata'"
             ).fetchone()
+            encrypted_table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'encrypted_content'"
+            ).fetchone()
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             migration = conn.execute("SELECT status FROM schema_migrations WHERE version = 2").fetchone()
+            encrypted_migration = conn.execute("SELECT status FROM schema_migrations WHERE version = 3").fetchone()
         self.assertIsNotNone(table)
-        self.assertEqual(version, 2)
+        self.assertIsNotNone(encrypted_table)
+        self.assertEqual(version, 3)
         self.assertEqual(migration["status"], "succeeded")
+        self.assertEqual(encrypted_migration["status"], "succeeded")
 
 
 if __name__ == "__main__":

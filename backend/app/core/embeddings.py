@@ -10,6 +10,12 @@ from uuid import uuid4
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import utc_now
+from backend.app.core.encrypted_storage import (
+    delete_source_chunk_encrypted_content,
+    page_from_encrypted_row,
+    plaintext_column_for_text,
+    source_from_encrypted_row,
+)
 
 HASH_EMBEDDING_DIMENSIONS = 128
 CHUNK_SIZE_WORDS = 180
@@ -403,7 +409,12 @@ def chunk_text(text: str) -> list[str]:
 
 
 def reindex_source_chunks(conn, source: dict) -> int:
+    delete_source_chunk_encrypted_content(conn, source_id=source["id"], vault_id=source.get("vault_id"))
     conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source["id"],))
+    if source.get("vault_id"):
+        row = conn.execute("SELECT * FROM sources WHERE id = ?", (source["id"],)).fetchone()
+        if row is not None:
+            source = source_from_encrypted_row(conn, row)
     _ensure_source_pages(conn, source)
     pages = conn.execute(
         """
@@ -417,8 +428,10 @@ def reindex_source_chunks(conn, source: dict) -> int:
     chunk_count = 0
     model_id = active_embedding_model_id()
     for page in pages:
-        chunks = chunk_text(page["raw_text"])
+        page_data = page_from_encrypted_row(conn, page)
+        chunks = chunk_text(page_data["raw_text"])
         for index, chunk in enumerate(chunks):
+            chunk_id = f"chunk-{uuid4()}"
             conn.execute(
                 """
                 INSERT INTO source_chunks (
@@ -432,13 +445,21 @@ def reindex_source_chunks(conn, source: dict) -> int:
                 )
                 """,
                 {
-                    "id": f"chunk-{uuid4()}",
+                    "id": chunk_id,
                     "source_id": source["id"],
-                    "page_id": page["id"],
+                    "page_id": page_data["id"],
                     "vault_id": source["vault_id"],
                     "cluster_id": source.get("cluster_id"),
                     "chunk_index": index,
-                    "text": chunk,
+                    "text": plaintext_column_for_text(
+                        conn,
+                        vault_id=source["vault_id"],
+                        entity_type="source_chunk",
+                        entity_id=chunk_id,
+                        field_name="text",
+                        text=chunk,
+                        now=now,
+                    ),
                     "embedding": encode_embedding(embed_text(chunk)),
                     "embedding_model_id": model_id,
                     "content_hash": content_hash(chunk),
@@ -462,6 +483,7 @@ def _ensure_source_pages(conn, source: dict) -> None:
     if not text:
         return
     now = utc_now()
+    page_id = f"page-{uuid4()}"
     conn.execute(
         """
         INSERT INTO source_pages (
@@ -474,11 +496,19 @@ def _ensure_source_pages(conn, source: dict) -> None:
         )
         """,
         {
-            "id": f"page-{uuid4()}",
+            "id": page_id,
             "source_id": source["id"],
             "vault_id": source["vault_id"],
             "page_number": 1,
-            "raw_text": text,
+            "raw_text": plaintext_column_for_text(
+                conn,
+                vault_id=source["vault_id"],
+                entity_type="source_page",
+                entity_id=page_id,
+                field_name="raw_text",
+                text=text,
+                now=now,
+            ),
             "extraction_version": "v1",
             "content_hash": content_hash(text),
             "created_at": now,

@@ -16,6 +16,7 @@ from backend.app.core.ocr import ocr_runtime_status
 from backend.app.core.startup_repair import startup_repair_summary
 from backend.app.core.startup_status import read_startup_status
 from backend.app.core.storage_accounting import storage_accounting
+from backend.app.core.vault_crypto import redact_security_material
 from backend.app.core.vector_maintenance import embedding_index_policy, vector_repair_plan
 from backend.app.schemas import DiagnosticBundleResponse
 
@@ -39,7 +40,10 @@ def create_diagnostic_bundle() -> dict:
         "app_version": "0.1.0",
         "backend_version": BACKEND_VERSION,
         "schema_version": schema_version,
-        "redaction": "Raw source text, extracted text, URLs, file paths, and tokens are not included.",
+        "redaction": "Raw source text, extracted text, URLs, file paths, tokens, passphrases, and recovery keys are not included.",
+        "encrypted_storage": (
+            "Secured vault content is stored through encrypted_content/blob records; diagnostics include counts only."
+        ),
     }
     included_files: list[str] = [
         "manifest.json",
@@ -95,6 +99,7 @@ def _database_summary() -> dict:
         "integration_imports",
         "extension_captures",
         "expert_artifacts",
+        "encrypted_content",
     ]
     summary = {}
     with connect() as conn:
@@ -160,7 +165,8 @@ def _candidate_logs(data_dir: Path) -> list[tuple[str, Path]]:
 
 
 def _redact_log(text: str) -> str:
-    redacted = re.sub(r"(x-cml-api-token|x-cml-bridge-token|CML_BRIDGE_TOKEN)([=:]\s*)\S+", r"\1\2[redacted]", text)
+    redacted = redact_security_material(text)
+    redacted = re.sub(r"(x-cml-api-token|x-cml-bridge-token|CML_BRIDGE_TOKEN)([=:]\s*)\S+", r"\1\2[redacted]", redacted)
     redacted = re.sub(r"(?i)(authorization:\s*bearer\s+)[A-Za-z0-9._~+/-]+=*", r"\1[redacted]", redacted)
     redacted = re.sub(r"(?i)(token|password|secret)([=:]\s*)[^\s\"']+", r"\1\2[redacted]", redacted)
     redacted = re.sub(r"[A-Za-z]:\\[^\s\"']+", "[local-path]", redacted)

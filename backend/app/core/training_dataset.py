@@ -3,6 +3,7 @@ from pathlib import Path
 
 from backend.app.core.database import connect, dict_from_row
 from backend.app.core.embeddings import content_hash
+from backend.app.core.encrypted_storage import source_from_encrypted_row
 
 
 def build_cluster_dataset(cluster_id: str) -> dict:
@@ -21,7 +22,9 @@ def build_cluster_dataset(cluster_id: str) -> dict:
 
         cluster = dict_from_row(cluster_row)
 
-        source_rows = conn.execute(
+        source_rows = [
+            source_from_encrypted_row(conn, row)
+            for row in conn.execute(
             """
             SELECT *
             FROM sources
@@ -29,14 +32,13 @@ def build_cluster_dataset(cluster_id: str) -> dict:
             ORDER BY updated_at DESC
             """,
             (cluster_id,),
-        ).fetchall()
+            ).fetchall()
+        ]
 
     documents = []
     total_text_chars = 0
 
-    for row in source_rows:
-        source = dict_from_row(row)
-
+    for source in source_rows:
         text = source.get("extracted_text") or ""
         if not text.strip() or source.get("deleted_at"):
             continue

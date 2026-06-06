@@ -19,6 +19,12 @@ from backend.app.core.embeddings import (
     require_embeddings_available,
     reindex_source_chunks,
 )
+from backend.app.core.encrypted_storage import (
+    delete_source_derived_encrypted_content,
+    plaintext_column_for_text,
+    store_source_content_fields,
+    update_source_content_fields,
+)
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path
 from backend.app.core.llm_runtime import (
@@ -1175,6 +1181,7 @@ def _ingest_chat_attachments(
                 "created_at": now,
                 "updated_at": now,
             }
+            stored_source = store_source_content_fields(conn, source, now=now)
             conn.execute(
                 """
                 INSERT INTO sources (
@@ -1188,7 +1195,7 @@ def _ingest_chat_attachments(
                     :cover_image_url, :created_at, :updated_at
                 )
                 """,
-                source,
+                stored_source,
             )
             _replace_source_pages(conn, source_id=source["id"], vault_id=vault_id, page_texts=pages, now=now)
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source["id"],)).fetchone()
@@ -1211,11 +1218,13 @@ def _ingest_chat_attachments(
 
 
 def _replace_source_pages(conn, *, source_id: str, vault_id: str, page_texts: list[str], now: str) -> None:
+    delete_source_derived_encrypted_content(conn, source_id=source_id, vault_id=vault_id)
     conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
     for index, text in enumerate(page_texts, start=1):
         page_text = (text or "").strip()
         if not page_text:
             continue
+        page_id = f"page-{uuid4()}"
         conn.execute(
             """
             INSERT INTO source_pages (
@@ -1225,11 +1234,19 @@ def _replace_source_pages(conn, *, source_id: str, vault_id: str, page_texts: li
             VALUES (?, ?, ?, ?, ?, 'v1', ?, ?, ?)
             """,
             (
-                f"page-{uuid4()}",
+                page_id,
                 source_id,
                 vault_id,
                 index,
-                page_text,
+                plaintext_column_for_text(
+                    conn,
+                    vault_id=vault_id,
+                    entity_type="source_page",
+                    entity_id=page_id,
+                    field_name="raw_text",
+                    text=page_text,
+                    now=now,
+                ),
                 content_hash(page_text),
                 now,
                 now,
@@ -1292,6 +1309,13 @@ def _upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> 
             "updated_at": now,
         }
         if existing:
+            stored_payload = update_source_content_fields(
+                conn,
+                vault_id=vault_id,
+                source_id=source_id,
+                updates=payload,
+                now=now,
+            )
             conn.execute(
                 """
                 UPDATE sources
@@ -1305,9 +1329,10 @@ def _upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> 
                     updated_at = :updated_at
                 WHERE id = :id
                 """,
-                payload,
+                stored_payload,
             )
         else:
+            stored_payload = store_source_content_fields(conn, payload, now=now)
             conn.execute(
                 """
                 INSERT INTO sources (
@@ -1319,7 +1344,7 @@ def _upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> 
                     :raw_text, :extracted_text, :summary, :tags, NULL, :updated_at, :updated_at
                 )
                 """,
-                payload,
+                stored_payload,
             )
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
         if row is not None:

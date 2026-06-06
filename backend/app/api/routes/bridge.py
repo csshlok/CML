@@ -10,6 +10,7 @@ from backend.app.api.routes.sources import source_from_row
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.embeddings import content_hash
+from backend.app.core.encrypted_storage import plaintext_column_for_text, store_source_content_fields
 from backend.app.core.memory_card import summarize_text
 from backend.app.schemas import (
     BridgeArtifactCapture,
@@ -610,6 +611,18 @@ def _capture_bridge_source(
     page_id = f"page-{uuid4()}"
     clean_text = text.strip()
     with connect() as conn:
+        source_payload = store_source_content_fields(
+            conn,
+            {
+                "id": source_id,
+                "vault_id": vault_id,
+                "raw_text": clean_text,
+                "extracted_text": clean_text,
+                "summary": summarize_text(clean_text),
+                "tags": json.dumps(["BRIDGE", "EXTERNAL", source_type.upper(), client_name.upper()[:40]]),
+            },
+            now=now,
+        )
         conn.execute(
             """
             INSERT INTO sources (
@@ -625,10 +638,10 @@ def _capture_bridge_source(
                 title,
                 source_type,
                 content_hash(clean_text),
-                clean_text,
-                clean_text,
-                summarize_text(clean_text),
-                json.dumps(["BRIDGE", "EXTERNAL", source_type.upper(), client_name.upper()[:40]]),
+                source_payload["raw_text"],
+                source_payload["extracted_text"],
+                source_payload["summary"],
+                source_payload["tags"],
                 now,
                 now,
             ),
@@ -641,7 +654,23 @@ def _capture_bridge_source(
             )
             VALUES (?, ?, ?, 1, ?, 'bridge-capture-v1', ?, ?, ?)
             """,
-            (page_id, source_id, vault_id, clean_text, content_hash(clean_text), now, now),
+            (
+                page_id,
+                source_id,
+                vault_id,
+                plaintext_column_for_text(
+                    conn,
+                    vault_id=vault_id,
+                    entity_type="source_page",
+                    entity_id=page_id,
+                    field_name="raw_text",
+                    text=clean_text,
+                    now=now,
+                ),
+                content_hash(clean_text),
+                now,
+                now,
+            ),
         )
         enqueue_job(
             conn,

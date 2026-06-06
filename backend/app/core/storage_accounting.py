@@ -2,6 +2,7 @@ from pathlib import Path
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import connect
+from backend.app.core.encrypted_storage import encrypted_blob_store_size
 
 
 def storage_accounting(vault_id: str | None = None) -> dict:
@@ -109,12 +110,35 @@ def storage_accounting(vault_id: str | None = None) -> dict:
             """,
             external_params,
         ).fetchone()
+        encrypted_clause = ""
+        encrypted_params: list[str] = []
+        if vault_id:
+            encrypted_clause = "WHERE vault_id = ?"
+            encrypted_params.append(vault_id)
+        encrypted_row = conn.execute(
+            f"""
+            SELECT
+                COUNT(*) AS count,
+                COALESCE(SUM(LENGTH(ciphertext)), 0) AS ciphertext_text_bytes,
+                COALESCE(SUM(byte_length), 0) AS plaintext_bytes
+            FROM encrypted_content
+            {encrypted_clause}
+            """,
+            encrypted_params,
+        ).fetchone()
     vector_dir = _directory_size(get_settings().data_dir / "vectors")
     database_size = _safe_file_size(get_settings().database_path)
+    encrypted_blob_bytes = encrypted_blob_store_size(vault_id)
     return {
         "vault_id": vault_id,
         "database_bytes": database_size,
         "vector_index_bytes": vector_dir,
+        "encrypted_blob_bytes": encrypted_blob_bytes,
+        "encrypted_content": {
+            "count": int(encrypted_row["count"] or 0),
+            "ciphertext_text_bytes": int(encrypted_row["ciphertext_text_bytes"] or 0),
+            "plaintext_bytes": int(encrypted_row["plaintext_bytes"] or 0),
+        },
         "sources": {
             "count": int(source_row["count"] or 0),
             "raw_text_bytes": int(source_row["raw_text_bytes"] or 0),
