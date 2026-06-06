@@ -165,6 +165,24 @@ export type VaultRecord = {
   updated_at: string;
 };
 
+export type UnlockStatusRead = {
+  state: "locked" | "unlocking" | "verifying" | "repair_required" | "ready";
+  vault_id: string | null;
+  unlock_mode: "convenience" | "strict" | string;
+  pin_enabled: boolean;
+  message: string;
+  verification_error: string;
+  updated_at: string;
+  ready: boolean;
+  secured_vault_count: number;
+  secured_vault_ids: string[];
+  has_vendor_recovery: boolean;
+};
+
+export type UnlockInitializeResponse = UnlockStatusRead & {
+  recovery_key: string;
+};
+
 export type ClusterRecord = {
   id: string;
   vault_id: string;
@@ -1271,6 +1289,49 @@ export async function checkDiskPreflight(payload: {
 
 export async function getStartupStatus() {
   return request<StartupStatusRead>("/api/v1/system/startup-status");
+}
+
+export async function getUnlockStatus() {
+  return request<UnlockStatusRead>("/api/v1/system/unlock/status");
+}
+
+export async function initializeVaultSecurity(payload: {
+  vault_id: string;
+  passphrase: string;
+  unlock_mode?: "convenience" | "strict";
+}) {
+  return request<UnlockInitializeResponse>("/api/v1/system/unlock/initialize", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function unlockVaultWithPassphrase(payload: { vault_id: string; passphrase: string }) {
+  return request<UnlockStatusRead>("/api/v1/system/unlock/passphrase", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function lockVault(vaultId?: string | null) {
+  const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
+  return request<UnlockStatusRead>(`/api/v1/system/unlock/lock${query}`, { method: "POST" });
+}
+
+export async function updateUnlockSettings(payload: {
+  vault_id: string;
+  unlock_mode?: "convenience" | "strict" | null;
+  pin_enabled?: boolean | null;
+}) {
+  return request<{
+    vault_id: string;
+    unlock_mode: string;
+    pin_enabled: boolean;
+    has_vendor_recovery: boolean;
+  }>("/api/v1/system/unlock/settings", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getHardwareStatus() {

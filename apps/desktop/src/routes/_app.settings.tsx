@@ -34,9 +34,12 @@ import {
   getEmbeddingRuntimeStatus,
   getEmbeddingDownloadStatus,
   getHardwareStatus,
+  getUnlockStatus,
   getModelCompatibilityReport,
   importLocalModel,
+  initializeVaultSecurity,
   getJobStatus,
+  lockVault,
   getModelRuntimeStatus,
   getOCRRuntimeStatus,
   pruneQueryCache,
@@ -46,7 +49,9 @@ import {
   refreshIntegrationImport,
   startModelDownload,
   startEmbeddingDownload,
+  unlockVaultWithPassphrase,
   updateIntegrationImport,
+  updateUnlockSettings,
   updateVault,
   type ChatEvidenceRetentionPolicy,
   type ChatEvidenceRetentionResult,
@@ -59,6 +64,7 @@ import {
   type ModelCompatibilityRecord,
   type ModelRuntimeStatus,
   type OCRRuntimeStatusRead,
+  type UnlockStatusRead,
   type VaultRecord,
 } from "@/lib/backend";
 
@@ -94,6 +100,9 @@ function SettingsView() {
   const [integrationImports, setIntegrationImports] = useState<IntegrationImportRecord[]>([]);
   const [retentionPolicy, setRetentionPolicy] = useState<ChatEvidenceRetentionPolicy | null>(null);
   const [retentionResult, setRetentionResult] = useState<ChatEvidenceRetentionResult | null>(null);
+  const [unlockStatus, setUnlockStatus] = useState<UnlockStatusRead | null>(null);
+  const [vaultPassphrase, setVaultPassphrase] = useState("");
+  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [refreshingImportId, setRefreshingImportId] = useState<string | null>(null);
   const [retentionBusy, setRetentionBusy] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -109,6 +118,18 @@ function SettingsView() {
 
     async function load() {
       try {
+        const currentUnlock = await getUnlockStatus();
+        if (cancelled) return;
+        setUnlockStatus(currentUnlock);
+        if (currentUnlock.secured_vault_count > 0 && currentUnlock.state !== "ready") {
+          const vaultRows = await listVaults();
+          if (cancelled) return;
+          const firstVault = vaultRows[0] ?? null;
+          setBackendVault(firstVault);
+          if (firstVault) setPathDraft(firstVault.path);
+          setStatusMessage(currentUnlock.message || "Vault is locked. Unlock it from Privacy settings.");
+          return;
+        }
         const [
           vaultRows,
           modelRows,
@@ -162,6 +183,71 @@ function SettingsView() {
       window.clearInterval(id);
     };
   }, []);
+
+  async function unlockVault() {
+    const vaultId = backendVault?.id ?? unlockStatus?.secured_vault_ids[0];
+    if (!vaultId || !vaultPassphrase.trim()) {
+      setStatusMessage("Choose a vault and enter the full passphrase.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const next = unlockStatus?.secured_vault_count
+        ? await unlockVaultWithPassphrase({ vault_id: vaultId, passphrase: vaultPassphrase })
+        : await initializeVaultSecurity({ vault_id: vaultId, passphrase: vaultPassphrase, unlock_mode: "convenience" });
+      setUnlockStatus(next);
+      if ("recovery_key" in next) setRecoveryKey(next.recovery_key);
+      setVaultPassphrase("");
+      setStatusMessage(next.state === "ready" ? "Vault ready." : next.message);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not unlock vault.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function lockCurrentVault() {
+    setSaving(true);
+    try {
+      const next = await lockVault(unlockStatus?.vault_id ?? backendVault?.id ?? null);
+      setUnlockStatus(next);
+      setStatusMessage("Vault locked.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not lock vault.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function setUnlockMode(mode: "convenience" | "strict") {
+    const vaultId = unlockStatus?.vault_id ?? backendVault?.id;
+    if (!vaultId) return;
+    setSaving(true);
+    try {
+      const settings = await updateUnlockSettings({ vault_id: vaultId, unlock_mode: mode });
+      setUnlockStatus((current) => current ? { ...current, unlock_mode: settings.unlock_mode } : current);
+      setStatusMessage(mode === "strict" ? "Strict locked mode enabled." : "Convenience mode enabled.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not update unlock mode.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function setPinEnabled(enabled: boolean) {
+    const vaultId = unlockStatus?.vault_id ?? backendVault?.id;
+    if (!vaultId) return;
+    setSaving(true);
+    try {
+      const settings = await updateUnlockSettings({ vault_id: vaultId, pin_enabled: enabled });
+      setUnlockStatus((current) => current ? { ...current, pin_enabled: settings.pin_enabled } : current);
+      setStatusMessage(enabled ? "Convenience PIN visibility enabled. Full passphrase remains required for sensitive actions." : "Convenience PIN disabled.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not update PIN setting.");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function saveVaultPath() {
     const path = pathDraft.trim();
@@ -624,6 +710,59 @@ function SettingsView() {
 
           <SettingsCard
             icon={<Lock className="h-4 w-4" />}
+            title="Vault unlock"
+            description="Control the local vault unlock boundary. Convenience mode is default; strict locked mode is opt-in."
+            status={unlockStatus?.state ?? "Unknown"}
+            statusTone={unlockStatus?.state === "ready" ? "ready" : "issue"}
+          >
+            <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
+              State: <span className="text-foreground">{unlockStatus?.state ?? "unknown"}</span>
+              {" / "}Mode: <span className="text-foreground">{unlockStatus?.unlock_mode ?? "convenience"}</span>
+              {" / "}PIN: <span className="text-foreground">{unlockStatus?.pin_enabled ? "enabled" : "disabled"}</span>
+            </div>
+            {unlockStatus?.verification_error ? (
+              <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                Repair required: {unlockStatus.verification_error}
+              </div>
+            ) : null}
+            <div className="mt-4 grid gap-2 md:grid-cols-[1fr_auto_auto]">
+              <Input
+                type="password"
+                value={vaultPassphrase}
+                onChange={(event) => setVaultPassphrase(event.target.value)}
+                placeholder={unlockStatus?.secured_vault_count ? "Vault passphrase" : "Create vault passphrase"}
+              />
+              <Button onClick={() => void unlockVault()} disabled={saving || !backendVault}>
+                {unlockStatus?.secured_vault_count ? "Unlock" : "Initialize security"}
+              </Button>
+              <Button variant="outline" onClick={() => void lockCurrentVault()} disabled={saving || unlockStatus?.state !== "ready"}>
+                Lock
+              </Button>
+            </div>
+            {recoveryKey ? (
+              <div className="mt-4 rounded-md border border-[var(--status-learning)]/35 bg-[var(--status-learning)]/10 px-3 py-3 text-sm">
+                <div className="font-medium">Offline recovery key. Store it now; CML has no vendor recovery path.</div>
+                <div className="mt-2 break-all font-mono text-xs">{recoveryKey}</div>
+              </div>
+            ) : null}
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => void setUnlockMode("convenience")} disabled={saving || unlockStatus?.state !== "ready"}>
+                Convenience mode
+              </Button>
+              <Button variant="outline" onClick={() => void setUnlockMode("strict")} disabled={saving || unlockStatus?.state !== "ready"}>
+                Strict locked mode
+              </Button>
+              <Button variant="outline" onClick={() => void setPinEnabled(!unlockStatus?.pin_enabled)} disabled={saving || unlockStatus?.state !== "ready"}>
+                {unlockStatus?.pin_enabled ? "Disable PIN" : "Enable PIN setting"}
+              </Button>
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">
+              The 6-digit PIN is convenience-only. Sensitive actions still require the full passphrase.
+            </p>
+          </SettingsCard>
+
+          <SettingsCard
+            icon={<ShieldCheck className="h-4 w-4" />}
             title="Evidence retention"
             description="Compact saved retrieval evidence without deleting chat messages."
             status={retentionPolicy ? "Policy loaded" : "Unavailable"}
