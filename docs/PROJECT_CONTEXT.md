@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-06-05
+Last updated: 2026-06-06
 
 ## Operating Rule
 
@@ -40,6 +40,11 @@ Public V1 target: end of July 2026 as a Windows-only public release. There is no
 - Public V1 expert claim: only say a cluster expert is trained after verified LoRA adapter graduation passes for that cluster.
 - Local-first privacy: user data stays local unless the user explicitly exports or connects a tool.
 - External access: Context Bridge through MCP, local HTTP API, CLI, and copy/export.
+- V1 security boundary: full security work is in public V1, not deferred. If encryption, unlock-state enforcement, parser/browser isolation, Bridge approval, renderer hardening, or LoRA integrity are not release-ready, release slips.
+- Vault recovery model: offline recovery key, generated locally, never stored server-side, with explicit user acknowledgment during setup.
+- Vault unlock modes: convenience mode is the default; strict locked mode is opt-in and must stay visible in Settings.
+- Convenience mode may use an optional 6-digit local PIN for fast re-entry, but the PIN is not the primary vault security boundary and must not replace the full passphrase for sensitive operations.
+- Strict locked mode requires passphrase re-entry after backend restart or explicit lock and pauses vault-bound background processing while locked.
 
 ## Model And Runtime Decisions
 
@@ -113,10 +118,15 @@ Runtime boundary:
 | Context Bridge | In progress | `[#########-] 95%` | Capture UX polish, clearer privacy copy, and later external-client smoke |
 | Packaging/install | In progress | `[##########] 99%` | Clean VM validation of bundled expert runtime |
 | QA/hardening | In progress | `[##########] 99%` | Clean VM package validation and larger user-owned vault benchmarks |
+| Security | In progress | `[#####-----] 50%` | Unlock/API gating complete; next gate is encrypted storage and blob boundary |
 
 ## Current Critical Path
 
 - Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
+- Implement the encrypted storage and blob boundary for public V1: SQLCipher or equivalent encrypted database layer, encrypted blob store, WAL/temp behavior, diagnostics/log redaction, and import/reference policy.
+- Implement the derived-state publication model at scale: compound tuple versioning, query snapshot epochs, staging namespace, copy-on-write publication, disk preflight, and staged-artifact cleanup.
+- Implement hostile-content defenses for public V1: encrypted quarantine, structural validation, parser/browser isolation, trust tiers, degraded retrieval gates, and renderer HTML-safety audit.
+- Implement Bridge and LoRA hardening for public V1: approval/identity model, locked-state behavior, dataset manifest review, runtime hash verification, and trustworthy expert graduation.
 - Keep Windows-only public V1 criteria. If verified LoRA or other public gates fail, delay release; do not ship a private demo fallback.
 - Verify real adapter training and runtime loading before any broad "trained expert" claim.
 - Compulsory expert work now has stricter dataset/diversity/quality gates, evaluation harness, smoke scripts, and Expert tab visibility, but still needs a real trainer command/model path before public claims.
@@ -185,6 +195,11 @@ QA/hardening:
 - Done: broad backend regression coverage, atomic job concurrency tests, local API auth/identity tests, OCR benchmarks, audits, diagnostic redaction/log-rotation policy, backend benchmark scripts, disposable-vault delete cleanup tests, failed embedding-write retry test, dynamic-link browser-runtime smoke with Playwright on `T:`, Codex-style MCP smoke, real second-embedding model/cache smoke, repeatable packaging/security smoke scripts, npm and Python vulnerability audits, threat model, 1k benchmark harness, startup stale-phase validation tests, recovery drills endpoint, first-run readiness gate tests.
 - Remaining: larger user-owned vault benchmarks, clean VM package validation, hardware-aware model recommendation QA.
 
+Security:
+
+- Done: local-only security architecture, unlock state machine, derived-state/migration rules, build-plan specs, Phase 0 baseline audit, Phase 1 crypto/metadata foundation, and Phase 2 unlock/API gating. Phase 2 added the backend unlock state manager, lock/unlock/recovery/settings/sensitive-action endpoints, protected-route middleware, locked background-job pause, and Settings lock controls.
+- Remaining: implement encrypted storage/blob boundary, derived-state publication, parser/browser isolation, retrieval trust gates, renderer audit, Bridge approval/identity, LoRA manifest/hash verification, reconciliation logging, packaging hardening, and large-vault security QA.
+
 ## Public V1 Blockers
 
 These are release gates, not polish.
@@ -196,8 +211,10 @@ These are release gates, not polish.
 - Disk preflight: installer/model/OCR/indexing/ingestion flows need required/available space checks.
 - Local API auth: Electron-managed private APIs now fail closed without the local API token; renderer-origin validation and Bridge-token separation remain release gates.
 - Auth threat model: written in `docs/THREAT_MODEL.md`; keep it updated and enforce it through release-gate tests before public V1.
+- Vault encryption and unlock boundary: public V1 requires passphrase-based encrypted vault storage, offline recovery key flow, convenience-vs-strict lock modes, unlock-time verification, and no silent backend restart bypass.
 - Embedding setup gate: production cannot silently use hash embeddings; semantic features must block/degrade explicitly when embeddings are unavailable.
 - Embedding transition correctness: retrieval/search must not silently mix vectors from different embedding models. The core filter hotfix is now in place; keep regression coverage and any remaining retrieval paths aligned with the same selector.
+- Derived-state correctness: retrieval must use a snapshotted active tuple for normalization, embedding, and extraction versions; mixed or partially published tuples must never serve one query.
 - Model integrity: managed model downloads record SHA-256 and verify real pinned expected hashes from `docs/model-integrity-manifest.json`.
 - Scheduler synthesis gate: background jobs that should not run during generation must respect active/retriable generation states.
 - Chat recovery: interrupted generations need durable timeline placeholders, retry actions, and no fake assistant messages.
@@ -206,9 +223,12 @@ These are release gates, not polish.
 - Diagnostics: log rotation policy exists and full-vault unpacked package smoke covers diagnostics export; clean VM execution remains.
 - MCP Bridge: Codex-style JSON-RPC smoke passed; keep external-client readiness claims conservative while Claude Desktop-specific smoke is deferred.
 - Bridge privacy boundary: current Bridge auth/scope model is not a meaningful anti-exfiltration throttle once a trusted client has a valid token for an allowed vault/cluster set. Threat-model wording and UI privacy language must say this plainly.
+- Bridge approval boundary: public V1 requires locked-state disablement, short-lived/rate-limited approval requests, explicit claimed-vs-verified identity UI, and approval history stored inside the encrypted vault boundary.
+- Renderer safety: public V1 requires an explicit audit and enforcement that LLM and document output are rendered as escaped text, not raw HTML.
 - LoRA: public V1 requires verified real adapter training, adapter artifact validation, runtime load against a real local model, rollback, supported hardware, failure codes, and quality win over retrieval baseline.
 - LoRA graduation framing: small or insufficient clusters should remain retrieval-backed with explicit status instead of pretending every cluster can graduate.
 - LoRA threshold honesty: current token/source defaults are scaffolding values, not benchmark-backed public gates. Raise or replace them before public claims.
+- LoRA trust boundary: public V1 requires dataset manifest review, low-trust source exclusion by default, runtime adapter/base-model hash verification, and no grandfathering of pre-integrity artifacts as trusted.
 - Expert runtime sizing: current expert runtime is a separate Transformers/PEFT load path, not a lightweight extension of the chat runtime. Public expert-mode hardware requirements must be measured and stated honestly.
 - Model recommendation: public V1 must recommend safe synthesis/embedding/expert setup by detected system tier, enforce one approved model family contract, and reject incompatible custom imports explicitly.
 - OCR/package: packaged OCR runtime, generated OCR fixture smoke, dynamic-link smoke, migration drill, and installer smoke pass; Ghostscript path is AGPL-compatible public release.
@@ -234,8 +254,12 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 ## Current Open Work
 
 - Add written public V1 decision record: Windows-only; public release only; release slips until verified LoRA and other public gates pass.
+- Implement Phase 3 encrypted storage/blob boundary end to end: encrypted DB/key handoff, encrypted blobs, WAL/temp-file policy, diagnostics/log handling, and import/reference confidentiality labels.
 - Finish first-run setup UI around the new readiness gate: vault path, model setup, embedding setup, OCR readiness, startup repair states.
 - Make onboarding honest about local model/embedding download size, time, hardware requirements, and external Bridge privacy tradeoffs.
+- Implement the derived-state migration framework at scale: query epoch snapshots, compound tuple activation, staged publication, rollback, disk-space preflight, and staging garbage collection.
+- Implement encrypted quarantine, parser/browser worker isolation, and source trust-tier assignment before public V1.
+- Implement post-unlock reconciliation summary/detail logging inside the encrypted vault boundary and keep locked mode externally opaque by default.
 - Add real checkpoint-family download/import UX for the approved model contract, beyond the current runtime/GGUF default downloads.
 - Define and implement the approved chat-role / expert-role pairing matrix, including hardware tiers and explicit rejected-pair reasons.
 - Add model provenance display in setup/settings using `/api/v1/models/integrity-manifest`.
@@ -251,6 +275,10 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 
 ## Recent Completed Work
 
+- Added local-only security build specs for public V1: security architecture, unlock state machine, derived-state/migration rules, and the full security patch build plan; updated tracked project context and threat-model language with approved security decisions.
+- Completed Security Phase 0 baseline audit: route classifications, renderer raw-HTML audit, helper executable/runtime-writable directory map, ingestion/parser/browser surface list, and security build-freeze rule are written in a local-only ignored document.
+- Completed Security Phase 1 crypto and vault metadata foundation: added compact vault security metadata schema/migration, Argon2id wrapping primitives, offline recovery-key unlock/reset, sensitive-action passphrase verification, redacted public metadata, process-memory-only key state, and focused backend tests.
+- Completed Security Phase 2 unlock state machine and API gating: protected routes reject until `ready`, unlock/recovery/lock/settings/sensitive-action endpoints exist, secured-vault restart returns locked, vault-bound jobs pause while locked, and Settings exposes convenience/strict/PIN controls.
 - Implemented the first dual-model setup pass: active chat/expert model roles in the registry, role-aware activation APIs, pair-aware onboarding/settings wording, retrieval-as-citation-authority wording, and role-aware readiness checks.
 - Hotfixed mixed-embedding correctness across core retrieval paths: semantic search, scoring ledger, expanded analysis, and cluster suggestion reads now filter by the active embedding model and index version instead of silently mixing vector spaces.
 - Updated security documentation to explicitly accept and document the current dynamic-link browser fallback risk and the trusted-client Bridge exfiltration boundary instead of implying stronger hardening than the code currently provides.
@@ -319,6 +347,9 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - No UI implementation unless explicitly requested; dark version and minimized/narrow desktop version are noted future requirements.
 - Do not delete or alter `UI-ref/`.
 - Playwright browser runtime for local dynamic-link smoke is installed on `T:\CML-playwright-browsers`; the packaged app now also stages `resources/ms-playwright`; contributor backend requirements include `playwright==1.60.0`.
+- Convenience mode is the default public-V1 unlock mode; strict locked mode remains opt-in and must stay explicit in Settings and onboarding copy.
+- The optional 6-digit PIN is convenience-only and must never be treated as the primary vault security boundary; sensitive operations still require the full passphrase.
+- Scale is a hard requirement for the security work: migrations, verification, trust gating, reconciliation logging, and cleanup must stay incremental, resumable, and bounded on long-lived vaults with thousands of documents.
 - Packaging smoke scripts clear inherited `ELECTRON_RUN_AS_NODE`; otherwise packaged Electron launches in Node mode and will not execute app startup.
 - Hash embeddings are development-only and must not be a silent production fallback.
 - SQLite is authoritative; vector indexes are derived and rebuildable.

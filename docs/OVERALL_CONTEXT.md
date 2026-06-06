@@ -1,12 +1,32 @@
 ﻿# Overall Context
 
-Last updated: 2026-06-05
+Last updated: 2026-06-06
 
 ## Fallback Context Rule
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
 Latest compact truth after the 2026-06-05 decision pass lives in `docs/PROJECT_CONTEXT.md`. Current product decision: V1 is Windows-only, public-release-only, and must include a working high-quality verified LoRA function; there is no private-demo fallback. Model policy is now explicit: strict `accepted` / `rejected` compatibility remains, but runtime architecture is now understood as dual-role rather than one lightweight unified path. Current Qwen/Phi/Gemma defaults remain the default recommendations, expert-capable onboarding still requires an app-managed approved local checkpoint, retrieval remains the citation authority, and public docs must stop implying that one approved family automatically means one cheap runtime path. Claude Desktop-specific smoke is deferred for now; clean Windows VM validation, real LoRA trainer/runtime smoke, live quality benchmarking, mixed-embedding correctness fixes, and hardware-aware model recommendations remain current external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+
+## 2026-06-06 Security Architecture Snapshot
+
+Completed decision:
+
+- Public V1 security work is not deferred. If encrypted vault storage, unlock-state enforcement, parser/browser isolation, Bridge approval, renderer hardening, or LoRA integrity are not release-ready, release slips.
+- Vault recovery uses an offline recovery key generated locally at setup. There is no vendor recovery path.
+- Convenience mode is the default unlock mode. Strict locked mode is opt-in and must stay visible in Settings.
+- A 6-digit PIN may be used only for local convenience re-entry. It is not the primary vault security boundary and must not replace full passphrase checks for sensitive operations.
+- Same-user malware while the vault is unlocked remains an accepted limitation, but the app must reduce exposure with encrypted-at-rest storage, scoped approvals, lock controls, and honest user-facing language.
+- Scale is a hard requirement: migrations, unlock verification, trust gating, reconciliation logging, and cleanup must be incremental, resumable, and bounded for long-lived vaults with thousands of documents.
+
+Implementation baseline:
+
+- Local-only security specs now exist for architecture, unlock state machine, derived-state/migration rules, the security build plan, and the Phase 0 baseline audit. These are intentionally ignored by git.
+- The build plan is phased from baseline audit through crypto/storage, unlock gating, derived-state publication, parser/browser isolation, retrieval trust, renderer hardening, Bridge approval, LoRA manifest/hash verification, reconciliation logs, packaging hardening, and end-to-end security QA.
+- Phase 0 is complete: backend route classification, renderer raw-HTML audit, helper executable/writable-directory map, ingestion/parser/browser surface list, and the security build-freeze rule are written down before implementation starts.
+- Phase 1 is complete: the backend now has compact vault security metadata, Argon2id passphrase/recovery wrapping primitives, random vault master keys, derived subkeys, recovery unlock/reset, sensitive-action passphrase verification, public metadata redaction, and process-memory-only unlocked key state.
+- Phase 2 is complete: the backend has the locked/unlocking/verifying/repair-required/ready state manager, unlock/recovery/lock/settings/sensitive-action endpoints, protected-route middleware, locked background-job pause, restart-to-locked behavior for secured vaults, and Settings controls for convenience/strict/PIN visibility.
+- `docs/PROJECT_CONTEXT.md` is the compact source of truth for the approved decisions and now includes a Security progress row.
 
 ## 2026-06-05 Dual-Model Decision Snapshot
 
@@ -345,10 +365,12 @@ Use this section for fast status checks. Detailed historical notes remain in the
 | Context Bridge             | In progress                | `[#########-] 94%`  | Full extension package, capture UX polish, and later external-client smoke.                      |
 | Packaging and installer    | In progress                | `[##########] 98%`  | Clean Windows VM validation.                                                                     |
 | QA and hardening           | In progress                | `[##########] 99%`  | Clean VM package validation, larger scale/performance benchmarks, model recommendation QA.       |
+| Security                   | In progress                | `[#####-----] 50%`  | Unlock/API gating complete; next gate is encrypted storage and blob boundary.                    |
 
 ### Current Critical Path
 
 - Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
+- Implement the remaining public V1 security build plan: encrypted storage boundary, parser/browser isolation, renderer hardening, Bridge approval, LoRA integrity, and large-vault security QA.
 - Keep Windows-only public V1 criteria; if blockers remain, delay release rather than ship a private demo.
 - Verify real adapter training/loading before using "trained expert" language in user-facing surfaces; current gates are stronger but still need real trainer/runtime proof.
 - Build hardware-aware model recommendation for low-, mid-, and high-spec users.
