@@ -1,4 +1,5 @@
 import os
+import io
 import subprocess
 import tempfile
 import unittest
@@ -88,12 +89,36 @@ class QuarantinePhase6Tests(unittest.TestCase):
                 run_parser_worker(str(Path(self.tmp.name) / "note.txt"))
         self.assertIn("malformed json", str(raised.exception).lower())
 
+    def test_missing_worker_stdout_is_rejected_cleanly(self) -> None:
+        from backend.app.core.quarantine import QuarantineError, run_parser_worker
+
+        completed = subprocess.CompletedProcess(args=["worker"], returncode=0, stdout=None, stderr=None)
+        with patch("backend.app.core.quarantine.subprocess.run", return_value=completed):
+            with self.assertRaises(QuarantineError) as raised:
+                run_parser_worker(str(Path(self.tmp.name) / "note.txt"))
+        self.assertIn("malformed json", str(raised.exception).lower())
+
     def test_defender_unavailable_is_advisory_not_safety_claim(self) -> None:
         from backend.app.core.quarantine import defender_scan
 
         with patch("backend.app.core.quarantine.platform.system", return_value="Linux"):
             result = defender_scan(str(Path(self.tmp.name) / "note.txt"))
         self.assertEqual(result["status"], "unavailable")
+
+    def test_parser_worker_writes_utf8_json_under_cp1252_stdout(self) -> None:
+        from backend.app.core import parser_worker
+
+        stdout_bytes = io.BytesIO()
+        stdout = io.TextIOWrapper(stdout_bytes, encoding="cp1252")
+        with patch(
+            "backend.app.core.parser_worker.extract_pages_from_validated_path",
+            return_value=("note.txt", ["unicode payload: सुरक्षा"]),
+        ), patch.object(parser_worker.sys, "stdout", stdout):
+            result = parser_worker.main(["ignored.txt"])
+
+        self.assertEqual(result, 0)
+        payload = stdout_bytes.getvalue().decode("utf-8").strip()
+        self.assertIn("सुरक्षा", payload)
 
     def test_from_path_ingestion_records_quarantine_and_trust_metadata(self) -> None:
         from backend.app.api.routes.sources import create_source_from_path

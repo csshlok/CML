@@ -85,6 +85,9 @@ class UnlockPhase2Tests(unittest.TestCase):
                 client.get("/api/v1/clusters/cluster-1/expert/status"),
                 client.post("/api/v1/bridge/context", json={"query": "x", "vault_id": "vault-phase2"}),
                 client.get("/api/v1/integrations/imports"),
+                client.get("/api/v1/integrations/imports/import-1/reconciliation-runs"),
+                client.get("/api/v1/integrations/reconciliation-runs/run-1/items"),
+                client.post("/api/v1/integrations/reconciliation-items/item-1/retry"),
                 client.post("/api/v1/diagnostics/bundle"),
                 client.post("/api/v1/jobs/run-once"),
             ]

@@ -1012,9 +1012,9 @@ class SourcePageIndexingTests(unittest.TestCase):
             quarantine_table = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'source_quarantine_records'"
             ).fetchone()
-        self.assertEqual(row["version"], 5)
+        self.assertEqual(row["version"], 7)
         self.assertEqual(row["status"], "succeeded")
-        self.assertEqual(user_version, 5)
+        self.assertEqual(user_version, 7)
         self.assertIsNotNone(security_table)
         self.assertIsNotNone(encrypted_table)
         self.assertIsNotNone(derived_table)
@@ -1349,6 +1349,35 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(source_count["count"], 1)
         self.assertEqual(import_row["imported_count"], 1)
         self.assertIsNotNone(import_row["next_watch_at"])
+
+    def test_refresh_scan_limit_uses_full_budget_for_manual_refresh(self) -> None:
+        from backend.app.api.routes.integrations import _refresh_scan_limit
+        from backend.app.core.local_integrations import MAX_SCAN_LIMIT
+
+        limit = _refresh_scan_limit(
+            {
+                "supported_count": 1200,
+                "imported_count": 1200,
+                "truncated": 0,
+            },
+            trigger_source="manual_refresh",
+        )
+
+        self.assertEqual(limit, MAX_SCAN_LIMIT)
+
+    def test_refresh_scan_limit_expands_watched_refresh_after_truncation(self) -> None:
+        from backend.app.api.routes.integrations import _refresh_scan_limit
+
+        limit = _refresh_scan_limit(
+            {
+                "supported_count": 1200,
+                "imported_count": 1000,
+                "truncated": 1,
+            },
+            trigger_source="watch_refresh",
+        )
+
+        self.assertEqual(limit, 1700)
 
     def test_obsidian_markdown_ingestion_extracts_frontmatter_links_and_attachments(self) -> None:
         from backend.app.api.routes.sources import create_source_from_path
