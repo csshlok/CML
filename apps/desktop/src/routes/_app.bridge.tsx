@@ -6,17 +6,23 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
+  approveBridgeApprovalRequest,
   createBridgeClient,
   deleteBridgeClient,
   getBridgeStatus,
+  listBridgeApprovalRequests,
+  listBridgeAuditEvents,
   listBridgeClients,
   listBridgeTokenRotations,
   listClusters,
   listBridgeRequests,
+  rejectBridgeApprovalRequest,
   listVaults,
   updateBridgeClient,
   updateBridgeSettings,
   useBackendHealth,
+  type BridgeApprovalRequest,
+  type BridgeAuditEvent,
   type BridgeClientRecord,
   type BridgeRequest,
   type BridgeStatus,
@@ -34,6 +40,8 @@ function BridgeView() {
   const backend = useBackendHealth();
   const [status, setStatus] = useState<BridgeStatus | null>(null);
   const [requests, setRequests] = useState<BridgeRequest[]>([]);
+  const [approvalRequests, setApprovalRequests] = useState<BridgeApprovalRequest[]>([]);
+  const [auditEvents, setAuditEvents] = useState<BridgeAuditEvent[]>([]);
   const [rotations, setRotations] = useState<BridgeTokenRotation[]>([]);
   const [clients, setClients] = useState<BridgeClientRecord[]>([]);
   const [clientName, setClientName] = useState("Local MCP client");
@@ -45,9 +53,11 @@ function BridgeView() {
   async function loadBridgeState(options: { clearOnError?: boolean } = {}) {
     if (backend.status !== "online") return;
     try {
-      const [nextStatus, nextRequests, nextRotations, nextClients, nextVaults, nextClusters] = await Promise.all([
+      const [nextStatus, nextRequests, nextApprovals, nextAuditEvents, nextRotations, nextClients, nextVaults, nextClusters] = await Promise.all([
         getBridgeStatus(),
         listBridgeRequests(),
+        listBridgeApprovalRequests(),
+        listBridgeAuditEvents(),
         listBridgeTokenRotations(),
         listBridgeClients(),
         listVaults(),
@@ -61,6 +71,8 @@ function BridgeView() {
         allowed_cluster_ids: nextStatus.allowed_cluster_ids.filter((id) => clusterIds.has(id)),
       });
       setRequests(nextRequests);
+      setApprovalRequests(nextApprovals);
+      setAuditEvents(nextAuditEvents);
       setRotations(nextRotations);
       setClients(nextClients);
       setVaults(nextVaults);
@@ -69,6 +81,8 @@ function BridgeView() {
       if (options.clearOnError) {
         setStatus(null);
         setRequests([]);
+        setApprovalRequests([]);
+        setAuditEvents([]);
         setRotations([]);
         setClients([]);
         setVaults([]);
@@ -165,6 +179,29 @@ function BridgeView() {
     }
   }
 
+  async function approveRequest(requestRow: BridgeApprovalRequest) {
+    setSaving(true);
+    try {
+      const created = await approveBridgeApprovalRequest(requestRow.id);
+      setClientToken(created.token);
+      await loadBridgeState();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function rejectRequest(requestRow: BridgeApprovalRequest) {
+    setSaving(true);
+    try {
+      await rejectBridgeApprovalRequest(requestRow.id, { detail: "Rejected in CML Bridge settings." });
+      await loadBridgeState();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const exampleClientToken = clientToken ?? "<approved-client-token>";
+
   return (
     <div className="vault-page-wash h-full overflow-y-auto">
       <div className="mx-auto max-w-4xl px-8 py-10">
@@ -176,11 +213,12 @@ function BridgeView() {
             </div>
             <h1 className="page-title mt-2">Bridge</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Let local AI tools request selected context from this vault. Keep it off until you
-              have chosen exactly which vaults and clusters another client can read.
+              Let local AI tools request selected context from this vault. New clients now request
+              approval first, and approved clients keep their own scope, token, and identity notes.
             </p>
             <div className="mt-2 text-xs text-muted-foreground">
-              Permissions refresh every minute. Last checked {status?.last_refreshed_at ?? "not yet"}.
+              Permissions refresh every minute. Pending approvals {status?.approval_requests_pending ?? 0}. Last checked{" "}
+              {status?.last_refreshed_at ?? "not yet"}.
             </div>
           </div>
 
@@ -327,6 +365,64 @@ function BridgeView() {
         </section>
 
         <section className="mt-4 rounded-md border border-border bg-card p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                Pending approvals
+              </div>
+              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                Claimed client names are never treated as verified identity on their own. Review the observed path and
+                signature signal before approving.
+              </p>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {approvalRequests.filter((item) => item.status === "pending").length} pending
+            </div>
+          </div>
+          <div className="mt-4 divide-y divide-border border-y border-border">
+            {approvalRequests.filter((item) => item.status === "pending").length > 0 ? (
+              approvalRequests
+                .filter((item) => item.status === "pending")
+                .map((item) => (
+                  <div key={item.id} className="grid gap-3 py-3 lg:grid-cols-[1fr_auto]">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="truncate text-sm font-medium">{item.claimed_name}</div>
+                        <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                          unverified claim
+                        </span>
+                        <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                          {item.signature_status.replace(/_/g, " ")}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {item.requested_vault_ids.length || 0} vaults / {item.requested_cluster_ids.length || 0} clusters / raw text{" "}
+                        {item.allow_raw_snippets ? "requested" : "off"}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        Path {item.observed_executable_path || item.executable_path_claim || "not provided"}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        Publisher {item.publisher_name || "not available"} / expires {new Date(item.expires_at).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button size="sm" disabled={saving} onClick={() => void approveRequest(item)}>
+                        Approve
+                      </Button>
+                      <Button variant="outline" size="sm" disabled={saving} onClick={() => void rejectRequest(item)}>
+                        Reject
+                      </Button>
+                    </div>
+                  </div>
+                ))
+            ) : (
+              <div className="py-4 text-sm text-muted-foreground">No pending Bridge approval requests.</div>
+            )}
+          </div>
+        </section>
+
+        <section className="mt-4 rounded-md border border-border bg-card p-4">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -375,6 +471,17 @@ function BridgeView() {
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       {client.allowed_vault_ids.length || 0} vaults / {client.allowed_cluster_ids.length || 0} clusters / raw text {client.allow_raw_snippets ? "on" : "off"}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Identity {client.verified_identity ? client.verified_identity_label : "unverified"} / signature{" "}
+                      {client.signature_status.replace(/_/g, " ")}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Path {client.observed_executable_path || client.executable_path_claim || "not recorded"}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Requests {client.request_count_total} / bytes {client.response_bytes_total.toLocaleString()}
+                      {client.last_request_at ? ` / last ${new Date(client.last_request_at).toLocaleString()}` : ""}
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -434,7 +541,7 @@ function BridgeView() {
                 void navigator.clipboard.writeText(
                   [
                     `POST ${backend.url}/api/v1/bridge/context`,
-                    `x-cml-bridge-token: ${status?.bridge_token ?? ""}`,
+                    `x-cml-bridge-token: ${exampleClientToken}`,
                     JSON.stringify({
                       query: "...",
                       vault_id: status?.allowed_vault_ids[0] ?? "",
@@ -452,7 +559,7 @@ function BridgeView() {
               size="sm"
               onClick={() => {
                 void navigator.clipboard.writeText(
-                  `$env:CML_BRIDGE_TOKEN="${status?.bridge_token ?? ""}"\n.\\scripts\\bridge\\cml-bridge.ps1 "summarize my relevant context" -BackendUrl ${backend.url}`,
+                  `$env:CML_BRIDGE_TOKEN="${exampleClientToken}"\n.\\scripts\\bridge\\cml-bridge.ps1 "summarize my relevant context" -BackendUrl ${backend.url}`,
                 );
               }}
             >
@@ -470,7 +577,7 @@ function BridgeView() {
                       args: ["-m", "backend.app.bridge_mcp"],
                       env: {
                         CML_BACKEND_URL: backend.url,
-                        CML_BRIDGE_TOKEN: status?.bridge_token ?? "",
+                        CML_BRIDGE_TOKEN: exampleClientToken,
                       },
                     },
                     null,
@@ -484,10 +591,10 @@ function BridgeView() {
             <Button
               variant="outline"
               size="sm"
-              disabled={!status}
-              onClick={() => void navigator.clipboard.writeText(status?.bridge_token ?? "")}
+              disabled={!clientToken}
+              onClick={() => clientToken && void navigator.clipboard.writeText(clientToken)}
             >
-              Copy token
+              Copy approved client token
             </Button>
             <Button
               variant="ghost"
@@ -506,6 +613,19 @@ function BridgeView() {
                   <div key={rotation.id} className="flex justify-between gap-3">
                     <span>{rotation.reason.replace(/_/g, " ")}</span>
                     <span>{new Date(rotation.rotated_at).toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {auditEvents.length > 0 && (
+            <div className="mt-4 border-t border-border pt-4">
+              <div className="text-xs font-medium text-muted-foreground">Recent Bridge security events</div>
+              <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                {auditEvents.slice(0, 5).map((event) => (
+                  <div key={event.id} className="flex justify-between gap-3">
+                    <span className="truncate">{event.event_type.replace(/_/g, " ")}</span>
+                    <span>{new Date(event.created_at).toLocaleString()}</span>
                   </div>
                 ))}
               </div>

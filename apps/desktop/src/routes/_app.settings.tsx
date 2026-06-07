@@ -13,6 +13,7 @@ import {
   MessageSquare,
   Play,
   RefreshCw,
+  RotateCcw,
   Server,
   Settings2,
   ShieldCheck,
@@ -45,8 +46,11 @@ import {
   pruneQueryCache,
   listLocalModels,
   listIntegrationImports,
+  listIntegrationReconciliationItems,
+  listIntegrationReconciliationRuns,
   listVaults,
   refreshIntegrationImport,
+  retryIntegrationReconciliationItem,
   startModelDownload,
   startEmbeddingDownload,
   unlockVaultWithPassphrase,
@@ -64,6 +68,8 @@ import {
   type ModelCompatibilityRecord,
   type ModelRuntimeStatus,
   type OCRRuntimeStatusRead,
+  type ReconciliationItemPage,
+  type ReconciliationRunRecord,
   type UnlockStatusRead,
   type VaultRecord,
 } from "@/lib/backend";
@@ -98,12 +104,19 @@ function SettingsView() {
   const [hardware, setHardware] = useState<HardwareStatusRead | null>(null);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
   const [integrationImports, setIntegrationImports] = useState<IntegrationImportRecord[]>([]);
+  const [reconciliationRunsByImport, setReconciliationRunsByImport] = useState<Record<string, ReconciliationRunRecord[]>>({});
+  const [reconciliationItemsByRun, setReconciliationItemsByRun] = useState<Record<string, ReconciliationItemPage>>({});
+  const [expandedImportId, setExpandedImportId] = useState<string | null>(null);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [retentionPolicy, setRetentionPolicy] = useState<ChatEvidenceRetentionPolicy | null>(null);
   const [retentionResult, setRetentionResult] = useState<ChatEvidenceRetentionResult | null>(null);
   const [unlockStatus, setUnlockStatus] = useState<UnlockStatusRead | null>(null);
   const [vaultPassphrase, setVaultPassphrase] = useState("");
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [refreshingImportId, setRefreshingImportId] = useState<string | null>(null);
+  const [loadingImportHistoryId, setLoadingImportHistoryId] = useState<string | null>(null);
+  const [loadingRunItemsId, setLoadingRunItemsId] = useState<string | null>(null);
+  const [retryingReconciliationItemId, setRetryingReconciliationItemId] = useState<string | null>(null);
   const [retentionBusy, setRetentionBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -404,7 +417,11 @@ function SettingsView() {
         import_files: true,
         tombstone_missing: true,
       });
-      setIntegrationImports(backendVault ? await listIntegrationImports(backendVault.id) : []);
+      await reloadIntegrationImports();
+      if (result.reconciliation_run_id) {
+        const runs = await listIntegrationReconciliationRuns(importId, 5);
+        setReconciliationRunsByImport((current) => ({ ...current, [importId]: runs }));
+      }
       setStatusMessage(
         `Import refreshed: ${result.imported_count} new, ${result.updated_count} updated, ` +
           `${result.moved_count} moved, ${result.tombstoned_count} removed, ${result.failed_count} failed.`,
@@ -426,6 +443,87 @@ function SettingsView() {
       setStatusMessage(updated.watch_enabled ? "Watched refresh enabled." : "Watched refresh disabled.");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not update watched refresh.");
+    }
+  }
+
+  async function reloadIntegrationImports() {
+    if (!backendVault) {
+      setIntegrationImports([]);
+      return;
+    }
+    setIntegrationImports(await listIntegrationImports(backendVault.id));
+  }
+
+  async function toggleImportHistory(importId: string) {
+    if (expandedImportId === importId) {
+      setExpandedImportId(null);
+      setExpandedRunId(null);
+      return;
+    }
+    setExpandedImportId(importId);
+    setExpandedRunId(null);
+    setLoadingImportHistoryId(importId);
+    try {
+      const runs = await listIntegrationReconciliationRuns(importId, 5);
+      setReconciliationRunsByImport((current) => ({ ...current, [importId]: runs }));
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not load reconciliation history.");
+    } finally {
+      setLoadingImportHistoryId(null);
+    }
+  }
+
+  async function loadReconciliationItems(run: ReconciliationRunRecord, append = false) {
+    const current = reconciliationItemsByRun[run.id];
+    const offset = append && current ? current.items.length : 0;
+    const resultFilter = run.failed_count > 0 ? "failed" : undefined;
+    setLoadingRunItemsId(run.id);
+    try {
+      const page = await listIntegrationReconciliationItems(run.id, {
+        limit: 25,
+        offset,
+        result: resultFilter,
+      });
+      setExpandedRunId(run.id);
+      setReconciliationItemsByRun((existing) => ({
+        ...existing,
+        [run.id]:
+          append && current
+            ? { ...page, items: [...current.items, ...page.items] }
+            : page,
+      }));
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not load reconciliation details.");
+    } finally {
+      setLoadingRunItemsId(null);
+    }
+  }
+
+  async function retryReconciliationItem(importId: string, itemId: string) {
+    setRetryingReconciliationItemId(itemId);
+    try {
+      const result = await retryIntegrationReconciliationItem(itemId);
+      await reloadIntegrationImports();
+      const runs = await listIntegrationReconciliationRuns(importId, 5);
+      setReconciliationRunsByImport((current) => ({ ...current, [importId]: runs }));
+      setExpandedImportId(importId);
+      setExpandedRunId(result.new_run.id);
+      const resultFilter = result.new_run.failed_count > 0 ? "failed" : undefined;
+      const page = await listIntegrationReconciliationItems(result.new_run.id, {
+        limit: 25,
+        offset: 0,
+        result: resultFilter,
+      });
+      setReconciliationItemsByRun((existing) => ({ ...existing, [result.new_run.id]: page }));
+      setStatusMessage(
+        result.new_item?.result === "failed"
+          ? `Retry still failed: ${result.new_item.error || "check reconciliation details"}`
+          : "Reconciliation item retried successfully.",
+      );
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not retry reconciliation item.");
+    } finally {
+      setRetryingReconciliationItemId(null);
     }
   }
 
@@ -816,6 +914,20 @@ function SettingsView() {
                         {record.next_watch_at ? ` · next ${new Date(record.next_watch_at).toLocaleString()}` : ""}
                         {record.last_failures.length ? ` · ${record.last_failures.length} recent failure(s)` : ""}
                       </div>
+                      {record.last_reconciliation_run_id ? (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          Last reconciliation: {record.last_reconciliation_status ?? "completed"}
+                          {record.last_reconciliation_trigger_source
+                            ? ` via ${record.last_reconciliation_trigger_source.replaceAll("_", " ")}`
+                            : ""}
+                          {record.last_reconciliation_finished_at
+                            ? ` at ${new Date(record.last_reconciliation_finished_at).toLocaleString()}`
+                            : ""}
+                          {record.last_reconciliation_retryable_failed_count
+                            ? ` · ${record.last_reconciliation_retryable_failed_count} retryable failure(s)`
+                            : ""}
+                        </div>
+                      ) : null}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button
@@ -830,7 +942,111 @@ function SettingsView() {
                       <Button variant="outline" onClick={() => void toggleWatchedImport(record)}>
                         {record.watch_enabled ? "Stop watch" : "Watch"}
                       </Button>
+                      {record.last_reconciliation_run_id ? (
+                        <Button
+                          variant="outline"
+                          onClick={() => void toggleImportHistory(record.id)}
+                          disabled={loadingImportHistoryId === record.id}
+                        >
+                          {expandedImportId === record.id ? "Hide history" : "Review history"}
+                        </Button>
+                      ) : null}
                     </div>
+                    {expandedImportId === record.id ? (
+                      <div className="md:col-span-2 rounded-md border border-border/70 bg-card/40 px-3 py-3">
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          Post-unlock reconciliation history
+                        </div>
+                        <div className="mt-3 space-y-3">
+                          {(reconciliationRunsByImport[record.id] ?? []).map((run) => {
+                            const page = reconciliationItemsByRun[run.id];
+                            const hasMore = page ? page.items.length < page.total : false;
+                            return (
+                              <div key={run.id} className="rounded-md border border-border bg-background px-3 py-3">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div>
+                                    <div className="font-medium text-foreground">
+                                      {run.status.replaceAll("_", " ")} · {run.trigger_source.replaceAll("_", " ")}
+                                    </div>
+                                    <div className="mt-1 text-xs text-muted-foreground">
+                                      {run.imported_count} new · {run.updated_count} updated · {run.moved_count} moved ·{" "}
+                                      {run.tombstoned_count} removed · {run.failed_count} failed · {run.unchanged_count} unchanged
+                                    </div>
+                                    <div className="mt-1 text-xs text-muted-foreground">
+                                      {new Date(run.created_at).toLocaleString()}
+                                      {run.detail_count ? ` · ${run.detail_count} detail item(s)` : ""}
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    <Button
+                                      variant="outline"
+                                      onClick={() => void loadReconciliationItems(run)}
+                                      disabled={loadingRunItemsId === run.id}
+                                    >
+                                      {expandedRunId === run.id ? "Refresh details" : "View details"}
+                                    </Button>
+                                  </div>
+                                </div>
+                                {expandedRunId === run.id && page ? (
+                                  <div className="mt-3 space-y-2">
+                                    {page.items.length === 0 ? (
+                                      <div className="rounded-md border border-border/70 bg-card px-3 py-2 text-xs text-muted-foreground">
+                                        No detail items stored for this run.
+                                      </div>
+                                    ) : (
+                                      page.items.map((item) => (
+                                        <div
+                                          key={item.id}
+                                          className="rounded-md border border-border/70 bg-card px-3 py-2 text-xs text-muted-foreground"
+                                        >
+                                          <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <div className="font-medium text-foreground">
+                                              {item.action.replaceAll("_", " ")} · {item.result}
+                                            </div>
+                                            {item.retryable ? (
+                                              <Button
+                                                variant="outline"
+                                                className="h-7 px-2 text-xs"
+                                                onClick={() => void retryReconciliationItem(record.id, item.id)}
+                                                disabled={retryingReconciliationItemId === item.id}
+                                              >
+                                                <RotateCcw className="mr-1 h-3 w-3" />
+                                                {retryingReconciliationItemId === item.id ? "Retrying..." : "Retry"}
+                                              </Button>
+                                            ) : null}
+                                          </div>
+                                          <div className="mt-1 break-all">{item.item_reference}</div>
+                                          {item.error ? <div className="mt-1 text-red-300">{item.error}</div> : null}
+                                        </div>
+                                      ))
+                                    )}
+                                    {hasMore ? (
+                                      <Button
+                                        variant="outline"
+                                        className="h-8 px-3 text-xs"
+                                        onClick={() => void loadReconciliationItems(run, true)}
+                                        disabled={loadingRunItemsId === run.id}
+                                      >
+                                        Load more
+                                      </Button>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                          {loadingImportHistoryId === record.id ? (
+                            <div className="rounded-md border border-border/70 bg-card px-3 py-2 text-xs text-muted-foreground">
+                              Loading reconciliation history...
+                            </div>
+                          ) : (reconciliationRunsByImport[record.id] ?? []).length === 0 ? (
+                            <div className="rounded-md border border-border/70 bg-card px-3 py-2 text-xs text-muted-foreground">
+                              No reconciliation runs have been recorded for this import yet.
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ))
               )}

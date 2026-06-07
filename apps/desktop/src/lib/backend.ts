@@ -123,14 +123,19 @@ export type BridgeStatus = {
   allow_style_profile: boolean;
   allow_expert_calls: boolean;
   bridge_token: string;
+  approval_requests_pending: number;
   last_refreshed_at?: string | null;
 };
 
 export type BridgeRequest = {
   id: string;
+  client_id?: string | null;
   client_name: string;
   query: string;
   mode: string;
+  decision: string;
+  source_count: number;
+  response_bytes: number;
   created_at: string;
 };
 
@@ -144,17 +149,68 @@ export type BridgeClientRecord = {
   id: string;
   name: string;
   enabled: boolean;
+  approval_vault_id?: string | null;
   allowed_vault_ids: string[];
   allowed_cluster_ids: string[];
   allow_raw_snippets: boolean;
   allow_style_profile: boolean;
   allow_expert_calls: boolean;
+  approval_request_id?: string | null;
+  approved_at?: string | null;
+  revoked_at?: string | null;
+  last_request_at?: string | null;
+  request_count_total: number;
+  response_bytes_total: number;
+  executable_path_claim: string;
+  observed_executable_path: string;
+  publisher_name: string;
+  signature_status: string;
+  signature_detail: string;
+  verified_identity: boolean;
+  verified_identity_label: string;
   created_at: string;
   updated_at: string;
 };
 
 export type BridgeClientCreateResponse = BridgeClientRecord & {
   token: string;
+};
+
+export type BridgeApprovalRequest = {
+  id: string;
+  vault_id: string;
+  status: string;
+  claimed_name: string;
+  requested_vault_ids: string[];
+  requested_cluster_ids: string[];
+  allow_raw_snippets: boolean;
+  allow_style_profile: boolean;
+  allow_expert_calls: boolean;
+  executable_path_claim: string;
+  observed_executable_path: string;
+  publisher_name: string;
+  signature_status: string;
+  signature_detail: string;
+  verified_identity: boolean;
+  verified_identity_label: string;
+  client_id?: string | null;
+  requested_at: string;
+  expires_at: string;
+  decided_at?: string | null;
+  delivered_at?: string | null;
+  updated_at: string;
+  detail: string;
+};
+
+export type BridgeAuditEvent = {
+  id: string;
+  vault_id?: string | null;
+  client_id?: string | null;
+  approval_request_id?: string | null;
+  event_type: string;
+  detail: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type VaultRecord = {
@@ -626,6 +682,7 @@ export type VaultSafetyRead = {
 
 export type LocalFolderScanResponse = {
   import_id: string | null;
+  reconciliation_run_id: string | null;
   path: string;
   integration_type: string;
   supported_files: string[];
@@ -657,6 +714,12 @@ export type IntegrationImportRecord = {
   tombstoned_count: number;
   failed_count: number;
   last_failures: Array<{ path: string; error: string }>;
+  last_reconciliation_run_id: string | null;
+  last_reconciliation_status: string | null;
+  last_reconciliation_trigger_source: string | null;
+  last_reconciliation_finished_at: string | null;
+  last_reconciliation_detail_count: number;
+  last_reconciliation_retryable_failed_count: number;
   last_scan_at: string;
   last_import_at: string | null;
   watch_enabled: boolean;
@@ -664,6 +727,58 @@ export type IntegrationImportRecord = {
   next_watch_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type ReconciliationRunRecord = {
+  id: string;
+  vault_id: string;
+  import_id: string;
+  trigger_source: string;
+  root_path: string;
+  status: string;
+  import_files: boolean;
+  tombstone_missing: boolean;
+  imported_count: number;
+  updated_count: number;
+  moved_count: number;
+  unchanged_count: number;
+  tombstoned_count: number;
+  failed_count: number;
+  retryable_failed_count: number;
+  detail_count: number;
+  started_at: string;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReconciliationItemRecord = {
+  id: string;
+  run_id: string;
+  vault_id: string;
+  import_id: string;
+  item_reference: string;
+  action: string;
+  result: string;
+  error: string;
+  retryable: boolean;
+  detail: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReconciliationItemPage = {
+  run_id: string;
+  items: ReconciliationItemRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type ReconciliationItemRetryResult = {
+  retried_item_id: string;
+  new_run: ReconciliationRunRecord;
+  new_item: ReconciliationItemRecord | null;
 };
 
 export type ExtensionClientRecord = {
@@ -716,6 +831,47 @@ export async function listBridgeTokenRotations() {
 
 export async function listBridgeClients() {
   return request<BridgeClientRecord[]>("/api/v1/bridge/clients");
+}
+
+export async function listBridgeApprovalRequests() {
+  return request<BridgeApprovalRequest[]>("/api/v1/bridge/approval-requests");
+}
+
+export async function approveBridgeApprovalRequest(
+  requestId: string,
+  payload: {
+    allowed_vault_ids?: string[];
+    allowed_cluster_ids?: string[];
+    allow_raw_snippets?: boolean;
+    allow_style_profile?: boolean;
+    allow_expert_calls?: boolean;
+    detail?: string;
+  } = {},
+) {
+  return request<BridgeClientCreateResponse>(
+    `/api/v1/bridge/approval-requests/${encodeURIComponent(requestId)}/approve`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function rejectBridgeApprovalRequest(
+  requestId: string,
+  payload: { detail?: string } = {},
+) {
+  return request<BridgeApprovalRequest>(
+    `/api/v1/bridge/approval-requests/${encodeURIComponent(requestId)}/reject`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function listBridgeAuditEvents() {
+  return request<BridgeAuditEvent[]>("/api/v1/bridge/audit-events");
 }
 
 export async function createBridgeClient(payload: {
@@ -1392,6 +1548,33 @@ export async function updateIntegrationImport(
     method: "PATCH",
     body: JSON.stringify(payload),
   });
+}
+
+export async function listIntegrationReconciliationRuns(importId: string, limit = 10) {
+  return request<ReconciliationRunRecord[]>(
+    `/api/v1/integrations/imports/${encodeURIComponent(importId)}/reconciliation-runs?limit=${limit}`,
+  );
+}
+
+export async function listIntegrationReconciliationItems(
+  runId: string,
+  options?: { limit?: number; offset?: number; result?: string },
+) {
+  const params = new URLSearchParams();
+  if (options?.limit) params.set("limit", String(options.limit));
+  if (options?.offset) params.set("offset", String(options.offset));
+  if (options?.result) params.set("result", options.result);
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<ReconciliationItemPage>(
+    `/api/v1/integrations/reconciliation-runs/${encodeURIComponent(runId)}/items${suffix}`,
+  );
+}
+
+export async function retryIntegrationReconciliationItem(itemId: string) {
+  return request<ReconciliationItemRetryResult>(
+    `/api/v1/integrations/reconciliation-items/${encodeURIComponent(itemId)}/retry`,
+    { method: "POST" },
+  );
 }
 
 export async function listExtensionClients() {
