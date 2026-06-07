@@ -23,6 +23,7 @@ Implementation baseline:
 
 - Local-only security specs now exist for architecture, unlock state machine, derived-state/migration rules, the security build plan, and the Phase 0 baseline audit. These are intentionally ignored by git.
 - The build plan is phased from baseline audit through crypto/storage, unlock gating, derived-state publication, parser/browser isolation, retrieval trust, renderer hardening, Bridge approval, LoRA manifest/hash verification, reconciliation logs, packaging hardening, and end-to-end security QA.
+- As of 2026-06-07, non-LoRA security phases are complete through Phase 14: helper manifest verification, package-layout overlap auditing, clean-vault and offline-at-rest smokes, interrupted-flow drills, and a `1200`-document large-vault security smoke all passed on the current dev machine. Only LoRA-specific Phase 11 remains intentionally deferred.
 - Phase 0 is complete: backend route classification, renderer raw-HTML audit, helper executable/writable-directory map, ingestion/parser/browser surface list, and the security build-freeze rule are written down before implementation starts.
 - Phase 1 is complete: the backend now has compact vault security metadata, Argon2id passphrase/recovery wrapping primitives, random vault master keys, derived subkeys, recovery unlock/reset, sensitive-action passphrase verification, public metadata redaction, and process-memory-only unlocked key state.
 - Phase 2 is complete: the backend has the locked/unlocking/verifying/repair-required/ready state manager, unlock/recovery/lock/settings/sensitive-action endpoints, protected-route middleware, locked background-job pause, restart-to-locked behavior for secured vaults, and Settings controls for convenience/strict/PIN visibility.
@@ -34,6 +35,7 @@ Implementation baseline:
 - Phase 7 is complete: dynamic browser extraction now runs through an isolated subprocess worker, static HTTP remains first, every browser request is validated against public-network rules, downloads are disabled, request/time/output budgets are enforced, and browser-derived sources are stored as low-trust with `lora_excluded` metadata.
 - Phase 8 is complete: retrieval candidates carry trust metadata, low-trust evidence is penalized during ranking, final evidence sets are classified before synthesis, sensitive low-trust-only requests are refused, all-low-trust evidence uses degraded extractive output, mixed low-trust synthesis input is capped, and LLM prompts quote source text as hostile evidence.
 - Phase 9 is complete: model/document output paths render as escaped text, raw renderer HTML sinks are blocked by `npm run security:renderer`, the chart style sink remains the only sanitizer-guarded allowlist, hostile output fixtures stay inert, and packaged renderer responses carry CSP, `nosniff`, and `no-referrer` headers.
+- Phase 10 is complete: Bridge runtime now requires approved client tokens when vault security is active, public approval requests/polling are time-bounded and rate-limited, admin review stays behind the local API token, approval/client/audit metadata is encrypted for secured vaults, the Bridge UI shows claimed-vs-observed identity signals, and revocation plus bounded Bridge history/usage counters are in place.
 - `docs/PROJECT_CONTEXT.md` is the compact source of truth for the approved decisions and now includes a Security progress row.
 
 ## 2026-06-05 Dual-Model Decision Snapshot
@@ -373,12 +375,12 @@ Use this section for fast status checks. Detailed historical notes remain in the
 | Context Bridge             | In progress                | `[#########-] 94%`  | Full extension package, capture UX polish, and later external-client smoke.                      |
 | Packaging and installer    | In progress                | `[##########] 98%`  | Clean Windows VM validation.                                                                     |
 | QA and hardening           | In progress                | `[##########] 99%`  | Clean VM package validation, larger scale/performance benchmarks, model recommendation QA.       |
-| Security                   | In progress                | `[#########-] 90%`  | Renderer hardening complete; next gate is Bridge approval and identity.                         |
+| Security                   | Complete except LoRA Phase 11 | `[##########] 100%` | Phases 0-10 and 12-14 complete; only the LoRA-specific trust phase remains intentionally deferred. |
 
 ### Current Critical Path
 
 - Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
-- Implement the remaining public V1 security build plan: Bridge approval, LoRA integrity, reconciliation logging, packaging hardening, and large-vault security QA.
+- Keep the non-LoRA security patch closed while LoRA-specific Phase 11 remains intentionally deferred until LoRA is ready for real hardening work.
 - Keep Windows-only public V1 criteria; if blockers remain, delay release rather than ship a private demo.
 - Verify real adapter training/loading before using "trained expert" language in user-facing surfaces; current gates are stronger but still need real trainer/runtime proof.
 - Build hardware-aware model recommendation for low-, mid-, and high-spec users.
@@ -439,7 +441,7 @@ Packaging and installer:
 
 QA and hardening:
 
-- Done: broad backend regression suite, atomic job concurrency tests, local API auth/identity tests, OCR preference/fallback/status tests, dynamic-link/security tests, IPv4-mapped URL blocking tests, vault-safety tests, deletion/search cleanup tests, citation tests, duplicate/reconciliation/retrieval snapshot tests, vector repair/compaction/policy tests, chat attachment/routing tests, Bridge/MCP/token tests, diagnostic redaction/runtime-summary tests, migration/startup repair tests, disk/model preflight tests, extension tests, cancellation/progress contract tests, expert lifecycle tests, vault-lock tests, hardware-gate smoke, backend benchmark script smoke, Electron token-store regression, desktop UI build verification, clean Python/npm audits, packaged smoke suite, and Playwright UI audits.
+- Done: broad backend regression suite, atomic job concurrency tests, local API auth/identity tests, OCR preference/fallback/status tests, dynamic-link/security tests, IPv4-mapped URL blocking tests, vault-safety tests, deletion/search cleanup tests, citation tests, duplicate/reconciliation/retrieval snapshot tests, vector repair/compaction/policy tests, chat attachment/routing tests, Bridge/MCP/token tests, diagnostic redaction/runtime-summary tests, migration/startup repair tests, disk/model preflight tests, extension tests, cancellation/progress contract tests, expert lifecycle tests, vault-lock tests, reconciliation log/retry/retention tests, hardware-gate smoke, backend benchmark script smoke, Electron token-store regression, desktop UI build verification, clean Python/npm audits, packaged smoke suite, and Playwright UI audits.
 - Remaining: real adapter smoke, adapter runtime-load smoke, retrieval-vs-adapter quality benchmark, clean VM package validation, larger scale/performance benchmarks, map benchmarks, real MCP client smoke, disposable-vault destructive UI tests, and more failure-state tests.
 
 ## Week-By-Week Goals

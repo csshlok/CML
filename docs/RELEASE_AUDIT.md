@@ -44,6 +44,13 @@ The repository has strong implementation progress and clear product/architecture
 
 In short: implementation maturity is high, but public release readiness is not yet fully demonstrated.
 
+Security update since this audit:
+
+- The non-LoRA security patch is now complete through Phases 0-10 and 12-14.
+- Packaging/runtime hardening now includes helper-manifest verification and package-layout overlap auditing.
+- End-to-end security QA now has reproducible clean-vault, large-vault, interrupted-flow, and offline-at-rest proof scripts, and the current dev-machine run passed with a `1200`-document large-vault smoke.
+- Remaining security work for release language is LoRA-specific Phase 11 only, which stays deferred until the LoRA runtime/training path is ready to harden and verify.
+
 ## Comparison Against the Reference Documents
 
 ### 1. ReadME.md
