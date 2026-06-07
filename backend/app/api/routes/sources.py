@@ -19,9 +19,10 @@ from backend.app.core.encrypted_storage import (
     update_source_content_fields,
 )
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
-from backend.app.core.extraction import ExtractionError, extract_pages_from_path, extract_text_from_url, link_extraction_diagnostics
+from backend.app.core.extraction import ExtractionError, extract_text_from_url_with_security, link_extraction_diagnostics
 from backend.app.core.memory_card import generate_tags, summarize_text
 from backend.app.core.network_security import strip_url_credentials
+from backend.app.core.quarantine import attach_quarantine_record, ingest_file_through_quarantine
 from backend.app.core.sql import build_update_assignments
 from backend.app.services.source_service import mark_source_changed, mark_source_deleted
 from backend.app.schemas import (
@@ -117,6 +118,10 @@ def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = 
             "original_path": payload.original_path,
             "url": payload.url,
             "checksum": checksum,
+            "provenance": "local_import",
+            "trust_tier": "trusted_local",
+            "security_labels": "[]",
+            "parser_security_json": "{}",
             "raw_text": raw_text,
             "extracted_text": raw_text,
             "summary": payload.summary
@@ -136,11 +141,13 @@ def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = 
             """
             INSERT INTO sources (
                 id, vault_id, cluster_id, title, source_type, state, original_path, url,
-                checksum, raw_text, extracted_text, summary, tags, cover_image_url, created_at, updated_at
+                checksum, provenance, trust_tier, security_labels, parser_security_json,
+                raw_text, extracted_text, summary, tags, cover_image_url, created_at, updated_at
             )
             VALUES (
                 :id, :vault_id, :cluster_id, :title, :source_type, :state, :original_path, :url,
-                :checksum, :raw_text, :extracted_text, :summary, :tags, :cover_image_url, :created_at, :updated_at
+                :checksum, :provenance, :trust_tier, :security_labels, :parser_security_json,
+                :raw_text, :extracted_text, :summary, :tags, :cover_image_url, :created_at, :updated_at
             )
             """,
             stored_source,
@@ -167,24 +174,50 @@ def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = 
 @router.post("/from-path", response_model=SourceRead)
 def create_source_from_path(payload: SourcePathCreate) -> dict:
     try:
-        title, pages = extract_pages_from_path(payload.path)
+        ingested = ingest_file_through_quarantine(payload.vault_id, payload.path)
     except ExtractionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    title = ingested["title"]
+    pages = ingested["pages"]
     text = "\n\n".join(page for page in pages if page.strip()).strip()
+    security = ingested["security"]
 
     suffix = Path(payload.path).suffix.lower()
-    return _create_source_record(
+    source = _create_source_record(
         SourceCreate(
             vault_id=payload.vault_id,
             cluster_id=payload.cluster_id,
             title=title,
             source_type=_source_type_for_suffix(suffix),
             original_path=payload.path,
-            checksum=_file_checksum(Path(payload.path)),
+            checksum=security["validation"]["content_hash"],
             raw_text=text,
+            tags=security["security_labels"],
         ),
         page_texts=pages,
     )
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE sources
+            SET provenance = ?,
+                trust_tier = ?,
+                security_labels = ?,
+                parser_security_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                security["provenance"],
+                security["trust_tier"],
+                json.dumps(security["security_labels"], sort_keys=True),
+                json.dumps(security, sort_keys=True),
+                utc_now(),
+                source["id"],
+            ),
+        )
+    attach_quarantine_record(ingested["quarantine_record_id"], source["id"])
+    return get_source(source["id"])
 
 
 @router.post("/from-text", response_model=SourceRead)
@@ -207,11 +240,11 @@ def create_source_from_text(payload: SourceTextCreate) -> dict:
 def create_source_from_url(payload: SourceUrlCreate) -> dict:
     sanitized_url = strip_url_credentials(payload.url)
     try:
-        title, text, cover_image_url = extract_text_from_url(sanitized_url)
+        title, text, cover_image_url, security = extract_text_from_url_with_security(sanitized_url)
     except ExtractionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return create_source(
+    source = create_source(
         SourceCreate(
             vault_id=payload.vault_id,
             cluster_id=payload.cluster_id,
@@ -220,8 +253,30 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
             url=sanitized_url,
             raw_text=text,
             cover_image_url=cover_image_url,
+            tags=security["security_labels"],
         )
     )
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE sources
+            SET provenance = ?,
+                trust_tier = ?,
+                security_labels = ?,
+                parser_security_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                security["provenance"],
+                security["trust_tier"],
+                json.dumps(security["security_labels"], sort_keys=True),
+                json.dumps(security, sort_keys=True),
+                utc_now(),
+                source["id"],
+            ),
+        )
+    return get_source(source["id"])
 
 
 @router.get("/link-diagnostics")

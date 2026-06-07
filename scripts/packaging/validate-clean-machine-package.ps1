@@ -23,6 +23,7 @@ $expertRuntimePython = Join-Path $resources "expert-python-runtime\Scripts\pytho
 $backend = Join-Path $resources "backend"
 $ocrManifest = Join-Path $backend "bin\ocr\manifest.json"
 $playwrightRuntime = Join-Path $resources "ms-playwright"
+$helperManifest = Join-Path $resources "helper-manifest.json"
 $checks = @(
   @{ name = "package_root_exists"; ok = Test-PathPresent $packageRootPath; path = $packageRootPath },
   @{ name = "resources_exists"; ok = Test-PathPresent $resources; path = $resources },
@@ -31,11 +32,13 @@ $checks = @(
   @{ name = "expert_python_runtime_exists"; ok = Test-PathPresent $expertRuntimePython; path = $expertRuntimePython },
   @{ name = "playwright_runtime_exists"; ok = Test-PathPresent $playwrightRuntime; path = $playwrightRuntime },
   @{ name = "ocr_manifest_exists"; ok = Test-PathPresent $ocrManifest; path = $ocrManifest },
+  @{ name = "helper_manifest_exists"; ok = Test-PathPresent $helperManifest; path = $helperManifest },
   @{ name = "app_launch_smoke_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\smoke-packaged-app-launch.ps1"); path = "scripts/packaging/smoke-packaged-app-launch.ps1" },
   @{ name = "runtime_smoke_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\smoke-packaged-runtime.ps1"); path = "scripts/packaging/smoke-packaged-runtime.ps1" },
   @{ name = "full_vault_smoke_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\smoke-packaged-full-vault.ps1"); path = "scripts/packaging/smoke-packaged-full-vault.ps1" },
   @{ name = "dynamic_link_smoke_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\smoke-packaged-dynamic-link.ps1"); path = "scripts/packaging/smoke-packaged-dynamic-link.ps1" },
-  @{ name = "migration_drill_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\smoke-packaged-migration-drill.ps1"); path = "scripts/packaging/smoke-packaged-migration-drill.ps1" }
+  @{ name = "migration_drill_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\smoke-packaged-migration-drill.ps1"); path = "scripts/packaging/smoke-packaged-migration-drill.ps1" },
+  @{ name = "package_layout_audit_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\audit-package-layout.cjs"); path = "scripts/packaging/audit-package-layout.cjs" }
 )
 
 $hostTools = @(
@@ -58,6 +61,7 @@ $report = [ordered]@{
     "Run scripts/packaging/smoke-packaged-full-vault.ps1 against the package root.",
     "Run scripts/packaging/smoke-packaged-dynamic-link.ps1 against the package root.",
     "Run scripts/packaging/smoke-packaged-migration-drill.ps1 against the package root.",
+    "Run node scripts/packaging/audit-package-layout.cjs against the packaged resources root.",
     "Run scripts/packaging/smoke-packaged-app-launch.ps1 against the package root.",
     "Run scripts/security/audit-app.ps1 against the installed app and generated diagnostics."
   )

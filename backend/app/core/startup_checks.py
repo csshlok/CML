@@ -26,6 +26,11 @@ def verify_schema_version() -> None:
         "app_jobs",
         "vault_security_metadata",
         "encrypted_content",
+        "derived_state_publications",
+        "derived_state_staged_artifacts",
+        "source_quarantine_records",
+        "reconciliation_runs",
+        "reconciliation_items",
     }
     with connect() as conn:
         rows = conn.execute(

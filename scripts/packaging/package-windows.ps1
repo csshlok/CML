@@ -16,6 +16,9 @@ $stagingDir = Join-Path $desktopDir "packaging\backend"
 $runtimeDir = Join-Path $desktopDir "packaging\python-runtime"
 $expertRuntimeDir = Join-Path $desktopDir "packaging\expert-python-runtime"
 $playwrightBrowserDir = Join-Path $desktopDir "packaging\ms-playwright"
+$packagingRoot = Join-Path $desktopDir "packaging"
+$helperManifestScript = Join-Path $repoRoot "scripts\packaging\generate-helper-manifest.cjs"
+$packageAuditScript = Join-Path $repoRoot "scripts\packaging\audit-package-layout.cjs"
 $ocrStagingScript = Join-Path $repoRoot "scripts\packaging\stage-ocr-runtime.ps1"
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
@@ -98,6 +101,12 @@ $expertRuntimePython = Join-Path $expertRuntimeDir "Scripts\python.exe"
   "torch>=2.4.0" `
   "transformers>=4.55.0" `
   "peft>=0.17.0"
+
+Write-Host "Generating helper integrity manifest..."
+node $helperManifestScript
+
+Write-Host "Auditing staged package layout..."
+node $packageAuditScript $packagingRoot $packagingRoot
 
 Write-Host "Packaging Windows app with electron-builder..."
 $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"

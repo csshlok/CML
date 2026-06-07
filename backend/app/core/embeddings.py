@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import utc_now
+from backend.app.core.derived_state import chunk_tuple_values, query_epoch_snapshot_conn
 from backend.app.core.encrypted_storage import (
     delete_source_chunk_encrypted_content,
     page_from_encrypted_row,
@@ -427,6 +428,13 @@ def reindex_source_chunks(conn, source: dict) -> int:
     now = utc_now()
     chunk_count = 0
     model_id = active_embedding_model_id()
+    tuple_snapshot = query_epoch_snapshot_conn(
+        conn,
+        source["vault_id"],
+        embedding_model_id=model_id,
+        index_version="v1",
+    )
+    tuple_values = chunk_tuple_values(tuple_snapshot)
     for page in pages:
         page_data = page_from_encrypted_row(conn, page)
         chunks = chunk_text(page_data["raw_text"])
@@ -436,12 +444,14 @@ def reindex_source_chunks(conn, source: dict) -> int:
                 """
                 INSERT INTO source_chunks (
                     id, source_id, page_id, vault_id, cluster_id, chunk_index, text, embedding,
-                    embedding_model_id, content_hash, index_version, indexed_at, created_at
+                    embedding_model_id, content_hash, index_version, normalization_version,
+                    extraction_version, derived_state_epoch, indexed_at, created_at
                 )
                 VALUES (
                     :id, :source_id, :page_id, :vault_id, :cluster_id, :chunk_index, :text,
-                    :embedding, :embedding_model_id, :content_hash, :index_version, :indexed_at,
-                    :created_at
+                    :embedding, :embedding_model_id, :content_hash, :index_version,
+                    :normalization_version, :extraction_version, :derived_state_epoch,
+                    :indexed_at, :created_at
                 )
                 """,
                 {
@@ -464,6 +474,7 @@ def reindex_source_chunks(conn, source: dict) -> int:
                     "embedding_model_id": model_id,
                     "content_hash": content_hash(chunk),
                     "index_version": "v1",
+                    **tuple_values,
                     "indexed_at": now,
                     "created_at": now,
                 },

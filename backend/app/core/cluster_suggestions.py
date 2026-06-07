@@ -1,5 +1,6 @@
 from collections import defaultdict
 
+from backend.app.core.derived_state import chunk_eligibility_sql, query_epoch_snapshot_conn
 from backend.app.core.embeddings import cosine_similarity, decode_embedding
 from backend.app.core.vector_maintenance import active_embedding_selector
 
@@ -71,14 +72,21 @@ def suggest_source_cluster_moves(conn, vault_id: str, limit: int = 12) -> list[d
 
 def _source_vectors(conn, vault_id: str) -> dict[str, list[float]]:
     selector = active_embedding_selector()
+    snapshot = query_epoch_snapshot_conn(
+        conn,
+        vault_id,
+        embedding_model_id=selector["embedding_model_id"],
+        index_version=selector["index_version"],
+    )
+    tuple_clause, tuple_params = chunk_eligibility_sql("", snapshot)
     grouped: dict[str, list[list[float]]] = defaultdict(list)
     rows = conn.execute(
-        """
+        f"""
         SELECT source_id, embedding
         FROM source_chunks
-        WHERE vault_id = ? AND embedding_model_id = ? AND index_version = ?
+        WHERE vault_id = ? {tuple_clause}
         """,
-        (vault_id, selector["embedding_model_id"], selector["index_version"]),
+        (vault_id, *tuple_params),
     ).fetchall()
     for row in rows:
         vector = decode_embedding(row["embedding"])
@@ -89,15 +97,22 @@ def _source_vectors(conn, vault_id: str) -> dict[str, list[float]]:
 
 def _cluster_vectors(conn, vault_id: str, exclude_source_id: str) -> dict[str, list[float]]:
     selector = active_embedding_selector()
+    snapshot = query_epoch_snapshot_conn(
+        conn,
+        vault_id,
+        embedding_model_id=selector["embedding_model_id"],
+        index_version=selector["index_version"],
+    )
+    tuple_clause, tuple_params = chunk_eligibility_sql("", snapshot)
     grouped: dict[str, list[list[float]]] = defaultdict(list)
     rows = conn.execute(
-        """
+        f"""
         SELECT cluster_id, embedding
         FROM source_chunks
         WHERE vault_id = ? AND source_id != ? AND cluster_id IS NOT NULL
-          AND embedding_model_id = ? AND index_version = ?
+          {tuple_clause}
         """,
-        (vault_id, exclude_source_id, selector["embedding_model_id"], selector["index_version"]),
+        (vault_id, exclude_source_id, *tuple_params),
     ).fetchall()
     for row in rows:
         vector = decode_embedding(row["embedding"])

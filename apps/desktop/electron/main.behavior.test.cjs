@@ -11,7 +11,7 @@ function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, setActiveVaultPath, getActiveVaultPath, collectSupportedFiles, findOpenPort, __setMainWindow: (value) => { mainWindow = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, rendererSecurityHeaders, setActiveVaultPath, getActiveVaultPath, collectSupportedFiles, findOpenPort, __setMainWindow: (value) => { mainWindow = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -112,6 +112,19 @@ test("external URL allowlist permits http/https/mailto and blocks unsafe schemes
   assert.equal(exported.isAllowedExternalUrl("file:///C:/secret.txt"), false);
   assert.equal(exported.isAllowedExternalUrl("ftp://example.com/file"), false);
   assert.equal(exported.isAllowedExternalUrl("javascript:alert(1)"), false);
+});
+
+test("packaged renderer security headers enforce CSP and nosniff", () => {
+  const { exported } = loadMainModule();
+
+  const headers = exported.rendererSecurityHeaders({ "content-type": "text/html; charset=utf-8" });
+
+  assert.match(headers["content-security-policy"], /default-src 'self'/);
+  assert.match(headers["content-security-policy"], /object-src 'none'/);
+  assert.match(headers["content-security-policy"], /frame-ancestors 'none'/);
+  assert.match(headers["content-security-policy"], /connect-src 'self' http:\/\/127\.0\.0\.1:\*/);
+  assert.equal(headers["x-content-type-options"], "nosniff");
+  assert.equal(headers["referrer-policy"], "no-referrer");
 });
 
 test("startup repair messages are phase-specific", () => {

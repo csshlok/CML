@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.database import connect, dict_from_row
+from backend.app.core.derived_state import chunk_eligibility_sql, query_epoch_snapshot_conn
 from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text, reindex_source_chunks, require_embeddings_available
 from backend.app.core.encrypted_storage import chunk_from_encrypted_row
 from backend.app.core.retrieval_scoring import (
@@ -10,6 +11,7 @@ from backend.app.core.retrieval_scoring import (
     scoring_ledger,
     threshold_benchmark,
 )
+from backend.app.core.retrieval_trust import is_low_trust, trust_weight
 from backend.app.core.retrieval_cache import list_query_cache, prune_query_cache, put_query_cache
 from backend.app.core.vector_maintenance import (
     activate_embedding_index,
@@ -43,6 +45,13 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
         vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (payload.vault_id,)).fetchone()
         if vault is None:
             raise HTTPException(status_code=404, detail="Vault not found")
+        snapshot = query_epoch_snapshot_conn(
+            conn,
+            payload.vault_id,
+            embedding_model_id=selector["embedding_model_id"],
+            index_version=selector["index_version"],
+        )
+        tuple_clause, tuple_params = chunk_eligibility_sql("chunks", snapshot)
 
         rows = conn.execute(
             f"""
@@ -57,21 +66,24 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
                 chunks.embedding,
                 sources.title AS source_title,
                 sources.source_type,
+                sources.provenance,
+                sources.trust_tier,
+                sources.security_labels,
                 pages.page_number
             FROM source_chunks chunks
             JOIN sources ON sources.id = chunks.source_id
             LEFT JOIN source_pages pages ON pages.id = chunks.page_id
             WHERE chunks.vault_id = ? AND sources.deleted_at IS NULL {cluster_clause}
-              AND chunks.embedding_model_id = ?
-              AND chunks.index_version = ?
+              {tuple_clause}
             """,
-            [*params, selector["embedding_model_id"], selector["index_version"]],
+            [*params, *tuple_params],
         ).fetchall()
         rows = [chunk_from_encrypted_row(conn, row) for row in rows]
 
     scored = []
     for row in rows:
-        score = cosine_similarity(query_vector, decode_embedding(row["embedding"]))
+        raw_score = cosine_similarity(query_vector, decode_embedding(row["embedding"]))
+        score = raw_score * trust_weight(row)
         if score <= 0:
             continue
         scored.append(
@@ -85,6 +97,11 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
                 "page_number": row["page_number"],
                 "chunk_index": row["chunk_index"],
                 "snippet": row["text"],
+                "provenance": row["provenance"],
+                "trust_tier": row["trust_tier"],
+                "security_labels": row["security_labels"],
+                "low_trust": is_low_trust(row),
+                "raw_score": round(raw_score, 4),
                 "score": round(score, 4),
             }
         )

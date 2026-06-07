@@ -12,6 +12,7 @@ from backend.app.core.config import get_settings
 from backend.app.core.database import connect, utc_now
 from backend.app.core.embeddings import embedding_download_status, embedding_status
 from backend.app.core.model_registry import list_models
+from backend.app.core.migration_planner import staging_summary
 from backend.app.core.ocr import ocr_runtime_status
 from backend.app.core.startup_repair import startup_repair_summary
 from backend.app.core.startup_status import read_startup_status
@@ -53,6 +54,7 @@ def create_diagnostic_bundle() -> dict:
         "vector-summary.json",
         "log-rotation-policy.json",
         "storage-accounting.json",
+        "migration-staging-summary.json",
     ]
     with ZipFile(bundle_path, "w", ZIP_DEFLATED) as bundle:
         bundle.writestr("manifest.json", json.dumps(manifest, indent=2))
@@ -62,6 +64,7 @@ def create_diagnostic_bundle() -> dict:
         bundle.writestr("vector-summary.json", json.dumps(_vector_summary(), indent=2))
         bundle.writestr("log-rotation-policy.json", json.dumps(log_rotation_policy(), indent=2))
         bundle.writestr("storage-accounting.json", json.dumps(storage_accounting(), indent=2))
+        bundle.writestr("migration-staging-summary.json", json.dumps(staging_summary(), indent=2))
         for name, path in _candidate_logs(settings.data_dir):
             if path.exists() and path.is_file():
                 bundle.writestr(f"logs/{name}", _redact_log(path.read_text(encoding="utf-8", errors="ignore")))
@@ -90,6 +93,7 @@ def _database_summary() -> dict:
         "sources",
         "source_pages",
         "source_chunks",
+        "source_quarantine_records",
         "chat_sessions",
         "chat_messages",
         "chat_attachments",

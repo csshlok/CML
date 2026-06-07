@@ -1,5 +1,5 @@
 from pathlib import Path
-import importlib.util
+import os
 import re
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
@@ -76,6 +76,16 @@ def extract_text_from_path(path: str) -> tuple[str, str]:
 
 
 def extract_pages_from_path(path: str) -> tuple[str, list[str]]:
+    if not os.environ.get("CML_PARSER_WORKER"):
+        from backend.app.core.quarantine import run_parser_worker, validate_candidate_file
+
+        validate_candidate_file(path)
+        parsed = run_parser_worker(path)
+        return parsed["title"], parsed["pages"]
+    return extract_pages_from_validated_path(path)
+
+
+def extract_pages_from_validated_path(path: str) -> tuple[str, list[str]]:
     source_path = Path(path).expanduser()
     if not source_path.exists() or not source_path.is_file():
         raise ExtractionError("File does not exist or is not readable")
@@ -298,6 +308,13 @@ class _TextHTMLParser(HTMLParser):
 
 
 def extract_text_from_url(url: str) -> tuple[str, str, str | None]:
+    title, text, cover_image_url, _security = extract_text_from_url_with_security(url)
+    return title, text, cover_image_url
+
+
+def extract_text_from_url_with_security(url: str) -> tuple[str, str, str | None, dict]:
+    from backend.app.core.browser_ingestion import static_web_security
+
     url = strip_url_credentials(url)
     try:
         validate_public_http_url(url)
@@ -328,6 +345,7 @@ def extract_text_from_url(url: str) -> tuple[str, str, str | None]:
     except UnicodeDecodeError:
         decoded = body.decode("utf-8", errors="replace")
 
+    security = static_web_security(final_url)
     if "html" in content_type:
         parser = _TextHTMLParser()
         parser.feed(decoded)
@@ -337,8 +355,10 @@ def extract_text_from_url(url: str) -> tuple[str, str, str | None]:
         if _needs_dynamic_extraction(text, decoded):
             dynamic = _extract_dynamic_text_from_url(final_url)
             if dynamic is not None and len(dynamic[1]) > len(text):
-                title, text, dynamic_cover = dynamic
+                title, text, dynamic_cover = dynamic[:3]
                 cover_image_url = dynamic_cover or cover_image_url
+                if len(dynamic) > 3:
+                    security = dynamic[3]
     else:
         text = decoded.strip()
         title = ""
@@ -348,7 +368,7 @@ def extract_text_from_url(url: str) -> tuple[str, str, str | None]:
         raise ExtractionError("No readable text was found at this link")
 
     fallback_title = (parsed.netloc + parsed.path).rstrip("/") or url
-    return title or fallback_title, text, cover_image_url
+    return title or fallback_title, text, cover_image_url, security
 
 
 def link_extraction_diagnostics(url: str) -> dict:
@@ -362,7 +382,8 @@ def link_extraction_diagnostics(url: str) -> dict:
         "dynamic_timeout_seconds": 12,
         "max_response_bytes": MAX_LINK_BYTES,
         "dynamic_fallback_available": False,
-        "extraction_order": ["static_http", "browser_rendered_dynamic_fallback"],
+        "browser_isolation": {},
+        "extraction_order": ["static_http", "isolated_browser_rendered_dynamic_fallback"],
         "quality_classification": "unknown",
         "quality_reason": "Fetch was not run during diagnostics.",
     }
@@ -374,7 +395,11 @@ def link_extraction_diagnostics(url: str) -> dict:
         diagnostics["security_error"] = str(exc)
         diagnostics["quality_classification"] = "blocked_by_security"
         diagnostics["quality_reason"] = str(exc)
-    diagnostics["dynamic_fallback_available"] = importlib.util.find_spec("playwright") is not None
+    from backend.app.core.browser_ingestion import browser_ingestion_diagnostics
+
+    browser_diagnostics = browser_ingestion_diagnostics()
+    diagnostics["browser_isolation"] = browser_diagnostics
+    diagnostics["dynamic_fallback_available"] = bool(browser_diagnostics["available"])
     if diagnostics["allowed"] and diagnostics["dynamic_fallback_available"]:
         diagnostics["quality_reason"] = "Static extraction is attempted first; browser fallback is available for thin dynamic pages."
     elif diagnostics["allowed"]:
@@ -389,28 +414,13 @@ def _needs_dynamic_extraction(text: str, html: str) -> bool:
     return (len(text.strip()) < 500 and script_count >= 3) or any(marker in lowered for marker in app_markers)
 
 
-def _extract_dynamic_text_from_url(url: str) -> tuple[str, str, str | None] | None:
-    if importlib.util.find_spec("playwright") is None:
-        return None
+def _extract_dynamic_text_from_url(url: str) -> tuple[str, str, str | None, dict] | None:
     try:
-        from playwright.sync_api import sync_playwright
+        from backend.app.core.browser_ingestion import extract_dynamic_text_from_url_isolated
+
+        return extract_dynamic_text_from_url_isolated(url)
     except Exception:
         return None
-    try:
-        validate_public_http_url(url)
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=12000)
-            title = page.title()
-            text = page.locator("body").inner_text(timeout=5000).strip()
-            cover = page.locator("meta[property='og:image']").first.get_attribute("content", timeout=1000)
-            browser.close()
-        if text:
-            return title or url, text, urljoin(url, cover) if cover else None
-    except Exception:
-        return None
-    return None
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):

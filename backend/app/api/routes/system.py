@@ -2,6 +2,13 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.core.hardware import hardware_status
 from backend.app.core.lora_training import trainer_dependency_status
+from backend.app.core.migration_planner import (
+    MigrationPreflightError,
+    begin_planned_migration,
+    collect_staged_garbage,
+    plan_derived_state_migration,
+    staging_summary,
+)
 from backend.app.core.ocr import ocr_runtime_status
 from backend.app.core.preflight import disk_preflight
 from backend.app.core.recovery_drills import startup_recovery_drills
@@ -201,6 +208,69 @@ def check_disk_preflight(payload: DiskPreflightRequest) -> dict:
         return disk_preflight(payload.path, payload.required_bytes)
     except OSError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/security/migrations/plan")
+def get_security_migration_plan(
+    vault_id: str,
+    normalization_version: str = "norm-v1",
+    embedding_model_id: str = "hash-dev",
+    index_version: str = "v1",
+    extraction_version: str = "extract-v1",
+    epoch: int = 1,
+    safety_margin_bytes: int = 512 * 1024 * 1024,
+) -> dict:
+    return plan_derived_state_migration(
+        vault_id,
+        {
+            "normalization_version": normalization_version,
+            "embedding_model_id": embedding_model_id,
+            "index_version": index_version,
+            "extraction_version": extraction_version,
+            "epoch": epoch,
+        },
+        safety_margin_bytes=safety_margin_bytes,
+    )
+
+
+@router.post("/security/migrations/begin")
+def begin_security_migration(
+    vault_id: str,
+    normalization_version: str = "norm-v1",
+    embedding_model_id: str = "hash-dev",
+    index_version: str = "v1",
+    extraction_version: str = "extract-v1",
+    epoch: int = 1,
+    safety_margin_bytes: int = 512 * 1024 * 1024,
+) -> dict:
+    try:
+        return begin_planned_migration(
+            vault_id,
+            {
+                "normalization_version": normalization_version,
+                "embedding_model_id": embedding_model_id,
+                "index_version": index_version,
+                "extraction_version": extraction_version,
+                "epoch": epoch,
+            },
+            safety_margin_bytes=safety_margin_bytes,
+        )
+    except MigrationPreflightError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/security/migrations/staging")
+def get_security_migration_staging(vault_id: str | None = None) -> dict:
+    return staging_summary(vault_id)
+
+
+@router.post("/security/migrations/staging/gc")
+def run_security_migration_staging_gc(
+    vault_id: str | None = None,
+    limit: int = 100,
+    stale_after_seconds: int = 3600,
+) -> dict:
+    return collect_staged_garbage(vault_id, limit=limit, stale_after_seconds=stale_after_seconds)
 
 
 @router.get("/hardware", response_model=HardwareStatusRead)

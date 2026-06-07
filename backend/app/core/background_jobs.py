@@ -6,8 +6,10 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.derived_state import chunk_eligibility_sql, query_epoch_snapshot_conn
 from backend.app.core.embeddings import content_hash, reindex_source_chunks, require_embeddings_available
 from backend.app.core.encrypted_storage import (
+    chunk_from_encrypted_row,
     delete_source_derived_encrypted_content,
     plaintext_column_for_text,
     update_source_content_fields,
@@ -709,20 +711,27 @@ def _run_expanded_analysis(payload: dict, job_id: str) -> None:
         cluster_clause = "AND chunks.cluster_id = ?"
         params.append(cluster_id)
     with connect() as conn:
+        snapshot = query_epoch_snapshot_conn(
+            conn,
+            vault_id,
+            embedding_model_id=selector["embedding_model_id"],
+            index_version=selector["index_version"],
+        )
+        tuple_clause, tuple_params = chunk_eligibility_sql("chunks", snapshot)
         rows = conn.execute(
             f"""
-            SELECT chunks.source_id, chunks.text, chunks.embedding, sources.title
+            SELECT chunks.id AS chunk_id, chunks.vault_id, chunks.source_id, chunks.text, chunks.embedding, sources.title
             FROM source_chunks chunks
             JOIN sources ON sources.id = chunks.source_id
             WHERE chunks.vault_id = ?
               AND sources.state = 'indexed'
               AND sources.deleted_at IS NULL
-              AND chunks.embedding_model_id = ?
-              AND chunks.index_version = ?
+              {tuple_clause}
               {cluster_clause}
             """,
-            [params[0], selector["embedding_model_id"], selector["index_version"], *params[1:]],
+            [params[0], *tuple_params, *params[1:]],
         ).fetchall()
+        rows = [chunk_from_encrypted_row(conn, row) for row in rows]
         best: dict[str, dict] = {}
         for row in rows:
             score = cosine_similarity(query_embedding, decode_embedding(row["embedding"]))
@@ -832,7 +841,12 @@ def _run_integration_refresh(payload: dict) -> None:
     import_id = str(payload.get("import_id") or "")
     if not import_id:
         raise RuntimeError("Integration refresh job requires import_id.")
-    refresh_integration_import(import_id, import_files=True, tombstone_missing=True)
+    refresh_integration_import(
+        import_id,
+        import_files=True,
+        tombstone_missing=True,
+        trigger_source="watch_refresh",
+    )
 
 
 def _run_train_cluster_adapter(payload: dict) -> None:

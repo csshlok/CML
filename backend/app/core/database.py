@@ -94,6 +94,10 @@ def init_db() -> None:
                 original_path TEXT,
                 url TEXT,
                 checksum TEXT,
+                provenance TEXT NOT NULL DEFAULT 'local_import',
+                trust_tier TEXT NOT NULL DEFAULT 'trusted_local',
+                security_labels TEXT NOT NULL DEFAULT '[]',
+                parser_security_json TEXT NOT NULL DEFAULT '{}',
                 raw_text TEXT NOT NULL DEFAULT '',
                 extracted_text TEXT NOT NULL DEFAULT '',
                 summary TEXT NOT NULL DEFAULT '',
@@ -106,12 +110,42 @@ def init_db() -> None:
                 FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS source_quarantine_records (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                source_id TEXT,
+                original_path TEXT NOT NULL,
+                canonical_path TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                suffix TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                content_hash TEXT NOT NULL DEFAULT '',
+                encrypted_blob_id TEXT NOT NULL DEFAULT '',
+                encrypted_blob_path TEXT NOT NULL DEFAULT '',
+                validation_status TEXT NOT NULL,
+                validation_json TEXT NOT NULL DEFAULT '{}',
+                defender_status TEXT NOT NULL DEFAULT 'not_run',
+                defender_detail TEXT NOT NULL DEFAULT '',
+                parser_status TEXT NOT NULL DEFAULT 'not_run',
+                parser_detail TEXT NOT NULL DEFAULT '',
+                trust_tier TEXT NOT NULL DEFAULT 'quarantined',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS bridge_requests (
                 id TEXT PRIMARY KEY,
+                client_id TEXT,
                 client_name TEXT NOT NULL DEFAULT 'unknown',
                 query TEXT NOT NULL,
                 mode TEXT NOT NULL DEFAULT 'context',
-                created_at TEXT NOT NULL
+                decision TEXT NOT NULL DEFAULT 'allowed',
+                source_count INTEGER NOT NULL DEFAULT 0,
+                response_bytes INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (client_id) REFERENCES bridge_clients(id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS bridge_settings (
@@ -140,13 +174,22 @@ def init_db() -> None:
                 name TEXT NOT NULL,
                 token_hash TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                approval_vault_id TEXT,
                 allowed_vault_ids TEXT NOT NULL DEFAULT '[]',
                 allowed_cluster_ids TEXT NOT NULL DEFAULT '[]',
                 allow_raw_snippets INTEGER NOT NULL DEFAULT 0,
                 allow_style_profile INTEGER NOT NULL DEFAULT 0,
                 allow_expert_calls INTEGER NOT NULL DEFAULT 0,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                approval_request_id TEXT,
+                approved_at TEXT,
+                revoked_at TEXT,
+                last_request_at TEXT,
+                request_count_total INTEGER NOT NULL DEFAULT 0,
+                response_bytes_total INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (approval_vault_id) REFERENCES vaults(id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS bridge_client_token_rotations (
@@ -157,6 +200,48 @@ def init_db() -> None:
                 previous_token_hash TEXT NOT NULL DEFAULT '',
                 new_token_hash TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY (client_id) REFERENCES bridge_clients(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS bridge_approval_requests (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                fingerprint_hash TEXT NOT NULL DEFAULT '',
+                details_json TEXT NOT NULL DEFAULT '{}',
+                approval_code_hash TEXT NOT NULL DEFAULT '',
+                requested_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                decided_at TEXT,
+                delivered_at TEXT,
+                client_id TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (client_id) REFERENCES bridge_clients(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS bridge_audit_events (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT,
+                client_id TEXT,
+                approval_request_id TEXT,
+                event_type TEXT NOT NULL,
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (client_id) REFERENCES bridge_clients(id) ON DELETE SET NULL,
+                FOREIGN KEY (approval_request_id) REFERENCES bridge_approval_requests(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS bridge_rate_limits (
+                scope_type TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                bucket TEXT NOT NULL,
+                window_started_at TEXT NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                byte_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (scope_type, scope_id, bucket)
             );
 
             CREATE TABLE IF NOT EXISTS cluster_expert_jobs (
@@ -222,6 +307,49 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS reconciliation_runs (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                import_id TEXT NOT NULL,
+                trigger_source TEXT NOT NULL,
+                root_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                import_files INTEGER NOT NULL DEFAULT 1,
+                tombstone_missing INTEGER NOT NULL DEFAULT 0,
+                imported_count INTEGER NOT NULL DEFAULT 0,
+                updated_count INTEGER NOT NULL DEFAULT 0,
+                moved_count INTEGER NOT NULL DEFAULT 0,
+                unchanged_count INTEGER NOT NULL DEFAULT 0,
+                tombstoned_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                retryable_failed_count INTEGER NOT NULL DEFAULT 0,
+                detail_count INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (import_id) REFERENCES integration_imports(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS reconciliation_items (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                vault_id TEXT NOT NULL,
+                import_id TEXT NOT NULL,
+                item_reference TEXT NOT NULL,
+                action TEXT NOT NULL,
+                result TEXT NOT NULL,
+                error TEXT NOT NULL DEFAULT '',
+                retryable INTEGER NOT NULL DEFAULT 0,
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (run_id) REFERENCES reconciliation_runs(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (import_id) REFERENCES integration_imports(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS extension_clients (
@@ -294,12 +422,50 @@ def init_db() -> None:
                 embedding_model_id TEXT NOT NULL DEFAULT 'hash',
                 content_hash TEXT NOT NULL DEFAULT '',
                 index_version TEXT NOT NULL DEFAULT 'v1',
+                normalization_version TEXT NOT NULL DEFAULT 'norm-v1',
+                extraction_version TEXT NOT NULL DEFAULT 'extract-v1',
+                derived_state_epoch INTEGER NOT NULL DEFAULT 1,
                 indexed_at TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
                 FOREIGN KEY (page_id) REFERENCES source_pages(id) ON DELETE CASCADE,
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
                 FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS derived_state_publications (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                epoch INTEGER NOT NULL,
+                normalization_version TEXT NOT NULL,
+                embedding_model_id TEXT NOT NULL,
+                index_version TEXT NOT NULL,
+                extraction_version TEXT NOT NULL,
+                status TEXT NOT NULL,
+                artifact_manifest_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                verified_at TEXT,
+                published_at TEXT,
+                rolled_back_at TEXT,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                UNIQUE(vault_id, epoch)
+            );
+
+            CREATE TABLE IF NOT EXISTS derived_state_staged_artifacts (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                publication_id TEXT NOT NULL,
+                artifact_type TEXT NOT NULL,
+                artifact_ref TEXT NOT NULL,
+                content_hash TEXT NOT NULL DEFAULT '',
+                byte_length INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                owner_job_id TEXT,
+                heartbeat_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (publication_id) REFERENCES derived_state_publications(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS source_pages (
@@ -383,6 +549,10 @@ def init_db() -> None:
                 query TEXT NOT NULL,
                 retrieval_mode TEXT NOT NULL DEFAULT 'semantic',
                 embedding_model_id TEXT NOT NULL DEFAULT '',
+                index_version TEXT NOT NULL DEFAULT 'v1',
+                normalization_version TEXT NOT NULL DEFAULT 'norm-v1',
+                extraction_version TEXT NOT NULL DEFAULT 'extract-v1',
+                derived_state_epoch INTEGER NOT NULL DEFAULT 1,
                 token_budget INTEGER,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
@@ -479,8 +649,13 @@ def init_db() -> None:
             );
 
             CREATE INDEX IF NOT EXISTS idx_source_chunks_vault_id ON source_chunks(vault_id);
+            CREATE INDEX IF NOT EXISTS idx_sources_trust ON sources(vault_id, trust_tier, provenance);
+            CREATE INDEX IF NOT EXISTS idx_source_quarantine_vault
+                ON source_quarantine_records(vault_id, validation_status, parser_status, updated_at);
             CREATE INDEX IF NOT EXISTS idx_source_chunks_cluster_id ON source_chunks(cluster_id);
             CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id ON source_chunks(source_id);
+            CREATE INDEX IF NOT EXISTS idx_source_chunks_tuple
+                ON source_chunks(vault_id, embedding_model_id, index_version, normalization_version, extraction_version, derived_state_epoch);
             CREATE INDEX IF NOT EXISTS idx_source_pages_source_id ON source_pages(source_id);
             CREATE INDEX IF NOT EXISTS idx_source_pages_vault_id ON source_pages(vault_id);
             CREATE INDEX IF NOT EXISTS idx_chat_sessions_vault_id ON chat_sessions(vault_id);
@@ -492,6 +667,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_retrieval_snapshot_items_snapshot_id ON retrieval_snapshot_items(snapshot_id);
             CREATE INDEX IF NOT EXISTS idx_app_jobs_status ON app_jobs(status, created_at);
             CREATE INDEX IF NOT EXISTS idx_integration_imports_vault ON integration_imports(vault_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_reconciliation_runs_import ON reconciliation_runs(import_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_reconciliation_runs_vault ON reconciliation_runs(vault_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_reconciliation_items_run ON reconciliation_items(run_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_reconciliation_items_import ON reconciliation_items(import_id, result, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_extension_captures_vault ON extension_captures(vault_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_expert_artifacts_cluster ON expert_artifacts(cluster_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_analysis_evidence_packets_job ON analysis_evidence_packets(job_id);
@@ -502,12 +681,20 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_extension_permission_audit_client ON extension_permission_audit(client_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_vault_security_unlock_mode ON vault_security_metadata(unlock_mode);
             CREATE INDEX IF NOT EXISTS idx_encrypted_content_vault ON encrypted_content(vault_id, entity_type, entity_id);
+            CREATE INDEX IF NOT EXISTS idx_derived_state_publications_vault
+                ON derived_state_publications(vault_id, status, epoch);
+            CREATE INDEX IF NOT EXISTS idx_derived_state_staged_vault
+                ON derived_state_staged_artifacts(vault_id, status, updated_at);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_app_jobs_dedupe_active
                 ON app_jobs(dedupe_key)
                 WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running');
             """
         )
         _add_column_if_missing(conn, "sources", "tags", "TEXT NOT NULL DEFAULT '[]'")
+        _add_column_if_missing(conn, "sources", "provenance", "TEXT NOT NULL DEFAULT 'local_import'")
+        _add_column_if_missing(conn, "sources", "trust_tier", "TEXT NOT NULL DEFAULT 'trusted_local'")
+        _add_column_if_missing(conn, "sources", "security_labels", "TEXT NOT NULL DEFAULT '[]'")
+        _add_column_if_missing(conn, "sources", "parser_security_json", "TEXT NOT NULL DEFAULT '{}'")
         _add_column_if_missing(conn, "sources", "cover_image_url", "TEXT")
         _add_column_if_missing(conn, "sources", "deleted_at", "TEXT")
         _add_column_if_missing(conn, "sources", "checksum", "TEXT")
@@ -524,13 +711,32 @@ def init_db() -> None:
         _add_column_if_missing(conn, "integration_imports", "next_watch_at", "TEXT")
         _add_column_if_missing(conn, "chat_messages", "useful", "INTEGER")
         _add_column_if_missing(conn, "chat_messages", "saved", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "retrieval_snapshots", "index_version", "TEXT NOT NULL DEFAULT 'v1'")
+        _add_column_if_missing(conn, "retrieval_snapshots", "normalization_version", "TEXT NOT NULL DEFAULT 'norm-v1'")
+        _add_column_if_missing(conn, "retrieval_snapshots", "extraction_version", "TEXT NOT NULL DEFAULT 'extract-v1'")
+        _add_column_if_missing(conn, "retrieval_snapshots", "derived_state_epoch", "INTEGER NOT NULL DEFAULT 1")
         _add_column_if_missing(conn, "chat_sessions", "memory_status", "TEXT NOT NULL DEFAULT 'idle'")
         _add_column_if_missing(conn, "chat_sessions", "memory_updated_at", "TEXT")
         _add_column_if_missing(conn, "bridge_settings", "bridge_token", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "bridge_requests", "client_id", "TEXT")
+        _add_column_if_missing(conn, "bridge_requests", "decision", "TEXT NOT NULL DEFAULT 'allowed'")
+        _add_column_if_missing(conn, "bridge_requests", "source_count", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "bridge_requests", "response_bytes", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "bridge_clients", "approval_vault_id", "TEXT")
+        _add_column_if_missing(conn, "bridge_clients", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        _add_column_if_missing(conn, "bridge_clients", "approval_request_id", "TEXT")
+        _add_column_if_missing(conn, "bridge_clients", "approved_at", "TEXT")
+        _add_column_if_missing(conn, "bridge_clients", "revoked_at", "TEXT")
+        _add_column_if_missing(conn, "bridge_clients", "last_request_at", "TEXT")
+        _add_column_if_missing(conn, "bridge_clients", "request_count_total", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "bridge_clients", "response_bytes_total", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "source_chunks", "page_id", "TEXT")
         _add_column_if_missing(conn, "source_chunks", "embedding_model_id", "TEXT NOT NULL DEFAULT 'hash'")
         _add_column_if_missing(conn, "source_chunks", "content_hash", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "source_chunks", "index_version", "TEXT NOT NULL DEFAULT 'v1'")
+        _add_column_if_missing(conn, "source_chunks", "normalization_version", "TEXT NOT NULL DEFAULT 'norm-v1'")
+        _add_column_if_missing(conn, "source_chunks", "extraction_version", "TEXT NOT NULL DEFAULT 'extract-v1'")
+        _add_column_if_missing(conn, "source_chunks", "derived_state_epoch", "INTEGER NOT NULL DEFAULT 1")
         _add_column_if_missing(conn, "source_chunks", "indexed_at", "TEXT")
         _add_column_if_missing(conn, "app_jobs", "priority", "TEXT NOT NULL DEFAULT 'normal'")
         _add_column_if_missing(conn, "app_jobs", "idempotency_class", "TEXT NOT NULL DEFAULT 'idempotent'")
@@ -564,6 +770,51 @@ def init_db() -> None:
         _add_column_if_missing(conn, "expert_artifacts", "deleted_at", "TEXT")
         _ensure_vault_security_metadata_schema(conn)
         _ensure_encrypted_content_schema(conn)
+        _ensure_derived_state_schema(conn)
+        _ensure_quarantine_schema(conn)
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS bridge_approval_requests (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                fingerprint_hash TEXT NOT NULL DEFAULT '',
+                details_json TEXT NOT NULL DEFAULT '{}',
+                approval_code_hash TEXT NOT NULL DEFAULT '',
+                requested_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                decided_at TEXT,
+                delivered_at TEXT,
+                client_id TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (client_id) REFERENCES bridge_clients(id) ON DELETE SET NULL
+            );
+            CREATE TABLE IF NOT EXISTS bridge_audit_events (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT,
+                client_id TEXT,
+                approval_request_id TEXT,
+                event_type TEXT NOT NULL,
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (client_id) REFERENCES bridge_clients(id) ON DELETE SET NULL,
+                FOREIGN KEY (approval_request_id) REFERENCES bridge_approval_requests(id) ON DELETE SET NULL
+            );
+            CREATE TABLE IF NOT EXISTS bridge_rate_limits (
+                scope_type TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                bucket TEXT NOT NULL,
+                window_started_at TEXT NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                byte_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (scope_type, scope_id, bucket)
+            );
+            """
+        )
         conn.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_app_jobs_runnable
@@ -572,6 +823,18 @@ def init_db() -> None:
                 ON app_jobs(depends_on_job_id);
             CREATE INDEX IF NOT EXISTS idx_source_chunks_page_id
                 ON source_chunks(page_id);
+            CREATE INDEX IF NOT EXISTS idx_source_chunks_tuple
+                ON source_chunks(vault_id, embedding_model_id, index_version, normalization_version, extraction_version, derived_state_epoch);
+            CREATE INDEX IF NOT EXISTS idx_sources_trust
+                ON sources(vault_id, trust_tier, provenance);
+            CREATE INDEX IF NOT EXISTS idx_bridge_requests_created
+                ON bridge_requests(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_bridge_approval_requests_status
+                ON bridge_approval_requests(vault_id, status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_bridge_audit_events_created
+                ON bridge_audit_events(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_source_quarantine_vault
+                ON source_quarantine_records(vault_id, validation_status, parser_status, updated_at);
             CREATE INDEX IF NOT EXISTS idx_sources_checksum
                 ON sources(vault_id, checksum);
             CREATE INDEX IF NOT EXISTS idx_expert_artifacts_active
@@ -584,6 +847,10 @@ def init_db() -> None:
                 ON vault_security_metadata(unlock_mode);
             CREATE INDEX IF NOT EXISTS idx_encrypted_content_vault
                 ON encrypted_content(vault_id, entity_type, entity_id);
+            CREATE INDEX IF NOT EXISTS idx_derived_state_publications_vault
+                ON derived_state_publications(vault_id, status, epoch);
+            CREATE INDEX IF NOT EXISTS idx_derived_state_staged_vault
+                ON derived_state_staged_artifacts(vault_id, status, updated_at);
             """
         )
 
@@ -676,6 +943,132 @@ def _ensure_encrypted_content_schema(conn: sqlite3.Connection) -> None:
         "updated_at": "TEXT NOT NULL DEFAULT ''",
     }.items():
         _add_column_if_missing(conn, "encrypted_content", column, definition)
+
+
+def _ensure_derived_state_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS derived_state_publications (
+            id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            epoch INTEGER NOT NULL,
+            normalization_version TEXT NOT NULL,
+            embedding_model_id TEXT NOT NULL,
+            index_version TEXT NOT NULL,
+            extraction_version TEXT NOT NULL,
+            status TEXT NOT NULL,
+            artifact_manifest_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            verified_at TEXT,
+            published_at TEXT,
+            rolled_back_at TEXT,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+            UNIQUE(vault_id, epoch)
+        )
+        """
+    )
+    for column, definition in {
+        "vault_id": "TEXT NOT NULL DEFAULT ''",
+        "epoch": "INTEGER NOT NULL DEFAULT 1",
+        "normalization_version": "TEXT NOT NULL DEFAULT 'norm-v1'",
+        "embedding_model_id": "TEXT NOT NULL DEFAULT 'hash'",
+        "index_version": "TEXT NOT NULL DEFAULT 'v1'",
+        "extraction_version": "TEXT NOT NULL DEFAULT 'extract-v1'",
+        "status": "TEXT NOT NULL DEFAULT 'staging'",
+        "artifact_manifest_json": "TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+        "verified_at": "TEXT",
+        "published_at": "TEXT",
+        "rolled_back_at": "TEXT",
+    }.items():
+        _add_column_if_missing(conn, "derived_state_publications", column, definition)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS derived_state_staged_artifacts (
+            id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            publication_id TEXT NOT NULL,
+            artifact_type TEXT NOT NULL,
+            artifact_ref TEXT NOT NULL,
+            content_hash TEXT NOT NULL DEFAULT '',
+            byte_length INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            owner_job_id TEXT,
+            heartbeat_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+            FOREIGN KEY (publication_id) REFERENCES derived_state_publications(id) ON DELETE CASCADE
+        )
+        """
+    )
+    for column, definition in {
+        "vault_id": "TEXT NOT NULL DEFAULT ''",
+        "publication_id": "TEXT NOT NULL DEFAULT ''",
+        "artifact_type": "TEXT NOT NULL DEFAULT ''",
+        "artifact_ref": "TEXT NOT NULL DEFAULT ''",
+        "content_hash": "TEXT NOT NULL DEFAULT ''",
+        "byte_length": "INTEGER NOT NULL DEFAULT 0",
+        "status": "TEXT NOT NULL DEFAULT 'staging'",
+        "owner_job_id": "TEXT",
+        "heartbeat_at": "TEXT",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+        "updated_at": "TEXT NOT NULL DEFAULT ''",
+    }.items():
+        _add_column_if_missing(conn, "derived_state_staged_artifacts", column, definition)
+
+
+def _ensure_quarantine_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS source_quarantine_records (
+            id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            source_id TEXT,
+            original_path TEXT NOT NULL,
+            canonical_path TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            suffix TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            content_hash TEXT NOT NULL DEFAULT '',
+            encrypted_blob_id TEXT NOT NULL DEFAULT '',
+            encrypted_blob_path TEXT NOT NULL DEFAULT '',
+            validation_status TEXT NOT NULL,
+            validation_json TEXT NOT NULL DEFAULT '{}',
+            defender_status TEXT NOT NULL DEFAULT 'not_run',
+            defender_detail TEXT NOT NULL DEFAULT '',
+            parser_status TEXT NOT NULL DEFAULT 'not_run',
+            parser_detail TEXT NOT NULL DEFAULT '',
+            trust_tier TEXT NOT NULL DEFAULT 'quarantined',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL
+        )
+        """
+    )
+    for column, definition in {
+        "vault_id": "TEXT NOT NULL DEFAULT ''",
+        "source_id": "TEXT",
+        "original_path": "TEXT NOT NULL DEFAULT ''",
+        "canonical_path": "TEXT NOT NULL DEFAULT ''",
+        "file_name": "TEXT NOT NULL DEFAULT ''",
+        "suffix": "TEXT NOT NULL DEFAULT ''",
+        "file_size": "INTEGER NOT NULL DEFAULT 0",
+        "content_hash": "TEXT NOT NULL DEFAULT ''",
+        "encrypted_blob_id": "TEXT NOT NULL DEFAULT ''",
+        "encrypted_blob_path": "TEXT NOT NULL DEFAULT ''",
+        "validation_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "validation_json": "TEXT NOT NULL DEFAULT '{}'",
+        "defender_status": "TEXT NOT NULL DEFAULT 'not_run'",
+        "defender_detail": "TEXT NOT NULL DEFAULT ''",
+        "parser_status": "TEXT NOT NULL DEFAULT 'not_run'",
+        "parser_detail": "TEXT NOT NULL DEFAULT ''",
+        "trust_tier": "TEXT NOT NULL DEFAULT 'quarantined'",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+        "updated_at": "TEXT NOT NULL DEFAULT ''",
+    }.items():
+        _add_column_if_missing(conn, "source_quarantine_records", column, definition)
 
 
 @contextmanager

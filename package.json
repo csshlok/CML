@@ -11,6 +11,9 @@
     "dev:web": "npm run dev:web --workspace @cml/desktop",
     "build": "npm run build --workspace @cml/desktop",
     "lint": "npm run lint --workspace @cml/desktop",
-    "package:win": "npm run package:win --workspace @cml/desktop"
+    "package:win": "npm run package:win --workspace @cml/desktop",
+    "security:renderer": "node scripts/security/audit-renderer-html-safety.mjs",
+    "security:package": "node scripts/packaging/generate-helper-manifest.cjs && node scripts/packaging/audit-package-layout.cjs apps/desktop/packaging apps/desktop/packaging",
+    "security:e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\security\\run-security-e2e.ps1"
   }
 }

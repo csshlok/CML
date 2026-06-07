@@ -37,6 +37,7 @@ try {
 
   Write-Host "Running Electron security behavior tests..."
   node apps\desktop\electron\main.behavior.test.cjs
+  node apps\desktop\electron\helper-integrity.test.cjs
   node apps\desktop\electron\token-store.test.cjs
 
   Write-Host "Running focused backend security tests..."

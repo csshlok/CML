@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import connect, utc_now
+from backend.app.core.derived_state import chunk_eligibility_sql, query_epoch_snapshot_conn
 from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text, tokenize
 from backend.app.core.encrypted_storage import chunk_from_encrypted_row
 from backend.app.core.vector_maintenance import active_embedding_selector
@@ -169,6 +170,13 @@ def _chunk_rows(vault_id: str, cluster_id: str | None) -> list[dict]:
         cluster_clause = "AND chunks.cluster_id = ?"
         params.append(cluster_id)
     with connect() as conn:
+        snapshot = query_epoch_snapshot_conn(
+            conn,
+            vault_id,
+            embedding_model_id=selector["embedding_model_id"],
+            index_version=selector["index_version"],
+        )
+        tuple_clause, tuple_params = chunk_eligibility_sql("chunks", snapshot)
         rows = conn.execute(
             f"""
             SELECT
@@ -190,11 +198,10 @@ def _chunk_rows(vault_id: str, cluster_id: str | None) -> list[dict]:
             WHERE chunks.vault_id = ?
               AND sources.deleted_at IS NULL
               AND sources.state = 'indexed'
-              AND chunks.embedding_model_id = ?
-              AND chunks.index_version = ?
+              {tuple_clause}
               {cluster_clause}
             """,
-            [params[0], selector["embedding_model_id"], selector["index_version"], *params[1:]],
+            [params[0], *tuple_params, *params[1:]],
         ).fetchall()
         return [chunk_from_encrypted_row(conn, row) for row in rows]
 

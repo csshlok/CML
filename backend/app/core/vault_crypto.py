@@ -35,7 +35,8 @@ TEST_KDF_PARAMS = {
 }
 DEFAULT_DERIVED_STATE_TUPLE = {
     "normalization_version": "norm-v1",
-    "embedding_model_version": "unset",
+    "embedding_model_id": "hash-dev",
+    "index_version": "v1",
     "extraction_version": "extract-v1",
     "epoch": 1,
 }

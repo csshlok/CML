@@ -49,6 +49,10 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "packaging/helper-manifest.json",
+        "to": "helper-manifest.json"
       }
     ],
     "win": {

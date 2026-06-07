@@ -5,7 +5,23 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.database import connect, utc_now
-from backend.app.core.local_integrations import WATCHED_FOLDER_SCAN_LIMIT, scan_local_folder, watched_folder_limits
+from backend.app.core.local_integrations import (
+    MAX_SCAN_LIMIT,
+    WATCHED_FOLDER_SCAN_LIMIT,
+    scan_local_folder,
+    watched_folder_limits,
+)
+from backend.app.core.reconciliation_log import (
+    append_reconciliation_item,
+    compact_reconciliation_logs,
+    create_reconciliation_run,
+    finish_reconciliation_run,
+    item_from_row,
+    list_reconciliation_items,
+    list_reconciliation_runs,
+    load_reconciliation_item,
+    run_from_row,
+)
 from backend.app.core.database import dict_from_row
 from backend.app.api.routes.sources import (
     _create_source_record,
@@ -25,6 +41,10 @@ from backend.app.schemas import (
     IntegrationImportUpdate,
     LocalFolderScanRequest,
     LocalFolderScanResponse,
+    ReconciliationItemPageRead,
+    ReconciliationItemRead,
+    ReconciliationItemRetryResponse,
+    ReconciliationRunRead,
     SourceCreate,
 )
 from uuid import uuid4
@@ -38,7 +58,50 @@ def list_integration_imports(vault_id: str | None = None) -> list[dict]:
         if vault_id:
             rows = conn.execute(
                 """
-                SELECT * FROM integration_imports
+                SELECT integration_imports.*,
+                       (
+                           SELECT rr.id
+                           FROM reconciliation_runs rr
+                           WHERE rr.import_id = integration_imports.id
+                           ORDER BY rr.created_at DESC
+                           LIMIT 1
+                       ) AS last_reconciliation_run_id,
+                       (
+                           SELECT rr.status
+                           FROM reconciliation_runs rr
+                           WHERE rr.import_id = integration_imports.id
+                           ORDER BY rr.created_at DESC
+                           LIMIT 1
+                       ) AS last_reconciliation_status,
+                       (
+                           SELECT rr.trigger_source
+                           FROM reconciliation_runs rr
+                           WHERE rr.import_id = integration_imports.id
+                           ORDER BY rr.created_at DESC
+                           LIMIT 1
+                       ) AS last_reconciliation_trigger_source,
+                       (
+                           SELECT rr.finished_at
+                           FROM reconciliation_runs rr
+                           WHERE rr.import_id = integration_imports.id
+                           ORDER BY rr.created_at DESC
+                           LIMIT 1
+                       ) AS last_reconciliation_finished_at,
+                       COALESCE((
+                           SELECT rr.detail_count
+                           FROM reconciliation_runs rr
+                           WHERE rr.import_id = integration_imports.id
+                           ORDER BY rr.created_at DESC
+                           LIMIT 1
+                       ), 0) AS last_reconciliation_detail_count,
+                       COALESCE((
+                           SELECT rr.retryable_failed_count
+                           FROM reconciliation_runs rr
+                           WHERE rr.import_id = integration_imports.id
+                           ORDER BY rr.created_at DESC
+                           LIMIT 1
+                       ), 0) AS last_reconciliation_retryable_failed_count
+                FROM integration_imports
                 WHERE vault_id = ?
                 ORDER BY updated_at DESC
                 LIMIT 50
@@ -48,7 +111,50 @@ def list_integration_imports(vault_id: str | None = None) -> list[dict]:
         else:
             rows = conn.execute(
                 """
-                SELECT * FROM integration_imports
+                SELECT integration_imports.*,
+                       (
+                           SELECT rr.id
+                           FROM reconciliation_runs rr
+                           WHERE rr.import_id = integration_imports.id
+                           ORDER BY rr.created_at DESC
+                           LIMIT 1
+                       ) AS last_reconciliation_run_id,
+                       (
+                           SELECT rr.status
+                           FROM reconciliation_runs rr
+                           WHERE rr.import_id = integration_imports.id
+                           ORDER BY rr.created_at DESC
+                           LIMIT 1
+                       ) AS last_reconciliation_status,
+                       (
+                           SELECT rr.trigger_source
+                           FROM reconciliation_runs rr
+                           WHERE rr.import_id = integration_imports.id
+                           ORDER BY rr.created_at DESC
+                           LIMIT 1
+                       ) AS last_reconciliation_trigger_source,
+                       (
+                           SELECT rr.finished_at
+                           FROM reconciliation_runs rr
+                           WHERE rr.import_id = integration_imports.id
+                           ORDER BY rr.created_at DESC
+                           LIMIT 1
+                       ) AS last_reconciliation_finished_at,
+                       COALESCE((
+                           SELECT rr.detail_count
+                           FROM reconciliation_runs rr
+                           WHERE rr.import_id = integration_imports.id
+                           ORDER BY rr.created_at DESC
+                           LIMIT 1
+                       ), 0) AS last_reconciliation_detail_count,
+                       COALESCE((
+                           SELECT rr.retryable_failed_count
+                           FROM reconciliation_runs rr
+                           WHERE rr.import_id = integration_imports.id
+                           ORDER BY rr.created_at DESC
+                           LIMIT 1
+                       ), 0) AS last_reconciliation_retryable_failed_count
+                FROM integration_imports
                 ORDER BY updated_at DESC
                 LIMIT 50
                 """
@@ -104,18 +210,122 @@ def update_integration_import(import_id: str, payload: IntegrationImportUpdate) 
     return _import_from_row(updated)
 
 
+@router.get("/imports/{import_id}/reconciliation-runs", response_model=list[ReconciliationRunRead])
+def list_import_reconciliation_runs(import_id: str, limit: int = 10) -> list[dict]:
+    with connect() as conn:
+        row = conn.execute("SELECT id FROM integration_imports WHERE id = ?", (import_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Integration import not found")
+        return list_reconciliation_runs(conn, import_id=import_id, limit=limit)
+
+
+@router.get("/reconciliation-runs/{run_id}/items", response_model=ReconciliationItemPageRead)
+def list_import_reconciliation_items(
+    run_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    result: str | None = None,
+) -> dict:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM reconciliation_runs WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Reconciliation run not found")
+        items, total = list_reconciliation_items(conn, run_id=run_id, limit=limit, offset=offset, result=result)
+    return {
+        "run_id": run_id,
+        "items": items,
+        "total": total,
+        "limit": max(1, min(limit, 200)),
+        "offset": max(offset, 0),
+    }
+
+
+@router.post("/reconciliation-items/{item_id}/retry", response_model=ReconciliationItemRetryResponse)
+def retry_import_reconciliation_item(item_id: str) -> dict:
+    with connect() as conn:
+        item = load_reconciliation_item(conn, item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Reconciliation item not found")
+        run_row = conn.execute("SELECT * FROM reconciliation_runs WHERE id = ?", (item["run_id"],)).fetchone()
+        import_row = conn.execute("SELECT * FROM integration_imports WHERE id = ?", (item["import_id"],)).fetchone()
+    if run_row is None or import_row is None:
+        raise HTTPException(status_code=404, detail="Reconciliation context not found")
+    if not item["retryable"] or item["result"] != "failed":
+        raise HTTPException(status_code=400, detail="Reconciliation item is not retryable")
+
+    action = str(item["action"])
+    detail = item.get("detail") or {}
+    if action == "scan":
+        refreshed = refresh_integration_import(
+            import_row["id"],
+            import_files=bool(run_row["import_files"]),
+            tombstone_missing=bool(run_row["tombstone_missing"]),
+            trigger_source="retry_item",
+        )
+        run_id = refreshed.get("reconciliation_run_id")
+        if not run_id:
+            raise HTTPException(status_code=500, detail="Retry did not create reconciliation run")
+        with connect() as conn:
+            new_run_row = conn.execute("SELECT * FROM reconciliation_runs WHERE id = ?", (run_id,)).fetchone()
+            latest_item_row = conn.execute(
+                """
+                SELECT *
+                FROM reconciliation_items
+                WHERE run_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+            new_item = item_from_row(conn, latest_item_row) if latest_item_row is not None else None
+        return {
+            "retried_item_id": item_id,
+            "new_run": run_from_row(new_run_row),
+            "new_item": new_item,
+        }
+
+    file_path = str(detail.get("path") or item["item_reference"] or "")
+    if not file_path:
+        raise HTTPException(status_code=400, detail="Reconciliation item is missing retry path")
+    new_run, new_item = _retry_reconciliation_file_item(
+        import_row=import_row,
+        file_path=file_path,
+        action=action,
+    )
+    return {
+        "retried_item_id": item_id,
+        "new_run": new_run,
+        "new_item": new_item,
+    }
+
+
 @router.post("/imports/{import_id}/refresh", response_model=LocalFolderScanResponse)
 def refresh_integration_import(
     import_id: str,
     import_files: bool = False,
     tombstone_missing: bool = False,
+    trigger_source: str = "manual_refresh",
 ) -> dict:
     with connect() as conn:
         row = conn.execute("SELECT * FROM integration_imports WHERE id = ?", (import_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Integration import not found")
+    run_id: str | None = None
+    if import_files:
+        if not row["vault_id"]:
+            raise HTTPException(status_code=400, detail="Import refresh cannot ingest without a vault")
+        with connect() as conn:
+            run_id = create_reconciliation_run(
+                conn,
+                vault_id=row["vault_id"],
+                import_id=import_id,
+                trigger_source=trigger_source,
+                root_path=row["root_path"],
+                import_files=import_files,
+                tombstone_missing=tombstone_missing,
+            )
     try:
-        result = scan_local_folder(row["root_path"], WATCHED_FOLDER_SCAN_LIMIT)
+        result = scan_local_folder(row["root_path"], _refresh_scan_limit(row, trigger_source=trigger_source))
     except OSError as exc:
         now = utc_now()
         with connect() as conn:
@@ -127,17 +337,61 @@ def refresh_integration_import(
                 """,
                 (now, import_id),
             )
+            if run_id and row["vault_id"]:
+                append_reconciliation_item(
+                    conn,
+                    run_id=run_id,
+                    vault_id=row["vault_id"],
+                    import_id=import_id,
+                    item_reference=row["root_path"],
+                    action="scan",
+                    result="failed",
+                    error=_failure_detail(exc),
+                    retryable=True,
+                    detail={"path": row["root_path"], "scope": "root_scan"},
+                )
+                finish_reconciliation_run(
+                    conn,
+                    run_id=run_id,
+                    status="failed",
+                    counts=_empty_reconcile_result(),
+                )
+                compact_reconciliation_logs(conn)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     reconcile = _empty_reconcile_result()
     if import_files:
-        if not row["vault_id"]:
-            raise HTTPException(status_code=400, detail="Import refresh cannot ingest without a vault")
-        reconcile = _reconcile_import_sources(
-            vault_id=row["vault_id"],
-            root_path=row["root_path"],
-            supported_files=result["supported_files"],
-            tombstone_missing=tombstone_missing,
-        )
+        try:
+            reconcile = _reconcile_import_sources(
+                vault_id=row["vault_id"],
+                import_id=import_id,
+                run_id=run_id,
+                root_path=row["root_path"],
+                supported_files=result["supported_files"],
+                tombstone_missing=tombstone_missing,
+            )
+        except HTTPException as exc:
+            if run_id and row["vault_id"]:
+                with connect() as conn:
+                    append_reconciliation_item(
+                        conn,
+                        run_id=run_id,
+                        vault_id=row["vault_id"],
+                        import_id=import_id,
+                        item_reference=row["root_path"],
+                        action="scan",
+                        result="failed",
+                        error=_failure_detail(exc),
+                        retryable=exc.status_code in (400, 409),
+                        detail={"path": row["root_path"], "scope": "preflight"},
+                    )
+                    finish_reconciliation_run(
+                        conn,
+                        run_id=run_id,
+                        status="failed",
+                        counts=reconcile,
+                    )
+                    compact_reconciliation_logs(conn)
+            raise
 
     now = utc_now()
     next_watch_at = _next_watch_at(row, now) if int(row["watch_enabled"] or 0) == 1 else None
@@ -171,7 +425,15 @@ def refresh_integration_import(
                 import_id,
             ),
         )
-    return {"import_id": import_id, **result, **reconcile}
+        if run_id and row["vault_id"]:
+            finish_reconciliation_run(
+                conn,
+                run_id=run_id,
+                status=_run_status_for_counts(reconcile),
+                counts=reconcile,
+            )
+            compact_reconciliation_logs(conn)
+    return {"import_id": import_id, "reconciliation_run_id": run_id, **result, **reconcile}
 
 
 @router.post("/local-folder/scan", response_model=LocalFolderScanResponse)
@@ -216,6 +478,8 @@ def _import_from_row(row) -> dict:
     record = dict_from_row(row)
     record["truncated"] = bool(record["truncated"])
     record["watch_enabled"] = bool(record.get("watch_enabled"))
+    record["last_reconciliation_detail_count"] = int(record.get("last_reconciliation_detail_count") or 0)
+    record["last_reconciliation_retryable_failed_count"] = int(record.get("last_reconciliation_retryable_failed_count") or 0)
     raw_failures = record.get("last_failures") or "[]"
     try:
         failures = json.loads(raw_failures)
@@ -237,9 +501,23 @@ def _empty_reconcile_result() -> dict:
     }
 
 
+def _refresh_scan_limit(row, *, trigger_source: str) -> int:
+    if trigger_source in {"manual_refresh", "retry_item"}:
+        return MAX_SCAN_LIMIT
+
+    supported_count = int(row["supported_count"] or 0)
+    imported_count = int(row["imported_count"] or 0)
+    base_limit = max(WATCHED_FOLDER_SCAN_LIMIT, supported_count, imported_count)
+    if bool(row["truncated"]):
+        base_limit = max(base_limit, supported_count + 500, imported_count + 500)
+    return max(1, min(base_limit, MAX_SCAN_LIMIT))
+
+
 def _reconcile_import_sources(
     *,
     vault_id: str,
+    import_id: str,
+    run_id: str | None,
     root_path: str,
     supported_files: list[str],
     tombstone_missing: bool,
@@ -253,6 +531,7 @@ def _reconcile_import_sources(
     seen_paths = {_normalize_path(path) for path in supported_files}
     result = _empty_reconcile_result()
     active_source_ids: set[str] = set()
+    log_entries: list[dict] = []
 
     with connect() as conn:
         existing_rows = conn.execute(
@@ -274,35 +553,40 @@ def _reconcile_import_sources(
         }
 
     for file_path in supported_files:
-        normalized = _normalize_path(file_path)
         try:
-            checksum = _file_checksum(Path(file_path))
-            existing = by_path.get(normalized)
-            moved = False
-            if existing is None:
-                existing = by_checksum.get(checksum)
-                moved = existing is not None
-
-            if existing is None:
-                _create_source_from_local_file(vault_id=vault_id, file_path=file_path, checksum=checksum)
-                result["imported_count"] += 1
-                continue
-
-            active_source_ids.add(existing["id"])
-            if moved:
-                _update_source_path(existing["id"], file_path)
-                result["moved_count"] += 1
-                continue
-
-            if existing["checksum"] == checksum:
-                result["unchanged_count"] += 1
-                continue
-
-            _update_source_from_local_file(existing, file_path=file_path, checksum=checksum)
-            result["updated_count"] += 1
+            outcome = _reconcile_single_supported_file(
+                vault_id=vault_id,
+                file_path=file_path,
+                by_path=by_path,
+                by_checksum=by_checksum,
+            )
+            existing_source_id = outcome.get("source_id")
+            if existing_source_id:
+                active_source_ids.add(str(existing_source_id))
+            result[_count_key_for_action(outcome["action"])] += 1
+            if run_id:
+                log_entries.append(
+                    {
+                        "item_reference": file_path,
+                        "action": outcome["action"],
+                        "result": "success",
+                        "detail": outcome["detail"],
+                    }
+                )
         except (ExtractionError, OSError, HTTPException) as exc:
             result["failed_count"] += 1
             result["failures"].append({"path": file_path, "error": _failure_detail(exc)})
+            if run_id:
+                log_entries.append(
+                    {
+                        "item_reference": file_path,
+                        "action": "scan_file",
+                        "result": "failed",
+                        "error": _failure_detail(exc),
+                        "retryable": True,
+                        "detail": {"path": file_path, "error_type": exc.__class__.__name__},
+                    }
+                )
 
     if tombstone_missing:
         for row in existing_for_root:
@@ -312,14 +596,39 @@ def _reconcile_import_sources(
             if original_path not in seen_paths:
                 delete_source(row["id"])
                 result["tombstoned_count"] += 1
+                if run_id:
+                    log_entries.append(
+                        {
+                            "item_reference": row["original_path"],
+                            "action": "tombstone",
+                            "result": "success",
+                            "detail": {"path": row["original_path"], "source_id": row["id"]},
+                        }
+                    )
+
+    if run_id and log_entries:
+        with connect() as conn:
+            for entry in log_entries:
+                append_reconciliation_item(
+                    conn,
+                    run_id=run_id,
+                    vault_id=vault_id,
+                    import_id=import_id,
+                    item_reference=entry["item_reference"],
+                    action=entry["action"],
+                    result=entry["result"],
+                    error=str(entry.get("error") or ""),
+                    retryable=bool(entry.get("retryable")),
+                    detail=entry.get("detail"),
+                )
 
     return result
 
 
-def _create_source_from_local_file(*, vault_id: str, file_path: str, checksum: str) -> None:
+def _create_source_from_local_file(*, vault_id: str, file_path: str, checksum: str) -> str:
     title, pages = extract_pages_from_path(file_path)
     text = "\n\n".join(page for page in pages if page.strip()).strip()
-    _create_source_record(
+    created = _create_source_record(
         SourceCreate(
             vault_id=vault_id,
             title=title,
@@ -330,6 +639,7 @@ def _create_source_from_local_file(*, vault_id: str, file_path: str, checksum: s
         ),
         page_texts=pages,
     )
+    return created["id"]
 
 
 def _update_source_path(source_id: str, file_path: str) -> None:
@@ -399,6 +709,149 @@ def _update_source_from_local_file(existing, *, file_path: str, checksum: str) -
             dedupe_key=f"reindex-source:{existing['id']}",
         )
         mark_cluster_needs_update(conn, existing["cluster_id"], "Imported local file changed.")
+
+
+def _reconcile_single_supported_file(
+    *,
+    vault_id: str,
+    file_path: str,
+    by_path: dict[str, object],
+    by_checksum: dict[str, object],
+) -> dict:
+    normalized = _normalize_path(file_path)
+    checksum = _file_checksum(Path(file_path))
+    existing = by_path.get(normalized)
+    moved = False
+    if existing is None:
+        existing = by_checksum.get(checksum)
+        moved = existing is not None
+
+    if existing is None:
+        source_id = _create_source_from_local_file(vault_id=vault_id, file_path=file_path, checksum=checksum)
+        return {
+            "action": "import",
+            "source_id": source_id,
+            "detail": {"path": file_path, "checksum": checksum, "source_id": source_id},
+        }
+
+    source_id = str(existing["id"])
+    if moved:
+        _update_source_path(existing["id"], file_path)
+        by_path[normalized] = existing
+        return {
+            "action": "move",
+            "source_id": source_id,
+            "detail": {"path": file_path, "checksum": checksum, "source_id": source_id},
+        }
+
+    if existing["checksum"] == checksum:
+        return {
+            "action": "unchanged",
+            "source_id": source_id,
+            "detail": {"path": file_path, "checksum": checksum, "source_id": source_id},
+        }
+
+    _update_source_from_local_file(existing, file_path=file_path, checksum=checksum)
+    return {
+        "action": "update",
+        "source_id": source_id,
+        "detail": {"path": file_path, "checksum": checksum, "source_id": source_id},
+    }
+
+
+def _retry_reconciliation_file_item(*, import_row, file_path: str, action: str) -> tuple[dict, dict | None]:
+    with connect() as conn:
+        run_id = create_reconciliation_run(
+            conn,
+            vault_id=import_row["vault_id"],
+            import_id=import_row["id"],
+            trigger_source="retry_item",
+            root_path=import_row["root_path"],
+            import_files=True,
+            tombstone_missing=False,
+        )
+    counts = _empty_reconcile_result()
+    try:
+        with connect() as conn:
+            existing_rows = conn.execute(
+                """
+                SELECT *
+                FROM sources
+                WHERE vault_id = ? AND original_path IS NOT NULL AND deleted_at IS NULL
+                """,
+                (import_row["vault_id"],),
+            ).fetchall()
+        root = Path(import_row["root_path"]).expanduser()
+        existing_for_root = [row for row in existing_rows if _is_path_within_root(row["original_path"], root)]
+        by_path = {_normalize_path(row["original_path"]): row for row in existing_for_root}
+        by_checksum = {row["checksum"]: row for row in existing_for_root if row["checksum"]}
+        outcome = _reconcile_single_supported_file(
+            vault_id=import_row["vault_id"],
+            file_path=file_path,
+            by_path=by_path,
+            by_checksum=by_checksum,
+        )
+        counts[_count_key_for_action(outcome["action"])] += 1
+        with connect() as conn:
+            item_id = append_reconciliation_item(
+                conn,
+                run_id=run_id,
+                vault_id=import_row["vault_id"],
+                import_id=import_row["id"],
+                item_reference=file_path,
+                action=outcome["action"],
+                result="success",
+                detail={**outcome["detail"], "retried_from_action": action},
+            )
+            finish_reconciliation_run(conn, run_id=run_id, status=_run_status_for_counts(counts), counts=counts)
+            compact_reconciliation_logs(conn)
+            run_row = conn.execute("SELECT * FROM reconciliation_runs WHERE id = ?", (run_id,)).fetchone()
+            item_row = conn.execute("SELECT * FROM reconciliation_items WHERE id = ?", (item_id,)).fetchone()
+            return run_from_row(run_row), item_from_row(conn, item_row)
+    except (ExtractionError, OSError, HTTPException) as exc:
+        with connect() as conn:
+            item_id = append_reconciliation_item(
+                conn,
+                run_id=run_id,
+                vault_id=import_row["vault_id"],
+                import_id=import_row["id"],
+                item_reference=file_path,
+                action=action,
+                result="failed",
+                error=_failure_detail(exc),
+                retryable=True,
+                detail={"path": file_path, "error_type": exc.__class__.__name__, "retried_from_action": action},
+            )
+            counts["failed_count"] = 1
+            finish_reconciliation_run(conn, run_id=run_id, status="failed", counts=counts)
+            compact_reconciliation_logs(conn)
+            run_row = conn.execute("SELECT * FROM reconciliation_runs WHERE id = ?", (run_id,)).fetchone()
+            item_row = conn.execute("SELECT * FROM reconciliation_items WHERE id = ?", (item_id,)).fetchone()
+            return run_from_row(run_row), item_from_row(conn, item_row)
+
+
+def _count_key_for_action(action: str) -> str:
+    return {
+        "import": "imported_count",
+        "update": "updated_count",
+        "move": "moved_count",
+        "unchanged": "unchanged_count",
+        "tombstone": "tombstoned_count",
+    }.get(action, "unchanged_count")
+
+
+def _run_status_for_counts(counts: dict) -> str:
+    failed_count = int(counts.get("failed_count") or 0)
+    if failed_count > 0:
+        succeeded = sum(int(counts.get(key) or 0) for key in (
+            "imported_count",
+            "updated_count",
+            "moved_count",
+            "unchanged_count",
+            "tombstoned_count",
+        ))
+        return "completed_with_failures" if succeeded > 0 else "failed"
+    return "completed"
 
 
 def _normalize_path(path: str) -> str:

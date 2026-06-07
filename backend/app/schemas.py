@@ -182,6 +182,10 @@ class SourceRead(BaseModel):
     original_path: str | None
     url: str | None
     checksum: str | None = None
+    provenance: str = "local_import"
+    trust_tier: str = "trusted_local"
+    security_labels: str = "[]"
+    parser_security_json: str = "{}"
     raw_text: str
     extracted_text: str
     summary: str
@@ -222,6 +226,11 @@ class SemanticSearchResult(BaseModel):
     chunk_index: int
     snippet: str
     score: float
+    raw_score: float | None = None
+    provenance: str = "local_import"
+    trust_tier: str = "trusted_local"
+    security_labels: str = "[]"
+    low_trust: bool = False
 
 
 class SemanticSearchResponse(BaseModel):
@@ -240,6 +249,7 @@ class BridgeStatus(BaseModel):
     allow_style_profile: bool = False
     allow_expert_calls: bool = False
     bridge_token: str = ""
+    approval_requests_pending: int = 0
     last_refreshed_at: str | None = None
 
 
@@ -301,9 +311,13 @@ class BridgeCaptureResponse(BaseModel):
 
 class BridgeRequestRead(BaseModel):
     id: str
+    client_id: str | None = None
     client_name: str
     query: str
     mode: str
+    decision: str = "allowed"
+    source_count: int = 0
+    response_bytes: int = 0
     created_at: str
 
 
@@ -338,11 +352,25 @@ class BridgeClientCreateResponse(BaseModel):
     name: str
     token: str
     enabled: bool
+    approval_vault_id: str | None = None
     allowed_vault_ids: list[str] = []
     allowed_cluster_ids: list[str] = []
     allow_raw_snippets: bool = False
     allow_style_profile: bool = False
     allow_expert_calls: bool = False
+    approval_request_id: str | None = None
+    approved_at: str | None = None
+    revoked_at: str | None = None
+    last_request_at: str | None = None
+    request_count_total: int = 0
+    response_bytes_total: int = 0
+    executable_path_claim: str = ""
+    observed_executable_path: str = ""
+    publisher_name: str = ""
+    signature_status: str = "not_provided"
+    signature_detail: str = ""
+    verified_identity: bool = False
+    verified_identity_label: str = ""
     created_at: str
     updated_at: str
 
@@ -351,11 +379,99 @@ class BridgeClientRead(BaseModel):
     id: str
     name: str
     enabled: bool
+    approval_vault_id: str | None = None
     allowed_vault_ids: list[str] = []
     allowed_cluster_ids: list[str] = []
     allow_raw_snippets: bool = False
     allow_style_profile: bool = False
     allow_expert_calls: bool = False
+    approval_request_id: str | None = None
+    approved_at: str | None = None
+    revoked_at: str | None = None
+    last_request_at: str | None = None
+    request_count_total: int = 0
+    response_bytes_total: int = 0
+    executable_path_claim: str = ""
+    observed_executable_path: str = ""
+    publisher_name: str = ""
+    signature_status: str = "not_provided"
+    signature_detail: str = ""
+    verified_identity: bool = False
+    verified_identity_label: str = ""
+    created_at: str
+    updated_at: str
+
+
+class BridgeApprovalRequestCreate(BaseModel):
+    claimed_name: str = Field(min_length=1, max_length=120)
+    requested_vault_ids: list[str] = []
+    requested_cluster_ids: list[str] = []
+    allow_raw_snippets: bool = False
+    allow_style_profile: bool = False
+    allow_expert_calls: bool = False
+    executable_path: str | None = Field(default=None, max_length=2048)
+
+
+class BridgeApprovalRequestCreateResponse(BaseModel):
+    request_id: str
+    status: str
+    expires_at: str
+    poll_code: str
+    detail: str = ""
+
+
+class BridgeApprovalRequestPollResponse(BaseModel):
+    request_id: str
+    status: str
+    expires_at: str
+    client_id: str | None = None
+    token: str | None = None
+    token_available: bool = False
+    detail: str = ""
+
+
+class BridgeApprovalRequestRead(BaseModel):
+    id: str
+    vault_id: str
+    status: str
+    claimed_name: str
+    requested_vault_ids: list[str] = []
+    requested_cluster_ids: list[str] = []
+    allow_raw_snippets: bool = False
+    allow_style_profile: bool = False
+    allow_expert_calls: bool = False
+    executable_path_claim: str = ""
+    observed_executable_path: str = ""
+    publisher_name: str = ""
+    signature_status: str = "not_provided"
+    signature_detail: str = ""
+    verified_identity: bool = False
+    verified_identity_label: str = ""
+    client_id: str | None = None
+    requested_at: str
+    expires_at: str
+    decided_at: str | None = None
+    delivered_at: str | None = None
+    updated_at: str
+    detail: str = ""
+
+
+class BridgeApprovalDecision(BaseModel):
+    allowed_vault_ids: list[str] | None = None
+    allowed_cluster_ids: list[str] | None = None
+    allow_raw_snippets: bool | None = None
+    allow_style_profile: bool | None = None
+    allow_expert_calls: bool | None = None
+    detail: str | None = Field(default=None, max_length=300)
+
+
+class BridgeAuditEventRead(BaseModel):
+    id: str
+    vault_id: str | None = None
+    client_id: str | None = None
+    approval_request_id: str | None = None
+    event_type: str
+    detail: str = ""
     created_at: str
     updated_at: str
 
@@ -401,6 +517,10 @@ class ChatCitation(BaseModel):
     page_id: str | None = None
     page_number: int | None = None
     state: str = "current"
+    provenance: str = "local_import"
+    trust_tier: str = "trusted_local"
+    security_labels: str = "[]"
+    low_trust: bool = False
 
 
 class ChatClusterUse(BaseModel):
@@ -415,6 +535,10 @@ class ChatCoverageLedger(BaseModel):
     sources_low_relevance: int = 0
     relevance_threshold: float = 0.0
     scope: str = "vault"
+    trust_gate_mode: str = "normal"
+    trusted_evidence_count: int = 0
+    low_trust_evidence_count: int = 0
+    trust_gate_latency_ms: float = 0.0
 
 
 class ChatContextResponse(BaseModel):
@@ -649,6 +773,7 @@ class LocalFolderScanRequest(BaseModel):
 
 class LocalFolderScanResponse(BaseModel):
     import_id: str | None = None
+    reconciliation_run_id: str | None = None
     path: str
     integration_type: str
     supported_files: list[str]
@@ -680,6 +805,12 @@ class IntegrationImportRead(BaseModel):
     tombstoned_count: int = 0
     failed_count: int = 0
     last_failures: list[dict] = []
+    last_reconciliation_run_id: str | None = None
+    last_reconciliation_status: str | None = None
+    last_reconciliation_trigger_source: str | None = None
+    last_reconciliation_finished_at: str | None = None
+    last_reconciliation_detail_count: int = 0
+    last_reconciliation_retryable_failed_count: int = 0
     last_scan_at: str
     last_import_at: str | None = None
     watch_enabled: bool = False
@@ -692,6 +823,58 @@ class IntegrationImportRead(BaseModel):
 class IntegrationImportUpdate(BaseModel):
     watch_enabled: bool | None = None
     watch_interval_seconds: int | None = Field(default=None, ge=60, le=86400)
+
+
+class ReconciliationRunRead(BaseModel):
+    id: str
+    vault_id: str
+    import_id: str
+    trigger_source: str
+    root_path: str
+    status: str
+    import_files: bool = True
+    tombstone_missing: bool = False
+    imported_count: int = 0
+    updated_count: int = 0
+    moved_count: int = 0
+    unchanged_count: int = 0
+    tombstoned_count: int = 0
+    failed_count: int = 0
+    retryable_failed_count: int = 0
+    detail_count: int = 0
+    started_at: str
+    finished_at: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class ReconciliationItemRead(BaseModel):
+    id: str
+    run_id: str
+    vault_id: str
+    import_id: str
+    item_reference: str
+    action: str
+    result: str
+    error: str = ""
+    retryable: bool = False
+    detail: dict = {}
+    created_at: str
+    updated_at: str
+
+
+class ReconciliationItemPageRead(BaseModel):
+    run_id: str
+    items: list[ReconciliationItemRead]
+    total: int
+    limit: int
+    offset: int
+
+
+class ReconciliationItemRetryResponse(BaseModel):
+    retried_item_id: str
+    new_run: ReconciliationRunRead
+    new_item: ReconciliationItemRead | None = None
 
 
 class ExtensionClientCreate(BaseModel):

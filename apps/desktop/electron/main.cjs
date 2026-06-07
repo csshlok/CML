@@ -5,6 +5,13 @@ const fs = require("node:fs/promises");
 const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
+const {
+  buildBackendChildEnv,
+  defaultWritableRoots,
+  packageLayoutAudit,
+  resolvePackagedHelperPaths,
+  verifyHelperManifest,
+} = require("./helper-integrity.cjs");
 const { createTokenStore, getOrCreateToken } = require("./token-store.cjs");
 
 const isDev = !app.isPackaged;
@@ -17,6 +24,7 @@ let backendTokenStore = null;
 let rendererServer = null;
 let rendererUrl = null;
 let vaultLockOverrideOnce = false;
+let packagedRuntimeVerification = null;
 const supportedSourceExtensions = new Set([
   ".aac", ".asc", ".bat", ".bmp", ".c", ".cpp", ".cs", ".csv", ".css", ".docx",
   ".flac", ".gif", ".go", ".htm", ".html", ".java", ".jpeg", ".jpg", ".js",
@@ -87,6 +95,14 @@ async function createWindow() {
       shell.openExternal(url);
     }
     return { action: "deny" };
+  });
+  window.webContents.on("will-navigate", (event, url) => {
+    if (url.startsWith("data:text/html")) return;
+    if (url === window.webContents.getURL()) return;
+    event.preventDefault();
+    if (isAllowedExternalUrl(url)) {
+      shell.openExternal(url);
+    }
   });
 
   if (isDev) {
@@ -375,6 +391,9 @@ async function ensureBackend() {
   const token = await getBackendApiToken();
   const existing = explicitBackend ? await findExistingCurrentBackend(token) : null;
   if (existing) return existing;
+  if (app.isPackaged) {
+    await verifyPackagedRuntime();
+  }
 
   const activeVaultPath = await getActiveVaultPath();
   const backendMode = activeVaultPath ? "full_vault" : "pre_vault";
@@ -385,33 +404,53 @@ async function ensureBackend() {
   const startupStatusPath = getStartupStatusPath();
   const port = await findOpenPort(7343, 7355);
   const rootDir = isDev ? path.resolve(__dirname, "../../..") : process.resourcesPath;
-  const pythonPath = isDev
-    ? path.join(rootDir, ".venv", "Scripts", "python.exe")
-    : path.join(process.resourcesPath, "python-runtime", "Scripts", "python.exe");
-  const expertPythonPath = isDev
-    ? path.join(rootDir, ".venv-lora", "Scripts", "python.exe")
-    : path.join(process.resourcesPath, "expert-python-runtime", "Scripts", "python.exe");
-  const pythonCommand = await pathExists(pythonPath) ? pythonPath : "python";
-  const expertPythonCommand = await pathExists(expertPythonPath) ? expertPythonPath : pythonCommand;
+  const helperPaths = isDev
+    ? {
+        resourcesRoot: rootDir,
+        pythonRuntime: path.join(rootDir, ".venv"),
+        backendPython: path.join(rootDir, ".venv", "Scripts", "python.exe"),
+        expertPython: path.join(rootDir, ".venv-lora", "Scripts", "python.exe"),
+        playwrightRoot: process.env.PLAYWRIGHT_BROWSERS_PATH || "",
+      }
+    : resolvePackagedHelperPaths(process.resourcesPath);
+  const pythonCommand = isDev
+    ? (await pathExists(helperPaths.backendPython) ? helperPaths.backendPython : "python")
+    : helperPaths.backendPython;
+  const expertPythonCommand = isDev
+    ? (await pathExists(helperPaths.expertPython) ? helperPaths.expertPython : pythonCommand)
+    : helperPaths.expertPython;
+  if (!isDev && (!(await pathExists(pythonCommand)) || !(await pathExists(expertPythonCommand)))) {
+    throw new Error("Packaged helper runtime is missing required Python executables.");
+  }
   backendProcess = spawn(
     pythonCommand,
     ["-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", String(port)],
     {
       cwd: rootDir,
-      env: {
-        ...process.env,
-        CML_API_PREFIX: apiPrefix,
-        CML_API_TOKEN: token,
-        CML_BACKEND_MODE: backendMode,
-        CML_DATA_DIR: dataDir,
-        CML_DATABASE_PATH: databasePath,
-        CML_STARTUP_STATUS_PATH: startupStatusPath,
-        CML_VAULT_LOCK_OVERRIDE: vaultLockOverrideOnce ? "open_anyway" : "",
-        CML_LORA_RUNTIME_PYTHON: expertPythonCommand,
-        PLAYWRIGHT_BROWSERS_PATH: isDev
-          ? process.env.PLAYWRIGHT_BROWSERS_PATH || ""
-          : path.join(process.resourcesPath, "ms-playwright"),
-      },
+      env: isDev
+        ? {
+            ...process.env,
+            CML_API_PREFIX: apiPrefix,
+            CML_API_TOKEN: token,
+            CML_BACKEND_MODE: backendMode,
+            CML_DATA_DIR: dataDir,
+            CML_DATABASE_PATH: databasePath,
+            CML_STARTUP_STATUS_PATH: startupStatusPath,
+            CML_VAULT_LOCK_OVERRIDE: vaultLockOverrideOnce ? "open_anyway" : "",
+            CML_LORA_RUNTIME_PYTHON: expertPythonCommand,
+            PLAYWRIGHT_BROWSERS_PATH: helperPaths.playwrightRoot,
+          }
+        : buildBackendChildEnv({
+            inheritedEnv: process.env,
+            helperPaths,
+            apiPrefix,
+            apiToken: token,
+            backendMode,
+            dataDir,
+            databasePath,
+            startupStatusPath,
+            vaultLockOverride: vaultLockOverrideOnce ? "open_anyway" : "",
+          }),
       windowsHide: true,
       stdio: "ignore",
     },
@@ -421,6 +460,42 @@ async function ensureBackend() {
   const startedUrl = `http://127.0.0.1:${port}`;
   await waitForBackend(startedUrl, token, 12000);
   return startedUrl;
+}
+
+async function verifyPackagedRuntime() {
+  if (packagedRuntimeVerification) {
+    return packagedRuntimeVerification;
+  }
+  const helperPaths = resolvePackagedHelperPaths(process.resourcesPath);
+  const activeVaultPath = await getActiveVaultPath();
+  const manifestReport = await verifyHelperManifest(process.resourcesPath);
+  if (!manifestReport.ok) {
+    const failingEntry = manifestReport.entries.find((entry) => !entry.ok);
+    const detail = failingEntry
+      ? `${failingEntry.relative_path} failed helper verification`
+      : "Helper manifest verification failed";
+    throw new Error(detail);
+  }
+  const layoutReport = packageLayoutAudit({
+    packageRoot: path.resolve(process.resourcesPath, ".."),
+    resourcesRoot: process.resourcesPath,
+    helperRoots: [
+      helperPaths.backendRoot,
+      helperPaths.pythonRuntime,
+      helperPaths.expertRuntime,
+      helperPaths.playwrightRoot,
+    ],
+    writableRoots: defaultWritableRoots({
+      userDataPath: app.getPath("userData"),
+      activeVaultPath,
+    }),
+    helperManifestPath: helperPaths.helperManifest,
+  });
+  if (!layoutReport.ok) {
+    throw new Error("Packaged helper layout overlaps runtime-writable paths.");
+  }
+  packagedRuntimeVerification = { manifestReport, layoutReport };
+  return packagedRuntimeVerification;
 }
 
 async function restartBackend() {
@@ -480,7 +555,7 @@ async function startPackagedRendererServer() {
       const parsed = new URL(request.url || "/", `http://127.0.0.1:${port}`);
       const staticResponse = await tryServeStaticAsset(clientDir, parsed.pathname);
       if (staticResponse) {
-        writeNodeResponse(response, staticResponse.status, staticResponse.headers, staticResponse.body);
+        writeNodeResponse(response, staticResponse.status, rendererSecurityHeaders(staticResponse.headers), staticResponse.body);
         return;
       }
 
@@ -491,7 +566,7 @@ async function startPackagedRendererServer() {
       });
       const webResponse = await worker.fetch(webRequest, {}, {});
       const body = Buffer.from(await webResponse.arrayBuffer());
-      writeNodeResponse(response, webResponse.status, Object.fromEntries(webResponse.headers), body);
+      writeNodeResponse(response, webResponse.status, rendererSecurityHeaders(Object.fromEntries(webResponse.headers)), body);
     } catch (error) {
       response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
       response.end(error instanceof Error ? error.stack || error.message : String(error));
@@ -531,6 +606,27 @@ async function tryServeStaticAsset(clientDir, pathname) {
 function writeNodeResponse(response, status, headers, body) {
   response.writeHead(status, headers);
   response.end(body);
+}
+
+function rendererSecurityHeaders(headers = {}) {
+  return {
+    ...headers,
+    "content-security-policy": [
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob: https: http:",
+      "font-src 'self' data:",
+      "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*",
+      "media-src 'none'",
+      "object-src 'none'",
+      "base-uri 'none'",
+      "form-action 'none'",
+      "frame-ancestors 'none'",
+    ].join("; "),
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer",
+  };
 }
 
 function contentTypeForPath(targetPath) {

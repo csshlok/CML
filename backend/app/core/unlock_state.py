@@ -265,9 +265,11 @@ def _validate_compact_tuple(raw: object) -> None:
     parsed = json.loads(raw)
     if not isinstance(parsed, dict):
         raise UnlockStateError("invalid_active_derived_state_tuple")
-    for key in ("normalization_version", "embedding_model_version", "extraction_version", "epoch"):
+    for key in ("normalization_version", "extraction_version", "epoch"):
         if key not in parsed:
             raise UnlockStateError(f"missing_active_tuple_field:{key}")
+    if "embedding_model_id" not in parsed and "embedding_model_version" not in parsed:
+        raise UnlockStateError("missing_active_tuple_field:embedding_model_id")
 
 
 def _set_state(

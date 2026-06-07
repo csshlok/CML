@@ -10,8 +10,8 @@ from fastapi.responses import StreamingResponse
 from backend.app.api.routes.search import semantic_search
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.derived_state import chunk_eligibility_sql, query_epoch_snapshot_conn
 from backend.app.core.embeddings import (
-    active_embedding_model_id,
     content_hash,
     cosine_similarity,
     decode_embedding,
@@ -36,6 +36,12 @@ from backend.app.core.llm_runtime import (
     stream_grounded_answer,
 )
 from backend.app.core.memory_card import generate_tags, summarize_text
+from backend.app.core.retrieval_trust import (
+    citations_for_synthesis,
+    classify_evidence_trust,
+    is_low_trust,
+    trust_weight,
+)
 from backend.app.core.vector_maintenance import active_embedding_selector
 from backend.app.core.chat_retention import (
     chat_evidence_retention_policy,
@@ -384,15 +390,16 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                 for chunk in _chunk_text(fallback):
                     answer_parts.append(chunk)
                     yield _sse("token", {"text": chunk})
-        elif not citations:
+        elif not citations or not context.get("trust_gate", {}).get("allow_synthesis", True):
             for chunk in _chunk_text(context["answer"]):
                 answer_parts.append(chunk)
                 yield _sse("token", {"text": chunk})
         else:
             try:
+                synthesis_citations = context.get("synthesis_citations") or citations
                 for chunk in stream_grounded_answer(
                     prompt=active_payload.prompt,
-                    citations=citations,
+                    citations=synthesis_citations,
                     clusters_used=clusters_used,
                 ):
                     answer_parts.append(chunk)
@@ -522,10 +529,16 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
             "page_number": result.get("page_number"),
             "snippet": _trim_snippet(result["snippet"]),
             "score": result["score"],
+            "provenance": result.get("provenance") or "local_import",
+            "trust_tier": result.get("trust_tier") or "trusted_local",
+            "security_labels": result.get("security_labels") or "[]",
+            "low_trust": bool(result.get("low_trust")),
             "state": "current",
         }
         for result in results[:4]
     ]
+    trust_gate = classify_evidence_trust(payload.prompt, citations)
+    synthesis_citations = citations_for_synthesis(citations, trust_gate)
 
     warnings = []
     if payload.expanded_analysis:
@@ -542,17 +555,32 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         f"{coverage_ledger['sources_analyzed']} source(s), marked "
         f"{coverage_ledger['sources_low_relevance']} low relevance."
     )
+    warnings.extend(trust_gate["warnings"])
+    coverage_ledger = {
+        **coverage_ledger,
+        "trust_gate_mode": trust_gate["mode"],
+        "trusted_evidence_count": trust_gate["trusted_count"],
+        "low_trust_evidence_count": trust_gate["low_trust_count"],
+        "trust_gate_latency_ms": trust_gate["latency_ms"],
+    }
     if not citations:
         answer = (
             "I could not find matching indexed context for this prompt yet. "
             "Try adding sources, reindexing the vault, or asking with more specific terms."
         )
         warnings.append("No semantic citations were found.")
+    elif trust_gate["mode"] == "refuse_sensitive_low_trust":
+        answer = (
+            "I found only low-trust evidence for a sensitive request, so I will not answer from it. "
+            "Add or verify trusted local sources, then ask again."
+        )
+    elif not trust_gate["allow_synthesis"]:
+        answer = _build_extract_answer(payload.prompt, citations)
     elif synthesize:
         try:
             result = generate_grounded_answer(
                 prompt=payload.prompt,
-                citations=citations,
+                citations=synthesis_citations,
                 clusters_used=clusters_used,
             )
             answer = result.text
@@ -567,6 +595,8 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "answer": answer,
         "clusters_used": clusters_used,
         "citations": citations,
+        "synthesis_citations": synthesis_citations,
+        "trust_gate": trust_gate,
         "coverage_ledger": coverage_ledger,
         "intent": intent,
         "runtime_state": runtime["state"],
@@ -693,25 +723,38 @@ def _score_sources_for_query(
         cluster_clause = "AND chunks.cluster_id = ?"
         params.append(cluster_id)
     with connect() as conn:
+        snapshot = query_epoch_snapshot_conn(
+            conn,
+            vault_id,
+            embedding_model_id=selector["embedding_model_id"],
+            index_version=selector["index_version"],
+        )
+        tuple_clause, tuple_params = chunk_eligibility_sql("chunks", snapshot)
         rows = conn.execute(
             f"""
-            SELECT chunks.source_id, chunks.embedding, sources.source_type, sources.tags
+            SELECT
+                chunks.source_id,
+                chunks.embedding,
+                sources.source_type,
+                sources.tags,
+                sources.provenance,
+                sources.trust_tier,
+                sources.security_labels
             FROM source_chunks chunks
             JOIN sources ON sources.id = chunks.source_id
             WHERE chunks.vault_id = ?
               AND sources.state = 'indexed'
               AND sources.deleted_at IS NULL
-              AND chunks.embedding_model_id = ?
-              AND chunks.index_version = ?
+              {tuple_clause}
               {cluster_clause}
             """,
-            [params[0], selector["embedding_model_id"], selector["index_version"], *params[1:]],
+            [params[0], *tuple_params, *params[1:]],
         ).fetchall()
     best_by_source: dict[str, float] = {}
     for row in rows:
         if not include_chat_transcripts and _is_chat_transcript_source(row):
             continue
-        score = cosine_similarity(query_vector, decode_embedding(row["embedding"]))
+        score = cosine_similarity(query_vector, decode_embedding(row["embedding"])) * trust_weight(row)
         source_id = row["source_id"]
         if score > best_by_source.get(source_id, -1):
             best_by_source[source_id] = score
@@ -860,7 +903,8 @@ def _build_extract_answer(prompt: str, citations: list[dict]) -> str:
     lead = f"Based on the closest local context for: \"{prompt}\""
     points = []
     for index, citation in enumerate(citations[:3], start=1):
-        points.append(f"{index}. {citation['snippet']}")
+        trust_note = " [low-trust]" if is_low_trust(citation) else ""
+        points.append(f"{index}. {citation['snippet']}{trust_note}")
     return lead + "\n\n" + "\n".join(points)
 
 
@@ -1077,15 +1121,35 @@ def _write_retrieval_snapshot(
     now: str,
 ) -> None:
     snapshot_id = f"snapshot-{uuid4()}"
+    selector = active_embedding_selector()
+    tuple_snapshot = query_epoch_snapshot_conn(
+        conn,
+        vault_id,
+        embedding_model_id=selector["embedding_model_id"],
+        index_version=selector["index_version"],
+    )
     conn.execute(
         """
         INSERT INTO retrieval_snapshots (
             id, message_id, session_id, vault_id, query, retrieval_mode,
-            embedding_model_id, token_budget, created_at
+            embedding_model_id, index_version, normalization_version, extraction_version,
+            derived_state_epoch, token_budget, created_at
         )
-        VALUES (?, ?, ?, ?, ?, 'semantic', ?, NULL, ?)
+        VALUES (?, ?, ?, ?, ?, 'semantic', ?, ?, ?, ?, ?, NULL, ?)
         """,
-        (snapshot_id, message_id, session_id, vault_id, query, active_embedding_model_id(), now),
+        (
+            snapshot_id,
+            message_id,
+            session_id,
+            vault_id,
+            query,
+            tuple_snapshot["embedding_model_id"],
+            tuple_snapshot["index_version"],
+            tuple_snapshot["normalization_version"],
+            tuple_snapshot["extraction_version"],
+            tuple_snapshot["epoch"],
+            now,
+        ),
     )
     for rank, citation in enumerate(citations, start=1):
         conn.execute(
@@ -1472,6 +1536,9 @@ def _snapshot_citations_for_message(conn, message: dict) -> list[dict]:
             items.*,
             sources.deleted_at AS source_deleted_at,
             sources.updated_at AS source_updated_at,
+            sources.provenance AS source_provenance,
+            sources.trust_tier AS source_trust_tier,
+            sources.security_labels AS source_security_labels,
             chunks.indexed_at AS chunk_indexed_at
         FROM retrieval_snapshot_items items
         LEFT JOIN sources ON sources.id = items.source_id
@@ -1499,6 +1566,15 @@ def _snapshot_citations_for_message(conn, message: dict) -> list[dict]:
                 "page_number": row["page_number"],
                 "snippet": row["short_snippet_excerpt"],
                 "score": row["relevance_score"],
+                "provenance": row["source_provenance"] or "local_import",
+                "trust_tier": row["source_trust_tier"] or "trusted_local",
+                "security_labels": row["source_security_labels"] or "[]",
+                "low_trust": is_low_trust(
+                    {
+                        "trust_tier": row["source_trust_tier"],
+                        "security_labels": row["source_security_labels"],
+                    }
+                ),
                 "state": state,
             }
         )
