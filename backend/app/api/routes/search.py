@@ -1,9 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.database import connect, dict_from_row
-from backend.app.core.derived_state import chunk_eligibility_sql, query_epoch_snapshot_conn
-from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text, reindex_source_chunks, require_embeddings_available
-from backend.app.core.encrypted_storage import chunk_from_encrypted_row
+from backend.app.core.embeddings import embed_text, reindex_source_chunks, require_embeddings_available
 from backend.app.core.retrieval_scoring import (
     compare_source_classes,
     export_benchmark_report,
@@ -11,16 +9,23 @@ from backend.app.core.retrieval_scoring import (
     scoring_ledger,
     threshold_benchmark,
 )
-from backend.app.core.retrieval_trust import is_low_trust, trust_weight
 from backend.app.core.retrieval_cache import list_query_cache, prune_query_cache, put_query_cache
 from backend.app.core.vector_maintenance import (
     activate_embedding_index,
-    active_embedding_selector,
     begin_embedding_index_transition,
     compact_vectors,
     embedding_index_policy,
     repair_vectors,
     vector_repair_plan,
+)
+from backend.app.core.turbovec_runtime import (
+    TurbovecSidecarUnavailable,
+    build_turbovec_sidecar,
+    repair_turbovec_sidecars,
+    semantic_search_results,
+    turbovec_sidecar_repair_plan,
+    turbovec_sidecar_status,
+    vector_backend_policy,
 )
 from backend.app.schemas import SemanticSearchRequest, SemanticSearchResponse
 
@@ -34,82 +39,20 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     query_vector = embed_text(payload.query)
-    selector = active_embedding_selector()
-    params: list[str] = [payload.vault_id]
-    cluster_clause = ""
-    if payload.cluster_id:
-        cluster_clause = "AND chunks.cluster_id = ?"
-        params.append(payload.cluster_id)
-
-    with connect() as conn:
-        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (payload.vault_id,)).fetchone()
-        if vault is None:
-            raise HTTPException(status_code=404, detail="Vault not found")
-        snapshot = query_epoch_snapshot_conn(
-            conn,
+    try:
+        search = semantic_search_results(
             payload.vault_id,
-            embedding_model_id=selector["embedding_model_id"],
-            index_version=selector["index_version"],
+            query_vector,
+            cluster_id=payload.cluster_id,
+            limit=payload.limit,
         )
-        tuple_clause, tuple_params = chunk_eligibility_sql("chunks", snapshot)
-
-        rows = conn.execute(
-            f"""
-            SELECT
-                chunks.id AS chunk_id,
-                chunks.source_id,
-                chunks.vault_id,
-                chunks.page_id,
-                chunks.cluster_id,
-                chunks.chunk_index,
-                chunks.text,
-                chunks.embedding,
-                sources.title AS source_title,
-                sources.source_type,
-                sources.provenance,
-                sources.trust_tier,
-                sources.security_labels,
-                pages.page_number
-            FROM source_chunks chunks
-            JOIN sources ON sources.id = chunks.source_id
-            LEFT JOIN source_pages pages ON pages.id = chunks.page_id
-            WHERE chunks.vault_id = ? AND sources.deleted_at IS NULL {cluster_clause}
-              {tuple_clause}
-            """,
-            [*params, *tuple_params],
-        ).fetchall()
-        rows = [chunk_from_encrypted_row(conn, row) for row in rows]
-
-    scored = []
-    for row in rows:
-        raw_score = cosine_similarity(query_vector, decode_embedding(row["embedding"]))
-        score = raw_score * trust_weight(row)
-        if score <= 0:
-            continue
-        scored.append(
-            {
-                "source_id": row["source_id"],
-                "source_title": row["source_title"],
-                "source_type": row["source_type"],
-                "cluster_id": row["cluster_id"],
-                "chunk_id": row["chunk_id"],
-                "page_id": row["page_id"],
-                "page_number": row["page_number"],
-                "chunk_index": row["chunk_index"],
-                "snippet": row["text"],
-                "provenance": row["provenance"],
-                "trust_tier": row["trust_tier"],
-                "security_labels": row["security_labels"],
-                "low_trust": is_low_trust(row),
-                "raw_score": round(raw_score, 4),
-                "score": round(score, 4),
-            }
-        )
-
-    scored.sort(key=lambda item: item["score"], reverse=True)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Vault not found") from exc
     return {
         "query": payload.query,
-        "results": scored[: payload.limit],
+        "backend": search["backend"],
+        "eligible_count": search["eligible_count"],
+        "results": search["results"],
     }
 
 
@@ -224,6 +167,11 @@ def get_vector_policy() -> dict:
     return embedding_index_policy()
 
 
+@router.get("/vectors/backend-policy")
+def get_vector_backend_policy() -> dict:
+    return vector_backend_policy()
+
+
 @router.post("/vectors/policy/begin-transition")
 def begin_vector_policy_transition(model_id: str) -> dict:
     if not model_id.strip():
@@ -255,3 +203,29 @@ def repair_vector_index(vault_id: str | None = None, limit: int = 100) -> dict:
 @router.post("/vectors/compact")
 def compact_vector_index(vault_id: str | None = None) -> dict:
     return compact_vectors(vault_id)
+
+
+@router.get("/vectors/sidecar/status")
+def get_turbovec_sidecar_status(vault_id: str) -> dict:
+    try:
+        return turbovec_sidecar_status(vault_id)
+    except TurbovecSidecarUnavailable as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/vectors/sidecar/build")
+def build_vector_sidecar(vault_id: str, rebuild_reason: str = "manual") -> dict:
+    try:
+        return build_turbovec_sidecar(vault_id, rebuild_reason=rebuild_reason.strip() or "manual")
+    except TurbovecSidecarUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/vectors/sidecar/repair-plan")
+def get_vector_sidecar_repair_plan(vault_id: str | None = None) -> dict:
+    return turbovec_sidecar_repair_plan(vault_id)
+
+
+@router.post("/vectors/sidecar/repair")
+def repair_vector_sidecars(vault_id: str | None = None) -> dict:
+    return repair_turbovec_sidecars(vault_id)

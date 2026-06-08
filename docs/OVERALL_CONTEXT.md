@@ -1,6 +1,6 @@
 ﻿# Overall Context
 
-Last updated: 2026-06-06
+Last updated: 2026-06-07
 
 ## Fallback Context Rule
 
@@ -37,6 +37,30 @@ Implementation baseline:
 - Phase 9 is complete: model/document output paths render as escaped text, raw renderer HTML sinks are blocked by `npm run security:renderer`, the chart style sink remains the only sanitizer-guarded allowlist, hostile output fixtures stay inert, and packaged renderer responses carry CSP, `nosniff`, and `no-referrer` headers.
 - Phase 10 is complete: Bridge runtime now requires approved client tokens when vault security is active, public approval requests/polling are time-bounded and rate-limited, admin review stays behind the local API token, approval/client/audit metadata is encrypted for secured vaults, the Bridge UI shows claimed-vs-observed identity signals, and revocation plus bounded Bridge history/usage counters are in place.
 - `docs/PROJECT_CONTEXT.md` is the compact source of truth for the approved decisions and now includes a Security progress row.
+
+## 2026-06-07 Turbovec Phase A/B Snapshot
+
+Completed:
+
+- Turbovec Phase A and B are now implemented in code rather than benchmark scaffolding only.
+- The backend now has a vector-backend abstraction in [backend/app/core/turbovec_runtime.py](../backend/app/core/turbovec_runtime.py) with three runtime modes: exact, explicit turbovec, and auto.
+- Live `/api/v1/search/semantic` requests now route through that abstraction and report which backend answered the query.
+- Sidecar identity is `vault_id + derived_state_epoch`, with one sidecar epoch directory under `<vault>/.cml/derived-artifacts/vectors`.
+- Sidecars now support build, status, repair-plan, and repair operations, plus incremental reindex/delete updates when churn stays below the rebuild threshold.
+- Corrupt, missing, stale, or unhealthy sidecars fail closed to exact scan instead of serving uncertain results.
+- Startup repair summary now includes turbovec sidecar detection and optional rebuild, so the repair surface can both identify and recover missing/corrupt sidecars without pretending startup already healed them.
+- Manifest handling is hardened: the manifest version, tuple fields, bit width, counts, and `tvim_path` are validated, and the path must resolve to the expected epoch-local `index.tvim` before the sidecar is trusted.
+
+Verification:
+
+- Added [backend/tests/test_turbovec_runtime.py](../backend/tests/test_turbovec_runtime.py) covering published-sidecar semantic search, corrupt-manifest fail-closed behavior, startup-repair rebuilds, sidecar route coverage, and source-delete sidecar updates.
+- Re-ran `.venv\Scripts\python -m unittest backend.tests.test_turbovec_runtime backend.tests.test_turbovec_benchmark backend.tests.test_system_vault_lock_and_embeddings -v`; `72` tests passed.
+- `git diff --check` passed; only existing CRLF normalization warnings were reported by Git.
+
+Still not completed:
+
+- Phase C default-on rollout is still blocked behind the benchmark gate in [docs/TURBOVEC_INTEGRATION_PLAN.md](./TURBOVEC_INTEGRATION_PLAN.md).
+- Real larger natural-corpus benchmark runs still need to prove the overlap, latency, cold-load, and sidecar-size acceptance thresholds before turbovec becomes the default path for healthy `>= 10,000`-chunk vaults.
 
 ## 2026-06-05 Dual-Model Decision Snapshot
 
@@ -385,6 +409,8 @@ Use this section for fast status checks. Detailed historical notes remain in the
 - Verify real adapter training/loading before using "trained expert" language in user-facing surfaces; current gates are stronger but still need real trainer/runtime proof.
 - Build hardware-aware model recommendation for low-, mid-, and high-spec users.
 - Tune retrieval thresholds and run larger backend benchmarks on real vault-shaped data.
+- Turbovec Phase A/B are complete. The remaining turbovec critical-path work is now Phase C evidence: larger natural-corpus benchmarking and acceptance-gate validation before any default-on rollout for healthy `>= 10,000`-chunk vaults.
+- Initial turbovec benchmark evidence now exists: a real-PDF run over 8 local PDFs produced 37 chunks and showed `6.758 ms` average current search-only latency versus `0.166 ms` for a 4-bit turbovec prototype, with `0.9583` average overlap@8. A replicated 100K-chunk stress run showed the current Python exact-scan path in the `9.8-19.5 s` search-only range per query, while the turbovec prototype remained in the low-millisecond range on the same replicated embeddings.
 - Defer Claude Desktop-specific Bridge smoke for now; keep external-client claims conservative.
 
 ### Phase Detail Snapshot
@@ -416,7 +442,7 @@ Vault ingestion:
 
 Embeddings and clustering:
 
-- Done: keyword clustering, chunking, required local embedding setup path, model/cache folder validation, folder picker, managed embedding download status/start/cancel API with byte/progress/speed/ETA fields, disk preflight, concurrent-download guard, local-only sentence-transformers attempts, MiniLM-first config, dev-only hash fallback, memory-search test UI, SQLite vector storage, semantic search, embedding health checks, broad-query scoring, vector repair plan/repair/compaction endpoints, active embedding-index transition policy, map search, suggestions, dismissals, merge controls, reconciliation job work, and chat coverage ledgers.
+- Done: keyword clustering, chunking, required local embedding setup path, model/cache folder validation, folder picker, managed embedding download status/start/cancel API with byte/progress/speed/ETA fields, disk preflight, concurrent-download guard, local-only sentence-transformers attempts, MiniLM-first config, dev-only hash fallback, memory-search test UI, SQLite vector storage, semantic search, embedding health checks, broad-query scoring, vector repair plan/repair/compaction endpoints, active embedding-index transition policy, map search, suggestions, dismissals, merge controls, reconciliation job work, chat coverage ledgers, and turbovec Phase A/B: benchmark harness, vector-backend abstraction, semantic-search integration, sidecar build/status/repair flows, incremental delta updates, and manifest validation/path hardening.
 - Remaining: broader threshold tuning on real user vault data.
 
 Chat and context routing:

@@ -24,6 +24,7 @@ from backend.app.core.memory_card import generate_tags, summarize_text
 from backend.app.core.network_security import strip_url_credentials
 from backend.app.core.quarantine import attach_quarantine_record, ingest_file_through_quarantine
 from backend.app.core.sql import build_update_assignments
+from backend.app.core.turbovec_runtime import maybe_remove_source_chunks_from_sidecar
 from backend.app.services.source_service import mark_source_changed, mark_source_deleted
 from backend.app.schemas import (
     SourceCreate,
@@ -386,6 +387,12 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
                     dedupe_key=f"reindex-source:{source_id}",
                 )
             else:
+                maybe_remove_source_chunks_from_sidecar(
+                    conn,
+                    source_id=source_id,
+                    vault_id=existing["vault_id"],
+                    rebuild_reason=f"source_state_change:{source_id}",
+                )
                 conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
             mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
             mark_cluster_needs_update(conn, source["cluster_id"], "Source changed or moved.")
@@ -435,6 +442,12 @@ def delete_source(source_id: str) -> None:
             )
             """,
             (source_id, source_id, source_id),
+        )
+        maybe_remove_source_chunks_from_sidecar(
+            conn,
+            source_id=source_id,
+            vault_id=source["vault_id"],
+            rebuild_reason=f"delete_source:{source_id}",
         )
         conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
         conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))

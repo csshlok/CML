@@ -235,6 +235,8 @@ class SemanticSearchResult(BaseModel):
 
 class SemanticSearchResponse(BaseModel):
     query: str
+    backend: str | None = None
+    eligible_count: int | None = None
     results: list[SemanticSearchResult]
 
 

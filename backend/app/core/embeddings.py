@@ -17,6 +17,7 @@ from backend.app.core.encrypted_storage import (
     plaintext_column_for_text,
     source_from_encrypted_row,
 )
+from backend.app.core.turbovec_runtime import apply_source_delta_to_sidecar
 
 HASH_EMBEDDING_DIMENSIONS = 128
 CHUNK_SIZE_WORDS = 180
@@ -410,6 +411,10 @@ def chunk_text(text: str) -> list[str]:
 
 
 def reindex_source_chunks(conn, source: dict) -> int:
+    removed_chunk_ids = [
+        str(row["id"])
+        for row in conn.execute("SELECT id FROM source_chunks WHERE source_id = ?", (source["id"],)).fetchall()
+    ]
     delete_source_chunk_encrypted_content(conn, source_id=source["id"], vault_id=source.get("vault_id"))
     conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source["id"],))
     if source.get("vault_id"):
@@ -427,6 +432,7 @@ def reindex_source_chunks(conn, source: dict) -> int:
     ).fetchall()
     now = utc_now()
     chunk_count = 0
+    added_chunks: list[dict[str, str]] = []
     model_id = active_embedding_model_id()
     tuple_snapshot = query_epoch_snapshot_conn(
         conn,
@@ -440,6 +446,7 @@ def reindex_source_chunks(conn, source: dict) -> int:
         chunks = chunk_text(page_data["raw_text"])
         for index, chunk in enumerate(chunks):
             chunk_id = f"chunk-{uuid4()}"
+            embedding = encode_embedding(embed_text(chunk))
             conn.execute(
                 """
                 INSERT INTO source_chunks (
@@ -470,7 +477,7 @@ def reindex_source_chunks(conn, source: dict) -> int:
                         text=chunk,
                         now=now,
                     ),
-                    "embedding": encode_embedding(embed_text(chunk)),
+                    "embedding": embedding,
                     "embedding_model_id": model_id,
                     "content_hash": content_hash(chunk),
                     "index_version": "v1",
@@ -479,7 +486,17 @@ def reindex_source_chunks(conn, source: dict) -> int:
                     "created_at": now,
                 },
             )
+            added_chunks.append({"chunk_id": chunk_id, "embedding": embedding})
             chunk_count += 1
+    if source.get("vault_id"):
+        apply_source_delta_to_sidecar(
+            conn,
+            vault_id=source["vault_id"],
+            snapshot=tuple_snapshot,
+            removed_chunk_ids=removed_chunk_ids,
+            added_chunks=added_chunks,
+            rebuild_reason=f"reindex_source:{source['id']}",
+        )
     return chunk_count
 
 

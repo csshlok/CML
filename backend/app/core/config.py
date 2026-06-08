@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 384
     embedding_cache_dir: Path | None = None
     allow_hash_embeddings: bool = False
+    vector_search_backend: str = "exact"
+    turbovec_bit_width: int = 4
+    turbovec_min_chunk_count: int = 10000
     ocr_binary_path: Path | None = None
     ocrmypdf_binary_path: Path | None = None
     api_token: str | None = None

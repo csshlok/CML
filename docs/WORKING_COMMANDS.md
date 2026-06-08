@@ -122,6 +122,12 @@ Run backend ingestion/search/vector repair benchmark smoke:
 .\scripts\backend\benchmark-backend.ps1 -Sources 250 -WordsPerSource 240 -ReportPath .tmp\backend-benchmark-report.md
 ```
 
+Run the real-PDF current-vs-turbovec retrieval benchmark:
+
+```powershell
+.\scripts\backend\benchmark-real-vault-retrieval.ps1 -MaxFiles 50 -QueryCount 20 -TopK 10
+```
+
 ## Local OCR
 
 Vault's OCR path is local-only. Scanned PDFs use OCRmyPDF + Tesseract when the local runtime is staged. Images use Tesseract directly. The backend first looks for bundled OCR binaries under:

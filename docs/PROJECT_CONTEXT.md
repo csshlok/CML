@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-06-06
+Last updated: 2026-06-07
 
 ## Operating Rule
 
@@ -132,6 +132,7 @@ Runtime boundary:
 - Dynamic link browser fallback now runs through an isolated worker boundary and browser-derived content is gated as low-trust before synthesis; keep validating packaged/clean-VM behavior before public claims.
 - Keep the written threat model current and treat local API/Bridge auth regressions as release blockers.
 - Continue retrieval threshold tuning beyond the benchmark harness using larger user-owned vaults.
+- Turbovec Phase A and B are now implemented: SQLite stays authoritative, semantic search is routed through a vector-backend abstraction, `turbovec` sidecars are buildable/repairable per `vault_id + derived_state_epoch`, and Phase C remains gated on the benchmark thresholds in `docs/TURBOVEC_INTEGRATION_PLAN.md` before any default-on rollout for healthy vaults with `>= 10,000` chunks.
 - Defer Claude Desktop-specific Bridge smoke for now; Codex-style MCP smoke remains a local protocol check, and external-client claims stay conservative.
 - Keep project context concise enough for session continuity.
 
@@ -164,8 +165,8 @@ Vault ingestion:
 
 Embeddings and clustering:
 
-- Done: default real embedding direction, hash dev fallback boundary, vector repair/compaction/policy endpoints, startup reconciliation, BM25 plus embedding scoring ledger, source-class weighting, threshold benchmark harness, retrieval eval fixtures, real T-drive cancellation smoke, 100-source benchmark script/report export, active-index transition smoke, real second-embedding cache smoke, user-shaped vault benchmark export, 1k benchmark script with timing targets, watched-folder back-pressure limits, cluster merge artifacts and rollback, and active-embedding filtering across retrieval/search paths so mixed embedding spaces are not ranked together.
-- Remaining: broader threshold tuning on user-owned vaults.
+- Done: default real embedding direction, hash dev fallback boundary, vector repair/compaction/policy endpoints, startup reconciliation, BM25 plus embedding scoring ledger, source-class weighting, threshold benchmark harness, retrieval eval fixtures, real T-drive cancellation smoke, 100-source benchmark script/report export, active-index transition smoke, real second-embedding cache smoke, user-shaped vault benchmark export, 1k benchmark script with timing targets, watched-folder back-pressure limits, cluster merge artifacts and rollback, active-embedding filtering across retrieval/search paths so mixed embedding spaces are not ranked together, and completed turbovec Phase A/B wiring: benchmark harness, vector-backend abstraction, live semantic-search integration, sidecar build/status/repair endpoints, incremental sidecar updates on reindex/delete, manifest validation/path hardening, and startup-repair coverage.
+- Remaining: broader threshold tuning on user-owned vaults, current exact-scan breaking-point measurement on larger natural PDF corpora, and the locked Phase C acceptance benchmark pass for default-on `turbovec` on healthy `>= 10,000`-chunk vaults.
 
 Chat/context routing:
 
@@ -285,6 +286,8 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Completed Security Phase 10 Bridge approval and identity: secured Bridge runtime now requires approved client tokens instead of the shared token, public approval requests/polling are time-bounded and rate-limited, admin review/rejection stays behind the local API token, approval/client/audit metadata uses encrypted storage when vault security is active, Bridge UI shows claimed-vs-observed identity signals, revocation blocks future calls, and bounded Bridge request/audit/usage history is recorded for scale.
 - Completed Security Phase 13 packaging and runtime hardening: packaged startup now verifies a helper hash manifest before backend launch, audits helper-load paths against writable runtime roots, launches packaged helpers only by absolute path, constrains packaged backend child `PATH`/Python environment, ships helper-manifest/package-layout audit tooling, and fails closed on helper/runtime mismatches.
 - Completed Security Phase 14 end-to-end security QA: added reproducible clean-vault, large-vault, interrupted-flow, and offline-at-rest security smokes plus a combined `scripts/security/run-security-e2e.ps1` runner; the current measured pass imported/indexed/retrieved `1200` documents with completed reconciliation, verified Bridge approval/revocation under lock/unlock rules, and found zero plaintext marker leaks in the secured-vault data directory.
+- Completed turbovec Phase A and B for retrieval scale: [backend/app/core/turbovec_runtime.py](../backend/app/core/turbovec_runtime.py) now provides the vector-backend abstraction, live semantic-search routing, sidecar build/status/repair flows, incremental reindex/delete updates, manifest path/schema validation, exact-scan fail-closed behavior, and startup-repair integration; [backend/tests/test_turbovec_runtime.py](../backend/tests/test_turbovec_runtime.py) adds regression coverage for published-sidecar search, corrupt-manifest fallback, startup repair rebuilds, sidecar management routes, and source-deletion updates. Initial benchmark evidence remains the same: an 8-PDF real-corpus run produced 37 chunks and showed `6.758 ms` average current search-only latency versus `0.166 ms` for a 4-bit turbovec prototype, with `0.9583` average overlap@8, while a replicated 100K-chunk stress pass measured the current Python exact-scan path at roughly `9.8-19.5 s` search-only per query versus `3.4-11.7 ms` for the turbovec prototype.
+- Verification for the turbovec Phase A/B pass: `.venv\Scripts\python -m unittest backend.tests.test_turbovec_runtime backend.tests.test_turbovec_benchmark backend.tests.test_system_vault_lock_and_embeddings -v` ran `72` tests and passed; `git diff --check` passed with whitespace warnings only from existing CRLF normalization behavior.
 - Implemented the first dual-model setup pass: active chat/expert model roles in the registry, role-aware activation APIs, pair-aware onboarding/settings wording, retrieval-as-citation-authority wording, and role-aware readiness checks.
 - Hotfixed mixed-embedding correctness across core retrieval paths: semantic search, scoring ledger, expanded analysis, and cluster suggestion reads now filter by the active embedding model and index version instead of silently mixing vector spaces.
 - Updated security documentation to explicitly accept and document the current dynamic-link browser fallback risk and the trusted-client Bridge exfiltration boundary instead of implying stronger hardening than the code currently provides.
@@ -359,6 +362,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Packaging smoke scripts clear inherited `ELECTRON_RUN_AS_NODE`; otherwise packaged Electron launches in Node mode and will not execute app startup.
 - Hash embeddings are development-only and must not be a silent production fallback.
 - SQLite is authoritative; vector indexes are derived and rebuildable.
+- Turbovec sidecars are sensitive derived state, not harmless cache. Phase B stores them only under `<vault>/.cml/derived-artifacts/vectors`, keeps them unencrypted at rest for now, validates that manifest `tvim_path` stays inside the expected epoch directory, and fails closed to exact scan plus repair when the sidecar is missing, corrupt, stale, or unhealthy.
 - Deleted sources must be excluded at SQLite/filter layer immediately, before async vector cleanup.
 - Startup order: vault ownership, SQLite integrity/schema/migrations, job recovery, vector/index reconciliation, runtime detection, then API/UI traffic.
 - `complete_analysis` is reserved for future map/reduce. Current broad path is `expanded_analysis`.

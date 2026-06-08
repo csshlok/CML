@@ -2,6 +2,7 @@ from backend.app.core.background_jobs import recover_interrupted_jobs
 from backend.app.core.database import connect
 from backend.app.core.startup_checks import verify_schema_version, verify_sqlite_integrity
 from backend.app.core.startup_status import read_startup_status
+from backend.app.core.turbovec_runtime import repair_turbovec_sidecars, turbovec_sidecar_repair_plan
 from backend.app.core.vector_maintenance import vector_repair_plan
 
 
@@ -13,6 +14,7 @@ def startup_repair_summary(*, apply_recovery: bool = False) -> dict:
         "interrupted_jobs": {},
         "interrupted_migrations": [],
         "vector_repair": {},
+        "turbovec_sidecars": {},
         "safe_degraded_mode": False,
         "issues": [],
     }
@@ -46,6 +48,14 @@ def startup_repair_summary(*, apply_recovery: bool = False) -> dict:
         summary["vector_repair"] = vector_repair_plan()
     except Exception as exc:
         summary["issues"].append(f"vector_repair_plan_failed: {exc}")
+
+    try:
+        if apply_recovery:
+            summary["turbovec_sidecars"] = repair_turbovec_sidecars()
+        else:
+            summary["turbovec_sidecars"] = turbovec_sidecar_repair_plan()
+    except Exception as exc:
+        summary["issues"].append(f"turbovec_sidecar_repair_failed: {exc}")
 
     return summary
 

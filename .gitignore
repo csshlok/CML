@@ -50,6 +50,7 @@ logs/
 !.env.example
 *.local
 .tmp/
+tmp/
 .playwright-mcp/
 **/.playwright-mcp/
 .wrangler/
