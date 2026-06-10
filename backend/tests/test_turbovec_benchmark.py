@@ -75,7 +75,10 @@ class TurbovecBenchmarkTests(unittest.TestCase):
 
     def test_benchmark_turbovec_scan_returns_results(self) -> None:
         from backend.app.core.embeddings import embed_text, encode_embedding
-        from backend.app.core.turbovec_benchmark import BenchmarkChunkRow, benchmark_turbovec_scan
+        from backend.app.core.turbovec_benchmark import BenchmarkChunkRow, IdMapIndex, benchmark_turbovec_scan
+
+        if IdMapIndex is None:
+            self.skipTest("turbovec is not installed in this Python environment")
 
         rows = [
             BenchmarkChunkRow("chunk-1", "source-1", "One", "alpha beta gamma delta", encode_embedding(embed_text("alpha beta gamma delta"))),

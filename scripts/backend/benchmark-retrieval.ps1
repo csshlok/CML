@@ -13,6 +13,29 @@ if (-not (Test-Path $python)) {
 $env:CML_ALLOW_HASH_EMBEDDINGS = "1"
 $env:CML_EMBEDDING_PROVIDER = "hash"
 
+if ($ReportPath) {
+  $resolvedReportPath = [System.IO.Path]::GetFullPath($ReportPath)
+  $extension = [System.IO.Path]::GetExtension($resolvedReportPath)
+  if ($extension) {
+    $reportDir = Split-Path -Parent $resolvedReportPath
+    if ($reportDir) {
+      New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
+      $env:CML_DATA_DIR = $reportDir
+    }
+    $env:CML_RETRIEVAL_BENCHMARK_REPORT_PATH = $resolvedReportPath
+  } else {
+    New-Item -ItemType Directory -Force -Path $resolvedReportPath | Out-Null
+    $env:CML_DATA_DIR = $resolvedReportPath
+    $env:CML_RETRIEVAL_BENCHMARK_REPORT_PATH = Join-Path $resolvedReportPath "retrieval-benchmark-report.json"
+  }
+  if ($env:CML_DATA_DIR) {
+    $env:CML_DATABASE_PATH = Join-Path $env:CML_DATA_DIR "retrieval-benchmark.sqlite3"
+    if (Test-Path -LiteralPath $env:CML_DATABASE_PATH) {
+      Remove-Item -Force -LiteralPath $env:CML_DATABASE_PATH
+    }
+  }
+}
+
 $code = @'
 import json
 import os
@@ -78,6 +101,15 @@ report = export_benchmark_report(
         {"query": "chat transcript source weighting", "must_include_source_ids": ["benchmark-source-0002"]},
     ],
 )
+detailed_report = {}
+json_path = Path(report.get("json_path") or "")
+if json_path.exists():
+    try:
+        detailed_report = json.loads(json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        detailed_report = {}
+fixture_count = int(detailed_report.get("fixture_count") or 0)
+passing_fixture_count = sum(1 for row in detailed_report.get("rows", []) if row.get("passes_fixture"))
 db_size = Path(settings.database_path).stat().st_size if Path(settings.database_path).exists() else 0
 targets = {
     "source_count": sources,
@@ -104,11 +136,41 @@ targets = {
     "compact_result": compact_result,
     "total_seconds": round(time.perf_counter() - started, 4),
 }
-print(json.dumps({**report, "targets": targets}, indent=2))
+result = {
+    **report,
+    "fixture_count": fixture_count,
+    "passing_fixture_count": passing_fixture_count,
+    "detailed_report_path": str(json_path) if json_path.exists() else "",
+    "targets": targets,
+}
+report_path = os.environ.get("CML_RETRIEVAL_BENCHMARK_REPORT_PATH", "").strip()
+if report_path:
+    report_file = Path(report_path)
+    report_file.parent.mkdir(parents=True, exist_ok=True)
+    report_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    markdown_path = report_file.with_suffix(".md")
+    markdown_path.write_text(
+        "\n".join(
+            [
+                "# Retrieval Benchmark Report",
+                "",
+                f"- Sources: {targets['source_count']}",
+                f"- Index seconds: {targets['index_seconds']}",
+                f"- Query latency seconds: {targets['query_latency_seconds']}",
+                f"- Max query latency seconds: {targets['max_query_latency_seconds']}",
+                f"- Compact seconds: {targets['compact_seconds']}",
+                f"- Database bytes: {targets['database_bytes']}",
+                f"- Passes low-spec targets: {targets['passes_low_spec_targets']}",
+                f"- Fixture count: {fixture_count}",
+                f"- Passing fixture count: {passing_fixture_count}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result["written_reports"] = {"json": str(report_file), "markdown": str(markdown_path)}
+print(json.dumps(result, indent=2))
 '@
 
 $env:CML_RETRIEVAL_BENCHMARK_SOURCES = "$Sources"
-if ($ReportPath) {
-  $env:CML_DATA_DIR = $ReportPath
-}
 $code | & $python -

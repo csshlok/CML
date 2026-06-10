@@ -8,9 +8,9 @@ Audit source: `docs/RELEASE_AUDIT.md`
 
 | Gate | Status | Evidence |
 | --- | --- | --- |
-| Backend regression suite | Blocked in this pass | Python launcher is broken on this machine, so `pytest` could not start. Prior audit evidence recorded `189 passed, 1 skipped`. |
+| Backend regression suite | Passed | `.venv\Scripts\python.exe -m pytest -q backend/tests` completed with `260 passed, 3 skipped`. |
 | Desktop production build | Passed | `npm run build` passed after rerunning outside the filesystem sandbox. |
-| Retrieval benchmark evidence | Open | `docs/RETRIEVAL_BENCHMARKS.md` records the blocked benchmark attempt and prior audit context. Larger user-owned vault benchmark evidence is still required. |
+| Retrieval benchmark evidence | Partially passed | 100-source and 1k synthetic benchmark reports were generated under `.tmp\phase5-retrieval-100` and `.tmp\phase5-retrieval-1k`; larger user-owned/natural-corpus benchmark evidence is still required. |
 | Real LoRA trainer smoke | Open | `docs/EXPERT_VALIDATION_REPORT.md` records that real smoke fails without `CML_LORA_TRAINER_COMMAND`. No real trainer run was available. |
 | Real LoRA runtime smoke | Open | No verified adapter path and accepted local Transformers base model were available. |
 | Live expert quality benchmark | Open | No live adapter-backed quality comparison was available. |
@@ -39,6 +39,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\benchmark-re
 ```
 
 Result: blocked by missing Python launcher target.
+Phase 5 rerun: passed for 100-source and 1k-source synthetic benchmarks; see `docs/RETRIEVAL_BENCHMARKS.md`.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\smoke-lora-expert.ps1 -ReportPath .tmp\phase4-lora-expert-real-report.json
@@ -46,9 +47,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\smoke-lora-e
 
 Result: failed because `CML_LORA_TRAINER_COMMAND` is required for real LoRA smoke.
 
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q backend/tests
+```
+
+Result: `260 passed, 3 skipped`.
+
 ## Release Decision
 
 Public V1 is not release-cleared.
 
-The missing validation artifacts have been created, but the audit's substantive blockers remain open where this workspace lacks the required package resources, clean VM, working Python validation environment, real LoRA trainer command, accepted local expert base model, and live adapter benchmark evidence.
-
+Backend and synthetic retrieval validation have advanced since Phase 4, but the audit's substantive blockers remain open where this workspace lacks the required package resources, clean VM, real LoRA trainer command, accepted local expert base model, and live adapter benchmark evidence.

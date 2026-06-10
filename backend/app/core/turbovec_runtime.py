@@ -621,18 +621,15 @@ def _mark_manifest_unhealthy(conn, vault_id: str, epoch: int, *, error: str) -> 
 
 
 def _active_snapshot(conn, vault_id: str) -> dict:
+    from backend.app.core.vector_maintenance import active_embedding_selector
+
+    selector = active_embedding_selector()
     return query_epoch_snapshot_conn(
         conn,
         vault_id,
-        embedding_model_id=_active_embedding_model_id(),
-        index_version="v1",
+        embedding_model_id=selector["embedding_model_id"],
+        index_version=selector["index_version"],
     )
-
-
-def _active_embedding_model_id() -> str:
-    from backend.app.core.embeddings import active_embedding_model_id
-
-    return active_embedding_model_id()
 
 
 def _decode_embedding(raw: str) -> list[float]:

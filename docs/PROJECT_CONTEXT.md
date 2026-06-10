@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-06-07
+Last updated: 2026-06-10
 
 ## Operating Rule
 
@@ -114,24 +114,25 @@ Runtime boundary:
 | Vault ingestion | Complete for current scope | `[##########] 100%` | Clean VM confirmation only |
 | Embeddings and clustering | In progress | `[##########] 99%` | Broader threshold tuning on real user vaults |
 | Chat/context routing | In progress | `[##########] 97%` | Complete-scope map/reduce, token budgets, runtime failure UX |
-| Compulsory cluster experts | In progress | `[#########-] 89%` | Real machine validation still required for LLaMA Factory smoke, live adapter prompt run, and live quality benchmark |
+| Compulsory cluster experts | In progress | `[#########-] 90%` | Real machine validation still required for LLaMA Factory smoke, live adapter prompt run, and live quality benchmark |
 | Context Bridge | In progress | `[#########-] 95%` | Capture UX polish, clearer privacy copy, and later external-client smoke |
-| Packaging/install | In progress | `[##########] 99%` | Clean VM validation of bundled expert runtime |
-| QA/hardening | In progress | `[##########] 99%` | Clean VM package validation and larger user-owned vault benchmarks |
+| Packaging/install | In progress | `[#########-] 96%` | Current unpacked artifact is missing packaged runtime resources; rebuild and clean VM validation are required |
+| QA/hardening | In progress | `[##########] 99%` | Clean VM package validation, larger user-owned vault benchmarks, and hardware-aware model recommendation QA |
 | Security | Complete except LoRA Phase 11 | `[##########] 100%` | Phases 0-10 and 12-14 complete; only LoRA-specific Phase 11 is intentionally deferred until LoRA is ready |
 
 ## Current Critical Path
 
-- Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
+- Rebuild or restage the Windows package so `win-unpacked\resources` contains backend, Python runtimes, expert runtime, Playwright runtime, OCR manifest, and helper manifest; then rerun package validation before clean VM execution.
+- Execute clean Windows VM validation against a complete package: no dev Python, no Node, no preinstalled OCR, cold first-run.
 - Keep the non-LoRA security patch closed while LoRA-specific Phase 11 remains intentionally deferred until the LoRA runtime/training path is ready to harden.
 - Keep Windows-only public V1 criteria. If verified LoRA or other public gates fail, delay release; do not ship a private demo fallback.
 - Verify real adapter training and runtime loading before any broad "trained expert" claim.
-- Compulsory expert work now has stricter dataset/diversity/quality gates, evaluation harness, smoke scripts, and Expert tab visibility, but still needs a real trainer command/model path before public claims.
+- Compulsory expert work now has stricter dataset/diversity/quality gates, evaluation harness, passing CI scaffold smoke, runtime dependency visibility, and Expert tab visibility, but still needs a real trainer command/model path before public claims.
 - Validate the new accepted/rejected model contract on a clean Windows machine with the bundled expert runtime and one imported approved checkpoint.
 - Update threat/privacy docs so Bridge is described honestly as token/scoped but not meaningfully throttled against repeated corpus walking by a trusted client.
 - Dynamic link browser fallback now runs through an isolated worker boundary and browser-derived content is gated as low-trust before synthesis; keep validating packaged/clean-VM behavior before public claims.
 - Keep the written threat model current and treat local API/Bridge auth regressions as release blockers.
-- Continue retrieval threshold tuning beyond the benchmark harness using larger user-owned vaults.
+- Continue retrieval threshold tuning beyond the synthetic 1k benchmark using larger user-owned or natural-corpus vaults.
 - Turbovec Phase A and B are now implemented: SQLite stays authoritative, semantic search is routed through a vector-backend abstraction, `turbovec` sidecars are buildable/repairable per `vault_id + derived_state_epoch`, and Phase C remains gated on the benchmark thresholds in `docs/TURBOVEC_INTEGRATION_PLAN.md` before any default-on rollout for healthy vaults with `>= 10,000` chunks.
 - Defer Claude Desktop-specific Bridge smoke for now; Codex-style MCP smoke remains a local protocol check, and external-client claims stay conservative.
 - Keep project context concise enough for session continuity.
@@ -165,7 +166,7 @@ Vault ingestion:
 
 Embeddings and clustering:
 
-- Done: default real embedding direction, hash dev fallback boundary, vector repair/compaction/policy endpoints, startup reconciliation, BM25 plus embedding scoring ledger, source-class weighting, threshold benchmark harness, retrieval eval fixtures, real T-drive cancellation smoke, 100-source benchmark script/report export, active-index transition smoke, real second-embedding cache smoke, user-shaped vault benchmark export, 1k benchmark script with timing targets, watched-folder back-pressure limits, cluster merge artifacts and rollback, active-embedding filtering across retrieval/search paths so mixed embedding spaces are not ranked together, and completed turbovec Phase A/B wiring: benchmark harness, vector-backend abstraction, live semantic-search integration, sidecar build/status/repair endpoints, incremental sidecar updates on reindex/delete, manifest validation/path hardening, and startup-repair coverage.
+- Done: default real embedding direction, hash dev fallback boundary, vector repair/compaction/policy endpoints, startup reconciliation, BM25 plus embedding scoring ledger, source-class weighting, threshold benchmark harness, retrieval eval fixtures, real T-drive cancellation smoke, 100-source benchmark script/report export, active-index transition smoke, real second-embedding cache smoke, user-shaped vault benchmark export, 1k benchmark script with timing targets, watched-folder back-pressure limits, cluster merge artifacts and rollback, active-embedding filtering across retrieval/search paths so mixed embedding spaces are not ranked together, exact semantic search now reads the active vector-index policy selector, and completed turbovec Phase A/B wiring: benchmark harness, vector-backend abstraction, live semantic-search integration, sidecar build/status/repair endpoints, incremental sidecar updates on reindex/delete, manifest validation/path hardening, and startup-repair coverage.
 - Remaining: broader threshold tuning on user-owned vaults, current exact-scan breaking-point measurement on larger natural PDF corpora, and the locked Phase C acceptance benchmark pass for default-on `turbovec` on healthy `>= 10,000`-chunk vaults.
 
 Chat/context routing:
@@ -175,7 +176,7 @@ Chat/context routing:
 
 Compulsory cluster experts:
 
-- Done: verified-LoRA contract scaffold, dataset export with source/token/diversity counts, duplicate-ratio gate, artifact schema, metrics, activation, rollback, delete guardrails, shell-free trainer process boundary, Windows-path trainer tests, stricter graduation contract, adapter config/weight validation, runtime-load plan metadata, deterministic expert evaluation harness, retrieval-vs-adapter delta gate, stale-adapter detection, Expert tab status UI, and repeatable LoRA expert/runtime smoke scripts.
+- Done: verified-LoRA contract scaffold, dataset export with source/token/diversity counts, duplicate-ratio gate, artifact schema, metrics, activation, rollback, delete guardrails, shell-free trainer process boundary, Windows-path trainer tests, stricter graduation contract, adapter config/weight validation, runtime-load plan metadata, deterministic expert evaluation harness, retrieval-vs-adapter delta gate, stale-adapter detection, Expert tab status UI, and a passing CI-only LoRA expert scaffold smoke that drains queued source-indexing and training jobs.
 - Remaining: execute the new Transformers/PEFT runtime smoke on a real machine with an installed accepted local base model, record a real LLaMA Factory trainer run against that model, expand hardware matrix/time estimates, replace deterministic adapter scoring with a live adapter-backed quality benchmark, and convert the model story from one-family wording to an explicit approved chat/expert pairing matrix.
 
 Context Bridge:
@@ -185,13 +186,13 @@ Context Bridge:
 
 Packaging/install:
 
-- Done: Windows package scripts, contributor requirements, OCR runtime staging script, local staged OCR runtime, valid rebuilt NSIS installer, silent install/uninstall smoke, packaged OCR verification, packaged model/embedding setup smoke, clean-machine validation script, generated-OCR full-vault packaged smoke, packaged dynamic-link/browser-runtime smoke, packaged interrupted-migration drill, packaged app launch smoke, AGPL-compatible Ghostscript release policy.
-- Remaining: clean VM execution. Current contributor environment does not have a VM installed, so this gate is still unproven rather than silently assumed complete.
+- Done: Windows package scripts, contributor requirements, OCR runtime staging script, local staged OCR runtime, NSIS installer path, silent install/uninstall smoke scripts, packaged OCR/model/embedding/full-vault/dynamic-link/migration/app-launch smoke scripts, clean-machine validation script, and AGPL-compatible Ghostscript release policy.
+- Remaining: current `apps/desktop/release/win-unpacked` is not a complete validation artifact because `resources\backend`, `resources\python-runtime`, `resources\expert-python-runtime`, `resources\ms-playwright`, `resources\backend\bin\ocr\manifest.json`, and `resources\helper-manifest.json` are missing. Rebuild/restage package resources, then rerun packaged runtime smokes and clean VM execution.
 
 QA/hardening:
 
-- Done: broad backend regression coverage, atomic job concurrency tests, local API auth/identity tests, OCR benchmarks, audits, diagnostic redaction/log-rotation policy, backend benchmark scripts, disposable-vault delete cleanup tests, failed embedding-write retry test, dynamic-link browser-runtime smoke with Playwright on `T:`, Codex-style MCP smoke, real second-embedding model/cache smoke, repeatable packaging/security smoke scripts, npm and Python vulnerability audits, threat model, 1k benchmark harness, startup stale-phase validation tests, recovery drills endpoint, first-run readiness gate tests.
-- Remaining: larger user-owned vault benchmarks, clean VM package validation, hardware-aware model recommendation QA.
+- Done: broad backend regression coverage, atomic job concurrency tests, local API auth/identity tests, OCR benchmarks, audits, diagnostic redaction/log-rotation policy, backend benchmark scripts with durable JSON/Markdown report output, disposable-vault delete cleanup tests, failed embedding-write retry test, dynamic-link browser-runtime smoke with Playwright on `T:`, Codex-style MCP smoke, real second-embedding model/cache smoke, repeatable packaging/security smoke scripts, npm and Python vulnerability audits, threat model, synthetic 1k benchmark harness/pass, startup stale-phase validation tests, recovery drills endpoint, first-run readiness gate tests.
+- Remaining: larger user-owned/natural-corpus vault benchmarks, clean VM package validation, hardware-aware model recommendation QA.
 
 Security:
 
@@ -218,7 +219,7 @@ These are release gates, not polish.
 - Chat recovery: interrupted generations need durable timeline placeholders, retry actions, and no fake assistant messages.
 - Complete analysis: current broad rerun is `expanded_analysis`; reserve `complete_analysis` for future evidence-packet map/reduce and return `501` if requested before implementation.
 - Deletion graph: deleted sensitive content must disappear from retrieval/search immediately before async cleanup.
-- Diagnostics: log rotation policy exists and full-vault unpacked package smoke covers diagnostics export; clean VM execution remains.
+- Diagnostics: log rotation policy exists; current package artifact no longer proves full-vault diagnostics export because packaged runtime resources are missing. Re-run full-vault package smoke after rebuilding/restaging.
 - MCP Bridge: Codex-style JSON-RPC smoke passed; keep external-client readiness claims conservative while Claude Desktop-specific smoke is deferred.
 - Bridge privacy boundary: current Bridge auth/scope model is not a meaningful anti-exfiltration throttle once a trusted client has a valid token for an allowed vault/cluster set. Threat-model wording and UI privacy language must say this plainly.
 - Bridge approval boundary: Phase 10 now enforces locked-state failure, public approval request creation with short-lived polling codes, explicit claimed-vs-observed identity UI, shared-token disablement for secured runtime Bridge calls, encrypted approval/client metadata, revocation, audit events, and bounded Bridge usage history.
@@ -229,7 +230,7 @@ These are release gates, not polish.
 - LoRA trust boundary: public V1 requires dataset manifest review, low-trust source exclusion by default, runtime adapter/base-model hash verification, and no grandfathering of pre-integrity artifacts as trusted.
 - Expert runtime sizing: current expert runtime is a separate Transformers/PEFT load path, not a lightweight extension of the chat runtime. Public expert-mode hardware requirements must be measured and stated honestly.
 - Model recommendation: public V1 must recommend safe synthesis/embedding/expert setup by detected system tier, enforce one approved model family contract, and reject incompatible custom imports explicitly.
-- OCR/package: packaged OCR runtime, generated OCR fixture smoke, dynamic-link smoke, migration drill, and installer smoke pass; Ghostscript path is AGPL-compatible public release.
+- OCR/package: package smoke scripts exist and previous package passes are recorded, but the current `win-unpacked` artifact is missing runtime resources and fails packaged runtime validation. Ghostscript path remains AGPL-compatible public release.
 - Dynamic-link browser fallback: Playwright/Chromium fallback now uses an isolated worker with request budgets, private/local/file blocking, download disabling, parent-side output validation, browser-derived low-trust provenance, and pre-synthesis retrieval trust gates. Remaining public-V1 work is packaged/clean-VM verification.
 - Cloud-synced vault path safety: selecting a OneDrive/iCloud/other synced vault path is currently not robustly warned/blocked. Treat this as a storage-integrity gap for public V1.
 - Diagnostics redaction: current bundle redaction is regex-based and does not yet amount to a rigorous "no secrets can leak" guarantee.
@@ -272,6 +273,10 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 
 ## Recent Completed Work
 
+- Phase 5 validation reconciliation: fixed exact semantic search to honor the active vector-index policy selector, hardened retrieval benchmark report output, hardened the CI-only LoRA expert smoke to drain queued indexing/training jobs, generated Phase 5 benchmark/package/expert evidence, and verified `.venv\Scripts\python.exe -m pytest -q backend/tests` with `260 passed, 3 skipped`.
+- Phase 5 retrieval evidence: `scripts/backend/benchmark-1k-vault.ps1 -ReportRoot .tmp\phase5-retrieval-1k -Sources 1000` passed with `1.7232s` indexing, `0.4679s` max query latency, `0.0521s` compaction, `20,692,992` database bytes, `3` fixtures, and `15` passing threshold rows.
+- Phase 5 expert evidence: `scripts/backend/smoke-lora-expert.ps1 -AllowTestTrainer -ReportPath .tmp\phase5-lora-expert-scaffold-report.json` passed with one CI scaffold adapter, runtime dependency imports available, and `training_ready`; real public LoRA remains blocked without `CML_LORA_TRAINER_COMMAND` and a real accepted base model.
+- Phase 5 package evidence: `scripts/packaging/validate-clean-machine-package.ps1` and `scripts/packaging/smoke-packaged-runtime.ps1` fail against current `apps/desktop/release/win-unpacked` because packaged runtime resources are absent. Treat current package artifacts as incomplete until rebuilt/restaged.
 - Added local-only security build specs for public V1: security architecture, unlock state machine, derived-state/migration rules, and the full security patch build plan; updated tracked project context and threat-model language with approved security decisions.
 - Completed Security Phase 0 baseline audit: route classifications, renderer raw-HTML audit, helper executable/runtime-writable directory map, ingestion/parser/browser surface list, and security build-freeze rule are written in a local-only ignored document.
 - Completed Security Phase 1 crypto and vault metadata foundation: added compact vault security metadata schema/migration, Argon2id wrapping primitives, offline recovery-key unlock/reset, sensitive-action passphrase verification, redacted public metadata, process-memory-only key state, and focused backend tests.
@@ -298,7 +303,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Expert validation for this pass: focused backend/source tests ran 102 OK with 1 skipped; full backend discovery ran 178 OK with 1 skipped; `ruff check backend` passed; `npm run lint` passed with existing warnings only; `npm run build` passed.
 - Added `docs/UI_ARCHITECTURE.md` as the detailed UI source of truth covering visual style, color tokens, tab requirements, component contracts, cross-cutting states, accessibility, responsive desktop behavior, and public V1 UI gates.
 - Completed the full post-review implementation pass: atomic background job claiming, concurrent `/jobs/run-once` tests, fail-closed local API auth, authenticated backend identity handshake for Electron/frontend probes, FastAPI lifespan migration, shell-free LoRA trainer execution, Windows-path trainer tests, Ruff cleanup, split desktop lint scope, and packaged Windows validation.
-- Current package artifacts: `apps/desktop/release/win-unpacked` and `apps/desktop/release/CML-0.1.0-Setup.exe` are valid local artifacts from the 2026-06-04 rebuild.
+- Current package artifacts: `apps/desktop/release/win-unpacked` and `apps/desktop/release/CML-0.1.0-Setup.exe` exist, but the current unpacked package is not release-valid because required packaged resources are missing.
 - Verification for this pass: full backend discovery ran 175 tests OK with 1 skipped; Electron behavior tests ran 8 OK; Electron token-store tests ran 4 OK; `ruff check backend` passed; `npm run lint` passed with existing warnings only; `npm run build` passed; `scripts/packaging/package-windows.ps1` passed; packaged runtime, clean-machine structure, full-vault OCR, dynamic-link, migration-drill, and app-launch smokes passed against `apps/desktop/release/win-unpacked`.
 - Completed the non-Claude remainder of the current 10-step build list without touching LoRA: valid NSIS rebuild, generated OCR package smoke, packaged dynamic-link/browser runtime, real GGUF SHA-256 manifest pins, user-owned retrieval benchmark harness, Settings evidence-retention controls, update/migration policy, packaged interrupted-migration drill, AGPL-compatible Ghostscript policy, clean-machine validator hardening, and package/security verification.
 - Previous tiny `.partial` setup files remain explicitly non-distributable.
@@ -352,7 +357,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Model policy is now explicit: single approved family contract, current Qwen/Phi/Gemma defaults remain the default choices, and custom models are only accepted or rejected after compatibility validation.
 - Q100 from the devil's advocate review is non-actionable per user instruction; do not use it to drive project decisions.
 - User-facing "trained expert" language is allowed only after real adapter graduation.
-- No package rebuild work unless explicitly requested; the latest requested rebuild was completed on 2026-06-04 and passed packaged smoke gates on this machine.
+- No package rebuild work unless explicitly requested; current `apps/desktop/release/win-unpacked` fails package validation until backend/runtime resources are restaged and rebuilt.
 - No UI implementation unless explicitly requested; dark version and minimized/narrow desktop version are noted future requirements.
 - Do not delete or alter `UI-ref/`.
 - Playwright browser runtime for local dynamic-link smoke is installed on `T:\CML-playwright-browsers`; the packaged app now also stages `resources/ms-playwright`; contributor backend requirements include `playwright==1.60.0`.

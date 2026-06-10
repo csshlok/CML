@@ -20,6 +20,26 @@ Result: failed.
 
 The generated report is `.tmp\phase4-clean-machine-package-validation.json`.
 
+Phase 5 rerun:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\validate-clean-machine-package.ps1 -PackageRoot apps\desktop\release\win-unpacked -ReportPath .tmp\phase5-clean-machine-package-validation.json
+```
+
+Result: failed with the same missing packaged resource checks.
+
+Packaged runtime smoke:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\smoke-packaged-runtime.ps1 -PackageRoot apps\desktop\release\win-unpacked
+```
+
+Result:
+
+```text
+Packaged Python runtime not found: C:\Users\KIIT0001\Desktop\Project-2\CML\apps\desktop\release\win-unpacked\resources\python-runtime\Scripts\python.exe
+```
+
 ## Failed Checks
 
 | Check | Expected path | Result |
@@ -56,5 +76,4 @@ Because Node is present and this is not a fresh VM, this machine does not satisf
 
 Status: not release-cleared.
 
-This artifact satisfies the missing Windows VM validation document requirement, but it does not close the clean-machine blocker. The current unpacked package is missing required runtime resources before VM validation can be considered meaningful.
-
+This artifact satisfies the Windows VM validation document requirement, but it does not close the clean-machine blocker. The current unpacked package is missing required runtime resources before VM validation can be considered meaningful.

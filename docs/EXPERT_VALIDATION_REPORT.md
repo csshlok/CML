@@ -12,10 +12,11 @@ The audit treats verified real LoRA expert training and runtime loading as block
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| CI scaffold smoke | Blocked in this pass | `scripts\backend\smoke-lora-expert.ps1 -AllowTestTrainer` could not start because the local Python launcher resolves to a missing Windows Store Python executable. |
+| CI scaffold smoke | Passed | `scripts\backend\smoke-lora-expert.ps1 -AllowTestTrainer -ReportPath .tmp\phase5-lora-expert-scaffold-report.json` produced one ready scaffold adapter artifact and `training_ready` expert status. This is not public release evidence. |
 | Real trainer smoke | Failed as expected | `scripts\backend\smoke-lora-expert.ps1` fails without `CML_LORA_TRAINER_COMMAND`, which is the correct release gate behavior. |
 | Real adapter runtime smoke | Not run | No verified real adapter path and accepted local Transformers base-model path were available in this workspace. |
-| Live adapter quality benchmark | Not run | No real trained adapter was available, so retrieval-vs-adapter quality proof remains missing. |
+| Live adapter quality benchmark | Not run | The scaffold smoke produced deterministic retrieval-vs-adapter metrics, but no real trained adapter was available, so release-grade quality proof remains missing. |
+| Backend expert regression coverage | Passed | Full backend suite: `260 passed, 3 skipped` on 2026-06-10. |
 
 ## Command Evidence
 
@@ -26,8 +27,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\smoke-lora-e
 Result:
 
 ```text
-No Python at '"C:\Users\KIIT0001\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\python.exe'
+LoRA expert smoke report written to C:\Users\KIIT0001\Desktop\Project-2\CML\.tmp\phase5-lora-expert-scaffold-report.json
 ```
+
+Report highlights:
+
+- `processed_jobs_total`: `4`
+- `artifact_count`: `1`
+- `expert_status.expert_status`: `training_ready`
+- `expert_status.trained`: `true`
+- `runtime_load.available`: `true`
+- `runtime_dependencies`: `torch`, `transformers`, and `peft` importable in `.venv`
+- `retrieval_vs_adapter.passes`: `true`
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\smoke-lora-expert.ps1 -ReportPath .tmp\phase4-lora-expert-real-report.json
@@ -54,5 +65,4 @@ CML must not claim that a cluster has a trained expert until all of these are tr
 
 Status: not release-cleared.
 
-This report creates the missing validation artifact required by the audit, but the real expert blocker remains open. The implementation correctly refuses to treat the CI-only trainer as release evidence.
-
+The repeatable scaffold path is now validated, but the real expert blocker remains open. The implementation correctly refuses to treat the CI-only trainer as release evidence.

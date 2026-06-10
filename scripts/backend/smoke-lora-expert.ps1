@@ -29,6 +29,7 @@ $pythonScript = @'
 import json
 import os
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -50,7 +51,7 @@ get_settings.cache_clear()
 
 from backend.app.api.routes.clusters import get_expert_status, list_expert_artifacts, queue_expert_retrain
 from backend.app.api.routes.sources import create_source
-from backend.app.core.background_jobs import run_due_jobs_once
+from backend.app.core.background_jobs import job_queue_status, run_due_jobs_once
 from backend.app.core.database import connect, init_db, utc_now
 from backend.app.core.expert_evaluation import build_expert_evaluation_plan, compare_retrieval_vs_adapter
 from backend.app.core.training_dataset import build_cluster_dataset
@@ -81,9 +82,34 @@ for index in range(3):
     )
 
 hardware = {"training_supported": True, "hardware_tier": "smoke", "detail": "smoke hardware override"}
-with patch("backend.app.core.expert_lifecycle.hardware_status", return_value=hardware), patch("backend.app.core.hardware.hardware_status", return_value=hardware):
+preferred_model = None
+if os.environ.get("CML_ALLOW_LORA_TEST_TRAINER") == "1":
+    preferred_model = {
+        "id": "smoke-base-model",
+        "name": "Smoke base model",
+        "family": "smoke",
+        "local_path": str(Path(os.environ["CML_LORA_MODEL_DIRS"]) / "smoke-base-model"),
+        "compatibility": {"accepted": True, "expert_role_accepted": True},
+        "source_kind": "smoke",
+    }
+
+patches = [
+    patch("backend.app.core.expert_lifecycle.hardware_status", return_value=hardware),
+    patch("backend.app.core.hardware.hardware_status", return_value=hardware),
+]
+if preferred_model is not None:
+    patches.append(patch("backend.app.core.background_jobs.preferred_expert_base_model", return_value=preferred_model))
+
+with ExitStack() as stack:
+    for item in patches:
+        stack.enter_context(item)
     expert_job = queue_expert_retrain("cluster-smoke")
-    processed = run_due_jobs_once(limit=10)
+    processed_passes = []
+    for _ in range(8):
+        processed = run_due_jobs_once(limit=10)
+        processed_passes.append(processed)
+        if processed == 0:
+            break
 
 dataset = build_cluster_dataset("cluster-smoke")
 plan = build_expert_evaluation_plan(dataset)
@@ -91,9 +117,12 @@ comparison = compare_retrieval_vs_adapter([60.0, 62.0, 61.0], [66.0, 68.0, 67.0]
 artifacts = list_expert_artifacts("cluster-smoke")
 status = get_expert_status("cluster-smoke")
 report = {
-    "processed_jobs": processed,
+    "processed_job_passes": processed_passes,
+    "processed_jobs_total": sum(processed_passes),
+    "job_queue_status": job_queue_status(),
     "expert_job": expert_job,
     "artifact_count": len(artifacts),
+    "artifacts": artifacts,
     "expert_status": status,
     "evaluation_plan": {"case_count": plan["case_count"], "categories": plan["categories"]},
     "retrieval_vs_adapter": comparison,
