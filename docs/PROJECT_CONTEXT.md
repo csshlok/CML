@@ -259,6 +259,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Continue hardening the Phase 3 storage boundary where later phases add new sensitive artifacts: retrieval snapshots, analysis packets, adapter artifacts, staged derived-state artifacts, and quarantine payloads must use encrypted content/blob storage instead of plaintext fields.
 - Finish first-run setup UI around the new readiness gate: vault path, model setup, embedding setup, OCR readiness, startup repair states.
 - Make onboarding honest about local model/embedding download size, time, hardware requirements, and external Bridge privacy tradeoffs.
+- UI follow-up: separate the purpose and presentation of `Home` versus `Mind`, and verify packaged startup routes first-run users into onboarding instead of dropping them into the main app shell.
 - Continue validating Phase 5 migration safety on large real vaults, but core disk-preflight, staged-publication start, bounded GC, and disk-full old-tuple preservation are implemented.
 - Done: Phase 12 reconciliation logging and locked-mode supportability. Integration imports now persist encrypted post-unlock reconciliation summaries/details, bounded detail pagination, per-item retry, retention/compaction, and no external locked-mode pending-work signal.
 - Add real checkpoint-family download/import UX for the approved model contract, beyond the current runtime/GGUF default downloads.

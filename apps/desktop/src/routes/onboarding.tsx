@@ -421,7 +421,7 @@ function Onboarding() {
       window.localStorage.setItem("ctx.chatModelChoice", modelChoice);
       window.localStorage.setItem("ctx.chatModelId", selectedModelId);
     }
-    navigate({ to: "/search" });
+    navigate({ to: "/home" });
   }
 
   return (

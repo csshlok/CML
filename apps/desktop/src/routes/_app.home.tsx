@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowRight,
@@ -38,6 +38,7 @@ export const Route = createFileRoute("/_app/home")({
 });
 
 export function HomeView() {
+  const navigate = useNavigate();
   const [vault, setVault] = useState<VaultRecord | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
   const [clusters, setClusters] = useState<Cluster[]>([]);
@@ -111,10 +112,10 @@ export function HomeView() {
     if (vault) {
       const session = await createChatSession({ vault_id: vault.id, title: text || "New chat" });
       if (text) window.sessionStorage.setItem(`cml.pendingPrompt.${session.id}`, text);
-      window.location.href = `/chat/${session.id}`;
+      navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
       return;
     }
-    window.location.href = "/chat";
+    navigate({ to: "/chat" });
   }
 
   return (

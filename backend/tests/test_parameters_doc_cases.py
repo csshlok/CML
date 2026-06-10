@@ -69,6 +69,24 @@ class TestingParametersDocCases(unittest.TestCase):
         finally:
             client.close()
 
+    def test_pre_vault_allowed_routes_follow_custom_api_prefix(self) -> None:
+        from backend.app.core.pre_vault import allowed_pre_vault_paths
+
+        allowed = allowed_pre_vault_paths("/custom/v2")
+
+        self.assertIn("/custom/v2/system/startup-status", allowed)
+        self.assertIn("/custom/v2/models", allowed)
+        self.assertNotIn("/api/v1/system/startup-status", allowed)
+
+    def test_bridge_public_auth_routes_follow_custom_api_prefix(self) -> None:
+        from backend.app.core.auth import _is_public_path
+
+        self.assertTrue(_is_public_path("/custom/v2/bridge/context", "POST", "/custom/v2"))
+        self.assertTrue(
+            _is_public_path("/custom/v2/bridge/approval-requests/request-1/status", "GET", "/custom/v2")
+        )
+        self.assertFalse(_is_public_path("/api/v1/bridge/context", "POST", "/custom/v2"))
+
     def test_complete_analysis_field_is_rejected_without_masking_parse_errors(self) -> None:
         client = self._client()
 

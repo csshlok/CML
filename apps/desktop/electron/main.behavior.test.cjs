@@ -11,7 +11,7 @@ function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, rendererSecurityHeaders, setActiveVaultPath, getActiveVaultPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, __setMainWindow: (value) => { mainWindow = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, rendererSecurityHeaders, sanitizeRendererBody, setActiveVaultPath, getActiveVaultPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, __setMainWindow: (value) => { mainWindow = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -133,6 +133,20 @@ test("packaged renderer security headers enforce CSP and nosniff", () => {
   assert.match(headers["content-security-policy"], /connect-src 'self' http:\/\/127\.0\.0\.1:\*/);
   assert.equal(headers["x-content-type-options"], "nosniff");
   assert.equal(headers["referrer-policy"], "no-referrer");
+});
+
+test("packaged renderer strips external font links before serving HTML", async () => {
+  const { exported } = loadMainModule();
+  const response = new Response(
+    '<!doctype html><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter"><link rel="preconnect" href="https://fonts.googleapis.com"><script type="module" src="/assets/index.js"></script>',
+    { headers: { "content-type": "text/html; charset=utf-8" } },
+  );
+
+  const body = await exported.sanitizeRendererBody(response, { "content-type": "text/html; charset=utf-8" });
+  const html = body.toString("utf8");
+
+  assert.doesNotMatch(html, /fonts\.googleapis\.com/);
+  assert.match(html, /\/assets\/index\.js/);
 });
 
 test("startup repair messages are phase-specific", () => {

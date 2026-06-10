@@ -1,5 +1,4 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { HomeView } from "./_app.home";
 import { useEffect, useMemo, useState, type ComponentType, type DragEvent } from "react";
 import {
   ArrowUpDown,
@@ -48,7 +47,7 @@ type AddMode = "note" | "link" | null;
 
 export const Route = createFileRoute("/_app/search")({
   head: () => ({ meta: [{ title: "Mind" }] }),
-  component: HomeView,
+  component: MindView,
 });
 
 function MindView() {

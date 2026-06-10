@@ -16,6 +16,7 @@ declare global {
       getBackendToken: () => Promise<string | null>;
       notifyRendererReady: (detail?: string) => Promise<boolean>;
       onBackendUrlChanged: (listener: (nextUrl: string | null) => void) => () => void;
+      copyText: (value: string) => Promise<boolean>;
       openVaultAnyway: () => Promise<string | null>;
       listSupportedFiles: (targetPaths: string[]) => Promise<string[]>;
       getDroppedFilePaths: (files: File[] | FileList) => string[];

@@ -200,6 +200,14 @@ function BridgeView() {
     }
   }
 
+  async function copyBridgeText(value: string) {
+    if (window.cmlDesktop?.copyText) {
+      await window.cmlDesktop.copyText(value);
+      return;
+    }
+    await navigator.clipboard.writeText(value);
+  }
+
   const exampleClientToken = clientToken ?? "<approved-client-token>";
 
   return (
@@ -451,7 +459,7 @@ function BridgeView() {
               <button
                 type="button"
                 className="mt-1 block max-w-full truncate font-mono text-left text-muted-foreground"
-                onClick={() => void navigator.clipboard.writeText(clientToken)}
+                onClick={() => void copyBridgeText(clientToken)}
                 title="Copy token"
               >
                 {clientToken}
@@ -538,7 +546,7 @@ function BridgeView() {
               variant="outline"
               size="sm"
               onClick={() => {
-                void navigator.clipboard.writeText(
+                void copyBridgeText(
                   [
                     `POST ${backend.url}/api/v1/bridge/context`,
                     `x-cml-bridge-token: ${exampleClientToken}`,
@@ -558,7 +566,7 @@ function BridgeView() {
               variant="outline"
               size="sm"
               onClick={() => {
-                void navigator.clipboard.writeText(
+                void copyBridgeText(
                   `$env:CML_BRIDGE_TOKEN="${exampleClientToken}"\n.\\scripts\\bridge\\cml-bridge.ps1 "summarize my relevant context" -BackendUrl ${backend.url}`,
                 );
               }}
@@ -570,7 +578,7 @@ function BridgeView() {
               variant="outline"
               size="sm"
               onClick={() => {
-                void navigator.clipboard.writeText(
+                void copyBridgeText(
                   JSON.stringify(
                     {
                       command: ".venv\\Scripts\\python.exe",
@@ -592,7 +600,7 @@ function BridgeView() {
               variant="outline"
               size="sm"
               disabled={!clientToken}
-              onClick={() => clientToken && void navigator.clipboard.writeText(clientToken)}
+              onClick={() => clientToken && void copyBridgeText(clientToken)}
             >
               Copy approved client token
             </Button>

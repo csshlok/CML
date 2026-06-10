@@ -444,3 +444,15 @@ try {
 } finally {
   Pop-Location
 }
+
+$expectedUnpackedExe = Join-Path $outputDirPath "win-unpacked\CML.exe"
+if (-not (Test-Path -LiteralPath $expectedUnpackedExe)) {
+  throw "electron-builder completed but did not produce expected unpacked executable: $expectedUnpackedExe"
+}
+
+if (-not $PackagedOnly) {
+  $expectedInstaller = Join-Path $outputDirPath "test-$desktopVersion-Setup.exe"
+  if (-not (Test-Path -LiteralPath $expectedInstaller)) {
+    throw "electron-builder completed but did not produce expected installer: $expectedInstaller"
+  }
+}

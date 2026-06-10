@@ -1,5 +1,22 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
+let rendererReadySent = false;
+
+async function notifyRendererReady(detail) {
+  if (rendererReadySent) return true;
+  rendererReadySent = true;
+  try {
+    return await ipcRenderer.invoke("cml:renderer-ready", detail);
+  } catch {
+    rendererReadySent = false;
+    return false;
+  }
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+  void notifyRendererReady(window.location.pathname || "/");
+});
+
 contextBridge.exposeInMainWorld("cmlDesktop", {
   platform: process.platform,
   openPath: (targetPath) => ipcRenderer.invoke("cml:open-path", targetPath),
@@ -12,7 +29,7 @@ contextBridge.exposeInMainWorld("cmlDesktop", {
   selectCoverImage: () => ipcRenderer.invoke("cml:select-cover-image"),
   getBackendUrl: () => ipcRenderer.invoke("cml:get-backend-url"),
   getBackendToken: () => ipcRenderer.invoke("cml:get-backend-token"),
-  notifyRendererReady: (detail) => ipcRenderer.invoke("cml:renderer-ready", detail),
+  notifyRendererReady: (detail) => notifyRendererReady(detail),
   onBackendUrlChanged: (listener) => {
     if (typeof listener !== "function") {
       return () => {};

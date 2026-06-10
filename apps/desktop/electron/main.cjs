@@ -134,6 +134,7 @@ process.on("unhandledRejection", (error) => {
 async function createWindow() {
   rendererReadyPath = null;
   let startupError = null;
+  const initialRendererPath = await getInitialRendererPath();
   try {
     backendUrl = await ensureBackend();
   } catch (error) {
@@ -202,7 +203,7 @@ async function createWindow() {
       await loadStartupFailure(window, startupError);
       return;
     }
-    const url = new URL(devUrl);
+    const url = new URL(initialRendererPath, ensureTrailingSlash(devUrl));
     if (backendUrl) url.searchParams.set("backendUrl", backendUrl);
     window.loadURL(url.toString());
     window.webContents.openDevTools({ mode: "detach" });
@@ -214,7 +215,7 @@ async function createWindow() {
     try {
       rendererUrl = rendererUrl || await startPackagedRendererServer();
       await verifyRendererUp(rendererUrl, 10000);
-      const url = new URL(rendererUrl);
+      const url = new URL(initialRendererPath, rendererUrl);
       if (backendUrl) url.searchParams.set("backendUrl", backendUrl);
       await window.loadURL(url.toString());
       await waitForRendererReady(10000);
@@ -223,6 +224,15 @@ async function createWindow() {
       await loadRendererFailure(window, error);
     }
   }
+}
+
+async function getInitialRendererPath() {
+  const activeVaultPath = await getActiveVaultPath();
+  return activeVaultPath ? "/home" : "/onboarding";
+}
+
+function ensureTrailingSlash(value) {
+  return value.endsWith("/") ? value : `${value}/`;
 }
 
 async function loadStartupFailure(window, error) {
@@ -552,7 +562,10 @@ if (gotSingleInstanceLock) {
       vaultLockOverrideOnce = true;
       await restartBackend();
       if (mainWindow && backendUrl) {
-        const url = isDev ? new URL(devUrl) : new URL(rendererUrl || await startPackagedRendererServer());
+        const targetPath = await getInitialRendererPath();
+        const url = isDev
+          ? new URL(targetPath, ensureTrailingSlash(devUrl))
+          : new URL(targetPath, rendererUrl || await startPackagedRendererServer());
         url.searchParams.set("backendUrl", backendUrl);
         await mainWindow.loadURL(url.toString());
       }
@@ -772,8 +785,9 @@ async function startPackagedRendererServer() {
         headers: request.headers,
       });
       const webResponse = await worker.fetch(webRequest, {}, {});
-      const body = Buffer.from(await webResponse.arrayBuffer());
-      writeNodeResponse(response, webResponse.status, rendererSecurityHeaders(Object.fromEntries(webResponse.headers)), body);
+      const responseHeaders = Object.fromEntries(webResponse.headers);
+      const body = await sanitizeRendererBody(webResponse, responseHeaders);
+      writeNodeResponse(response, webResponse.status, rendererSecurityHeaders(responseHeaders), body);
     } catch (error) {
       writeDesktopRuntimeLog("renderer request failed", error);
       response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
@@ -787,6 +801,19 @@ async function startPackagedRendererServer() {
   });
   rendererUrl = `http://127.0.0.1:${port}/`;
   return rendererUrl;
+}
+
+async function sanitizeRendererBody(webResponse, headers) {
+  const rawBody = Buffer.from(await webResponse.arrayBuffer());
+  const contentType = String(headers["content-type"] || headers["Content-Type"] || "");
+  if (!contentType.toLowerCase().includes("text/html")) {
+    return rawBody;
+  }
+  const html = rawBody.toString("utf8")
+    .replace(/<link\b[^>]*href=["']https:\/\/fonts\.googleapis\.com\/[^"']*["'][^>]*>/gi, "")
+    .replace(/<link\b[^>]*rel=["']preconnect["'][^>]*href=["']https:\/\/fonts\.googleapis\.com["'][^>]*>/gi, "")
+    .replace(/<link\b[^>]*href=["']https:\/\/fonts\.googleapis\.com["'][^>]*rel=["']preconnect["'][^>]*>/gi, "");
+  return Buffer.from(html, "utf8");
 }
 
 async function tryServeStaticAsset(clientDir, pathname) {
