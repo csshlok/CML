@@ -12,6 +12,21 @@ contextBridge.exposeInMainWorld("cmlDesktop", {
   selectCoverImage: () => ipcRenderer.invoke("cml:select-cover-image"),
   getBackendUrl: () => ipcRenderer.invoke("cml:get-backend-url"),
   getBackendToken: () => ipcRenderer.invoke("cml:get-backend-token"),
+  notifyRendererReady: (detail) => ipcRenderer.invoke("cml:renderer-ready", detail),
+  onBackendUrlChanged: (listener) => {
+    if (typeof listener !== "function") {
+      return () => {};
+    }
+    const wrapped = (_event, nextUrl) => {
+      listener(nextUrl ?? null);
+    };
+    ipcRenderer.on("cml:backend-url-changed", wrapped);
+    return () => {
+      ipcRenderer.removeListener("cml:backend-url-changed", wrapped);
+    };
+  },
+  copyText: (value) => ipcRenderer.invoke("cml:copy-text", value),
+  retryStartup: () => ipcRenderer.invoke("cml:retry-startup"),
   openVaultAnyway: () => ipcRenderer.invoke("cml:open-vault-anyway"),
   listSupportedFiles: (targetPaths) => ipcRenderer.invoke("cml:list-supported-files", targetPaths),
   getDroppedFilePaths: (files) =>

@@ -113,7 +113,7 @@
   --radius-lg: 8px;
   --sidebar-width: 220px;
   --panel-width: 320px;
-  --font: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font: "Segoe UI", ui-sans-serif, system-ui, sans-serif;
 
   --radius: var(--radius-lg);
   --background: var(--bg-canvas);

@@ -1,89 +1,12 @@
 {
   "name": "@cml/desktop",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "Local desktop app for the CML context management layer.",
   "author": "CML",
   "private": true,
   "sideEffects": false,
   "type": "module",
   "main": "electron/main.cjs",
-  "build": {
-    "appId": "local.cml.desktop",
-    "productName": "CML",
-    "electronVersion": "39.8.10",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "electron/**/*",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "packaging/backend",
-        "to": "backend",
-        "filter": [
-          "app/**/*",
-          "bin/**/*",
-          "pyproject.toml"
-        ]
-      },
-      {
-        "from": "packaging/python-runtime",
-        "to": "python-runtime",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "packaging/expert-python-runtime",
-        "to": "expert-python-runtime",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "packaging/ms-playwright",
-        "to": "ms-playwright",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "packaging/helper-manifest.json",
-        "to": "helper-manifest.json"
-      }
-    ],
-    "win": {
-      "target": "nsis",
-      "signAndEditExecutable": false,
-      "forceCodeSigning": false,
-      "requestedExecutionLevel": "asInvoker"
-    },
-    "nsis": {
-      "oneClick": true,
-      "perMachine": false,
-      "allowElevation": false,
-      "allowToChangeInstallationDirectory": false,
-      "createDesktopShortcut": false,
-      "createStartMenuShortcut": true,
-      "shortcutName": "CML",
-      "runAfterFinish": true,
-      "deleteAppDataOnUninstall": false,
-      "artifactName": "CML-${version}-Setup.${ext}"
-    }
-  },
-  "scripts": {
-    "dev": "concurrently -k \"vite dev --host 127.0.0.1 --port 5173\" \"wait-on tcp:5173 && node scripts/start-electron.cjs\"",
-    "dev:web": "vite dev --host 127.0.0.1 --port 5173",
-    "build": "vite build",
-    "package:win": "npm run build && npm exec electron-builder -- --win --x64",
-    "build:dev": "vite build --mode development",
-    "preview": "vite preview",
-    "lint": "eslint \"src/**/*.{ts,tsx}\" \"electron/**/*.cjs\" \"scripts/**/*.cjs\" \"vite.config.ts\"",
-    "format": "prettier --write ."
-  },
   "dependencies": {
     "@cloudflare/vite-plugin": "^1.25.5",
     "@hookform/resolvers": "^5.2.2",
@@ -140,27 +63,5 @@
     "vite-tsconfig-paths": "^6.0.2",
     "zod": "^3.24.2",
     "zustand": "^5.0.13"
-  },
-  "devDependencies": {
-    "@eslint/js": "^9.32.0",
-    "@lovable.dev/vite-tanstack-config": "^1.7.0",
-    "@types/node": "^22.16.5",
-    "@types/react": "^19.2.0",
-    "@types/react-dom": "^19.2.0",
-    "@vitejs/plugin-react": "^5.0.4",
-    "concurrently": "^9.2.1",
-    "electron": "39.8.10",
-    "electron-builder": "^26.0.12",
-    "eslint": "^9.32.0",
-    "eslint-config-prettier": "^10.1.1",
-    "eslint-plugin-prettier": "^5.2.6",
-    "eslint-plugin-react-hooks": "^5.2.0",
-    "eslint-plugin-react-refresh": "^0.4.20",
-    "globals": "^15.15.0",
-    "prettier": "^3.7.3",
-    "typescript": "^5.8.3",
-    "typescript-eslint": "^8.56.1",
-    "vite": "^7.3.1",
-    "wait-on": "^9.0.3"
   }
 }

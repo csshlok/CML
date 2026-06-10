@@ -100,6 +100,7 @@ class TurbovecRuntimeTests(unittest.TestCase):
             "CML_ALLOW_HASH_EMBEDDINGS",
             "CML_ALLOW_UNAUTHENTICATED_API",
             "CML_VECTOR_SEARCH_BACKEND",
+            "CML_TURBOVEC_MIN_CHUNK_COUNT",
         ):
             os.environ.pop(key, None)
         self.tmp.cleanup()
@@ -379,6 +380,99 @@ class TurbovecRuntimeTests(unittest.TestCase):
         titles = [item["source_title"] for item in response.json()["results"]]
         self.assertNotIn("Alpha", titles)
         self.assertTrue(Path(built["tvim_path"]).exists())
+
+    def test_auto_backend_requires_phase_c_approval_before_using_turbovec(self) -> None:
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.database import connect, dict_from_row, utc_now
+        from backend.app.core.embeddings import reindex_source_chunks
+        from backend.app.schemas import SourceCreate
+        import backend.app.core.turbovec_runtime as turbovec_runtime
+        import backend.app.core.turbovec_benchmark as turbovec_benchmark
+
+        os.environ["CML_VECTOR_SEARCH_BACKEND"] = "auto"
+        os.environ["CML_TURBOVEC_MIN_CHUNK_COUNT"] = "1"
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.vault_dir), now, now),
+            )
+
+        source_a = create_source(
+            SourceCreate(vault_id="vault-1", title="Alpha", source_type="note", raw_text="alpha beta gamma delta")
+        )
+        source_b = create_source(
+            SourceCreate(vault_id="vault-1", title="Bridge", source_type="note", raw_text="bridge approval token flow")
+        )
+        with connect() as conn:
+            row_a = conn.execute("SELECT * FROM sources WHERE id = ?", (source_a["id"],)).fetchone()
+            row_b = conn.execute("SELECT * FROM sources WHERE id = ?", (source_b["id"],)).fetchone()
+            reindex_source_chunks(conn, dict_from_row(row_a))
+            reindex_source_chunks(conn, dict_from_row(row_b))
+
+        exact_report = {
+            "engine": "current_scan",
+            "query_count": 1,
+            "search_latency_ms": {"min": 8.0, "median": 8.0, "max": 8.0, "avg": 8.0},
+            "total_latency_ms": {"min": 9.0, "median": 9.0, "max": 9.0, "avg": 9.0},
+            "embedding_latency_ms": {"min": 1.0, "median": 1.0, "max": 1.0, "avg": 1.0},
+            "results": [{"query": "alpha beta gamma delta", "top_chunk_ids": ["chunk-a"]}],
+        }
+        turbovec_report = {
+            "engine": "turbovec",
+            "query_count": 1,
+            "search_latency_ms": {"min": 1.0, "median": 1.0, "max": 1.0, "avg": 1.0},
+            "total_latency_ms": {"min": 2.0, "median": 2.0, "max": 2.0, "avg": 2.0},
+            "embedding_latency_ms": {"min": 1.0, "median": 1.0, "max": 1.0, "avg": 1.0},
+            "results": [{"query": "alpha beta gamma delta", "top_chunk_ids": ["chunk-a"]}],
+        }
+        sidecar_status = {
+            "vault_id": "vault-1",
+            "derived_state_epoch": 1,
+            "status": "published",
+            "manifest_path": str(self.vault_dir / "manifest.json"),
+            "tvim_path": str(self.vault_dir / "index.tvim"),
+            "chunk_count": 2,
+            "allocated_slot_count": 2,
+            "cold_load_seconds": 0.25,
+            "tvim_size_bytes": 128,
+            "last_error": "",
+            "last_error_at": "",
+        }
+
+        with patch.object(turbovec_runtime, "IdMapIndex", FakeIdMapIndex):
+            turbovec_runtime.build_turbovec_sidecar("vault-1", rebuild_reason="test")
+            client = self._client()
+            try:
+                before = client.post(
+                    "/api/v1/search/semantic",
+                    json={"vault_id": "vault-1", "query": "alpha beta gamma delta", "limit": 3},
+                )
+                with (
+                    patch.object(turbovec_benchmark, "sampled_queries", return_value=["alpha beta gamma delta"]),
+                    patch.object(turbovec_benchmark, "benchmark_current_scan", return_value=exact_report),
+                    patch.object(turbovec_benchmark, "benchmark_turbovec_scan", return_value=turbovec_report),
+                    patch.object(turbovec_benchmark, "corpus_stats", return_value={"total_embedding_bytes": 1024}),
+                    patch.object(turbovec_runtime, "_sidecar_status_for_snapshot", return_value=sidecar_status),
+                ):
+                    benchmark = client.post("/api/v1/search/vectors/phase-c/benchmark?vault_id=vault-1&query_limit=1&top_k=1")
+                    status = client.get("/api/v1/search/vectors/phase-c/status?vault_id=vault-1")
+                after = client.post(
+                    "/api/v1/search/semantic",
+                    json={"vault_id": "vault-1", "query": "alpha beta gamma delta", "limit": 3},
+                )
+            finally:
+                client.close()
+
+        self.assertEqual(before.status_code, 200)
+        self.assertEqual(before.json()["backend"], "exact")
+        self.assertEqual(benchmark.status_code, 200)
+        self.assertTrue(benchmark.json()["approved"])
+        self.assertEqual(status.status_code, 200)
+        self.assertTrue(status.json()["approved"])
+        self.assertEqual(after.status_code, 200)
+        self.assertEqual(after.json()["backend"], "turbovec")
 
     def _client(self) -> TestClient:
         from backend.app.core.config import get_settings

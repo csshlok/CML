@@ -669,7 +669,7 @@ const sourceIcon: Record<SourceType, ComponentType<{ className?: string }>> = {
 
 function imageSrc(value?: string) {
   if (!value) return undefined;
-  if (/^https?:\/\//i.test(value) || value.startsWith("data:") || value.startsWith("file://")) {
+  if (/^https:\/\//i.test(value) || value.startsWith("data:") || value.startsWith("file://")) {
     return value;
   }
   return `file:///${value.replace(/\\/g, "/")}`;

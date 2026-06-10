@@ -6,12 +6,12 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 if (-not $PackageRoot) {
-  $PackageRoot = Join-Path $repoRoot "apps\desktop\release\win-unpacked"
+  throw "PackageRoot is required. Pass the explicit win-unpacked root to smoke-packaged-migration-drill.ps1."
 }
 
 $packagePath = [System.IO.Path]::GetFullPath($PackageRoot)
 $resourcesPath = Join-Path $packagePath "resources"
-$python = Join-Path $resourcesPath "python-runtime\Scripts\python.exe"
+$python = Join-Path $resourcesPath "python-runtime\python.exe"
 $backendRoot = Join-Path $resourcesPath "backend"
 
 if (-not (Test-Path -LiteralPath $python)) {
@@ -27,6 +27,7 @@ $dbPath = Join-Path $dataDir "cml.sqlite3"
 New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
 $env:PYTHONPATH = $resourcesPath
+$env:PYTHONNOUSERSITE = "1"
 $env:CML_BACKEND_MODE = "full_vault"
 $env:CML_DATA_DIR = $dataDir
 $env:CML_DATABASE_PATH = $dbPath
@@ -67,7 +68,7 @@ if not interrupted or interrupted[0].get("version") != 99:
 print(json.dumps({"drill": "interrupted_migration", "summary": summary}, indent=2))
 '@
 
-$code | & $python -
+$code | & $python -s -
 if ($LASTEXITCODE -ne 0) {
   throw "Packaged migration drill failed."
 }

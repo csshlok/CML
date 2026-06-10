@@ -15,7 +15,7 @@ const {
 
 test("verifyHelperManifest detects modified helper payloads", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cml-helper-manifest-"));
-  const helperPath = path.join(root, "python-runtime", "Scripts");
+  const helperPath = path.join(root, "python-runtime");
   fs.mkdirSync(helperPath, { recursive: true });
   const pythonExe = path.join(helperPath, "python.exe");
   fs.writeFileSync(pythonExe, "trusted-runtime", "utf8");
@@ -24,7 +24,7 @@ test("verifyHelperManifest detects modified helper payloads", async () => {
     path.join(root, "helper-manifest.json"),
     `${JSON.stringify({
       generated_at: new Date().toISOString(),
-      entries: [{ group: "python-runtime", relative_path: "python-runtime/Scripts/python.exe", sha256: expected }],
+      entries: [{ group: "python-runtime", relative_path: "python-runtime/python.exe", sha256: expected }],
     })}\n`,
     "utf8",
   );
@@ -82,8 +82,9 @@ test("buildBackendChildEnv pins PATH to helper and system roots", () => {
     helperPaths: {
       resourcesRoot: "C:\\Package\\resources",
       pythonRuntime: "C:\\Package\\resources\\python-runtime",
-      backendPython: "C:\\Package\\resources\\python-runtime\\Scripts\\python.exe",
-      expertPython: "C:\\Package\\resources\\expert-python-runtime\\Scripts\\python.exe",
+      expertRuntime: "C:\\Package\\resources\\expert-python-runtime",
+      backendPython: "C:\\Package\\resources\\python-runtime\\python.exe",
+      expertPython: "C:\\Package\\resources\\expert-python-runtime\\python.exe",
       playwrightRoot: "C:\\Package\\resources\\ms-playwright",
     },
     apiPrefix: "/api/v1",
@@ -95,9 +96,10 @@ test("buildBackendChildEnv pins PATH to helper and system roots", () => {
     vaultLockOverride: "",
   });
 
-  assert.match(env.PATH, /python-runtime\\Scripts/);
-  assert.match(env.PATH, /expert-python-runtime\\Scripts/);
+  assert.match(env.PATH, /python-runtime/);
+  assert.match(env.PATH, /expert-python-runtime/);
   assert.equal(env.PYTHONPATH, "C:\\Package\\resources");
+  assert.equal(env.PYTHONNOUSERSITE, "1");
   assert.equal(env.CML_API_TOKEN, "token");
 });
 

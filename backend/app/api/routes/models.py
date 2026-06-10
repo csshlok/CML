@@ -10,6 +10,7 @@ from backend.app.core.embeddings import (
 from backend.app.core.llm_runtime import runtime_status
 from backend.app.core.model_registry import (
     cancel_model_download,
+    discover_installed_models,
     import_model_checkpoint,
     list_models,
     model_compatibility_report,
@@ -24,6 +25,7 @@ from backend.app.schemas import (
     EmbeddingRuntimeStatus,
     EmbeddingModelDownloadRequest,
     EmbeddingModelDownloadState,
+    InstalledModelDiscoveryRead,
     ModelCompatibilityRead,
     ModelCompatibilityRequest,
     ModelActivateRequest,
@@ -44,6 +46,14 @@ def list_local_models() -> list[dict]:
 @router.get("/recommendations", response_model=ModelRecommendationRead)
 def get_model_recommendations() -> dict:
     return model_recommendations()
+
+
+@router.get("/discover", response_model=InstalledModelDiscoveryRead)
+def discover_local_models(max_results: int = 32, include_rejected: bool = False) -> dict:
+    return discover_installed_models(
+        max_results=max(1, min(int(max_results), 200)),
+        include_rejected=include_rejected,
+    )
 
 
 @router.get("/runtime", response_model=ModelRuntimeStatus)

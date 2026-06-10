@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     lora_runtime_dtype: str = "auto"
     lora_runtime_max_new_tokens: int = 48
     lora_runtime_prompt: str = "Reply with the single word CML."
+    model_scan_roots: str = ""
+    model_scan_max_depth: int = 4
 
     model_config = SettingsConfigDict(env_prefix="CML_", env_file=ROOT_DIR / ".env", extra="ignore")
 

@@ -25,6 +25,7 @@ import {
   checkDiskPreflight,
   configureEmbeddingRuntime,
   createVault,
+  discoverInstalledModels,
   getEmbeddingDownloadStatus,
   getModelCompatibilityReport,
   getEmbeddingRuntimeStatus,
@@ -35,6 +36,7 @@ import {
   type EmbeddingModelDownloadState,
   type EmbeddingRuntimeStatus,
   type DiskPreflightResponse,
+  type DiscoveredInstalledModelRecord,
   type LocalModelRecord,
   type ModelCompatibilityRecord,
   type VaultRecord,
@@ -84,6 +86,8 @@ function Onboarding() {
   const [customModelPath, setCustomModelPath] = useState("");
   const [customModelName, setCustomModelName] = useState("");
   const [customModelReport, setCustomModelReport] = useState<ModelCompatibilityRecord | null>(null);
+  const [discoveredModels, setDiscoveredModels] = useState<DiscoveredInstalledModelRecord[]>([]);
+  const [discoveringModels, setDiscoveringModels] = useState(false);
   const [embeddingChoice, setEmbeddingChoice] = useState<EmbeddingChoice>("recommended");
   const [embeddingCacheDir, setEmbeddingCacheDir] = useState("");
   const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
@@ -124,6 +128,9 @@ function Onboarding() {
     if (step !== 5 && step !== 6) return;
     void refreshModels();
     void refreshEmbeddingStatus();
+    if (step === 5) {
+      void refreshDetectedModels();
+    }
   }, [step]);
 
   async function refreshModels() {
@@ -146,6 +153,19 @@ function Onboarding() {
     if (selected) {
       setCustomModelPath(selected);
       setCustomModelReport(null);
+    }
+  }
+
+  async function refreshDetectedModels() {
+    setDiscoveringModels(true);
+    try {
+      const discovered = await discoverInstalledModels({ max_results: 24 });
+      setDiscoveredModels(discovered.models);
+    } catch (err) {
+      setDiscoveredModels([]);
+      setError(err instanceof Error ? err.message : "Could not scan for installed compatible models.");
+    } finally {
+      setDiscoveringModels(false);
     }
   }
 
@@ -180,6 +200,23 @@ function Onboarding() {
       await refreshModels();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not import the model.");
+      setMessage(null);
+    }
+  }
+
+  async function importDiscoveredModel(model: DiscoveredInstalledModelRecord) {
+    setError(null);
+    setMessage(`Importing ${model.name}...`);
+    try {
+      const imported = await importLocalModel({
+        path: model.local_path,
+        name: model.name,
+      });
+      setMessage(`${imported.name} imported and ready.`);
+      await refreshModels();
+      await refreshDetectedModels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not import the detected model.");
       setMessage(null);
     }
   }
@@ -631,6 +668,49 @@ function Onboarding() {
                     </div>
                   ) : (
                     <div className="grid gap-4">
+                      <div className="rounded-md border border-border bg-secondary/35 p-4 text-sm">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <div className="font-medium text-foreground">Compatible models already on this device</div>
+                            <div className="mt-1 text-muted-foreground">
+                              Vault can scan common local model folders and offer one-click import for accepted expert checkpoints.
+                            </div>
+                          </div>
+                          <Button variant="outline" onClick={() => void refreshDetectedModels()} disabled={discoveringModels}>
+                            {discoveringModels ? "Scanning..." : "Scan device"}
+                          </Button>
+                        </div>
+                        <div className="mt-3 grid gap-3">
+                          {discoveringModels ? (
+                            <p className="text-xs text-muted-foreground">Scanning configured and common model folders...</p>
+                          ) : discoveredModels.length ? (
+                            discoveredModels.map((model) => (
+                              <div key={model.id} className="rounded-md border border-border bg-card p-3">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div>
+                                    <div className="font-medium">{model.name}</div>
+                                    <div className="mt-1 text-xs text-muted-foreground">
+                                      {model.family_name || model.family || "Approved family"} · {model.local_path}
+                                    </div>
+                                    <div className="mt-1 text-xs text-muted-foreground">{model.detail}</div>
+                                  </div>
+                                  <Button
+                                    variant="outline"
+                                    onClick={() => void importDiscoveredModel(model)}
+                                    disabled={model.already_imported}
+                                  >
+                                    {model.already_imported ? "Already imported" : "Import"}
+                                  </Button>
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <p className="text-xs text-muted-foreground">
+                              No accepted local Transformers checkpoints were found in the configured or common model directories.
+                            </p>
+                          )}
+                        </div>
+                      </div>
                       <Field label="Checkpoint folder">
                         <div className="flex flex-col gap-2 sm:flex-row">
                           <Input
@@ -712,8 +792,8 @@ function Onboarding() {
                         onChange={(event) => setEmbeddingCacheDir(event.target.value)}
                         placeholder={
                           embeddingChoice === "recommended"
-                            ? "T:\\Models\\all-MiniLM-L6-v2"
-                            : "T:\\LLM\\embeddings"
+                            ? "Choose a local embedding model folder"
+                            : "Choose an existing embedding cache folder"
                         }
                       />
                       <Button

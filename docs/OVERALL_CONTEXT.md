@@ -6,6 +6,30 @@ Last updated: 2026-06-07
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
+## 2026-06-08 Clean VM Attempt Snapshot
+
+Attempted:
+
+- Hyper-V guest access was established for `VM-1` under `T:\VM`.
+- The guest account `.\tests` was reachable through PowerShell Direct after enabling Guest Services and stabilizing authentication.
+- The packaged installer `CML-0.1.0-Setup.exe` was copied into the guest and executed through the repo's installer smoke path.
+
+Observed blocker:
+
+- The installer crashed inside the guest before install completed with Windows event log entries:
+  - `Application Error` 1000
+  - faulting application `CML-0.1.0-Setup.exe`
+  - faulting module `System.dll`
+  - exception `0xc0000005`
+- The same guest also showed Windows servicing/component-store failures (`WindowsWcpOtherFailure3`, CBS/component-store errors) and unstable PowerShell Direct / Hyper-V socket failures, so this VM image is not currently a trustworthy clean-machine release gate.
+
+Current decision:
+
+- Keep clean-VM validation open.
+- Do not mark packaging or QA complete from `VM-1`.
+- Rerun the packaged installer and smoke sequence on a healthier clean VM image before treating the gate as passed.
+- Manual installer review also surfaced a product UX gap: the current one-click NSIS build does not expose install-location selection and does not offer desktop-shortcut creation. Keep that as an explicit installer-policy decision for V1 rather than assuming the one-click behavior is final.
+
 Latest compact truth after the 2026-06-05 decision pass lives in `docs/PROJECT_CONTEXT.md`. Current product decision: V1 is Windows-only, public-release-only, and must include a working high-quality verified LoRA function; there is no private-demo fallback. Model policy is now explicit: strict `accepted` / `rejected` compatibility remains, but runtime architecture is now understood as dual-role rather than one lightweight unified path. Current Qwen/Phi/Gemma defaults remain the default recommendations, expert-capable onboarding still requires an app-managed approved local checkpoint, retrieval remains the citation authority, and public docs must stop implying that one approved family automatically means one cheap runtime path. Claude Desktop-specific smoke is deferred for now; clean Windows VM validation, real LoRA trainer/runtime smoke, live quality benchmarking, mixed-embedding correctness fixes, and hardware-aware model recommendations remain current external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
 
 ## 2026-06-06 Security Architecture Snapshot
@@ -38,6 +62,27 @@ Implementation baseline:
 - Phase 10 is complete: Bridge runtime now requires approved client tokens when vault security is active, public approval requests/polling are time-bounded and rate-limited, admin review stays behind the local API token, approval/client/audit metadata is encrypted for secured vaults, the Bridge UI shows claimed-vs-observed identity signals, and revocation plus bounded Bridge history/usage counters are in place.
 - `docs/PROJECT_CONTEXT.md` is the compact source of truth for the approved decisions and now includes a Security progress row.
 
+## 2026-06-08 Model Discovery And Turbovec Phase C Snapshot
+
+Completed:
+
+- Vault now has first-class compatible-model discovery for expert checkpoints already present on the local machine.
+- Discovery scans configured model roots plus common local Windows/user model roots, validates each candidate against the approved-family/runtime contract, and exposes the results through `/api/v1/models/discover`.
+- Onboarding and Settings now surface detected compatible local checkpoints and allow one-click import into Vault instead of forcing manual path hunting.
+- Turbovec Phase C is now implemented in product code, not left as a doc-only gate: `/api/v1/search/vectors/phase-c/benchmark` records per-vault benchmark evidence, persists approval against the active derived-state epoch, and `vector_search_backend=auto` only switches to turbovec when the chunk threshold, sidecar health, and benchmark gate all pass.
+- Phase C approval is fail-closed. If the sidecar is unhealthy, the vault is below the chunk threshold, or the approval does not match the active epoch, auto mode stays on exact scan.
+
+Verification:
+
+- Added model-discovery regression coverage in [backend/tests/test_additional_qa_cases.py](../backend/tests/test_additional_qa_cases.py).
+- Added Phase C auto-backend gate coverage in [backend/tests/test_turbovec_runtime.py](../backend/tests/test_turbovec_runtime.py).
+- Re-ran `.venv\Scripts\python -m unittest backend.tests.test_additional_qa_cases backend.tests.test_turbovec_runtime backend.tests.test_turbovec_benchmark -v`; `80` tests passed with `1` existing symlink-environment skip.
+- Rebuilt the desktop app with `npm run build --workspace @cml/desktop`.
+
+Still external evidence rather than missing implementation:
+
+- Larger natural/user-owned corpus benchmark runs are still useful QA evidence, but they are no longer blocked on missing Phase C wiring.
+
 ## 2026-06-07 Turbovec Phase A/B Snapshot
 
 Completed:
@@ -59,8 +104,7 @@ Verification:
 
 Still not completed:
 
-- Phase C default-on rollout is still blocked behind the benchmark gate in [docs/TURBOVEC_INTEGRATION_PLAN.md](./TURBOVEC_INTEGRATION_PLAN.md).
-- Real larger natural-corpus benchmark runs still need to prove the overlap, latency, cold-load, and sidecar-size acceptance thresholds before turbovec becomes the default path for healthy `>= 10,000`-chunk vaults.
+- Phase C default-on rollout wiring is now implemented. Larger natural-corpus runs remain QA evidence for rollout confidence rather than missing architecture.
 
 ## 2026-06-05 Dual-Model Decision Snapshot
 
@@ -393,7 +437,7 @@ Use this section for fast status checks. Detailed historical notes remain in the
 | Desktop app foundation     | In progress                | `[##########] 98%`  | Clean VM launch validation and broader packaged startup repair QA.                               |
 | Local backend foundation   | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only.                                                               |
 | Vault ingestion            | Complete for current scope | `[##########] 100%` | Clean VM confirmation only.                                                                      |
-| Embeddings and clustering  | In progress                | `[##########] 99%`  | Broader threshold tuning on real user vaults.                                                    |
+| Embeddings and clustering  | Complete for current scope | `[##########] 100%` | Larger real-vault evidence now lives under QA/hardening.                                         |
 | Chat and context routing   | In progress                | `[##########] 96%`  | Complete-scope map/reduce answering, token budgets, runtime failure UI.                          |
 | Compulsory cluster experts | In progress                | `[#######---] 70%`  | Real LLaMA Factory smoke and live runtime adapter loading against a real local model.            |
 | Context Bridge             | In progress                | `[#########-] 94%`  | Full extension package, capture UX polish, and later external-client smoke.                      |
@@ -408,8 +452,8 @@ Use this section for fast status checks. Detailed historical notes remain in the
 - Keep Windows-only public V1 criteria; if blockers remain, delay release rather than ship a private demo.
 - Verify real adapter training/loading before using "trained expert" language in user-facing surfaces; current gates are stronger but still need real trainer/runtime proof.
 - Build hardware-aware model recommendation for low-, mid-, and high-spec users.
-- Tune retrieval thresholds and run larger backend benchmarks on real vault-shaped data.
-- Turbovec Phase A/B are complete. The remaining turbovec critical-path work is now Phase C evidence: larger natural-corpus benchmarking and acceptance-gate validation before any default-on rollout for healthy `>= 10,000`-chunk vaults.
+- Tune retrieval thresholds and run larger backend benchmarks on real vault-shaped data for QA evidence, not missing retrieval architecture.
+- Turbovec Phase C rollout wiring is complete: per-vault benchmark approval, epoch binding, and auto-backend gating now exist in code. Remaining work is corpus evidence collection, not new backend plumbing.
 - Initial turbovec benchmark evidence now exists: a real-PDF run over 8 local PDFs produced 37 chunks and showed `6.758 ms` average current search-only latency versus `0.166 ms` for a 4-bit turbovec prototype, with `0.9583` average overlap@8. A replicated 100K-chunk stress run showed the current Python exact-scan path in the `9.8-19.5 s` search-only range per query, while the turbovec prototype remained in the low-millisecond range on the same replicated embeddings.
 - Defer Claude Desktop-specific Bridge smoke for now; keep external-client claims conservative.
 

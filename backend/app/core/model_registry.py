@@ -1,7 +1,9 @@
 from dataclasses import asdict, dataclass
 import hashlib
+import os
 from pathlib import Path
 import re
+import time
 from typing import Any
 from urllib.parse import quote
 from urllib.error import URLError
@@ -143,6 +145,18 @@ APPROVED_MODEL_FAMILIES: tuple[ApprovedModelFamily, ...] = (
 _download_state: dict[str, dict[str, Any]] = {}
 _download_lock = threading.Lock()
 _cancelled_downloads: set[str] = set()
+MODEL_SCAN_SKIP_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "__pycache__",
+    "blobs",
+    "node_modules",
+    "refs",
+    "tmp",
+    "venv",
+}
 
 
 def models_dir() -> Path:
@@ -336,6 +350,7 @@ def model_recommendations() -> dict[str, Any]:
     )
     preferred_chat = next((item for item in ordered if item["id"] == preferred_id), None)
     current_pair = active_model_pair_status()
+    discovered = discover_installed_models(max_results=12)
     return {
         "hardware": hardware,
         "recommended_model_id": preferred_id,
@@ -343,6 +358,8 @@ def model_recommendations() -> dict[str, Any]:
         "recommended_expert_family": preferred_chat.get("family") if preferred_chat else "",
         "active_pair": current_pair,
         "models": ordered,
+        "detected_compatible_models": discovered["models"],
+        "detected_compatible_model_count": discovered["compatible_model_count"],
         "detail": (
             f"Recommended chat model selection for hardware tier {tier}. "
             "Expert mode still requires a separate accepted local checkpoint."
@@ -671,6 +688,104 @@ def preferred_expert_base_model() -> dict[str, Any] | None:
     return None
 
 
+def discover_installed_models(
+    *,
+    max_results: int = 32,
+    include_rejected: bool = False,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    scanned_roots: list[str] = []
+    missing_roots: list[str] = []
+    models: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    compatible_count = 0
+    truncated = False
+
+    for root in installed_model_scan_roots():
+        normalized_root = _normalized_path(root)
+        if normalized_root in scanned_roots:
+            continue
+        if not root.exists():
+            missing_roots.append(str(root))
+            continue
+        scanned_roots.append(normalized_root)
+        for candidate in _iter_transformers_checkpoint_dirs(root, max_depth=int(get_settings().model_scan_max_depth)):
+            normalized = _normalized_path(candidate)
+            if normalized in seen_paths:
+                continue
+            seen_paths.add(normalized)
+            compatibility = model_compatibility_report(candidate)
+            if compatibility.get("accepted"):
+                compatible_count += 1
+            if not include_rejected and not compatibility.get("accepted"):
+                continue
+            metadata = _discovered_model_metadata(candidate, compatibility=compatibility, root=root)
+            if any(item["local_path"] == metadata["local_path"] for item in imported_model_statuses()):
+                metadata["already_imported"] = True
+            models.append(metadata)
+            if len(models) >= max_results:
+                truncated = True
+                break
+        if truncated:
+            break
+
+    models.sort(
+        key=lambda item: (
+            0 if item["compatibility"].get("accepted") else 1,
+            0 if item.get("already_imported") else 1,
+            item["name"].lower(),
+        )
+    )
+    return {
+        "models": models,
+        "compatible_model_count": compatible_count,
+        "scanned_root_count": len(scanned_roots),
+        "scanned_roots": scanned_roots,
+        "missing_roots": missing_roots,
+        "truncated": truncated,
+        "scan_duration_ms": round((time.perf_counter() - started) * 1000, 2),
+    }
+
+
+def installed_model_scan_roots() -> list[Path]:
+    settings = get_settings()
+    roots: list[Path] = []
+    explicit = str(getattr(settings, "model_scan_roots", "") or "")
+    for raw in explicit.split(os.pathsep):
+        text = raw.strip()
+        if text:
+            roots.append(Path(text).expanduser())
+
+    from backend.app.core.expert_runtime import local_model_search_roots
+
+    roots.extend(local_model_search_roots())
+
+    home = Path.home()
+    user_profile = Path(os.environ.get("USERPROFILE", str(home)))
+    local_appdata = Path(os.environ.get("LOCALAPPDATA", ""))
+    appdata = Path(os.environ.get("APPDATA", ""))
+    defaults = [
+        home / ".cache" / "huggingface" / "hub",
+        home / ".cache" / "lm-studio" / "models",
+        home / ".lmstudio" / "models",
+        user_profile / ".cache" / "huggingface" / "hub",
+        user_profile / ".cache" / "lm-studio" / "models",
+        local_appdata / "HuggingFace" / "hub",
+        local_appdata / "lm-studio" / "models",
+        appdata / "LM Studio" / "models",
+    ]
+    roots.extend(path for path in defaults if str(path))
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        normalized = _normalized_path(root)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(root)
+    return unique
+
+
 def _model_disk_preflight(model: LocalModel) -> dict[str, Any]:
     target_dir = models_dir() / model.id
     probe = target_dir if target_dir.exists() else _nearest_existing_parent(target_dir)
@@ -749,6 +864,72 @@ def _find_local_model_file(model: LocalModel) -> Path | None:
         return None
     matches = sorted(repo_dir.glob(pattern))
     return matches[0] if matches else None
+
+
+def _iter_transformers_checkpoint_dirs(root: Path, *, max_depth: int) -> list[Path]:
+    discovered: list[Path] = []
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    seen: set[str] = set()
+    while stack:
+        current, depth = stack.pop()
+        normalized = _normalized_path(current)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if not current.exists() or not current.is_dir():
+            continue
+        if _is_transformers_model_dir(current):
+            discovered.append(current)
+            continue
+        if depth >= max_depth:
+            continue
+        try:
+            children = sorted(
+                (entry for entry in current.iterdir() if entry.is_dir()),
+                key=lambda item: item.name.lower(),
+            )
+        except OSError:
+            continue
+        for child in reversed(children):
+            if child.name.lower() in MODEL_SCAN_SKIP_DIRS:
+                continue
+            stack.append((child, depth + 1))
+    return discovered
+
+
+def _discovered_model_metadata(candidate: Path, *, compatibility: dict[str, Any], root: Path) -> dict[str, Any]:
+    config = _read_transformers_config(candidate)
+    name_or_path = str(config.get("_name_or_path") or config.get("name_or_path") or "").strip()
+    display_name = _display_model_name(candidate, name_or_path=name_or_path, family=compatibility.get("family_name") or "")
+    return {
+        "id": f"discovered-{hashlib.sha1(str(candidate.resolve()).encode('utf-8')).hexdigest()[:12]}",
+        "name": display_name,
+        "family": str(compatibility.get("family") or ""),
+        "family_name": str(compatibility.get("family_name") or ""),
+        "local_path": str(candidate.resolve()),
+        "source_root": str(root),
+        "source_kind": "discovered_checkpoint",
+        "already_imported": False,
+        "compatibility": compatibility,
+        "detail": str(compatibility.get("detail") or ""),
+    }
+
+
+def _display_model_name(candidate: Path, *, name_or_path: str, family: str) -> str:
+    if name_or_path:
+        label = name_or_path.replace("\\", "/").rstrip("/").split("/")[-1]
+        if label:
+            return label
+    if family:
+        return f"{family} ({candidate.name})"
+    return candidate.name
+
+
+def _normalized_path(path: Path) -> str:
+    try:
+        return str(path.expanduser().resolve(strict=False)).lower()
+    except OSError:
+        return str(path).lower()
 
 
 def _download_model(model: LocalModel) -> None:

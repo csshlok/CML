@@ -7,13 +7,13 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 if (-not $PackageRoot) {
-  $PackageRoot = Join-Path $repoRoot "apps\desktop\release\win-unpacked"
+  throw "PackageRoot is required. Pass the explicit win-unpacked root to smoke-packaged-runtime.ps1."
 }
 
 $packagePath = [System.IO.Path]::GetFullPath($PackageRoot)
 $resourcesPath = Join-Path $packagePath "resources"
-$python = Join-Path $resourcesPath "python-runtime\Scripts\python.exe"
-$expertPython = Join-Path $resourcesPath "expert-python-runtime\Scripts\python.exe"
+$python = Join-Path $resourcesPath "python-runtime\python.exe"
+$expertPython = Join-Path $resourcesPath "expert-python-runtime\python.exe"
 $backendRoot = Join-Path $resourcesPath "backend"
 $ocrManifest = Join-Path $backendRoot "bin\ocr\manifest.json"
 
@@ -52,13 +52,14 @@ if not status.get("pdf_ocr_available"):
 '@ | Set-Content -LiteralPath $ocrProbePath -Encoding UTF8
 
 $env:PYTHONPATH = $resourcesPath
+$env:PYTHONNOUSERSITE = "1"
 $env:CML_BACKEND_MODE = "pre_vault"
 $env:CML_DATA_DIR = $dataDir
 $env:CML_DATABASE_PATH = $dbPath
 $env:CML_STARTUP_STATUS_PATH = $statusPath
 $env:CML_API_TOKEN = "packaged-smoke-token"
 
-$ocrJson = & $python $ocrProbePath
+$ocrJson = & $python -s $ocrProbePath
 if ($LASTEXITCODE -ne 0) {
   throw "Packaged OCR probe failed."
 }
@@ -78,7 +79,7 @@ if not all(result.values()):
     raise SystemExit("Packaged expert runtime is missing required dependencies.")
 '@ | Set-Content -LiteralPath $expertProbePath -Encoding UTF8
 
-$expertJson = & $expertPython $expertProbePath
+$expertJson = & $expertPython -s $expertProbePath
 if ($LASTEXITCODE -ne 0) {
   throw "Packaged expert runtime probe failed."
 }
@@ -86,7 +87,7 @@ $expertStatus = $expertJson | ConvertFrom-Json
 
 $process = Start-Process `
   -FilePath $python `
-  -ArgumentList @("-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", "$Port") `
+  -ArgumentList @("-s", "-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", "$Port") `
   -WorkingDirectory $resourcesPath `
   -WindowStyle Hidden `
   -PassThru `

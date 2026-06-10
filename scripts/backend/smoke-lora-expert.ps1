@@ -14,7 +14,7 @@ if (-not $AllowTestTrainer -and -not $env:CML_LORA_TRAINER_COMMAND) {
   throw "CML_LORA_TRAINER_COMMAND is required for real LoRA smoke. Use -AllowTestTrainer only for CI scaffold validation."
 }
 
-$reportFullPath = Join-Path $repoRoot $ReportPath
+$reportFullPath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $ReportPath))
 $reportDir = Split-Path -Parent $reportFullPath
 if ($reportDir) {
   New-Item -ItemType Directory -Force -Path $reportDir | Out-Null

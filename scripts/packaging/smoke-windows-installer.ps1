@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 if (-not $InstallerPath) {
-  $InstallerPath = Join-Path $repoRoot "apps\desktop\release\CML-0.1.0-Setup.exe"
+  throw "InstallerPath is required. Pass the explicit NSIS installer path to smoke-windows-installer.ps1."
 }
 $installer = [System.IO.Path]::GetFullPath($InstallerPath)
 if (-not (Test-Path -LiteralPath $installer)) {
@@ -39,7 +39,6 @@ function Get-CmlUninstallEntry {
       Where-Object {
         $_.DisplayName -eq "CML" -or
           $_.DisplayName -like "CML *" -or
-          $_.DisplayName -eq "Vault" -or
           $_.Publisher -eq "CML"
       } |
       Select-Object -First 1
@@ -104,7 +103,7 @@ if (-not $installLocation) {
   }
 }
 if (-not $installLocation) {
-  $installLocation = Join-Path $env:LOCALAPPDATA "Programs\@cmldesktop"
+  throw "CML install location was not present in the uninstall registry entry."
 }
 $installedExe = Join-Path $installLocation "CML.exe"
 if (-not (Test-Path -LiteralPath $installedExe)) {

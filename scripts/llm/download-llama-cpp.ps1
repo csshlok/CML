@@ -1,5 +1,5 @@
 param(
-  [string]$Destination = "T:\LLM\runtimes\llama.cpp",
+  [string]$Destination = "",
   [ValidateSet("cpu", "cuda")]
   [string]$Runtime = "cpu",
   [string]$CudaVersion = "12.4",
@@ -7,6 +7,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $Destination) {
+  $Destination = Join-Path $env:LOCALAPPDATA "CML\llm-runtimes\llama.cpp"
+}
 
 New-Item -ItemType Directory -Force -Path $Destination | Out-Null
 

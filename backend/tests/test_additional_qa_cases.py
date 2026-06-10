@@ -43,6 +43,7 @@ class AdditionalQACases(unittest.TestCase):
         os.environ.pop("CML_LORA_MIN_UNIQUE_SOURCES", None)
         os.environ.pop("CML_LORA_MAX_DUPLICATE_RATIO", None)
         os.environ.pop("CML_LORA_MODEL_DIRS", None)
+        os.environ.pop("CML_MODEL_SCAN_ROOTS", None)
         os.environ.pop("CML_MODELS_DIR", None)
         os.environ.pop("CML_LLM_MODEL", None)
         self.tmp.cleanup()
@@ -156,6 +157,46 @@ class AdditionalQACases(unittest.TestCase):
         self.assertTrue(chat_check["ok"])
         self.assertTrue(expert_check["ok"])
         self.assertTrue(pair_check["ok"])
+
+    def test_discover_installed_models_finds_supported_local_checkpoint(self) -> None:
+        from backend.app.core.model_registry import discover_installed_models
+
+        model_dir = self._write_fake_local_transformers_model(
+            "detected-qwen",
+            model_type="qwen2",
+            repo_hint="Qwen/Qwen3-4B",
+        )
+        os.environ["CML_MODEL_SCAN_ROOTS"] = str(model_dir.parent)
+        from backend.app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        discovery = discover_installed_models(max_results=10)
+
+        self.assertGreaterEqual(discovery["compatible_model_count"], 1)
+        self.assertTrue(any(item["local_path"] == str(model_dir.resolve()) for item in discovery["models"]))
+
+    def test_models_discover_route_returns_detected_models(self) -> None:
+        model_dir = self._write_fake_local_transformers_model(
+            "route-detected-qwen",
+            model_type="qwen2",
+            repo_hint="Qwen/Qwen3-4B",
+        )
+        os.environ["CML_MODEL_SCAN_ROOTS"] = str(model_dir.parent)
+        from backend.app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        client = self._client()
+        try:
+            response = client.get("/api/v1/models/discover?max_results=10")
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertGreaterEqual(payload["compatible_model_count"], 1)
+        self.assertTrue(any(item["local_path"] == str(model_dir.resolve()) for item in payload["models"]))
 
     def test_bridge_context_requires_token_when_enabled(self) -> None:
         from backend.app.api.routes.bridge import update_bridge_settings
@@ -1180,10 +1221,18 @@ class AdditionalQACases(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[2]
         stage_script = repo_root / "scripts" / "packaging" / "stage-ocr-runtime.ps1"
         package_script = repo_root / "scripts" / "packaging" / "package-windows.ps1"
+        packaged_launch_smoke = repo_root / "scripts" / "packaging" / "smoke-packaged-app-launch.ps1"
+        installed_launch_smoke = repo_root / "scripts" / "packaging" / "smoke-installed-app.ps1"
+        validate_script = repo_root / "scripts" / "packaging" / "validate-clean-machine-package.ps1"
+        root_main = repo_root / "apps" / "desktop" / "main.cjs"
         ocr_readme = repo_root / "backend" / "bin" / "ocr" / "README.md"
 
         stage_text = stage_script.read_text(encoding="utf-8")
         package_text = package_script.read_text(encoding="utf-8")
+        packaged_launch_text = packaged_launch_smoke.read_text(encoding="utf-8")
+        installed_launch_text = installed_launch_smoke.read_text(encoding="utf-8")
+        validate_text = validate_script.read_text(encoding="utf-8")
+        root_main_text = root_main.read_text(encoding="utf-8")
         readme_text = ocr_readme.read_text(encoding="utf-8")
 
         self.assertIn("tessdata_fast/main/eng.traineddata", stage_text)
@@ -1204,7 +1253,20 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("SkipGhostscriptInstaller", package_text)
         self.assertIn("TesseractExePath", package_text)
         self.assertIn("GhostscriptExePath", package_text)
-        self.assertIn("ocrmypdf>=16.0.0", package_text)
+        self.assertIn('fastapi==0.136.3', package_text)
+        self.assertIn('uvicorn[standard]==0.48.0', package_text)
+        self.assertIn('ocrmypdf==17.5.0', package_text)
+        self.assertIn('sentence-transformers==5.5.1', package_text)
+        self.assertIn('transformers==5.6.0', package_text)
+        self.assertIn('peft==0.18.1', package_text)
+        self.assertIn("renderer ready signal received", packaged_launch_text)
+        self.assertIn("renderer ready signal received", installed_launch_text)
+        self.assertIn("renderer never signaled readiness", packaged_launch_text)
+        self.assertIn("renderer never signaled readiness", installed_launch_text)
+        self.assertIn("[switch]$RunExecutableSmokes", validate_text)
+        self.assertIn("[string]$InstallerPath", validate_text)
+        self.assertIn("smoke-windows-installer.ps1", validate_text)
+        self.assertEqual(root_main_text.strip(), 'module.exports = require("./electron/main.cjs");')
         self.assertIn("scripts/packaging/stage-ocr-runtime.ps1", readme_text)
 
     def test_ocr_benchmark_script_reports_similarity_metrics(self) -> None:

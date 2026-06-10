@@ -1,10 +1,11 @@
-const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } = require("electron");
+const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 const {
   buildBackendChildEnv,
   defaultWritableRoots,
@@ -25,6 +26,18 @@ let rendererServer = null;
 let rendererUrl = null;
 let vaultLockOverrideOnce = false;
 let packagedRuntimeVerification = null;
+let backendStdoutStream = null;
+let backendStderrStream = null;
+let rendererReadyPath = null;
+const startupRepairLogoMarkup = `
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+    <rect width="64" height="64" rx="14" fill="#f6f1e7"/>
+    <circle cx="22" cy="24" r="8" fill="#b5cdb1"/>
+    <circle cx="42" cy="24" r="8" fill="#b6d0e0"/>
+    <circle cx="32" cy="42" r="8" fill="#d7a78a"/>
+    <path d="M28 25h8M26 31l4 6M38 31l-4 6" stroke="#4c4035" stroke-width="3" stroke-linecap="round"/>
+  </svg>
+`;
 const supportedSourceExtensions = new Set([
   ".aac", ".asc", ".bat", ".bmp", ".c", ".cpp", ".cs", ".csv", ".css", ".docx",
   ".flac", ".gif", ".go", ".htm", ".html", ".java", ".jpeg", ".jpg", ".js",
@@ -40,12 +53,74 @@ let mainWindow = null;
 
 function writeDesktopRuntimeLog(message, error = null) {
   try {
-    const logPath = path.join(app.getPath("userData"), "desktop-runtime.log");
+    const logPath = getDesktopRuntimeLogPath();
     const detail = error && (error.stack || error.message) ? `\n${error.stack || error.message}` : "";
     fsSync.appendFileSync(logPath, `${new Date().toISOString()} ${message}${detail}\n`, "utf8");
   } catch {
     // Startup logging must never become the reason the app fails to open.
   }
+}
+
+function getDesktopRuntimeLogPath() {
+  return path.join(app.getPath("userData"), "desktop-runtime.log");
+}
+
+function getBackendLogPaths() {
+  const userDataPath = app.getPath("userData");
+  return {
+    stdout: path.join(userDataPath, "backend-stdout.log"),
+    stderr: path.join(userDataPath, "backend-stderr.log"),
+  };
+}
+
+function closeBackendLogStreams() {
+  const stdoutStream = backendStdoutStream;
+  const stderrStream = backendStderrStream;
+  backendStdoutStream = null;
+  backendStderrStream = null;
+  if (stdoutStream) {
+    stdoutStream.end();
+  }
+  if (stderrStream) {
+    stderrStream.end();
+  }
+}
+
+function attachBackendLogging(childProcess, command, args) {
+  const logPaths = getBackendLogPaths();
+  closeBackendLogStreams();
+  const stdoutStream = fsSync.createWriteStream(logPaths.stdout, { flags: "a" });
+  const stderrStream = fsSync.createWriteStream(logPaths.stderr, { flags: "a" });
+  backendStdoutStream = stdoutStream;
+  backendStderrStream = stderrStream;
+  const header = `[${new Date().toISOString()}] spawn ${command} ${args.join(" ")}\n`;
+  stdoutStream.write(`\n${header}`);
+  stderrStream.write(`\n${header}`);
+  if (childProcess.stdout) {
+    childProcess.stdout.on("data", (chunk) => {
+      stdoutStream.write(chunk);
+    });
+  }
+  if (childProcess.stderr) {
+    childProcess.stderr.on("data", (chunk) => {
+      stderrStream.write(chunk);
+    });
+  }
+  childProcess.on("error", (error) => {
+    writeDesktopRuntimeLog("backend process error", error);
+  });
+  childProcess.on("close", (code, signal) => {
+    writeDesktopRuntimeLog(`backend exited; code=${code ?? "null"} signal=${signal ?? "null"}`);
+    if (backendStdoutStream === stdoutStream) {
+      backendStdoutStream = null;
+    }
+    if (backendStderrStream === stderrStream) {
+      backendStderrStream = null;
+    }
+    stdoutStream.end();
+    stderrStream.end();
+  });
+  return logPaths;
 }
 
 process.on("uncaughtException", (error) => {
@@ -57,6 +132,7 @@ process.on("unhandledRejection", (error) => {
 });
 
 async function createWindow() {
+  rendererReadyPath = null;
   let startupError = null;
   try {
     backendUrl = await ensureBackend();
@@ -70,6 +146,7 @@ async function createWindow() {
     minHeight: 680,
     title: "Vault",
     backgroundColor: "#fbfaf6",
+    autoHideMenuBar: true,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -79,6 +156,7 @@ async function createWindow() {
     },
   });
   mainWindow = window;
+  window.setMenuBarVisibility(false);
 
   window.once("ready-to-show", () => {
     window.setTitle("Vault");
@@ -95,6 +173,20 @@ async function createWindow() {
       shell.openExternal(url);
     }
     return { action: "deny" };
+  });
+  window.webContents.on("did-finish-load", () => {
+    writeDesktopRuntimeLog(`renderer did-finish-load ${window.webContents.getURL()}`);
+  });
+  window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    writeDesktopRuntimeLog(
+      `renderer did-fail-load code=${errorCode} mainFrame=${isMainFrame} url=${validatedURL} description=${errorDescription}`,
+    );
+  });
+  window.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    writeDesktopRuntimeLog(`renderer console level=${level} source=${sourceId || "unknown"} line=${line} message=${message}`);
+  });
+  window.webContents.on("render-process-gone", (_event, details) => {
+    writeDesktopRuntimeLog(`renderer process gone reason=${details.reason} exitCode=${details.exitCode}`);
   });
   window.webContents.on("will-navigate", (event, url) => {
     if (url.startsWith("data:text/html")) return;
@@ -119,15 +211,23 @@ async function createWindow() {
       await loadStartupFailure(window, startupError);
       return;
     }
-    rendererUrl = rendererUrl || await startPackagedRendererServer();
-    const url = new URL(rendererUrl);
-    if (backendUrl) url.searchParams.set("backendUrl", backendUrl);
-    window.loadURL(url.toString());
+    try {
+      rendererUrl = rendererUrl || await startPackagedRendererServer();
+      await verifyRendererUp(rendererUrl, 10000);
+      const url = new URL(rendererUrl);
+      if (backendUrl) url.searchParams.set("backendUrl", backendUrl);
+      await window.loadURL(url.toString());
+      await waitForRendererReady(10000);
+    } catch (error) {
+      writeDesktopRuntimeLog("packaged renderer failed", error);
+      await loadRendererFailure(window, error);
+    }
   }
 }
 
 async function loadStartupFailure(window, error) {
   const status = await readStartupStatus();
+  const backendLogs = getBackendLogPaths();
   const detail = status?.message || error?.message || "Vault could not start its local backend.";
   const phase = status?.phase || "startup_failed";
   const action = repairActionForPhase(phase);
@@ -137,6 +237,9 @@ async function loadStartupFailure(window, error) {
     `Data directory: ${status?.data_dir || "Unknown"}`,
     `Database: ${status?.database_path || "Unknown"}`,
     `Startup status: ${getStartupStatusPath()}`,
+    `Backend stdout log: ${backendLogs.stdout}`,
+    `Backend stderr log: ${backendLogs.stderr}`,
+    `Desktop runtime log: ${getDesktopRuntimeLogPath()}`,
   ].join("\n");
   const html = `
     <!doctype html>
@@ -145,7 +248,7 @@ async function loadStartupFailure(window, error) {
     <body style="margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#fbfaf6;color:#1f1a17;">
       <main style="max-width:760px;margin:10vh auto;padding:32px;">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px;">
-          <div style="width:32px;height:32px;border:1px solid #ded6cc;border-radius:8px;display:grid;place-items:center;background:#fffdf9;">V</div>
+          <div style="width:32px;height:32px;border:1px solid #ded6cc;border-radius:8px;display:grid;place-items:center;background:#fffdf9;overflow:hidden;">${startupRepairLogoMarkup}</div>
           <div>
             <div style="font-weight:650;font-size:14px;">Vault</div>
             <div style="font-size:12px;color:#7c6f65;">Startup repair</div>
@@ -166,12 +269,89 @@ async function loadStartupFailure(window, error) {
           <dd style="margin:4px 0 0;word-break:break-all;">${escapeHtml(status?.database_path || "Unknown")}</dd>
         </dl>
         <div style="display:flex;gap:10px;margin-top:22px;flex-wrap:wrap;">
-          <button onclick="location.reload()" style="height:36px;padding:0 14px;border:0;border-radius:8px;background:#765f4d;color:#fff;font-weight:600;">Try again</button>
+          <button onclick="window.cmlDesktop?.retryStartup?.()" style="height:36px;padding:0 14px;border:0;border-radius:8px;background:#765f4d;color:#fff;font-weight:600;">Try again</button>
           ${phase === "vault_lock_failed" ? '<button onclick="window.cmlDesktop?.openVaultAnyway?.()" style="height:36px;padding:0 14px;border:1px solid #9b6a4f;border-radius:8px;background:#fff7ed;color:#7c2d12;font-weight:600;">Open anyway</button>' : ""}
-          <button onclick="navigator.clipboard?.writeText(${JSON.stringify(diagnosticText)}).then(()=>this.textContent='Copied details').catch(()=>this.textContent='Copy failed')" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Copy details</button>
+          <button id="copy-details-button" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Copy details</button>
           <button onclick="window.close()" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Close Vault</button>
         </div>
       </main>
+      <script>
+        const copyButton = document.getElementById("copy-details-button");
+        if (copyButton) {
+          copyButton.addEventListener("click", async () => {
+            try {
+              if (window.cmlDesktop?.copyText) {
+                await window.cmlDesktop.copyText(${JSON.stringify(diagnosticText)});
+              } else if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(${JSON.stringify(diagnosticText)});
+              } else {
+                throw new Error("Clipboard bridge unavailable");
+              }
+              copyButton.textContent = "Copied details";
+            } catch {
+              copyButton.textContent = "Copy failed";
+            }
+          });
+        }
+      </script>
+    </body>`;
+  await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+}
+
+async function loadRendererFailure(window, error) {
+  const diagnosticText = [
+    "Phase: renderer_startup_failed",
+    `Message: ${error?.message || "Packaged renderer did not become available."}`,
+    `Renderer URL: ${rendererUrl || "Unknown"}`,
+    `Startup status: ${getStartupStatusPath()}`,
+    `Backend stdout log: ${getBackendLogPaths().stdout}`,
+    `Backend stderr log: ${getBackendLogPaths().stderr}`,
+    `Desktop runtime log: ${getDesktopRuntimeLogPath()}`,
+  ].join("\n");
+  const html = `
+    <!doctype html>
+    <meta charset="utf-8" />
+    <title>Vault renderer issue</title>
+    <body style="margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#fbfaf6;color:#1f1a17;">
+      <main style="max-width:760px;margin:10vh auto;padding:32px;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px;">
+          <div style="width:32px;height:32px;border:1px solid #ded6cc;border-radius:8px;display:grid;place-items:center;background:#fffdf9;overflow:hidden;">${startupRepairLogoMarkup}</div>
+          <div>
+            <div style="font-weight:650;font-size:14px;">Vault</div>
+            <div style="font-size:12px;color:#7c6f65;">Renderer repair</div>
+          </div>
+        </div>
+        <h1 style="font-size:30px;line-height:1.15;margin:0 0 12px;">Vault could not load its packaged UI.</h1>
+        <p style="line-height:1.65;color:#5f524b;margin:0;max-width:620px;">${escapeHtml(error?.message || "The local renderer did not become ready.")}</p>
+        <div style="margin-top:22px;padding:16px;border:1px solid #d7cfc5;border-radius:8px;background:#fffdf9;">
+          <div style="font-weight:600;font-size:14px;">The backend may already be healthy.</div>
+          <div style="margin-top:6px;font-size:13px;line-height:1.55;color:#5f524b;">Check the desktop runtime log path below for renderer startup details before rebuilding.</div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:22px;flex-wrap:wrap;">
+          <button onclick="window.cmlDesktop?.retryStartup?.()" style="height:36px;padding:0 14px;border:0;border-radius:8px;background:#765f4d;color:#fff;font-weight:600;">Try again</button>
+          <button id="copy-details-button" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Copy details</button>
+          <button onclick="window.close()" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Close Vault</button>
+        </div>
+      </main>
+      <script>
+        const copyButton = document.getElementById("copy-details-button");
+        if (copyButton) {
+          copyButton.addEventListener("click", async () => {
+            try {
+              if (window.cmlDesktop?.copyText) {
+                await window.cmlDesktop.copyText(${JSON.stringify(diagnosticText)});
+              } else if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(${JSON.stringify(diagnosticText)});
+              } else {
+                throw new Error("Clipboard bridge unavailable");
+              }
+              copyButton.textContent = "Copied details";
+            } catch {
+              copyButton.textContent = "Copy failed";
+            }
+          });
+        }
+      </script>
     </body>`;
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 }
@@ -343,6 +523,21 @@ if (gotSingleInstanceLock) {
 
     ipcMain.handle("cml:get-backend-url", async () => backendUrl);
     ipcMain.handle("cml:get-backend-token", async () => getBackendApiToken());
+    ipcMain.handle("cml:renderer-ready", async (_event, detail) => {
+      rendererReadyPath = typeof detail === "string" ? detail : "";
+      writeDesktopRuntimeLog(`renderer ready signal received path=${rendererReadyPath || "unknown"}`);
+      return true;
+    });
+    ipcMain.handle("cml:copy-text", async (_event, value) => {
+      clipboard.writeText(typeof value === "string" ? value : String(value ?? ""));
+      return true;
+    });
+    ipcMain.handle("cml:retry-startup", async () => {
+      writeDesktopRuntimeLog("manual startup retry requested");
+      app.relaunch();
+      app.exit(0);
+      return true;
+    });
     ipcMain.handle("cml:open-vault-anyway", async () => {
       const confirmation = await dialog.showMessageBox(mainWindow, {
         type: "warning",
@@ -422,9 +617,13 @@ async function ensureBackend() {
   if (!isDev && (!(await pathExists(pythonCommand)) || !(await pathExists(expertPythonCommand)))) {
     throw new Error("Packaged helper runtime is missing required Python executables.");
   }
+  writeDesktopRuntimeLog(`starting backend; mode=${backendMode} dataDir=${dataDir}`);
+  const backendArgs = ["-s", "-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", String(port)];
+  const backendWaitTimeoutMs = Number(process.env.CML_BACKEND_WAIT_TIMEOUT_MS || 30000);
+  const backendStartedAt = Date.now();
   backendProcess = spawn(
     pythonCommand,
-    ["-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", String(port)],
+    backendArgs,
     {
       cwd: rootDir,
       env: isDev
@@ -439,6 +638,7 @@ async function ensureBackend() {
             CML_VAULT_LOCK_OVERRIDE: vaultLockOverrideOnce ? "open_anyway" : "",
             CML_LORA_RUNTIME_PYTHON: expertPythonCommand,
             PLAYWRIGHT_BROWSERS_PATH: helperPaths.playwrightRoot,
+            PYTHONNOUSERSITE: "1",
           }
         : buildBackendChildEnv({
             inheritedEnv: process.env,
@@ -452,13 +652,19 @@ async function ensureBackend() {
             vaultLockOverride: vaultLockOverrideOnce ? "open_anyway" : "",
           }),
       windowsHide: true,
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "pipe"],
     },
+  );
+  const backendLogPaths = attachBackendLogging(
+    backendProcess,
+    pythonCommand,
+    backendArgs,
   );
   vaultLockOverrideOnce = false;
   backendProcess.unref();
   const startedUrl = `http://127.0.0.1:${port}`;
-  await waitForBackend(startedUrl, token, 12000);
+  await waitForBackend(startedUrl, token, backendWaitTimeoutMs, backendLogPaths);
+  writeDesktopRuntimeLog(`backend ready after ${Date.now() - backendStartedAt}ms at ${startedUrl}`);
   return startedUrl;
 }
 
@@ -503,6 +709,7 @@ async function restartBackend() {
     backendProcess.kill();
   }
   backendProcess = null;
+  closeBackendLogStreams();
   backendUrl = null;
   backendUrl = await ensureBackend();
   if (mainWindow && backendUrl) {
@@ -547,7 +754,7 @@ async function startPackagedRendererServer() {
   const port = await findOpenPort(5174, 5190);
   const clientDir = path.join(__dirname, "../dist/client");
   const serverEntry = path.join(__dirname, "../dist/server/index.js");
-  const workerModule = await import(pathToFileUrl(serverEntry));
+  const workerModule = await import(pathToFileURL(serverEntry).href);
   const worker = workerModule.default;
 
   rendererServer = http.createServer(async (request, response) => {
@@ -568,6 +775,7 @@ async function startPackagedRendererServer() {
       const body = Buffer.from(await webResponse.arrayBuffer());
       writeNodeResponse(response, webResponse.status, rendererSecurityHeaders(Object.fromEntries(webResponse.headers)), body);
     } catch (error) {
+      writeDesktopRuntimeLog("renderer request failed", error);
       response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
       response.end(error instanceof Error ? error.stack || error.message : String(error));
     }
@@ -582,7 +790,16 @@ async function startPackagedRendererServer() {
 }
 
 async function tryServeStaticAsset(clientDir, pathname) {
-  const safePathname = decodeURIComponent(pathname).replace(/^\/+/, "");
+  let safePathname = "";
+  try {
+    safePathname = decodeURIComponent(pathname).replace(/^\/+/, "");
+  } catch {
+    return {
+      status: 400,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+      body: Buffer.from("Bad request"),
+    };
+  }
   if (!safePathname || safePathname.includes("..")) return null;
   if (!(safePathname.startsWith("assets/") || safePathname === "favicon.svg")) return null;
   const target = path.join(clientDir, safePathname);
@@ -613,9 +830,9 @@ function rendererSecurityHeaders(headers = {}) {
     ...headers,
     "content-security-policy": [
       "default-src 'self'",
-      "script-src 'self'",
+      "script-src 'self' 'unsafe-inline'",
       "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob: https: http:",
+      "img-src 'self' data: blob: https:",
       "font-src 'self' data:",
       "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*",
       "media-src 'none'",
@@ -638,16 +855,12 @@ function contentTypeForPath(targetPath) {
   return "application/octet-stream";
 }
 
-function pathToFileUrl(targetPath) {
-  return `file:///${targetPath.replace(/\\/g, "/").replace(/^([a-zA-Z]):/, "$1:")}`;
-}
-
 async function findExistingCurrentBackend(token) {
   const candidates = [
     process.env.VITE_CML_BACKEND_URL,
     process.env.CML_BACKEND_URL,
-    "http://127.0.0.1:7343",
     "http://127.0.0.1:7342",
+    ...Array.from({ length: 13 }, (_value, index) => `http://127.0.0.1:${7343 + index}`),
   ].filter(Boolean);
   for (const candidate of [...new Set(candidates)]) {
     if (await isCurrentBackend(candidate, token)) return candidate;
@@ -663,16 +876,85 @@ function isCurrentBackend(url, token) {
       identity.service === "cml-backend" &&
       identity.api_prefix === apiPrefix
     ))
-    .catch(() => false);
+    .catch(async (error) => {
+      // In pre-vault mode, private API routes intentionally return 409 until
+      // setup completes. That still means the backend is alive and current.
+      if (error instanceof HttpStatusError && error.statusCode === 409) {
+        try {
+          const health = await httpJson(`${url}/health`, 1200);
+          return health && health.service === "cml-backend" && health.status === "ok";
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    });
 }
 
-async function waitForBackend(url, token, timeoutMs) {
+async function waitForBackend(url, token, timeoutMs, backendLogPaths = null) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     if (await isCurrentBackend(url, token)) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error(`Backend did not start at ${url}`);
+  const status = await readStartupStatus();
+  const messageParts = [`Backend did not start at ${url}`];
+  if (status?.phase) {
+    messageParts.push(`phase=${status.phase}`);
+  }
+  if (status?.message) {
+    messageParts.push(`detail=${status.message}`);
+  }
+  messageParts.push(`elapsed_ms=${Date.now() - started}`);
+  if (backendLogPaths?.stderr) {
+    messageParts.push(`stderr=${backendLogPaths.stderr}`);
+  }
+  throw new Error(messageParts.join(" | "));
+}
+
+async function verifyRendererUp(url, timeoutMs) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const response = await httpStatus(url, 1500);
+      if (response.statusCode >= 200 && response.statusCode < 400) {
+        return;
+      }
+      const locationText = response.location ? ` location=${response.location}` : "";
+      writeDesktopRuntimeLog(`renderer probe returned status ${response.statusCode} for ${url}${locationText}`);
+    } catch (error) {
+      writeDesktopRuntimeLog(`renderer probe failed for ${url}`, error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Renderer did not become available at ${url}. See ${getDesktopRuntimeLogPath()}`);
+}
+
+async function waitForRendererReady(timeoutMs) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (rendererReadyPath !== null) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Renderer did not signal readiness. See ${getDesktopRuntimeLogPath()}`);
+}
+
+function httpStatus(url, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, { timeout: timeoutMs }, (response) => {
+      response.resume();
+      response.on("end", () => resolve({
+        statusCode: response.statusCode || 0,
+        location: response.headers.location || "",
+      }));
+    });
+    request.on("timeout", () => {
+      request.destroy(new Error("Timed out"));
+    });
+    request.on("error", reject);
+  });
 }
 
 function httpJson(url, timeoutMs, token = "") {
@@ -686,7 +968,7 @@ function httpJson(url, timeoutMs, token = "") {
       });
       response.on("end", () => {
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          reject(new Error(`HTTP ${response.statusCode}`));
+          reject(new HttpStatusError(response.statusCode, body));
           return;
         }
         try {
@@ -701,6 +983,15 @@ function httpJson(url, timeoutMs, token = "") {
     });
     request.on("error", reject);
   });
+}
+
+class HttpStatusError extends Error {
+  constructor(statusCode, body = "") {
+    super(`HTTP ${statusCode}`);
+    this.name = "HttpStatusError";
+    this.statusCode = statusCode;
+    this.body = body;
+  }
 }
 
 async function findOpenPort(start, end) {
@@ -806,4 +1097,5 @@ app.on("before-quit", () => {
   if (backendProcess && !backendProcess.killed) {
     backendProcess.kill();
   }
+  closeBackendLogStreams();
 });

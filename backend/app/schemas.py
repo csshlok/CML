@@ -678,7 +678,32 @@ class ModelRecommendationRead(BaseModel):
     recommended_expert_family: str = ""
     active_pair: dict = {}
     models: list[ModelRead]
+    detected_compatible_models: list[dict] = []
+    detected_compatible_model_count: int = 0
     detail: str
+
+
+class DiscoveredInstalledModelRead(BaseModel):
+    id: str
+    name: str
+    family: str = ""
+    family_name: str = ""
+    local_path: str
+    source_root: str
+    source_kind: str = "discovered_checkpoint"
+    already_imported: bool = False
+    compatibility: ModelCompatibilityRead
+    detail: str = ""
+
+
+class InstalledModelDiscoveryRead(BaseModel):
+    models: list[DiscoveredInstalledModelRead]
+    compatible_model_count: int
+    scanned_root_count: int
+    scanned_roots: list[str]
+    missing_roots: list[str]
+    truncated: bool = False
+    scan_duration_ms: float
 
 
 class ModelDownloadStart(BaseModel):

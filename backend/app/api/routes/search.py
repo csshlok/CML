@@ -20,9 +20,11 @@ from backend.app.core.vector_maintenance import (
 )
 from backend.app.core.turbovec_runtime import (
     TurbovecSidecarUnavailable,
+    benchmark_turbovec_phase_c,
     build_turbovec_sidecar,
     repair_turbovec_sidecars,
     semantic_search_results,
+    turbovec_phase_c_status,
     turbovec_sidecar_repair_plan,
     turbovec_sidecar_status,
     vector_backend_policy,
@@ -168,8 +170,8 @@ def get_vector_policy() -> dict:
 
 
 @router.get("/vectors/backend-policy")
-def get_vector_backend_policy() -> dict:
-    return vector_backend_policy()
+def get_vector_backend_policy(vault_id: str | None = None) -> dict:
+    return vector_backend_policy(vault_id)
 
 
 @router.post("/vectors/policy/begin-transition")
@@ -229,3 +231,29 @@ def get_vector_sidecar_repair_plan(vault_id: str | None = None) -> dict:
 @router.post("/vectors/sidecar/repair")
 def repair_vector_sidecars(vault_id: str | None = None) -> dict:
     return repair_turbovec_sidecars(vault_id)
+
+
+@router.get("/vectors/phase-c/status")
+def get_turbovec_phase_c_gate_status(vault_id: str) -> dict:
+    try:
+        return turbovec_phase_c_status(vault_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Vault not found") from exc
+
+
+@router.post("/vectors/phase-c/benchmark")
+def run_turbovec_phase_c_benchmark(vault_id: str, query_limit: int = 20, top_k: int = 10) -> dict:
+    try:
+        require_embeddings_available("Turbovec Phase C benchmark")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
+        return benchmark_turbovec_phase_c(
+            vault_id,
+            query_limit=max(1, min(query_limit, 100)),
+            top_k=max(1, min(top_k, 20)),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Vault not found") from exc
+    except TurbovecSidecarUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

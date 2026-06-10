@@ -30,6 +30,7 @@ import {
   configureEmbeddingRuntime,
   createDiagnosticBundle,
   createVault,
+  discoverInstalledModels,
   enforceChatEvidenceRetention,
   getChatEvidenceRetentionPolicy,
   getEmbeddingRuntimeStatus,
@@ -64,6 +65,7 @@ import {
   type HardwareStatusRead,
   type IntegrationImportRecord,
   type JobQueueStatus,
+  type DiscoveredInstalledModelRecord,
   type LocalModelRecord,
   type ModelCompatibilityRecord,
   type ModelRuntimeStatus,
@@ -125,6 +127,8 @@ function SettingsView() {
   const [customModelPath, setCustomModelPath] = useState("");
   const [customModelName, setCustomModelName] = useState("");
   const [customModelReport, setCustomModelReport] = useState<ModelCompatibilityRecord | null>(null);
+  const [discoveredModels, setDiscoveredModels] = useState<DiscoveredInstalledModelRecord[]>([]);
+  const [discoveringModels, setDiscoveringModels] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -146,6 +150,7 @@ function SettingsView() {
         const [
           vaultRows,
           modelRows,
+          discoveredRows,
           runtimeStatus,
           embeddingStatus,
           embeddingDownloadStatus,
@@ -156,6 +161,7 @@ function SettingsView() {
         ] = await Promise.all([
           listVaults(),
           listLocalModels(),
+          discoverInstalledModels({ max_results: 24 }),
           getModelRuntimeStatus(),
           getEmbeddingRuntimeStatus(),
           getEmbeddingDownloadStatus(),
@@ -173,6 +179,7 @@ function SettingsView() {
         const importRows = firstVault ? await listIntegrationImports(firstVault.id) : [];
         if (cancelled) return;
         setModels(modelRows);
+        setDiscoveredModels(discoveredRows.models);
         setRuntime(runtimeStatus);
         setEmbeddingRuntime(embeddingStatus);
         setEmbeddingCacheDraft(embeddingStatus.cache_dir ?? "");
@@ -388,6 +395,38 @@ function SettingsView() {
       setStatusMessage(`${imported.name} imported.`);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not import model.");
+    }
+  }
+
+  async function scanInstalledModels() {
+    setDiscoveringModels(true);
+    try {
+      const discovered = await discoverInstalledModels({ max_results: 24 });
+      setDiscoveredModels(discovered.models);
+      setStatusMessage(
+        discovered.models.length
+          ? `Found ${discovered.models.length} compatible local checkpoint${discovered.models.length === 1 ? "" : "s"}.`
+          : "No accepted local Transformers checkpoints were found in the scanned folders.",
+      );
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not scan for installed models.");
+    } finally {
+      setDiscoveringModels(false);
+    }
+  }
+
+  async function importDiscoveredModel(model: DiscoveredInstalledModelRecord) {
+    try {
+      const imported = await importLocalModel({
+        path: model.local_path,
+        name: model.name,
+      });
+      setModels(await listLocalModels());
+      setCustomModelReport(imported.compatibility);
+      await scanInstalledModels();
+      setStatusMessage(`${imported.name} imported.`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not import detected model.");
     }
   }
 
@@ -714,6 +753,9 @@ function SettingsView() {
               <Button onClick={() => void importApprovedModel()} disabled={!customModelReport?.accepted}>
                 Import approved model
               </Button>
+              <Button variant="outline" onClick={() => void scanInstalledModels()} disabled={discoveringModels}>
+                {discoveringModels ? "Scanning..." : "Scan installed models"}
+              </Button>
             </div>
             {customModelReport && (
               <div className="mt-4 rounded-md border border-border bg-background px-3 py-3 text-sm">
@@ -722,6 +764,34 @@ function SettingsView() {
                 <div className="mt-1 text-xs text-muted-foreground">{customModelReport.pairing_detail}</div>
               </div>
             )}
+            <div className="mt-4 space-y-3">
+              {discoveredModels.length ? (
+                discoveredModels.map((model) => (
+                  <div key={model.id} className="rounded-md border border-border bg-background px-3 py-3 text-sm">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="font-medium">{model.name}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {model.family_name || model.family || "Approved family"} · {model.local_path}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">{model.detail}</div>
+                      </div>
+                      <Button
+                        variant="outline"
+                        onClick={() => void importDiscoveredModel(model)}
+                        disabled={model.already_imported}
+                      >
+                        {model.already_imported ? "Already imported" : "Import"}
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Scan common local model folders to detect accepted expert checkpoints already installed on this device.
+                </p>
+              )}
+            </div>
           </SettingsCard>
 
           <SettingsCard
@@ -1077,7 +1147,7 @@ function SettingsView() {
             meta="Available locally"
           />
           <ReadinessRow label="GPU" value="Optional" meta={hardware?.detail ?? "No dedicated GPU check yet"} />
-          <ReadinessRow label="Backend" value="Online" meta={runtime?.base_url ?? "http://localhost:7343"} />
+          <ReadinessRow label="Backend" value="Online" meta={runtime?.base_url ?? "Loopback runtime not detected"} />
           <ReadinessRow label="Model runtime" value={runtime?.available ? "Ready" : "Missing"} meta={runtime?.available ? "Local runtime ready." : "Start a model server to chat."} warning={!runtime?.available} />
         </div>
 

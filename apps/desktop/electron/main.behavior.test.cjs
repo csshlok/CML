@@ -11,7 +11,7 @@ function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, rendererSecurityHeaders, setActiveVaultPath, getActiveVaultPath, collectSupportedFiles, findOpenPort, __setMainWindow: (value) => { mainWindow = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, rendererSecurityHeaders, setActiveVaultPath, getActiveVaultPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, __setMainWindow: (value) => { mainWindow = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -38,6 +38,9 @@ function loadMainModule() {
         return Promise.resolve({ response: 0 });
       },
     },
+    clipboard: {
+      writeText: () => {},
+    },
     ipcMain: {
       handle: () => {},
     },
@@ -63,7 +66,10 @@ function loadMainModule() {
     },
     __dirname,
     __filename: filePath,
-    process,
+    process: Object.assign(Object.create(process), {
+      env: process.env,
+      on: () => {},
+    }),
     console,
     Buffer,
     setTimeout,
@@ -120,6 +126,8 @@ test("packaged renderer security headers enforce CSP and nosniff", () => {
   const headers = exported.rendererSecurityHeaders({ "content-type": "text/html; charset=utf-8" });
 
   assert.match(headers["content-security-policy"], /default-src 'self'/);
+  assert.match(headers["content-security-policy"], /script-src 'self' 'unsafe-inline'/);
+  assert.match(headers["content-security-policy"], /img-src 'self' data: blob: https:/);
   assert.match(headers["content-security-policy"], /object-src 'none'/);
   assert.match(headers["content-security-policy"], /frame-ancestors 'none'/);
   assert.match(headers["content-security-policy"], /connect-src 'self' http:\/\/127\.0\.0\.1:\*/);
@@ -223,4 +231,109 @@ test("isCurrentBackend requires authenticated backend identity", async () => {
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("isCurrentBackend accepts pre-vault 409 when health still reports cml-backend", async () => {
+  const { exported } = loadMainModule();
+  const server = http.createServer((request, response) => {
+    if (request.url === "/api/v1/system/backend-identity") {
+      response.writeHead(409, { "content-type": "application/json" });
+      response.end(JSON.stringify({ detail: "Vault not initialized." }));
+      return;
+    }
+    if (request.url === "/health") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ service: "cml-backend", status: "ok" }));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    assert.equal(await exported.isCurrentBackend(`http://127.0.0.1:${port}`, "expected-token"), true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("startup failure page renders a real copy button instead of malformed inline HTML", async () => {
+  const { exported } = loadMainModule();
+  let loadedUrl = "";
+  const window = {
+    loadURL: async (url) => {
+      loadedUrl = url;
+    },
+  };
+
+  await exported.loadStartupFailure(window, new Error("backend boot failed"));
+
+  const html = decodeURIComponent(String(loadedUrl).replace(/^data:text\/html;charset=utf-8,/, ""));
+  assert.match(html, /id="copy-details-button"/);
+  assert.match(html, /addEventListener\("click"/);
+  assert.match(html, /window\.cmlDesktop\?\.copyText/);
+  assert.match(html, /window\.cmlDesktop\?\.retryStartup/);
+  assert.match(html, /backend-stderr\.log/);
+  assert.doesNotMatch(html, /this\.textContent='Copied details'/);
+});
+
+test("packaged static asset server returns 400 for malformed encoded paths", async () => {
+  const { exported } = loadMainModule();
+  const clientDir = fs.mkdtempSync(path.join(os.tmpdir(), "cml-client-"));
+
+  const response = await exported.tryServeStaticAsset(clientDir, "/assets/%E0%A4%A");
+
+  assert.equal(response?.status, 400);
+  assert.match(String(response?.body), /bad request/i);
+});
+
+test("verifyRendererUp succeeds when the packaged renderer responds", async () => {
+  const { exported } = loadMainModule();
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end("<!doctype html><title>ok</title>");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    await exported.verifyRendererUp(`http://127.0.0.1:${port}/`, 2000);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("verifyRendererUp accepts redirect responses from the packaged router", async () => {
+  const { exported } = loadMainModule();
+  const server = http.createServer((_request, response) => {
+    response.writeHead(307, { location: "/onboarding" });
+    response.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    await exported.verifyRendererUp(`http://127.0.0.1:${port}/`, 2000);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("renderer failure page offers retry and copy diagnostics", async () => {
+  const { exported } = loadMainModule();
+  let loadedUrl = "";
+  const window = {
+    loadURL: async (url) => {
+      loadedUrl = url;
+    },
+  };
+
+  await exported.loadRendererFailure(window, new Error("renderer not available"));
+
+  const html = decodeURIComponent(String(loadedUrl).replace(/^data:text\/html;charset=utf-8,/, ""));
+  assert.match(html, /window\.cmlDesktop\?\.retryStartup/);
+  assert.match(html, /window\.cmlDesktop\?\.copyText/);
+  assert.match(html, /desktop-runtime\.log/);
 });

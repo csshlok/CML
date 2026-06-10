@@ -9,12 +9,12 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 if (-not $PackageRoot) {
-  $PackageRoot = Join-Path $repoRoot "apps\desktop\release\win-unpacked"
+  throw "PackageRoot is required. Pass the explicit win-unpacked root to smoke-packaged-full-vault.ps1."
 }
 
 $packagePath = [System.IO.Path]::GetFullPath($PackageRoot)
 $resourcesPath = Join-Path $packagePath "resources"
-$python = Join-Path $resourcesPath "python-runtime\Scripts\python.exe"
+$python = Join-Path $resourcesPath "python-runtime\python.exe"
 $backendRoot = Join-Path $resourcesPath "backend"
 
 if (-not (Test-Path -LiteralPath $python)) {
@@ -70,7 +70,7 @@ page = doc.new_page(width=1200, height=360)
 page.insert_image(fitz.Rect(0, 0, 1200, 360), filename=image_path)
 doc.save(pdf_path)
 '@
-  $code | & $PythonPath - $ImagePath $PdfPath
+  $code | & $PythonPath -s - $ImagePath $PdfPath
   if ($LASTEXITCODE -ne 0) {
     throw "Could not generate OCR PDF fixture with packaged Python."
   }
@@ -98,6 +98,7 @@ function Ensure-OcrFixtures {
 Ensure-OcrFixtures -FixtureRoot (Join-Path $smokeRoot "fixtures") -PythonPath $python
 
 $env:PYTHONPATH = $resourcesPath
+$env:PYTHONNOUSERSITE = "1"
 $env:CML_BACKEND_MODE = "full_vault"
 $env:CML_DATA_DIR = $dataDir
 $env:CML_DATABASE_PATH = $dbPath
@@ -108,7 +109,7 @@ $env:CML_EMBEDDING_PROVIDER = "hash"
 
 $process = Start-Process `
   -FilePath $python `
-  -ArgumentList @("-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", "$Port") `
+  -ArgumentList @("-s", "-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", "$Port") `
   -WorkingDirectory $resourcesPath `
   -WindowStyle Hidden `
   -PassThru `

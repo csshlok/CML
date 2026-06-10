@@ -9,8 +9,8 @@ param(
   )]
   [string]$ModelId,
 
-  [string]$ModelRoot = "T:\LLM",
-  [string]$RuntimeRoot = "T:\LLM\runtimes\llama.cpp",
+  [string]$ModelRoot = "",
+  [string]$RuntimeRoot = "",
   [ValidateSet("auto", "cpu", "cuda")]
   [string]$Runtime = "auto",
   [int]$Port = 8084,
@@ -21,6 +21,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $ModelRoot) {
+  $ModelRoot = Join-Path $env:LOCALAPPDATA "CML\models"
+}
+if (-not $RuntimeRoot) {
+  $RuntimeRoot = Join-Path $env:LOCALAPPDATA "CML\llm-runtimes\llama.cpp"
+}
 
 $servers = Get-ChildItem -Path $RuntimeRoot -Recurse -Filter "llama-server.exe"
 if ($Runtime -eq "cuda") {

@@ -24,6 +24,16 @@ def init_db() -> None:
     settings.database_path.parent.mkdir(parents=True, exist_ok=True)
 
     with connect(settings.database_path) as conn:
+        # Older local databases may predate columns now used by startup indexes.
+        # Add those columns first when the legacy tables already exist so init_db
+        # can repair forward instead of crashing before migrations run.
+        _add_column_if_missing_if_table_exists(conn, "sources", "provenance", "TEXT NOT NULL DEFAULT 'local_import'")
+        _add_column_if_missing_if_table_exists(conn, "sources", "trust_tier", "TEXT NOT NULL DEFAULT 'trusted_local'")
+        _add_column_if_missing_if_table_exists(conn, "source_chunks", "embedding_model_id", "TEXT NOT NULL DEFAULT 'hash'")
+        _add_column_if_missing_if_table_exists(conn, "source_chunks", "index_version", "TEXT NOT NULL DEFAULT 'v1'")
+        _add_column_if_missing_if_table_exists(conn, "source_chunks", "normalization_version", "TEXT NOT NULL DEFAULT 'norm-v1'")
+        _add_column_if_missing_if_table_exists(conn, "source_chunks", "extraction_version", "TEXT NOT NULL DEFAULT 'extract-v1'")
+        _add_column_if_missing_if_table_exists(conn, "source_chunks", "derived_state_epoch", "INTEGER NOT NULL DEFAULT 1")
         conn.executescript(
             """
             PRAGMA foreign_keys = ON;
@@ -864,6 +874,17 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, de
     }
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _add_column_if_missing_if_table_exists(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    if not IDENTIFIER_RE.fullmatch(table):
+        raise ValueError("Unsafe database identifier")
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    if exists:
+        _add_column_if_missing(conn, table, column, definition)
 
 
 def _ensure_vault_security_metadata_schema(conn: sqlite3.Connection) -> None:

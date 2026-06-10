@@ -72,8 +72,8 @@ function resolvePackagedHelperPaths(resourcesRoot) {
     backendRoot: path.join(resourcesRoot, "backend"),
     pythonRuntime: path.join(resourcesRoot, "python-runtime"),
     expertRuntime: path.join(resourcesRoot, "expert-python-runtime"),
-    backendPython: path.join(resourcesRoot, "python-runtime", "Scripts", "python.exe"),
-    expertPython: path.join(resourcesRoot, "expert-python-runtime", "Scripts", "python.exe"),
+    backendPython: path.join(resourcesRoot, "python-runtime", "python.exe"),
+    expertPython: path.join(resourcesRoot, "expert-python-runtime", "python.exe"),
     playwrightRoot: path.join(resourcesRoot, "ms-playwright"),
     helperManifest: path.join(resourcesRoot, HELPER_MANIFEST_NAME),
   };
@@ -154,10 +154,13 @@ function buildBackendChildEnv({
     PLAYWRIGHT_BROWSERS_PATH: helperPaths.playwrightRoot,
     PYTHONPATH: helperPaths.resourcesRoot,
     PYTHONHOME: helperPaths.pythonRuntime,
+    PYTHONNOUSERSITE: "1",
   };
   env.PATH = [
-    path.dirname(helperPaths.backendPython),
-    path.dirname(helperPaths.expertPython),
+    helperPaths.pythonRuntime,
+    path.join(helperPaths.pythonRuntime, "Scripts"),
+    helperPaths.expertRuntime,
+    path.join(helperPaths.expertRuntime, "Scripts"),
     env.SystemRoot,
     path.join(env.SystemRoot, "System32"),
     path.join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0"),

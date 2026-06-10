@@ -1,19 +1,23 @@
 param(
-  [string]$PackageRoot = "",
-  [int]$TimeoutSeconds = 30
+  [string]$InstallerPath = "",
+  [string]$InstallDir = "",
+  [int]$TimeoutSeconds = 45
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
-if (-not $PackageRoot) {
-  throw "PackageRoot is required. Pass the explicit win-unpacked root to smoke-packaged-app-launch.ps1."
+if (-not $InstallerPath) {
+  throw "InstallerPath is required. Pass the explicit NSIS installer path to smoke-installed-app.ps1."
+}
+if (-not $InstallDir) {
+  $InstallDir = Join-Path $env:TEMP ("cml-installed-smoke-" + [guid]::NewGuid().ToString("n"))
 }
 
-$packagePath = [System.IO.Path]::GetFullPath($PackageRoot)
-$exe = Join-Path $packagePath "CML.exe"
-if (-not (Test-Path -LiteralPath $exe)) {
-  throw "Packaged app executable not found: $exe"
+$installer = [System.IO.Path]::GetFullPath($InstallerPath)
+$installRoot = [System.IO.Path]::GetFullPath($InstallDir)
+if (-not (Test-Path -LiteralPath $installer)) {
+  throw "Installer not found: $installer"
 }
 
 function Get-FileSnapshot([string]$PathValue) {
@@ -41,6 +45,18 @@ function Get-AppendedLogText([string]$PathValue, $Snapshot) {
   return $text.Substring([int]$Snapshot.length)
 }
 
+if (Test-Path -LiteralPath $installRoot) {
+  Remove-Item -Recurse -Force $installRoot
+}
+
+$installArgs = @("/S", "/D=$installRoot")
+Start-Process -FilePath $installer -ArgumentList $installArgs -Wait
+
+$exe = Join-Path $installRoot "CML.exe"
+if (-not (Test-Path -LiteralPath $exe)) {
+  throw "Installed executable not found after NSIS install: $exe"
+}
+
 $candidateStatusPaths = @(
   (Join-Path $env:APPDATA "@cml\desktop\startup-status.json")
 )
@@ -53,6 +69,7 @@ $candidateStderrLogs = @(
 $candidateRuntimeLogs = @(
   (Join-Path $env:APPDATA "@cml\desktop\desktop-runtime.log")
 )
+
 $statusBefore = @{}
 $fileSnapshots = @{}
 foreach ($candidate in ($candidateStatusPaths + $candidateStdoutLogs + $candidateStderrLogs + $candidateRuntimeLogs)) {
@@ -62,8 +79,6 @@ foreach ($candidate in ($candidateStatusPaths + $candidateStdoutLogs + $candidat
   $fileSnapshots[$candidate] = Get-FileSnapshot $candidate
 }
 
-$electronRunAsNode = $env:ELECTRON_RUN_AS_NODE
-Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 $process = Start-Process -FilePath $exe -PassThru
 try {
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -95,11 +110,10 @@ try {
   $runtimeLogText = if ($runtimeLog) { Get-AppendedLogText $runtimeLog $fileSnapshots[$runtimeLog] } else { "" }
 
   if (-not $status) {
-    $known = $candidateStatusPaths -join ", "
-    throw "Packaged app did not write fresh startup status. Checked: $known stderr=$stderrLog runtime=$runtimeLog"
+    throw "Installed app did not write fresh startup status. stderr=$stderrLog runtime=$runtimeLog"
   }
   if ($status.status -ne "ready") {
-    throw "Packaged app startup did not reach ready: $($status | ConvertTo-Json -Compress)"
+    throw "Installed app startup did not reach ready: $($status | ConvertTo-Json -Compress)"
   }
   $rendererReadyDetected = $false
   $rendererFailureDetected = $false
@@ -119,14 +133,15 @@ try {
     Start-Sleep -Milliseconds 250
   }
   if ($rendererFailureDetected) {
-    throw "Packaged app reached backend ready but renderer failed. runtime=$runtimeLog"
+    throw "Installed app reached backend ready but renderer failed. runtime=$runtimeLog"
   }
   if (-not $rendererReadyDetected) {
-    throw "Packaged app reached backend ready but renderer never signaled readiness. runtime=$runtimeLog"
+    throw "Installed app reached backend ready but renderer never signaled readiness. runtime=$runtimeLog"
   }
 
   [ordered]@{
-    package_root = $packagePath
+    installer = $installer
+    install_dir = $installRoot
     launched_exe = $exe
     startup_status_path = $statusPath
     startup_status = $status.status
@@ -139,12 +154,9 @@ try {
     renderer_failure_detected = $rendererFailureDetected
   } | ConvertTo-Json -Depth 5
 } finally {
-  if ($electronRunAsNode -ne $null) {
-    $env:ELECTRON_RUN_AS_NODE = $electronRunAsNode
-  }
   Get-Process -Name "CML" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
   Get-Process -Name "python" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -like "*\win-unpacked\resources\python-runtime\*" } |
+    Where-Object { $_.Path -like "*$installRoot*python-runtime*" } |
     Stop-Process -Force -ErrorAction SilentlyContinue
   if ($process -and -not $process.HasExited) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue

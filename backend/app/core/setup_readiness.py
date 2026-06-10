@@ -4,6 +4,7 @@ from backend.app.core.model_registry import (
     active_chat_model_status,
     active_expert_model_status,
     active_model_pair_status,
+    discover_installed_models,
     model_integrity_manifest_status,
     list_models,
 )
@@ -17,6 +18,7 @@ def first_run_readiness() -> dict:
     ocr = ocr_runtime_status()
     manifest = model_integrity_manifest_status()
     installed_models = [model for model in list_models() if model.get("installed")]
+    discovered = discover_installed_models(max_results=8)
     active_chat_model = active_chat_model_status()
     active_expert_model = active_expert_model_status()
     active_pair = active_model_pair_status()
@@ -41,7 +43,8 @@ def first_run_readiness() -> dict:
             "ok": bool(manifest.get("available")) or bool(installed_models),
             "detail": (
                 f"manifest_models={manifest.get('model_count', 0)}; "
-                f"installed_models={len(installed_models)}"
+                f"installed_models={len(installed_models)}; "
+                f"discovered_compatible_models={discovered.get('compatible_model_count', 0)}"
             ),
         },
         {

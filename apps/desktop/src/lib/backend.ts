@@ -4,8 +4,12 @@ const CONFIGURED_BACKEND_URL =
   (import.meta.env.VITE_CML_BACKEND_URL as string | undefined) || "http://127.0.0.1:7343";
 const CONFIGURED_BACKEND_TOKEN = import.meta.env.VITE_CML_API_TOKEN as string | undefined;
 const API_PREFIX = (import.meta.env.VITE_CML_API_PREFIX as string | undefined) || "/api/v1";
+const DEFAULT_BACKEND_CANDIDATES = [
+  "http://127.0.0.1:7342",
+  ...Array.from({ length: 13 }, (_value, index) => `http://127.0.0.1:${7343 + index}`),
+];
 const BACKEND_CANDIDATES = Array.from(
-  new Set([CONFIGURED_BACKEND_URL, "http://127.0.0.1:7343", "http://127.0.0.1:7342"]),
+  new Set([CONFIGURED_BACKEND_URL, ...DEFAULT_BACKEND_CANDIDATES]),
 );
 let resolvedBackendUrl: string | null = null;
 let resolvedBackendToken: string | null = CONFIGURED_BACKEND_TOKEN || null;
@@ -20,6 +24,9 @@ if (typeof window !== "undefined") {
     });
     void window.cmlDesktop?.getBackendToken?.().then((token) => {
       if (token) resolvedBackendToken = token;
+    });
+    window.cmlDesktop?.onBackendUrlChanged?.((nextUrl) => {
+      if (nextUrl) resolvedBackendUrl = nextUrl;
     });
   }
 }
@@ -599,7 +606,32 @@ export type ModelRecommendationsRecord = {
   recommended_expert_family: string;
   active_pair: Record<string, unknown>;
   models: LocalModelRecord[];
+  detected_compatible_models: DiscoveredInstalledModelRecord[];
+  detected_compatible_model_count: number;
   detail: string;
+};
+
+export type DiscoveredInstalledModelRecord = {
+  id: string;
+  name: string;
+  family: string;
+  family_name: string;
+  local_path: string;
+  source_root: string;
+  source_kind: string;
+  already_imported: boolean;
+  compatibility: ModelCompatibilityRecord;
+  detail: string;
+};
+
+export type InstalledModelDiscoveryRecord = {
+  models: DiscoveredInstalledModelRecord[];
+  compatible_model_count: number;
+  scanned_root_count: number;
+  scanned_roots: string[];
+  missing_roots: string[];
+  truncated: boolean;
+  scan_duration_ms: number;
 };
 
 export type ModelRuntimeStatus = {
@@ -1371,6 +1403,17 @@ export async function listLocalModels() {
 
 export async function getModelRecommendations() {
   return request<ModelRecommendationsRecord>("/api/v1/models/recommendations");
+}
+
+export async function discoverInstalledModels(payload?: {
+  max_results?: number;
+  include_rejected?: boolean;
+}) {
+  const query = new URLSearchParams();
+  if (payload?.max_results) query.set("max_results", String(payload.max_results));
+  if (payload?.include_rejected) query.set("include_rejected", "true");
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<InstalledModelDiscoveryRecord>(`/api/v1/models/discover${suffix}`);
 }
 
 export async function getModelCompatibilityReport(payload: { path: string; name?: string | null }) {

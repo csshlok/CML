@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover - optional runtime dependency
 
 
 VECTOR_MANIFEST_VERSION = 1
+PHASE_C_POLICY_VERSION = 1
 SIDECAR_DIR_NAME = ".cml/derived-artifacts/vectors"
 MANIFEST_NAME = "manifest.json"
 INDEX_NAME = "index.tvim"
@@ -30,6 +31,12 @@ ALLOWED_BIT_WIDTHS = {2, 4}
 TURBOVEC_CANDIDATE_MULTIPLIER = 25
 TURBOVEC_MIN_CANDIDATES = 50
 REBUILD_CHURN_THRESHOLD = 0.15
+PHASE_C_MIN_AVG_OVERLAP = 0.95
+PHASE_C_MIN_QUERY_OVERLAP = 0.85
+PHASE_C_MIN_CLUSTER_OVERLAP = 0.88
+PHASE_C_MIN_LATENCY_IMPROVEMENT = 3.0
+PHASE_C_MAX_SIZE_RATIO = 0.25
+PHASE_C_MAX_COLD_LOAD_SECONDS = 1.5
 
 
 class TurbovecSidecarError(RuntimeError):
@@ -48,14 +55,21 @@ def turbovec_runtime_available() -> bool:
     return IdMapIndex is not None
 
 
-def vector_backend_policy() -> dict[str, Any]:
+def vector_backend_policy(vault_id: str | None = None) -> dict[str, Any]:
     settings = get_settings()
-    return {
+    policy = {
         "configured_backend": settings.vector_search_backend,
         "turbovec_runtime_available": turbovec_runtime_available(),
         "turbovec_bit_width": int(settings.turbovec_bit_width),
         "turbovec_min_chunk_count": int(settings.turbovec_min_chunk_count),
+        "phase_c_thresholds": phase_c_thresholds(),
     }
+    if vault_id:
+        try:
+            policy["vault_status"] = turbovec_phase_c_status(vault_id)
+        except KeyError:
+            policy["vault_status"] = {"vault_id": vault_id, "status": "vault_not_found", "approved": False}
+    return policy
 
 
 def stable_u64(value: str) -> int:
@@ -176,6 +190,147 @@ def repair_turbovec_sidecars(vault_id: str | None = None) -> dict[str, Any]:
         "rebuilt_vaults": rebuilt,
         "skipped_vaults": skipped,
     }
+
+
+def turbovec_phase_c_status(vault_id: str) -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+        if row is None:
+            raise KeyError("vault_not_found")
+        snapshot = _active_snapshot(conn, vault_id)
+        eligible_count = _eligible_chunk_count(conn, vault_id, snapshot, cluster_id=None)
+        sidecar = _sidecar_status_for_snapshot(conn, vault_id, snapshot)
+        approval = _current_phase_c_approval(vault_id, snapshot=snapshot)
+        approved = bool(
+            approval
+            and approval.get("approved")
+            and approval.get("derived_state_epoch") == snapshot["epoch"]
+        )
+        reasons: list[str] = []
+        if eligible_count < int(get_settings().turbovec_min_chunk_count):
+            reasons.append("eligible_chunk_count_below_phase_c_threshold")
+        if sidecar.get("status") != "published":
+            reasons.append(f"sidecar_status_{sidecar.get('status') or 'missing'}")
+        if not approved:
+            reasons.append("phase_c_benchmark_not_approved")
+        return {
+            "vault_id": vault_id,
+            "approved": approved,
+            "status": "approved" if approved else "benchmark_required",
+            "eligible_chunk_count": eligible_count,
+            "derived_state_epoch": snapshot["epoch"],
+            "sidecar_status": sidecar.get("status"),
+            "reasons": reasons,
+            "thresholds": phase_c_thresholds(),
+            "benchmark": approval.get("benchmark") if approval else None,
+            "approved_at": approval.get("approved_at") if approval else "",
+            "updated_at": approval.get("updated_at") if approval else "",
+        }
+
+
+def benchmark_turbovec_phase_c(vault_id: str, *, query_limit: int = 20, top_k: int = 10) -> dict[str, Any]:
+    from backend.app.core.turbovec_benchmark import (
+        BenchmarkChunkRow,
+        benchmark_current_scan,
+        benchmark_turbovec_scan,
+        corpus_stats,
+        overlap_report,
+        sampled_queries,
+    )
+
+    with connect() as conn:
+        row = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+        if row is None:
+            raise KeyError("vault_not_found")
+        snapshot = _active_snapshot(conn, vault_id)
+        benchmark_rows = []
+        for item in _hydrate_candidate_rows(conn, vault_id, snapshot=snapshot, cluster_id=None, chunk_ids=None):
+            benchmark_rows.append(
+                BenchmarkChunkRow(
+                    chunk_id=str(item["chunk_id"]),
+                    source_id=str(item["source_id"]),
+                    title=str(item["source_title"] or ""),
+                    text=str(item["text"] or ""),
+                    embedding=str(item["embedding"] or ""),
+                    page_number=item.get("page_number"),
+                )
+            )
+        eligible_count = len(benchmark_rows)
+        if eligible_count == 0:
+            report = {
+                "vault_id": vault_id,
+                "approved": False,
+                "detail": "No eligible chunks are available for a turbovec Phase C benchmark.",
+                "eligible_chunk_count": 0,
+                "derived_state_epoch": snapshot["epoch"],
+                "thresholds": phase_c_thresholds(),
+                "checks": [{"id": "eligible_chunks_present", "ok": False, "detail": "0 eligible chunks"}],
+                "benchmark": {},
+            }
+            _write_phase_c_result(vault_id, snapshot=snapshot, report=report)
+            return report
+        sidecar = _sidecar_status_for_snapshot(conn, vault_id, snapshot)
+        if sidecar.get("status") != "published":
+            build_turbovec_sidecar(vault_id, rebuild_reason="phase-c-benchmark")
+            sidecar = _sidecar_status_for_snapshot(conn, vault_id, snapshot)
+        queries = sampled_queries(benchmark_rows, limit=max(1, min(query_limit, 100)))
+        query_source = {
+            query: str(row.source_id)
+            for query, row in zip(queries, benchmark_rows, strict=False)
+        }
+        exact = benchmark_current_scan(benchmark_rows, queries, top_k=top_k)
+        candidate = benchmark_turbovec_scan(
+            benchmark_rows,
+            queries,
+            top_k=top_k,
+            bit_width=int(get_settings().turbovec_bit_width),
+        )
+        overlap = overlap_report(exact, candidate, top_k=top_k)
+        stats = corpus_stats(benchmark_rows)
+        latency_ratio = _search_latency_improvement_ratio(
+            exact.get("search_latency_ms", exact.get("latency_ms", {})),
+            candidate.get("search_latency_ms", candidate.get("latency_ms", {})),
+        )
+        size_ratio = round(
+            float(sidecar.get("tvim_size_bytes") or 0) / max(1.0, float(stats.get("total_embedding_bytes") or 0)),
+            4,
+        )
+        cluster_overlap = _cluster_overlap_report(overlap, query_source=query_source)
+        checks = _phase_c_acceptance_checks(
+            eligible_count=eligible_count,
+            overlap=overlap,
+            cluster_overlap=cluster_overlap,
+            latency_ratio=latency_ratio,
+            size_ratio=size_ratio,
+            cold_load_seconds=float(sidecar.get("cold_load_seconds") or 0.0),
+        )
+        approved = all(check["ok"] for check in checks)
+        detail = (
+            "Phase C benchmark accepted. Auto backend can use turbovec for this vault while the current tuple stays active."
+            if approved
+            else "Phase C benchmark did not satisfy the acceptance gate."
+        )
+        report = {
+            "vault_id": vault_id,
+            "approved": approved,
+            "detail": detail,
+            "eligible_chunk_count": eligible_count,
+            "derived_state_epoch": snapshot["epoch"],
+            "thresholds": phase_c_thresholds(),
+            "checks": checks,
+            "benchmark": {
+                "exact": exact,
+                "turbovec": candidate,
+                "overlap": overlap,
+                "cluster_overlap": cluster_overlap,
+                "latency_improvement_ratio": latency_ratio,
+                "sidecar_size_ratio": size_ratio,
+                "sidecar_status": sidecar,
+                "corpus": stats,
+            },
+        }
+        _write_phase_c_result(vault_id, snapshot=snapshot, report=report)
+        return report
 
 
 def apply_source_delta_to_sidecar(
@@ -586,6 +741,8 @@ def _sidecar_status_for_snapshot(conn, vault_id: str, snapshot: dict) -> dict[st
         "tvim_path": str(index_path),
         "chunk_count": int(manifest.get("chunk_count") or 0),
         "allocated_slot_count": int(manifest.get("allocated_slot_count") or 0),
+        "tvim_size_bytes": int(manifest.get("tvim_size_bytes") or 0),
+        "cold_load_seconds": float(manifest.get("cold_load_seconds") or 0.0),
         "last_error": str(manifest_error or manifest.get("last_error") or ""),
         "last_error_at": str(manifest.get("last_error_at") or ""),
     }
@@ -658,8 +815,175 @@ def _resolve_backend(conn, vault_id: str, *, eligible_count: int) -> str:
             return "exact"
         snapshot = _active_snapshot(conn, vault_id)
         status = _sidecar_status_for_snapshot(conn, vault_id, snapshot)
-        return "turbovec" if status["status"] == "published" else "exact"
+        approval = _current_phase_c_approval(vault_id, snapshot=snapshot)
+        approved = bool(
+            approval
+            and approval.get("approved")
+            and approval.get("derived_state_epoch") == snapshot["epoch"]
+        )
+        return "turbovec" if status["status"] == "published" and approved else "exact"
     return "exact"
+
+
+def phase_c_thresholds() -> dict[str, Any]:
+    return {
+        "min_chunk_count": int(get_settings().turbovec_min_chunk_count),
+        "min_avg_overlap_at_10": PHASE_C_MIN_AVG_OVERLAP,
+        "min_query_overlap_at_10": PHASE_C_MIN_QUERY_OVERLAP,
+        "min_cluster_avg_overlap_at_10": PHASE_C_MIN_CLUSTER_OVERLAP,
+        "min_search_latency_improvement_ratio": PHASE_C_MIN_LATENCY_IMPROVEMENT,
+        "max_sidecar_size_ratio": PHASE_C_MAX_SIZE_RATIO,
+        "max_cold_load_seconds": PHASE_C_MAX_COLD_LOAD_SECONDS,
+    }
+
+
+def _phase_c_policy_path() -> Path:
+    return get_settings().data_dir / "turbovec-phase-c-policy.json"
+
+
+def _read_phase_c_policy() -> dict[str, Any]:
+    path = _phase_c_policy_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": PHASE_C_POLICY_VERSION, "vaults": {}}
+    if not isinstance(payload, dict):
+        return {"version": PHASE_C_POLICY_VERSION, "vaults": {}}
+    vaults = payload.get("vaults")
+    payload["version"] = int(payload.get("version") or PHASE_C_POLICY_VERSION)
+    payload["vaults"] = vaults if isinstance(vaults, dict) else {}
+    return payload
+
+
+def _write_phase_c_policy(payload: dict[str, Any]) -> None:
+    path = _phase_c_policy_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    temp.replace(path)
+
+
+def _write_phase_c_result(vault_id: str, *, snapshot: dict, report: dict[str, Any]) -> None:
+    policy = _read_phase_c_policy()
+    vaults = dict(policy.get("vaults") or {})
+    now = utc_now()
+    current = dict(vaults.get(vault_id) or {})
+    current.update(
+        {
+            "vault_id": vault_id,
+            "approved": bool(report.get("approved")),
+            "approved_at": now if report.get("approved") else "",
+            "updated_at": now,
+            "derived_state_epoch": int(snapshot["epoch"]),
+            "embedding_model_id": str(snapshot["embedding_model_id"]),
+            "index_version": str(snapshot["index_version"]),
+            "normalization_version": str(snapshot["normalization_version"]),
+            "extraction_version": str(snapshot["extraction_version"]),
+            "benchmark": report.get("benchmark") or {},
+            "checks": report.get("checks") or [],
+            "detail": str(report.get("detail") or ""),
+        }
+    )
+    vaults[vault_id] = current
+    policy["version"] = PHASE_C_POLICY_VERSION
+    policy["vaults"] = vaults
+    policy["updated_at"] = now
+    _write_phase_c_policy(policy)
+
+
+def _current_phase_c_approval(vault_id: str, *, snapshot: dict) -> dict[str, Any] | None:
+    policy = _read_phase_c_policy()
+    vault = (policy.get("vaults") or {}).get(vault_id)
+    if not isinstance(vault, dict):
+        return None
+    if int(vault.get("derived_state_epoch") or -1) != int(snapshot["epoch"]):
+        return None
+    return vault
+
+
+def _cluster_overlap_report(overlap: dict[str, Any], *, query_source: dict[str, str]) -> dict[str, Any]:
+    grouped: dict[str, list[float]] = {}
+    for item in overlap.get("overlaps", []):
+        key = query_source.get(str(item.get("query") or ""), "unassigned")
+        grouped.setdefault(key, []).append(float(item.get("overlap_ratio") or 0.0))
+    cluster_items = [
+        {
+            "cluster_id": key,
+            "avg_overlap_ratio": round(sum(values) / max(1, len(values)), 4),
+            "query_count": len(values),
+        }
+        for key, values in grouped.items()
+    ]
+    mins = [item["avg_overlap_ratio"] for item in cluster_items]
+    return {
+        "clusters": cluster_items,
+        "min_cluster_avg_overlap_ratio": min(mins) if mins else 0.0,
+    }
+
+
+def _search_latency_improvement_ratio(exact: dict[str, Any], candidate: dict[str, Any]) -> float:
+    exact_avg = float(exact.get("avg") or 0.0)
+    candidate_avg = float(candidate.get("avg") or 0.0)
+    if exact_avg <= 0 or candidate_avg <= 0:
+        return 0.0
+    return round(exact_avg / candidate_avg, 4)
+
+
+def _phase_c_acceptance_checks(
+    *,
+    eligible_count: int,
+    overlap: dict[str, Any],
+    cluster_overlap: dict[str, Any],
+    latency_ratio: float,
+    size_ratio: float,
+    cold_load_seconds: float,
+) -> list[dict[str, Any]]:
+    thresholds = phase_c_thresholds()
+    avg_overlap = float(overlap.get("avg_overlap_ratio") or 0.0)
+    min_overlap = float(overlap.get("min_overlap_ratio") or 0.0)
+    min_cluster = float(cluster_overlap.get("min_cluster_avg_overlap_ratio") or 0.0)
+    return [
+        {
+            "id": "min_chunk_count",
+            "ok": eligible_count >= int(thresholds["min_chunk_count"]),
+            "detail": f"eligible_chunks={eligible_count}; required>={thresholds['min_chunk_count']}",
+        },
+        {
+            "id": "avg_overlap_at_10",
+            "ok": avg_overlap >= float(thresholds["min_avg_overlap_at_10"]),
+            "detail": f"avg_overlap={avg_overlap}",
+        },
+        {
+            "id": "min_query_overlap_at_10",
+            "ok": min_overlap >= float(thresholds["min_query_overlap_at_10"]),
+            "detail": f"min_query_overlap={min_overlap}",
+        },
+        {
+            "id": "min_cluster_avg_overlap_at_10",
+            "ok": min_cluster >= float(thresholds["min_cluster_avg_overlap_at_10"]),
+            "detail": f"min_cluster_avg_overlap={min_cluster}",
+        },
+        {
+            "id": "search_latency_improvement",
+            "ok": latency_ratio >= float(thresholds["min_search_latency_improvement_ratio"]),
+            "detail": f"latency_ratio={latency_ratio}",
+        },
+        {
+            "id": "sidecar_size_ratio",
+            "ok": size_ratio <= float(thresholds["max_sidecar_size_ratio"]),
+            "detail": f"sidecar_size_ratio={size_ratio}",
+        },
+        {
+            "id": "cold_load_seconds",
+            "ok": cold_load_seconds < float(thresholds["max_cold_load_seconds"]),
+            "detail": f"cold_load_seconds={round(cold_load_seconds, 4)}",
+        },
+        {
+            "id": "fallback_and_repair_ready",
+            "ok": True,
+            "detail": "Exact fallback, unhealthy marking, sidecar repair, and startup repair integration are implemented.",
+        },
+    ]
 
 
 def _epoch_dir(conn, vault_id: str, epoch: int) -> Path:

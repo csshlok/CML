@@ -194,10 +194,7 @@ const seedSources: Source[] = [
   preview: "A short extracted preview from this source appears here with enough context for quick triage.",
   summary: "A short auto-generated summary of this source.",
   tags: [],
-  coverImageUrl:
-    type === "image"
-      ? "https://images.unsplash.com/photo-1497032628192-86f99bcd76bc?auto=format&fit=crop&w=900&q=80"
-      : undefined,
+  coverImageUrl: undefined,
   vaultPath: `/Sources/${title as string}`,
   localPath:
     type === "link"

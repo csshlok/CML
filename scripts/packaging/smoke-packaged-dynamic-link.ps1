@@ -7,12 +7,12 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 if (-not $PackageRoot) {
-  $PackageRoot = Join-Path $repoRoot "apps\desktop\release\win-unpacked"
+  throw "PackageRoot is required. Pass the explicit win-unpacked root to smoke-packaged-dynamic-link.ps1."
 }
 
 $packagePath = [System.IO.Path]::GetFullPath($PackageRoot)
 $resourcesPath = Join-Path $packagePath "resources"
-$python = Join-Path $resourcesPath "python-runtime\Scripts\python.exe"
+$python = Join-Path $resourcesPath "python-runtime\python.exe"
 $backendRoot = Join-Path $resourcesPath "backend"
 
 if (-not (Test-Path -LiteralPath $python)) {
@@ -23,6 +23,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $backendRoot "app\main.py"))) {
 }
 
 $env:PYTHONPATH = $resourcesPath
+$env:PYTHONNOUSERSITE = "1"
 $env:CML_DYNAMIC_LINK_SMOKE_URL = $Url
 $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $resourcesPath "ms-playwright"
 
@@ -53,7 +54,7 @@ if len(text.strip()) < 50:
 print(json.dumps(result, indent=2))
 '@
 
-$code | & $python -
+$code | & $python -s -
 if ($LASTEXITCODE -ne 0) {
   throw "Packaged dynamic-link smoke failed."
 }

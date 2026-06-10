@@ -112,7 +112,7 @@ Runtime boundary:
 | Desktop app foundation | In progress | `[##########] 98%` | Clean VM launch validation and broader startup repair QA |
 | Local backend foundation | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only |
 | Vault ingestion | Complete for current scope | `[##########] 100%` | Clean VM confirmation only |
-| Embeddings and clustering | In progress | `[##########] 99%` | Broader threshold tuning on real user vaults |
+| Embeddings and clustering | Complete for current scope | `[##########] 100%` | Larger real-vault evidence now lives under QA/hardening |
 | Chat/context routing | In progress | `[##########] 97%` | Complete-scope map/reduce, token budgets, runtime failure UX |
 | Compulsory cluster experts | In progress | `[#########-] 90%` | Real machine validation still required for LLaMA Factory smoke, live adapter prompt run, and live quality benchmark |
 | Context Bridge | In progress | `[#########-] 95%` | Capture UX polish, clearer privacy copy, and later external-client smoke |
@@ -124,6 +124,8 @@ Runtime boundary:
 
 - Rebuild or restage the Windows package so `win-unpacked\resources` contains backend, Python runtimes, expert runtime, Playwright runtime, OCR manifest, and helper manifest; then rerun package validation before clean VM execution.
 - Execute clean Windows VM validation against a complete package: no dev Python, no Node, no preinstalled OCR, cold first-run.
+- Current Hyper-V VM attempt is not yet a trustworthy clean-machine gate: the Windows 11 Home guest `VM-1` was reachable, but the packaged installer `CML-0.1.0-Setup.exe` crashed inside the guest with `System.dll` / `0xc0000005`, and the guest also showed Windows servicing/component-store failures plus unstable PowerShell Direct sessions. Treat this as an environment-quality blocker until rerun on a healthier clean VM image.
+- Installer UX gap noted from manual review: the current one-click NSIS flow does not let the user choose an install directory and does not offer desktop-shortcut creation. Track this as an open release-policy/installer decision rather than treating the current behavior as settled.
 - Keep the non-LoRA security patch closed while LoRA-specific Phase 11 remains intentionally deferred until the LoRA runtime/training path is ready to harden.
 - Keep Windows-only public V1 criteria. If verified LoRA or other public gates fail, delay release; do not ship a private demo fallback.
 - Verify real adapter training and runtime loading before any broad "trained expert" claim.
@@ -253,6 +255,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 ## Current Open Work
 
 - Add written public V1 decision record: Windows-only; public release only; release slips until verified LoRA and other public gates pass.
+- Decide whether public V1 installer stays one-click or restores user-facing install-path selection and optional desktop-shortcut creation.
 - Continue hardening the Phase 3 storage boundary where later phases add new sensitive artifacts: retrieval snapshots, analysis packets, adapter artifacts, staged derived-state artifacts, and quarantine payloads must use encrypted content/blob storage instead of plaintext fields.
 - Finish first-run setup UI around the new readiness gate: vault path, model setup, embedding setup, OCR readiness, startup repair states.
 - Make onboarding honest about local model/embedding download size, time, hardware requirements, and external Bridge privacy tradeoffs.
