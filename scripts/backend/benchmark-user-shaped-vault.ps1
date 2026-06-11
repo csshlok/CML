@@ -35,8 +35,8 @@ candidate_files = [
     ROOT_DIR / "docs" / "PROJECT_CONTEXT.md",
     ROOT_DIR / "docs" / "OVERALL_CONTEXT.md",
     ROOT_DIR / "ReadME.md",
-    ROOT_DIR / "docs" / "QA_MASTER_TEST_CATALOG_2026-06-01.md",
-    ROOT_DIR / "docs" / "TEST_CASES_2026-06-01.md",
+    ROOT_DIR / "docs" / "WORKING_COMMANDS.md",
+    ROOT_DIR / "docs" / "RELEASE_VALIDATION_CHECKLIST.md",
 ]
 chunks = []
 for path in candidate_files:

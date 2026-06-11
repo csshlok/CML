@@ -107,4 +107,3 @@ release-alt
 UI_audit_brief
 docs/UI_AUDIT_BRIEF.md
 docs/PACKAGING_INVESTIGATION.md
-*.ps1

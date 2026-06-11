@@ -183,6 +183,23 @@ function Remove-ChildByPatterns([string]$ParentPath, [string[]]$Patterns) {
   }
 }
 
+function Remove-PythonCaches([string]$RootPath) {
+  if (-not (Test-Path -LiteralPath $RootPath)) {
+    return
+  }
+  Get-ChildItem -LiteralPath $RootPath -Recurse -Directory -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq "__pycache__" } |
+    ForEach-Object {
+      Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+    }
+
+  Get-ChildItem -LiteralPath $RootPath -Recurse -File -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in @(".pyc", ".pyo") } |
+    ForEach-Object {
+      Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+    }
+}
+
 function Optimize-PortablePythonRuntime([string]$RuntimeRoot) {
   if (-not (Test-Path -LiteralPath $RuntimeRoot)) {
     throw "Cannot optimize missing runtime root: $RuntimeRoot"
@@ -335,6 +352,7 @@ if (Test-Path (Join-Path $backendDir "bin")) {
   Copy-Item -Recurse -Force (Join-Path $backendDir "bin") (Join-Path $stagingDir "bin")
 }
 Copy-Item -Force (Join-Path $backendDir "pyproject.toml") (Join-Path $stagingDir "pyproject.toml")
+Remove-PythonCaches $stagingDir
 Complete-PackagePhase $stagingDir
 
 $runtimePython = Join-Path $runtimeDir "python.exe"
