@@ -766,7 +766,7 @@ async function startPackagedRendererServer() {
   if (rendererServer && rendererUrl) return rendererUrl;
   const port = await findOpenPort(5174, 5190);
   const clientDir = path.join(__dirname, "../dist/client");
-  const serverEntry = path.join(__dirname, "../dist/server/index.js");
+  const serverEntry = await resolvePackagedServerEntry();
   const workerModule = await import(pathToFileURL(serverEntry).href);
   const worker = workerModule.default;
 
@@ -801,6 +801,21 @@ async function startPackagedRendererServer() {
   });
   rendererUrl = `http://127.0.0.1:${port}/`;
   return rendererUrl;
+}
+
+async function resolvePackagedServerEntry(baseDir = __dirname) {
+  const candidates = [
+    path.join(baseDir, "../dist/server/index.js"),
+    path.join(baseDir, "../dist/server/server.js"),
+  ];
+  for (const candidate of candidates) {
+    if (await pathExists(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error(
+    `Packaged renderer server entry is missing. Checked: ${candidates.join(", ")}`,
+  );
 }
 
 async function sanitizeRendererBody(webResponse, headers) {

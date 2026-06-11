@@ -11,7 +11,7 @@ function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, rendererSecurityHeaders, sanitizeRendererBody, setActiveVaultPath, getActiveVaultPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, __setMainWindow: (value) => { mainWindow = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, rendererSecurityHeaders, sanitizeRendererBody, setActiveVaultPath, getActiveVaultPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, resolvePackagedServerEntry, __setMainWindow: (value) => { mainWindow = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -350,4 +350,17 @@ test("renderer failure page offers retry and copy diagnostics", async () => {
   assert.match(html, /window\.cmlDesktop\?\.retryStartup/);
   assert.match(html, /window\.cmlDesktop\?\.copyText/);
   assert.match(html, /desktop-runtime\.log/);
+});
+
+test("resolvePackagedServerEntry falls back to dist/server/server.js when index.js is absent", async () => {
+  const { exported } = loadMainModule();
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-renderer-entry-"));
+  const electronDir = path.join(tempRoot, "electron");
+  const serverDir = path.join(tempRoot, "dist", "server");
+  fs.mkdirSync(electronDir, { recursive: true });
+  fs.mkdirSync(serverDir, { recursive: true });
+  fs.writeFileSync(path.join(serverDir, "server.js"), "export default {};\n", "utf8");
+
+  const resolved = await exported.resolvePackagedServerEntry(electronDir);
+  assert.equal(resolved, path.join(electronDir, "../dist/server/server.js"));
 });

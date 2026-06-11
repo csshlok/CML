@@ -24,7 +24,7 @@ from backend.app.schemas import DiagnosticBundleResponse
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 
 BUNDLE_FORMAT_VERSION = 1
-BACKEND_VERSION = "0.1.0"
+BACKEND_VERSION = "0.1.5"
 
 
 @router.post("/bundle", response_model=DiagnosticBundleResponse)
@@ -38,7 +38,7 @@ def create_diagnostic_bundle() -> dict:
     manifest = {
         "bundle_format_version": BUNDLE_FORMAT_VERSION,
         "bundle_generated_at": generated_at,
-        "app_version": "0.1.0",
+        "app_version": "0.1.5",
         "backend_version": BACKEND_VERSION,
         "schema_version": schema_version,
         "redaction": "Raw source text, extracted text, URLs, file paths, tokens, passphrases, and recovery keys are not included.",
@@ -73,7 +73,7 @@ def create_diagnostic_bundle() -> dict:
         "bundle_path": str(bundle_path),
         "bundle_format_version": BUNDLE_FORMAT_VERSION,
         "bundle_generated_at": generated_at,
-        "app_version": "0.1.0",
+        "app_version": "0.1.5",
         "backend_version": BACKEND_VERSION,
         "schema_version": schema_version,
         "included_files": included_files,

@@ -88,7 +88,7 @@ async def lifespan(_app: FastAPI):
         shutdown()
 
 
-app = FastAPI(title="CML Local Backend", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="CML Local Backend", version="0.1.5", lifespan=lifespan)
 
 app.add_middleware(ReservedChatFieldMiddleware)
 app.add_middleware(UnlockGateMiddleware)

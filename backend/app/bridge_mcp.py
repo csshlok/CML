@@ -45,7 +45,7 @@ def handle_message(message: dict) -> dict:
             {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "cml-bridge", "version": "0.1.0"},
+                "serverInfo": {"name": "cml-bridge", "version": "0.1.5"},
             },
         )
     if method == "tools/list":

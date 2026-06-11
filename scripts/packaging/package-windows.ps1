@@ -58,6 +58,66 @@ $expertRuntimePackages = @(
   "peft==0.18.1"
 )
 
+$script:PackageStartedAt = Get-Date
+$script:PackagePhaseStartedAt = $script:PackageStartedAt
+$script:PackagePhaseIndex = 0
+$script:PackagePhaseCount = 10
+if ($Release) {
+  $script:PackagePhaseCount += 1
+}
+if ($IncludeEmbeddingRuntime) {
+  $script:PackagePhaseCount += 1
+}
+
+function Format-Duration([TimeSpan]$Duration) {
+  if ($Duration.TotalHours -ge 1) {
+    return "{0:00}:{1:00}:{2:00}" -f [int]$Duration.TotalHours, $Duration.Minutes, $Duration.Seconds
+  }
+  return "{0:00}:{1:00}" -f $Duration.Minutes, $Duration.Seconds
+}
+
+function Format-FileSize([long]$Bytes) {
+  if ($Bytes -ge 1GB) {
+    return "{0:n2} GB" -f ($Bytes / 1GB)
+  }
+  if ($Bytes -ge 1MB) {
+    return "{0:n1} MB" -f ($Bytes / 1MB)
+  }
+  if ($Bytes -ge 1KB) {
+    return "{0:n1} KB" -f ($Bytes / 1KB)
+  }
+  return "$Bytes B"
+}
+
+function Write-PackageLine([string]$Message, [string]$Level = "INFO") {
+  $elapsed = Format-Duration ((Get-Date) - $script:PackageStartedAt)
+  Write-Host ("[{0}] [{1}] {2}" -f $elapsed, $Level, $Message)
+}
+
+function Start-PackagePhase([string]$Name, [string]$Detail = "") {
+  $script:PackagePhaseIndex += 1
+  $script:PackagePhaseStartedAt = Get-Date
+  $percent = [Math]::Min(99, [Math]::Max(0, [int](($script:PackagePhaseIndex - 1) * 100 / $script:PackagePhaseCount)))
+  Write-Progress -Activity "CML Windows package" -Status "$($script:PackagePhaseIndex)/$($script:PackagePhaseCount) $Name" -PercentComplete $percent
+  Write-PackageLine "[$($script:PackagePhaseIndex)/$($script:PackagePhaseCount)] $Name"
+  if ($Detail) {
+    Write-PackageLine "  $Detail" "DETAIL"
+  }
+}
+
+function Complete-PackagePhase([string]$Detail = "") {
+  $duration = Format-Duration ((Get-Date) - $script:PackagePhaseStartedAt)
+  $message = "completed in $duration"
+  if ($Detail) {
+    $message = "$message; $Detail"
+  }
+  Write-PackageLine $message "DONE"
+}
+
+function Write-PackageDetail([string]$Message) {
+  Write-PackageLine "  $Message" "DETAIL"
+}
+
 function Get-StringFingerprint([string[]]$Parts) {
   $text = [string]::Join("`n", $Parts)
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
@@ -128,7 +188,7 @@ function Optimize-PortablePythonRuntime([string]$RuntimeRoot) {
     throw "Cannot optimize missing runtime root: $RuntimeRoot"
   }
 
-  Write-Host "Removing non-runtime payload from $RuntimeRoot..."
+  Write-PackageDetail "Pruning non-runtime payload from $RuntimeRoot"
 
   $rootPrune = @(
     "Doc",
@@ -183,31 +243,41 @@ if (-not $OutputDir) {
 }
 $outputDirPath = [System.IO.Path]::GetFullPath($OutputDir)
 
-Write-Host "Clearing previous package output..."
+Write-PackageLine "CML Windows package build starting"
+Write-PackageDetail "Version: $desktopVersion"
+Write-PackageDetail "Mode: $(if ($Release) { "release" } else { "dev/test" })"
+Write-PackageDetail "Target: $(if ($PackagedOnly) { "packaged directory only" } else { "NSIS installer + unpacked app" })"
+Write-PackageDetail "Output: $outputDirPath"
+Write-PackageDetail "Base Python: $basePythonRoot"
+
+Start-PackagePhase "Clear previous output" "Removing old artifacts from output directory."
 if (Test-Path $outputDirPath) {
   Remove-Item -Recurse -Force $outputDirPath
 }
 New-Item -ItemType Directory -Force -Path $outputDirPath | Out-Null
+Complete-PackagePhase $outputDirPath
 
 if ($Release) {
-  Write-Host "Release mode: clearing cached staged runtimes..."
+  Start-PackagePhase "Clear release caches" "Release builds rebuild helper runtimes from scratch."
   Reset-StagedPath $runtimeDir
   Reset-StagedPath $expertRuntimeDir
   Reset-StagedPath $playwrightBrowserDir
   if (-not $SkipOcrRuntimeDownload) {
     Reset-StagedPath (Join-Path $backendDir "bin\ocr")
   }
+  Complete-PackagePhase
 }
 
-Write-Host "Building desktop app..."
+Start-PackagePhase "Build desktop renderer" "Running npm run build in $desktopDir."
 Push-Location $desktopDir
 try {
   npm run build
 } finally {
   Pop-Location
 }
+Complete-PackagePhase "dist/client and dist/server refreshed"
 
-Write-Host "Staging backend source..."
+Start-PackagePhase "Stage backend source" "Copying backend app, pyproject, and OCR bin payload if present."
 if (Test-Path $stagingDir) {
   Remove-Item -Recurse -Force $stagingDir
 }
@@ -237,25 +307,27 @@ if (-not $SkipOcrRuntimeDownload) {
   }
 
   if ($ocrRuntimeReady) {
-    Write-Host "Reusing staged OCR runtime..."
+    Write-PackageDetail "OCR runtime cache hit: $ocrRuntimeDir"
   } else {
-    Write-Host "Staging OCR runtime..."
-  $ocrArgs = @()
-  if ($TesseractExePath) {
-    $ocrArgs += @("-TesseractExePath", $TesseractExePath)
-  }
-  if ($GhostscriptExePath) {
-    $ocrArgs += @("-GhostscriptExePath", $GhostscriptExePath)
-  }
-  if ($SkipGhostscriptInstaller) {
-    $ocrArgs += "-SkipGhostscriptInstaller"
-  }
-  if ($AllowPartialOcrRuntime) {
-    $ocrArgs += "-AllowPartial"
-  }
-  & $ocrStagingScript @ocrArgs
+    Write-PackageDetail "OCR runtime cache miss; staging OCR payload."
+    $ocrArgs = @()
+    if ($TesseractExePath) {
+      $ocrArgs += @("-TesseractExePath", $TesseractExePath)
+    }
+    if ($GhostscriptExePath) {
+      $ocrArgs += @("-GhostscriptExePath", $GhostscriptExePath)
+    }
+    if ($SkipGhostscriptInstaller) {
+      $ocrArgs += "-SkipGhostscriptInstaller"
+    }
+    if ($AllowPartialOcrRuntime) {
+      $ocrArgs += "-AllowPartial"
+    }
+    & $ocrStagingScript @ocrArgs
     Write-StagedRuntimeStamp $ocrRuntimeStampPath $ocrRuntimeFingerprint
   }
+} else {
+  Write-PackageDetail "OCR runtime staging skipped by flag."
 }
 
 Copy-Item -Recurse -Force (Join-Path $backendDir "app") (Join-Path $stagingDir "app")
@@ -263,6 +335,7 @@ if (Test-Path (Join-Path $backendDir "bin")) {
   Copy-Item -Recurse -Force (Join-Path $backendDir "bin") (Join-Path $stagingDir "bin")
 }
 Copy-Item -Force (Join-Path $backendDir "pyproject.toml") (Join-Path $stagingDir "pyproject.toml")
+Complete-PackagePhase $stagingDir
 
 $runtimePython = Join-Path $runtimeDir "python.exe"
 $backendRuntimeStampPath = Join-Path $runtimeDir ".cml-runtime-stamp"
@@ -282,16 +355,19 @@ if (-not $Release) {
     -RequiredPaths @($runtimePython)
 }
 
+Start-PackagePhase "Backend Python runtime" "Fingerprint: $($backendRuntimeFingerprint.Substring(0, 12)); packages: $($backendRuntimePackages.Count)"
 if ($backendRuntimeReady) {
-  Write-Host "Reusing packaged backend Python runtime..."
+  Write-PackageDetail "Cache hit: $runtimeDir"
 } else {
-  Write-Host "Building packaged backend Python runtime..."
+  Write-PackageDetail "Cache miss; copying base Python runtime."
   Copy-PortablePythonRuntime $basePythonRoot $runtimeDir
+  Write-PackageDetail "Installing backend Python packages."
   & $runtimePython -I -m pip install --upgrade pip
   & $runtimePython -I -m pip install --upgrade @backendRuntimePackages
   Optimize-PortablePythonRuntime $runtimeDir
   Write-StagedRuntimeStamp $backendRuntimeStampPath $backendRuntimeFingerprint
 }
+Complete-PackagePhase $runtimeDir
 
 $playwrightStampPath = Join-Path $playwrightBrowserDir ".cml-playwright-stamp"
 $playwrightFingerprint = Get-StringFingerprint @(
@@ -311,10 +387,11 @@ if (-not $Release) {
 }
 
 $env:PLAYWRIGHT_BROWSERS_PATH = $playwrightBrowserDir
+Start-PackagePhase "Playwright Chromium runtime" "Browser cache: $playwrightBrowserDir"
 if ($playwrightReady) {
-  Write-Host "Reusing staged Playwright Chromium runtime..."
+  Write-PackageDetail "Cache hit: $playwrightBrowserDir"
 } else {
-  Write-Host "Staging Playwright Chromium runtime..."
+  Write-PackageDetail "Cache miss; installing Chromium browser payload."
   if (Test-Path $playwrightBrowserDir) {
     Remove-Item -Recurse -Force $playwrightBrowserDir
   }
@@ -322,10 +399,12 @@ if ($playwrightReady) {
   & $runtimePython -m playwright install chromium
   Write-StagedRuntimeStamp $playwrightStampPath $playwrightFingerprint
 }
+Complete-PackagePhase $playwrightBrowserDir
 
 if ($IncludeEmbeddingRuntime) {
-  Write-Host "Installing optional embedding runtime dependencies..."
+  Start-PackagePhase "Optional embedding runtime" "Installing sentence-transformers==5.5.1 into backend runtime."
   & $runtimePython -m pip install "sentence-transformers==5.5.1"
+  Complete-PackagePhase $runtimeDir
 }
 
 $expertRuntimePython = Join-Path $expertRuntimeDir "python.exe"
@@ -351,28 +430,33 @@ if (-not $Release) {
     )
 }
 
+Start-PackagePhase "Expert Python runtime" "Fingerprint: $($expertRuntimeFingerprint.Substring(0, 12)); packages: $($expertRuntimePackages.Count)"
 if ($expertRuntimeReady) {
-  Write-Host "Reusing packaged expert Python runtime..."
+  Write-PackageDetail "Cache hit: $expertRuntimeDir"
 } else {
-  Write-Host "Building packaged expert Python runtime..."
+  Write-PackageDetail "Cache miss; copying base Python runtime."
   Copy-PortablePythonRuntime $basePythonRoot $expertRuntimeDir
+  Write-PackageDetail "Installing expert Python packages."
   & $expertRuntimePython -I -m pip install --upgrade pip
   & $expertRuntimePython -I -m pip install --upgrade @expertRuntimePackages
   Optimize-PortablePythonRuntime $expertRuntimeDir
   Write-StagedRuntimeStamp $expertRuntimeStampPath $expertRuntimeFingerprint
 }
+Complete-PackagePhase $expertRuntimeDir
 
-Write-Host "Generating helper integrity manifest..."
+Start-PackagePhase "Helper integrity manifest" "Generating helper-manifest.json for packaged resources."
 node $helperManifestScript
+Complete-PackagePhase (Join-Path $packagingRoot "helper-manifest.json")
 
-Write-Host "Auditing staged package layout..."
+Start-PackagePhase "Package layout audit" "Checking packaged backend, runtimes, browser payload, and UI assets."
 node $packageAuditScript $packagingRoot $packagingRoot
+Complete-PackagePhase
 
-Write-Host "Packaging Windows app with electron-builder..."
 $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
 $builderCompression = if ($Release) { "maximum" } else { "store" }
 $builderTarget = if ($PackagedOnly) { "dir" } else { "nsis" }
 $builderConfigPath = Join-Path $tmpDir "electron-builder.generated.json"
+Start-PackagePhase "Package Windows app" "electron-builder target=$builderTarget; compression=$builderCompression"
 New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
 @"
 {
@@ -434,6 +518,7 @@ New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
   }
 }
 "@ | Set-Content -Path $builderConfigPath -Encoding ascii
+Write-PackageDetail "Builder config: $builderConfigPath"
 Push-Location $desktopDir
 try {
   $builderArgs = @("--win", "--x64", "--config", $builderConfigPath)
@@ -444,15 +529,26 @@ try {
 } finally {
   Pop-Location
 }
+Complete-PackagePhase $outputDirPath
 
+Start-PackagePhase "Verify package artifacts" "Checking expected unpacked executable and installer outputs."
 $expectedUnpackedExe = Join-Path $outputDirPath "win-unpacked\CML.exe"
 if (-not (Test-Path -LiteralPath $expectedUnpackedExe)) {
   throw "electron-builder completed but did not produce expected unpacked executable: $expectedUnpackedExe"
 }
+$expectedUnpackedExeItem = Get-Item -LiteralPath $expectedUnpackedExe
+Write-PackageDetail "Unpacked executable: $expectedUnpackedExe ($(Format-FileSize $expectedUnpackedExeItem.Length))"
 
 if (-not $PackagedOnly) {
   $expectedInstaller = Join-Path $outputDirPath "test-$desktopVersion-Setup.exe"
   if (-not (Test-Path -LiteralPath $expectedInstaller)) {
     throw "electron-builder completed but did not produce expected installer: $expectedInstaller"
   }
+  $expectedInstallerItem = Get-Item -LiteralPath $expectedInstaller
+  Write-PackageDetail "Installer: $expectedInstaller ($(Format-FileSize $expectedInstallerItem.Length))"
 }
+Complete-PackagePhase
+Write-Progress -Activity "CML Windows package" -Completed
+$totalDuration = Format-Duration ((Get-Date) - $script:PackageStartedAt)
+Write-PackageLine "Package build finished in $totalDuration" "DONE"
+Write-PackageLine "Output directory: $outputDirPath" "DONE"
