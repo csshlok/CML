@@ -11,6 +11,14 @@ if (-not $ReportRoot) {
 }
 New-Item -ItemType Directory -Force -Path $ReportRoot | Out-Null
 
+function Invoke-SmokeJson([string]$ScriptPath, [string[]]$Arguments) {
+  $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $ScriptPath @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "Smoke script failed: $ScriptPath"
+  }
+  return (($output -join "`n") | ConvertFrom-Json)
+}
+
 Write-Host "Running renderer hostile-output audit..."
 Push-Location $repoRoot
 try {
@@ -18,13 +26,27 @@ try {
   $packageAudit = node scripts\packaging\audit-package-layout.cjs apps\desktop\packaging apps\desktop\packaging
   $packageAuditReport = $packageAudit | ConvertFrom-Json
   Write-Host "Running clean-vault security smoke..."
-  $clean = & (Join-Path $PSScriptRoot "security-smoke-clean-vault.ps1") -ReportPath (Join-Path $ReportRoot "clean-vault.json") | ConvertFrom-Json
+  $clean = Invoke-SmokeJson (Join-Path $PSScriptRoot "security-smoke-clean-vault.ps1") @(
+    "-ReportPath",
+    (Join-Path $ReportRoot "clean-vault.json")
+  )
   Write-Host "Running large-vault security smoke..."
-  $large = & (Join-Path $PSScriptRoot "security-smoke-large-vault.ps1") -Sources $LargeVaultSources -ReportPath (Join-Path $ReportRoot "large-vault.json") | ConvertFrom-Json
+  $large = Invoke-SmokeJson (Join-Path $PSScriptRoot "security-smoke-large-vault.ps1") @(
+    "-Sources",
+    "$LargeVaultSources",
+    "-ReportPath",
+    (Join-Path $ReportRoot "large-vault.json")
+  )
   Write-Host "Running interrupted-flow drill..."
-  $drill = & (Join-Path $PSScriptRoot "security-drill-interrupted-flows.ps1") -ReportPath (Join-Path $ReportRoot "interrupted-flows.json") | ConvertFrom-Json
+  $drill = Invoke-SmokeJson (Join-Path $PSScriptRoot "security-drill-interrupted-flows.ps1") @(
+    "-ReportPath",
+    (Join-Path $ReportRoot "interrupted-flows.json")
+  )
   Write-Host "Running offline at-rest inspection..."
-  $offline = & (Join-Path $PSScriptRoot "inspect-offline-vault-at-rest.ps1") -ReportPath (Join-Path $ReportRoot "offline-at-rest.json") | ConvertFrom-Json
+  $offline = Invoke-SmokeJson (Join-Path $PSScriptRoot "inspect-offline-vault-at-rest.ps1") @(
+    "-ReportPath",
+    (Join-Path $ReportRoot "offline-at-rest.json")
+  )
 } finally {
   Pop-Location
 }
