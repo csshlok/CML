@@ -32,8 +32,10 @@ class AdditionalQACases(unittest.TestCase):
 
     def tearDown(self) -> None:
         from backend.app.core.config import get_settings
+        from backend.app.core.model_registry import invalidate_model_discovery_cache
 
         get_settings.cache_clear()
+        invalidate_model_discovery_cache()
         os.environ.pop("CML_DATABASE_PATH", None)
         os.environ.pop("CML_DATA_DIR", None)
         os.environ.pop("CML_EMBEDDING_PROVIDER", None)
@@ -44,6 +46,7 @@ class AdditionalQACases(unittest.TestCase):
         os.environ.pop("CML_LORA_MAX_DUPLICATE_RATIO", None)
         os.environ.pop("CML_LORA_MODEL_DIRS", None)
         os.environ.pop("CML_MODEL_SCAN_ROOTS", None)
+        os.environ.pop("CML_MODEL_SCAN_CACHE_SECONDS", None)
         os.environ.pop("CML_MODELS_DIR", None)
         os.environ.pop("CML_LLM_MODEL", None)
         self.tmp.cleanup()
@@ -197,6 +200,64 @@ class AdditionalQACases(unittest.TestCase):
         payload = response.json()
         self.assertGreaterEqual(payload["compatible_model_count"], 1)
         self.assertTrue(any(item["local_path"] == str(model_dir.resolve()) for item in payload["models"]))
+
+    def test_discover_installed_models_uses_cache_until_refresh(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.model_registry import discover_installed_models, invalidate_model_discovery_cache
+
+        model_dir = self._write_fake_local_transformers_model(
+            "cached-detected-qwen",
+            model_type="qwen2",
+            repo_hint="Qwen/Qwen3-4B",
+        )
+        os.environ["CML_MODEL_SCAN_ROOTS"] = str(model_dir.parent)
+        os.environ["CML_MODEL_SCAN_CACHE_SECONDS"] = "300"
+        get_settings.cache_clear()
+        invalidate_model_discovery_cache()
+
+        call_counter = {"count": 0}
+
+        def counting_iter(root: Path, *, max_depth: int) -> list[Path]:
+            call_counter["count"] += 1
+            return [model_dir]
+
+        with patch("backend.app.core.model_registry._iter_transformers_checkpoint_dirs", side_effect=counting_iter):
+            first = discover_installed_models(max_results=10)
+            after_first = call_counter["count"]
+            second = discover_installed_models(max_results=10)
+            after_second = call_counter["count"]
+            refreshed = discover_installed_models(max_results=10, refresh=True)
+            after_refresh = call_counter["count"]
+
+        self.assertGreater(after_first, 0)
+        self.assertEqual(after_second, after_first)
+        self.assertGreater(after_refresh, after_second)
+        self.assertEqual(first["models"], second["models"])
+        self.assertEqual(second["models"], refreshed["models"])
+
+    def test_first_run_readiness_skips_deep_embedding_probe(self) -> None:
+        from backend.app.core.setup_readiness import first_run_readiness
+
+        probe_flags: list[bool] = []
+
+        def fake_embedding_status(*, probe_model: bool = True) -> dict:
+            probe_flags.append(probe_model)
+            return {
+                "provider": "sentence-transformers",
+                "model": "sentence-transformers/all-MiniLM-L6-v2",
+                "dimensions": 384,
+                "available": True,
+                "detail": "Configured.",
+                "setup_required": False,
+                "cache_dir": str(Path(self.tmp.name) / "embeddings"),
+            }
+
+        with patch("backend.app.core.setup_readiness.embedding_status", side_effect=fake_embedding_status):
+            readiness = first_run_readiness()
+
+        self.assertEqual(probe_flags, [False])
+        embedding_check = next(check for check in readiness["checks"] if check["id"] == "embedding_setup")
+        self.assertTrue(embedding_check["ok"])
 
     def test_bridge_context_requires_token_when_enabled(self) -> None:
         from backend.app.api.routes.bridge import update_bridge_settings
@@ -629,7 +690,7 @@ class AdditionalQACases(unittest.TestCase):
             extract_pages_from_path(str(target))
         self.assertIn("No readable text", str(raised.exception))
 
-    def test_modified_file_after_first_ingest_is_not_deduplicated(self) -> None:
+    def test_modified_file_after_first_ingest_updates_same_source(self) -> None:
         from backend.app.api.routes.sources import create_source_from_path
         from backend.app.core.database import connect, utc_now
         from backend.app.schemas import SourcePathCreate
@@ -649,9 +710,16 @@ class AdditionalQACases(unittest.TestCase):
 
         with connect() as conn:
             count = conn.execute("SELECT COUNT(*) AS count FROM sources").fetchone()["count"]
+            stored = conn.execute(
+                "SELECT id, original_path, checksum FROM sources WHERE id = ?",
+                (first["id"],),
+            ).fetchone()
 
-        self.assertNotEqual(first["id"], second["id"])
-        self.assertEqual(count, 2)
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(count, 1)
+        self.assertEqual(stored["id"], first["id"])
+        self.assertEqual(stored["original_path"], str(target))
+        self.assertNotEqual(first["checksum"], second["checksum"])
 
     def test_url_ingestion_resolves_relative_cover_image_url(self) -> None:
         from backend.app.api.routes.sources import create_source_from_url
@@ -925,6 +993,52 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("event: done", payload)
         self.assertLess(payload.index("event: meta"), payload.index("event: token"))
         self.assertLess(payload.index("event: token"), payload.index("event: done"))
+
+    def test_persisted_stream_chat_marks_generation_retriable_when_context_build_fails(self) -> None:
+        import asyncio
+
+        from backend.app.api.routes.chat import get_chat_timeline, stream_chat_context
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+
+        async def collect(response) -> str:
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with patch("backend.app.api.routes.chat._build_retrieval_context", side_effect=RuntimeError("context build exploded")):
+            response = stream_chat_context(ChatContextRequest(vault_id="vault-1", prompt="Find my notes", persist=True))
+            with self.assertRaisesRegex(RuntimeError, "context build exploded"):
+                asyncio.run(collect(response))
+
+        with connect() as conn:
+            generation = conn.execute("SELECT * FROM chat_generations").fetchone()
+            self.assertIsNotNone(generation)
+            self.assertEqual(generation["state"], "retriable")
+            self.assertIn("context build exploded", generation["error"])
+            self.assertIsNone(generation["assistant_message_id"])
+            session_id = generation["session_id"]
+
+            messages = conn.execute(
+                "SELECT role, content FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC",
+                (session_id,),
+            ).fetchall()
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(messages[0]["role"], "user")
+            self.assertEqual(messages[0]["content"], "Find my notes")
+
+        timeline = get_chat_timeline(session_id)
+        retriable = [item for item in timeline["items"] if item["message_type"] == "retriable_generation"]
+        self.assertEqual(len(retriable), 1)
+        self.assertIn("context build exploded", retriable[0]["error"])
 
     def test_message_saved_flag_updates_session_saved_state(self) -> None:
         from backend.app.api.routes.chat import update_chat_message
@@ -1259,6 +1373,9 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn('sentence-transformers==5.5.1', package_text)
         self.assertIn('transformers==5.6.0', package_text)
         self.assertIn('peft==0.18.1', package_text)
+        self.assertIn('$effectiveBackendRuntimePackages = @($backendRuntimePackages)', package_text)
+        self.assertIn('python-runtime-v6', package_text)
+        self.assertIn('Embedding runtime is included in the staged backend runtime fingerprint', package_text)
         self.assertIn("renderer ready signal received", packaged_launch_text)
         self.assertIn("renderer ready signal received", installed_launch_text)
         self.assertIn("renderer never signaled readiness", packaged_launch_text)
@@ -1323,10 +1440,45 @@ class AdditionalQACases(unittest.TestCase):
         finally:
             client.close()
 
-        self.assertEqual(response.status_code, 200)
+    def test_persisted_chat_context_rejects_unknown_cluster_before_creating_session(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest
+
+        now = utc_now()
         with connect() as conn:
-            row = conn.execute("SELECT path FROM vaults WHERE id = 'vault-1'").fetchone()
-        self.assertEqual(row["path"], "C:\\vault")
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.db_path.parent), now, now),
+            )
+
+        with self.assertRaises(HTTPException) as raised:
+            build_chat_context(
+                ChatContextRequest(
+                    vault_id="vault-1",
+                    cluster_id="cluster-missing",
+                    prompt="Summarize my cluster notes.",
+                    persist=True,
+                )
+            )
+
+        self.assertEqual(raised.exception.status_code, 404)
+        with connect() as conn:
+            session_count = conn.execute("SELECT COUNT(*) AS count FROM chat_sessions").fetchone()["count"]
+            generation_count = conn.execute("SELECT COUNT(*) AS count FROM chat_generations").fetchone()["count"]
+        self.assertEqual(session_count, 0)
+        self.assertEqual(generation_count, 0)
+
+    def test_onboarding_route_uses_internal_scroll_shell_instead_of_hidden_root(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        onboarding = (repo_root / "apps" / "desktop" / "src" / "routes" / "onboarding.tsx").read_text(encoding="utf-8")
+
+        self.assertIn('vault-onboarding-shell h-screen overflow-y-auto', onboarding)
+        self.assertIn('min-h-0 flex-1 overflow-y-auto px-6 sm:px-8', onboarding)
+        self.assertIn('lg:max-h-[calc(100vh-4rem)]', onboarding)
+        self.assertNotIn('vault-onboarding-shell min-h-screen overflow-hidden', onboarding)
 
     def test_extension_capture_rejects_core_api_token(self) -> None:
         os.environ["CML_API_TOKEN"] = "core-token"

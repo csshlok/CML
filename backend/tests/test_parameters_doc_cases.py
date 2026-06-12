@@ -199,6 +199,65 @@ class TestingParametersDocCases(unittest.TestCase):
         self.assertTrue(all(item["extracted_text"] == "" for item in response["source_snippets"]))
         self.assertTrue(any("redacted" in warning.lower() for warning in response["warnings"]))
 
+    def test_bridge_context_does_not_decrypt_raw_source_fields_when_permission_is_disabled(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes.bridge import build_context, update_bridge_settings
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import BridgeContextRequest, BridgeSettingsUpdate, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Bridge encrypted note",
+                source_type="note",
+                raw_text="bridge encrypted source text " * 80,
+            )
+        )
+        run_due_jobs_once(limit=1)
+        update_bridge_settings(
+            BridgeSettingsUpdate(
+                enabled=True,
+                allow_raw_snippets=False,
+                allowed_vault_ids=["vault-1"],
+                rotate_token=True,
+            )
+        )
+        settings = update_bridge_settings(BridgeSettingsUpdate())
+        requested_fields: list[str] = []
+
+        def tracking_get_encrypted_text(conn, *, vault_id, entity_type, entity_id, field_name):
+            requested_fields.append(field_name)
+            from backend.app.core.encrypted_storage import get_encrypted_text as real_get_encrypted_text
+
+            return real_get_encrypted_text(
+                conn,
+                vault_id=vault_id,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                field_name=field_name,
+            )
+
+        with patch("backend.app.api.routes.bridge.get_encrypted_text", side_effect=tracking_get_encrypted_text):
+            response = build_context(
+                BridgeContextRequest(vault_id="vault-1", client_name="test-client", query="bridge encrypted"),
+                x_cml_bridge_token=settings["bridge_token"],
+            )
+
+        self.assertGreaterEqual(len(response["source_snippets"]), 1)
+        self.assertNotIn("raw_text", requested_fields)
+        self.assertNotIn("extracted_text", requested_fields)
+        self.assertTrue(set(requested_fields).issubset({"summary", "tags"}))
+
     def _client(self) -> TestClient:
         from backend.app.core.config import get_settings
 

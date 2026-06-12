@@ -126,6 +126,7 @@ class RetrievalTrustPhase8Tests(unittest.TestCase):
         self.assertEqual(response["coverage_ledger"]["trust_gate_mode"], "degraded_low_trust_dominant")
         self.assertEqual(len(captured["citations"]), 2)
         self.assertEqual(sum(1 for citation in captured["citations"] if citation["low_trust"]), 1)
+        self.assertNotIn("expert_assist", captured)
 
     def test_context_prompt_quotes_evidence_and_warns_against_source_instructions(self) -> None:
         from backend.app.core.llm_runtime import _build_context_prompt

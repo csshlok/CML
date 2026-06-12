@@ -1,5 +1,4 @@
 import importlib
-import json
 import os
 import tempfile
 import unittest
@@ -177,6 +176,163 @@ class BridgePhase10Tests(unittest.TestCase):
         self.assertEqual(rows[0]["claimed_name"], "Claude Desktop")
         self.assertFalse(rows[0]["verified_identity"])
         self.assertEqual(rows[0]["verified_identity_label"], "")
+
+    def test_cluster_scoped_client_can_infer_vault_for_context_requests(self) -> None:
+        from backend.app.api.routes.bridge import build_context, create_bridge_client, update_bridge_settings
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.schemas import BridgeClientCreate, BridgeContextRequest, BridgeSettingsUpdate, SourceCreate
+
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True))
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                cluster_id="cluster-1",
+                title="Cluster-only bridge note",
+                source_type="note",
+                raw_text="cluster scoped bridge lookup content " * 80,
+            )
+        )
+        run_due_jobs_once(limit=1)
+        client = create_bridge_client(
+            BridgeClientCreate(
+                name="Cluster only client",
+                allowed_cluster_ids=["cluster-1"],
+            )
+        )
+
+        response = build_context(
+            BridgeContextRequest(
+                cluster_id="cluster-1",
+                query="cluster scoped bridge lookup",
+                client_name="Cluster only client",
+            ),
+            x_cml_bridge_token=client["token"],
+        )
+
+        self.assertEqual(response["query"], "cluster scoped bridge lookup")
+        self.assertEqual(len(response["selected_clusters"]), 1)
+        self.assertEqual(response["selected_clusters"][0]["id"], "cluster-1")
+        self.assertGreaterEqual(len(response["source_snippets"]), 1)
+
+    def test_cluster_scoped_client_can_list_clusters_without_explicit_vault_scope(self) -> None:
+        from backend.app.api.routes.bridge import create_bridge_client, list_bridge_clusters, update_bridge_settings
+        from backend.app.schemas import BridgeClientCreate, BridgeSettingsUpdate
+
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True))
+        client = create_bridge_client(
+            BridgeClientCreate(
+                name="Cluster list client",
+                allowed_cluster_ids=["cluster-1"],
+            )
+        )
+
+        response = list_bridge_clusters(x_cml_bridge_token=client["token"])
+
+        self.assertEqual(len(response["clusters"]), 1)
+        self.assertEqual(response["clusters"][0]["id"], "cluster-1")
+
+    def test_cluster_scoped_manual_client_is_anchored_to_single_vault(self) -> None:
+        from backend.app.api.routes.bridge import create_bridge_client, list_bridge_clients, update_bridge_settings
+        from backend.app.schemas import BridgeClientCreate, BridgeSettingsUpdate
+
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True))
+        client = create_bridge_client(
+            BridgeClientCreate(
+                name="Anchored cluster client",
+                allowed_cluster_ids=["cluster-1"],
+            )
+        )
+        listed = list_bridge_clients()
+
+        self.assertEqual(client["approval_vault_id"], "vault-1")
+        self.assertEqual(listed[0]["approval_vault_id"], "vault-1")
+
+    def test_bridge_context_returns_contract_vault_not_found_for_missing_vault(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.bridge import build_context, update_bridge_settings
+        from backend.app.schemas import BridgeContextRequest, BridgeSettingsUpdate
+
+        settings = update_bridge_settings(
+            BridgeSettingsUpdate(enabled=True, allowed_vault_ids=["vault-1"], rotate_token=True)
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            build_context(
+                BridgeContextRequest(
+                    vault_id="vault-missing",
+                    query="missing vault bridge lookup",
+                    client_name="Bridge client",
+                ),
+                x_cml_bridge_token=settings["bridge_token"],
+            )
+
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertEqual(raised.exception.detail, "vault_not_found")
+
+    def test_reenabling_bridge_client_clears_revoked_timestamp(self) -> None:
+        from backend.app.api.routes.bridge import create_bridge_client, update_bridge_client, update_bridge_settings
+        from backend.app.core.database import connect
+        from backend.app.schemas import BridgeClientCreate, BridgeClientUpdate, BridgeSettingsUpdate
+
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True))
+        client = create_bridge_client(
+            BridgeClientCreate(
+                name="Re-enable client",
+                allowed_vault_ids=["vault-1"],
+            )
+        )
+        disabled = update_bridge_client(client["id"], BridgeClientUpdate(enabled=False))
+        reenabled = update_bridge_client(client["id"], BridgeClientUpdate(enabled=True))
+
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT enabled, revoked_at FROM bridge_clients WHERE id = ?",
+                (client["id"],),
+            ).fetchone()
+
+        self.assertFalse(disabled["enabled"])
+        self.assertIsNotNone(disabled["revoked_at"])
+        self.assertTrue(reenabled["enabled"])
+        self.assertIsNone(reenabled["revoked_at"])
+        self.assertEqual(row["enabled"], 1)
+        self.assertIsNone(row["revoked_at"])
+
+    def test_updating_approved_client_scope_keeps_anchor_and_identity_metadata(self) -> None:
+        from backend.app.api.routes.bridge import (
+            approve_bridge_approval_request,
+            create_bridge_approval_request,
+            update_bridge_client,
+            update_bridge_settings,
+        )
+        from backend.app.schemas import (
+            BridgeApprovalDecision,
+            BridgeApprovalRequestCreate,
+            BridgeClientUpdate,
+            BridgeSettingsUpdate,
+        )
+
+        executable = Path(self.tmp.name) / "approved-client.exe"
+        executable.write_bytes(b"fake-binary")
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True))
+        request_row = create_bridge_approval_request(
+            BridgeApprovalRequestCreate(
+                claimed_name="Approved client",
+                requested_vault_ids=["vault-1"],
+                executable_path=str(executable),
+            ),
+            request=self._request_stub(),
+        )
+        approved = approve_bridge_approval_request(request_row["request_id"], BridgeApprovalDecision())
+        updated = update_bridge_client(
+            approved["id"],
+            BridgeClientUpdate(allowed_vault_ids=[]),
+        )
+
+        self.assertEqual(updated["approval_vault_id"], "vault-1")
+        self.assertEqual(updated["observed_executable_path"], str(executable.resolve()))
+        self.assertNotEqual(updated["signature_status"], "not_provided")
 
     def test_revoked_approved_client_token_is_blocked_and_shared_token_is_disabled_for_secured_vaults(self) -> None:
         from backend.app.api.routes.bridge import (

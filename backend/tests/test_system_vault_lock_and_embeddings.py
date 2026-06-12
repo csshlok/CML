@@ -1257,6 +1257,38 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertIsNotNone(page["next_cursor"])
         self.assertEqual(compacted["compacted_snapshots"], 1)
 
+    def test_chat_pagination_cursor_is_stable_when_messages_share_timestamp(self) -> None:
+        from backend.app.api.routes.chat import get_chat_messages_page
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id, vault_id, title, scope_cluster_id, saved, memory_status, memory_updated_at, created_at, updated_at
+                )
+                VALUES ('chat-cursor', 'vault-1', 'Cursor test', NULL, 0, 'idle', NULL, ?, ?)
+                """,
+                (now, now),
+            )
+            for message_id in ("msg-a", "msg-b", "msg-c"):
+                conn.execute(
+                    "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?, 'chat-cursor', 'user', ?, ?)",
+                    (message_id, message_id, now),
+                )
+
+        first = get_chat_messages_page("chat-cursor", limit=2)
+        second = get_chat_messages_page("chat-cursor", limit=2, cursor=first["next_cursor"])
+
+        self.assertEqual([item["id"] for item in first["items"]], ["msg-a", "msg-b"])
+        self.assertEqual([item["id"] for item in second["items"]], ["msg-c"])
+        self.assertIsNone(second["next_cursor"])
+
     def test_extension_pairing_and_permission_audit(self) -> None:
         from backend.app.api.routes.extension import (
             approve_extension_pairing,

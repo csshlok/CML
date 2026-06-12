@@ -9,6 +9,13 @@ class BridgeMCPTests(unittest.TestCase):
 
         self.assertIsNone(response)
 
+    def test_unknown_notification_also_returns_no_response(self) -> None:
+        from backend.app.bridge_mcp import handle_message
+
+        response = handle_message({"jsonrpc": "2.0", "method": "tools/list"})
+
+        self.assertIsNone(response)
+
     def test_known_bridge_error_codes_are_stable(self) -> None:
         from backend.app.bridge_mcp import app_error_code
 

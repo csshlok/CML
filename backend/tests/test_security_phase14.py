@@ -1,4 +1,3 @@
-import json
 import unittest
 from pathlib import Path
 
@@ -10,14 +9,13 @@ class SecurityPhase14ScriptTests(unittest.TestCase):
     def test_package_hardening_assets_are_wired_into_build(self) -> None:
         package_windows = (self.repo_root / "scripts" / "packaging" / "package-windows.ps1").read_text(encoding="utf-8")
         clean_machine = (self.repo_root / "scripts" / "packaging" / "validate-clean-machine-package.ps1").read_text(encoding="utf-8")
-        desktop_package = json.loads((self.repo_root / "apps" / "desktop" / "package.json").read_text(encoding="utf-8"))
 
         self.assertIn("generate-helper-manifest.cjs", package_windows)
         self.assertIn("audit-package-layout.cjs", package_windows)
         self.assertIn("helper_manifest_exists", clean_machine)
         self.assertIn("package_layout_audit_exists", clean_machine)
-        extra_resources = desktop_package["build"]["extraResources"]
-        self.assertTrue(any(entry.get("to") == "helper-manifest.json" for entry in extra_resources))
+        self.assertIn('"from": "packaging/helper-manifest.json"', package_windows)
+        self.assertIn('"to": "helper-manifest.json"', package_windows)
 
     def test_phase14_security_runner_covers_required_smokes(self) -> None:
         runner = (self.repo_root / "scripts" / "security" / "run-security-e2e.ps1").read_text(encoding="utf-8")
