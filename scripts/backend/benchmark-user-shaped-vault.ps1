@@ -1,5 +1,5 @@
 param(
-  [string]$ReportRoot = "T:\CML-build-smoke\user-shaped-retrieval",
+  [string]$ReportRoot = "",
   [int]$Sources = 100
 )
 
@@ -8,6 +8,10 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
   $python = "python"
+}
+
+if (-not $ReportRoot) {
+  $ReportRoot = Join-Path $env:TEMP "cml-build-smoke\user-shaped-retrieval"
 }
 
 $env:CML_DATA_DIR = $ReportRoot

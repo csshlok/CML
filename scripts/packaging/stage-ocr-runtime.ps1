@@ -279,7 +279,7 @@ $bundledGhostscript = Get-ChildItem -LiteralPath (Join-Path $destinationPath "gh
 
 $manifest = [ordered]@{
   generated_at = (Get-Date).ToUniversalTime().ToString("o")
-  destination = $destinationPath
+  layout = "self-contained-ocr-runtime-v1"
   tesseract = (Test-Path -LiteralPath (Join-Path $destinationPath "tesseract.exe")) -and (Test-TesseractExecutable -Path (Join-Path $destinationPath "tesseract.exe"))
   eng_traineddata = Test-Path -LiteralPath (Join-Path $destinationPath "tessdata\eng.traineddata")
   qpdf = (Get-ChildItem -LiteralPath (Join-Path $destinationPath "qpdf") -Recurse -Filter "qpdf.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1) -ne $null

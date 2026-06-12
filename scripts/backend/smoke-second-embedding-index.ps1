@@ -1,7 +1,7 @@
 param(
   [string]$PrimaryModel = "sentence-transformers/all-MiniLM-L6-v2",
   [string]$SecondaryModel = "sentence-transformers/paraphrase-MiniLM-L3-v2",
-  [string]$CacheRoot = "T:\CML-embedding-index-smoke"
+  [string]$CacheRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,6 +9,10 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
   $python = "python"
+}
+
+if (-not $CacheRoot) {
+  $CacheRoot = Join-Path $env:TEMP "cml-embedding-index-smoke"
 }
 
 $code = @'

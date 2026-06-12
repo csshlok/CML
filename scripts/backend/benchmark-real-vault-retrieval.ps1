@@ -1,5 +1,5 @@
 param(
-  [string[]]$Roots = @("C:\Users\csshl\Desktop", "C:\Users\csshl\Documents"),
+  [string[]]$Roots = @(),
   [string[]]$ExcludeRoots = @(),
   [int]$MaxFiles = 50,
   [string]$ReportPath = "",
@@ -21,6 +21,9 @@ if (-not $DataRoot) {
 }
 if (-not $ReportPath) {
   $ReportPath = Join-Path $DataRoot "real-vault-benchmark-report.json"
+}
+if ($Roots.Count -eq 0) {
+  $Roots = @($HOME)
 }
 
 $env:CML_DATA_DIR = $DataRoot

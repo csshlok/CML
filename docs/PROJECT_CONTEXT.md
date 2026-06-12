@@ -36,6 +36,7 @@ Public V1 target: end of July 2026 as a Windows-only public release. There is no
 - UI direction: memory-board landing, visual map, chat workspace, Mindly-like organization, Obsidian-like graph/map; detailed UI rules live in `docs/UI_ARCHITECTURE.md`.
 - UI responsive scope: no dedicated mobile screen for public V1; dark version and minimized/narrow desktop window version are required.
 - UI reference folder: preserve `UI-ref/`; do not delete or refactor it.
+- Desktop brand asset: use only `apps/desktop/public/brand/vault-logo.png` and `apps/desktop/public/brand/vault-icon.png` for Vault branding; do not reintroduce favicon-derived or ad hoc logo variants in the UI.
 - Cluster experts: compulsory product pillar.
 - Public V1 expert claim: only say a cluster expert is trained after verified LoRA adapter graduation passes for that cluster.
 - Local-first privacy: user data stays local unless the user explicitly exports or connects a tool.
@@ -260,6 +261,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Finish first-run setup UI around the new readiness gate: vault path, model setup, embedding setup, OCR readiness, startup repair states.
 - Make onboarding honest about local model/embedding download size, time, hardware requirements, and external Bridge privacy tradeoffs.
 - UI follow-up: separate the purpose and presentation of `Home` versus `Mind`, and verify packaged startup routes first-run users into onboarding instead of dropping them into the main app shell.
+- UI bug to fix: onboarding pages are currently not scrollable in the desktop app, which blocks first-run usability on taller content sections.
 - Continue validating Phase 5 migration safety on large real vaults, but core disk-preflight, staged-publication start, bounded GC, and disk-full old-tuple preservation are implemented.
 - Done: Phase 12 reconciliation logging and locked-mode supportability. Integration imports now persist encrypted post-unlock reconciliation summaries/details, bounded detail pagination, per-item retry, retention/compaction, and no external locked-mode pending-work signal.
 - Add real checkpoint-family download/import UX for the approved model contract, beyond the current runtime/GGUF default downloads.

@@ -57,6 +57,13 @@ $expertRuntimePackages = @(
   "transformers==5.6.0",
   "peft==0.18.1"
 )
+$embeddingRuntimePackages = @(
+  "sentence-transformers==5.5.1"
+)
+$effectiveBackendRuntimePackages = @($backendRuntimePackages)
+if ($IncludeEmbeddingRuntime) {
+  $effectiveBackendRuntimePackages += $embeddingRuntimePackages
+}
 
 $script:PackageStartedAt = Get-Date
 $script:PackagePhaseStartedAt = $script:PackageStartedAt
@@ -326,6 +333,7 @@ if (-not $SkipOcrRuntimeDownload) {
   if ($ocrRuntimeReady) {
     Write-PackageDetail "OCR runtime cache hit: $ocrRuntimeDir"
   } else {
+    Write-PackageLine "Staging OCR runtime" "INFO"
     Write-PackageDetail "OCR runtime cache miss; staging OCR payload."
     $ocrArgs = @()
     if ($TesseractExePath) {
@@ -358,22 +366,26 @@ Complete-PackagePhase $stagingDir
 $runtimePython = Join-Path $runtimeDir "python.exe"
 $backendRuntimeStampPath = Join-Path $runtimeDir ".cml-runtime-stamp"
 $backendRuntimeFingerprint = Get-StringFingerprint @(
-  "python-runtime-v5",
+  "python-runtime-v6",
   "base_python_root=$basePythonRoot",
   "prune=docs-tests-pip",
   "dependency_policy=pinned",
-  ($backendRuntimePackages -join "`n")
+  ($effectiveBackendRuntimePackages -join "`n")
 )
 $backendRuntimeReady = $false
 if (-not $Release) {
+  $backendRuntimeRequiredPaths = @($runtimePython)
+  if ($IncludeEmbeddingRuntime) {
+    $backendRuntimeRequiredPaths += (Join-Path $runtimeDir "Lib\site-packages\sentence_transformers")
+  }
   $backendRuntimeReady = Test-StagedRuntime `
     -RuntimeDir $runtimeDir `
     -StampPath $backendRuntimeStampPath `
     -ExpectedFingerprint $backendRuntimeFingerprint `
-    -RequiredPaths @($runtimePython)
+    -RequiredPaths $backendRuntimeRequiredPaths
 }
 
-Start-PackagePhase "Backend Python runtime" "Fingerprint: $($backendRuntimeFingerprint.Substring(0, 12)); packages: $($backendRuntimePackages.Count)"
+Start-PackagePhase "Backend Python runtime" "Fingerprint: $($backendRuntimeFingerprint.Substring(0, 12)); packages: $($effectiveBackendRuntimePackages.Count)"
 if ($backendRuntimeReady) {
   Write-PackageDetail "Cache hit: $runtimeDir"
 } else {
@@ -381,7 +393,7 @@ if ($backendRuntimeReady) {
   Copy-PortablePythonRuntime $basePythonRoot $runtimeDir
   Write-PackageDetail "Installing backend Python packages."
   & $runtimePython -I -m pip install --upgrade pip
-  & $runtimePython -I -m pip install --upgrade @backendRuntimePackages
+  & $runtimePython -I -m pip install --upgrade @effectiveBackendRuntimePackages
   Optimize-PortablePythonRuntime $runtimeDir
   Write-StagedRuntimeStamp $backendRuntimeStampPath $backendRuntimeFingerprint
 }
@@ -420,9 +432,8 @@ if ($playwrightReady) {
 Complete-PackagePhase $playwrightBrowserDir
 
 if ($IncludeEmbeddingRuntime) {
-  Start-PackagePhase "Optional embedding runtime" "Installing sentence-transformers==5.5.1 into backend runtime."
-  & $runtimePython -m pip install "sentence-transformers==5.5.1"
-  Complete-PackagePhase $runtimeDir
+  Start-PackagePhase "Optional embedding runtime" "Embedding runtime is included in the staged backend runtime fingerprint and package set."
+  Complete-PackagePhase "sentence-transformers packaged with backend runtime"
 }
 
 $expertRuntimePython = Join-Path $expertRuntimeDir "python.exe"
