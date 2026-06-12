@@ -4,6 +4,8 @@ import sys
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from backend.app.core.version import app_version
+
 
 BACKEND_URL = os.getenv("CML_BACKEND_URL", "http://127.0.0.1:7343").rstrip("/")
 BRIDGE_TOKEN = os.getenv("CML_BRIDGE_TOKEN", "")
@@ -39,13 +41,15 @@ def main() -> int:
 def handle_message(message: dict) -> dict:
     method = message.get("method")
     request_id = message.get("id")
+    if request_id is None:
+        return None
     if method == "initialize":
         return result(
             request_id,
             {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "cml-bridge", "version": "0.1.5"},
+                "serverInfo": {"name": "cml-bridge", "version": app_version()},
             },
         )
     if method == "tools/list":
@@ -66,8 +70,6 @@ def handle_message(message: dict) -> dict:
         if name == "capture_external_artifact":
             return result(request_id, call_capture_external_artifact(arguments, request_id))
         return error(request_id, -32602, f"Unknown CML tool: {name}")
-    if method == "notifications/initialized":
-        return None
     return error(request_id, -32601, f"Unknown method: {method}")
 
 

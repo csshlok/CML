@@ -541,6 +541,16 @@ class ChatCoverageLedger(BaseModel):
     trusted_evidence_count: int = 0
     low_trust_evidence_count: int = 0
     trust_gate_latency_ms: float = 0.0
+    token_budget: int = 0
+    prompt_tokens_estimate: int = 0
+    evidence_tokens_estimate: int = 0
+    citations_selected: int = 0
+    citations_trimmed: int = 0
+    budget_applied: bool = False
+    partial_failure_mode: str = "none"
+    expert_route_mode: str = "not_eligible"
+    expert_assist_attempted: bool = False
+    expert_assist_used: bool = False
 
 
 class ChatContextResponse(BaseModel):

@@ -65,7 +65,12 @@ def create_source(payload: SourceCreate) -> dict:
     return _create_source_record(payload, page_texts=[payload.raw_text] if payload.raw_text else None)
 
 
-def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = None) -> dict:
+def _create_source_record(
+    payload: SourceCreate,
+    page_texts: list[str] | None = None,
+    *,
+    dedupe_checksum: bool = False,
+) -> dict:
     if payload.raw_text:
         try:
             require_embeddings_available("Source ingestion")
@@ -89,16 +94,28 @@ def _create_source_record(payload: SourceCreate, page_texts: list[str] | None = 
                 raise HTTPException(status_code=404, detail="Cluster not found")
 
         checksum = payload.checksum or (content_hash(raw_text) if raw_text else None)
-        if checksum:
-            existing = conn.execute(
-                """
-                SELECT * FROM sources
-                WHERE vault_id = ? AND checksum = ? AND deleted_at IS NULL
-                ORDER BY created_at ASC
-                LIMIT 1
-                """,
-                (payload.vault_id, checksum),
-            ).fetchone()
+        if checksum and dedupe_checksum:
+            existing = None
+            if payload.original_path:
+                existing = conn.execute(
+                    """
+                    SELECT * FROM sources
+                    WHERE vault_id = ? AND original_path = ? AND deleted_at IS NULL
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (payload.vault_id, payload.original_path),
+                ).fetchone()
+            elif payload.url:
+                existing = conn.execute(
+                    """
+                    SELECT * FROM sources
+                    WHERE vault_id = ? AND url = ? AND deleted_at IS NULL
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (payload.vault_id, payload.url),
+                ).fetchone()
             if existing is not None:
                 return source_from_row(existing, conn=conn)
         if cluster_id is None and raw_text:
@@ -184,20 +201,121 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
     security = ingested["security"]
 
     suffix = Path(payload.path).suffix.lower()
-    source = _create_source_record(
-        SourceCreate(
-            vault_id=payload.vault_id,
-            cluster_id=payload.cluster_id,
-            title=title,
-            source_type=_source_type_for_suffix(suffix),
-            original_path=payload.path,
-            checksum=security["validation"]["content_hash"],
-            raw_text=text,
-            tags=security["security_labels"],
-        ),
-        page_texts=pages,
-    )
+    source_type = _source_type_for_suffix(suffix)
+    checksum = security["validation"]["content_hash"]
+    now = utc_now()
     with connect() as conn:
+        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (payload.vault_id,)).fetchone()
+        if vault is None:
+            raise HTTPException(status_code=404, detail="Vault not found")
+        existing = conn.execute(
+            """
+            SELECT id, vault_id, cluster_id
+            FROM sources
+            WHERE vault_id = ? AND original_path = ? AND deleted_at IS NULL
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (payload.vault_id, payload.path),
+        ).fetchone()
+        if existing is None:
+            source = _create_source_record(
+                SourceCreate(
+                    vault_id=payload.vault_id,
+                    cluster_id=payload.cluster_id,
+                    title=title,
+                    source_type=source_type,
+                    original_path=payload.path,
+                    checksum=checksum,
+                    raw_text=text,
+                    tags=security["security_labels"],
+                ),
+                page_texts=pages,
+            )
+            source_id = source["id"]
+        else:
+            source_id = str(existing["id"])
+            target_cluster_id = payload.cluster_id if payload.cluster_id is not None else existing["cluster_id"]
+            if target_cluster_id:
+                cluster = conn.execute(
+                    "SELECT id FROM clusters WHERE id = ? AND vault_id = ?",
+                    (target_cluster_id, payload.vault_id),
+                ).fetchone()
+                if cluster is None:
+                    raise HTTPException(status_code=404, detail="Cluster not found")
+            tags = json.dumps(security["security_labels"], sort_keys=True)
+            stored_updates = update_source_content_fields(
+                conn,
+                vault_id=payload.vault_id,
+                source_id=source_id,
+                updates={
+                    "cluster_id": target_cluster_id,
+                    "title": title,
+                    "source_type": source_type,
+                    "state": "indexed",
+                    "original_path": payload.path,
+                    "checksum": checksum,
+                    "raw_text": text,
+                    "extracted_text": text,
+                    "summary": summarize_text(text),
+                    "tags": tags,
+                },
+                now=now,
+            )
+            conn.execute(
+                """
+                UPDATE sources
+                SET cluster_id = ?,
+                    title = ?,
+                    source_type = ?,
+                    state = 'indexed',
+                    original_path = ?,
+                    checksum = ?,
+                    raw_text = ?,
+                    extracted_text = ?,
+                    summary = ?,
+                    tags = ?,
+                    provenance = ?,
+                    trust_tier = ?,
+                    security_labels = ?,
+                    parser_security_json = ?,
+                    updated_at = ?
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (
+                    target_cluster_id,
+                    title,
+                    source_type,
+                    payload.path,
+                    checksum,
+                    stored_updates["raw_text"],
+                    stored_updates["extracted_text"],
+                    stored_updates["summary"],
+                    stored_updates["tags"],
+                    security["provenance"],
+                    security["trust_tier"],
+                    tags,
+                    json.dumps(security, sort_keys=True),
+                    now,
+                    source_id,
+                ),
+            )
+            _replace_source_pages(
+                conn,
+                source_id=source_id,
+                vault_id=payload.vault_id,
+                page_texts=pages,
+                now=now,
+            )
+            enqueue_job(
+                conn,
+                job_type="reindex_source",
+                payload={"source_id": source_id},
+                dedupe_key=f"reindex-source:{source_id}",
+            )
+            mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
+            mark_cluster_needs_update(conn, target_cluster_id, "Source changed or moved.")
+            mark_source_changed(source_id, conn=conn)
         conn.execute(
             """
             UPDATE sources
@@ -214,11 +332,11 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
                 json.dumps(security["security_labels"], sort_keys=True),
                 json.dumps(security, sort_keys=True),
                 utc_now(),
-                source["id"],
+                source_id,
             ),
         )
-    attach_quarantine_record(ingested["quarantine_record_id"], source["id"])
-    return get_source(source["id"])
+    attach_quarantine_record(ingested["quarantine_record_id"], source_id)
+    return get_source(source_id)
 
 
 @router.post("/from-text", response_model=SourceRead)
@@ -245,19 +363,116 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
     except ExtractionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    source = create_source(
-        SourceCreate(
-            vault_id=payload.vault_id,
-            cluster_id=payload.cluster_id,
-            title=title,
-            source_type="link",
-            url=sanitized_url,
-            raw_text=text,
-            cover_image_url=cover_image_url,
-            tags=security["security_labels"],
-        )
-    )
+    now = utc_now()
     with connect() as conn:
+        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (payload.vault_id,)).fetchone()
+        if vault is None:
+            raise HTTPException(status_code=404, detail="Vault not found")
+        existing = conn.execute(
+            """
+            SELECT id, vault_id, cluster_id
+            FROM sources
+            WHERE vault_id = ? AND url = ? AND deleted_at IS NULL
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (payload.vault_id, sanitized_url),
+        ).fetchone()
+        if existing is None:
+            source = create_source(
+                SourceCreate(
+                    vault_id=payload.vault_id,
+                    cluster_id=payload.cluster_id,
+                    title=title,
+                    source_type="link",
+                    url=sanitized_url,
+                    raw_text=text,
+                    cover_image_url=cover_image_url,
+                    tags=security["security_labels"],
+                )
+            )
+            source_id = source["id"]
+        else:
+            source_id = str(existing["id"])
+            target_cluster_id = payload.cluster_id if payload.cluster_id is not None else existing["cluster_id"]
+            if target_cluster_id:
+                cluster = conn.execute(
+                    "SELECT id FROM clusters WHERE id = ? AND vault_id = ?",
+                    (target_cluster_id, payload.vault_id),
+                ).fetchone()
+                if cluster is None:
+                    raise HTTPException(status_code=404, detail="Cluster not found")
+            tags = json.dumps(security["security_labels"], sort_keys=True)
+            stored_updates = update_source_content_fields(
+                conn,
+                vault_id=payload.vault_id,
+                source_id=source_id,
+                updates={
+                    "cluster_id": target_cluster_id,
+                    "title": title,
+                    "state": "indexed",
+                    "url": sanitized_url,
+                    "raw_text": text,
+                    "extracted_text": text,
+                    "summary": summarize_text(text),
+                    "tags": tags,
+                    "cover_image_url": cover_image_url,
+                },
+                now=now,
+            )
+            conn.execute(
+                """
+                UPDATE sources
+                SET cluster_id = ?,
+                    title = ?,
+                    source_type = 'link',
+                    state = 'indexed',
+                    url = ?,
+                    raw_text = ?,
+                    extracted_text = ?,
+                    summary = ?,
+                    tags = ?,
+                    cover_image_url = ?,
+                    provenance = ?,
+                    trust_tier = ?,
+                    security_labels = ?,
+                    parser_security_json = ?,
+                    updated_at = ?
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (
+                    target_cluster_id,
+                    title,
+                    sanitized_url,
+                    stored_updates["raw_text"],
+                    stored_updates["extracted_text"],
+                    stored_updates["summary"],
+                    stored_updates["tags"],
+                    cover_image_url,
+                    security["provenance"],
+                    security["trust_tier"],
+                    tags,
+                    json.dumps(security, sort_keys=True),
+                    now,
+                    source_id,
+                ),
+            )
+            _replace_source_pages(
+                conn,
+                source_id=source_id,
+                vault_id=payload.vault_id,
+                page_texts=[text] if text else [],
+                now=now,
+            )
+            enqueue_job(
+                conn,
+                job_type="reindex_source",
+                payload={"source_id": source_id},
+                dedupe_key=f"reindex-source:{source_id}",
+            )
+            mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
+            mark_cluster_needs_update(conn, target_cluster_id, "Source changed or moved.")
+            mark_source_changed(source_id, conn=conn)
         conn.execute(
             """
             UPDATE sources
@@ -274,10 +489,10 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
                 json.dumps(security["security_labels"], sort_keys=True),
                 json.dumps(security, sort_keys=True),
                 utc_now(),
-                source["id"],
+                source_id,
             ),
         )
-    return get_source(source["id"])
+    return get_source(source_id)
 
 
 @router.get("/link-diagnostics")

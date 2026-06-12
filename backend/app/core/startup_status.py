@@ -11,6 +11,7 @@ FALLBACK_PHASES = {
     "vault_lock_acquiring",
     "vault_lock_acquired",
     "database_initializing",
+    "database_initialization_failed",
     "integrity_check_running",
     "integrity_check_failed",
     "schema_check_running",

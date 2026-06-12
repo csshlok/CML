@@ -11,7 +11,6 @@ from urllib.request import Request, urlopen
 import json
 import shutil
 import threading
-import time
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import utc_now
@@ -145,6 +144,8 @@ APPROVED_MODEL_FAMILIES: tuple[ApprovedModelFamily, ...] = (
 _download_state: dict[str, dict[str, Any]] = {}
 _download_lock = threading.Lock()
 _cancelled_downloads: set[str] = set()
+_MODEL_DISCOVERY_CACHE_LOCK = threading.Lock()
+_MODEL_DISCOVERY_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 MODEL_SCAN_SKIP_DIRS = {
     ".git",
     ".hg",
@@ -228,6 +229,11 @@ def imported_model_statuses() -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def invalidate_model_discovery_cache() -> None:
+    with _MODEL_DISCOVERY_CACHE_LOCK:
+        _MODEL_DISCOVERY_CACHE.clear()
 
 
 def model_status(model_id: str) -> dict[str, Any]:
@@ -652,6 +658,7 @@ def import_model_checkpoint(source_path: str | Path, *, name: str | None = None)
         "created_at": utc_now(),
     }
     (destination / "cml-model.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    invalidate_model_discovery_cache()
     if not active_expert_model_status():
         set_active_model(model_id, role="expert")
     return next(item for item in imported_model_statuses() if item["id"] == model_id)
@@ -692,7 +699,23 @@ def discover_installed_models(
     *,
     max_results: int = 32,
     include_rejected: bool = False,
+    refresh: bool = False,
 ) -> dict[str, Any]:
+    settings = get_settings()
+    roots = installed_model_scan_roots()
+    cache_ttl = max(0, int(getattr(settings, "model_scan_cache_seconds", 30) or 0))
+    cache_key = (
+        tuple(_normalized_path(root) for root in roots),
+        int(settings.model_scan_max_depth),
+        bool(include_rejected),
+        int(max_results),
+    )
+    if not refresh and cache_ttl > 0:
+        with _MODEL_DISCOVERY_CACHE_LOCK:
+            cached = _MODEL_DISCOVERY_CACHE.get(cache_key)
+        if cached and (time.monotonic() - float(cached["stored_at"])) <= cache_ttl:
+            return dict(cached["payload"])
+
     started = time.perf_counter()
     scanned_roots: list[str] = []
     missing_roots: list[str] = []
@@ -700,8 +723,9 @@ def discover_installed_models(
     seen_paths: set[str] = set()
     compatible_count = 0
     truncated = False
+    imported_paths = {item["local_path"] for item in imported_model_statuses()}
 
-    for root in installed_model_scan_roots():
+    for root in roots:
         normalized_root = _normalized_path(root)
         if normalized_root in scanned_roots:
             continue
@@ -709,7 +733,7 @@ def discover_installed_models(
             missing_roots.append(str(root))
             continue
         scanned_roots.append(normalized_root)
-        for candidate in _iter_transformers_checkpoint_dirs(root, max_depth=int(get_settings().model_scan_max_depth)):
+        for candidate in _iter_transformers_checkpoint_dirs(root, max_depth=int(settings.model_scan_max_depth)):
             normalized = _normalized_path(candidate)
             if normalized in seen_paths:
                 continue
@@ -720,7 +744,7 @@ def discover_installed_models(
             if not include_rejected and not compatibility.get("accepted"):
                 continue
             metadata = _discovered_model_metadata(candidate, compatibility=compatibility, root=root)
-            if any(item["local_path"] == metadata["local_path"] for item in imported_model_statuses()):
+            if metadata["local_path"] in imported_paths:
                 metadata["already_imported"] = True
             models.append(metadata)
             if len(models) >= max_results:
@@ -736,7 +760,7 @@ def discover_installed_models(
             item["name"].lower(),
         )
     )
-    return {
+    payload = {
         "models": models,
         "compatible_model_count": compatible_count,
         "scanned_root_count": len(scanned_roots),
@@ -745,6 +769,13 @@ def discover_installed_models(
         "truncated": truncated,
         "scan_duration_ms": round((time.perf_counter() - started) * 1000, 2),
     }
+    if cache_ttl > 0:
+        with _MODEL_DISCOVERY_CACHE_LOCK:
+            _MODEL_DISCOVERY_CACHE[cache_key] = {
+                "stored_at": time.monotonic(),
+                "payload": dict(payload),
+            }
+    return payload
 
 
 def installed_model_scan_roots() -> list[Path]:

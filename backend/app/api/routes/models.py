@@ -49,10 +49,11 @@ def get_model_recommendations() -> dict:
 
 
 @router.get("/discover", response_model=InstalledModelDiscoveryRead)
-def discover_local_models(max_results: int = 32, include_rejected: bool = False) -> dict:
+def discover_local_models(max_results: int = 32, include_rejected: bool = False, refresh: bool = False) -> dict:
     return discover_installed_models(
         max_results=max(1, min(int(max_results), 200)),
         include_rejected=include_rejected,
+        refresh=refresh,
     )
 
 

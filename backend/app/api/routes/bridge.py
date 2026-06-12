@@ -29,7 +29,12 @@ from backend.app.core.bridge_security import (
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.embeddings import content_hash
-from backend.app.core.encrypted_storage import plaintext_column_for_text, store_source_content_fields
+from backend.app.core.encrypted_storage import (
+    get_encrypted_text,
+    is_vault_secured,
+    plaintext_column_for_text,
+    store_source_content_fields,
+)
 from backend.app.core.memory_card import summarize_text
 from backend.app.core.unlock_state import current_unlock_state, security_gate_active
 from backend.app.schemas import (
@@ -511,27 +516,26 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
     permissions = client_permissions or settings
 
     with connect() as conn:
-        vault_id = payload.vault_id
-        if vault_id:
-            vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
-            if vault is None:
-                _log_bridge_request(payload, mode_suffix="vault_not_found", client_id=client_permissions["id"] if client_permissions else None)
-                raise HTTPException(status_code=404, detail="vault_not_found")
-        else:
-            if len(permissions["allowed_vault_ids"]) == 1:
-                vault_id = permissions["allowed_vault_ids"][0]
-            else:
-                _log_bridge_request(payload, mode_suffix="no_active_vault", client_id=client_permissions["id"] if client_permissions else None)
-                raise HTTPException(status_code=409, detail="no_active_vault")
+        if payload.cluster_id and permissions["allowed_cluster_ids"] and payload.cluster_id not in permissions["allowed_cluster_ids"]:
+            _log_bridge_request(payload, mode_suffix="cluster_not_allowed", client_id=client_permissions["id"] if client_permissions else None)
+            raise HTTPException(status_code=403, detail="cluster_not_allowed")
+        try:
+            vault_id = _resolve_bridge_vault_id(
+                conn,
+                requested_vault_id=payload.vault_id,
+                requested_cluster_id=payload.cluster_id,
+                permissions=permissions,
+            )
+        except HTTPException as exc:
+            if exc.detail in {"no_active_vault", "vault_not_found", "cluster_not_found"}:
+                _log_bridge_request(payload, mode_suffix=str(exc.detail), client_id=client_permissions["id"] if client_permissions else None)
+            raise
 
         if permissions["allowed_vault_ids"] and vault_id not in permissions["allowed_vault_ids"]:
             _log_bridge_request(payload, mode_suffix="vault_not_allowed", client_id=client_permissions["id"] if client_permissions else None)
             raise HTTPException(status_code=403, detail="vault_not_allowed")
 
         if payload.cluster_id:
-            if permissions["allowed_cluster_ids"] and payload.cluster_id not in permissions["allowed_cluster_ids"]:
-                _log_bridge_request(payload, mode_suffix="cluster_not_allowed", client_id=client_permissions["id"] if client_permissions else None)
-                raise HTTPException(status_code=403, detail="cluster_not_allowed")
             cluster = conn.execute(
                 "SELECT id FROM clusters WHERE id = ? AND vault_id = ?",
                 (payload.cluster_id, vault_id),
@@ -595,14 +599,13 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
         else:
             warnings.append("Add or reindex sources before relying on Bridge context.")
 
-    sources_by_id = {row["id"]: source_from_row(row) for row in source_rows}
+    sources_by_id = {
+        row["id"]: _bridge_source_from_row(row, conn=None, allow_raw_snippets=bool(permissions["allow_raw_snippets"]))
+        for row in source_rows
+    }
     ordered_sources = [sources_by_id[source_id] for source_id in source_ids if source_id in sources_by_id]
-    if not permissions["allow_raw_snippets"]:
-        for source in ordered_sources:
-            source["raw_text"] = ""
-            source["extracted_text"] = ""
-        if ordered_sources:
-            warnings.append("Raw source text is redacted by Bridge permissions.")
+    if not permissions["allow_raw_snippets"] and ordered_sources:
+        warnings.append("Raw source text is redacted by Bridge permissions.")
     if results:
         warnings.append("Bridge context is ranked by local semantic search.")
     response = {
@@ -738,7 +741,7 @@ def list_bridge_clients() -> list[dict]:
         rows = conn.execute(
             "SELECT * FROM bridge_clients ORDER BY updated_at DESC"
         ).fetchall()
-    return [_bridge_client_from_row(conn, row) for row in rows]
+        return [_bridge_client_from_row(conn, row) for row in rows]
 
 
 @router.post("/clients", response_model=BridgeClientCreateResponse)
@@ -747,14 +750,19 @@ def create_bridge_client(payload: BridgeClientCreate) -> dict:
     token = secrets.token_urlsafe(24)
     with connect() as conn:
         existing_vault_ids = _existing_vault_ids(conn, payload.allowed_vault_ids)
+        existing_cluster_ids = _existing_cluster_ids(conn, payload.allowed_cluster_ids)
         client = {
             "id": f"bridge-client-{uuid4()}",
             "name": payload.name,
             "token_hash": _token_hash(token),
             "enabled": 1,
-            "approval_vault_id": existing_vault_ids[0] if existing_vault_ids else None,
+            "approval_vault_id": _bridge_client_anchor_vault_id(
+                conn,
+                allowed_vault_ids=existing_vault_ids,
+                allowed_cluster_ids=existing_cluster_ids,
+            ),
             "allowed_vault_ids": json.dumps(existing_vault_ids),
-            "allowed_cluster_ids": json.dumps(_existing_cluster_ids(conn, payload.allowed_cluster_ids)),
+            "allowed_cluster_ids": json.dumps(existing_cluster_ids),
             "allow_raw_snippets": 1 if payload.allow_raw_snippets else 0,
             "allow_style_profile": 1 if payload.allow_style_profile else 0,
             "allow_expert_calls": 1 if payload.allow_expert_calls else 0,
@@ -843,6 +851,17 @@ def update_bridge_client(client_id: str, payload: BridgeClientUpdate) -> dict:
                 elif key in {"enabled", "allow_raw_snippets", "allow_style_profile", "allow_expert_calls"}:
                     value = 1 if value else 0
                 current[key] = value
+        candidate_approval_vault_id = _bridge_client_anchor_vault_id(
+            conn,
+            allowed_vault_ids=_json_list(current.get("allowed_vault_ids")),
+            allowed_cluster_ids=_json_list(current.get("allowed_cluster_ids")),
+        )
+        if current.get("approval_request_id") and current.get("approval_vault_id"):
+            # Approved clients keep their original vault anchor so encrypted identity metadata
+            # remains readable after later scope edits.
+            current["approval_vault_id"] = current["approval_vault_id"]
+        else:
+            current["approval_vault_id"] = candidate_approval_vault_id
         current["updated_at"] = now
         conn.execute(
             """
@@ -850,6 +869,7 @@ def update_bridge_client(client_id: str, payload: BridgeClientUpdate) -> dict:
             SET name = :name,
                 token_hash = :token_hash,
                 enabled = :enabled,
+                approval_vault_id = :approval_vault_id,
                 allowed_vault_ids = :allowed_vault_ids,
                 allowed_cluster_ids = :allowed_cluster_ids,
                 allow_raw_snippets = :allow_raw_snippets,
@@ -860,15 +880,17 @@ def update_bridge_client(client_id: str, payload: BridgeClientUpdate) -> dict:
             """,
             current,
         )
-        updated = conn.execute("SELECT * FROM bridge_clients WHERE id = ?", (client_id,)).fetchone()
         event_type = "bridge_client_updated"
         if updates.get("enabled") is False:
             current["revoked_at"] = now
             event_type = "bridge_client_revoked"
+        elif updates.get("enabled") is True:
+            current["revoked_at"] = None
         conn.execute(
             "UPDATE bridge_clients SET revoked_at = :revoked_at WHERE id = :id",
             current,
         )
+        updated = conn.execute("SELECT * FROM bridge_clients WHERE id = ?", (client_id,)).fetchone()
         _insert_bridge_audit_event(
             conn,
             vault_id=current.get("approval_vault_id"),
@@ -925,17 +947,19 @@ def list_bridge_clusters(x_cml_bridge_token: str | None = Header(default=None)) 
     permissions = client_permissions or settings
     with connect() as conn:
         _enforce_runtime_rate_limits(conn, client_permissions, auth_mode)
-    if not permissions["allowed_vault_ids"]:
-        raise HTTPException(status_code=409, detail="no_active_vault")
     with connect() as conn:
-        params: list[str] = list(permissions["allowed_vault_ids"])
-        vault_clause = f"vault_id IN ({','.join('?' for _ in params)})"
-        cluster_clause = ""
+        params: list[str] = []
+        clauses: list[str] = []
+        if permissions["allowed_vault_ids"]:
+            clauses.append(f"vault_id IN ({','.join('?' for _ in permissions['allowed_vault_ids'])})")
+            params.extend(permissions["allowed_vault_ids"])
         if permissions["allowed_cluster_ids"]:
-            cluster_clause = f" AND id IN ({','.join('?' for _ in permissions['allowed_cluster_ids'])})"
+            clauses.append(f"id IN ({','.join('?' for _ in permissions['allowed_cluster_ids'])})")
             params.extend(permissions["allowed_cluster_ids"])
+        if not clauses:
+            raise HTTPException(status_code=409, detail="no_active_vault")
         rows = conn.execute(
-            f"SELECT * FROM clusters WHERE {vault_clause}{cluster_clause} ORDER BY updated_at DESC",
+            f"SELECT * FROM clusters WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC",
             params,
         ).fetchall()
     return {"clusters": [dict_from_row(row) for row in rows]}
@@ -1098,6 +1122,77 @@ def _bridge_client_from_mapping(client: dict, *, metadata: dict | None = None) -
     }
 
 
+def _bridge_client_anchor_vault_id(conn, *, allowed_vault_ids: list[str], allowed_cluster_ids: list[str]) -> str | None:
+    if allowed_vault_ids:
+        return str(allowed_vault_ids[0])
+    if not allowed_cluster_ids:
+        return None
+    rows = conn.execute(
+        f"SELECT DISTINCT vault_id FROM clusters WHERE id IN ({','.join('?' for _ in allowed_cluster_ids)})",
+        allowed_cluster_ids,
+    ).fetchall()
+    vault_ids = [str(row["vault_id"]) for row in rows if row["vault_id"]]
+    if len(vault_ids) == 1:
+        return vault_ids[0]
+    return None
+
+
+def _bridge_source_from_row(row, *, conn=None, allow_raw_snippets: bool) -> dict:
+    if allow_raw_snippets:
+        return source_from_row(row, conn=conn)
+    if conn is None:
+        with connect() as local_conn:
+            return _bridge_source_from_row(row, conn=local_conn, allow_raw_snippets=False)
+    source = dict_from_row(row)
+    if is_vault_secured(conn, source["vault_id"]):
+        for field in ("summary", "tags"):
+            encrypted = get_encrypted_text(
+                conn,
+                vault_id=source["vault_id"],
+                entity_type="source",
+                entity_id=source["id"],
+                field_name=field,
+            )
+            if encrypted:
+                source[field] = encrypted
+    source["raw_text"] = ""
+    source["extracted_text"] = ""
+    raw_tags = source.get("tags") or "[]"
+    try:
+        tags = json.loads(raw_tags)
+    except json.JSONDecodeError:
+        tags = []
+    source["tags"] = tags if isinstance(tags, list) else []
+    return source
+
+
+def _resolve_bridge_vault_id(
+    conn,
+    *,
+    requested_vault_id: str | None,
+    requested_cluster_id: str | None,
+    permissions: dict,
+) -> str:
+    resolved_vault_id: str | None = None
+    if requested_vault_id:
+        resolved_vault_id = requested_vault_id
+    elif requested_cluster_id:
+        cluster = conn.execute("SELECT vault_id FROM clusters WHERE id = ?", (requested_cluster_id,)).fetchone()
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="cluster_not_found")
+        resolved_vault_id = str(cluster["vault_id"])
+    else:
+        allowed_vault_ids = list(permissions.get("allowed_vault_ids") or [])
+        if len(allowed_vault_ids) == 1:
+            resolved_vault_id = str(allowed_vault_ids[0])
+    if not resolved_vault_id:
+        raise HTTPException(status_code=409, detail="no_active_vault")
+    vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (resolved_vault_id,)).fetchone()
+    if vault is None:
+        raise HTTPException(status_code=404, detail="vault_not_found")
+    return resolved_vault_id
+
+
 def _approval_request_details(conn, row) -> dict:
     return load_secure_json(
         conn,
@@ -1191,17 +1286,17 @@ def _authorize_bridge_write_scope(
 ) -> tuple[str, str | None, dict | None, str]:
     settings, client_permissions, auth_mode = _authorize_bridge_runtime_token(token)
     permissions = client_permissions or settings
-    resolved_vault_id = vault_id
-    if not resolved_vault_id:
-        if len(permissions["allowed_vault_ids"]) == 1:
-            resolved_vault_id = permissions["allowed_vault_ids"][0]
-        else:
-            raise HTTPException(status_code=409, detail="no_active_vault")
-    if permissions["allowed_vault_ids"] and resolved_vault_id not in permissions["allowed_vault_ids"]:
-        raise HTTPException(status_code=403, detail="vault_not_allowed")
-    if cluster_id and permissions["allowed_cluster_ids"] and cluster_id not in permissions["allowed_cluster_ids"]:
-        raise HTTPException(status_code=403, detail="cluster_not_allowed")
     with connect() as conn:
+        if cluster_id and permissions["allowed_cluster_ids"] and cluster_id not in permissions["allowed_cluster_ids"]:
+            raise HTTPException(status_code=403, detail="cluster_not_allowed")
+        resolved_vault_id = _resolve_bridge_vault_id(
+            conn,
+            requested_vault_id=vault_id,
+            requested_cluster_id=cluster_id,
+            permissions=permissions,
+        )
+        if permissions["allowed_vault_ids"] and resolved_vault_id not in permissions["allowed_vault_ids"]:
+            raise HTTPException(status_code=403, detail="vault_not_allowed")
         vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (resolved_vault_id,)).fetchone()
         if vault is None:
             raise HTTPException(status_code=404, detail="vault_not_found")

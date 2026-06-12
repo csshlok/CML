@@ -16,7 +16,6 @@ from backend.app.api.routes.sources import create_source_from_path
 from backend.app.core.config import get_settings
 from backend.app.core.database import connect, dict_from_row, init_db, utc_now
 from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text, reindex_source_chunks
-from backend.app.core.storage_accounting import storage_accounting
 from backend.app.schemas import SourcePathCreate
 
 try:

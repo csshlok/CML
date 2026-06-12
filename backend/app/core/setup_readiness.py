@@ -14,7 +14,7 @@ from backend.app.core.startup_status import startup_status_staleness, validate_s
 
 def first_run_readiness() -> dict:
     settings = get_settings()
-    embedding = embedding_status()
+    embedding = embedding_status(probe_model=False)
     ocr = ocr_runtime_status()
     manifest = model_integrity_manifest_status()
     installed_models = [model for model in list_models() if model.get("installed")]

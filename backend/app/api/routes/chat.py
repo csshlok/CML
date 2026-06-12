@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.app.api.routes.search import semantic_search
 from backend.app.core.background_jobs import enqueue_job
+from backend.app.core.config import get_settings
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.derived_state import chunk_eligibility_sql, query_epoch_snapshot_conn
 from backend.app.core.embeddings import (
@@ -19,9 +20,12 @@ from backend.app.core.embeddings import (
     require_embeddings_available,
     reindex_source_chunks,
 )
+from backend.app.core.expert_runtime import run_cluster_expert_prompt
 from backend.app.core.encrypted_storage import (
+    delete_source_encrypted_content,
     delete_source_derived_encrypted_content,
     plaintext_column_for_text,
+    source_from_encrypted_row,
     store_source_content_fields,
     update_source_content_fields,
 )
@@ -43,6 +47,7 @@ from backend.app.core.retrieval_trust import (
     trust_weight,
 )
 from backend.app.core.vector_maintenance import active_embedding_selector
+from backend.app.core.turbovec_runtime import maybe_remove_source_chunks_from_sidecar
 from backend.app.core.chat_retention import (
     chat_evidence_retention_policy,
     compact_retrieval_snapshots,
@@ -50,6 +55,7 @@ from backend.app.core.chat_retention import (
     paginated_messages,
 )
 from backend.app.core.sql import build_update_assignments
+from backend.app.services.source_service import mark_source_deleted
 from backend.app.schemas import (
     ChatContextRequest,
     ChatContextResponse,
@@ -237,20 +243,42 @@ def update_chat_session(session_id: str, payload: ChatSessionUpdate) -> dict:
 def delete_chat_session(session_id: str) -> None:
     with connect() as conn:
         attachment_rows = conn.execute(
-            "SELECT source_id FROM chat_attachments WHERE session_id = ?",
+            """
+            SELECT source_id
+            FROM chat_attachments
+            WHERE session_id = ?
+            """,
             (session_id,),
         ).fetchall()
         transcript_rows = conn.execute(
-            "SELECT id FROM sources WHERE id LIKE ?",
+            """
+            SELECT id
+            FROM sources
+            WHERE id LIKE ?
+              AND (
+                source_type = 'chat_transcript'
+                OR title LIKE 'Chat transcript - %'
+                OR tags LIKE '%TRANSCRIPT%'
+              )
+            """,
             (f"chat-source-{session_id}-%",),
         ).fetchall()
         source_ids = {row["source_id"] for row in attachment_rows}
         source_ids.update(row["id"] for row in transcript_rows)
         for source_id in source_ids:
-            conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
-            conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
-            conn.execute("DELETE FROM chat_attachments WHERE source_id = ?", (source_id,))
-            conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+            source = conn.execute(
+                "SELECT id, vault_id, cluster_id, source_type, tags FROM sources WHERE id = ?",
+                (source_id,),
+            ).fetchone()
+            if source is None:
+                continue
+            source_payload = source_from_encrypted_row(conn, source)
+            if _is_chat_transcript_source(source) or _should_delete_chat_attachment_source(
+                conn,
+                session_id=session_id,
+                source=source_payload,
+            ):
+                _delete_chat_owned_source(conn, session_id=session_id, source=source_payload)
         result = conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Chat session not found")
@@ -327,6 +355,7 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
             answer=answer,
             clusters_used=clusters_used,
             citations=citations,
+            token_budget=context["coverage_ledger"].get("token_budget"),
             warnings=warnings,
         )
         session_id = generation["session_id"]
@@ -352,94 +381,113 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
 def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
     def events():
         generation = None
-        if payload.persist:
-            generation = _start_chat_generation(
-                vault_id=payload.vault_id,
-                session_id=payload.session_id,
-                cluster_id=payload.cluster_id,
-                prompt=payload.prompt,
-                attachments=payload.attachments,
-            )
-            active_payload = payload.model_copy(update={"session_id": generation["session_id"]})
-        else:
-            active_payload = payload
-        context = _build_retrieval_context(active_payload, synthesize=False)
-        answer_parts: list[str] = []
-        warnings = list(context["warnings"])
-        citations = context["citations"]
-        clusters_used = context["clusters_used"]
-        attachments_stored = generation["attachment_sources"] if generation else []
-        yield _sse("meta", {
-            "clusters_used": clusters_used,
-            "citations": citations,
-            "coverage_ledger": context["coverage_ledger"],
-            "attachments_stored": attachments_stored,
-            "intent": context["intent"],
-            "runtime_state": context["runtime_state"],
-            "warnings": warnings,
-        })
-        if context["intent"] == "general_chat" and context["runtime_state"] == "ready":
-            try:
-                for chunk in stream_direct_answer(prompt=active_payload.prompt):
+        generation_completed = False
+        try:
+            if payload.persist:
+                generation = _start_chat_generation(
+                    vault_id=payload.vault_id,
+                    session_id=payload.session_id,
+                    cluster_id=payload.cluster_id,
+                    prompt=payload.prompt,
+                    attachments=payload.attachments,
+                )
+                active_payload = payload.model_copy(update={"session_id": generation["session_id"]})
+            else:
+                active_payload = payload
+            context = _build_retrieval_context(active_payload, synthesize=False)
+            answer_parts: list[str] = []
+            warnings = list(context["warnings"])
+            citations = context["citations"]
+            clusters_used = context["clusters_used"]
+            attachments_stored = generation["attachment_sources"] if generation else []
+            yield _sse("meta", {
+                "clusters_used": clusters_used,
+                "citations": citations,
+                "coverage_ledger": context["coverage_ledger"],
+                "attachments_stored": attachments_stored,
+                "intent": context["intent"],
+                "runtime_state": context["runtime_state"],
+                "warnings": warnings,
+            })
+            if context["intent"] == "general_chat" and context["runtime_state"] == "ready":
+                try:
+                    for chunk in stream_direct_answer(prompt=active_payload.prompt):
+                        answer_parts.append(chunk)
+                        yield _sse("token", {"text": chunk})
+                    warnings.append("Answered by local LLM runtime without vault retrieval.")
+                except LLMRuntimeError as exc:
+                    fallback = _build_runtime_unavailable_answer(active_payload.prompt, str(exc))
+                    warnings.append(f"Local LLM runtime became unavailable during chat: {exc}")
+                    context["coverage_ledger"]["partial_failure_mode"] = "general_chat_runtime_unavailable"
+                    for chunk in _chunk_text(fallback):
+                        answer_parts.append(chunk)
+                        yield _sse("token", {"text": chunk})
+            elif not citations or not context.get("trust_gate", {}).get("allow_synthesis", True):
+                for chunk in _chunk_text(context["answer"]):
                     answer_parts.append(chunk)
                     yield _sse("token", {"text": chunk})
-                warnings.append("Answered by local LLM runtime without vault retrieval.")
-            except LLMRuntimeError as exc:
-                fallback = _build_runtime_unavailable_answer(active_payload.prompt, str(exc))
-                warnings.append(f"Local LLM runtime became unavailable during chat: {exc}")
-                for chunk in _chunk_text(fallback):
-                    answer_parts.append(chunk)
-                    yield _sse("token", {"text": chunk})
-        elif not citations or not context.get("trust_gate", {}).get("allow_synthesis", True):
-            for chunk in _chunk_text(context["answer"]):
-                answer_parts.append(chunk)
-                yield _sse("token", {"text": chunk})
-        else:
-            try:
-                synthesis_citations = context.get("synthesis_citations") or citations
-                for chunk in stream_grounded_answer(
-                    prompt=active_payload.prompt,
-                    citations=synthesis_citations,
-                    clusters_used=clusters_used,
-                ):
-                    answer_parts.append(chunk)
-                    yield _sse("token", {"text": chunk})
-                warnings.append("Answered by streaming local model runtime.")
-            except LLMRuntimeError as exc:
-                fallback = _build_extract_answer(active_payload.prompt, citations)
-                warnings.append(f"Using retrieval draft fallback because local streaming is unavailable: {exc}")
-                for chunk in _chunk_text(fallback):
-                    answer_parts.append(chunk)
-                    yield _sse("token", {"text": chunk})
+            else:
+                try:
+                    synthesis_citations = context.get("synthesis_citations") or citations
+                    for chunk in stream_grounded_answer(**_grounded_answer_kwargs(
+                        prompt=active_payload.prompt,
+                        citations=synthesis_citations,
+                        clusters_used=clusters_used,
+                        expert_assist=context.get("expert_assist"),
+                    )):
+                        answer_parts.append(chunk)
+                        yield _sse("token", {"text": chunk})
+                    warnings.append("Answered by streaming local model runtime.")
+                except LLMRuntimeError as exc:
+                    fallback = _build_expert_extract_answer(
+                        active_payload.prompt,
+                        citations,
+                        expert_assist=context.get("expert_assist"),
+                    )
+                    warnings.append(f"Using retrieval draft fallback because local streaming is unavailable: {exc}")
+                    context["coverage_ledger"]["partial_failure_mode"] = (
+                        "runtime_unavailable_expert_extract_fallback"
+                        if context.get("expert_assist")
+                        else "runtime_unavailable_extract_fallback"
+                    )
+                    for chunk in _chunk_text(fallback):
+                        answer_parts.append(chunk)
+                        yield _sse("token", {"text": chunk})
 
-        answer = "".join(answer_parts).strip()
-        session_id = generation["session_id"] if generation else payload.session_id
-        user_message_id = generation["user_message_id"] if generation else None
-        assistant_message_id = generation["assistant_message_id"] if generation else None
-        if generation:
-            _complete_chat_generation(
-                generation_id=generation["generation_id"],
-                session_id=generation["session_id"],
-                assistant_message_id=generation["assistant_message_id"],
-                vault_id=payload.vault_id,
-                prompt=payload.prompt,
-                answer=answer,
-                clusters_used=clusters_used,
-                citations=citations,
-                warnings=warnings,
-            )
-        yield _sse("done", {
-            "session_id": session_id,
-            "user_message_id": user_message_id,
-            "assistant_message_id": assistant_message_id,
-            "answer": answer,
-            "coverage_ledger": context["coverage_ledger"],
-            "attachments_stored": attachments_stored,
-            "intent": context["intent"],
-            "runtime_state": context["runtime_state"],
-            "warnings": warnings,
-            "memory_status": "indexing" if payload.persist else None,
-        })
+            answer = "".join(answer_parts).strip()
+            session_id = generation["session_id"] if generation else payload.session_id
+            user_message_id = generation["user_message_id"] if generation else None
+            assistant_message_id = generation["assistant_message_id"] if generation else None
+            if generation:
+                _complete_chat_generation(
+                    generation_id=generation["generation_id"],
+                    session_id=generation["session_id"],
+                    assistant_message_id=generation["assistant_message_id"],
+                    vault_id=payload.vault_id,
+                    prompt=payload.prompt,
+                    answer=answer,
+                    clusters_used=clusters_used,
+                    citations=citations,
+                    token_budget=context["coverage_ledger"].get("token_budget"),
+                    warnings=warnings,
+                )
+                generation_completed = True
+            yield _sse("done", {
+                "session_id": session_id,
+                "user_message_id": user_message_id,
+                "assistant_message_id": assistant_message_id,
+                "answer": answer,
+                "coverage_ledger": context["coverage_ledger"],
+                "attachments_stored": attachments_stored,
+                "intent": context["intent"],
+                "runtime_state": context["runtime_state"],
+                "warnings": warnings,
+                "memory_status": "indexing" if payload.persist else None,
+            })
+        except Exception as exc:
+            if generation and not generation_completed:
+                _mark_chat_generation_retriable(generation["generation_id"], str(exc))
+            raise
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -471,14 +519,6 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
             return _build_embedding_unavailable_context(payload, intent=intent, detail=str(exc))
 
     effective_limit = 12 if payload.expanded_analysis else payload.limit
-    source_scores = _score_sources_for_query(
-        vault_id=payload.vault_id,
-        cluster_id=payload.cluster_id,
-        query=payload.prompt,
-        include_chat_transcripts=include_chat_transcripts,
-    )
-    analyzed_source_ids = [item["source_id"] for item in source_scores[: effective_limit]]
-
     search_response = semantic_search(
         SemanticSearchRequest(
             vault_id=payload.vault_id,
@@ -487,11 +527,25 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
             limit=min(30, max(effective_limit * 4, 12)),
         )
     )
-    results = [
+    candidate_results = [
         result for result in search_response["results"]
-        if (not analyzed_source_ids or result["source_id"] in analyzed_source_ids)
-        and (include_chat_transcripts or not _is_chat_transcript_result(result))
+        if include_chat_transcripts or not _is_chat_transcript_result(result)
     ]
+    if payload.expanded_analysis:
+        source_scores = _score_sources_for_query(
+            vault_id=payload.vault_id,
+            cluster_id=payload.cluster_id,
+            query=payload.prompt,
+            include_chat_transcripts=include_chat_transcripts,
+        )
+        analyzed_source_ids = [item["source_id"] for item in source_scores[: effective_limit]]
+        results = [
+            result for result in candidate_results
+            if (not analyzed_source_ids or result["source_id"] in analyzed_source_ids)
+        ]
+    else:
+        results = candidate_results
+        analyzed_source_ids = _top_source_ids_from_results(results, limit=effective_limit)
     source_ids = list(OrderedDict.fromkeys(result["source_id"] for result in results))
     coverage_ledger = _build_coverage_ledger(
         vault_id=payload.vault_id,
@@ -539,6 +593,19 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     ]
     trust_gate = classify_evidence_trust(payload.prompt, citations)
     synthesis_citations = citations_for_synthesis(citations, trust_gate)
+    token_budget = max(int(get_settings().llm_context_token_budget), 128)
+    budget_plan = _apply_synthesis_token_budget(
+        prompt=payload.prompt,
+        clusters_used=clusters_used,
+        citations=synthesis_citations,
+        token_budget=token_budget,
+    )
+    synthesis_citations = budget_plan["citations"]
+    expert_assist = _maybe_run_cluster_expert_assist(
+        payload=payload,
+        intent=intent,
+        citations=citations,
+    )
 
     warnings = []
     if payload.expanded_analysis:
@@ -562,32 +629,67 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "trusted_evidence_count": trust_gate["trusted_count"],
         "low_trust_evidence_count": trust_gate["low_trust_count"],
         "trust_gate_latency_ms": trust_gate["latency_ms"],
+        "token_budget": token_budget,
+        "prompt_tokens_estimate": budget_plan["prompt_tokens_estimate"],
+        "evidence_tokens_estimate": budget_plan["evidence_tokens_estimate"],
+        "citations_selected": len(synthesis_citations),
+        "citations_trimmed": budget_plan["citations_trimmed"],
+        "budget_applied": bool(budget_plan["budget_applied"]),
+        "partial_failure_mode": "none",
+        "expert_route_mode": expert_assist["mode"],
+        "expert_assist_attempted": bool(expert_assist["attempted"]),
+        "expert_assist_used": bool(expert_assist["used"]),
     }
+    if budget_plan["budget_applied"]:
+        warnings.append(
+            "Synthesis context was trimmed to stay within the local token budget for this machine."
+        )
+    if expert_assist["used"]:
+        warnings.append(
+            "A verified local cluster expert was used as a reasoning aid. Retrieval citations still remain the authority."
+        )
+    elif expert_assist["attempted"] and expert_assist["detail"]:
+        warnings.append(
+            f"Cluster expert assist was unavailable, so this answer stayed retrieval-first: {expert_assist['detail']}"
+        )
     if not citations:
         answer = (
             "I could not find matching indexed context for this prompt yet. "
             "Try adding sources, reindexing the vault, or asking with more specific terms."
         )
         warnings.append("No semantic citations were found.")
+        coverage_ledger["partial_failure_mode"] = "no_citations"
     elif trust_gate["mode"] == "refuse_sensitive_low_trust":
         answer = (
             "I found only low-trust evidence for a sensitive request, so I will not answer from it. "
             "Add or verify trusted local sources, then ask again."
         )
+        coverage_ledger["partial_failure_mode"] = "refuse_sensitive_low_trust"
     elif not trust_gate["allow_synthesis"]:
         answer = _build_extract_answer(payload.prompt, citations)
+        coverage_ledger["partial_failure_mode"] = "low_trust_extract_only"
     elif synthesize:
         try:
-            result = generate_grounded_answer(
+            result = generate_grounded_answer(**_grounded_answer_kwargs(
                 prompt=payload.prompt,
                 citations=synthesis_citations,
                 clusters_used=clusters_used,
-            )
+                expert_assist=expert_assist["text"],
+            ))
             answer = result.text
             warnings.append(f"Answered by local model runtime: {result.provider} / {result.model}.")
         except LLMRuntimeError as exc:
-            answer = _build_extract_answer(payload.prompt, citations)
+            answer = _build_expert_extract_answer(
+                payload.prompt,
+                citations,
+                expert_assist=expert_assist["text"],
+            )
             warnings.append(f"Using retrieval draft fallback because local synthesis is unavailable: {exc}")
+            coverage_ledger["partial_failure_mode"] = (
+                "runtime_unavailable_expert_extract_fallback"
+                if expert_assist["used"]
+                else "runtime_unavailable_extract_fallback"
+            )
     else:
         answer = _build_extract_answer(payload.prompt, citations)
 
@@ -601,6 +703,7 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "intent": intent,
         "runtime_state": runtime["state"],
         "warnings": warnings,
+        "expert_assist": expert_assist["text"],
     }
 
 
@@ -617,7 +720,18 @@ def _build_embedding_unavailable_context(payload: ChatContextRequest, *, intent:
         ),
         "clusters_used": [],
         "citations": [],
-        "coverage_ledger": {**coverage_ledger, "sources_analyzed": 0, "sources_low_relevance": coverage_ledger["sources_considered"]},
+        "coverage_ledger": {
+            **coverage_ledger,
+            "sources_analyzed": 0,
+            "sources_low_relevance": coverage_ledger["sources_considered"],
+            "token_budget": max(int(get_settings().llm_context_token_budget), 128),
+            "prompt_tokens_estimate": _estimate_tokens(payload.prompt),
+            "evidence_tokens_estimate": 0,
+            "citations_selected": 0,
+            "citations_trimmed": 0,
+            "budget_applied": False,
+            "partial_failure_mode": "embedding_unavailable",
+        },
         "intent": intent,
         "runtime_state": runtime_status()["state"],
         "warnings": [detail],
@@ -675,11 +789,41 @@ def _build_direct_chat_context(payload: ChatContextRequest, *, runtime_state: st
         "answer": answer,
         "clusters_used": [],
         "citations": [],
-        "coverage_ledger": {**coverage_ledger, "sources_analyzed": 0, "sources_low_relevance": coverage_ledger["sources_considered"]},
+        "coverage_ledger": {
+            **coverage_ledger,
+            "sources_analyzed": 0,
+            "sources_low_relevance": coverage_ledger["sources_considered"],
+            "token_budget": 0,
+            "prompt_tokens_estimate": _estimate_tokens(payload.prompt),
+            "evidence_tokens_estimate": 0,
+            "citations_selected": 0,
+            "citations_trimmed": 0,
+            "budget_applied": False,
+            "partial_failure_mode": "general_chat_direct"
+            if runtime_state == "ready" or _is_conversational_prompt(payload.prompt)
+            else "general_chat_runtime_unavailable",
+        },
         "intent": "general_chat",
         "runtime_state": runtime_state,
         "warnings": warnings,
     }
+
+
+def _grounded_answer_kwargs(
+    *,
+    prompt: str,
+    citations: list[dict],
+    clusters_used: list[dict],
+    expert_assist: str | None = None,
+) -> dict:
+    payload = {
+        "prompt": prompt,
+        "citations": citations,
+        "clusters_used": clusters_used,
+    }
+    if expert_assist:
+        payload["expert_assist"] = expert_assist
+    return payload
 
 
 def _build_coverage_ledger(*, vault_id: str, cluster_id: str | None, analyzed_source_ids: list[str]) -> dict:
@@ -767,6 +911,20 @@ def _score_sources_for_query(
     return scored
 
 
+def _top_source_ids_from_results(results: list[dict], *, limit: int) -> list[str]:
+    source_ids: list[str] = []
+    seen: set[str] = set()
+    for result in results:
+        source_id = str(result.get("source_id") or "").strip()
+        if not source_id or source_id in seen:
+            continue
+        seen.add(source_id)
+        source_ids.append(source_id)
+        if len(source_ids) >= limit:
+            break
+    return source_ids
+
+
 def _is_conversational_prompt(prompt: str) -> bool:
     normalized = " ".join(prompt.lower().strip().split())
     trimmed = normalized.strip(" .!?")
@@ -850,7 +1008,33 @@ def _is_chat_transcript_result(result: dict) -> bool:
 
 def _is_chat_transcript_source(row) -> bool:
     tags = row["tags"] if "tags" in row.keys() else ""
-    return str(row["source_id"]).startswith("chat-source-") or "TRANSCRIPT" in str(tags)
+    source_id = row["source_id"] if "source_id" in row.keys() else row["id"]
+    source_type = row["source_type"] if "source_type" in row.keys() else ""
+    return (
+        str(source_type or "") == "chat_transcript"
+        or str(source_id).startswith("chat-source-")
+        or "TRANSCRIPT" in str(tags)
+    )
+
+
+def _is_chat_attachment_source(row) -> bool:
+    tags = row["tags"] if "tags" in row.keys() else row.get("tags", "")
+    return "CHAT_ATTACHMENT" in str(tags or "")
+
+
+def _should_delete_chat_attachment_source(conn, *, session_id: str, source: dict) -> bool:
+    if not _is_chat_attachment_source(source):
+        return False
+    other_reference = conn.execute(
+        """
+        SELECT 1
+        FROM chat_attachments
+        WHERE source_id = ? AND session_id <> ?
+        LIMIT 1
+        """,
+        (source["id"], session_id),
+    ).fetchone()
+    return other_reference is None
 
 
 def _build_direct_chat_answer(prompt: str) -> str:
@@ -908,6 +1092,132 @@ def _build_extract_answer(prompt: str, citations: list[dict]) -> str:
     return lead + "\n\n" + "\n".join(points)
 
 
+def _build_expert_extract_answer(prompt: str, citations: list[dict], *, expert_assist: str | None) -> str:
+    base = _build_extract_answer(prompt, citations)
+    if not expert_assist:
+        return base
+    return (
+        f"{base}\n\n"
+        "Cluster expert draft (reasoning aid only; verify it against the cited evidence):\n"
+        f"{expert_assist}"
+    )
+
+
+def _estimate_tokens(text: str) -> int:
+    cleaned = " ".join(str(text or "").split())
+    if not cleaned:
+        return 0
+    return max(1, (len(cleaned) + 3) // 4)
+
+
+def _apply_synthesis_token_budget(
+    *,
+    prompt: str,
+    clusters_used: list[dict],
+    citations: list[dict],
+    token_budget: int,
+) -> dict:
+    base_tokens = _estimate_tokens(prompt) + _estimate_tokens(
+        "\n".join(f"{cluster['cluster_name']} {cluster['reason']}" for cluster in clusters_used)
+    ) + 120
+    remaining = max(token_budget - base_tokens, 80)
+    trimmed: list[dict] = []
+    citations_trimmed = 0
+    evidence_tokens_estimate = 0
+    max_citations = min(len(citations), 4)
+    per_citation_budget = max(40, remaining // max(max_citations, 1))
+    for citation in citations[:max_citations]:
+        trimmed_citation = dict(citation)
+        original_snippet = str(citation.get("snippet") or "")
+        snippet_budget = max(24, per_citation_budget - 16)
+        trimmed_snippet = _trim_text_to_token_budget(original_snippet, snippet_budget)
+        trimmed_citation["snippet"] = trimmed_snippet
+        trimmed.append(trimmed_citation)
+        original_tokens = _estimate_tokens(original_snippet)
+        kept_tokens = _estimate_tokens(trimmed_snippet)
+        evidence_tokens_estimate += kept_tokens
+        if kept_tokens < original_tokens:
+            citations_trimmed += 1
+    return {
+        "citations": trimmed,
+        "prompt_tokens_estimate": base_tokens + evidence_tokens_estimate,
+        "evidence_tokens_estimate": evidence_tokens_estimate,
+        "citations_trimmed": citations_trimmed,
+        "budget_applied": citations_trimmed > 0,
+    }
+
+
+def _trim_text_to_token_budget(text: str, token_budget: int) -> str:
+    cleaned = " ".join(str(text or "").split())
+    if _estimate_tokens(cleaned) <= token_budget:
+        return cleaned
+    max_chars = max(32, token_budget * 4)
+    return cleaned[: max_chars - 3].rstrip() + "..."
+
+
+def _maybe_run_cluster_expert_assist(*, payload: ChatContextRequest, intent: str, citations: list[dict]) -> dict:
+    if intent != "cluster_question" or not payload.cluster_id or not citations:
+        return {
+            "mode": "not_eligible",
+            "attempted": False,
+            "used": False,
+            "text": None,
+            "detail": "",
+        }
+    with connect() as conn:
+        cluster = conn.execute(
+            """
+            SELECT id, expert_status
+            FROM clusters
+            WHERE id = ? AND vault_id = ?
+            """,
+            (payload.cluster_id, payload.vault_id),
+        ).fetchone()
+        if cluster is None:
+            return {
+                "mode": "cluster_missing",
+                "attempted": False,
+                "used": False,
+                "text": None,
+                "detail": "",
+            }
+        active_artifact = conn.execute(
+            """
+            SELECT id
+            FROM expert_artifacts
+            WHERE cluster_id = ? AND active = 1 AND status = 'ready' AND deleted_at IS NULL
+            LIMIT 1
+            """,
+            (payload.cluster_id,),
+        ).fetchone()
+    non_runnable_statuses = {"setting-up", "training_pending", "training_running", "training_failed", "hardware_unsupported"}
+    if active_artifact is None or str(cluster["expert_status"] or "") in non_runnable_statuses:
+        return {
+            "mode": "expert_not_ready",
+            "attempted": False,
+            "used": False,
+            "text": None,
+            "detail": "",
+        }
+    with connect() as conn:
+        result = run_cluster_expert_prompt(conn, cluster_id=payload.cluster_id, prompt=payload.prompt)
+    if result.get("ok"):
+        return {
+            "mode": "expert_assisted",
+            "attempted": True,
+            "used": True,
+            "text": str(result.get("response_text") or "").strip() or None,
+            "detail": "",
+        }
+    return {
+        "mode": "expert_unavailable",
+        "attempted": True,
+        "used": False,
+        "text": None,
+        "detail": str(result.get("detail") or "").strip(),
+    }
+
+
 def _persist_chat_turn(
     *,
     vault_id: str,
@@ -917,6 +1227,7 @@ def _persist_chat_turn(
     answer: str,
     clusters_used: list[dict],
     citations: list[dict],
+    token_budget: int | None = None,
     warnings: list[str],
 ) -> tuple[str, str, str]:
     generation = _start_chat_generation(
@@ -935,6 +1246,7 @@ def _persist_chat_turn(
         answer=answer,
         clusters_used=clusters_used,
         citations=citations,
+        token_budget=token_budget,
         warnings=warnings,
     )
     return generation["session_id"], generation["user_message_id"], generation["assistant_message_id"]
@@ -952,6 +1264,8 @@ def _start_chat_generation(
     title = _title_from_prompt(prompt)
     with connect() as conn:
         _ensure_vault(conn, vault_id)
+        if cluster_id:
+            _ensure_cluster(conn, cluster_id, vault_id)
         if session_id is None:
             session_id = f"chat-{uuid4()}"
             conn.execute(
@@ -1045,6 +1359,7 @@ def _complete_chat_generation(
     answer: str,
     clusters_used: list[dict],
     citations: list[dict],
+    token_budget: int | None,
     warnings: list[str],
 ) -> None:
     now = utc_now()
@@ -1073,6 +1388,7 @@ def _complete_chat_generation(
             vault_id=vault_id,
             query=prompt,
             citations=citations,
+            token_budget=token_budget,
             now=now,
         )
         conn.execute(
@@ -1118,6 +1434,7 @@ def _write_retrieval_snapshot(
     vault_id: str,
     query: str,
     citations: list[dict],
+    token_budget: int | None,
     now: str,
 ) -> None:
     snapshot_id = f"snapshot-{uuid4()}"
@@ -1135,7 +1452,7 @@ def _write_retrieval_snapshot(
             embedding_model_id, index_version, normalization_version, extraction_version,
             derived_state_epoch, token_budget, created_at
         )
-        VALUES (?, ?, ?, ?, ?, 'semantic', ?, ?, ?, ?, ?, NULL, ?)
+        VALUES (?, ?, ?, ?, ?, 'semantic', ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             snapshot_id,
@@ -1148,6 +1465,7 @@ def _write_retrieval_snapshot(
             tuple_snapshot["normalization_version"],
             tuple_snapshot["extraction_version"],
             tuple_snapshot["epoch"],
+            token_budget,
             now,
         ),
     )
@@ -1209,23 +1527,24 @@ def _ingest_chat_attachments(
         if not text:
             raise HTTPException(status_code=400, detail=f"Chat attachment {Path(path).name} had no readable text.")
         checksum = _file_checksum(Path(path))
-        existing = conn.execute(
+        existing_rows = conn.execute(
             """
             SELECT * FROM sources
-            WHERE vault_id = ? AND checksum = ? AND deleted_at IS NULL
+            WHERE vault_id = ? AND checksum = ? AND original_path = ? AND deleted_at IS NULL
             ORDER BY created_at ASC
-            LIMIT 1
             """,
-            (vault_id, checksum),
-        ).fetchone()
+            (vault_id, checksum, path),
+        ).fetchall()
+        existing = next(
+            (
+                row
+                for row in existing_rows
+                if _is_chat_attachment_source(row) and row["cluster_id"] == target_cluster_id
+            ),
+            None,
+        )
         if existing is not None:
             source = dict_from_row(existing)
-            if target_cluster_id and source.get("cluster_id") != target_cluster_id:
-                conn.execute(
-                    "UPDATE sources SET cluster_id = ?, updated_at = ? WHERE id = ?",
-                    (target_cluster_id, now, source["id"]),
-                )
-                source["cluster_id"] = target_cluster_id
         else:
             source = {
                 "id": f"source-{uuid4()}",
@@ -1340,144 +1659,52 @@ def _source_type_for_suffix(suffix: str) -> str:
     return "file"
 
 
-def _upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> None:
-    session = conn.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
-    if session is None:
-        return
-    messages = conn.execute(
-        "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC",
-        (session_id,),
-    ).fetchall()
-    if not messages:
-        return
-
-    clusters = _transcript_target_clusters(conn, vault_id=vault_id, session=session, messages=messages)
-    transcript = _transcript_text(session, messages)
+def _delete_chat_owned_source(conn, *, session_id: str, source: dict) -> None:
+    source_id = str(source["id"])
+    vault_id = str(source["vault_id"])
     now = utc_now()
-    for cluster in clusters:
-        source_id = f"chat-source-{session_id}-{cluster['id']}"
-        title = f"Chat transcript - {session['title']} - {cluster['name']}"[:240]
-        tags = json.dumps(["CHAT", "TRANSCRIPT", cluster["name"].upper()[:40]])
-        existing = conn.execute("SELECT id FROM sources WHERE id = ?", (source_id,)).fetchone()
-        payload = {
-            "id": source_id,
-            "vault_id": vault_id,
-            "cluster_id": cluster["id"],
-            "title": title,
-            "source_type": "note",
-            "state": "indexed",
-            "raw_text": transcript,
-            "extracted_text": transcript,
-            "summary": summarize_text(transcript),
-            "tags": tags,
-            "updated_at": now,
-        }
-        if existing:
-            stored_payload = update_source_content_fields(
-                conn,
-                vault_id=vault_id,
-                source_id=source_id,
-                updates=payload,
-                now=now,
-            )
-            conn.execute(
-                """
-                UPDATE sources
-                SET cluster_id = :cluster_id,
-                    title = :title,
-                    state = :state,
-                    raw_text = :raw_text,
-                    extracted_text = :extracted_text,
-                    summary = :summary,
-                    tags = :tags,
-                    updated_at = :updated_at
-                WHERE id = :id
-                """,
-                stored_payload,
-            )
-        else:
-            stored_payload = store_source_content_fields(conn, payload, now=now)
-            conn.execute(
-                """
-                INSERT INTO sources (
-                    id, vault_id, cluster_id, title, source_type, state, original_path, url,
-                    raw_text, extracted_text, summary, tags, cover_image_url, created_at, updated_at
-                )
-                VALUES (
-                    :id, :vault_id, :cluster_id, :title, :source_type, :state, NULL, NULL,
-                    :raw_text, :extracted_text, :summary, :tags, NULL, :updated_at, :updated_at
-                )
-                """,
-                stored_payload,
-            )
-        row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
-        if row is not None:
-            from backend.app.core.embeddings import reindex_source_chunks
-
-            reindex_source_chunks(conn, dict_from_row(row))
-            mark_cluster_needs_update(conn, cluster["id"], "Chat transcript memory was indexed.")
-
-
-def _transcript_target_clusters(conn, *, vault_id: str, session, messages) -> list[dict]:
-    cluster_ids: list[str] = []
-    if session["scope_cluster_id"]:
-        cluster_ids.append(session["scope_cluster_id"])
-    for message in messages:
-        for cluster in _json_list(message["clusters_used"]):
-            cluster_id = cluster.get("cluster_id")
-            if cluster_id and cluster_id not in cluster_ids:
-                cluster_ids.append(cluster_id)
-
-    if not cluster_ids:
-        return [_ensure_chats_cluster(conn, vault_id)]
-
-    rows = conn.execute(
-        f"SELECT id, name FROM clusters WHERE vault_id = ? AND id IN ({','.join('?' for _ in cluster_ids)})",
-        [vault_id, *cluster_ids],
-    ).fetchall()
-    clusters = [dict_from_row(row) for row in rows]
-    return clusters or [_ensure_chats_cluster(conn, vault_id)]
-
-
-def _ensure_chats_cluster(conn, vault_id: str) -> dict:
-    row = conn.execute(
-        "SELECT id, name FROM clusters WHERE vault_id = ? AND name = 'Chats' LIMIT 1",
-        (vault_id,),
-    ).fetchone()
-    if row is not None:
-        return dict_from_row(row)
-    now = utc_now()
-    cluster = {
-        "id": f"cluster-{uuid4()}",
-        "vault_id": vault_id,
-        "name": "Chats",
-        "description": "Chat transcripts that were not scoped to a specific context cluster.",
-        "color": "sand",
-        "expert_status": "setting-up",
-        "created_at": now,
-        "updated_at": now,
-    }
+    delete_source_encrypted_content(conn, source_id=source_id, vault_id=vault_id)
     conn.execute(
         """
-        INSERT INTO clusters (
-            id, vault_id, name, description, color, expert_status, created_at, updated_at
-        )
-        VALUES (
-            :id, :vault_id, :name, :description, :color, :expert_status, :created_at, :updated_at
+        UPDATE retrieval_snapshot_items
+        SET state = 'source_deleted', source_id = NULL, chunk_id = NULL, page_id = NULL
+        WHERE source_id = ? OR chunk_id IN (
+            SELECT id FROM source_chunks WHERE source_id = ?
+        ) OR page_id IN (
+            SELECT id FROM source_pages WHERE source_id = ?
         )
         """,
-        cluster,
+        (source_id, source_id, source_id),
     )
-    return {"id": cluster["id"], "name": cluster["name"]}
-
-
-def _transcript_text(session, messages) -> str:
-    lines = [f"Chat transcript: {session['title']}", ""]
-    for message in messages:
-        role = "User" if message["role"] == "user" else "Assistant"
-        lines.append(f"{role}: {message['content']}")
-        lines.append("")
-    return "\n".join(lines).strip()
+    maybe_remove_source_chunks_from_sidecar(
+        conn,
+        source_id=source_id,
+        vault_id=vault_id,
+        rebuild_reason=f"delete_chat_session:{session_id}:{source_id}",
+    )
+    conn.execute(
+        """
+        UPDATE app_jobs
+        SET status = 'cancelled', status_detail = 'Chat-owned source was deleted with its session.', completed_at = ?, updated_at = ?
+        WHERE status IN ('queued', 'blocked_by_dependency', 'running')
+          AND (
+            scope_id = ?
+            OR payload LIKE ?
+          )
+        """,
+        (now, now, source_id, f'%"{source_id}"%'),
+    )
+    conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
+    conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
+    conn.execute("DELETE FROM chat_attachments WHERE source_id = ?", (source_id,))
+    conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+    if source.get("cluster_id"):
+        mark_cluster_needs_update(
+            conn,
+            str(source["cluster_id"]),
+            "Chat session was deleted and its derived sources were removed.",
+        )
+    mark_source_deleted(source_id, conn=conn)
 
 
 def _title_from_prompt(prompt: str) -> str:

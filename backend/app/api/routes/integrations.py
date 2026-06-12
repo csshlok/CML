@@ -42,7 +42,6 @@ from backend.app.schemas import (
     LocalFolderScanRequest,
     LocalFolderScanResponse,
     ReconciliationItemPageRead,
-    ReconciliationItemRead,
     ReconciliationItemRetryResponse,
     ReconciliationRunRead,
     SourceCreate,
@@ -559,6 +558,7 @@ def _reconcile_import_sources(
                 file_path=file_path,
                 by_path=by_path,
                 by_checksum=by_checksum,
+                seen_paths=seen_paths,
             )
             existing_source_id = outcome.get("source_id")
             if existing_source_id:
@@ -638,6 +638,7 @@ def _create_source_from_local_file(*, vault_id: str, file_path: str, checksum: s
             raw_text=text,
         ),
         page_texts=pages,
+        dedupe_checksum=False,
     )
     return created["id"]
 
@@ -717,14 +718,17 @@ def _reconcile_single_supported_file(
     file_path: str,
     by_path: dict[str, object],
     by_checksum: dict[str, object],
+    seen_paths: set[str] | None = None,
 ) -> dict:
     normalized = _normalize_path(file_path)
     checksum = _file_checksum(Path(file_path))
     existing = by_path.get(normalized)
     moved = False
     if existing is None:
-        existing = by_checksum.get(checksum)
-        moved = existing is not None
+        checksum_match = by_checksum.get(checksum)
+        if checksum_match is not None and _should_treat_checksum_match_as_move(checksum_match, seen_paths=seen_paths):
+            existing = checksum_match
+            moved = True
 
     if existing is None:
         source_id = _create_source_from_local_file(vault_id=vault_id, file_path=file_path, checksum=checksum)
@@ -880,3 +884,16 @@ def _next_watch_at(row, now: str) -> str:
         current = datetime.now(UTC)
         interval = 900
     return (current + timedelta(seconds=interval)).isoformat()
+
+
+def _should_treat_checksum_match_as_move(existing, *, seen_paths: set[str] | None) -> bool:
+    original_path = str(existing["original_path"] or "").strip()
+    if not original_path:
+        return False
+    normalized_original = _normalize_path(original_path)
+    if seen_paths is not None and normalized_original in seen_paths:
+        return False
+    try:
+        return not Path(original_path).expanduser().exists()
+    except OSError:
+        return False

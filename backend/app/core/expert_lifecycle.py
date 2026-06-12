@@ -12,19 +12,59 @@ def mark_cluster_needs_update(conn, cluster_id: str | None, detail: str) -> None
     row = conn.execute("SELECT id, vault_id, expert_status FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
     if row is None:
         return
+    already_stale = str(row["expert_status"] or "") == "needs-update"
     if row["expert_status"] not in {"training_pending", "training_running"}:
         conn.execute(
             "UPDATE clusters SET expert_status = 'needs-update', updated_at = ? WHERE id = ?",
             (utc_now(), cluster_id),
         )
-    create_expert_job(conn, cluster_id=cluster_id, vault_id=row["vault_id"], action="refresh-needed", detail=detail)
+    create_expert_job(
+        conn,
+        cluster_id=cluster_id,
+        vault_id=row["vault_id"],
+        action="refresh-needed",
+        detail=detail,
+        dedupe_if_already_stale=already_stale,
+    )
 
 
-def create_expert_job(conn, *, cluster_id: str, vault_id: str, action: str, detail: str = "") -> dict:
+def create_expert_job(
+    conn,
+    *,
+    cluster_id: str,
+    vault_id: str,
+    action: str,
+    detail: str = "",
+    dedupe_if_already_stale: bool = False,
+) -> dict:
     now = utc_now()
     hardware = hardware_status()
     status = "queued"
     failure_code = ""
+    if action == "refresh-needed":
+        if dedupe_if_already_stale:
+            existing = conn.execute(
+                """
+                SELECT *
+                FROM cluster_expert_jobs
+                WHERE cluster_id = ? AND action = 'refresh-needed'
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (cluster_id,),
+            ).fetchone()
+            if existing is not None:
+                conn.execute(
+                    """
+                    UPDATE cluster_expert_jobs
+                    SET detail = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (detail, now, existing["id"]),
+                )
+                refreshed = conn.execute("SELECT * FROM cluster_expert_jobs WHERE id = ?", (existing["id"],)).fetchone()
+                return dict_from_row(refreshed)
+        status = "completed"
     if action in {"retrain", "train"} and hardware["training_supported"] is False:
         status = "manual_review"
         failure_code = "hardware_unsupported"
@@ -119,12 +159,14 @@ def expert_status_report(conn, cluster_id: str) -> dict:
     stale = bool(active and dataset_hash and active.get("dataset_hash") != dataset_hash)
     runtime_load = {}
     trained = bool(active and not stale)
+    runtime_load_failed = False
     if active:
         runtime_load = runtime_adapter_load_plan(
             adapter_path=active.get("local_path") or "",
             base_model=active.get("base_model") or "",
         )
-        trained = trained and bool(runtime_load.get("available"))
+        runtime_load_failed = not bool(runtime_load.get("available"))
+        trained = trained and not runtime_load_failed
 
     failure_code = ""
     detail = ""
@@ -132,12 +174,22 @@ def expert_status_report(conn, cluster_id: str) -> dict:
         job = dict_from_row(latest_job)
         failure_code = str(job.get("failure_code") or "")
         detail = str(job.get("detail") or "")
+    if active and runtime_load_failed:
+        failure_code = failure_code or "runtime_load_failed"
+        detail = detail or str(runtime_load.get("detail") or "Active adapter is not loadable on this machine.")
 
     expert_status = str(cluster.get("expert_status") or "retrieval_ready")
     if stale and expert_status == "training_ready":
         expert_status = "needs-update"
         detail = detail or "Cluster sources changed after the active adapter was trained."
-    user_status = _user_status(expert_status, trained=trained, stale=stale, failure_code=failure_code)
+    elif runtime_load_failed and expert_status == "training_ready":
+        expert_status = "training_failed"
+    user_status = _user_status(
+        expert_status,
+        trained=trained,
+        stale=stale,
+        failure_code=failure_code,
+    )
     return {
         "cluster_id": cluster_id,
         "expert_status": expert_status,

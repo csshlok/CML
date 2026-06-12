@@ -42,7 +42,7 @@ def upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> N
             "vault_id": vault_id,
             "cluster_id": cluster["id"],
             "title": title,
-            "source_type": "note",
+            "source_type": "chat_transcript",
             "state": "indexed",
             "raw_text": transcript,
             "extracted_text": transcript,

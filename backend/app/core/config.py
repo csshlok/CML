@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://127.0.0.1:8080/v1"
     llm_model: str = "Qwen/Qwen3-4B-GGUF:Q4_K_M"
     llm_timeout_seconds: float = 45.0
+    llm_context_token_budget: int = 1200
     embedding_provider: str = "sentence-transformers"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_dimensions: int = 384
@@ -48,6 +49,7 @@ class Settings(BaseSettings):
     lora_runtime_prompt: str = "Reply with the single word CML."
     model_scan_roots: str = ""
     model_scan_max_depth: int = 4
+    model_scan_cache_seconds: int = 30
 
     model_config = SettingsConfigDict(env_prefix="CML_", env_file=ROOT_DIR / ".env", extra="ignore")
 

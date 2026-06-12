@@ -16,6 +16,7 @@ from backend.app.core.reserved_fields import ReservedChatFieldMiddleware
 from backend.app.core.startup_checks import StartupCheckError, verify_schema_version, verify_sqlite_integrity
 from backend.app.core.unlock_middleware import UnlockGateMiddleware
 from backend.app.core.startup_status import write_startup_status
+from backend.app.core.version import app_version
 from backend.app.core.vault_lock import VaultLockError, acquire_vault_lock, release_vault_lock
 from backend.app.schemas import HealthResponse
 
@@ -44,7 +45,12 @@ def startup() -> None:
         try:
             init_db()
         except Exception as exc:
-            write_startup_status("integrity_check_failed", status="failed", message=str(exc), error_code=exc.__class__.__name__)
+            write_startup_status(
+                "database_initialization_failed",
+                status="failed",
+                message=str(exc),
+                error_code=exc.__class__.__name__,
+            )
             failure_status_written = True
             raise
         write_startup_status("integrity_check_running")
@@ -88,7 +94,7 @@ async def lifespan(_app: FastAPI):
         shutdown()
 
 
-app = FastAPI(title="CML Local Backend", version="0.1.5", lifespan=lifespan)
+app = FastAPI(title="CML Local Backend", version=app_version(), lifespan=lifespan)
 
 app.add_middleware(ReservedChatFieldMiddleware)
 app.add_middleware(UnlockGateMiddleware)

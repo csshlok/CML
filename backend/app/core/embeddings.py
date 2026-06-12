@@ -38,7 +38,7 @@ def embed_text(text: str) -> list[float]:
     return _embed_with_hash(text)
 
 
-def embedding_status() -> dict:
+def embedding_status(*, probe_model: bool = True) -> dict:
     config = embedding_config()
     status = {
         "provider": config["provider"],
@@ -51,13 +51,16 @@ def embedding_status() -> dict:
     }
     if config["provider"] == "sentence-transformers":
         if importlib.util.find_spec("sentence_transformers") is not None:
-            try:
-                _embed_with_sentence_transformers(config["model"], config["cache_dir"], "vault setup test")
-                status["detail"] = "SentenceTransformers embedding model is available."
-            except Exception as exc:
-                status["available"] = False
-                status["setup_required"] = True
-                status["detail"] = f"SentenceTransformers is installed, but the embedding model is not ready: {exc}"
+            if probe_model:
+                try:
+                    _embed_with_sentence_transformers(config["model"], config["cache_dir"], "vault setup test")
+                    status["detail"] = "SentenceTransformers embedding model is available."
+                except Exception as exc:
+                    status["available"] = False
+                    status["setup_required"] = True
+                    status["detail"] = f"SentenceTransformers is installed, but the embedding model is not ready: {exc}"
+            else:
+                status["detail"] = "SentenceTransformers runtime is configured. Full model probe was skipped for this summary."
         else:
             status["available"] = False
             status["setup_required"] = True

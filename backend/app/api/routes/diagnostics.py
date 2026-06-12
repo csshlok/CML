@@ -16,6 +16,7 @@ from backend.app.core.migration_planner import staging_summary
 from backend.app.core.ocr import ocr_runtime_status
 from backend.app.core.startup_repair import startup_repair_summary
 from backend.app.core.startup_status import read_startup_status
+from backend.app.core.version import app_version
 from backend.app.core.storage_accounting import storage_accounting
 from backend.app.core.vault_crypto import redact_security_material
 from backend.app.core.vector_maintenance import embedding_index_policy, vector_repair_plan
@@ -24,7 +25,7 @@ from backend.app.schemas import DiagnosticBundleResponse
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 
 BUNDLE_FORMAT_VERSION = 1
-BACKEND_VERSION = "0.1.5"
+BACKEND_VERSION = app_version()
 
 
 @router.post("/bundle", response_model=DiagnosticBundleResponse)
@@ -38,7 +39,7 @@ def create_diagnostic_bundle() -> dict:
     manifest = {
         "bundle_format_version": BUNDLE_FORMAT_VERSION,
         "bundle_generated_at": generated_at,
-        "app_version": "0.1.5",
+        "app_version": BACKEND_VERSION,
         "backend_version": BACKEND_VERSION,
         "schema_version": schema_version,
         "redaction": "Raw source text, extracted text, URLs, file paths, tokens, passphrases, and recovery keys are not included.",
@@ -73,7 +74,7 @@ def create_diagnostic_bundle() -> dict:
         "bundle_path": str(bundle_path),
         "bundle_format_version": BUNDLE_FORMAT_VERSION,
         "bundle_generated_at": generated_at,
-        "app_version": "0.1.5",
+        "app_version": BACKEND_VERSION,
         "backend_version": BACKEND_VERSION,
         "schema_version": schema_version,
         "included_files": included_files,
@@ -135,7 +136,7 @@ def _runtime_summary() -> dict:
     return {
         "startup_status": read_startup_status(),
         "ocr": ocr_runtime_status(),
-        "embedding": embedding_status(),
+        "embedding": embedding_status(probe_model=False),
         "embedding_download": embedding_download_status(),
         "model_downloads": models,
         "jobs": job_queue_status(),
@@ -161,11 +162,22 @@ def log_rotation_policy() -> dict:
 
 
 def _candidate_logs(data_dir: Path) -> list[tuple[str, Path]]:
-    return [
+    startup_status_path = get_settings().startup_status_path
+    electron_log_dir = startup_status_path.parent if startup_status_path is not None else None
+    logs = [
         ("backend.log", data_dir / "logs" / "backend.log"),
         ("backend-dev.log", Path("backend-dev.log")),
         ("desktop-dev.log", Path("desktop-dev.log")),
     ]
+    if electron_log_dir is not None:
+        logs.extend(
+            [
+                ("desktop-runtime.log", electron_log_dir / "desktop-runtime.log"),
+                ("backend-stdout.log", electron_log_dir / "backend-stdout.log"),
+                ("backend-stderr.log", electron_log_dir / "backend-stderr.log"),
+            ]
+        )
+    return logs
 
 
 def _redact_log(text: str) -> str:

@@ -6,8 +6,9 @@ def paginated_messages(session_id: str, *, limit: int = 50, cursor: str | None =
     params: list[object] = [session_id]
     cursor_clause = ""
     if cursor:
+        cursor_created_at, cursor_id = _parse_message_cursor(cursor)
         cursor_clause = "AND (created_at > ? OR (created_at = ? AND id > ?))"
-        params.extend([cursor, cursor, ""])
+        params.extend([cursor_created_at, cursor_created_at, cursor_id])
     params.append(safe_limit + 1)
     with connect() as conn:
         rows = conn.execute(
@@ -24,8 +25,21 @@ def paginated_messages(session_id: str, *, limit: int = 50, cursor: str | None =
     items = [dict_from_row(row) for row in rows[:safe_limit]]
     next_cursor = None
     if len(rows) > safe_limit and items:
-        next_cursor = items[-1]["created_at"]
+        next_cursor = _format_message_cursor(items[-1]["created_at"], items[-1]["id"])
     return {"session_id": session_id, "items": items, "next_cursor": next_cursor}
+
+
+def _format_message_cursor(created_at: str, message_id: str) -> str:
+    return f"{created_at}|{message_id}"
+
+
+def _parse_message_cursor(cursor: str) -> tuple[str, str]:
+    text = str(cursor or "").strip()
+    if "|" not in text:
+        # Backward compatibility with older timestamp-only cursors.
+        return text, ""
+    created_at, message_id = text.rsplit("|", 1)
+    return created_at, message_id
 
 
 def compact_retrieval_snapshots(*, message_id: str | None = None, keep_latest_per_message: int = 1) -> dict:

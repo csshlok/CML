@@ -2,8 +2,14 @@ import json
 import os
 import subprocess
 import sys
+from urllib.error import URLError
+from urllib.request import urlopen
 from pathlib import Path
 from uuid import uuid4
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import connect, utc_now
@@ -173,7 +179,13 @@ def _lock_override_enabled() -> bool:
 def _classify_lock_owner(pid: int) -> str:
     command_line = _process_command_line(pid)
     if not command_line:
-        return "unverified" if _is_process_alive(pid) else "dead"
+        if not _is_process_alive(pid):
+            return "dead"
+        if _is_local_backend_listener(pid):
+            return "vault_backend"
+        if _process_image_name(pid):
+            return "other_process"
+        return "unverified"
     normalized = command_line.lower()
     if (
         "backend.app.main:app" in normalized
@@ -213,6 +225,26 @@ def _windows_process_command_line(pid: int) -> str:
     return output.strip()
 
 
+def _process_image_name(pid: int) -> str:
+    if os.name == "nt":
+        command = f"$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($p) {{ $p.ProcessName }}"
+        try:
+            output = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", command],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=3,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return output.strip()
+    proc_path = Path("/proc") / str(pid) / "comm"
+    try:
+        return proc_path.read_text(encoding="utf-8", errors="ignore").strip()
+    except OSError:
+        return ""
+
+
 def _is_process_alive(pid: int) -> bool:
     if os.name == "nt":
         command = f"$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($p) {{ 'alive' }}"
@@ -231,6 +263,154 @@ def _is_process_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _is_local_backend_listener(pid: int) -> bool:
+    for candidate_pid in _candidate_backend_probe_pids(pid):
+        for port in _listening_ports_for_process(candidate_pid):
+            try:
+                with urlopen(f"http://127.0.0.1:{port}/health", timeout=0.5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except (OSError, TimeoutError, URLError, ValueError, json.JSONDecodeError):
+                continue
+            if response.status == 200 and payload.get("service") == "cml-backend":
+                return True
+    return False
+
+
+def _candidate_backend_probe_pids(pid: int) -> list[int]:
+    candidates = [pid]
+    if os.name == "nt":
+        for child_pid in _windows_descendant_pids(pid):
+            if child_pid not in candidates:
+                candidates.append(child_pid)
+    return candidates
+
+
+def _listening_ports_for_process(pid: int) -> list[int]:
+    if os.name == "nt":
+        try:
+            output = subprocess.check_output(
+                ["cmd", "/c", "netstat -ano -p tcp"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=3,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+        return _parse_windows_netstat_ports(output.splitlines(), pid)
+    proc_net_tcp = Path("/proc") / str(pid) / "net" / "tcp"
+    proc_net_tcp6 = Path("/proc") / str(pid) / "net" / "tcp6"
+    ports: list[int] = []
+    for candidate in (proc_net_tcp, proc_net_tcp6):
+        try:
+            lines = candidate.read_text(encoding="utf-8", errors="ignore").splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4 or parts[3] != "0A":
+                continue
+            local_address = parts[1]
+            try:
+                port = int(local_address.split(":")[1], 16)
+            except (IndexError, ValueError):
+                continue
+            ports.append(port)
+    return sorted(set(ports))
+
+
+def _parse_ports(lines: list[str]) -> list[int]:
+    ports: list[int] = []
+    for line in lines:
+        value = line.strip()
+        if not value:
+            continue
+        try:
+            ports.append(int(value))
+        except ValueError:
+            continue
+    return sorted(set(ports))
+
+
+def _parse_windows_netstat_ports(lines: list[str], pid: int) -> list[int]:
+    ports: list[int] = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        protocol, local_address, _foreign_address, state, owning_pid = parts[:5]
+        if protocol.upper() != "TCP" or state.upper() != "LISTENING":
+            continue
+        try:
+            owning_pid_int = int(owning_pid)
+        except ValueError:
+            continue
+        if owning_pid_int != pid:
+            continue
+        host, _, port_text = local_address.rpartition(":")
+        if not host:
+            continue
+        try:
+            ports.append(int(port_text))
+        except ValueError:
+            continue
+    return sorted(set(ports))
+
+
+def _windows_descendant_pids(pid: int) -> list[int]:
+    child_map = _windows_process_child_map()
+    discovered: list[int] = []
+    queue = [pid]
+    seen = {pid}
+    while queue:
+        current = queue.pop(0)
+        for child_pid in child_map.get(current, ()):
+            if child_pid in seen:
+                continue
+            seen.add(child_pid)
+            discovered.append(child_pid)
+            queue.append(child_pid)
+    return discovered
+
+
+def _windows_process_child_map() -> dict[int, list[int]]:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    TH32CS_SNAPPROCESS = 0x00000002
+    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_void_p),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snapshot == INVALID_HANDLE_VALUE:
+        return {}
+    child_map: dict[int, list[int]] = {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            return {}
+        while True:
+            parent_pid = int(entry.th32ParentProcessID)
+            process_pid = int(entry.th32ProcessID)
+            child_map.setdefault(parent_pid, []).append(process_pid)
+            if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                break
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return child_map
 
 
 def _posix_process_command_line(pid: int) -> str:
