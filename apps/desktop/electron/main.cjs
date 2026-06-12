@@ -30,13 +30,12 @@ let backendStdoutStream = null;
 let backendStderrStream = null;
 let rendererReadyPath = null;
 const startupRepairLogoMarkup = `
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
-    <rect width="64" height="64" rx="14" fill="#f6f1e7"/>
-    <circle cx="22" cy="24" r="8" fill="#b5cdb1"/>
-    <circle cx="42" cy="24" r="8" fill="#b6d0e0"/>
-    <circle cx="32" cy="42" r="8" fill="#d7a78a"/>
-    <path d="M28 25h8M26 31l4 6M38 31l-4 6" stroke="#4c4035" stroke-width="3" stroke-linecap="round"/>
-  </svg>
+  <img
+    src="data:image/png;base64,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"
+    alt=""
+    aria-hidden="true"
+    style="display:block;width:100%;height:100%;object-fit:cover;"
+  />
 `;
 const supportedSourceExtensions = new Set([
   ".aac", ".asc", ".bat", ".bmp", ".c", ".cpp", ".cs", ".csv", ".css", ".docx",
@@ -676,7 +675,7 @@ async function ensureBackend() {
   vaultLockOverrideOnce = false;
   backendProcess.unref();
   const startedUrl = `http://127.0.0.1:${port}`;
-  await waitForBackend(startedUrl, token, backendWaitTimeoutMs, backendLogPaths);
+  await waitForBackend(startedUrl, token, backendWaitTimeoutMs, backendLogPaths, backendProcess);
   writeDesktopRuntimeLog(`backend ready after ${Date.now() - backendStartedAt}ms at ${startedUrl}`);
   return startedUrl;
 }
@@ -738,7 +737,13 @@ async function getActiveVaultPath() {
   try {
     const raw = await fs.readFile(getActiveVaultConfigPath(), "utf8");
     const parsed = JSON.parse(raw);
-    if (typeof parsed.path === "string" && parsed.path.trim()) return parsed.path;
+    if (typeof parsed.path === "string" && parsed.path.trim()) {
+      const candidatePath = parsed.path.trim();
+      if (await isUsableActiveVaultPath(candidatePath)) {
+        return candidatePath;
+      }
+      await clearActiveVaultPath();
+    }
   } catch {
     return null;
   }
@@ -753,6 +758,30 @@ async function setActiveVaultPath(targetPath) {
     JSON.stringify({ path: targetPath, updated_at: new Date().toISOString() }, null, 2),
     "utf8",
   );
+}
+
+async function clearActiveVaultPath() {
+  try {
+    await fs.unlink(getActiveVaultConfigPath());
+  } catch {
+    // Missing or locked config should not prevent the app from recovering.
+  }
+}
+
+async function isUsableActiveVaultPath(targetPath) {
+  if (!(await isExistingLocalPath(targetPath))) {
+    return false;
+  }
+  try {
+    const rootStat = await fs.lstat(targetPath);
+    if (!rootStat.isDirectory()) {
+      return false;
+    }
+    const vaultState = await fs.lstat(path.join(targetPath, ".vault"));
+    return vaultState.isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 async function getBackendApiToken() {
@@ -843,7 +872,7 @@ async function tryServeStaticAsset(clientDir, pathname) {
     };
   }
   if (!safePathname || safePathname.includes("..")) return null;
-  if (!(safePathname.startsWith("assets/") || safePathname === "favicon.svg")) return null;
+  if (!(safePathname.startsWith("assets/") || safePathname === "favicon.png" || safePathname === "brand/vault-icon.png" || safePathname === "brand/vault-logo.png")) return null;
   const target = path.join(clientDir, safePathname);
   if (!target.startsWith(clientDir)) return null;
   try {
@@ -933,13 +962,7 @@ function isCurrentBackend(url, token) {
     });
 }
 
-async function waitForBackend(url, token, timeoutMs, backendLogPaths = null) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    if (await isCurrentBackend(url, token)) return;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  const status = await readStartupStatus();
+function createBackendLaunchError(url, started, status, backendLogPaths = null, processState = null) {
   const messageParts = [`Backend did not start at ${url}`];
   if (status?.phase) {
     messageParts.push(`phase=${status.phase}`);
@@ -948,10 +971,52 @@ async function waitForBackend(url, token, timeoutMs, backendLogPaths = null) {
     messageParts.push(`detail=${status.message}`);
   }
   messageParts.push(`elapsed_ms=${Date.now() - started}`);
+  if (processState?.error?.message) {
+    messageParts.push(`process_error=${processState.error.message}`);
+  }
+  if (processState?.exitCode !== null && processState?.exitCode !== undefined) {
+    messageParts.push(`exit_code=${processState.exitCode}`);
+  }
+  if (processState?.signal) {
+    messageParts.push(`signal=${processState.signal}`);
+  }
   if (backendLogPaths?.stderr) {
     messageParts.push(`stderr=${backendLogPaths.stderr}`);
   }
-  throw new Error(messageParts.join(" | "));
+  return new Error(messageParts.join(" | "));
+}
+
+async function waitForBackend(url, token, timeoutMs, backendLogPaths = null, childProcess = null) {
+  const started = Date.now();
+  const processState = { exitCode: null, signal: null, error: null };
+  const onClose = (code, signal) => {
+    processState.exitCode = code;
+    processState.signal = signal;
+  };
+  const onError = (error) => {
+    processState.error = error;
+  };
+  if (childProcess) {
+    childProcess.once("close", onClose);
+    childProcess.once("error", onError);
+  }
+  try {
+    while (Date.now() - started < timeoutMs) {
+      if (await isCurrentBackend(url, token)) return;
+      if (processState.error || processState.exitCode !== null || processState.signal) {
+        const status = await readStartupStatus();
+        throw createBackendLaunchError(url, started, status, backendLogPaths, processState);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    const status = await readStartupStatus();
+    throw createBackendLaunchError(url, started, status, backendLogPaths, processState);
+  } finally {
+    if (childProcess) {
+      childProcess.removeListener("close", onClose);
+      childProcess.removeListener("error", onError);
+    }
+  }
 }
 
 async function verifyRendererUp(url, timeoutMs) {

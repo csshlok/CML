@@ -5,13 +5,14 @@ const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const { EventEmitter } = require("node:events");
 const vm = require("node:vm");
 
 function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, rendererSecurityHeaders, sanitizeRendererBody, setActiveVaultPath, getActiveVaultPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, resolvePackagedServerEntry, __setMainWindow: (value) => { mainWindow = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, rendererSecurityHeaders, sanitizeRendererBody, setActiveVaultPath, getActiveVaultPath, getInitialRendererPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, __setMainWindow: (value) => { mainWindow = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -190,6 +191,18 @@ test("setActiveVaultPath persists unicode vault path and creates .vault director
   assert.equal(fs.existsSync(path.join(vaultPath, ".vault")), true);
 });
 
+test("stale active vault config falls back to onboarding instead of forcing home", async () => {
+  const { exported } = loadMainModule();
+  const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-stale-vault-"));
+  const vaultPath = path.join(targetRoot, "stale-vault");
+
+  await exported.setActiveVaultPath(vaultPath);
+  fs.rmSync(targetRoot, { recursive: true, force: true });
+
+  assert.equal(await exported.getActiveVaultPath(), null);
+  assert.equal(await exported.getInitialRendererPath(), "/onboarding");
+});
+
 test("collectSupportedFiles skips symlinks and build folders", async () => {
   const { exported } = loadMainModule();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cml-collect-"));
@@ -350,6 +363,25 @@ test("renderer failure page offers retry and copy diagnostics", async () => {
   assert.match(html, /window\.cmlDesktop\?\.retryStartup/);
   assert.match(html, /window\.cmlDesktop\?\.copyText/);
   assert.match(html, /desktop-runtime\.log/);
+});
+
+test("waitForBackend fails fast when the backend child exits before readiness", async () => {
+  const { exported } = loadMainModule();
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
+
+  setTimeout(() => {
+    child.exitCode = 1;
+    child.emit("close", 1, null);
+  }, 20);
+
+  const started = Date.now();
+  await assert.rejects(
+    exported.waitForBackend("http://127.0.0.1:65530", "expected-token", 2000, { stderr: "stderr.log" }, child),
+    /exit_code=1/,
+  );
+  assert.ok(Date.now() - started < 1000);
 });
 
 test("resolvePackagedServerEntry falls back to dist/server/server.js when index.js is absent", async () => {
