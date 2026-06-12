@@ -14,8 +14,8 @@ Audit source: `docs/RELEASE_AUDIT.md`
 | Real LoRA trainer smoke | Open | `docs/EXPERT_VALIDATION_REPORT.md` records that real smoke fails without `CML_LORA_TRAINER_COMMAND`. No real trainer run was available. |
 | Real LoRA runtime smoke | Open | No verified adapter path and accepted local Transformers base model were available. |
 | Live expert quality benchmark | Open | No live adapter-backed quality comparison was available. |
-| Clean Windows VM validation | Open | `docs/WINDOWS_VM_VALIDATION.md` records missing packaged runtime resources and no clean-VM pass. |
-| Packaged runtime completeness | Open | Current `apps\desktop\release\win-unpacked` lacks `resources\backend`, packaged Python runtimes, Playwright runtime, OCR manifest, and helper manifest. |
+| Clean Windows VM validation | Open | No trustworthy clean-VM pass exists yet; the older `docs/WINDOWS_VM_VALIDATION.md` missing-resources evidence is historical, not the current package state. |
+| Installed package first-run parity | Open | The repo now has separate `win-unpacked`, installed-app, and installer lifecycle smokes, but a healthy clean-VM installed-app pass is still missing. |
 | Hardware-aware model/setup validation | Open | Existing implementation has role-aware model acceptance paths, but clean-machine validation with one imported approved checkpoint was not completed in this pass. |
 | Bridge privacy/trusted-client wording | Partially documented | `docs/PROJECT_CONTEXT.md` records the trusted-client exfiltration boundary. `docs/THREAT_MODEL.md` is still minimal and should be expanded before public sign-off. |
 | Cloud-synced vault path safety | Open | `docs/PROJECT_CONTEXT.md` marks robust warning/blocking for synced vault locations as a public V1 storage-integrity gap. |
@@ -32,7 +32,7 @@ Result: passed after sandbox approval.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\validate-clean-machine-package.ps1 -PackageRoot apps\desktop\release\win-unpacked -ReportPath .tmp\phase4-clean-machine-package-validation.json
 ```
 
-Result: failed because required packaged resources are missing.
+Result at that time: failed because required packaged resources were missing.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\benchmark-retrieval.ps1 -Sources 100
@@ -57,4 +57,4 @@ Result: `260 passed, 3 skipped`.
 
 Public V1 is not release-cleared.
 
-Backend and synthetic retrieval validation have advanced since Phase 4, but the audit's substantive blockers remain open where this workspace lacks the required package resources, clean VM, real LoRA trainer command, accepted local expert base model, and live adapter benchmark evidence.
+Backend and synthetic retrieval validation have advanced since Phase 4, but the audit's substantive blockers remain open around clean-VM installed-app validation, real LoRA trainer command, accepted local expert base model, and live adapter benchmark evidence.

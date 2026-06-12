@@ -1,10 +1,146 @@
 ﻿# Overall Context
 
-Last updated: 2026-06-07
+Last updated: 2026-06-12
 
 ## Fallback Context Rule
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
+
+## 2026-06-12 Chat Attachment Ownership And Secure Cleanup Snapshot
+
+Completed:
+
+- Fixed a real chat-attachment ownership bug in `backend/app/api/routes/chat.py`: chat uploads no longer reuse and silently re-cluster an existing normal vault source only because the file checksum matches. Reuse is now limited to already chat-owned attachment sources with the same original path and cluster scope.
+- Fixed a real secured-vault cleanup bug in `delete_chat_session()`: chat-session deletion now decrypts source metadata before ownership checks and performs full chat-owned source cleanup for secured vaults, including encrypted-content deletion, retrieval-snapshot citation invalidation, vector sidecar cleanup, and cache invalidation.
+- Removed the stale duplicate `_upsert_chat_transcript_sources()` implementation from `backend/app/api/routes/chat.py` so transcript indexing stays single-sourced in `backend/app/core/chat_memory.py`.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "chat_attachment or delete_chat_session"` passed with `2` tests, covering normal-source preservation and secured chat-owned source cleanup.
+- `python -m compileall backend/app` passed.
+
+Still not completed:
+
+- The broader backend objective remains open: service-layer extraction, larger-scale retrieval evidence, deeper chat/expert routing, and real expert-runtime validation are still separate remaining work items.
+
+## 2026-06-12 Source Identity And Reimport Snapshot
+
+Completed:
+
+- Fixed a real source-lifecycle bug in `backend/app/api/routes/sources.py`: generic source creation no longer deduplicates different manual notes or different file paths by checksum alone.
+- Manual file imports now treat path as the source identity. Re-importing the same path updates the existing source instead of creating duplicates, while different paths with the same content now remain separate sources.
+- Manual URL imports now treat the URL as the source identity, so repeated saves of the same URL update the existing source record instead of creating one more duplicate row.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "manual_path_ingestion or duplicate_manual_notes or chat_attachment"` passed with `4` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "modified_file_after_first_ingest_updates_same_source"` passed with `1` test.
+- `python -m compileall backend/app` passed.
+
+Still not completed:
+
+- The broader backend objective remains open: service-layer extraction, larger-scale retrieval evidence, deeper chat/expert routing, and real expert-runtime validation are still separate remaining work items.
+
+## 2026-06-12 Onboarding Scroll And Chat Scope Snapshot
+
+Completed:
+
+- Added the root `PRODUCT.md` needed for the impeccable UI workflow, using the current project docs as the product register/source of truth.
+- Fixed a real persisted-chat bug in `backend/app/api/routes/chat.py`: `_start_chat_generation()` now validates `cluster_id` against the target vault before inserting a new chat session or generation row, so a bad client payload no longer creates orphaned session/generation state with an invalid cluster scope.
+- Fixed the onboarding scroll trap in `apps/desktop/src/routes/onboarding.tsx`: the route now owns a `h-screen overflow-y-auto` shell, uses an internal scroll region for step content, and keeps the footer actions pinned so long setup steps remain usable inside Electron's fixed-height window.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "unknown_cluster_before_creating_session or onboarding_route_uses_internal_scroll_shell or packaging_scripts_stage_local_ocr_runtime"` passed with `3` tests.
+- `python -m compileall backend/app` passed.
+
+Known follow-up from validation:
+
+- `node .\node_modules\typescript\bin\tsc --noEmit -p apps/desktop/tsconfig.json` still reports unrelated pre-existing frontend type errors in chat, clusters, search, and settings routes; those failures are outside the onboarding scroll fix and remain separate cleanup work.
+
+## 2026-06-12 Packaging Audit Follow-up Snapshot
+
+Completed:
+
+- Diagnostics bundles now include the Electron packaged-launch logs (`desktop-runtime.log`, `backend-stdout.log`, `backend-stderr.log`) whenever backend startup status is configured under the packaged user-data directory, so support bundles finally carry the same evidence the startup-repair UI points users toward.
+- The optional embedding-runtime packaging path no longer tries to run `pip` after the backend runtime has already been optimized and stripped. `sentence-transformers==5.5.1` is now folded into the backend-runtime fingerprint/package set itself, so dev-package cache hits and cache misses behave consistently instead of failing late on reused runtimes.
+- Packaging-context docs were reconciled with current reality: `PROJECT_CONTEXT.md`, `WINDOWS_VM_VALIDATION.md`, and `V1_RELEASE_CHECKLIST.md` now treat the missing-packaged-resources failure as historical evidence rather than the current active blocker.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m unittest backend.tests.test_runtime_contracts -v` passed with `7` tests, including packaged Electron-log bundle coverage.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k packaging_scripts_stage_local_ocr_runtime` passed with `1` test covering the updated packaging-script contract.
+- `python -m compileall backend/app` passed.
+
+Still not completed:
+
+- Clean Windows VM validation is still open on a healthy image.
+- Installed-app first-run parity still needs current-package evidence on a clean VM, even though the repo now distinguishes `win-unpacked`, installed-app, and installer lifecycle smokes.
+- The broader backend objective remains open: service-layer extraction, larger-scale retrieval evidence, deeper chat/expert routing, and real expert-runtime validation are still separate remaining work items.
+
+## 2026-06-12 Startup And Bridge Repair Snapshot
+
+Completed:
+
+- Electron startup now treats `active-vault.json` as advisory rather than blindly authoritative: if the stored vault path or its `.vault` directory no longer exists, the stale entry is discarded and packaged/dev startup routes back to `/onboarding` instead of forcing `/home`.
+- Packaged backend readiness now fails fast when the spawned Python child exits early, so startup repair surfaces the backend exit sooner instead of burning the entire readiness timeout before reporting failure.
+- Bridge/MCP now ignores all JSON-RPC notifications, not only `notifications/initialized`, bringing the local MCP surface back into line with notification semantics expected by stricter clients.
+- Diagnostics bundle generation no longer performs a heavyweight SentenceTransformers model load just to summarize embedding runtime state, closing a real support-path scale regression that had stalled the focused runtime-contract suite.
+- First-run readiness now uses the same lightweight embedding-summary approach instead of triggering a deep model probe just to answer a setup-status/readiness check.
+- Windows vault-lock classification now survives denied CIM/WMI command-line access by probing descendant processes plus local backend health listeners, so same-user packaged/backend ownership checks still recognize a real Vault backend instead of collapsing to `unverified` or `other_process`.
+- Full backend regression coverage is green again after two chat/expert routing compatibility fixes: plain retrieval synthesis no longer sends a useless `expert_assist=None` kwarg through grounded-answer call sites, and cluster-scoped expert assist can still attempt against an active ready adapter after the cluster is marked `needs-update`.
+- Local compatible-model discovery now has explicit cache regression coverage, and backend benchmark/smoke scripts no longer assume `T:` or one specific Windows profile path by default.
+- Watched-folder reconciliation now preserves duplicate same-content files as separate imported sources instead of collapsing them into one source record, and checksum-only matches are treated as moves only when the previous path is actually gone.
+- Cluster expert stale-state tracking no longer accumulates permanently queued `refresh-needed` jobs for every source change; repeated changes during one stale period now update a single completed stale marker until the next training cycle.
+- Approved Bridge clients now keep their original vault anchor after later scope edits, so encrypted executable/signature metadata remains readable instead of disappearing after normal admin permission changes.
+- Chat message pagination now uses a composite `(created_at, id)` cursor, preventing duplicate or skipped messages when multiple chat rows share the same timestamp.
+
+Verification:
+
+- `node apps/desktop/electron/main.behavior.test.cjs` passed with `19` tests, including stale-vault onboarding recovery and early backend-child-exit coverage.
+- `.venv\Scripts\python -m unittest backend.tests.test_bridge_mcp -v` passed with `4` tests, including unknown-notification no-response coverage.
+- `.venv\Scripts\python -m unittest backend.tests.test_runtime_contracts -v` passed with `6` tests, including lightweight diagnostics bundle coverage.
+- `.venv\Scripts\python -m unittest backend.tests.test_system_vault_lock_and_embeddings.SystemVaultLockAndEmbeddingTests.test_classify_lock_owner_detects_real_uvicorn_backend backend.tests.test_system_vault_lock_and_embeddings.SystemVaultLockAndEmbeddingTests.test_classify_lock_owner_does_not_trust_backend_token_in_unrelated_process_argv -v` passed with `2` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "readiness or discover"` passed with `5` tests, including lightweight readiness and discovery-cache coverage.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_runtime_contracts.py backend/tests/test_system_vault_lock_and_embeddings.py -k "first_run_readiness or diagnostics_bundle_skips_deep_embedding_probe"` passed with `2` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "duplicate_source_checksum_returns_existing_source or integration_refresh"` passed with `5` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_reconciliation_phase12.py backend/tests/test_source_pages.py -k "integration or reconciliation"` passed with `12` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "needs_update or expert_status or expert_retrain"` passed with `4` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_bridge_phase10.py` passed with `12` tests, including approved-client scope-edit metadata retention coverage.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_system_vault_lock_and_embeddings.py -k "chat_pagination or chat_evidence_retention"` passed with `3` tests, including same-timestamp pagination coverage.
+- `.venv\Scripts\python -m pytest -q backend/tests` passed with `290 passed, 2 skipped`.
+- `python -m compileall backend/app` passed.
+
+Still not completed:
+
+- Backend/build docs still need a broader pass to keep long-form packaging notes aligned with the current startup instrumentation and package command path.
+- The larger backend objective remains open: service-layer extraction, embedding/clustering scale evidence, deeper chat/expert routing, and real expert-runtime validation are still separate remaining work items.
+
+## 2026-06-11 Chat Routing Hardening Snapshot
+
+Completed:
+
+- Bridge scope hardening now preserves the explicit Bridge error contract for missing vaults: `/api/v1/bridge/context` validates the resolved vault before semantic search, so callers receive `vault_not_found` instead of the search route's generic `"Vault not found"` string. Focused regression coverage was added for that boundary.
+- Fixed an internal chat-persistence regression that the broad suite had not surfaced yet: `_persist_chat_turn()` now accepts an optional `token_budget` so helper-based assistant persistence still completes retrieval snapshot writes without a missing-argument failure, and the contributor version-bump instructions now keep `backend/pyproject.toml` as the single backend version source.
+- Retrieval chat now computes and reports an automatic local synthesis token budget instead of relying on an implicit citation cap.
+- Synthesis context is trimmed before model calls when evidence would overrun the configured local budget.
+- Retrieval snapshots now persist the applied `token_budget` for later diagnostics and historical inspection.
+- Chat coverage ledgers now expose explicit `partial_failure_mode` states for embedding-unavailable retrieval, low-trust extract-only answers, runtime-unavailable synthesis fallback, and other degraded branches.
+- Bridge/runtime audit fixes from the immediately previous pass remain in place: explicit `database_initialization_failed` startup phase, dynamic backend/MCP version resolution, explicit `chat_transcript` source typing, and Bridge client revoke/re-enable state repair.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_bridge_phase10.py -k vault_not_found` passed with `1 passed, 10 deselected`.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k persist_chat_turn` passed with `1 passed, 60 deselected`.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests` passed with `283 passed, 2 skipped`.
+- `.venv\Scripts\ruff.exe check backend` passed.
+- `python -m compileall backend/app` passed.
+
+Still not completed:
+
+- Chat routing still does not implement true complete-scope map/reduce answering.
+- Desktop/runtime UX still needs to surface the new partial-failure states more clearly instead of depending on raw warning strings alone.
+- Expert-assisted routing remains shallow relative to the planned chat/expert split.
 
 ## 2026-06-08 Clean VM Attempt Snapshot
 
@@ -28,7 +164,7 @@ Current decision:
 - Keep clean-VM validation open.
 - Do not mark packaging or QA complete from `VM-1`.
 - Rerun the packaged installer and smoke sequence on a healthier clean VM image before treating the gate as passed.
-- Manual installer review also surfaced a product UX gap: the current one-click NSIS build does not expose install-location selection and does not offer desktop-shortcut creation. Keep that as an explicit installer-policy decision for V1 rather than assuming the one-click behavior is final.
+- The current NSIS packaging path already exposes install-location selection plus desktop and start-menu shortcut creation. Remaining packaging work here is clean-VM validation and installed-app parity, not restoring those installer toggles.
 
 Latest compact truth after the 2026-06-05 decision pass lives in `docs/PROJECT_CONTEXT.md`. Current product decision: V1 is Windows-only, public-release-only, and must include a working high-quality verified LoRA function; there is no private-demo fallback. Model policy is now explicit: strict `accepted` / `rejected` compatibility remains, but runtime architecture is now understood as dual-role rather than one lightweight unified path. Current Qwen/Phi/Gemma defaults remain the default recommendations, expert-capable onboarding still requires an app-managed approved local checkpoint, retrieval remains the citation authority, and public docs must stop implying that one approved family automatically means one cheap runtime path. Claude Desktop-specific smoke is deferred for now; clean Windows VM validation, real LoRA trainer/runtime smoke, live quality benchmarking, mixed-embedding correctness fixes, and hardware-aware model recommendations remain current external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
 

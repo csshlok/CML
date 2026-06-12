@@ -8,7 +8,7 @@ Audit source: `docs/RELEASE_AUDIT.md`
 
 The audit marks clean Windows VM package validation as a release blocker. The required environment is a fresh Windows VM with no dev Python, no Node, no preinstalled OCR tools, and a cold first run from the packaged artifact.
 
-## Current Package Probe
+## Historical Probe
 
 Command:
 
@@ -16,7 +16,7 @@ Command:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\validate-clean-machine-package.ps1 -PackageRoot apps\desktop\release\win-unpacked -ReportPath .tmp\phase4-clean-machine-package-validation.json
 ```
 
-Result: failed.
+Result at that time: failed.
 
 The generated report is `.tmp\phase4-clean-machine-package-validation.json`.
 
@@ -26,7 +26,7 @@ Phase 5 rerun:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\validate-clean-machine-package.ps1 -PackageRoot apps\desktop\release\win-unpacked -ReportPath .tmp\phase5-clean-machine-package-validation.json
 ```
 
-Result: failed with the same missing packaged resource checks.
+Result at that time: failed with the same missing packaged resource checks.
 
 Packaged runtime smoke:
 
@@ -40,7 +40,7 @@ Result:
 Packaged Python runtime not found: C:\Users\KIIT0001\Desktop\Project-2\CML\apps\desktop\release\win-unpacked\resources\python-runtime\Scripts\python.exe
 ```
 
-## Failed Checks
+## Historical Failed Checks
 
 | Check | Expected path | Result |
 | --- | --- | --- |
@@ -72,8 +72,8 @@ The validator also reported:
 
 Because Node is present and this is not a fresh VM, this machine does not satisfy the clean-VM requirement even if package structure were fixed.
 
-## Release Assessment
+## Current Release Assessment
 
 Status: not release-cleared.
 
-This artifact satisfies the Windows VM validation document requirement, but it does not close the clean-machine blocker. The current unpacked package is missing required runtime resources before VM validation can be considered meaningful.
+This document preserves the old missing-resources evidence only as historical context. The current packaging path has since moved past that state; the active blocker is still a healthy clean-VM validation run plus installed-app first-run evidence from a current package.

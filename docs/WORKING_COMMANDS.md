@@ -204,14 +204,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\smoke-wind
 
 ## 5. Version Bump Procedure
 
-There is no single centralized version source today. If you are creating a new app version, update the version in all of these places:
+Versioning is split by surface, but backend runtime metadata is centralized now:
 
 - `package.json`
 - `apps/desktop/package.json`
 - `backend/pyproject.toml`
-- `backend/app/main.py`
-- `backend/app/api/routes/diagnostics.py`
-- `backend/app/bridge_mcp.py`
 
 ### 5.1 Recommended Version Bump Order
 
@@ -227,12 +224,11 @@ Update the desktop app version:
 npm version 0.1.5 --workspace @cml/desktop --no-git-tag-version
 ```
 
-Then manually update backend version strings in:
+Then update the backend package version in:
 
 - `backend/pyproject.toml`
-- `backend/app/main.py`
-- `backend/app/api/routes/diagnostics.py`
-- `backend/app/bridge_mcp.py`
+
+Backend runtime, diagnostics, and MCP metadata now resolve the app version from `backend/pyproject.toml` through `backend/app/core/version.py`. Do not manually hardcode the same version into multiple Python files.
 
 Refresh npm lock metadata after version bumps:
 
@@ -250,7 +246,7 @@ rg -n "0\\.1\\.4|0\\.1\\.0" package.json apps\desktop\package.json backend\pypro
 
 - The Windows installer artifact name is driven by `apps/desktop/package.json`.
 - If you only bump the root `package.json`, the installer version does not change.
-- Backend diagnostics and API metadata still expose backend version strings independently.
+- Backend diagnostics and API metadata are derived from the backend package version; keep `backend/pyproject.toml` authoritative.
 - Do not hardcode version numbers into packaging commands or tests.
 
 ## 6. Daily Validation Commands

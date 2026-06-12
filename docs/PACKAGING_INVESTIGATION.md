@@ -21,28 +21,11 @@ The packaged app is not a thin Electron wrapper around a remote service. It is a
 
 ## Packaging entry points
 
-There are currently two packaging definitions in play.
+The current packaging entry point is the Windows packaging script:
 
-### 1. Static Electron Builder config in `apps/desktop/package.json`
+### `scripts/packaging/package-windows.ps1`
 
-This defines:
-
-- `productName: "CML"`
-- `target: "nsis"`
-- `requestedExecutionLevel: "asInvoker"`
-- `allowToChangeInstallationDirectory: true`
-- `createDesktopShortcut: true`
-- `artifactName: "test-0.1-Setup.${ext}"`
-
-But it also still says:
-
-- `oneClick: true`
-
-That is inconsistent with the custom packaging script below.
-
-### 2. Dynamic packaging script in `scripts/packaging/package-windows.ps1`
-
-This is the real orchestrator for the current Windows package flow. It:
+This script is the real orchestrator for the current Windows package flow. It:
 
 1. Builds the desktop frontend with `npm run build`
 2. Stages backend source into `apps/desktop/packaging/backend`
@@ -55,16 +38,7 @@ This is the real orchestrator for the current Windows package flow. It:
 9. Generates a temporary Electron Builder config in `.tmp/electron-builder.generated.json`
 10. Runs `npx electron-builder --win --x64 --config <generated-config>`
 
-Important detail:
-
-- The generated config sets `oneClick: false`
-- The static `package.json` config sets `oneClick: true`
-
-This means the packaging behavior depends on which command path is used.
-
-If someone runs `npm run package:win` directly, they do not necessarily get the same package settings as when they run `scripts/packaging/package-windows.ps1`.
-
-That is a real packaging bug.
+`apps/desktop/package.json` now delegates its `package:win` command to this script, so the packaging path is single-sourced through the PowerShell workflow rather than split across a second static Electron Builder definition.
 
 ## What exactly gets bundled
 
@@ -261,13 +235,12 @@ Electron spawns:
 
 `python.exe -s -m uvicorn backend.app.main:app --host 127.0.0.1 --port <port>`
 
-Important current limitation:
+Current behavior:
 
-- `stdio` is set to `ignore`
+- backend `stdout` and `stderr` are piped to `backend-stdout.log` and `backend-stderr.log` under Electron `userData`
+- the main process also writes `desktop-runtime.log`
 
-That means if Python crashes before the backend writes `startup-status.json`, we lose the actual exception text.
-
-This is one of the biggest packaging-debuggability gaps right now.
+That closes the earlier observability gap where backend startup failures could disappear before `startup-status.json` was written.
 
 ### Backend startup sequence
 
@@ -441,30 +414,7 @@ There is not yet enough installer-side logging in the current flow to state this
 
 ## Packaging bugs and weaknesses identified
 
-### Bug 1: Two conflicting installer definitions
-
-Current state:
-
-- `apps/desktop/package.json` says `oneClick: true`
-- generated config in `package-windows.ps1` says `oneClick: false`
-
-Impact:
-
-- build behavior changes depending on which command path is used
-- packaging settings are not single-sourced
-
-### Bug 2: Electron launch path drops backend stderr/stdout
-
-Current state:
-
-- backend child process is spawned with `stdio: "ignore"`
-
-Impact:
-
-- if startup fails before status file write, diagnostics are mostly lost
-- VM startup failures are hard to root-cause
-
-### Bug 3: Validation emphasizes `win-unpacked`, not installed app parity
+### Bug 1: Validation emphasizes `win-unpacked`, not installed app parity
 
 Current state:
 
@@ -475,7 +425,7 @@ Impact:
 
 - installer-specific or install-path-specific failures can slip through
 
-### Bug 4: Renderer startup is under-instrumented
+### Bug 2: Renderer startup is under-instrumented
 
 Current state:
 
@@ -501,7 +451,7 @@ Impact:
 ## Local facts confirmed during this investigation
 
 - Current local packaged startup status file is present and currently reports `ready`
-- Current local desktop runtime log shows packaged launches, but no detailed backend crash trace
+- Current local packaged startup path now writes `desktop-runtime.log`, `backend-stdout.log`, and `backend-stderr.log` under Electron `userData`
 - Current installer `test-0.1-Setup.exe` is unsigned
 - Current output directory contains:
   - `win-unpacked/`
@@ -512,11 +462,10 @@ Impact:
 
 These are the highest-value packaging fixes before another rebuild cycle:
 
-1. Unify Electron Builder config so there is exactly one source of truth
-2. Capture backend child stdout/stderr to files under `userData`
-3. Add installed-app smoke coverage, not just `win-unpacked`
-4. Add durable renderer startup logging for blank-screen cases
-5. Decide whether unsigned local NSIS installers are acceptable for VM and local testing, or whether signing/reputation handling must become part of the workflow
+1. Keep installed-app smoke coverage at parity with `win-unpacked` validation instead of relying mainly on unpacked runtime checks
+2. Continue tightening renderer startup verification so blank-screen failures are classified more precisely
+3. Decide whether unsigned local NSIS installers are acceptable for VM and local testing, or whether signing/reputation handling must become part of the workflow
+4. Keep package/runtime notes current as the startup instrumentation and package command path evolve
 
 ## Current assessment
 
