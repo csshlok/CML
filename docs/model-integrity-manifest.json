@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "updated_at": "2026-06-12T00:00:00Z",
+  "models": {
+    "qwen3-4b-q4_k_m": {
+      "hf_repo": "Qwen/Qwen3-4B-GGUF",
+      "repo_commit": "bc640142c66e1fdd12af0bd68f40445458f3869b",
+      "file_name": "Qwen3-4B-Q4_K_M.gguf",
+      "sha256": "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
+      "size_bytes": 2497280256
+    },
+    "phi-4-mini-instruct-q4_k_m": {
+      "hf_repo": "unsloth/Phi-4-mini-instruct-GGUF",
+      "repo_commit": "78eb92a46fc37e6b524df991ed9aca9bc6aa7b80",
+      "file_name": "Phi-4-mini-instruct-Q4_K_M.gguf",
+      "sha256": "88c00229914083cd112853aab84ed51b87bdf6b9ce42f532d8c85c7c63b1730a",
+      "size_bytes": 2491874272
+    },
+    "qwen3-8b-q4_k_m": {
+      "hf_repo": "Qwen/Qwen3-8B-GGUF",
+      "repo_commit": "7c41481f57cb95916b40956ab2f0b139b296d974",
+      "file_name": "Qwen3-8B-Q4_K_M.gguf",
+      "sha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+      "size_bytes": 5027783488
+    },
+    "gemma-3-4b-it-q4_k_m": {
+      "hf_repo": "Aldaris/gemma-3-4b-it-Q4_K_M-GGUF",
+      "repo_commit": "cb07ae9fff0688526565f159bf0ba65434b98914",
+      "file_name": "gemma-3-4b-it-q4_k_m.gguf",
+      "sha256": "882e8d2db44dc554fb0ea5077cb7e4bc49e7342a1f0da57901c0802ea21a0863",
+      "size_bytes": 2489757856
+    },
+    "gemma-3-12b-it-q4_k_m": {
+      "hf_repo": "nocturne23/gemma-3-12b-it-Q4_K_M-GGUF",
+      "repo_commit": "2dbea714de33dbdd7fa37e33856330a51c45d116",
+      "file_name": "gemma-3-12b-it-q4_k_m.gguf",
+      "sha256": "7bb69bff3f48a7b642355d64a90e481182a7794707b3133890646b1efa778ff5",
+      "size_bytes": 7300574976
+    }
+  }
+}

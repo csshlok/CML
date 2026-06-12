@@ -133,6 +133,25 @@ class AdditionalQACases(unittest.TestCase):
         activated = set_active_model(imported["id"], role="expert")
         self.assertEqual(activated["id"], imported["id"])
 
+    def test_import_model_checkpoint_rejects_overlapping_managed_destination(self) -> None:
+        from backend.app.core.model_registry import import_model_checkpoint
+
+        imported = import_model_checkpoint(
+            self._write_fake_local_transformers_model(
+                "managed-qwen",
+                model_type="qwen2",
+                repo_hint="Qwen/Qwen3-4B",
+            ),
+            name="Managed Qwen",
+        )
+        managed_path = Path(imported["local_path"])
+
+        with self.assertRaises(ValueError) as raised:
+            import_model_checkpoint(managed_path, name="Managed Qwen")
+
+        self.assertIn("separate directories", str(raised.exception))
+        self.assertTrue((managed_path / "config.json").exists())
+
     def test_first_run_readiness_requires_active_approved_model(self) -> None:
         from backend.app.core.model_registry import import_model_checkpoint, set_active_model
         from backend.app.core.setup_readiness import first_run_readiness
@@ -862,6 +881,38 @@ class AdditionalQACases(unittest.TestCase):
                 _safe_open(Request("https://example.com/start"), timeout=1)
         self.assertIn("not allowed", str(raised.exception).lower())
 
+    def test_safe_open_blocks_private_connected_peer_after_public_url_validation(self) -> None:
+        from backend.app.core.extraction import ExtractionError, _safe_open
+        from urllib.request import Request
+
+        class FakeSocket:
+            def getpeername(self):
+                return ("127.0.0.1", 443)
+
+        class FakeRaw:
+            _sock = FakeSocket()
+
+        class FakeFp:
+            raw = FakeRaw()
+
+        class FakeResponse:
+            fp = FakeFp()
+
+            def geturl(self):
+                return "https://example.com/start"
+
+        class PublicUrlPrivatePeer:
+            def open(self, _request, timeout=0):
+                return FakeResponse()
+
+        with (
+            patch("backend.app.core.extraction.build_opener", return_value=PublicUrlPrivatePeer()),
+            patch("socket.getaddrinfo", return_value=[(None, None, None, None, ("93.184.216.34", 443))]),
+        ):
+            with self.assertRaises(ExtractionError) as raised:
+                _safe_open(Request("https://example.com/start"), timeout=1)
+        self.assertIn("private", str(raised.exception).lower())
+
     def test_text_ingestion_stores_sql_payload_literally(self) -> None:
         from backend.app.api.routes.sources import create_source_from_text
         from backend.app.core.database import connect, utc_now
@@ -1526,6 +1577,91 @@ class AdditionalQACases(unittest.TestCase):
 
         with self.assertRaises(MigrationError):
             run_migrations()
+
+    def test_run_migrations_retries_failed_record_without_primary_key_collision(self) -> None:
+        from backend.app.core import migrations
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    status TEXT NOT NULL,
+                    error TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, name, started_at, finished_at, status, error)
+                VALUES (1, 'old_failure', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:01+00:00', 'failed', 'boom')
+                """
+            )
+
+        original_schema_version = migrations.SCHEMA_VERSION
+        original_migrations = migrations.MIGRATIONS
+        try:
+            migrations.SCHEMA_VERSION = 1
+            migrations.MIGRATIONS = {1: lambda _conn: None}
+            migrations.run_migrations()
+        finally:
+            migrations.SCHEMA_VERSION = original_schema_version
+            migrations.MIGRATIONS = original_migrations
+
+        with connect() as conn:
+            row = conn.execute("SELECT status, error FROM schema_migrations WHERE version = 1").fetchone()
+        self.assertEqual(row["status"], "succeeded")
+        self.assertEqual(row["error"], "")
+
+    def test_source_and_cluster_list_routes_are_bounded(self) -> None:
+        from backend.app.api.routes.clusters import list_clusters
+        from backend.app.api.routes.sources import list_sources
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES ('vault-1', 'Vault', ?, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
+                (self.tmp.name,),
+            )
+            for index in range(3):
+                created_at = f"2026-01-01T00:00:0{index}+00:00"
+                conn.execute(
+                    """
+                    INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
+                    VALUES (?, 'vault-1', ?, '', 'sage', 'setting-up', ?, ?)
+                    """,
+                    (f"cluster-{index}", f"Cluster {index}", created_at, created_at),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO sources (
+                        id, vault_id, cluster_id, title, source_type, state, raw_text,
+                        extracted_text, summary, tags, created_at, updated_at
+                    )
+                    VALUES (?, 'vault-1', ?, ?, 'text', 'indexed', ?, ?, '', '[]', ?, ?)
+                    """,
+                    (
+                        f"source-{index}",
+                        f"cluster-{index}",
+                        f"Source {index}",
+                        f"Source body {index}",
+                        f"Source body {index}",
+                        created_at,
+                        created_at,
+                    ),
+                )
+
+        sources = list_sources(vault_id="vault-1", limit=2)
+        clusters = list_clusters(vault_id="vault-1", limit=2)
+        next_sources = list_sources(vault_id="vault-1", limit=2, offset=2)
+
+        self.assertEqual([source["id"] for source in sources], ["source-2", "source-1"])
+        self.assertEqual([cluster["id"] for cluster in clusters], ["cluster-2", "cluster-1"])
+        self.assertEqual([source["id"] for source in next_sources], ["source-0"])
 
     def test_source_cluster_must_belong_to_same_vault(self) -> None:
         from backend.app.api.routes.sources import create_source

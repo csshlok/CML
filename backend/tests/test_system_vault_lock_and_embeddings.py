@@ -1,4 +1,5 @@
 import importlib
+import hashlib
 import json
 import os
 import subprocess
@@ -533,6 +534,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
 
         with (
             patch("backend.app.core.model_registry.threading.Thread", ImmediateThread),
+            patch("backend.app.core.model_registry._download_expected_model_sha256", return_value="0" * 64),
             patch("backend.app.core.model_registry._resolve_gguf_filename", return_value="model.Q4_K_M.gguf"),
             patch("backend.app.core.model_registry.urlopen", return_value=FakeStream()),
         ):
@@ -633,8 +635,11 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
                     return b"x" * (1024 * 1024)
                 return b""
 
+        expected_digest = hashlib.sha256(b"x" * (2 * 1024 * 1024)).hexdigest()
         with (
             patch("backend.app.core.model_registry._find_local_model_file", return_value=None),
+            patch("backend.app.core.model_registry._download_expected_model_sha256", return_value=expected_digest),
+            patch("backend.app.core.model_registry._expected_model_sha256", return_value=expected_digest),
             patch("backend.app.core.model_registry._resolve_gguf_filename", return_value="model.Q4_K_M.gguf"),
             patch("backend.app.core.model_registry.validate_huggingface_url", return_value=None),
             patch("backend.app.core.model_registry.urlopen", return_value=FastResponse()),
@@ -943,6 +948,39 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         summary = startup_repair_summary()
 
         self.assertEqual(summary["interrupted_migrations"][0]["version"], 99)
+        self.assertEqual(summary["interrupted_migrations"][0]["status"], "running")
+
+    def test_startup_repair_reports_failed_migrations(self) -> None:
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.startup_repair import startup_repair_summary
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    status TEXT NOT NULL,
+                    error TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, name, started_at, finished_at, status, error)
+                VALUES (100, 'failed_test', ?, ?, 'failed', 'boom')
+                """,
+                (now, now),
+            )
+
+        summary = startup_repair_summary()
+
+        self.assertEqual(summary["interrupted_migrations"][0]["version"], 100)
+        self.assertEqual(summary["interrupted_migrations"][0]["status"], "failed")
+        self.assertEqual(summary["interrupted_migrations"][0]["error"], "boom")
 
     def test_ocr_source_job_writes_page_progress_detail(self) -> None:
         from backend.app.core.background_jobs import _run_ocr_source, enqueue_job
@@ -1375,6 +1413,53 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
 
         self.assertEqual(_expected_model_sha256(model), expected)
         self.assertEqual(model_integrity_manifest_status()["model_count"], 1)
+
+    def test_default_model_integrity_manifest_pins_all_managed_models(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.model_registry import (
+            MODEL_REGISTRY,
+            _expected_model_sha256,
+            _resolve_gguf_filename,
+            model_integrity_manifest_status,
+        )
+
+        os.environ.pop("CML_MODEL_INTEGRITY_MANIFEST_PATH", None)
+        os.environ.pop("CML_MODEL_INTEGRITY_MANIFEST_URL", None)
+        get_settings.cache_clear()
+
+        status = model_integrity_manifest_status()
+
+        self.assertTrue(status["available"])
+        self.assertGreaterEqual(status["model_count"], len(MODEL_REGISTRY))
+        for model in MODEL_REGISTRY:
+            self.assertRegex(_expected_model_sha256(model), r"^[0-9a-f]{64}$")
+            self.assertTrue(_resolve_gguf_filename(model).lower().endswith(".gguf"))
+
+    def test_managed_model_download_fails_closed_without_trusted_hash(self) -> None:
+        from backend.app.core import model_registry
+        from backend.app.core.config import get_settings
+
+        os.environ["CML_MODELS_DIR"] = str(self.data_dir / "models")
+        empty_manifest = self.data_dir / "empty-model-integrity.json"
+        empty_manifest.write_text(json.dumps({"version": 1, "models": {}}), encoding="utf-8")
+        os.environ["CML_MODEL_INTEGRITY_MANIFEST_PATH"] = str(empty_manifest)
+        get_settings.cache_clear()
+        local_manifest = self.data_dir / "models" / "qwen3-4b-q4_k_m" / "integrity.json"
+        local_manifest.parent.mkdir(parents=True, exist_ok=True)
+        local_manifest.write_text(
+            json.dumps({"expected_sha256": "a" * 64, "sha256": "a" * 64, "status": "verified"}),
+            encoding="utf-8",
+        )
+        model_registry._download_state.clear()
+        model_registry._download_state["qwen3-4b-q4_k_m"] = {"model_id": "qwen3-4b-q4_k_m", "status": "resolving"}
+
+        with patch("backend.app.core.model_registry.urlopen") as fetch:
+            model_registry._download_model(model_registry.get_model("qwen3-4b-q4_k_m"))
+
+        fetch.assert_not_called()
+        state = model_registry._download_state["qwen3-4b-q4_k_m"]
+        self.assertEqual(state["status"], "failed")
+        self.assertIn("integrity pin is missing", state["error"])
 
     def test_startup_phase_registry_and_staleness_route(self) -> None:
         from backend.app.core.startup_status import write_startup_status

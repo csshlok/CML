@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     model_scan_roots: str = ""
     model_scan_max_depth: int = 4
     model_scan_cache_seconds: int = 30
+    enable_dynamic_web_ingestion: bool = False
 
     model_config = SettingsConfigDict(env_prefix="CML_", env_file=ROOT_DIR / ".env", extra="ignore")
 

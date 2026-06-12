@@ -386,13 +386,29 @@ def run_migrations() -> None:
                 raise MigrationError(f"No migration registered for schema version {version}")
             name = migration.__name__.removeprefix("_migration_")
             started_at = utc_now()
-            conn.execute(
-                """
-                INSERT INTO schema_migrations (version, name, started_at, status)
-                VALUES (?, ?, ?, 'running')
-                """,
-                (version, name, started_at),
-            )
+            previous = conn.execute(
+                "SELECT status FROM schema_migrations WHERE version = ?",
+                (version,),
+            ).fetchone()
+            if previous is None:
+                conn.execute(
+                    """
+                    INSERT INTO schema_migrations (version, name, started_at, status)
+                    VALUES (?, ?, ?, 'running')
+                    """,
+                    (version, name, started_at),
+                )
+            elif previous["status"] == "failed":
+                conn.execute(
+                    """
+                    UPDATE schema_migrations
+                    SET name = ?, started_at = ?, finished_at = NULL, status = 'running', error = ''
+                    WHERE version = ?
+                    """,
+                    (name, started_at, version),
+                )
+            else:
+                raise MigrationError(f"Unexpected migration state for version {version}: {previous['status']}")
             try:
                 migration(conn)
             except Exception as exc:

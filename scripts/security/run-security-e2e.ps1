@@ -48,5 +48,9 @@ $report = [ordered]@{
 }
 
 $reportPath = Join-Path $ReportRoot "security-e2e-summary.json"
-$report | ConvertTo-Json -Depth 8 | Set-Content -Path $reportPath -Encoding UTF8
-$report | ConvertTo-Json -Depth 8
+$reportJson = $report | ConvertTo-Json -Depth 8
+$reportJson | Set-Content -Path $reportPath -Encoding UTF8
+$reportJson
+if (-not $report.pass) {
+  exit 1
+}

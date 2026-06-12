@@ -157,16 +157,20 @@ def initialize_vault_security(
 
 
 def unlock_vault_with_passphrase(vault_id: str, passphrase: str) -> VaultKeyMaterial:
+    master_key = _unwrap_master_key_with_passphrase(vault_id, passphrase)
+    material = VaultKeyMaterial(vault_id=vault_id, master_key=master_key)
+    _ACTIVE_KEYS[vault_id] = material
+    return material
+
+
+def _unwrap_master_key_with_passphrase(vault_id: str, passphrase: str) -> bytes:
     _validate_secret(passphrase, "passphrase")
     row = _metadata(vault_id)
     params = _row_kdf_params(row)
     salt = _b64d(row["passphrase_salt"])
     wrapped = _b64d(row["passphrase_wrapped_vmk"])
     kek = _derive_kek(passphrase.encode("utf-8"), salt, params)
-    master_key = _unwrap_key(kek, wrapped, vault_id, "passphrase")
-    material = VaultKeyMaterial(vault_id=vault_id, master_key=master_key)
-    _ACTIVE_KEYS[vault_id] = material
-    return material
+    return _unwrap_key(kek, wrapped, vault_id, "passphrase")
 
 
 def unlock_vault_with_recovery_key(vault_id: str, recovery_key: str) -> VaultKeyMaterial:
@@ -223,7 +227,8 @@ def reset_passphrase_with_recovery_key(
 
 
 def verify_sensitive_action(vault_id: str, passphrase: str) -> bool:
-    unlock_vault_with_passphrase(vault_id, passphrase)
+    master_key = _unwrap_master_key_with_passphrase(vault_id, passphrase)
+    _best_effort_zeroize(master_key)
     return True
 
 

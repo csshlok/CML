@@ -135,6 +135,8 @@ class UnlockPhase2Tests(unittest.TestCase):
                 "/api/v1/system/unlock/sensitive-action",
                 json={"vault_id": "vault-phase2", "passphrase": "phase2-passphrase"},
             )
+            status_after_sensitive_action = client.get("/api/v1/system/unlock/status")
+            protected_after_sensitive_action = client.get("/api/v1/sources")
         finally:
             client.close()
 
@@ -143,6 +145,8 @@ class UnlockPhase2Tests(unittest.TestCase):
         self.assertEqual(pin.status_code, 401)
         self.assertEqual(full.status_code, 200)
         self.assertTrue(full.json()["ok"])
+        self.assertEqual(status_after_sensitive_action.json()["state"], "locked")
+        self.assertEqual(protected_after_sensitive_action.status_code, 423)
 
     def test_initialize_endpoint_returns_recovery_key_once_and_ready_state(self) -> None:
         client = self._client()

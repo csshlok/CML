@@ -82,9 +82,9 @@ def _interrupted_migrations() -> list[dict]:
             return []
         rows = conn.execute(
             """
-            SELECT version, name, started_at, error
+            SELECT version, name, started_at, status, error
             FROM schema_migrations
-            WHERE status = 'running'
+            WHERE status IN ('running', 'failed')
             ORDER BY version ASC
             """
         ).fetchall()
@@ -93,6 +93,7 @@ def _interrupted_migrations() -> list[dict]:
             "version": int(row["version"]),
             "name": row["name"],
             "started_at": row["started_at"],
+            "status": row["status"],
             "error": row["error"],
         }
         for row in rows

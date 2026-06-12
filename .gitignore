@@ -22,6 +22,7 @@ apps/desktop/packaging/
 backend/bin/ocr/**
 !backend/bin/ocr/
 !backend/bin/ocr/README.md
+!backend/bin/ocr/manifest.json
 out/
 .output/
 .vinxi/
@@ -95,7 +96,6 @@ docs/UI_INTERACTION_AUDIT_2026-06-01.md
 backend/tests/CML_400_TEST_CASES.md
 docs/CLUSTER_MERGE_POLICY.md
 docs/GHOSTSCRIPT_AGPL_RELEASE_POLICY.md
-docs/model-integrity-manifest.json
 docs/THREAT_MODEL.md
 docs/UPDATE_MIGRATION_POLICY.md
 docs/SECURITY_ARCHITECTURE.md

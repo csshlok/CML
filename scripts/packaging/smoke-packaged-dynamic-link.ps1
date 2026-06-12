@@ -25,6 +25,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $backendRoot "app\main.py"))) {
 $env:PYTHONPATH = $resourcesPath
 $env:PYTHONNOUSERSITE = "1"
 $env:CML_DYNAMIC_LINK_SMOKE_URL = $Url
+$env:CML_ENABLE_DYNAMIC_WEB_INGESTION = "1"
 $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $resourcesPath "ms-playwright"
 
 $code = @'

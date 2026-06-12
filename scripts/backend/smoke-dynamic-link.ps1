@@ -26,4 +26,5 @@ print(json.dumps({
 '@
 
 $env:CML_DYNAMIC_LINK_SMOKE_URL = $Url
+$env:CML_ENABLE_DYNAMIC_WEB_INGESTION = "1"
 $code | & $python -

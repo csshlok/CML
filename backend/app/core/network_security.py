@@ -27,9 +27,22 @@ def validate_public_http_url(url: str) -> None:
         raise NetworkSecurityError("URL hostname could not be resolved") from exc
 
     for address in addresses:
-        ip = ipaddress.ip_address(address[4][0])
-        if _is_blocked_ip(ip):
-            raise NetworkSecurityError("Private, local, and reserved network URLs are not allowed")
+        validate_public_ip_address(address[4][0])
+
+
+def validate_public_ip_address(address: str) -> None:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError as exc:
+        raise NetworkSecurityError("Network peer address could not be validated") from exc
+    if _is_blocked_ip(ip):
+        raise NetworkSecurityError("Private, local, and reserved network URLs are not allowed")
+
+
+def validate_response_peer(response: object) -> None:
+    peer_ip = _response_peer_ip(response)
+    if peer_ip:
+        validate_public_ip_address(peer_ip)
 
 
 def strip_url_credentials(url: str) -> str:
@@ -75,3 +88,23 @@ def _parse_ip_literal(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6Ad
         return ipaddress.ip_address(hostname)
     except ValueError:
         return None
+
+
+def _response_peer_ip(response: object) -> str:
+    sock = None
+    fp = getattr(response, "fp", None)
+    raw = getattr(fp, "raw", None)
+    if raw is not None:
+        sock = getattr(raw, "_sock", None) or getattr(raw, "sock", None)
+    if sock is None:
+        sock = getattr(response, "socket", None)
+    getpeername = getattr(sock, "getpeername", None)
+    if getpeername is None:
+        return ""
+    try:
+        peer = getpeername()
+    except OSError:
+        return ""
+    if not peer:
+        return ""
+    return str(peer[0])

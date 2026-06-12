@@ -24,15 +24,20 @@ router = APIRouter(prefix="/clusters", tags=["clusters"])
 
 
 @router.get("", response_model=list[ClusterRead])
-def list_clusters(vault_id: str | None = None) -> list[dict]:
+def list_clusters(vault_id: str | None = None, limit: int = 500, offset: int = 0) -> list[dict]:
+    safe_limit = max(1, min(int(limit), 1000))
+    safe_offset = max(0, int(offset))
     with connect() as conn:
         if vault_id:
             rows = conn.execute(
-                "SELECT * FROM clusters WHERE vault_id = ? ORDER BY updated_at DESC",
-                (vault_id,),
+                "SELECT * FROM clusters WHERE vault_id = ? ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+                (vault_id, safe_limit, safe_offset),
             ).fetchall()
         else:
-            rows = conn.execute("SELECT * FROM clusters ORDER BY updated_at DESC").fetchall()
+            rows = conn.execute(
+                "SELECT * FROM clusters ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+                (safe_limit, safe_offset),
+            ).fetchall()
         return [dict_from_row(row) for row in rows]
 
 

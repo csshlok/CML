@@ -6,6 +6,69 @@ Last updated: 2026-06-12
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
+## 2026-06-12 Backend Audit Pass 3 Bridge Scale Snapshot
+
+Completed:
+
+- Bridge settings pruning no longer scans every vault and cluster row to remove stale allowlist IDs; it now checks only the configured permission IDs.
+- `/api/v1/bridge/clusters` now supports bounded, stable `limit`/`offset` pagination capped at `1000` rows, avoiding large unbounded responses for clients allowed to see a large vault.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "bridge_status_prunes_deleted_permission_ids or bridge_cluster_listing_is_bounded or delete_source_cleanup_removes_secured"` passed with `3` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "import_model_checkpoint_rejects_overlapping or source_and_cluster_list_routes"` passed with `2` tests.
+- `.venv\Scripts\python.exe -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- This is pass 3 of the requested backend audit, not the final audit closure.
+- The full backend test suite, build/security checks, and remaining backend file audit still need to run before closing the goal.
+
+## 2026-06-12 Backend Audit Pass 2 Scale And Cleanup Snapshot
+
+Completed:
+
+- Local model checkpoint import now rejects overlapping source/destination paths before deleting a managed import destination, preventing an already managed checkpoint from deleting itself during re-import.
+- Source and cluster list routes now expose bounded, stable `limit`/`offset` parameters capped at `1000` rows, avoiding default full-vault loads/decrypts for large source or cluster sets.
+- Background delete-source cleanup now removes secured encrypted source/chunk/page payloads before deleting derived rows, so the reconcile job is safe even when it runs independently after an interrupted delete.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "import_model_checkpoint_rejects_overlapping or source_and_cluster_list_routes"` passed with `2` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "delete_source_cleanup_removes_secured_encrypted_payloads or delete_source_tombstones"` passed with `2` tests.
+- `.venv\Scripts\python.exe -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- This is pass 2 of the requested backend audit, not the final audit closure.
+- The full backend test suite, build/security checks, and remaining backend file audit still need to run before closing the goal.
+
+## 2026-06-12 Backend Audit Pass 1 Security And Release Snapshot
+
+Completed:
+
+- Fixed sensitive-action passphrase verification so it no longer calls the normal unlock path or leaves vault master key material in the active key registry after a verify-only action.
+- Hardened static URL ingestion against DNS-rebinding style gaps by validating the connected peer IP after `urllib` opens the response, while keeping redirect target validation.
+- Changed dynamic Playwright/Chromium link extraction to explicit opt-in through `CML_ENABLE_DYNAMIC_WEB_INGESTION=1`; diagnostics now report enabled/runtime availability separately. Static HTTP extraction remains the default.
+- Added a tracked trusted managed-model manifest at `docs/model-integrity-manifest.json` with exact GGUF filenames, upstream repo commits, sizes, and SHA-256 hashes for the current Qwen/Phi/Gemma managed downloads.
+- Managed model downloads now fail closed before network access when a trusted SHA-256 pin is missing, and manifest-pinned filenames are used before falling back to Hugging Face model-file discovery.
+- Made failed schema migrations retryable by updating a previous `failed` row back to `running` instead of inserting the same primary key again; startup repair now reports both `running` and `failed` migration records.
+- Stabilized vault-lock audit ordering with monotonic in-process audit timestamps and a route-level `rowid` tie-breaker.
+- Added a tracked `backend/bin/ocr/manifest.json` source-checkout contract while keeping OCR binaries ignored; real packaging still stages and overwrites the runtime manifest.
+- Updated `.gitignore` so the OCR and model integrity manifests are versionable without pulling large runtime artifacts into git.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_vault_crypto_phase1.py backend/tests/test_unlock_phase2.py backend/tests/test_browser_ingestion_phase7.py` passed with `25` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "safe_open or run_migrations"` passed with `5` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_system_vault_lock_and_embeddings.py -k "vault_lock or startup_repair_reports or model_integrity or model_download or download_cancel"` passed with `64` tests.
+
+Still not completed:
+
+- This is pass 1 of the requested backend audit, not the final audit closure.
+- The full backend test suite, desktop build/security checks, and final current-state backend audit remain to run after the next audit passes.
+- Clean Windows VM package validation and real LoRA trainer/runtime/quality validation remain public-V1 gates.
+
 ## 2026-06-12 Chat Attachment Ownership And Secure Cleanup Snapshot
 
 Completed:
@@ -1795,7 +1858,7 @@ These items are not ordinary polish. If they are not implemented and verified, t
   - add deletion cleanup that prevents deleted sensitive content from surfacing even before async orphan cleanup completes
   - add vector/index compaction and storage accounting policy
 - Replace static-only link ingestion with backend page capture/extraction that can open a URL, extract readable text, page metadata, images/media references, and handle dynamic pages through a browser/readability path where safe.
-- Static link ingestion now attempts an optional Playwright-rendered fallback when the static HTML looks like a thin client-side app. Remaining work: package/browser-runtime decision, stricter dynamic-page sandboxing, richer readability extraction, and real dynamic-site smoke tests.
+- Static link ingestion remains the default. Playwright-rendered fallback now requires explicit `CML_ENABLE_DYNAMIC_WEB_INGESTION=1` because Chromium DNS/peer validation is not strong enough to be the default SSRF boundary. Remaining work: package/browser-runtime decision, richer readability extraction, and real dynamic-site smoke tests under the explicit opt-in.
 - Add task/list item ingestion as a first-class source type.
 - Continue generated-reference exact-match polishing on Chat detail, Bridge, Timeline/Activity, Tasks, and packaged onboarding edge states. Home, Sources, Clusters, Map, cluster detail, prompt-zero Chat, Settings/Profile, shared shell, bottom user tab, and footer now have the new reference structure; the remaining pass should focus on typography, spacing, component finish, and route-specific edge states rather than a new visual direction.
 - Keep the specified old Map reference image as the Map source of truth: `C:\Users\csshl\.codex\generated_images\019e7411-c67b-7ff3-a47b-5a8bb086f1c0\ig_015215293cf7ae25016a1c50a99ff881918f421c3047c44a24.png`.

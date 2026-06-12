@@ -76,6 +76,16 @@ class BrowserIngestionPhase7Tests(unittest.TestCase):
                 extract_dynamic_text_from_url_isolated("https://example.com/app")
         self.assertIn("malformed JSON", str(raised.exception))
 
+    def test_browser_fallback_is_disabled_by_default_even_when_runtime_exists(self) -> None:
+        from backend.app.core.browser_ingestion import browser_ingestion_diagnostics
+
+        with patch("backend.app.core.browser_ingestion.importlib.util.find_spec", return_value=object()):
+            diagnostics = browser_ingestion_diagnostics()
+
+        self.assertFalse(diagnostics["available"])
+        self.assertFalse(diagnostics["enabled"])
+        self.assertTrue(diagnostics["runtime_available"])
+
     def test_url_source_persists_browser_derived_low_trust_metadata(self) -> None:
         from backend.app.api.routes.sources import create_source_from_url
         from backend.app.core.database import connect, utc_now

@@ -253,6 +253,113 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIsNone(item["page_id"])
         self.assertIsNotNone(queued_cleanup)
 
+    def test_delete_source_cleanup_removes_secured_encrypted_payloads(self) -> None:
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core import vault_crypto
+        from backend.app.core.background_jobs import _run_delete_source_cleanup
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.embeddings import reindex_source_chunks
+        from backend.app.core.encrypted_storage import source_from_encrypted_row
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-secured", "Secured", str(self.db_path.parent), now, now),
+            )
+        vault_crypto.initialize_vault_security(
+            "vault-secured",
+            "cleanup-passphrase",
+            kdf_params=vault_crypto.TEST_KDF_PARAMS,
+        )
+        source = create_source(
+            SourceCreate(
+                vault_id="vault-secured",
+                title="Secured cleanup",
+                source_type="note",
+                raw_text="secured cleanup evidence " * 80,
+            )
+        )
+        with connect() as conn:
+            row = conn.execute("SELECT * FROM sources WHERE id = ?", (source["id"],)).fetchone()
+            reindex_source_chunks(conn, source_from_encrypted_row(conn, row))
+
+        with connect() as conn:
+            page = conn.execute("SELECT id FROM source_pages WHERE source_id = ?", (source["id"],)).fetchone()
+            chunk = conn.execute("SELECT id FROM source_chunks WHERE source_id = ?", (source["id"],)).fetchone()
+            encrypted_before = conn.execute(
+                "SELECT COUNT(*) AS count FROM encrypted_content WHERE vault_id = ?",
+                ("vault-secured",),
+            ).fetchone()["count"]
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id, vault_id, title, scope_cluster_id, saved, memory_status,
+                    memory_updated_at, created_at, updated_at
+                )
+                VALUES ('cleanup-chat', 'vault-secured', 'Chat', NULL, 0, 'idle', NULL, ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES ('cleanup-message', 'cleanup-chat', 'assistant', 'answer', ?)",
+                (now,),
+            )
+            conn.execute(
+                """
+                INSERT INTO retrieval_snapshots (
+                    id, message_id, session_id, vault_id, query, retrieval_mode,
+                    embedding_model_id, token_budget, created_at
+                )
+                VALUES ('cleanup-snapshot', 'cleanup-message', 'cleanup-chat', 'vault-secured', 'query', 'semantic', 'hash-dev', NULL, ?)
+                """,
+                (now,),
+            )
+            conn.execute(
+                """
+                INSERT INTO retrieval_snapshot_items (
+                    id, snapshot_id, source_id, chunk_id, page_id,
+                    source_title_at_answer_time, page_number, snippet_hash,
+                    short_snippet_excerpt, relevance_score, item_rank, state, created_at
+                )
+                VALUES (
+                    'cleanup-item', 'cleanup-snapshot', NULL, ?, ?, 'Secured cleanup', 1,
+                    'hash', 'excerpt', 1.0, 1, 'current', ?
+                )
+                """,
+                (chunk["id"], page["id"], now),
+            )
+            deleted_at = utc_now()
+            conn.execute(
+                "UPDATE sources SET state = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?",
+                (deleted_at, deleted_at, source["id"]),
+            )
+        self.assertGreater(encrypted_before, 0)
+
+        _run_delete_source_cleanup({"source_id": source["id"]})
+
+        with connect() as conn:
+            encrypted_after = conn.execute(
+                "SELECT COUNT(*) AS count FROM encrypted_content WHERE vault_id = ?",
+                ("vault-secured",),
+            ).fetchone()["count"]
+            chunks = conn.execute(
+                "SELECT COUNT(*) AS count FROM source_chunks WHERE source_id = ?",
+                (source["id"],),
+            ).fetchone()["count"]
+            pages = conn.execute(
+                "SELECT COUNT(*) AS count FROM source_pages WHERE source_id = ?",
+                (source["id"],),
+            ).fetchone()["count"]
+            item = conn.execute("SELECT state, chunk_id, page_id FROM retrieval_snapshot_items WHERE id = 'cleanup-item'").fetchone()
+        self.assertEqual(encrypted_after, 0)
+        self.assertEqual(chunks, 0)
+        self.assertEqual(pages, 0)
+        self.assertEqual(item["state"], "source_deleted")
+        self.assertIsNone(item["chunk_id"])
+        self.assertIsNone(item["page_id"])
+
     def test_vector_reconciliation_queues_missing_source_chunks(self) -> None:
         from backend.app.api.routes.sources import create_source
         from backend.app.core.background_jobs import _run_vector_reconcile_incremental
@@ -1357,6 +1464,39 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(status["allowed_cluster_ids"], [])
         self.assertTrue(status["last_refreshed_at"])
 
+    def test_bridge_cluster_listing_is_bounded_and_stable(self) -> None:
+        from backend.app.api.routes.bridge import list_bridge_clusters, update_bridge_settings
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import BridgeSettingsUpdate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            for index in range(3):
+                created_at = f"2026-01-01T00:00:0{index}+00:00"
+                conn.execute(
+                    """
+                    INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
+                    VALUES (?, 'vault-1', ?, '', 'sage', 'setting-up', ?, ?)
+                    """,
+                    (f"bridge-cluster-{index}", f"Cluster {index}", created_at, created_at),
+                )
+
+        status = update_bridge_settings(
+            BridgeSettingsUpdate(enabled=True, allowed_vault_ids=["vault-1"], rotate_token=True)
+        )
+        first_page = list_bridge_clusters(x_cml_bridge_token=status["bridge_token"], limit=2)
+        second_page = list_bridge_clusters(x_cml_bridge_token=status["bridge_token"], limit=2, offset=2)
+
+        self.assertEqual(
+            [cluster["id"] for cluster in first_page["clusters"]],
+            ["bridge-cluster-2", "bridge-cluster-1"],
+        )
+        self.assertEqual([cluster["id"] for cluster in second_page["clusters"]], ["bridge-cluster-0"])
+
     def test_bridge_requires_explicit_allowed_vault_when_vault_omitted(self) -> None:
         from fastapi import HTTPException
 
@@ -2177,6 +2317,8 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIn("Markdown links: https://example.com", source["raw_text"])
 
     def test_large_local_import_reports_batch_counts_without_crashing(self) -> None:
+        from unittest.mock import patch
+
         from backend.app.api.routes.integrations import refresh_integration_import, scan_local_folder_integration
         from backend.app.core.database import connect, utc_now
         from backend.app.schemas import LocalFolderScanRequest
@@ -2193,11 +2335,14 @@ class SourcePageIndexingTests(unittest.TestCase):
             )
 
         scan = scan_local_folder_integration(LocalFolderScanRequest(vault_id="vault-1", path=str(folder), max_files=500))
-        result = refresh_integration_import(scan["import_id"], import_files=True)
+        with patch("backend.app.core.quarantine.run_parser_worker") as worker:
+            worker.side_effect = AssertionError("text imports should not launch parser workers")
+            result = refresh_integration_import(scan["import_id"], import_files=True)
 
         self.assertEqual(result["supported_count"], 160)
         self.assertEqual(result["imported_count"], 160)
         self.assertEqual(result["failed_count"], 0)
+        worker.assert_not_called()
         with connect() as conn:
             row = conn.execute("SELECT COUNT(*) AS count FROM sources WHERE vault_id = 'vault-1'").fetchone()
         self.assertEqual(row["count"], 160)

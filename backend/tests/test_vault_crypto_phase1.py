@@ -127,6 +127,20 @@ class VaultCryptoPhase1Tests(unittest.TestCase):
         with self.assertRaises(vault_crypto.InvalidVaultSecretError):
             vault_crypto.verify_sensitive_action("vault-crypto", "123456")
 
+    def test_sensitive_action_verification_does_not_unlock_vault(self) -> None:
+        from backend.app.core import vault_crypto
+
+        vault_crypto.initialize_vault_security(
+            "vault-crypto",
+            "sensitive-passphrase",
+            kdf_params=vault_crypto.TEST_KDF_PARAMS,
+        )
+        vault_crypto.lock_vault("vault-crypto")
+
+        self.assertTrue(vault_crypto.verify_sensitive_action("vault-crypto", "sensitive-passphrase"))
+        self.assertFalse(vault_crypto.is_vault_unlocked("vault-crypto"))
+        self.assertEqual(vault_crypto.active_key_count(), 0)
+
     def test_public_metadata_redacts_wrapped_keys_and_vendor_recovery_is_absent(self) -> None:
         from backend.app.core import vault_crypto
 

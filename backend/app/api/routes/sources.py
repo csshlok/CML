@@ -40,9 +40,14 @@ router = APIRouter(prefix="/sources", tags=["sources"])
 
 
 @router.get("", response_model=list[SourceRead])
-def list_sources(vault_id: str | None = None, cluster_id: str | None = None) -> list[dict]:
+def list_sources(
+    vault_id: str | None = None,
+    cluster_id: str | None = None,
+    limit: int = 500,
+    offset: int = 0,
+) -> list[dict]:
     clauses: list[str] = []
-    params: list[str] = []
+    params: list[object] = []
     if vault_id:
         clauses.append("vault_id = ?")
         params.append(vault_id)
@@ -52,10 +57,12 @@ def list_sources(vault_id: str | None = None, cluster_id: str | None = None) -> 
 
     clauses.append("deleted_at IS NULL")
     where = f"WHERE {' AND '.join(clauses)}"
+    safe_limit = max(1, min(int(limit), 1000))
+    safe_offset = max(0, int(offset))
     with connect() as conn:
         rows = conn.execute(
-            f"SELECT * FROM sources {where} ORDER BY updated_at DESC",
-            params,
+            f"SELECT * FROM sources {where} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+            [*params, safe_limit, safe_offset],
         ).fetchall()
         return [source_from_row(row, conn=conn) for row in rows]
 

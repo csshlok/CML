@@ -14,10 +14,13 @@ from backend.app.core.encrypted_storage import is_vault_secured, write_encrypted
 from backend.app.core.extraction import (
     MAX_LOCAL_FILE_BYTES,
     MAX_LOCAL_MEDIA_BYTES,
+    SUPPORTED_CODE_EXTENSIONS,
     SUPPORTED_DOCUMENT_EXTENSIONS,
     SUPPORTED_IMAGE_EXTENSIONS,
     SUPPORTED_MEDIA_EXTENSIONS,
+    SUPPORTED_TEXT_EXTENSIONS,
     ExtractionError,
+    extract_pages_from_validated_path,
 )
 from backend.app.core.vault_crypto import is_vault_unlocked
 
@@ -30,6 +33,7 @@ MAX_DOCX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
 MAX_DOCX_EXPANSION_RATIO = 100
 MAX_PDF_PAGES = 1000
 PARSER_TIMEOUT_SECONDS = 180
+IN_PROCESS_PARSER_EXTENSIONS = SUPPORTED_TEXT_EXTENSIONS | SUPPORTED_CODE_EXTENSIONS
 
 
 class QuarantineError(ExtractionError):
@@ -42,7 +46,7 @@ def ingest_file_through_quarantine(vault_id: str, path: str) -> dict:
     encrypted_blob = _encrypted_quarantine_blob(vault_id, Path(candidate["canonical_path"]))
     record_id = create_quarantine_record(vault_id, candidate, defender, encrypted_blob=encrypted_blob)
     try:
-        parsed = run_parser_worker(candidate["canonical_path"])
+        parsed = parse_candidate_file(candidate)
         update_quarantine_record(
             record_id,
             validation_status="passed",
@@ -69,6 +73,15 @@ def ingest_file_through_quarantine(vault_id: str, path: str) -> dict:
         "security_labels": _security_labels(candidate, defender),
     }
     return parsed
+
+
+def parse_candidate_file(candidate: dict) -> dict:
+    suffix = str(candidate.get("suffix") or "").lower()
+    path = str(candidate.get("canonical_path") or "")
+    if suffix in IN_PROCESS_PARSER_EXTENSIONS:
+        title, pages = extract_pages_from_validated_path(path)
+        return validate_worker_output({"title": title, "pages": pages})
+    return run_parser_worker(path)
 
 
 def validate_candidate_file(path: str) -> dict:

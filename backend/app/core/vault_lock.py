@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timedelta
 from urllib.error import URLError
 from urllib.request import urlopen
 from pathlib import Path
@@ -24,6 +25,7 @@ class VaultLockUnverifiedError(VaultLockError):
 
 
 _LOCK_PATH: Path | None = None
+_LAST_AUDIT_CREATED_AT = ""
 
 
 def acquire_vault_lock() -> None:
@@ -111,6 +113,7 @@ def _write_audit(
     user_choice: str = "",
 ) -> None:
     try:
+        created_at = _next_audit_created_at()
         with connect() as conn:
             conn.execute(
                 """
@@ -127,12 +130,21 @@ def _write_audit(
                     str(lock_path),
                     detail,
                     user_choice,
-                    utc_now(),
+                    created_at,
                 ),
             )
     except Exception:
         # Lock auditing must never prevent startup/shutdown.
         return
+
+
+def _next_audit_created_at() -> str:
+    global _LAST_AUDIT_CREATED_AT
+    created_at = utc_now()
+    if _LAST_AUDIT_CREATED_AT and created_at <= _LAST_AUDIT_CREATED_AT:
+        created_at = (datetime.fromisoformat(_LAST_AUDIT_CREATED_AT) + timedelta(microseconds=1)).isoformat()
+    _LAST_AUDIT_CREATED_AT = created_at
+    return created_at
 
 
 def _write_override_audit_sequence(*, lock_path: Path, owner_pid: int, owner_state: str) -> None:

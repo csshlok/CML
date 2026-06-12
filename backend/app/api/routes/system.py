@@ -308,7 +308,7 @@ def list_vault_lock_audit(limit: int = 20) -> list[dict]:
         rows = conn.execute(
             """
             SELECT * FROM vault_lock_audit
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, rowid DESC
             LIMIT ?
             """,
             (safe_limit,),

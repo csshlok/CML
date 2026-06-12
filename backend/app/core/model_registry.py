@@ -642,6 +642,8 @@ def import_model_checkpoint(source_path: str | Path, *, name: str | None = None)
     family = report["family"]
     destination_name = _safe_import_dir_name(name or source_dir.name or family)
     destination = imported_models_dir() / destination_name
+    if _paths_overlap(source_dir, destination):
+        raise ValueError("Imported checkpoint source and managed destination must be separate directories.")
     if destination.exists():
         shutil.rmtree(destination)
     shutil.copytree(source_dir, destination)
@@ -963,9 +965,24 @@ def _normalized_path(path: Path) -> str:
         return str(path).lower()
 
 
+def _paths_overlap(first: Path, second: Path) -> bool:
+    try:
+        first_path = str(first.expanduser().resolve(strict=False)).lower()
+        second_path = str(second.expanduser().resolve(strict=False)).lower()
+        common = os.path.commonpath([first_path, second_path])
+    except (OSError, ValueError):
+        return False
+    return common in {first_path, second_path}
+
+
 def _download_model(model: LocalModel) -> None:
     try:
         _raise_if_cancelled(model.id)
+        expected_sha256 = _download_expected_model_sha256(model)
+        if not expected_sha256:
+            raise RuntimeError(
+                f"Managed model integrity pin is missing for {model.id}; refusing to download without a trusted SHA-256."
+            )
         file_name = _resolve_gguf_filename(model)
         _raise_if_cancelled(model.id)
         safe_file_name = _safe_model_file_name(file_name)
@@ -1002,8 +1019,7 @@ def _download_model(model: LocalModel) -> None:
                     downloaded += len(chunk)
                     _update_model_download_progress(model.id, downloaded, total_bytes, started_monotonic)
         actual_sha256 = _sha256_file(partial)
-        expected_sha256 = _expected_model_sha256(model)
-        if expected_sha256 and actual_sha256.lower() != expected_sha256.lower():
+        if actual_sha256.lower() != expected_sha256.lower():
             raise RuntimeError(
                 f"Model integrity check failed for {safe_file_name}: expected {expected_sha256}, got {actual_sha256}"
             )
@@ -1021,7 +1037,7 @@ def _download_model(model: LocalModel) -> None:
                     "eta_seconds": 0,
                     "local_path": str(target),
                     "sha256": actual_sha256,
-                    "integrity_status": "verified" if expected_sha256 else "recorded",
+                    "integrity_status": "verified",
                     "updated_at": utc_now(),
                 }
             )
@@ -1100,6 +1116,9 @@ def _cleanup_partial_download(model: LocalModel) -> None:
 
 
 def _resolve_gguf_filename(model: LocalModel) -> str:
+    trusted_file_name = _trusted_manifest_file_name(model)
+    if trusted_file_name:
+        return trusted_file_name
     api_url = f"https://huggingface.co/api/models/{model.hf_repo}"
     validate_huggingface_url(api_url)
     request = Request(api_url, headers={"User-Agent": "CML-local-backend/0.1"})
@@ -1144,16 +1163,38 @@ def _expected_model_sha256(model: LocalModel) -> str:
     return expected if isinstance(expected, str) else ""
 
 
+def _download_expected_model_sha256(model: LocalModel) -> str:
+    if model.expected_sha256:
+        return model.expected_sha256
+    return _trusted_manifest_expected_sha256(model)
+
+
 def _trusted_manifest_expected_sha256(model: LocalModel) -> str:
+    entry = _trusted_manifest_model_entry(model)
+    sha256 = entry.get("sha256") or entry.get("expected_sha256") or ""
+    return sha256 if _is_sha256(str(sha256)) else ""
+
+
+def _trusted_manifest_file_name(model: LocalModel) -> str:
+    entry = _trusted_manifest_model_entry(model)
+    file_name = str(entry.get("file_name") or "")
+    if not file_name:
+        return ""
+    return _safe_model_file_name(file_name)
+
+
+def _trusted_manifest_model_entry(model: LocalModel) -> dict[str, Any]:
     manifest = _trusted_integrity_manifest()
     models = manifest.get("models", {})
     if not isinstance(models, dict):
-        return ""
+        return {}
     entry = models.get(model.id) or {}
     if not isinstance(entry, dict):
-        return ""
-    sha256 = entry.get("sha256") or entry.get("expected_sha256") or ""
-    return sha256 if _is_sha256(str(sha256)) else ""
+        return {}
+    hf_repo = str(entry.get("hf_repo") or "")
+    if hf_repo and hf_repo != model.hf_repo:
+        return {}
+    return entry
 
 
 def _trusted_integrity_manifest() -> dict[str, Any]:

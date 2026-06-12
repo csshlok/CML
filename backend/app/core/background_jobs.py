@@ -10,6 +10,7 @@ from backend.app.core.derived_state import chunk_eligibility_sql, query_epoch_sn
 from backend.app.core.embeddings import content_hash, reindex_source_chunks, require_embeddings_available
 from backend.app.core.encrypted_storage import (
     chunk_from_encrypted_row,
+    delete_source_encrypted_content,
     delete_source_derived_encrypted_content,
     plaintext_column_for_text,
     update_source_content_fields,
@@ -772,13 +773,23 @@ def _run_expanded_analysis(payload: dict, job_id: str) -> None:
 def _run_delete_source_cleanup(payload: dict) -> None:
     source_id = str(payload["source_id"])
     with connect() as conn:
+        source = conn.execute("SELECT vault_id FROM sources WHERE id = ?", (source_id,)).fetchone()
+        delete_source_encrypted_content(
+            conn,
+            source_id=source_id,
+            vault_id=source["vault_id"] if source is not None else None,
+        )
         conn.execute(
             """
             UPDATE retrieval_snapshot_items
             SET state = 'source_deleted', source_id = NULL, chunk_id = NULL, page_id = NULL
-            WHERE source_id = ?
+            WHERE source_id = ? OR chunk_id IN (
+                SELECT id FROM source_chunks WHERE source_id = ?
+            ) OR page_id IN (
+                SELECT id FROM source_pages WHERE source_id = ?
+            )
             """,
-            (source_id,),
+            (source_id, source_id, source_id),
         )
         conn.execute("DELETE FROM chat_attachments WHERE source_id = ?", (source_id,))
         conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))

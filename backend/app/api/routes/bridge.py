@@ -942,13 +942,19 @@ def revoke_bridge_client(client_id: str) -> None:
 
 
 @router.get("/clusters")
-def list_bridge_clusters(x_cml_bridge_token: str | None = Header(default=None)) -> dict:
+def list_bridge_clusters(
+    x_cml_bridge_token: str | None = Header(default=None),
+    limit: int = 500,
+    offset: int = 0,
+) -> dict:
     settings, client_permissions, auth_mode = _authorize_bridge_runtime_token(x_cml_bridge_token)
     permissions = client_permissions or settings
+    safe_limit = max(1, min(int(limit), 1000))
+    safe_offset = max(0, int(offset))
     with connect() as conn:
         _enforce_runtime_rate_limits(conn, client_permissions, auth_mode)
     with connect() as conn:
-        params: list[str] = []
+        params: list[object] = []
         clauses: list[str] = []
         if permissions["allowed_vault_ids"]:
             clauses.append(f"vault_id IN ({','.join('?' for _ in permissions['allowed_vault_ids'])})")
@@ -959,8 +965,8 @@ def list_bridge_clusters(x_cml_bridge_token: str | None = Header(default=None)) 
         if not clauses:
             raise HTTPException(status_code=409, detail="no_active_vault")
         rows = conn.execute(
-            f"SELECT * FROM clusters WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC",
-            params,
+            f"SELECT * FROM clusters WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+            [*params, safe_limit, safe_offset],
         ).fetchall()
     return {"clusters": [dict_from_row(row) for row in rows]}
 
@@ -986,23 +992,19 @@ def _get_bridge_settings() -> dict:
     with connect() as conn:
         _ensure_bridge_settings(conn)
         row = conn.execute("SELECT * FROM bridge_settings WHERE id = 'default'").fetchone()
-        existing_vault_ids = {
-            vault["id"] for vault in conn.execute("SELECT id FROM vaults").fetchall()
-        }
-        existing_cluster_ids = {
-            cluster["id"] for cluster in conn.execute("SELECT id FROM clusters").fetchall()
-        }
+        configured_vault_ids = [str(item) for item in _json_list(row["allowed_vault_ids"])]
+        configured_cluster_ids = [str(item) for item in _json_list(row["allowed_cluster_ids"])]
+        existing_vault_ids = _existing_ids(conn, table="vaults", ids=configured_vault_ids)
+        existing_cluster_ids = _existing_ids(conn, table="clusters", ids=configured_cluster_ids)
         allowed_vault_ids = [
-            str(item) for item in _json_list(row["allowed_vault_ids"]) if str(item) in existing_vault_ids
+            item for item in configured_vault_ids if item in existing_vault_ids
         ]
         allowed_cluster_ids = [
-            str(item)
-            for item in _json_list(row["allowed_cluster_ids"])
-            if str(item) in existing_cluster_ids
+            item for item in configured_cluster_ids if item in existing_cluster_ids
         ]
         if (
-            allowed_vault_ids != _json_list(row["allowed_vault_ids"])
-            or allowed_cluster_ids != _json_list(row["allowed_cluster_ids"])
+            allowed_vault_ids != configured_vault_ids
+            or allowed_cluster_ids != configured_cluster_ids
         ):
             conn.execute(
                 """
@@ -1040,6 +1042,20 @@ def _json_list(value: str | None) -> list:
     except json.JSONDecodeError:
         return []
     return parsed if isinstance(parsed, list) else []
+
+
+def _existing_ids(conn, *, table: str, ids: list[str]) -> set[str]:
+    if table not in {"vaults", "clusters"}:
+        raise ValueError("unsupported_id_table")
+    unique_ids = list(dict.fromkeys(item for item in ids if item))
+    if not unique_ids:
+        return set()
+    placeholders = ",".join("?" for _ in unique_ids)
+    rows = conn.execute(
+        f"SELECT id FROM {table} WHERE id IN ({placeholders})",
+        unique_ids,
+    ).fetchall()
+    return {str(row["id"]) for row in rows}
 
 
 def _token_hash(token: str) -> str:

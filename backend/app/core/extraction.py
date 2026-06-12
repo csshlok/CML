@@ -5,7 +5,12 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from backend.app.core.network_security import NetworkSecurityError, strip_url_credentials, validate_public_http_url
+from backend.app.core.network_security import (
+    NetworkSecurityError,
+    strip_url_credentials,
+    validate_public_http_url,
+    validate_response_peer,
+)
 from backend.app.core.ocr import OCRError, ocr_image, ocr_pdf_pages
 
 
@@ -77,10 +82,10 @@ def extract_text_from_path(path: str) -> tuple[str, str]:
 
 def extract_pages_from_path(path: str) -> tuple[str, list[str]]:
     if not os.environ.get("CML_PARSER_WORKER"):
-        from backend.app.core.quarantine import run_parser_worker, validate_candidate_file
+        from backend.app.core.quarantine import parse_candidate_file, validate_candidate_file
 
-        validate_candidate_file(path)
-        parsed = run_parser_worker(path)
+        candidate = validate_candidate_file(path)
+        parsed = parse_candidate_file(candidate)
         return parsed["title"], parsed["pages"]
     return extract_pages_from_validated_path(path)
 
@@ -434,7 +439,11 @@ def _safe_open(request: Request, timeout: int):
     for _ in range(MAX_REDIRECTS + 1):
         try:
             response = opener.open(current, timeout=timeout)
-            validate_public_http_url(response.geturl())
+            try:
+                validate_public_http_url(response.geturl())
+                validate_response_peer(response)
+            except NetworkSecurityError as validation_exc:
+                raise ExtractionError(str(validation_exc)) from validation_exc
             return response, response.geturl()
         except Exception as exc:
             code = getattr(exc, "code", None)

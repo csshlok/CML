@@ -5,8 +5,9 @@ import subprocess
 import sys
 from urllib.parse import urljoin
 
+from backend.app.core.config import get_settings
 from backend.app.core.extraction import ExtractionError, MAX_LINK_BYTES
-from backend.app.core.network_security import NetworkSecurityError, strip_url_credentials, validate_public_http_url
+from backend.app.core.network_security import NetworkSecurityError, strip_url_credentials, validate_public_http_url, validate_public_ip_address
 
 BROWSER_TIMEOUT_SECONDS = 18
 BROWSER_NAVIGATION_TIMEOUT_MS = 12_000
@@ -14,7 +15,7 @@ BROWSER_TEXT_TIMEOUT_MS = 5_000
 BROWSER_REQUEST_BUDGET = 80
 BROWSER_MAX_TEXT_BYTES = MAX_LINK_BYTES
 BROWSER_MAX_WORKER_JSON_BYTES = MAX_LINK_BYTES + 64 * 1024
-BROWSER_BLOCKED_RESOURCE_TYPES = {"font", "image", "media"}
+BROWSER_BLOCKED_RESOURCE_TYPES = {"eventsource", "fetch", "font", "image", "media", "websocket", "xhr"}
 
 
 class BrowserIngestionError(ExtractionError):
@@ -22,12 +23,15 @@ class BrowserIngestionError(ExtractionError):
 
 
 def browser_fallback_available() -> bool:
-    return importlib.util.find_spec("playwright") is not None
+    return get_settings().enable_dynamic_web_ingestion and importlib.util.find_spec("playwright") is not None
 
 
 def browser_ingestion_diagnostics() -> dict:
+    runtime_available = importlib.util.find_spec("playwright") is not None
     return {
         "available": browser_fallback_available(),
+        "enabled": get_settings().enable_dynamic_web_ingestion,
+        "runtime_available": runtime_available,
         "isolated_worker": True,
         "timeout_seconds": BROWSER_TIMEOUT_SECONDS,
         "navigation_timeout_ms": BROWSER_NAVIGATION_TIMEOUT_MS,
@@ -173,6 +177,13 @@ def browser_worker_extract(url: str) -> dict:
         validate_public_http_url(final_url)
         if response is not None:
             validate_public_http_url(strip_url_credentials(response.url))
+            server_addr_fn = getattr(response, "server_addr", None)
+            server_addr = server_addr_fn() if callable(server_addr_fn) else None
+            if server_addr and server_addr.get("ipAddress"):
+                try:
+                    validate_public_ip_address(str(server_addr["ipAddress"]))
+                except NetworkSecurityError as exc:
+                    raise BrowserIngestionError(str(exc)) from exc
             content_length = response.headers.get("content-length")
             if content_length and int(content_length) > BROWSER_MAX_TEXT_BYTES:
                 raise BrowserIngestionError("Browser response is too large to ingest safely")
