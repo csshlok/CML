@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { BrandLogo } from "@/components/BrandLogo";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -425,17 +426,14 @@ function Onboarding() {
   }
 
   return (
-    <main className="vault-onboarding-shell min-h-screen overflow-hidden bg-background text-foreground">
+    <main className="vault-onboarding-shell h-screen overflow-y-auto bg-background text-foreground">
       <AnimatedBackground />
 
-      <div className="relative z-10 grid min-h-screen grid-cols-1 lg:grid-cols-[360px_1fr]">
-        <aside className="hidden border-r border-border bg-background px-10 py-10 lg:flex lg:flex-col">
+      <div className="relative z-10 grid min-h-full grid-cols-1 lg:grid-cols-[360px_1fr]">
+        <aside className="hidden border-r border-border bg-background px-10 py-10 lg:flex lg:min-h-full lg:flex-col">
           <div className="flex items-center gap-3">
-            <div className="vault-sidebar-mark flex h-8 w-8 items-center justify-center rounded-md">
-              <ShieldCheck className="h-4 w-4" />
-            </div>
             <div>
-              <div className="text-sm font-semibold">Vault</div>
+              <BrandLogo className="h-8 w-auto select-none" />
               <div className="text-xs text-muted-foreground">Local memory setup</div>
             </div>
           </div>
@@ -452,106 +450,109 @@ function Onboarding() {
           <StepRail step={step} />
         </aside>
 
-        <section className="flex min-h-screen items-center justify-center px-5 py-8 sm:px-10">
-          <div className="vault-onboarding-card w-full max-w-[880px]">
-            <MobileHeader step={step} />
+        <section className="flex min-h-full items-start justify-center px-5 py-8 sm:px-10 lg:items-center">
+          <div className="vault-onboarding-card flex w-full max-w-[880px] flex-col overflow-hidden lg:max-h-[calc(100vh-4rem)]">
+            <div className="shrink-0 px-6 pb-6 pt-6 sm:px-8">
+              <MobileHeader step={step} />
 
-            <div className="border-b border-border pb-6">
-              <div className="text-sm font-semibold">Vault setup</div>
-              <div className="mt-1 text-sm text-muted-foreground">
-                Step {step + 1} of {steps.length} / {steps[step]}
+              <div className="border-b border-border pb-6">
+                <div className="text-sm font-semibold">Vault setup</div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  Step {step + 1} of {steps.length} / {steps[step]}
+                </div>
               </div>
             </div>
 
-            <div key={step} className="vault-step-enter py-10">
-              {step === 0 && (
-                <SetupPanel
-                  icon={<Mail className="h-5 w-5" />}
-                  title="Sign up to Vault"
-                  sub="This creates a local profile for your device. Cloud accounts can be connected later."
-                >
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <ChoiceButton
-                      selected={signupMethod === "email"}
-                      title="Email"
-                      description="Use an email for your local profile."
-                      onClick={() => setSignupMethod("email")}
-                    />
-                    <ChoiceButton
-                      selected={signupMethod === "google"}
-                      title="Google"
-                      description="Reserved for OAuth; local profile now."
-                      onClick={() => setSignupMethod("google")}
-                      mark="G"
-                    />
-                  </div>
-                  {signupMethod === "email" && (
-                    <Field label="Email">
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 sm:px-8">
+              <div key={step} className="vault-step-enter py-10">
+                {step === 0 && (
+                  <SetupPanel
+                    icon={<Mail className="h-5 w-5" />}
+                    title="Sign up to Vault"
+                    sub="This creates a local profile for your device. Cloud accounts can be connected later."
+                  >
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <ChoiceButton
+                        selected={signupMethod === "email"}
+                        title="Email"
+                        description="Use an email for your local profile."
+                        onClick={() => setSignupMethod("email")}
+                      />
+                      <ChoiceButton
+                        selected={signupMethod === "google"}
+                        title="Google"
+                        description="Reserved for OAuth; local profile now."
+                        onClick={() => setSignupMethod("google")}
+                        mark="G"
+                      />
+                    </div>
+                    {signupMethod === "email" && (
+                      <Field label="Email">
+                        <Input
+                          value={email}
+                          onChange={(event) => setEmail(event.target.value)}
+                          placeholder="you@example.com"
+                          autoFocus
+                        />
+                      </Field>
+                    )}
+                  </SetupPanel>
+                )}
+
+                {step === 1 && (
+                  <SetupPanel
+                    icon={<UserRound className="h-5 w-5" />}
+                    title="What should Vault call you?"
+                    sub="This name stays in your local profile and appears in your workspace."
+                  >
+                    <Field label="Display name">
                       <Input
-                        value={email}
-                        onChange={(event) => setEmail(event.target.value)}
-                        placeholder="you@example.com"
+                        value={displayName}
+                        onChange={(event) => setDisplayName(event.target.value)}
+                        placeholder="Your name"
                         autoFocus
                       />
                     </Field>
-                  )}
-                </SetupPanel>
-              )}
+                  </SetupPanel>
+                )}
 
-              {step === 1 && (
-                <SetupPanel
-                  icon={<UserRound className="h-5 w-5" />}
-                  title="What should Vault call you?"
-                  sub="This name stays in your local profile and appears in your workspace."
-                >
-                  <Field label="Display name">
-                    <Input
-                      value={displayName}
-                      onChange={(event) => setDisplayName(event.target.value)}
-                      placeholder="Your name"
-                      autoFocus
-                    />
-                  </Field>
-                </SetupPanel>
-              )}
+                {step === 2 && (
+                  <SetupPanel
+                    icon={<Sparkles className="h-5 w-5" />}
+                    title="Name your vault"
+                    sub="A vault is the local memory space where your files, links, notes, and chats live."
+                  >
+                    <Field label="Vault name">
+                      <Input
+                        value={vaultName}
+                        onChange={(event) => setVaultName(event.target.value)}
+                        placeholder="My Vault"
+                        autoFocus
+                      />
+                    </Field>
+                  </SetupPanel>
+                )}
 
-              {step === 2 && (
-                <SetupPanel
-                  icon={<Sparkles className="h-5 w-5" />}
-                  title="Name your vault"
-                  sub="A vault is the local memory space where your files, links, notes, and chats live."
-                >
-                  <Field label="Vault name">
-                    <Input
-                      value={vaultName}
-                      onChange={(event) => setVaultName(event.target.value)}
-                      placeholder="My Vault"
-                      autoFocus
-                    />
-                  </Field>
-                </SetupPanel>
-              )}
+                {step === 3 && (
+                  <SetupPanel
+                    icon={<ShieldCheck className="h-5 w-5" />}
+                    title={`Welcome${displayName.trim() ? `, ${displayName.trim()}` : ""}`}
+                    sub="Vault keeps the setup simple: choose a local folder, connect memory search, then start adding context."
+                  >
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <MiniFact title="Private" body="Stored on this device." />
+                      <MiniFact title="Searchable" body="Powered by a local embedding model." />
+                      <MiniFact title="Ready" body="Chat can use your context after indexing." />
+                    </div>
+                  </SetupPanel>
+                )}
 
-              {step === 3 && (
-                <SetupPanel
-                  icon={<ShieldCheck className="h-5 w-5" />}
-                  title={`Welcome${displayName.trim() ? `, ${displayName.trim()}` : ""}`}
-                  sub="Vault keeps the setup simple: choose a local folder, connect memory search, then start adding context."
-                >
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <MiniFact title="Private" body="Stored on this device." />
-                    <MiniFact title="Searchable" body="Powered by a local embedding model." />
-                    <MiniFact title="Ready" body="Chat can use your context after indexing." />
-                  </div>
-                </SetupPanel>
-              )}
-
-              {step === 4 && (
-                <SetupPanel
-                  icon={<FolderOpen className="h-5 w-5" />}
-                  title="Choose where Vault lives"
-                  sub="This folder becomes your real storage location. Vault data is written inside a hidden .vault folder there."
-                >
+                {step === 4 && (
+                  <SetupPanel
+                    icon={<FolderOpen className="h-5 w-5" />}
+                    title="Choose where Vault lives"
+                    sub="This folder becomes your real storage location. Vault data is written inside a hidden .vault folder there."
+                  >
                   <Field label="Vault location">
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <Input
@@ -598,7 +599,7 @@ function Onboarding() {
                 </SetupPanel>
               )}
 
-              {step === 5 && (
+                {step === 5 && (
                 <SetupPanel
                   icon={<PlugZap className="h-5 w-5" />}
                   title="Choose the chat model and expert checkpoint"
@@ -764,7 +765,7 @@ function Onboarding() {
                 </SetupPanel>
               )}
 
-              {step === 6 && (
+                {step === 6 && (
                 <SetupPanel
                   icon={<Sparkles className="h-5 w-5" />}
                   title="Choose the memory-search model"
@@ -868,7 +869,7 @@ function Onboarding() {
                 </SetupPanel>
               )}
 
-              {step === 7 && (
+                {step === 7 && (
                 <SetupPanel
                   icon={<Check className="h-5 w-5" />}
                   title="Welcome to Vault"
@@ -884,48 +885,51 @@ function Onboarding() {
                     />
                   </div>
                 </SetupPanel>
+                )}
+              </div>
+
+              {(message || error) && (
+                <div
+                  className={cn(
+                    "mb-6 rounded-md border px-4 py-3 text-sm",
+                    error
+                      ? "border-destructive/30 bg-destructive/5 text-destructive"
+                      : "border-[var(--status-ready)]/25 bg-[var(--status-ready)]/10 text-foreground",
+                  )}
+                >
+                  {error ?? message}
+                </div>
               )}
             </div>
 
-            {(message || error) && (
-              <div
-                className={cn(
-                  "mt-5 rounded-md border px-4 py-3 text-sm",
-                  error
-                    ? "border-destructive/30 bg-destructive/5 text-destructive"
-                    : "border-[var(--status-ready)]/25 bg-[var(--status-ready)]/10 text-foreground",
-                )}
-              >
-                {error ?? message}
-              </div>
-            )}
+            <div className="shrink-0 border-t border-border px-6 pb-6 pt-5 sm:px-8">
+              <div className="flex items-center justify-between gap-3">
+                <Button variant="ghost" onClick={back} disabled={step === 0}>
+                  <ArrowLeft className="h-4 w-4" />
+                  Back
+                </Button>
 
-            <div className="flex items-center justify-between gap-3 border-t border-border pt-5">
-              <Button variant="ghost" onClick={back} disabled={step === 0}>
-                <ArrowLeft className="h-4 w-4" />
-                Back
-              </Button>
-
-              <div className="flex items-center gap-3">
-                <div className="hidden text-xs text-muted-foreground sm:block">
-                  {step + 1} of {steps.length}
+                <div className="flex items-center gap-3">
+                  <div className="hidden text-xs text-muted-foreground sm:block">
+                    {step + 1} of {steps.length}
+                  </div>
+                  {step === 4 ? (
+                    <Button onClick={() => void createVaultAfterFolderSelection()} disabled={!canContinue}>
+                      Create vault
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
+                  ) : step === 7 ? (
+                    <Button onClick={finish}>
+                      Open Vault
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
+                  ) : (
+                    <Button onClick={next} disabled={!canContinue}>
+                      Continue
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
+                  )}
                 </div>
-                {step === 4 ? (
-                  <Button onClick={() => void createVaultAfterFolderSelection()} disabled={!canContinue}>
-                    Create vault
-                    <ArrowRight className="h-4 w-4" />
-                  </Button>
-                ) : step === 7 ? (
-                  <Button onClick={finish}>
-                    Open Vault
-                    <ArrowRight className="h-4 w-4" />
-                  </Button>
-                ) : (
-                  <Button onClick={next} disabled={!canContinue}>
-                    Continue
-                    <ArrowRight className="h-4 w-4" />
-                  </Button>
-                )}
               </div>
             </div>
           </div>
@@ -948,7 +952,7 @@ function MobileHeader({ step }: { step: Step }) {
   return (
     <div className="mb-7 lg:hidden">
       <div className="flex items-center justify-between">
-        <div className="text-sm font-semibold">Vault</div>
+        <BrandLogo className="h-7 w-auto select-none" />
         <div className="text-xs text-muted-foreground">
           {step + 1} / {steps.length}
         </div>

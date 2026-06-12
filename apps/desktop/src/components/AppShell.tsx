@@ -19,6 +19,7 @@ import {
   LockKeyhole,
 } from "lucide-react";
 import { CommandPalette, useCommandPalette } from "@/components/CommandPalette";
+import { BrandLogo } from "@/components/BrandLogo";
 import { useEffect, useState } from "react";
 import {
   createChatSession,
@@ -212,9 +213,8 @@ export function AppShell() {
               <FolderOpen className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
               <span className="truncate">{vaultPath ?? "Choose vault"}</span>
             </button>
-            <div className="mt-4 flex items-center gap-2">
-              <span className="text-[16px] leading-none text-[var(--text-primary)]">✳</span>
-              <span className="text-[14px] font-medium leading-5 text-[var(--text-primary)]">Vault</span>
+            <div className="mt-4">
+              <BrandLogo className="h-7 w-auto select-none" />
             </div>
             <button
               type="button"
