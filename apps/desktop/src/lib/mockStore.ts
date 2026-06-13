@@ -69,6 +69,10 @@ export interface ChatMessage {
   citations?: CitationRef[];
   useful?: boolean | null;
   saved?: boolean;
+  warnings?: string[];
+  intent?: string;
+  runtimeState?: string | null;
+  coverageLedger?: Record<string, unknown> | null;
 }
 
 export interface Chat {

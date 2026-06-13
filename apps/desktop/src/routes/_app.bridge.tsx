@@ -7,27 +7,46 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
   approveBridgeApprovalRequest,
+  captureBridgeArtifact,
+  captureBridgeExternalTurn,
+  approveExtensionPairing,
   createBridgeClient,
+  createExtensionClient,
+  decideBridgeWritebackReview,
   deleteBridgeClient,
+  getExtensionStatus,
+  listBridgeCaptures,
   getBridgeStatus,
   listBridgeApprovalRequests,
   listBridgeAuditEvents,
   listBridgeClients,
   listBridgeTokenRotations,
+  listExtensionCaptures,
+  listExtensionClients,
+  listExtensionPairings,
+  listBridgeWritebackReviews,
   listClusters,
   listBridgeRequests,
   rejectBridgeApprovalRequest,
+  revokeExtensionClient,
+  startExtensionPairing,
   listVaults,
   updateBridgeClient,
   updateBridgeSettings,
+  updateExtensionClient,
   useBackendHealth,
   type BridgeApprovalRequest,
   type BridgeAuditEvent,
+  type BridgeCaptureRecord,
   type BridgeClientRecord,
   type BridgeRequest,
   type BridgeStatus,
   type BridgeTokenRotation,
+  type BridgeWritebackReview,
   type ClusterRecord,
+  type ExtensionCaptureRecord,
+  type ExtensionClientRecord,
+  type ExtensionPairingRecord,
   type VaultRecord,
 } from "@/lib/backend";
 
@@ -44,16 +63,32 @@ function BridgeView() {
   const [auditEvents, setAuditEvents] = useState<BridgeAuditEvent[]>([]);
   const [rotations, setRotations] = useState<BridgeTokenRotation[]>([]);
   const [clients, setClients] = useState<BridgeClientRecord[]>([]);
+  const [captures, setCaptures] = useState<BridgeCaptureRecord[]>([]);
+  const [reviews, setReviews] = useState<BridgeWritebackReview[]>([]);
+  const [extensionClients, setExtensionClients] = useState<ExtensionClientRecord[]>([]);
+  const [extensionCaptures, setExtensionCaptures] = useState<ExtensionCaptureRecord[]>([]);
+  const [extensionPairings, setExtensionPairings] = useState<ExtensionPairingRecord[]>([]);
   const [clientName, setClientName] = useState("Local MCP client");
   const [clientToken, setClientToken] = useState<string | null>(null);
   const [vaults, setVaults] = useState<VaultRecord[]>([]);
   const [clusters, setClusters] = useState<ClusterRecord[]>([]);
   const [saving, setSaving] = useState(false);
+  const [captureMode, setCaptureMode] = useState<"artifact" | "turn">("artifact");
+  const [captureVaultId, setCaptureVaultId] = useState("");
+  const [captureClusterId, setCaptureClusterId] = useState("");
+  const [captureTitle, setCaptureTitle] = useState("");
+  const [capturePrompt, setCapturePrompt] = useState("");
+  const [captureResponse, setCaptureResponse] = useState("");
+  const [captureClientName, setCaptureClientName] = useState("desktop-manual");
+  const [captureNotice, setCaptureNotice] = useState<string | null>(null);
+  const [extensionName, setExtensionName] = useState("Browser extension");
+  const [extensionToken, setExtensionToken] = useState<string | null>(null);
+  const [extensionNotice, setExtensionNotice] = useState<string | null>(null);
 
   async function loadBridgeState(options: { clearOnError?: boolean } = {}) {
     if (backend.status !== "online") return;
     try {
-      const [nextStatus, nextRequests, nextApprovals, nextAuditEvents, nextRotations, nextClients, nextVaults, nextClusters] = await Promise.all([
+      const [nextStatus, nextRequests, nextApprovals, nextAuditEvents, nextRotations, nextClients, nextVaults, nextClusters, nextCaptures, nextReviews, nextExtensionClients, nextExtensionCaptures, nextExtensionPairings] = await Promise.all([
         getBridgeStatus(),
         listBridgeRequests(),
         listBridgeApprovalRequests(),
@@ -62,6 +97,11 @@ function BridgeView() {
         listBridgeClients(),
         listVaults(),
         listClusters(),
+        listBridgeCaptures(),
+        listBridgeWritebackReviews(undefined, true),
+        listExtensionClients(),
+        listExtensionCaptures(),
+        listExtensionPairings(),
       ]);
       const vaultIds = new Set(nextVaults.map((vault) => vault.id));
       const clusterIds = new Set(nextClusters.map((cluster) => cluster.id));
@@ -77,6 +117,14 @@ function BridgeView() {
       setClients(nextClients);
       setVaults(nextVaults);
       setClusters(nextClusters);
+      setCaptures(nextCaptures);
+      setReviews(nextReviews);
+      setExtensionClients(nextExtensionClients);
+      setExtensionCaptures(nextExtensionCaptures);
+      setExtensionPairings(nextExtensionPairings);
+      if (!captureVaultId && nextStatus.allowed_vault_ids.length > 0) {
+        setCaptureVaultId(nextStatus.allowed_vault_ids[0] ?? "");
+      }
     } catch {
       if (options.clearOnError) {
         setStatus(null);
@@ -87,6 +135,11 @@ function BridgeView() {
         setClients([]);
         setVaults([]);
         setClusters([]);
+        setCaptures([]);
+        setReviews([]);
+        setExtensionClients([]);
+        setExtensionCaptures([]);
+        setExtensionPairings([]);
       }
     }
   }
@@ -194,6 +247,133 @@ function BridgeView() {
     setSaving(true);
     try {
       await rejectBridgeApprovalRequest(requestRow.id, { detail: "Rejected in CML Bridge settings." });
+      await loadBridgeState();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function reviewCapture(sourceId: string, approved: boolean) {
+    setSaving(true);
+    try {
+      await decideBridgeWritebackReview(sourceId, approved);
+      await loadBridgeState();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function submitManualCapture() {
+    const vaultId = captureVaultId || status?.allowed_vault_ids[0] || "";
+    if (!vaultId) return;
+    if (captureMode === "artifact") {
+      const title = captureTitle.trim();
+      const content = captureResponse.trim();
+      if (!title || !content) return;
+      setSaving(true);
+      try {
+        const result = await captureBridgeArtifact({
+          vault_id: vaultId,
+          cluster_id: captureClusterId || null,
+          client_name: captureClientName.trim() || "desktop-manual",
+          title,
+          content,
+          artifact_type: "manual_capture",
+          metadata: { capture_surface: "desktop_bridge" },
+        });
+        setCaptureNotice(`Saved ${result.source_type.replace(/_/g, " ")} to the vault.`);
+        setCaptureTitle("");
+        setCaptureResponse("");
+        await loadBridgeState();
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+    const prompt = capturePrompt.trim();
+    const response = captureResponse.trim();
+    if (!prompt || !response) return;
+    setSaving(true);
+    try {
+      const result = await captureBridgeExternalTurn({
+        vault_id: vaultId,
+        cluster_id: captureClusterId || null,
+        client_name: captureClientName.trim() || "desktop-manual",
+        user_prompt: prompt,
+        model_response: response,
+        metadata: { capture_surface: "desktop_bridge" },
+      });
+      setCaptureNotice(`Saved ${result.source_type.replace(/_/g, " ")} to the vault.`);
+      setCapturePrompt("");
+      setCaptureResponse("");
+      await loadBridgeState();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function createManualExtensionClient() {
+    const name = extensionName.trim();
+    if (!name) return;
+    setSaving(true);
+    try {
+      const result = await createExtensionClient({ name });
+      setExtensionToken(result.token);
+      setExtensionNotice("Extension client created.");
+      await loadBridgeState();
+      try {
+        const statusResult = await getExtensionStatus(result.token);
+        setExtensionNotice(statusResult.detail);
+      } catch {
+        // Best-effort status probe.
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function createPairingSession() {
+    const name = extensionName.trim();
+    if (!name) return;
+    setSaving(true);
+    try {
+      await startExtensionPairing({
+        name,
+        allowed_vault_ids: captureVaultId ? [captureVaultId] : undefined,
+      });
+      setExtensionNotice("Pairing session started.");
+      await loadBridgeState();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function approvePairing(pairingId: string) {
+    setSaving(true);
+    try {
+      const result = await approveExtensionPairing(pairingId);
+      setExtensionToken(result.token);
+      setExtensionNotice("Pairing approved and token issued.");
+      await loadBridgeState();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleExtensionClient(client: ExtensionClientRecord, enabled: boolean) {
+    setSaving(true);
+    try {
+      await updateExtensionClient(client.id, { enabled });
+      await loadBridgeState();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeExtensionClient(client: ExtensionClientRecord) {
+    setSaving(true);
+    try {
+      await revokeExtensionClient(client.id);
       await loadBridgeState();
     } finally {
       setSaving(false);
@@ -376,6 +556,235 @@ function BridgeView() {
           <div className="flex items-center justify-between gap-4">
             <div>
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                Extension pairing
+              </div>
+              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                Set up a browser/extension capture client without dropping to raw API calls. Start a pairing, approve it here, and then monitor captures.
+              </p>
+            </div>
+            <div className="flex min-w-0 gap-2">
+              <Input
+                value={extensionName}
+                onChange={(event) => setExtensionName(event.target.value)}
+                className="h-8 w-52"
+                aria-label="Extension client name"
+              />
+              <Button size="sm" variant="outline" disabled={saving} onClick={() => void createPairingSession()}>
+                Start pairing
+              </Button>
+              <Button size="sm" disabled={saving} onClick={() => void createManualExtensionClient()}>
+                Create token
+              </Button>
+            </div>
+          </div>
+          {extensionToken && (
+            <div className="mt-4 rounded-md border border-[var(--status-ready)]/35 bg-[var(--status-ready)]/10 px-3 py-2 text-xs">
+              <div className="font-medium">New extension token</div>
+              <button
+                type="button"
+                className="mt-1 block max-w-full truncate font-mono text-left text-muted-foreground"
+                onClick={() => void copyBridgeText(extensionToken)}
+                title="Copy extension token"
+              >
+                {extensionToken}
+              </button>
+            </div>
+          )}
+          <div className="mt-2 text-xs text-muted-foreground">{extensionNotice ?? "Use pairing for approve-in-app setup, or create a direct token if you are configuring it yourself."}</div>
+          <div className="mt-4 divide-y divide-border border-y border-border">
+            {extensionPairings.length > 0 ? (
+              extensionPairings.slice(0, 6).map((pairing) => (
+                <div key={pairing.id} className="grid gap-3 py-3 lg:grid-cols-[1fr_auto]">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="truncate text-sm font-medium">{pairing.requested_name}</div>
+                      <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                        {pairing.status}
+                      </span>
+                    </div>
+                    <div className="mt-1 font-mono text-xs text-muted-foreground">{pairing.pairing_code}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Expires {new Date(pairing.expires_at).toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {pairing.status === "pending" && (
+                      <Button size="sm" disabled={saving} onClick={() => void approvePairing(pairing.id)}>
+                        Approve
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="py-4 text-sm text-muted-foreground">No extension pairing sessions yet.</div>
+            )}
+          </div>
+        </section>
+
+        <section className="mt-4 rounded-md border border-border bg-card p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                Extension clients and captures
+              </div>
+              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                Review which extension clients are active and what they have saved recently.
+              </p>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {extensionClients.length} clients / {extensionCaptures.length} captures
+            </div>
+          </div>
+          <div className="mt-4 divide-y divide-border border-y border-border">
+            {extensionClients.length > 0 ? (
+              extensionClients.map((client) => (
+                <div key={client.id} className="grid gap-3 py-3 lg:grid-cols-[1fr_auto]">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="truncate text-sm font-medium">{client.name}</div>
+                      <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                        {client.enabled ? "enabled" : "disabled"}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {client.allowed_vault_ids.length || 0} allowed vaults / updated {new Date(client.updated_at).toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Switch checked={client.enabled} disabled={saving} onCheckedChange={(enabled) => void toggleExtensionClient(client, enabled)} />
+                    <Button variant="ghost" size="icon" disabled={saving} aria-label={`Delete ${client.name}`} onClick={() => void removeExtensionClient(client)}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="py-4 text-sm text-muted-foreground">No extension clients configured yet.</div>
+            )}
+          </div>
+          <div className="mt-4 divide-y divide-border border-y border-border">
+            {extensionCaptures.length > 0 ? (
+              extensionCaptures.slice(0, 6).map((capture) => (
+                <div key={capture.id} className="grid grid-cols-[1fr_auto] gap-3 py-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium">{capture.title}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {capture.capture_type} / {new Date(capture.created_at).toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="py-4 text-sm text-muted-foreground">No extension captures stored yet.</div>
+            )}
+          </div>
+        </section>
+
+        <section className="mt-4 rounded-md border border-border bg-card p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                Save external context
+              </div>
+              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                Paste an external answer or a full prompt-response pair and store it directly in CML. This is the current in-app save flow while the broader extension capture path is still landing.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant={captureMode === "artifact" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setCaptureMode("artifact")}
+              >
+                Artifact
+              </Button>
+              <Button
+                variant={captureMode === "turn" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setCaptureMode("turn")}
+              >
+                Prompt + answer
+              </Button>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <label className="space-y-1">
+              <span className="text-xs text-muted-foreground">Vault</span>
+              <select
+                value={captureVaultId}
+                onChange={(event) => setCaptureVaultId(event.target.value)}
+                className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+              >
+                <option value="">Select vault</option>
+                {vaults.map((vault) => (
+                  <option key={vault.id} value={vault.id}>
+                    {vault.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs text-muted-foreground">Cluster</span>
+              <select
+                value={captureClusterId}
+                onChange={(event) => setCaptureClusterId(event.target.value)}
+                className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+              >
+                <option value="">No cluster</option>
+                {clusters
+                  .filter((cluster) => !captureVaultId || cluster.vault_id === captureVaultId)
+                  .map((cluster) => (
+                    <option key={cluster.id} value={cluster.id}>
+                      {cluster.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label className="space-y-1 md:col-span-2">
+              <span className="text-xs text-muted-foreground">Client label</span>
+              <Input value={captureClientName} onChange={(event) => setCaptureClientName(event.target.value)} />
+            </label>
+            {captureMode === "artifact" ? (
+              <label className="space-y-1 md:col-span-2">
+                <span className="text-xs text-muted-foreground">Title</span>
+                <Input value={captureTitle} onChange={(event) => setCaptureTitle(event.target.value)} />
+              </label>
+            ) : (
+              <label className="space-y-1 md:col-span-2">
+                <span className="text-xs text-muted-foreground">User prompt</span>
+                <textarea
+                  value={capturePrompt}
+                  onChange={(event) => setCapturePrompt(event.target.value)}
+                  className="min-h-24 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                />
+              </label>
+            )}
+            <label className="space-y-1 md:col-span-2">
+              <span className="text-xs text-muted-foreground">
+                {captureMode === "artifact" ? "Artifact content" : "Model response"}
+              </span>
+              <textarea
+                value={captureResponse}
+                onChange={(event) => setCaptureResponse(event.target.value)}
+                className="min-h-36 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              />
+            </label>
+          </div>
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <div className="text-xs text-muted-foreground">
+              {captureNotice ?? "Stored captures inherit the same Bridge trust and review rules as external MCP writeback."}
+            </div>
+            <Button size="sm" disabled={saving || !captureVaultId || !captureResponse.trim()} onClick={() => void submitManualCapture()}>
+              Save to CML
+            </Button>
+          </div>
+        </section>
+
+        <section className="mt-4 rounded-md border border-border bg-card p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
                 Pending approvals
               </div>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
@@ -520,6 +929,93 @@ function BridgeView() {
               ))
             ) : (
               <div className="py-4 text-sm text-muted-foreground">No Bridge clients have dedicated tokens yet.</div>
+            )}
+          </div>
+        </section>
+
+        <section className="mt-4 rounded-md border border-border bg-card p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                Capture review queue
+              </div>
+              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                External answers that only partially used vault context, contradicted it, or skipped it stay here until you approve them.
+              </p>
+            </div>
+            <div className="text-xs text-muted-foreground">{reviews.length} pending</div>
+          </div>
+          <div className="mt-4 divide-y divide-border border-y border-border">
+            {reviews.length > 0 ? (
+              reviews.map((review) => (
+                <div key={review.source_id} className="grid gap-3 py-3 lg:grid-cols-[1fr_auto]">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="truncate text-sm font-medium">{review.title}</div>
+                      <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                        {review.quality_state.replace(/_/g, " ")}
+                      </span>
+                      <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                        {review.trust_tier}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Reasons: {review.reasons.join(", ") || "none recorded"}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Updated {new Date(review.updated_at).toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button size="sm" disabled={saving} onClick={() => void reviewCapture(review.source_id, true)}>
+                      Approve
+                    </Button>
+                    <Button variant="outline" size="sm" disabled={saving} onClick={() => void reviewCapture(review.source_id, false)}>
+                      Keep gated
+                    </Button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="py-4 text-sm text-muted-foreground">No Bridge captures are waiting for review.</div>
+            )}
+          </div>
+        </section>
+
+        <section className="mt-4 rounded-md border border-border bg-card p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                Saved captures
+              </div>
+              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                Recent external transcripts and artifacts stored through Bridge. This is the current operator-facing capture history until the dedicated save flow lands.
+              </p>
+            </div>
+            <div className="text-xs text-muted-foreground">{captures.length} recent</div>
+          </div>
+          <div className="mt-4 divide-y divide-border border-y border-border">
+            {captures.length > 0 ? (
+              captures.slice(0, 8).map((capture) => (
+                <div key={capture.source_id} className="grid grid-cols-[1fr_auto] gap-3 py-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="truncate text-sm font-medium">{capture.title}</div>
+                      <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                        {capture.source_type.replace(/_/g, " ")}
+                      </span>
+                      <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                        {capture.quality_state.replace(/_/g, " ")}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {capture.approved ? "Approved for trusted reuse" : "Stored with current trust gate"} / {new Date(capture.created_at).toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="py-4 text-sm text-muted-foreground">No Bridge captures stored yet.</div>
             )}
           </div>
         </section>

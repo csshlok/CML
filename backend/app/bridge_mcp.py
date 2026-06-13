@@ -5,6 +5,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from backend.app.core.version import app_version
+from backend.app.core.context_packets import build_bridge_context_packet, packet_telemetry
 
 
 BACKEND_URL = os.getenv("CML_BACKEND_URL", "http://127.0.0.1:7343").rstrip("/")
@@ -63,6 +64,8 @@ def handle_message(message: dict) -> dict:
             return error(request_id, -32602, validation_error)
         if name == "get_cluster_context":
             return result(request_id, call_get_cluster_context(arguments, request_id))
+        if name == "expand_context_item":
+            return result(request_id, call_expand_context_item(arguments, request_id))
         if name == "list_clusters":
             return result(request_id, call_list_clusters(request_id))
         if name == "log_external_turn":
@@ -85,8 +88,24 @@ def tools() -> list[dict]:
                     "vault_id": {"type": "string"},
                     "cluster_id": {"type": "string"},
                     "limit": {"type": "number"},
+                    "format": {"type": "string", "enum": ["packet", "json"]},
+                    "debug": {"type": "boolean"},
                 },
                 "required": ["query"],
+            },
+        },
+        {
+            "name": "expand_context_item",
+            "description": "Expand one CML context packet handle into fuller source, page, or chunk text.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "handle": {"type": "string"},
+                    "vault_id": {"type": "string"},
+                    "cluster_id": {"type": "string"},
+                    "mode": {"type": "string"},
+                },
+                "required": ["handle"],
             },
         },
         {
@@ -129,6 +148,8 @@ def tools() -> list[dict]:
 
 
 def call_get_cluster_context(arguments: dict, request_id) -> dict:
+    output_format = str(arguments.get("format") or "packet").strip().lower() or "packet"
+    debug = bool(arguments.get("debug"))
     payload = {
         "query": arguments.get("query", ""),
         "vault_id": arguments.get("vault_id"),
@@ -143,11 +164,12 @@ def call_get_cluster_context(arguments: dict, request_id) -> dict:
         headers={"x-cml-bridge-token": BRIDGE_TOKEN},
         request_id=request_id,
     )
+    raw_text = json.dumps(data, indent=2, ensure_ascii=False)
     return {
         "content": [
             {
                 "type": "text",
-                "text": json.dumps(data, indent=2),
+                "text": raw_text if output_format == "json" or debug else _format_context_packet(data, raw_text=raw_text),
             }
         ]
     }
@@ -167,6 +189,24 @@ def call_list_clusters(request_id) -> dict:
             }
         ]
     }
+
+
+def call_expand_context_item(arguments: dict, request_id) -> dict:
+    payload = {
+        "handle": arguments.get("handle", ""),
+        "vault_id": arguments.get("vault_id"),
+        "cluster_id": arguments.get("cluster_id"),
+        "mode": arguments.get("mode") or "full",
+        "client_name": "cml-mcp",
+    }
+    data = http_json(
+        "/api/v1/bridge/context/expand",
+        method="POST",
+        payload=payload,
+        headers={"x-cml-bridge-token": BRIDGE_TOKEN},
+        request_id=request_id,
+    )
+    return {"content": [{"type": "text", "text": json.dumps(data, indent=2, ensure_ascii=False)}]}
 
 
 def call_log_external_turn(arguments: dict, request_id) -> dict:
@@ -218,13 +258,20 @@ def validate_tool_arguments(name, arguments) -> str | None:
     for key, value in arguments.items():
         if isinstance(value, str) and len(value) > MAX_TOOL_STRING_LENGTH:
             return f"Tool argument is too large: {key}"
-    if name == "get_cluster_context" and not str(arguments.get("query") or "").strip():
-        return "get_cluster_context requires query."
+    if name == "get_cluster_context":
+        if not str(arguments.get("query") or "").strip():
+            return "get_cluster_context requires query."
+        requested_format = str(arguments.get("format") or "packet").strip().lower()
+        if requested_format and requested_format not in {"packet", "json"}:
+            return "get_cluster_context format must be packet or json."
     if name == "log_external_turn":
         if not str(arguments.get("user_prompt") or "").strip():
             return "log_external_turn requires user_prompt."
         if not str(arguments.get("model_response") or "").strip():
             return "log_external_turn requires model_response."
+    if name == "expand_context_item":
+        if not str(arguments.get("handle") or "").strip():
+            return "expand_context_item requires handle."
     if name == "capture_external_artifact":
         if not str(arguments.get("title") or "").strip():
             return "capture_external_artifact requires title."
@@ -290,6 +337,26 @@ def app_error_code(detail: str) -> int:
         "vault_not_found": 1003,
         "cluster_not_found": 1007,
     }.get(detail, 1000)
+
+
+def _format_context_packet(data: dict, *, raw_text: str) -> str:
+    packet = build_bridge_context_packet(
+        query=str(data.get("query") or ""),
+        context_request_id=str(data.get("context_request_id") or "") or None,
+        selected_clusters=[item for item in data.get("selected_clusters") or [] if isinstance(item, dict)],
+        source_snippets=[item for item in data.get("source_snippets") or [] if isinstance(item, dict)],
+        warnings=[str(item).strip() for item in data.get("warnings") or [] if str(item).strip()],
+        memory_items=[item for item in data.get("memory_items") or [] if isinstance(item, dict)],
+        working_memory=data.get("working_memory") or {},
+    )
+    telemetry = packet_telemetry(packet, raw_text=raw_text)
+    return (
+        f"{telemetry['packet_text']}\n\n"
+        "Packet Telemetry\n"
+        f"- Raw JSON bytes: {telemetry['raw_bytes']}\n"
+        f"- Packet bytes: {telemetry['packet_bytes']}\n"
+        f"- Approx savings vs raw JSON: {telemetry['savings_percent']:.1f}%"
+    )
 
 
 if __name__ == "__main__":

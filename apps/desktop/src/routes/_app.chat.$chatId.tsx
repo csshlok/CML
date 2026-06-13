@@ -21,6 +21,12 @@ import {
   type ModelRuntimeStatus,
   type VaultRecord,
 } from "@/lib/backend";
+import {
+  analysisModeLabel,
+  describeCoverage,
+  describePartialFailure,
+  statusToneForPartialFailure,
+} from "@/lib/chat-presentation";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -73,6 +79,10 @@ function ChatView() {
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const [streamWarnings, setStreamWarnings] = useState<string[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [latestContextMeta, setLatestContextMeta] = useState<Pick<
+    ChatContextResponse,
+    "coverage_ledger" | "intent" | "runtime_state" | "warnings"
+  > | null>(null);
   const [attachments, setAttachments] = useState<string[]>([]);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<ModelRuntimeStatus | null>(null);
@@ -88,6 +98,7 @@ function ChatView() {
     setBackendSessionId(null);
     setBackendMessages([]);
     setLastError(null);
+    setLatestContextMeta(null);
     try {
       const vaults = await listVaults();
       const activeVault = vaults[0] ?? null;
@@ -200,7 +211,17 @@ function ChatView() {
     : null;
   const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant");
   const latestCitations = latestAssistant?.citations ?? [];
-  const latestWarnings = streamWarnings.length > 0 ? streamWarnings : [];
+  const latestWarnings =
+    streamWarnings.length > 0
+      ? streamWarnings
+      : latestContextMeta?.warnings ?? latestAssistant?.warnings ?? [];
+  const latestCoverage = latestContextMeta?.coverage_ledger ?? latestAssistant?.coverageLedger ?? null;
+  const latestIntent = latestContextMeta?.intent ?? latestAssistant?.intent ?? "vault_question";
+  const latestRuntimeState = latestContextMeta?.runtime_state ?? latestAssistant?.runtimeState ?? null;
+  const latestPartialFailure = String(latestCoverage?.partial_failure_mode ?? "none");
+  const latestPartialFailureText = describePartialFailure(latestPartialFailure);
+  const latestCoverageSummary = describeCoverage(latestCoverage);
+  const latestAnalysisLabel = analysisModeLabel(latestIntent, latestCoverage);
 
   const setScope = async (val: string) => {
     const nextScope = val === "global" ? null : val;
@@ -244,7 +265,11 @@ function ChatView() {
     navigate({ to: "/chat" });
   };
 
-  const send = async (promptOverride?: string, attachmentOverride?: string[], expandedAnalysis = false) => {
+  const send = async (
+    promptOverride?: string,
+    attachmentOverride?: string[],
+    analysisMode: "standard" | "expanded" | "complete" = "standard",
+  ) => {
     const selectedAttachments = attachmentOverride ?? (promptOverride ? [] : attachments);
     const prompt = (promptOverride ?? input).trim() || (selectedAttachments.length > 0 ? "Read and store these attachments." : "");
     if ((!prompt && selectedAttachments.length === 0) || streaming) return;
@@ -265,8 +290,15 @@ function ChatView() {
     }
     setStreaming(true);
     setStreamText("");
-    setStreamStatus(expandedAnalysis ? "Scoring sources in scope..." : "Routing message...");
+    setStreamStatus(
+      analysisMode === "complete"
+        ? "Scoring every indexed source in scope..."
+        : analysisMode === "expanded"
+          ? "Scoring sources in scope..."
+          : "Routing message...",
+    );
     setStreamWarnings([]);
+    setLatestContextMeta(null);
     setLastError(null);
     setAttachmentNotice(
       selectedAttachments.length > 0
@@ -296,8 +328,9 @@ function ChatView() {
             cluster_id: scope?.id ?? null,
             session_id: backendSessionId ?? chatId,
             persist: true,
-            limit: expandedAnalysis ? 12 : 6,
-            expanded_analysis: expandedAnalysis,
+            limit: analysisMode === "expanded" ? 12 : 6,
+            expanded_analysis: analysisMode === "expanded",
+            complete_analysis: analysisMode === "complete",
             attachments: selectedAttachments.map((path) => ({
               path,
               cluster_id: scope?.id ?? null,
@@ -306,11 +339,14 @@ function ChatView() {
           {
             onMeta: (meta) => {
               streamedMeta = meta;
+              setLatestContextMeta(meta);
               const coverage = meta.coverage_ledger;
               setStreamStatus(
                 meta.intent === "general_chat"
                   ? "Using local LLM chat"
-                  : expandedAnalysis
+                  : analysisMode === "complete"
+                    ? `Complete analysis: scored ${coverage?.sources_considered ?? 0} source${coverage?.sources_considered === 1 ? "" : "s"}; analyzing ${coverage?.sources_analyzed ?? 0}.`
+                    : analysisMode === "expanded"
                     ? `Expanded analysis: considered ${coverage?.sources_considered ?? 0} source${coverage?.sources_considered === 1 ? "" : "s"}; analyzing ${coverage?.sources_analyzed ?? 0}.`
                     : coverage
                   ? `Considered ${coverage.sources_considered} source${coverage.sources_considered === 1 ? "" : "s"}; analyzing ${coverage.sources_analyzed}.`
@@ -322,12 +358,24 @@ function ChatView() {
             },
             onToken: (text) => {
               streamedAnswer += text;
-              setStreamStatus(expandedAnalysis ? "Writing expanded analysis..." : "Writing answer...");
+              setStreamStatus(
+                analysisMode === "complete"
+                  ? "Writing complete analysis..."
+                  : analysisMode === "expanded"
+                    ? "Writing expanded analysis..."
+                    : "Writing answer...",
+              );
               setStreamText(streamedAnswer);
             },
             onDone: (done) => {
               streamedDone = done;
               setStreamWarnings(done.warnings ?? streamedMeta.warnings ?? []);
+              setLatestContextMeta({
+                coverage_ledger: done.coverage_ledger ?? streamedMeta.coverage_ledger ?? null,
+                intent: done.intent ?? streamedMeta.intent,
+                runtime_state: done.runtime_state ?? streamedMeta.runtime_state,
+                warnings: done.warnings ?? streamedMeta.warnings ?? [],
+              });
             },
           },
           abortController.signal,
@@ -562,14 +610,24 @@ function ChatView() {
               </Button>
             )}
             {lastUserPrompt && !streaming && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1"
-                onClick={() => void send(lastUserPrompt, [], true)}
-              >
-                Expanded analysis
-              </Button>
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1"
+                  onClick={() => void send(lastUserPrompt, [], "expanded")}
+                >
+                  Expanded analysis
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1"
+                  onClick={() => void send(lastUserPrompt, [], "complete")}
+                >
+                  Complete analysis
+                </Button>
+              </>
             )}
             {streaming && (
               <Button variant="outline" size="sm" className="gap-1" onClick={stopStreaming}>
@@ -649,6 +707,26 @@ function ChatView() {
           </div>
           <aside className="hidden w-80 shrink-0 overflow-y-auto border-l border-border bg-card/20 p-4 xl:block">
             <div className="text-sm font-medium">Context used</div>
+            <div className="mt-3 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+              <div className="font-medium text-foreground">{latestAnalysisLabel}</div>
+              {latestCoverageSummary ? <div className="mt-1">{latestCoverageSummary}</div> : null}
+              {latestRuntimeState ? <div className="mt-1">Runtime: {latestRuntimeState}</div> : null}
+            </div>
+            {latestPartialFailureText && (
+              <div
+                className={
+                  "mt-3 rounded-md border px-3 py-2 text-xs " +
+                  (statusToneForPartialFailure(latestPartialFailure) === "critical"
+                    ? "border-red-300 bg-red-50 text-red-950"
+                    : statusToneForPartialFailure(latestPartialFailure) === "warning"
+                      ? "border-amber-300 bg-amber-50 text-amber-950"
+                      : "border-border bg-card text-muted-foreground")
+                }
+              >
+                <div className="font-medium">Degraded mode</div>
+                <div className="mt-1">{latestPartialFailureText}</div>
+              </div>
+            )}
             <div className="mt-3 space-y-3">
               {latestCitations.length === 0 ? (
                 <div className="text-sm text-muted-foreground">
@@ -675,7 +753,7 @@ function ChatView() {
             </div>
             {latestWarnings.length > 0 && (
               <div className="mt-5 border-t border-border pt-4">
-                <div className="text-sm font-medium">Runtime notes</div>
+                <div className="text-sm font-medium">Context notes</div>
                 <ul className="mt-2 space-y-2 text-xs text-muted-foreground">
                   {latestWarnings.map((warning) => (
                     <li key={warning}>{warning}</li>
@@ -700,6 +778,20 @@ function ChatView() {
           {backendReady && runtime && !runtime.available && (
             <div className="mx-auto mb-2 max-w-3xl rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
               Local LLM is offline. General chat is degraded until a local model runtime is running.
+            </div>
+          )}
+          {latestPartialFailureText && !streaming && (
+            <div
+              className={
+                "mx-auto mb-2 max-w-3xl rounded-md border px-3 py-2 text-xs " +
+                (statusToneForPartialFailure(latestPartialFailure) === "critical"
+                  ? "border-red-300 bg-red-50 text-red-950"
+                  : statusToneForPartialFailure(latestPartialFailure) === "warning"
+                    ? "border-amber-300 bg-amber-50 text-amber-950"
+                    : "border-border bg-background text-muted-foreground")
+              }
+            >
+              {latestPartialFailureText}
             </div>
           )}
           {attachmentNotice && (
@@ -756,7 +848,7 @@ function ChatView() {
             </div>
           )}
           <p className="mx-auto mt-1.5 max-w-3xl text-[11px] text-muted-foreground">
-            Ctrl/Cmd Enter to send / {scope ? scope.name : "all vault context"} / memory{" "}
+            Ctrl/Cmd Enter to send / {scope ? scope.name : "all vault context"} / {latestAnalysisLabel.toLowerCase()} / memory{" "}
             {memoryLabel(memoryState)}
           </p>
         </div>
@@ -794,6 +886,7 @@ function messageFromRecord(record: ChatMessageRecord): ChatMessage {
     })),
     useful: record.useful,
     saved: record.saved,
+    warnings: record.warnings,
   };
 }
 

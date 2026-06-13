@@ -220,6 +220,39 @@ export type BridgeAuditEvent = {
   updated_at: string;
 };
 
+export type BridgeWritebackReview = {
+  source_id: string;
+  vault_id: string;
+  context_request_id?: string | null;
+  quality_state: string;
+  approved: boolean;
+  reasons: string[];
+  title: string;
+  trust_tier: string;
+  security_labels: string[];
+  updated_at: string;
+};
+
+export type BridgeCaptureRecord = {
+  source_id: string;
+  vault_id: string;
+  cluster_id?: string | null;
+  title: string;
+  source_type: string;
+  quality_state: string;
+  approved: boolean;
+  created_at: string;
+};
+
+export type BridgeCaptureResponse = {
+  source_id: string;
+  vault_id: string;
+  cluster_id?: string | null;
+  source_type: string;
+  indexed: boolean;
+  warnings: string[];
+};
+
 export type VaultRecord = {
   id: string;
   name: string;
@@ -447,6 +480,41 @@ export type ChatContextResponse = {
     sources_low_relevance: number;
     relevance_threshold: number;
     scope: string;
+    trust_gate_mode?: string;
+    trusted_evidence_count?: number;
+    low_trust_evidence_count?: number;
+    trust_gate_latency_ms?: number;
+    route_policy?: string;
+    route_reason?: string;
+    analysis_mode?: string;
+    retrieval_attempted?: boolean;
+    token_budget?: number;
+    budget_hardware_tier?: string;
+    budget_model_tier?: string;
+    budget_query_type?: string;
+    budget_trust_mode?: string;
+    budget_widening_applied?: boolean;
+    budget_narrowing_applied?: boolean;
+    budget_widening_reason?: string;
+    budget_narrowing_reason?: string;
+    prompt_tokens_estimate?: number;
+    evidence_tokens_estimate?: number;
+    history_tokens_estimate?: number;
+    history_turns_selected?: number;
+    history_turns_trimmed?: number;
+    memory_items_selected?: number;
+    citations_selected?: number;
+    citations_trimmed?: number;
+    candidate_citations?: number;
+    supported_claims_count?: number;
+    unsupported_claims_count?: number;
+    contradiction_detected?: boolean;
+    synthesis_guard_mode?: string;
+    budget_applied?: boolean;
+    partial_failure_mode?: string;
+    expert_route_mode?: string;
+    expert_assist_attempted?: boolean;
+    expert_assist_used?: boolean;
   } | null;
   attachments_stored: Array<{
     source_id: string;
@@ -838,6 +906,23 @@ export type ExtensionCaptureRecord = {
   created_at: string;
 };
 
+export type ExtensionPairingRecord = {
+  id: string;
+  pairing_code: string;
+  status: string;
+  requested_name: string;
+  allowed_vault_ids: string[];
+  created_at: string;
+  expires_at: string;
+  completed_at?: string | null;
+};
+
+export type ExtensionStatusResponse = {
+  ok: boolean;
+  client_id?: string | null;
+  detail: string;
+};
+
 export type VaultLockAuditRecord = {
   id: string;
   event_type: string;
@@ -904,6 +989,57 @@ export async function rejectBridgeApprovalRequest(
 
 export async function listBridgeAuditEvents() {
   return request<BridgeAuditEvent[]>("/api/v1/bridge/audit-events");
+}
+
+export async function listBridgeWritebackReviews(vaultId?: string, pendingOnly = false) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (pendingOnly) params.set("pending_only", "true");
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<BridgeWritebackReview[]>(`/api/v1/bridge/reviews${suffix}`);
+}
+
+export async function decideBridgeWritebackReview(sourceId: string, approved: boolean) {
+  return request<BridgeWritebackReview>(`/api/v1/bridge/reviews/${encodeURIComponent(sourceId)}`, {
+    method: "POST",
+    body: JSON.stringify({ approved }),
+  });
+}
+
+export async function listBridgeCaptures(vaultId?: string) {
+  const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
+  return request<BridgeCaptureRecord[]>(`/api/v1/bridge/captures${query}`);
+}
+
+export async function captureBridgeArtifact(payload: {
+  vault_id?: string | null;
+  cluster_id?: string | null;
+  client_name: string;
+  title: string;
+  content: string;
+  artifact_type?: string;
+  metadata?: Record<string, unknown>;
+}) {
+  return request<BridgeCaptureResponse>("/api/v1/bridge/artifacts", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function captureBridgeExternalTurn(payload: {
+  vault_id?: string | null;
+  cluster_id?: string | null;
+  client_name: string;
+  user_prompt: string;
+  model_response: string;
+  context_request_id?: string | null;
+  model_name?: string | null;
+  metadata?: Record<string, unknown>;
+}) {
+  return request<BridgeCaptureResponse>("/api/v1/bridge/external-turn", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function createBridgeClient(payload: {
@@ -1229,6 +1365,7 @@ export async function buildChatContext(payload: {
   limit?: number;
   attachments?: Array<{ path: string; cluster_id?: string | null }>;
   expanded_analysis?: boolean;
+  complete_analysis?: boolean;
 }) {
   return request<ChatContextResponse>("/api/v1/chat/context", {
     method: "POST",
@@ -1246,6 +1383,7 @@ export async function streamChatContext(
     limit?: number;
     attachments?: Array<{ path: string; cluster_id?: string | null }>;
     expanded_analysis?: boolean;
+    complete_analysis?: boolean;
   },
   handlers: {
     onMeta?: (
@@ -1628,6 +1766,33 @@ export async function createExtensionClient(payload: { name: string }) {
   return request<ExtensionClientCreateResponse>("/api/v1/extension/clients", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function startExtensionPairing(payload: {
+  name: string;
+  allowed_vault_ids?: string[];
+  ttl_seconds?: number;
+}) {
+  return request<ExtensionPairingRecord>("/api/v1/extension/pairing/start", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function approveExtensionPairing(pairingId: string) {
+  return request<ExtensionClientCreateResponse>(`/api/v1/extension/pairing/${encodeURIComponent(pairingId)}/approve`, {
+    method: "POST",
+  });
+}
+
+export async function listExtensionPairings() {
+  return request<ExtensionPairingRecord[]>("/api/v1/extension/pairing");
+}
+
+export async function getExtensionStatus(token?: string) {
+  return request<ExtensionStatusResponse>("/api/v1/extension/status", {
+    headers: token ? { "x-cml-extension-token": token } : undefined,
   });
 }
 
