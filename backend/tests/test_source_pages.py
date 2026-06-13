@@ -92,6 +92,566 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertTrue(all(chunk["embedding_model_id"] for chunk in chunks))
         self.assertTrue(all(chunk["indexed_at"] for chunk in chunks))
 
+    def test_python_source_uses_symbol_aware_code_chunking(self) -> None:
+        from backend.app.api.routes.sources import create_source_from_path
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourcePathCreate
+
+        now = utc_now()
+        code_path = Path(self.tmp.name) / "example.py"
+        code_path.write_text(
+            "\n".join(
+                [
+                    "def first_function():",
+                    "    return 'first'",
+                    "",
+                    "class Example:",
+                    "    def method(self):",
+                    "        return 'method'",
+                    "",
+                    "def second_function():",
+                    "    return 'second'",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        source = create_source_from_path(SourcePathCreate(vault_id="vault-1", path=str(code_path)))
+        run_due_jobs_once(limit=1)
+
+        with connect() as conn:
+            chunks = conn.execute(
+                "SELECT chunk_strategy, content_profile, text FROM source_chunks WHERE source_id = ? ORDER BY chunk_index",
+                (source["id"],),
+            ).fetchall()
+
+        self.assertGreaterEqual(len(chunks), 2)
+        self.assertTrue(all(chunk["content_profile"] == "code" for chunk in chunks))
+        self.assertTrue(any(chunk["chunk_strategy"] == "python_ast_symbol" for chunk in chunks))
+        self.assertTrue(any("def first_function" in chunk["text"] for chunk in chunks))
+        self.assertTrue(any("class Example" in chunk["text"] for chunk in chunks))
+
+    def test_csv_source_keeps_headers_and_rows_together(self) -> None:
+        from backend.app.api.routes.sources import create_source_from_path
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourcePathCreate
+
+        now = utc_now()
+        csv_path = Path(self.tmp.name) / "table.csv"
+        csv_rows = ["name,role,value"] + [f"user{index},engineer,{index}" for index in range(85)]
+        csv_path.write_text("\n".join(csv_rows), encoding="utf-8")
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        source = create_source_from_path(SourcePathCreate(vault_id="vault-1", path=str(csv_path)))
+        run_due_jobs_once(limit=1)
+
+        with connect() as conn:
+            chunks = conn.execute(
+                "SELECT content_profile, chunk_strategy, text FROM source_chunks WHERE source_id = ? ORDER BY chunk_index",
+                (source["id"],),
+            ).fetchall()
+
+        self.assertGreaterEqual(len(chunks), 2)
+        self.assertTrue(all(chunk["content_profile"] == "table_csv" for chunk in chunks))
+        self.assertTrue(all(chunk["chunk_strategy"] == "tabular_rows" for chunk in chunks))
+        self.assertTrue(all(chunk["text"].splitlines()[0] == "name,role,value" for chunk in chunks))
+        self.assertTrue(any("user84,engineer,84" in chunk["text"] for chunk in chunks))
+
+    def test_typescript_source_uses_brace_symbol_chunking(self) -> None:
+        from backend.app.api.routes.sources import create_source_from_path
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourcePathCreate
+
+        now = utc_now()
+        ts_path = Path(self.tmp.name) / "example.ts"
+        ts_path.write_text(
+            "\n".join(
+                [
+                    "export class SessionStore {",
+                    "  constructor(private readonly baseUrl: string) {}",
+                    "  async loadSession(id: string) {",
+                    "    return fetch(`${this.baseUrl}/${id}`);",
+                    "  }",
+                    "}",
+                    "",
+                    "export function buildPacket(query: string) {",
+                    "  return { query, mode: 'packet' };",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        source = create_source_from_path(SourcePathCreate(vault_id="vault-1", path=str(ts_path)))
+        run_due_jobs_once(limit=1)
+
+        with connect() as conn:
+            chunks = conn.execute(
+                "SELECT chunk_strategy, content_profile, text, chunk_meta_json FROM source_chunks WHERE source_id = ? ORDER BY chunk_index",
+                (source["id"],),
+            ).fetchall()
+
+        self.assertGreaterEqual(len(chunks), 2)
+        self.assertTrue(all(chunk["content_profile"] == "code" for chunk in chunks))
+        self.assertTrue(any(chunk["chunk_strategy"] == "brace_symbol_block" for chunk in chunks))
+        self.assertTrue(any("export class SessionStore" in chunk["text"] for chunk in chunks))
+        self.assertTrue(any("export function buildPacket" in chunk["text"] for chunk in chunks))
+
+    def test_go_source_keeps_method_body_with_receiver(self) -> None:
+        from backend.app.api.routes.sources import create_source_from_path
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourcePathCreate
+
+        now = utc_now()
+        go_path = Path(self.tmp.name) / "worker.go"
+        go_path.write_text(
+            "\n".join(
+                [
+                    "package worker",
+                    "",
+                    "type Processor struct {",
+                    "    Name string",
+                    "}",
+                    "",
+                    "func (p *Processor) Run(task string) error {",
+                    "    if task == \"\" {",
+                    "        return nil",
+                    "    }",
+                    "    return nil",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        source = create_source_from_path(SourcePathCreate(vault_id="vault-1", path=str(go_path)))
+        run_due_jobs_once(limit=1)
+
+        with connect() as conn:
+            chunks = conn.execute(
+                "SELECT chunk_strategy, text FROM source_chunks WHERE source_id = ? ORDER BY chunk_index",
+                (source["id"],),
+            ).fetchall()
+
+        self.assertTrue(any(chunk["chunk_strategy"] == "brace_symbol_block" for chunk in chunks))
+        self.assertTrue(any("func (p *Processor) Run" in chunk["text"] and "return nil" in chunk["text"] for chunk in chunks))
+
+    def test_context_layer_report_exports_packet_savings_and_memory_counts(self) -> None:
+        from backend.app.api.routes.search import create_context_layer_report
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-1', 'vault-1', 'Context', '', 'sage', 'retrieval_ready', ?, ?)
+                """,
+                (now, now),
+            )
+        for index in range(4):
+            create_source(
+                SourceCreate(
+                    vault_id="vault-1",
+                    cluster_id="cluster-1",
+                    title=f"Context layer source {index}",
+                    source_type="note",
+                    raw_text=(
+                        "We decided to use retrieval first, compact packets, memory items, and working memory for this project. "
+                        f"Context source marker {index}. "
+                    ) * 24,
+                )
+            )
+        run_due_jobs_once(limit=4)
+
+        report = create_context_layer_report("vault-1", cluster_id="cluster-1", limit=4)
+
+        self.assertGreaterEqual(report["average_packet_savings_percent"], 0)
+        self.assertTrue(Path(report["json_path"]).exists())
+        self.assertTrue(Path(report["markdown_path"]).exists())
+
+        payload = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+        self.assertGreaterEqual(payload["query_count"], 1)
+        self.assertTrue(any(row["memory_item_count"] >= 1 for row in payload["rows"]))
+        self.assertTrue(all(row["packet_bytes"] > 0 and row["raw_payload_bytes"] > 0 for row in payload["rows"]))
+        self.assertTrue(any(row["expansion_handle_count"] >= 1 for row in payload["rows"]))
+
+    def test_context_layer_benchmark_script_exports_context_report(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        script = repo_root / "scripts" / "backend" / "benchmark-context-layer.ps1"
+        text = script.read_text(encoding="utf-8")
+        self.assertIn("export_context_layer_report", text)
+        self.assertIn("CML_CONTEXT_LAYER_REPORT_PATH", text)
+
+    def test_persisted_chat_builds_distilled_memory_and_working_memory(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.llm_runtime import LLMResult
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Project decision note",
+                source_type="note",
+                raw_text="We decided to use retrieval first. The system must stay local-first and should not trust raw web text.",
+            )
+        )
+        run_due_jobs_once(limit=1)
+
+        with patch(
+            "backend.app.api.routes.chat.generate_grounded_answer",
+            return_value=LLMResult(text="We will use retrieval first and must stay local-first.", provider="test", model="test"),
+        ):
+            response = build_chat_context(
+                ChatContextRequest(
+                    vault_id="vault-1",
+                    prompt="What did we decide for this project?",
+                    persist=True,
+                )
+            )
+
+        run_due_jobs_once(limit=2)
+
+        with connect() as conn:
+            session = conn.execute("SELECT memory_status FROM chat_sessions WHERE id = ?", (response["session_id"],)).fetchone()
+            memory_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM memory_items WHERE session_id = ? AND status = 'active'",
+                (response["session_id"],),
+            ).fetchone()["count"]
+            working = conn.execute(
+                "SELECT summary FROM working_memory_snapshots WHERE vault_id = 'vault-1' ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+
+        self.assertEqual(session["memory_status"], "indexed")
+        self.assertGreaterEqual(memory_count, 1)
+        self.assertIsNotNone(working)
+        self.assertIn("memory", working["summary"].lower())
+
+    def test_bridge_context_includes_memory_items_and_working_memory(self) -> None:
+        from backend.app.api.routes.bridge import build_context, update_bridge_settings
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import BridgeContextRequest, BridgeSettingsUpdate, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True, allowed_vault_ids=["vault-1"], rotate_token=True))
+        settings = update_bridge_settings(BridgeSettingsUpdate())
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Vision note",
+                source_type="note",
+                raw_text="Our goal is to reduce token cost. We must avoid replaying old transcripts.",
+            )
+        )
+        run_due_jobs_once(limit=1)
+
+        response = build_context(
+            BridgeContextRequest(vault_id="vault-1", query="What is our goal?", client_name="test-client"),
+            x_cml_bridge_token=settings["bridge_token"],
+        )
+
+        self.assertTrue(response["context_request_id"])
+        self.assertGreaterEqual(len(response["memory_items"]), 1)
+        self.assertTrue(response["working_memory"]["summary"])
+        self.assertIn("Context request ID", response["packet_text"])
+
+    def test_grounded_external_turn_keeps_medium_trust_and_memory(self) -> None:
+        from backend.app.api.routes.bridge import build_context, log_external_turn, update_bridge_settings
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import (
+            BridgeContextRequest,
+            BridgeExternalTurnCapture,
+            BridgeSettingsUpdate,
+            SourceCreate,
+        )
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True, allowed_vault_ids=["vault-1"], rotate_token=True))
+        settings = update_bridge_settings(BridgeSettingsUpdate())
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Architecture note",
+                source_type="note",
+                raw_text="The architecture note says retrieval first and compact packets are the decision.",
+            )
+        )
+        run_due_jobs_once(limit=1)
+        context = build_context(
+            BridgeContextRequest(vault_id="vault-1", query="architecture decision", client_name="bridge-client"),
+            x_cml_bridge_token=settings["bridge_token"],
+        )
+
+        result = log_external_turn(
+            BridgeExternalTurnCapture(
+                vault_id="vault-1",
+                client_name="bridge-client",
+                user_prompt="What is the architecture decision?",
+                model_response="According to Architecture note, the decision is retrieval first and compact packets.",
+                context_request_id=context["context_request_id"],
+            ),
+            x_cml_bridge_token=settings["bridge_token"],
+        )
+
+        run_due_jobs_once(limit=1)
+
+        with connect() as conn:
+            review = conn.execute(
+                "SELECT quality_state FROM bridge_writeback_reviews WHERE source_id = ?",
+                (result["source_id"],),
+            ).fetchone()
+            source_row = conn.execute(
+                "SELECT trust_tier, security_labels FROM sources WHERE id = ?",
+                (result["source_id"],),
+            ).fetchone()
+            memory_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM memory_items WHERE source_id = ? AND status = 'active'",
+                (result["source_id"],),
+            ).fetchone()["count"]
+
+        self.assertEqual(review["quality_state"], "grounded")
+        self.assertEqual(source_row["trust_tier"], "external_capture")
+        self.assertNotIn("review_needed", source_row["security_labels"])
+        self.assertGreaterEqual(memory_count, 1)
+
+    def test_ungrounded_external_turn_is_downgraded_and_excluded_from_memory(self) -> None:
+        from backend.app.api.routes.bridge import build_context, log_external_turn, update_bridge_settings
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import (
+            BridgeContextRequest,
+            BridgeExternalTurnCapture,
+            BridgeSettingsUpdate,
+            SourceCreate,
+        )
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True, allowed_vault_ids=["vault-1"], rotate_token=True))
+        settings = update_bridge_settings(BridgeSettingsUpdate())
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Context note",
+                source_type="note",
+                raw_text="The note says the system is local-first.",
+            )
+        )
+        run_due_jobs_once(limit=1)
+        context = build_context(
+            BridgeContextRequest(vault_id="vault-1", query="local-first", client_name="bridge-client"),
+            x_cml_bridge_token=settings["bridge_token"],
+        )
+
+        result = log_external_turn(
+            BridgeExternalTurnCapture(
+                vault_id="vault-1",
+                client_name="bridge-client",
+                user_prompt="What is the context?",
+                model_response="The answer is that the moon is made of cheese.",
+                context_request_id=context["context_request_id"],
+            ),
+            x_cml_bridge_token=settings["bridge_token"],
+        )
+
+        run_due_jobs_once(limit=1)
+
+        with connect() as conn:
+            review = conn.execute(
+                "SELECT quality_state FROM bridge_writeback_reviews WHERE source_id = ?",
+                (result["source_id"],),
+            ).fetchone()
+            source_row = conn.execute(
+                "SELECT trust_tier, security_labels FROM sources WHERE id = ?",
+                (result["source_id"],),
+            ).fetchone()
+            memory_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM memory_items WHERE source_id = ? AND status = 'active'",
+                (result["source_id"],),
+            ).fetchone()["count"]
+
+        self.assertEqual(review["quality_state"], "ungrounded")
+        self.assertEqual(source_row["trust_tier"], "low_trust_web")
+        self.assertIn("review_needed", source_row["security_labels"])
+        self.assertEqual(memory_count, 0)
+
+    def test_partially_grounded_external_turn_requires_review_and_can_be_approved(self) -> None:
+        from backend.app.api.routes.bridge import (
+            build_context,
+            capture_external_artifact,
+            decide_bridge_writeback_review,
+            list_bridge_captures,
+            list_bridge_writeback_reviews,
+            log_external_turn,
+            update_bridge_settings,
+        )
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import (
+            BridgeArtifactCapture,
+            BridgeContextRequest,
+            BridgeExternalTurnCapture,
+            BridgeSettingsUpdate,
+            BridgeWritebackReviewDecision,
+            SourceCreate,
+        )
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True, allowed_vault_ids=["vault-1"], rotate_token=True))
+        settings = update_bridge_settings(BridgeSettingsUpdate())
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Architecture decision",
+                source_type="note",
+                raw_text="The architecture decision is retrieval first. Compact packets reduce token cost.",
+            )
+        )
+        run_due_jobs_once(limit=1)
+        context = build_context(
+            BridgeContextRequest(vault_id="vault-1", query="architecture decision", client_name="bridge-client"),
+            x_cml_bridge_token=settings["bridge_token"],
+        )
+
+        result = log_external_turn(
+            BridgeExternalTurnCapture(
+                vault_id="vault-1",
+                client_name="bridge-client",
+                user_prompt="What is the architecture decision?",
+                model_response=(
+                    "The Architecture decision says retrieval first. "
+                    "It also says the product should send all private data to the public web."
+                ),
+                context_request_id=context["context_request_id"],
+            ),
+            x_cml_bridge_token=settings["bridge_token"],
+        )
+
+        pending = list_bridge_writeback_reviews(vault_id="vault-1", pending_only=True)
+        captures = list_bridge_captures(vault_id="vault-1")
+        self.assertTrue(any(item["source_id"] == result["source_id"] for item in pending))
+        self.assertTrue(any(item["source_id"] == result["source_id"] for item in captures))
+
+        with connect() as conn:
+            review = conn.execute(
+                "SELECT quality_state, approved FROM bridge_writeback_reviews WHERE source_id = ?",
+                (result["source_id"],),
+            ).fetchone()
+            source_row = conn.execute(
+                "SELECT trust_tier, security_labels FROM sources WHERE id = ?",
+                (result["source_id"],),
+            ).fetchone()
+            memory_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM memory_items WHERE source_id = ? AND status = 'active'",
+                (result["source_id"],),
+            ).fetchone()["count"]
+
+        self.assertEqual(review["quality_state"], "partially_grounded")
+        self.assertFalse(bool(review["approved"]))
+        self.assertEqual(source_row["trust_tier"], "external_capture")
+        self.assertIn("review_needed", source_row["security_labels"])
+        self.assertEqual(memory_count, 0)
+
+        approved = decide_bridge_writeback_review(
+            result["source_id"],
+            BridgeWritebackReviewDecision(approved=True),
+        )
+
+        self.assertTrue(approved["approved"])
+        self.assertEqual(approved["trust_tier"], "trusted_reviewed")
+        self.assertNotIn("review_needed", approved["security_labels"])
+
+        with connect() as conn:
+            memory_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM memory_items WHERE source_id = ? AND status = 'active'",
+                (result["source_id"],),
+            ).fetchone()["count"]
+        self.assertGreaterEqual(memory_count, 1)
+
+        artifact = capture_external_artifact(
+            BridgeArtifactCapture(
+                vault_id="vault-1",
+                client_name="bridge-client",
+                title="Manual summary",
+                content="A manually saved external summary.",
+                artifact_type="generated_text",
+            ),
+            x_cml_bridge_token=settings["bridge_token"],
+        )
+
+        captures = list_bridge_captures(vault_id="vault-1")
+        artifact_row = next(item for item in captures if item["source_id"] == artifact["source_id"])
+        self.assertEqual(artifact_row["source_type"], "external_artifact")
+        self.assertEqual(artifact_row["quality_state"], "user_artifact")
+
     def test_deleted_source_is_hidden_and_content_removed_immediately(self) -> None:
         from backend.app.api.routes.search import semantic_search
         from backend.app.api.routes.sources import create_source, delete_source
@@ -842,6 +1402,182 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(response["citations"], [])
         self.assertIn("local LLM runtime", response["answer"])
 
+    def test_retrieval_first_default_routes_natural_prompt_into_vault_search(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Overview note",
+                source_type="note",
+                raw_text="project overview milestone status summary details " * 80,
+            )
+        )
+        run_due_jobs_once(limit=1)
+
+        with patch("backend.app.api.routes.chat.generate_grounded_answer") as generate:
+            generate.return_value = SimpleNamespace(text="grounded", provider="test", model="test")
+            response = build_chat_context(
+                ChatContextRequest(vault_id="vault-1", prompt="Give me an overview", persist=False)
+            )
+
+        self.assertEqual(response["intent"], "vault_question")
+        self.assertGreaterEqual(response["coverage_ledger"]["sources_analyzed"], 1)
+        generate.assert_called_once()
+
+    def test_no_citations_falls_back_to_ungrounded_direct_answer_when_runtime_is_ready(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.llm_runtime import LLMResult
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Unrelated note",
+                source_type="note",
+                raw_text="stored unrelated local context " * 80,
+            )
+        )
+        run_due_jobs_once(limit=1)
+
+        with (
+            patch("backend.app.api.routes.chat.runtime_status", return_value={"state": "ready"}),
+            patch("backend.app.api.routes.chat.semantic_search", return_value={"results": []}),
+            patch(
+                "backend.app.api.routes.chat.generate_direct_answer",
+                return_value=LLMResult(text="general fallback", provider="test", model="test"),
+            ) as generate_direct,
+        ):
+            response = build_chat_context(
+                ChatContextRequest(vault_id="vault-1", prompt="Give me an overview", persist=False)
+            )
+
+        self.assertEqual(response["coverage_ledger"]["partial_failure_mode"], "no_citations_direct_answer")
+        self.assertIn("without grounded vault evidence", response["answer"])
+        generate_direct.assert_called_once()
+
+    def test_embedding_unavailable_falls_back_to_ungrounded_direct_answer_when_runtime_is_ready(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.llm_runtime import LLMResult
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Relevant note",
+                source_type="note",
+                raw_text="stored project context overview details " * 80,
+            )
+        )
+        run_due_jobs_once(limit=1)
+
+        with (
+            patch("backend.app.api.routes.chat.runtime_status", return_value={"state": "ready"}),
+            patch("backend.app.api.routes.chat.require_embeddings_available", side_effect=RuntimeError("embedding model missing")),
+            patch(
+                "backend.app.api.routes.chat.generate_direct_answer",
+                return_value=LLMResult(text="ungrounded answer", provider="test", model="test"),
+            ) as generate_direct,
+        ):
+            response = build_chat_context(
+                ChatContextRequest(vault_id="vault-1", prompt="Give me an overview", persist=False)
+            )
+
+        self.assertEqual(response["coverage_ledger"]["partial_failure_mode"], "embedding_unavailable_direct_answer")
+        self.assertIn("without grounded vault evidence", response["answer"])
+        generate_direct.assert_called_once()
+
+    def test_grounded_chat_passes_recent_turns_and_history_budget_to_runtime(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes.chat import build_chat_context, create_chat_session
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, ChatSessionCreate, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Project note",
+                source_type="note",
+                raw_text="project architecture discussion details and implementation notes " * 80,
+            )
+        )
+        run_due_jobs_once(limit=1)
+        session = create_chat_session(ChatSessionCreate(vault_id="vault-1"))
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)",
+                ("turn-1", session["id"], "Earlier project question", now),
+            )
+            conn.execute(
+                "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?, ?, 'assistant', ?, ?)",
+                ("turn-2", session["id"], "Earlier project answer", now),
+            )
+
+        captured = {}
+
+        def fake_generate(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(text="grounded", provider="test", model="test")
+
+        with patch("backend.app.api.routes.chat.generate_grounded_answer", side_effect=fake_generate):
+            response = build_chat_context(
+                ChatContextRequest(
+                    vault_id="vault-1",
+                    session_id=session["id"],
+                    prompt="What did you just tell me about the project?",
+                    persist=False,
+                )
+            )
+
+        self.assertEqual(response["answer"], "grounded")
+        self.assertTrue(captured["recent_turns"])
+        self.assertEqual([turn["role"] for turn in captured["recent_turns"]], ["user", "assistant"])
+        self.assertGreater(response["coverage_ledger"]["history_turns_selected"], 0)
+        self.assertGreaterEqual(response["coverage_ledger"]["history_tokens_estimate"], 1)
+
     def test_expanded_analysis_sets_intent_and_expands_analysis_set(self) -> None:
         from backend.app.api.routes.chat import build_chat_context
         from backend.app.api.routes.sources import create_source
@@ -921,12 +1657,13 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertGreaterEqual(response["coverage_ledger"]["sources_analyzed"], 1)
         self.assertGreaterEqual(len(response["citations"]), 1)
 
-    def test_expanded_analysis_still_uses_whole_scope_source_scoring(self) -> None:
+    def test_expanded_analysis_still_uses_packet_builder_scoring(self) -> None:
         from unittest.mock import patch
 
         from backend.app.api.routes.chat import build_chat_context
         from backend.app.api.routes.sources import create_source
         from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.analysis_packets import build_analysis_packets
         from backend.app.core.database import connect, utc_now
         from backend.app.schemas import ChatContextRequest, SourceCreate
 
@@ -946,7 +1683,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         )
         run_due_jobs_once(limit=1)
 
-        with patch("backend.app.api.routes.chat._score_sources_for_query", wraps=__import__("backend.app.api.routes.chat", fromlist=["_score_sources_for_query"])._score_sources_for_query) as score_mock:
+        with patch("backend.app.api.routes.chat.build_analysis_packets", wraps=build_analysis_packets) as packet_mock:
             response = build_chat_context(
                 ChatContextRequest(
                     vault_id="vault-1",
@@ -956,7 +1693,7 @@ class SourcePageIndexingTests(unittest.TestCase):
             )
 
         self.assertEqual(response["intent"], "expanded_analysis")
-        score_mock.assert_called_once()
+        packet_mock.assert_called_once()
 
     def test_expanded_analysis_job_writes_evidence_packets(self) -> None:
         from backend.app.api.routes.chat import build_chat_context
@@ -993,6 +1730,102 @@ class SourcePageIndexingTests(unittest.TestCase):
             packets = conn.execute("SELECT * FROM analysis_evidence_packets").fetchall()
         self.assertGreaterEqual(len(packets), 1)
         self.assertEqual(packets[0]["status"], "ready")
+
+    def test_complete_analysis_routes_without_semantic_search_truncation(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        for index in range(4):
+            create_source(
+                SourceCreate(
+                    vault_id="vault-1",
+                    title=f"Full scope {index}",
+                    source_type="note",
+                    raw_text=f"full scope analysis evidence packet {index} " * 80,
+                )
+            )
+        run_due_jobs_once(limit=4)
+
+        with patch("backend.app.api.routes.chat.semantic_search", side_effect=AssertionError("complete analysis should not rely on top-k semantic search")):
+            response = build_chat_context(
+                ChatContextRequest(
+                    vault_id="vault-1",
+                    prompt="full scope analysis evidence packet",
+                    complete_analysis=True,
+                )
+            )
+
+        self.assertEqual(response["intent"], "complete_analysis")
+        self.assertEqual(response["coverage_ledger"]["analysis_mode"], "complete_analysis")
+        self.assertEqual(response["coverage_ledger"]["sources_considered"], 4)
+        self.assertEqual(response["coverage_ledger"]["sources_analyzed"], 4)
+        self.assertGreaterEqual(len(response["citations"]), 1)
+
+    def test_complete_analysis_job_writes_packets_for_every_source_in_scope(self) -> None:
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Relevant evidence",
+                source_type="note",
+                raw_text="complete map reduce relevant evidence token saving context layer " * 80,
+            )
+        )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Low relevance evidence",
+                source_type="note",
+                raw_text="zebra quartz lantern orbit magnet glacier " * 80,
+            )
+        )
+        run_due_jobs_once(limit=2)
+
+        build_chat_context(
+            ChatContextRequest(
+                vault_id="vault-1",
+                prompt="token saving context layer",
+                complete_analysis=True,
+            )
+        )
+        run_due_jobs_once(limit=2)
+
+        with connect() as conn:
+            packets = conn.execute(
+                """
+                SELECT source_title, status, relevance_score
+                FROM analysis_evidence_packets
+                WHERE job_id IN (SELECT id FROM app_jobs WHERE job_type = 'complete_analysis')
+                ORDER BY source_title ASC
+                """
+            ).fetchall()
+
+        self.assertEqual(len(packets), 2)
+        self.assertEqual({packet["source_title"] for packet in packets}, {"Low relevance evidence", "Relevant evidence"})
+        self.assertIn("low_relevance", {packet["status"] for packet in packets})
+        self.assertIn("ready", {packet["status"] for packet in packets})
 
     def test_cluster_chat_uses_ready_expert_as_reasoning_aid(self) -> None:
         from unittest.mock import patch
@@ -1042,8 +1875,8 @@ class SourcePageIndexingTests(unittest.TestCase):
 
         seen = {}
 
-        def fake_generate(*, prompt, citations, clusters_used, expert_assist=None):
-            seen["expert_assist"] = expert_assist
+        def fake_generate(**kwargs):
+            seen["expert_assist"] = kwargs.get("expert_assist")
             return SimpleNamespace(text="expert aided answer", provider="test", model="test-model")
 
         with (
@@ -1155,7 +1988,7 @@ class SourcePageIndexingTests(unittest.TestCase):
                 "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                 ("vault-1", "Test vault", str(self.db_path.parent), now, now),
             )
-        for index in range(4):
+        for index in range(6):
             create_source(
                 SourceCreate(
                     vault_id="vault-1",
@@ -1168,8 +2001,8 @@ class SourcePageIndexingTests(unittest.TestCase):
 
         seen = {}
 
-        def fake_generate(*, prompt, citations, clusters_used):
-            seen["citations"] = citations
+        def fake_generate(**kwargs):
+            seen["citations"] = kwargs["citations"]
             return SimpleNamespace(text="budgeted answer", provider="test", model="test-model")
 
         with patch("backend.app.api.routes.chat.generate_grounded_answer", side_effect=fake_generate):
@@ -1183,6 +2016,104 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(ledger["partial_failure_mode"], "none")
         self.assertLessEqual(ledger["evidence_tokens_estimate"], ledger["token_budget"])
         self.assertTrue(any(citation["snippet"].endswith("...") for citation in seen["citations"]))
+
+    def test_dynamic_budget_widens_for_quality_model_on_high_spec_hardware(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.core.config import get_settings
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        os.environ["CML_LLM_MODEL"] = "Qwen/Qwen3-8B-GGUF:Q4_K_M"
+        os.environ["CML_LLM_CONTEXT_TOKEN_BUDGET"] = "1200"
+        get_settings.cache_clear()
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        for index in range(10):
+            create_source(
+                SourceCreate(
+                    vault_id="vault-1",
+                    title=f"Wide evidence {index}",
+                    source_type="note",
+                    raw_text=(f"dynamic budget evidence source {index} " * 220),
+                )
+            )
+        run_due_jobs_once(limit=10)
+
+        seen = {}
+
+        def fake_generate(**kwargs):
+            seen["citations"] = kwargs["citations"]
+            return SimpleNamespace(text="wide budget answer", provider="test", model="test-model")
+
+        with (
+            patch(
+                "backend.app.core.context_budget_policy.hardware_status",
+                return_value={"hardware_tier": "gpu_or_high_spec_candidate"},
+            ),
+            patch("backend.app.api.routes.chat.generate_grounded_answer", side_effect=fake_generate),
+        ):
+            response = build_chat_context(
+                ChatContextRequest(vault_id="vault-1", prompt="Compare the dynamic budget evidence across the vault")
+            )
+
+        ledger = response["coverage_ledger"]
+        self.assertGreater(ledger["token_budget"], 1200)
+        self.assertEqual(ledger["budget_model_tier"], "quality")
+        self.assertEqual(ledger["budget_hardware_tier"], "gpu_or_high_spec_candidate")
+        self.assertGreaterEqual(ledger["citations_selected"], 5)
+        self.assertGreaterEqual(len(seen["citations"]), 5)
+
+    def test_conflicting_evidence_stays_extractive_and_skips_synthesis(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Decision A",
+                source_type="note",
+                raw_text="We must use retrieval first for grounded answers in this project.",
+            )
+        )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Decision B",
+                source_type="note",
+                raw_text="We must not use retrieval first for grounded answers in this project.",
+            )
+        )
+        run_due_jobs_once(limit=2)
+
+        with patch("backend.app.api.routes.chat.generate_grounded_answer") as generate:
+            response = build_chat_context(
+                ChatContextRequest(vault_id="vault-1", prompt="What did we decide about retrieval first?")
+            )
+
+        generate.assert_not_called()
+        self.assertEqual(response["coverage_ledger"]["partial_failure_mode"], "conflicting_evidence_extract_only")
+        self.assertTrue(response["coverage_ledger"]["contradiction_detected"])
+        self.assertTrue(any("conflicts" in warning.lower() for warning in response["warnings"]))
 
     def test_chat_context_marks_runtime_fallback_as_partial_failure(self) -> None:
         from unittest.mock import patch

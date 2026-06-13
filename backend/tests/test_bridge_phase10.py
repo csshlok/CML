@@ -178,10 +178,21 @@ class BridgePhase10Tests(unittest.TestCase):
         self.assertEqual(rows[0]["verified_identity_label"], "")
 
     def test_cluster_scoped_client_can_infer_vault_for_context_requests(self) -> None:
-        from backend.app.api.routes.bridge import build_context, create_bridge_client, update_bridge_settings
+        from backend.app.api.routes.bridge import (
+            build_context,
+            create_bridge_client,
+            expand_context_item,
+            update_bridge_settings,
+        )
         from backend.app.api.routes.sources import create_source
         from backend.app.core.background_jobs import run_due_jobs_once
-        from backend.app.schemas import BridgeClientCreate, BridgeContextRequest, BridgeSettingsUpdate, SourceCreate
+        from backend.app.schemas import (
+            BridgeClientCreate,
+            BridgeContextExpandRequest,
+            BridgeContextRequest,
+            BridgeSettingsUpdate,
+            SourceCreate,
+        )
 
         update_bridge_settings(BridgeSettingsUpdate(enabled=True))
         create_source(
@@ -214,6 +225,14 @@ class BridgePhase10Tests(unittest.TestCase):
         self.assertEqual(len(response["selected_clusters"]), 1)
         self.assertEqual(response["selected_clusters"][0]["id"], "cluster-1")
         self.assertGreaterEqual(len(response["source_snippets"]), 1)
+        self.assertTrue(response["expansion_handles"])
+
+        expanded = expand_context_item(
+            BridgeContextExpandRequest(cluster_id="cluster-1", handle=response["expansion_handles"][0]),
+            x_cml_bridge_token=client["token"],
+        )
+
+        self.assertIn("cluster scoped bridge lookup content", expanded["text"])
 
     def test_cluster_scoped_client_can_list_clusters_without_explicit_vault_scope(self) -> None:
         from backend.app.api.routes.bridge import create_bridge_client, list_bridge_clusters, update_bridge_settings

@@ -1045,6 +1045,50 @@ class AdditionalQACases(unittest.TestCase):
         self.assertLess(payload.index("event: meta"), payload.index("event: token"))
         self.assertLess(payload.index("event: token"), payload.index("event: done"))
 
+    def test_stream_chat_context_uses_direct_answer_fallback_when_retrieval_has_no_grounding(self) -> None:
+        import asyncio
+
+        from backend.app.api.routes.chat import stream_chat_context
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+
+        async def collect(response) -> str:
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        context = {
+            "answer": "",
+            "clusters_used": [],
+            "citations": [],
+            "coverage_ledger": {"partial_failure_mode": "no_citations_direct_answer"},
+            "intent": "vault_question",
+            "runtime_state": "ready",
+            "warnings": [],
+            "recent_turns": [],
+            "direct_answer_fallback": True,
+            "direct_answer_prefix": "Ungrounded fallback.\n\n",
+        }
+
+        with (
+            patch("backend.app.api.routes.chat._build_retrieval_context", return_value=context),
+            patch("backend.app.api.routes.chat.stream_direct_answer", return_value=iter(["Hello", " world"])),
+        ):
+            response = stream_chat_context(ChatContextRequest(vault_id="vault-1", prompt="overview", persist=False))
+            payload = asyncio.run(collect(response))
+
+        self.assertIn("Ungrounded fallback.", payload)
+        self.assertIn("Hello", payload)
+        self.assertIn("event: done", payload)
+
     def test_persisted_stream_chat_marks_generation_retriable_when_context_build_fails(self) -> None:
         import asyncio
 
@@ -1487,7 +1531,7 @@ class AdditionalQACases(unittest.TestCase):
 
         client = self._client()
         try:
-            response = client.patch("/api/v1/vaults/vault-1", json={"database_path": "C:\\evil.sqlite3"})
+            client.patch("/api/v1/vaults/vault-1", json={"database_path": "C:\\evil.sqlite3"})
         finally:
             client.close()
 

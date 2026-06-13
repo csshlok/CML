@@ -87,7 +87,15 @@ class TestingParametersDocCases(unittest.TestCase):
         )
         self.assertFalse(_is_public_path("/api/v1/bridge/context", "POST", "/custom/v2"))
 
-    def test_complete_analysis_field_is_rejected_without_masking_parse_errors(self) -> None:
+    def test_complete_analysis_field_routes_normally_without_masking_parse_errors(self) -> None:
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
         client = self._client()
 
         try:
@@ -103,7 +111,8 @@ class TestingParametersDocCases(unittest.TestCase):
         finally:
             client.close()
 
-        self.assertEqual(reserved.status_code, 501)
+        self.assertEqual(reserved.status_code, 200)
+        self.assertEqual(reserved.json()["intent"], "complete_analysis")
         self.assertNotEqual(malformed.status_code, 501)
 
     def test_synthesis_gate_blocks_recent_retriable_generations_but_not_old_ones(self) -> None:
@@ -157,11 +166,16 @@ class TestingParametersDocCases(unittest.TestCase):
         self.assertEqual(claimed["id"], "job-blocked")
 
     def test_bridge_context_redacts_raw_text_when_permission_is_disabled(self) -> None:
-        from backend.app.api.routes.bridge import build_context, update_bridge_settings
+        from backend.app.api.routes.bridge import build_context, expand_context_item, update_bridge_settings
         from backend.app.api.routes.sources import create_source
         from backend.app.core.background_jobs import run_due_jobs_once
         from backend.app.core.database import connect, utc_now
-        from backend.app.schemas import BridgeContextRequest, BridgeSettingsUpdate, SourceCreate
+        from backend.app.schemas import (
+            BridgeContextExpandRequest,
+            BridgeContextRequest,
+            BridgeSettingsUpdate,
+            SourceCreate,
+        )
 
         now = utc_now()
         with connect() as conn:
@@ -198,6 +212,16 @@ class TestingParametersDocCases(unittest.TestCase):
         self.assertTrue(all(item["raw_text"] == "" for item in response["source_snippets"]))
         self.assertTrue(all(item["extracted_text"] == "" for item in response["source_snippets"]))
         self.assertTrue(any("redacted" in warning.lower() for warning in response["warnings"]))
+        self.assertTrue(response["expansion_handles"])
+
+        expanded = expand_context_item(
+            BridgeContextExpandRequest(vault_id="vault-1", handle=response["expansion_handles"][0]),
+            x_cml_bridge_token=settings["bridge_token"],
+        )
+
+        self.assertEqual(expanded["handle"], response["expansion_handles"][0])
+        self.assertIn("redacted", " ".join(expanded["warnings"]).lower())
+        self.assertEqual(expanded["text"], response["source_snippets"][0]["summary"])
 
     def test_bridge_context_does_not_decrypt_raw_source_fields_when_permission_is_disabled(self) -> None:
         from unittest.mock import patch
