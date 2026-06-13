@@ -4,11 +4,17 @@
 
 The Context Management Layer is a local desktop AI workspace for general second-brain users. Users collect files, links, notes, screenshots, documents, and chat transcripts into a local vault. The app converts this material into context clusters, trains a small local expert for each cluster, and uses those experts to feed focused context and intermediate reasoning into a larger synthesis model.
 
+The deeper V1 product is a layer between the user and a model: it should reduce context loss across long or old chats and reduce token cost by letting models call CML for compact, grounded context instead of repeatedly ingesting raw transcripts and files.
+
+For V1, "compact" must mean more than top-k retrieval. CML should deliver reversible, content-type-aware context packets that can be expanded on demand instead of sending raw transcripts, files, logs, or chunks by default.
+
 The product should feel approachable and visual like Mindly, navigable like Obsidian, and centered around chat. The main user value is not generic file search. It is turning scattered personal material into living context clusters that can answer, write, and reason in the style and knowledge boundaries of the user's own data.
 
 ## 2. Product Goals
 
 - Let users drop mixed personal material into a local vault and have it organized into meaningful clusters.
+- Preserve long-lived context outside the model so users do not lose important history when chats get long or old.
+- Reduce prompt/token cost by returning compact relevant context instead of replaying whole transcripts or source corpora.
 - Create one compulsory local expert per cluster.
 - Route user prompts to relevant cluster experts.
 - Use cluster expert outputs as structured context for a larger final model.
@@ -198,6 +204,11 @@ Required bridge capabilities:
 - Ask a cluster expert for structured intermediate output.
 - Build a ready-to-paste context prompt for another LLM.
 - Return citations/source references with retrieved context.
+- Save external conversations and generated artifacts back into the vault.
+- Return compact token-budgeted context packets that combine durable memory, current working context, and supporting evidence.
+- Return compact packets using content-type-aware shaping for prose, code, logs, tables/JSON, and transcript history.
+- Return expansion handles so external clients can request fuller evidence only for the packet items they actually need.
+- Return packet telemetry showing raw size estimate, compacted size estimate, and savings percentage.
 
 Example tools:
 
@@ -218,6 +229,30 @@ Example use case:
 5. Claude uses that returned context to answer the user's prompt.
 
 The bridge must respect local-first privacy. External clients should receive only the specific context requested by the user or allowed by bridge permissions.
+
+### 7.9 Distilled Memory And Working Memory
+
+V1 must not behave only as source retrieval plus transcript storage.
+
+Required memory layers:
+
+- **Distilled memory**: reusable facts, preferences, decisions, constraints, goals, and open loops extracted from sources and conversations.
+- **Working memory**: compact per-vault and per-cluster summaries of what changed recently, what matters now, and what should happen next.
+- **Bootstrap memory map**: generated starting summary for new vaults/clusters so context can be used before a long manual history exists.
+
+Memory items must preserve provenance back to source records or conversation captures so users and models can inspect why a memory exists.
+
+### 7.10 Reversible Context Delivery
+
+V1 context packets must be reversible and inspectable.
+
+Required behavior:
+
+- Retrieval and memory assembly should produce a compact packet first.
+- Each compacted evidence item should keep a local expansion handle or equivalent retrievable reference.
+- Internal chat and external MCP/Bridge clients should share the same packet-building path.
+- The system should compact different content classes differently rather than flattening everything into one prose summary.
+- The system should record packet-size reduction and expansion frequency so product claims can be measured.
 
 ## 8. Functional Requirements
 
@@ -363,6 +398,9 @@ V1 is successful when:
 - User can enable the local Context Bridge.
 - An external MCP-compatible client can list clusters and request context for a query.
 - A terminal user can retrieve context through the CLI and paste or pipe it into another LLM.
+- Internal chat and external clients receive compact reversible packets rather than raw source-shaped payloads by default.
+- Users or clients can expand compact packet items on demand when more detail is needed.
+- The app can show measured token or size reduction for compact packets against raw replay baselines.
 
 ## 12. Risks
 

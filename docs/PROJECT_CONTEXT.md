@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-06-12
+Last updated: 2026-06-13
 
 ## Operating Rule
 
@@ -18,6 +18,8 @@ Build CML, a local-first downloadable desktop app for personal context managemen
 
 The user creates a local vault, adds files, folders, links, notes, screenshots, chat transcripts, and other memory artifacts, then CML clusters related material, indexes it, trains verified local cluster experts, and supplies structured context to local or external tools through the app, Bridge, CLI, and API.
 
+CML is not only a second-brain vault. Public V1 must act as a real context-management layer between the user and an LLM: reduce context loss across long or old conversations, reduce token cost by avoiding repeated corpus/transcript replay, and let external tools call CML for compressed, source-grounded, reusable context instead of re-reading raw history.
+
 Target user: general second-brain users, not only developers.
 
 Public V1 target: end of July 2026 as a Windows-only public release. There is no private-demo fallback path; release slips until public-quality gates pass, including a working, high-quality verified LoRA cluster expert function.
@@ -33,6 +35,9 @@ Public V1 target: end of July 2026 as a Windows-only public release. There is no
 - V1 storage: local vault folder with `CML_DATA_DIR=<vault>/.vault` and `CML_DATABASE_PATH=<vault>/.vault/cml.sqlite3`.
 - V1 integrations: local synced folders first, including Google Drive Desktop, Dropbox, OneDrive, iCloud Drive, Obsidian folders, and normal folders.
 - Later integrations: OAuth/API connectors after local ingestion is stable.
+- PDF ingestion decision: keep direct PDF text extraction as the first path, keep OCR as the fallback for scanned/image-only PDFs, and add table-aware extraction for table-heavy PDFs so structured tables can be stored as normalized JSON plus canonical text.
+- Table extraction decision: prototype a Camelot-first local pipeline for text-based PDFs because it fits the Python-heavy packaged stack better; keep a Tabula/Java fallback only if coverage gaps justify the extra runtime complexity.
+- Structured-table learning decision: cluster experts and retrieval should learn from canonical text generated from extracted table JSON, while the JSON remains available for exact row/column grounding and future tool-style lookups.
 - UI direction: memory-board landing, visual map, chat workspace, Mindly-like organization, Obsidian-like graph/map; detailed UI rules live in `docs/UI_ARCHITECTURE.md`.
 - UI responsive scope: no dedicated mobile screen for public V1; dark version and minimized/narrow desktop window version are required.
 - UI reference folder: preserve `UI-ref/`; do not delete or refactor it.
@@ -41,6 +46,12 @@ Public V1 target: end of July 2026 as a Windows-only public release. There is no
 - Public V1 expert claim: only say a cluster expert is trained after verified LoRA adapter graduation passes for that cluster.
 - Local-first privacy: user data stays local unless the user explicitly exports or connects a tool.
 - External access: Context Bridge through MCP, local HTTP API, CLI, and copy/export.
+- Public V1 context-layer requirement: external conversation capture, distilled memory extraction, working-memory updates, bootstrap memory maps, reversible token-optimized MCP/Bridge context packets, content-type-aware packet compaction, context expansion-on-demand, packet savings telemetry, chat-model hardening, and context writeback are required V1 behavior, not post-V1 polish.
+- Chat routing decision: public V1 uses retrieval-first routing. Default chat intent should be vault retrieval, with `general_chat` reserved for explicit/direct conversational prompts, empty-vault cases, or user-requested no-vault answers. No semantic classifier should be added until routing telemetry proves it is needed.
+- Bridge packet decision: MCP/Bridge must not default to raw `json.dumps(...)` payloads for model context. Public V1 needs model-ready context packets with usage instructions, trust/limit wording, citations, and token-savings telemetry; raw JSON is diagnostics-only. Implementation is split into exactly two required passes: Pass 1 fixes MCP `get_cluster_context` formatting in `bridge_mcp.py`; Pass 2 completes shared builder convergence, expansion handles, and content-aware chunking.
+- Content-aware chunking decision: supported code, Markdown, CSV/TSV, JSON/YAML/TOML, logs, transcripts, and generated artifacts must not rely only on generic 180-word chunks. Pass 2 must add content-profile detection and content-aware chunk dispatch in the reindexing layer for both external captures and local/synced imports, including Tree-sitter or lightweight parser-backed symbol chunking for code when heuristics are insufficient.
+- External response quality decision: Bridge writeback must not let hallucinated or context-ignoring outside-model answers become authoritative vault memory. Pass 2 must classify external responses as grounded, partially grounded, ungrounded, unknown, or user artifact, and gate retrieval, distilled-memory extraction, and expert-training inclusion on that state.
+- Sensitive-query decision: CML is a personal vault, so sensitive intent detection must cover medical, legal, therapy/mental-health, employment, identity, family/private correspondence, safety, finance, and secrets/credentials. The current credential/finance-heavy pattern is too narrow for public V1 trust gating.
 - V1 security boundary: full security work is in public V1, not deferred. If encryption, unlock-state enforcement, parser/browser isolation, Bridge approval, renderer hardening, or LoRA integrity are not release-ready, release slips.
 - Vault recovery model: offline recovery key, generated locally, never stored server-side, with explicit user acknowledgment during setup.
 - Vault unlock modes: convenience mode is the default; strict locked mode is opt-in and must stay visible in Settings.
@@ -113,10 +124,10 @@ Runtime boundary:
 | Desktop app foundation | In progress | `[##########] 98%` | Clean VM launch validation and broader startup repair QA |
 | Local backend foundation | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only |
 | Vault ingestion | Complete for current scope | `[##########] 100%` | Clean VM confirmation only |
-| Embeddings and clustering | Complete for current scope | `[##########] 100%` | Larger real-vault evidence now lives under QA/hardening |
-| Chat/context routing | In progress | `[##########] 97%` | Complete-scope map/reduce, token budgets, runtime failure UX |
+| Embeddings and clustering | In progress | `[##########] 99%` | Final broader parser coverage, richer structured-source evals, and larger real-vault evidence |
+| Chat/context routing | In progress | `[##########] 99%` | Richer runtime-failure UX, broader hostile-content/adversarial eval proof, and broader budget-quality benchmarking on real user vaults |
 | Compulsory cluster experts | In progress | `[#########-] 90%` | Real machine validation still required for LLaMA Factory smoke, live adapter prompt run, and live quality benchmark |
-| Context Bridge | In progress | `[#########-] 95%` | Capture UX polish, clearer privacy copy, and later external-client smoke |
+| Context Bridge | In progress | `[##########] 99%` | Later external-client smoke and extension-grade capture polish beyond the current desktop pairing/save flow |
 | Packaging/install | In progress | `[#########-] 97%` | Clean VM validation plus installed-app startup/install diagnostics remain required; do not rely on the older missing-resources state |
 | QA/hardening | In progress | `[##########] 99%` | Current backend audit final suite, clean VM package validation, larger user-owned vault benchmarks, and hardware-aware model recommendation QA |
 | Security | Audit pass in progress except LoRA Phase 11 | `[##########] 99%` | Backend audit pass 1 fixed focused regressions; full backend audit/final suite still pending; LoRA-specific Phase 11 remains deferred until LoRA is ready |
@@ -130,14 +141,23 @@ Runtime boundary:
 - Installer UX gap from older manual review is now closed in config: the generated NSIS config enables install-directory selection and desktop/start-menu shortcut creation. Remaining installer work is first-run reliability and clean-VM validation, not those older UX toggles.
 - Keep the non-LoRA security patch closed while LoRA-specific Phase 11 remains intentionally deferred until the LoRA runtime/training path is ready to harden.
 - Keep Windows-only public V1 criteria. If verified LoRA or other public gates fail, delay release; do not ship a private demo fallback.
+- Treat the context-layer promise as a release gate: public V1 must let users capture external conversations, retrieve distilled memory plus evidence, hand external tools reversible compact context packets that are materially smaller than replaying raw transcripts/files, and prove those savings with packet telemetry.
+- Treat grounded chat safety as a release gate too: public V1 must not rely only on prompt wording for synthesis safety. It needs compact evidence delivery, stronger synthesis-eligibility rules, contradiction handling, explicit degraded modes, and adversarial evals for hostile retrieved content.
+- Treat dynamic evidence budgeting as a release gate too: public V1 must not use one static synthesis-evidence budget for all hardware tiers and model tiers. Context width must scale by machine capability, active model, query type, and trust mode.
 - Verify real adapter training and runtime loading before any broad "trained expert" claim.
 - Compulsory expert work now has stricter dataset/diversity/quality gates, evaluation harness, passing CI scaffold smoke, runtime dependency visibility, and Expert tab visibility, but still needs a real trainer command/model path before public claims.
 - Validate the new accepted/rejected model contract on a clean Windows machine with the bundled expert runtime and one imported approved checkpoint.
 - Update threat/privacy docs so Bridge is described honestly as token/scoped but not meaningfully throttled against repeated corpus walking by a trusted client.
+- Build the missing memory layer above retrieval: bootstrap memory maps, distilled memory objects, working-memory updates, reversible packet compaction, and writeback from internal/external conversations before public V1 positioning claims.
+- Build the missing chat hardening layer above raw retrieval: extraction-before-synthesis checks, stronger synthesis trust gating, contradiction detection, and explicit user-visible failure states before public V1 grounded-chat claims.
+- Replace the static `llm_context_token_budget` strategy with the dynamic policy described in `docs/DYNAMIC_CONTEXT_BUDGETING_DESIGN.md`: widen or tighten context by hardware tier, active model tier, query class, trust mode, and expanded-analysis state instead of relying on one fixed 1,200-token ceiling.
+- Keep the retrieval-first routing pass honest in desktop UX: the backend now defaults natural prompts to vault retrieval, falls back to clearly ungrounded direct answers when retrieval or embeddings cannot ground an answer, records route telemetry, includes recent-turn history in model calls, supports full-scope `complete_analysis`, and the desktop chat UI now surfaces analysis mode, degraded-state banners, and context/runtime notes. The remaining work is broader hostile-content and budget-quality proof.
+- Keep the Bridge packet work on the two-pass plan in `docs/BRIDGE_CONTEXT_PACKET_DESIGN.md`: Pass 1 is implemented, and Pass 2 now has a shared packet-builder foundation plus first-cut expansion handles and content-aware chunking in place. The remaining gap is memory-backed packet shaping and external response quality gating.
 - Dynamic link ingestion is static HTTP by default. The Playwright/Chromium browser fallback remains isolated, low-trust, and smoke-testable, but now requires explicit `CML_ENABLE_DYNAMIC_WEB_INGESTION=1` because Chromium DNS/peer validation cannot be treated as a default public-network SSRF boundary.
 - Keep the written threat model current and treat local API/Bridge auth regressions as release blockers.
 - Continue retrieval threshold tuning beyond the synthetic 1k benchmark using larger user-owned or natural-corpus vaults.
 - Turbovec Phase A and B are now implemented: SQLite stays authoritative, semantic search is routed through a vector-backend abstraction, `turbovec` sidecars are buildable/repairable per `vault_id + derived_state_epoch`, and Phase C remains gated on the benchmark thresholds in `docs/TURBOVEC_INTEGRATION_PLAN.md` before any default-on rollout for healthy vaults with `>= 10,000` chunks.
+- Next pass priority: finish turbovec Phase C and make an explicit default-policy decision for healthy large vaults. The goal is to fully implement the intended turbovec rollout path rather than leaving `>10,000`-chunk vault behavior behind benchmark gating indefinitely.
 - Defer Claude Desktop-specific Bridge smoke for now; Codex-style MCP smoke remains a local protocol check, and external-client claims stay conservative.
 - Keep project context concise enough for session continuity.
 
@@ -166,17 +186,17 @@ Local backend foundation:
 Vault ingestion:
 
 - Done: files, folders, links, text, Markdown/Obsidian metadata, PDFs, images, OCR runtime health, OCR jobs, per-page OCR job progress, page/chunk storage, dynamic-link fallback, packaged generated image/PDF OCR smoke, packaged dynamic-link/browser-runtime smoke.
-- Remaining: clean VM confirmation only.
+- Remaining: clean VM confirmation, table-aware PDF extraction, normalized structured-table storage, canonical table-text generation for retrieval/training, and evaluation on table-heavy real PDFs.
 
 Embeddings and clustering:
 
-- Done: default real embedding direction, hash dev fallback boundary, vector repair/compaction/policy endpoints, startup reconciliation, BM25 plus embedding scoring ledger, source-class weighting, threshold benchmark harness, retrieval eval fixtures, real T-drive cancellation smoke, 100-source benchmark script/report export, active-index transition smoke, real second-embedding cache smoke, user-shaped vault benchmark export, 1k benchmark script with timing targets, watched-folder back-pressure limits, cluster merge artifacts and rollback, active-embedding filtering across retrieval/search paths so mixed embedding spaces are not ranked together, exact semantic search now reads the active vector-index policy selector, and completed turbovec Phase A/B wiring: benchmark harness, vector-backend abstraction, live semantic-search integration, sidecar build/status/repair endpoints, incremental sidecar updates on reindex/delete, manifest validation/path hardening, and startup-repair coverage.
-- Remaining: broader threshold tuning on user-owned vaults, current exact-scan breaking-point measurement on larger natural PDF corpora, and the locked Phase C acceptance benchmark pass for default-on `turbovec` on healthy `>= 10,000`-chunk vaults.
+- Done: default real embedding direction, hash dev fallback boundary, vector repair/compaction/policy endpoints, startup reconciliation, BM25 plus embedding scoring ledger, source-class weighting, threshold benchmark harness, retrieval eval fixtures, real T-drive cancellation smoke, 100-source benchmark script/report export, active-index transition smoke, real second-embedding cache smoke, user-shaped vault benchmark export, 1k benchmark script with timing targets, watched-folder back-pressure limits, cluster merge artifacts and rollback, active-embedding filtering across retrieval/search paths so mixed embedding spaces are not ranked together, exact semantic search now reads the active vector-index policy selector, completed turbovec Phase A/B wiring, and first-cut content-aware chunk dispatch for prose, transcripts, Markdown, code, diffs, logs, structured JSON/YAML/TOML, and CSV/TSV with parser-backed Python symbol chunking plus brace-block symbol chunking for JS/TS/TSX/JSX, Go, Java, C#, C/C++, and Rust, plus chunk metadata on `source_chunks`.
+- Remaining: expand structured/chunking eval coverage on real mixed artifacts, broaden threshold tuning on user-owned vaults, current exact-scan breaking-point measurement on larger natural PDF corpora, and the locked Phase C acceptance benchmark pass for default-on `turbovec` on healthy `>= 10,000`-chunk vaults.
 
 Chat/context routing:
 
-- Done: LLM-first routing, retrieval intent, degraded runtime states, citation snapshots, attachment ingestion, coverage ledger, expanded-analysis foundation, chat message pagination, retrieval snapshot compaction, query/evidence cache pruning, evidence retention policy/enforcement API, explicit product framing that retrieval remains citation authority while expert models assist with reasoning, automatic synthesis token-budget accounting/trimming, retrieval-snapshot token-budget persistence, and structured partial-failure modes for embedding-unavailable, low-trust extract-only, and runtime-fallback chat paths.
-- Remaining: real complete-scope map/reduce, richer runtime failure UX in the desktop flow, and deeper expert-assisted routing beyond the current contract/state split.
+- Done: LLM-first routing, retrieval intent, degraded runtime states, citation snapshots, attachment ingestion, coverage ledger, expanded-analysis foundation, full-scope `complete_analysis` routing plus packet scoring across every indexed source in scope, persisted complete-analysis evidence jobs, desktop chat surfacing for analysis mode/degraded-state/context notes, chat message pagination, retrieval snapshot compaction, query/evidence cache pruning, evidence retention policy/enforcement API, explicit product framing that retrieval remains citation authority while expert models assist with reasoning, automatic synthesis token-budget accounting/trimming, retrieval-snapshot token-budget persistence, structured partial-failure modes for embedding-unavailable, low-trust extract-only, and runtime-fallback chat paths, retrieval-first routing default, explicit direct-chat/no-vault/empty-scope routing exceptions, no-citations direct-answer fallback with ungrounded warning, embedding-unavailable direct-answer fallback when runtime is ready, route telemetry in the coverage ledger, recent-turn conversation history in both grounded and direct local-model calls, a shared message-builder path with a bounded history carveout inside the existing token budget, shared packet-text rendering for grounded chat prompts through the common context-packet builder, durable distilled-memory extraction from chats/sources, working-memory updates plus bootstrap maps, contradiction-aware extract-before-synthesis gating, supported-claim shaping for synthesis prompts, and dynamic evidence-budget selection driven by hardware tier, model tier, query type, trust mode, and runtime state.
+- Remaining: stronger adversarial eval coverage on hostile retrieved content, and broader budget-quality benchmarking on real user vaults.
 
 Compulsory cluster experts:
 
@@ -185,8 +205,8 @@ Compulsory cluster experts:
 
 Context Bridge:
 
-- Done: bridge tokens, permissions, token rotation, stale allowlist pruning, no-active-vault errors, notification behavior, constant-time token compare, explicit external-turn/artifact capture tools with vault/cluster permission checks, Codex-style MCP JSON-RPC smoke, malformed-client hardening, and explicit threat-model wording that Bridge is trusted-client scoped access rather than a meaningful anti-exfiltration throttle.
-- Remaining: full extension package, capture UX polish, later external-client smoke when reprioritized.
+- Done: bridge tokens, permissions, token rotation, stale allowlist pruning, no-active-vault errors, notification behavior, constant-time token compare, explicit external-turn/artifact capture tools with vault/cluster permission checks, Codex-style MCP JSON-RPC smoke, malformed-client hardening, explicit threat-model wording that Bridge is trusted-client scoped access rather than a meaningful anti-exfiltration throttle, Pass-1 MCP `get_cluster_context` packet formatting with packet text by default, `format=json` opt-in, usage instructions, and packet-vs-raw size telemetry, shared packet-builder adoption for Bridge packet rendering, the first reversible expansion path through `/api/v1/bridge/context/expand` plus the MCP `expand_context_item` tool, durable memory-backed packet shaping, external-response grounding classification (`grounded`, `partially_grounded`, `ungrounded`, `unknown`, `user_artifact`), automatic downgrade labels for unsafe writeback, explicit Bridge review/approval endpoints so downgraded outside answers only become trusted memory after approval, and Bridge desktop user/operator surfaces for extension pairing, manual save-to-CML capture, pending review queue, extension capture history, and recent Bridge capture history.
+- Remaining: extension-grade capture polish beyond the current desktop pairing/save flow, and later external-client smoke when reprioritized.
 
 Packaging/install:
 
@@ -201,6 +221,7 @@ QA/hardening:
 Security:
 
 - Done: local-only security architecture, unlock state machine, derived-state/migration rules, build-plan specs, Phase 0 baseline audit, Phase 1 crypto/metadata foundation, Phase 2 unlock/API gating, Phase 3 encrypted storage/blob boundary, Phase 4 derived-state tuple publication, Phase 5 migration planner/staging GC, Phase 6 quarantine/parser worker isolation, Phase 7 Playwright/link isolation, Phase 8 retrieval trust gate/prompt safety, Phase 9 renderer hardening, Phase 10 Bridge approval/identity, Phase 12 reconciliation logging/locked-mode supportability, Phase 13 packaging/runtime hardening, and Phase 14 end-to-end security QA. Phase 8 adds trust metadata to retrieval candidates, trust-aware ranking, final-evidence classification before synthesis, sensitive low-trust refusal, all-low-trust degraded extractive output, low-trust synthesis caps, and quoted evidence prompts.
+- Approach for next chat-model hardening pass: reduce raw hostile text exposure through shared compact packets, add extraction-before-synthesis and contradiction checks ahead of final generation, tighten synthesis-eligibility gates so low-trust or conflicting evidence degrades safely, and back the path with adversarial fixtures instead of only happy-path retrieval tests.
 - Remaining: only Phase 11 LoRA-specific hardening is intentionally deferred until LoRA itself is finished enough to patch against.
 
 ## Public V1 Blockers
@@ -221,12 +242,25 @@ These are release gates, not polish.
 - Model integrity: managed model downloads record SHA-256 and verify real pinned expected hashes from `docs/model-integrity-manifest.json`.
 - Scheduler synthesis gate: background jobs that should not run during generation must respect active/retriable generation states.
 - Chat recovery: interrupted generations need durable timeline placeholders, retry actions, and no fake assistant messages.
-- Complete analysis: current broad rerun is `expanded_analysis`; reserve `complete_analysis` for future evidence-packet map/reduce and return `501` if requested before implementation.
+- Complete analysis: `expanded_analysis` remains the lighter broad rerun, while `complete_analysis` now performs full-scope packet scoring across every indexed source in scope and persists background evidence packets for audit/review.
 - Deletion graph: deleted sensitive content must disappear from retrieval/search immediately before async cleanup.
 - Diagnostics: log rotation policy exists; keep packaged full-vault diagnostics export revalidated whenever packaging/runtime behavior changes.
 - MCP Bridge: Codex-style JSON-RPC smoke passed; keep external-client readiness claims conservative while Claude Desktop-specific smoke is deferred.
 - Bridge privacy boundary: current Bridge auth/scope model is not a meaningful anti-exfiltration throttle once a trusted client has a valid token for an allowed vault/cluster set. Threat-model wording and UI privacy language must say this plainly.
 - Bridge approval boundary: Phase 10 now enforces locked-state failure, public approval request creation with short-lived polling codes, explicit claimed-vs-observed identity UI, shared-token disablement for secured runtime Bridge calls, encrypted approval/client metadata, revocation, audit events, and bounded Bridge usage history.
+- External conversation capture: public V1 must include an explicit user-facing way to save outside model conversations and artifacts into CML, not only backend/MCP plumbing.
+- Distilled memory layer: public V1 must extract and store reusable facts, preferences, decisions, constraints, goals, and open loops rather than behaving only as source retrieval plus transcript archive.
+- Working memory: public V1 must maintain a compact "what changed / what matters / what is next" layer for vaults and clusters so later model calls do not depend on replaying long raw history.
+- Bootstrap memory map: new vaults/clusters must get a generated starting memory map so CML can answer from a compact overview before users build long manual histories.
+- Token-optimized Bridge packets: public V1 Bridge/MCP must return reversible budgeted compact context packets built from memory plus evidence, not just source-shaped records, must support on-demand expansion of compacted items, and must prove a meaningful size reduction versus replaying raw transcripts/files.
+- MCP model-readability: Pass 1 is now in place for `get_cluster_context`: MCP defaults to model-readable packet text with raw JSON opt-in plus basic telemetry. Public V1 still requires Pass-2 shared packet shaping, reversible expansion, and richer memory-plus-evidence compaction before the Bridge context-layer claim is complete.
+- Content-type-aware compaction: public V1 must not compact every payload the same way. Prose, code, logs, structured tables/JSON, and transcript history need different packet-shaping rules so compression does not destroy usefulness.
+- Content-aware source chunking: public V1 must not index generated artifacts or supported local/synced structured files through only 180-word / 40-word-overlap chunks. Code, diffs, logs, Markdown, CSV/TSV, structured JSON/YAML/TOML, and transcripts need profile-aware chunking, parser-backed symbol chunking for code when needed, and raw-content preservation for future reprocessing.
+- External response quality gate: public V1 must not ingest outside-model answers as trusted memory just because an MCP client sent them back. External responses need context-use metadata, verifier status, low-trust/review-needed downgrade for ungrounded or unknown answers, and exclusion from normal synthesis/distilled-memory/expert-training paths until approved.
+- Context-layer evals: public V1 needs repeatable measurements for recall quality, grounding quality, packet usefulness, and token reduction across internal chat and external Bridge/MCP flows.
+- Chat-model hardening: public V1 must reduce prompt-injection and weak-evidence risk by architecture, not only instructions. It needs extraction-before-synthesis, contradiction-aware evidence checks, stronger synthesis-eligibility rules, explicit degraded states, and adversarial eval coverage for hostile retrieved content.
+- Personal-vault sensitive queries: public V1 must not treat medical, legal, therapy, employment, identity, family/private correspondence, or safety queries as ordinary retrieval just because they do not mention passwords, API keys, or money. Sensitive-query classification needs broader categories, tests, trust-gated synthesis, and explicit warnings/degraded modes.
+- Dynamic context budgeting: public V1 must not starve larger local models and stronger machines with the same fixed evidence budget as low-tier setups. It needs hardware-aware, model-aware, query-aware, and trust-aware evidence budgeting with measured packet sizes and widening rules.
 - Renderer safety: Phase 9 now enforces escaped text rendering for model/document output through a static renderer sink audit, hostile output fixture, packaged CSP headers, and Electron behavior coverage.
 - LoRA: public V1 requires verified real adapter training, adapter artifact validation, runtime load against a real local model, rollback, supported hardware, failure codes, and quality win over retrieval baseline.
 - LoRA graduation framing: small or insufficient clusters should remain retrieval-backed with explicit status instead of pretending every cluster can graduate.
@@ -236,6 +270,7 @@ These are release gates, not polish.
 - Model recommendation: public V1 must recommend safe synthesis/embedding/expert setup by detected system tier, enforce one approved model family contract, and reject incompatible custom imports explicitly.
 - OCR/package: package smoke scripts and previous package/runtime passes are recorded, but clean VM validation and current-state packaging documentation are still release gates. Ghostscript path remains AGPL-compatible public release.
 - Dynamic-link browser fallback: static HTTP extraction is the default. Playwright/Chromium fallback now requires explicit `CML_ENABLE_DYNAMIC_WEB_INGESTION=1`, uses an isolated worker with request budgets, private/local/file blocking, download disabling, parent-side output validation, browser-derived low-trust provenance, and pre-synthesis retrieval trust gates. Remaining public-V1 work is packaged/clean-VM verification.
+- Table-heavy PDF support: public V1 must not rely only on flattened prose extraction for table-rich PDFs. It needs a table-aware path that preserves structure as JSON, generates canonical text for retrieval/training, and falls back gracefully when table detection is weak.
 - Cloud-synced vault path safety: selecting a OneDrive/iCloud/other synced vault path is currently not robustly warned/blocked. Treat this as a storage-integrity gap for public V1.
 - Diagnostics redaction: current bundle redaction is regex-based and does not yet amount to a rigorous "no secrets can leak" guarantee.
 
@@ -254,6 +289,23 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 9. Add Expert tab actions for retrain, pause, activate, rollback, and delete while preserving the current honest status copy.
 10. Update release docs with real smoke/benchmark results and exact public-V1 expert claim rules.
 
+## Context Layer V1 Work Path
+
+Implementation order for the context-layer promise lives in `docs/CONTEXT_LAYER_V1_WORKPATH.md`.
+
+Current required sequence:
+
+1. External capture UX: ship save-to-CML flows for outside conversations/artifacts through Bridge and extension surfaces.
+2. Distilled memory schema: add typed memory objects for facts, preferences, decisions, constraints, goals, tasks, and open loops.
+3. Memory extraction/writeback: extract distilled memory from internal chats, external-turn captures, and selected sources with reviewable confidence.
+4. Working memory and bootstrap maps: maintain compact per-vault/per-cluster summaries of current state, recent changes, and next actions.
+5. Shared context packets: route internal chat and Bridge/MCP through one token-budgeted packet builder that returns memory plus evidence instead of source-shaped payloads.
+6. Reversible compaction and expansion: compact packet items by content type, preserve expansion handles, and let clients request fuller evidence only when needed.
+7. Context evals: measure packet size reduction, retrieval/memory recall, grounding quality, expansion rate, and end-to-end usefulness before public V1 sign-off.
+8. Chat-model hardening: add extraction-before-synthesis, contradiction checks, stronger synthesis-eligibility gates, explicit degraded states, and adversarial hostile-content evals.
+9. Dynamic context budgeting: replace the single fixed evidence ceiling with a policy-driven budget allocator that scales by hardware/model/query/trust and records actual packet usage.
+10. Retrieval-first routing: make vault retrieval the default for natural prompts, keep direct chat as an explicit narrow path, and degrade no-results/embedding-missing states into clearly ungrounded direct answers when possible.
+
 ## Current Open Work
 
 - Add written public V1 decision record: Windows-only; public release only; release slips until verified LoRA and other public gates pass.
@@ -268,6 +320,14 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Add model provenance display in setup/settings using `/api/v1/models/integrity-manifest`.
 - Continue backend service-layer extraction around raw route/database operations.
 - Add complete-scope answering in stages: coverage ledger, BM25/embedding scoring, threshold tuning, map packets, reduce/synthesis, cache pruning.
+- Implement chat-model hardening for V1: compact-evidence-first delivery, extraction-before-synthesis, contradiction-aware evidence checks, stronger synthesis trust gates, explicit degraded UX states, and adversarial prompt-injection / hostile-content eval fixtures.
+- Broaden sensitive-query detection in `backend/app/core/retrieval_trust.py`: add personal-vault sensitivity categories, category-specific reasons/telemetry, regression tests for medical/legal/therapy/private correspondence/employment/identity/safety prompts, and ensure low-trust-only sensitive answers degrade or refuse.
+- Implement dynamic context budgeting for V1 per `docs/DYNAMIC_CONTEXT_BUDGETING_DESIGN.md`: budget-policy module, hardware/model/query/trust-aware budget selection, citation-count/snippet-length allocation from full candidate evidence, telemetry, UI diagnostics, and regression/eval coverage.
+- Implement retrieval-first chat routing for V1 per `docs/RETRIEVAL_FIRST_ROUTING_DESIGN.md`: default natural prompts to vault retrieval, narrow direct chat to explicit cases, add no-citations and embedding-unavailable ungrounded fallbacks, add empty-vault short-circuiting, and record route telemetry.
+- Implement Bridge model-ready packets for V1 per `docs/BRIDGE_CONTEXT_PACKET_DESIGN.md`: Pass 1 defaults MCP `get_cluster_context` output to formatted packet text, keeps raw JSON opt-in for diagnostics, adds trust/citation/limit instructions, records savings telemetry, and covers the behavior with MCP tests; Pass 2 completes expansion handles, shared packet convergence, content-aware chunking for external and local structured/code sources, and external response quality gating.
+- Finish turbovec rollout work in `docs/TURBOVEC_INTEGRATION_PLAN.md`: Phase C acceptance benchmarking on larger natural corpora, default-policy decision for healthy `>= 10,000`-chunk vaults, fallback/repair UX validation, and release-ready operator/user wording.
+- Implement the PDF ingestion upgrade path in `docs/PDF_INGESTION_WORKPATH.md`: table detection, JSON table storage, canonical table text, retrieval/training integration, and evaluation on real table-heavy PDFs.
+- Build the full context-layer feature set for V1 per `docs/CONTEXT_LAYER_V1_WORKPATH.md`: external capture UX, distilled memory, working memory, bootstrap maps, shared compact context packets, reversible content-type-aware compaction, on-demand expansion, packet savings telemetry, and evals.
 - Finish local synced-folder import history and watched refresh polish where gaps remain.
 - Build actual browser extension package and safer pairing flow.
 - Execute the clean-machine package script and smoke sequence on a fresh Windows VM before public release claims.
@@ -396,7 +456,7 @@ Scope constraints for this list: compulsory cluster expert group only; no packag
 - Turbovec sidecars are sensitive derived state, not harmless cache. Phase B stores them only under `<vault>/.cml/derived-artifacts/vectors`, keeps them unencrypted at rest for now, validates that manifest `tvim_path` stays inside the expected epoch directory, and fails closed to exact scan plus repair when the sidecar is missing, corrupt, stale, or unhealthy.
 - Deleted sources must be excluded at SQLite/filter layer immediately, before async vector cleanup.
 - Startup order: vault ownership, SQLite integrity/schema/migrations, job recovery, vector/index reconciliation, runtime detection, then API/UI traffic.
-- `complete_analysis` is reserved for future map/reduce. Current broad path is `expanded_analysis`.
+- `complete_analysis` now exists as the full-scope analysis path; `expanded_analysis` remains the lighter broad rerun.
 - MCP Bridge must not respond to JSON-RPC notifications.
 - MCP Bridge must return explicit app errors like `1001 no_active_vault`; never silently choose the first vault.
 - MCP cannot automatically see outside model responses; external transcripts are capturable only when the MCP client explicitly sends them back through a logging/capture tool.

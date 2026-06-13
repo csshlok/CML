@@ -1,10 +1,70 @@
 ﻿# Overall Context
 
-Last updated: 2026-06-12
+Last updated: 2026-06-13
 
 ## Fallback Context Rule
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
+
+## 2026-06-13 Context-Layer First-Pass Snapshot
+
+Completed:
+
+- MCP `get_cluster_context` in `backend/app/bridge_mcp.py` now returns model-readable packet text by default instead of raw indented JSON, with `format=json` kept as an explicit diagnostics mode.
+- The Bridge packet now includes basic usage instructions, compact evidence formatting, citation/title handles, trust/limit wording, and packet-vs-raw byte telemetry.
+- Chat routing now follows the retrieval-first policy: natural prompts default to vault retrieval, with direct-chat reserved for conversational prompts, explicit no-vault requests, empty-scope cases, and a small obvious-direct/world-knowledge bucket.
+- Retrieval chat now falls back to clearly ungrounded direct answers when runtime is ready but retrieval has no citations or embeddings are unavailable, instead of silently bypassing the vault with the old default-general path.
+- Local model calls now receive bounded recent-turn conversation history for both grounded synthesis and direct chat, using one shared message builder and a history carveout inside the existing token budget.
+- Sensitive-query trust gating now covers broader personal-vault categories including medical, legal, therapy/mental-health, employment, identity, family/private correspondence, and safety, not only credentials and finance.
+
+Verification:
+
+- `.venv\Scripts\python -m unittest backend.tests.test_bridge_mcp -v` passed with `8` tests.
+- `.venv\Scripts\python -m pytest -q backend/tests/test_retrieval_trust_phase8.py` passed with `8` tests.
+- `.venv\Scripts\python -m pytest -q backend/tests/test_source_pages.py` passed with `72` tests.
+- `.venv\Scripts\python -m pytest -q backend/tests/test_additional_qa_cases.py` passed with `76` tests and `1` skipped.
+- `.venv\Scripts\python -m pytest -q backend/tests/test_retrieval_trust_phase8.py backend/tests/test_bridge_mcp.py` passed with `16` tests.
+- `python -m compileall backend/app` passed.
+
+Still not completed:
+
+- Dynamic evidence-budget scaling is still separate work; the first pass only adds a bounded recent-history carveout inside the current static budget.
+- Bridge Pass 2 remains open: shared internal/Bridge packet builder, expansion handles, content-aware chunking, and external response quality gating.
+- The higher memory layer remains open: distilled memory, working-memory updates, bootstrap memory maps, and reversible compact packets across internal chat and Bridge.
+
+## 2026-06-13 Context-Layer Pass-2 Foundation Snapshot
+
+Completed:
+
+- The implementation order in `docs/CONTEXT_LAYER_V1_WORKPATH.md` is now dependency-ordered instead of feature-list ordered: memory schema/writeback first, then working-memory maps, then shared packets, expansion, chunking, quality gating, hardening, budgeting, UX, and evals.
+- Bridge and grounded internal chat now share one packet-rendering module at `backend/app/core/context_packets.py` instead of independent formatting logic.
+- Bridge context responses now include shared packet text plus reversible evidence handles, and the backend exposes `/api/v1/bridge/context/expand` to expand source, chunk, or page handles under Bridge permissions.
+- MCP now exposes `expand_context_item`, so external clients can request fuller evidence for one handle instead of forcing the full context payload to stay large by default.
+- Distilled memory, working-memory snapshots, and bootstrap maps are now durable tables instead of design-only requirements; persisted chats and eligible sources rebuild memory automatically, and both chat and Bridge packets now include memory plus current-state summaries.
+- Chat synthesis no longer uses one fixed evidence ceiling. Dynamic context budgeting now selects evidence width from hardware tier, active model tier, query type, trust mode, and runtime state, and the coverage ledger records the applied budget policy.
+- Grounded chat now runs a deterministic synthesis guard before model generation: it extracts supported claims, detects obvious contradictions across top evidence, and degrades to extractive answers instead of synthesizing through conflicting evidence.
+- Bridge writeback now classifies outside-model answers as `grounded`, `partially_grounded`, `ungrounded`, `unknown`, or `user_artifact`, downgrades unsafe captures automatically, and exposes an approval path before degraded captures can become trusted memory again.
+- The desktop Bridge screen now consumes the new review/capture APIs: users can start/approve extension pairing, manually save an external artifact or prompt-response pair into CML, operators can see pending downgraded captures, approve or keep them gated, and inspect recent Bridge-stored or extension-stored captures without leaving the app.
+- Indexing no longer treats every source as prose: `backend/app/core/embeddings.py` now detects content profiles and dispatches chunking for prose, conversations, Markdown, code, diffs, logs, structured JSON/YAML/TOML, and CSV/TSV.
+- Python source files now use parser-backed AST symbol chunking, and brace-based languages now use symbol-block chunking for JS/TS/TSX/JSX, Go, Java, C#, C/C++, and Rust instead of falling straight back to word windows.
+- `source_chunks` now record `content_profile`, `chunk_strategy`, and `chunk_meta_json` so later packet shaping, reprocessing, and evals can inspect how chunking happened.
+- `complete_analysis` is no longer a placeholder rejection. Chat can now route full-scope requests through a packet-builder path that scores every indexed source in scope, reduces relevant evidence into the grounded answer path, and writes background complete-analysis evidence packets for audit.
+- The desktop chat route now surfaces context-layer state instead of burying it: latest analysis mode, degraded fallback banner, coverage summary, and context/runtime notes are visible in the chat sidebar and composer area, with both `Expanded analysis` and `Complete analysis` rerun actions.
+
+Verification:
+
+- `.venv\Scripts\python -m pytest -q backend/tests/test_source_pages.py backend/tests/test_bridge_phase10.py backend/tests/test_parameters_doc_cases.py backend/tests/test_retrieval_trust_phase8.py backend/tests/test_bridge_mcp.py` passed with `118` tests.
+- `python -m compileall backend/app` passed.
+- `.venv\Scripts\ruff.exe check backend` passed.
+- `npm run build` in `apps/desktop` passed.
+- Follow-up verification for the complete-analysis implementation: `.venv\Scripts\python.exe -m pytest -q backend/tests/test_parameters_doc_cases.py backend/tests/test_source_pages.py -k "complete_analysis or expanded_analysis"` passed with `6` tests; `.venv\Scripts\ruff.exe check backend/app/core/analysis_packets.py backend/app/api/routes/chat.py backend/app/core/background_jobs.py backend/app/core/reserved_fields.py backend/app/schemas.py backend/tests/test_parameters_doc_cases.py backend/tests/test_source_pages.py` passed; `python -m compileall backend/app` passed.
+- Desktop follow-up verification for degraded-state surfacing: `node --test apps/desktop/electron/*.test.cjs` passed with `31` tests including the new chat-presentation helper cases; `npm run build` in `apps/desktop` passed.
+
+Still not completed:
+
+- Parser-backed chunking is still not a full Tree-sitter-grade path; brace languages now have symbol-block parsing, but structured eval coverage and future reprocessing/versioning work remain.
+- Broader polished extension flows are still open; the desktop pairing/save path now exists, but the final extension-grade capture experience is not fully done.
+- Broader adversarial eval proof and wider real-vault budget-quality validation are still open.
 
 ## 2026-06-12 Backend Audit Pass 3 Bridge Scale Snapshot
 
@@ -201,8 +261,8 @@ Verification:
 
 Still not completed:
 
-- Chat routing still does not implement true complete-scope map/reduce answering.
-- Desktop/runtime UX still needs to surface the new partial-failure states more clearly instead of depending on raw warning strings alone.
+- Chat routing still needed true complete-scope answering at this snapshot; that gap is now closed in the current codebase.
+- Desktop/runtime UX needed clearer partial-failure surfacing at this snapshot; that gap is now closed in the current desktop chat route.
 - Expert-assisted routing remains shallow relative to the planned chat/expert split.
 
 ## 2026-06-08 Clean VM Attempt Snapshot
@@ -637,9 +697,9 @@ Use this section for fast status checks. Detailed historical notes remain in the
 | Local backend foundation   | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only.                                                               |
 | Vault ingestion            | Complete for current scope | `[##########] 100%` | Clean VM confirmation only.                                                                      |
 | Embeddings and clustering  | Complete for current scope | `[##########] 100%` | Larger real-vault evidence now lives under QA/hardening.                                         |
-| Chat and context routing   | In progress                | `[##########] 96%`  | Complete-scope map/reduce answering, token budgets, runtime failure UI.                          |
+| Chat and context routing   | In progress                | `[##########] 99%`  | Runtime failure UI, broader hostile-content eval proof, and wider real-vault budget-quality validation. |
 | Compulsory cluster experts | In progress                | `[#######---] 70%`  | Real LLaMA Factory smoke and live runtime adapter loading against a real local model.            |
-| Context Bridge             | In progress                | `[#########-] 94%`  | Full extension package, capture UX polish, and later external-client smoke.                      |
+| Context Bridge             | In progress                | `[##########] 98%`  | Full extension package, capture UX polish, and later external-client smoke.                      |
 | Packaging and installer    | In progress                | `[##########] 98%`  | Clean Windows VM validation.                                                                     |
 | QA and hardening           | In progress                | `[##########] 99%`  | Clean VM package validation, larger scale/performance benchmarks, model recommendation QA.       |
 | Security                   | Complete except LoRA Phase 11 | `[##########] 100%` | Phases 0-10 and 12-14 complete; only the LoRA-specific trust phase remains intentionally deferred. |
@@ -690,8 +750,8 @@ Embeddings and clustering:
 
 Chat and context routing:
 
-- Done: global-by-default chat, LLM-first intent routing, small-talk handling, direct local runtime chat, prompt-zero attachments, attachment-to-source ingestion, persisted sessions/messages, pending generation records, retriable startup recovery, combined timeline endpoint, retrieval snapshots/items, streaming, page-aware citations, stale/deleted citation labels, source actions, runtime status, coverage-ledger accounting, expanded-analysis evidence jobs, degraded-runtime notes, reserved `complete_analysis` rejection, answer actions, transcript indexing, and local runtime adapter.
-- Remaining: complete-scope map/reduce answering, token budgets, richer runtime failure UI, and long-running analysis UI.
+- Done: global-by-default chat, LLM-first intent routing, small-talk handling, direct local runtime chat, prompt-zero attachments, attachment-to-source ingestion, persisted sessions/messages, pending generation records, retriable startup recovery, combined timeline endpoint, retrieval snapshots/items, streaming, page-aware citations, stale/deleted citation labels, source actions, runtime status, coverage-ledger accounting, expanded-analysis evidence jobs, full-scope `complete_analysis` routing plus evidence packets, degraded-runtime notes, answer actions, transcript indexing, and local runtime adapter.
+- Remaining: long-running analysis UI and broader real-vault budget-quality proof.
 
 Compulsory cluster experts:
 

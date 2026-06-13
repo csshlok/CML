@@ -32,6 +32,20 @@ In packaged builds:
 2. The app starts or connects to the bundled local backend service.
 3. Runtime data stays under the selected local vault and app data directories.
 
+## Context Layer Shape
+
+Public V1 architecture should be understood as a layered context system, not only as storage plus retrieval:
+
+1. Capture layer: files, links, OCR, internal chats, external conversations, and external artifacts enter the vault.
+2. Evidence layer: sources, pages, chunks, embeddings, retrieval snapshots, and citations remain the source of truth.
+3. Routing layer: chat defaults to vault retrieval for natural prompts, with direct chat reserved for explicit conversational/no-vault cases and graceful ungrounded fallback when retrieval has no usable context.
+4. Memory layer: distilled facts, preferences, decisions, constraints, goals, and open loops are extracted from evidence.
+5. Working-memory layer: compact vault/cluster summaries describe current state, recent changes, and next actions.
+6. Packet layer: internal chat and Bridge/MCP should consume one shared token-budgeted context-packet builder that assembles memory plus evidence for the target prompt. Bridge/MCP should default to model-readable packet text with trust, citation, limit, and expansion instructions; raw JSON should be diagnostics-only.
+7. Safety layer: chat synthesis should consume compact, trust-classified evidence packets through an extraction-first path, not large raw source blobs by default. Low-trust, conflicting, or insufficient evidence should downgrade or refuse synthesis explicitly.
+
+This layered shape is required for the V1 claim that CML reduces context loss and token cost instead of only acting as a searchable vault.
+
 ## Local Model Runtime
 
 The first implementation should use an external local runtime boundary rather than hard-coding one model library into chat logic. CML should talk to a local OpenAI-compatible endpoint first, with llama.cpp `llama-server` and Ollama as the practical adapters.
