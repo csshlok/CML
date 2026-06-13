@@ -9,6 +9,7 @@ from backend.app.core.retrieval_scoring import (
     scoring_ledger,
     threshold_benchmark,
 )
+from backend.app.core.context_layer_eval import export_context_layer_report
 from backend.app.core.retrieval_cache import list_query_cache, prune_query_cache, put_query_cache
 from backend.app.core.vector_maintenance import (
     activate_embedding_index,
@@ -101,6 +102,19 @@ def create_benchmark_report(vault_id: str) -> dict:
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return export_benchmark_report(vault_id)
+
+
+@router.post("/context-layer-report")
+def create_context_layer_report(vault_id: str, cluster_id: str | None = None, limit: int = 5) -> dict:
+    try:
+        require_embeddings_available("Context-layer report")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return export_context_layer_report(
+        vault_id,
+        cluster_id=cluster_id,
+        limit=max(1, min(limit, 12)),
+    )
 
 
 @router.get("/query-cache")

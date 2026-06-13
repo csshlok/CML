@@ -430,6 +430,9 @@ def init_db() -> None:
                 text TEXT NOT NULL,
                 embedding TEXT NOT NULL,
                 embedding_model_id TEXT NOT NULL DEFAULT 'hash',
+                content_profile TEXT NOT NULL DEFAULT 'prose',
+                chunk_strategy TEXT NOT NULL DEFAULT 'word_window',
+                chunk_meta_json TEXT NOT NULL DEFAULT '{}',
                 content_hash TEXT NOT NULL DEFAULT '',
                 index_version TEXT NOT NULL DEFAULT 'v1',
                 normalization_version TEXT NOT NULL DEFAULT 'norm-v1',
@@ -609,6 +612,72 @@ def init_db() -> None:
                 FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS memory_items (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                cluster_id TEXT,
+                source_id TEXT,
+                session_id TEXT,
+                kind TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                detail_text TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0.5,
+                freshness REAL NOT NULL DEFAULT 0.5,
+                review_state TEXT NOT NULL DEFAULT 'auto',
+                status TEXT NOT NULL DEFAULT 'active',
+                origin_fingerprint TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                invalidated_at TEXT,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE SET NULL,
+                FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS working_memory_snapshots (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                cluster_id TEXT,
+                scope_type TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                source_count INTEGER NOT NULL DEFAULT 0,
+                memory_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS bridge_context_packets (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                cluster_id TEXT,
+                client_name TEXT NOT NULL DEFAULT '',
+                query TEXT NOT NULL,
+                packet_text TEXT NOT NULL DEFAULT '',
+                evidence_handles_json TEXT NOT NULL DEFAULT '[]',
+                source_titles_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS bridge_writeback_reviews (
+                id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                vault_id TEXT NOT NULL,
+                context_request_id TEXT,
+                quality_state TEXT NOT NULL,
+                reasons_json TEXT NOT NULL DEFAULT '[]',
+                approved INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS query_evidence_cache (
                 id TEXT PRIMARY KEY,
                 vault_id TEXT NOT NULL,
@@ -685,6 +754,11 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_expert_artifacts_cluster ON expert_artifacts(cluster_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_analysis_evidence_packets_job ON analysis_evidence_packets(job_id);
             CREATE INDEX IF NOT EXISTS idx_analysis_evidence_packets_vault ON analysis_evidence_packets(vault_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_memory_items_scope ON memory_items(vault_id, cluster_id, status, updated_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_items_origin_active ON memory_items(origin_fingerprint) WHERE status = 'active';
+            CREATE INDEX IF NOT EXISTS idx_working_memory_scope ON working_memory_snapshots(vault_id, cluster_id, status, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_bridge_context_packets_scope ON bridge_context_packets(vault_id, cluster_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_bridge_writeback_reviews_source ON bridge_writeback_reviews(source_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_query_evidence_cache_vault ON query_evidence_cache(vault_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_cluster_merge_artifacts_vault ON cluster_merge_artifacts(vault_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_extension_pairing_status ON extension_pairing_sessions(status, expires_at);
@@ -708,6 +782,9 @@ def init_db() -> None:
         _add_column_if_missing(conn, "sources", "cover_image_url", "TEXT")
         _add_column_if_missing(conn, "sources", "deleted_at", "TEXT")
         _add_column_if_missing(conn, "sources", "checksum", "TEXT")
+        _add_column_if_missing(conn, "source_chunks", "content_profile", "TEXT NOT NULL DEFAULT 'prose'")
+        _add_column_if_missing(conn, "source_chunks", "chunk_strategy", "TEXT NOT NULL DEFAULT 'word_window'")
+        _add_column_if_missing(conn, "source_chunks", "chunk_meta_json", "TEXT NOT NULL DEFAULT '{}'")
         _add_column_if_missing(conn, "integration_imports", "imported_count", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "integration_imports", "updated_count", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "integration_imports", "moved_count", "INTEGER NOT NULL DEFAULT 0")

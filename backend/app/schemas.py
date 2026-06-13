@@ -272,13 +272,40 @@ class BridgeContextRequest(BaseModel):
     mode: str = "context"
     client_name: str = "unknown"
     limit: int = Field(default=5, ge=1, le=12)
+    context_request_id: str | None = None
 
 
 class BridgeContextResponse(BaseModel):
+    context_request_id: str
     query: str
     selected_clusters: list[ClusterRead]
     source_snippets: list[SourceRead]
     warnings: list[str]
+    packet_text: str | None = None
+    expansion_handles: list[str] = []
+    memory_items: list[dict] = []
+    working_memory: dict = {}
+
+
+class BridgeContextExpandRequest(BaseModel):
+    vault_id: str | None = None
+    cluster_id: str | None = None
+    handle: str = Field(min_length=1)
+    mode: str = "full"
+    client_name: str = "unknown"
+
+
+class BridgeContextExpandResponse(BaseModel):
+    handle: str
+    source_id: str | None = None
+    chunk_id: str | None = None
+    page_id: str | None = None
+    cluster_id: str | None = None
+    title: str = ""
+    source_type: str = ""
+    trust_tier: str = ""
+    text: str = ""
+    warnings: list[str] = []
 
 
 class BridgeExternalTurnCapture(BaseModel):
@@ -309,6 +336,34 @@ class BridgeCaptureResponse(BaseModel):
     source_type: str
     indexed: bool
     warnings: list[str] = []
+
+
+class BridgeWritebackReviewRead(BaseModel):
+    source_id: str
+    vault_id: str
+    context_request_id: str | None = None
+    quality_state: str
+    approved: bool = False
+    reasons: list[str] = []
+    title: str = ""
+    trust_tier: str = ""
+    security_labels: list[str] = []
+    updated_at: str
+
+
+class BridgeWritebackReviewDecision(BaseModel):
+    approved: bool
+
+
+class BridgeCaptureListItem(BaseModel):
+    source_id: str
+    vault_id: str
+    cluster_id: str | None = None
+    title: str
+    source_type: str
+    quality_state: str = "unknown"
+    approved: bool = False
+    created_at: str
 
 
 class BridgeRequestRead(BaseModel):
@@ -507,6 +562,7 @@ class ChatContextRequest(BaseModel):
     persist: bool = True
     limit: int = Field(default=6, ge=1, le=12)
     expanded_analysis: bool = False
+    complete_analysis: bool = False
     attachments: list[ChatAttachmentInput] = Field(default_factory=list)
 
 

@@ -6,10 +6,8 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.derived_state import chunk_eligibility_sql, query_epoch_snapshot_conn
 from backend.app.core.embeddings import content_hash, reindex_source_chunks, require_embeddings_available
 from backend.app.core.encrypted_storage import (
-    chunk_from_encrypted_row,
     delete_source_encrypted_content,
     delete_source_derived_encrypted_content,
     plaintext_column_for_text,
@@ -18,7 +16,9 @@ from backend.app.core.encrypted_storage import (
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.config import get_settings
 from backend.app.core.model_registry import preferred_expert_base_model
-from backend.app.core.vector_maintenance import active_embedding_selector, vector_repair_plan
+from backend.app.core.vector_maintenance import vector_repair_plan
+from backend.app.core.context_memory import rebuild_chat_session_memory, rebuild_source_memory
+from backend.app.core.analysis_packets import build_analysis_packets
 from backend.app.core.training_dataset import build_cluster_dataset, write_cluster_training_dataset
 from backend.app.core.training_evaluation import evaluate_adapter_quality, evaluate_cluster_dataset
 from backend.app.core.unlock_state import should_pause_vault_job
@@ -132,6 +132,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         preemptable=False,
         timeout_seconds=900,
         soft_timeout_seconds=120,
+        timeout_action="defer",
+    ),
+    "complete_analysis": JobPolicy(
+        priority="normal",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="chat",
+        concurrency_group="analysis",
+        resource_cost="heavy",
+        can_run_during_synthesis=True,
+        user_visible=True,
+        user_initiated=True,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=1800,
+        soft_timeout_seconds=300,
         timeout_action="defer",
     ),
     "delete_source_cleanup": JobPolicy(
@@ -528,6 +545,8 @@ def _run_claimed_job(job: dict) -> None:
             _run_ocr_source(payload, job["id"])
         elif job["job_type"] == "expanded_analysis":
             _run_expanded_analysis(payload, job["id"])
+        elif job["job_type"] == "complete_analysis":
+            _run_complete_analysis(payload, job["id"])
         elif job["job_type"] == "delete_source_cleanup":
             _run_delete_source_cleanup(payload)
         elif job["job_type"] == "vector_reconcile_incremental":
@@ -567,6 +586,7 @@ def _run_reindex_source(payload: dict) -> None:
             return
         reindex_source_chunks(conn, source)
         mark_cluster_needs_update(conn, source.get("cluster_id"), "Source was indexed in the background.")
+        rebuild_source_memory(conn, source_id=source_id)
 
 
 def _run_chat_transcript_memory(payload: dict) -> None:
@@ -582,6 +602,7 @@ def _run_chat_transcript_memory(payload: dict) -> None:
             (now, session_id),
         )
         upsert_chat_transcript_sources(conn, vault_id=vault_id, session_id=session_id)
+        rebuild_chat_session_memory(conn, vault_id=vault_id, session_id=session_id)
         conn.execute(
             "UPDATE chat_sessions SET memory_status = 'indexed', memory_updated_at = ? WHERE id = ?",
             (utc_now(), session_id),
@@ -695,65 +716,40 @@ def _update_job_progress(conn, job_id: str, detail: dict) -> None:
 
 
 def _run_expanded_analysis(payload: dict, job_id: str) -> None:
+    _materialize_analysis_packets(payload, job_id, full_scope=False)
+
+
+def _run_complete_analysis(payload: dict, job_id: str) -> None:
+    _materialize_analysis_packets(payload, job_id, full_scope=True)
+
+
+def _materialize_analysis_packets(payload: dict, job_id: str, *, full_scope: bool) -> None:
     query = str(payload.get("query") or "").strip()
     vault_id = str(payload.get("vault_id") or "").strip()
     cluster_id = str(payload.get("cluster_id") or "").strip() or None
     limit = max(1, min(int(payload.get("limit") or 12), 50))
     if not query or not vault_id:
-        raise RuntimeError("Expanded analysis requires vault_id and query.")
-    require_embeddings_available("Expanded analysis")
-    from backend.app.core.embeddings import cosine_similarity, decode_embedding, embed_text
-
-    query_embedding = embed_text(query)
-    selector = active_embedding_selector()
-    params: list[str] = [vault_id]
-    cluster_clause = ""
-    if cluster_id:
-        cluster_clause = "AND chunks.cluster_id = ?"
-        params.append(cluster_id)
+        raise RuntimeError("Analysis job requires vault_id and query.")
+    require_embeddings_available("Analysis job")
+    packet_bundle = build_analysis_packets(
+        vault_id=vault_id,
+        cluster_id=cluster_id,
+        query=query,
+        include_chat_transcripts=False,
+        limit=None if full_scope else limit,
+        full_scope=full_scope,
+    )
     with connect() as conn:
-        snapshot = query_epoch_snapshot_conn(
-            conn,
-            vault_id,
-            embedding_model_id=selector["embedding_model_id"],
-            index_version=selector["index_version"],
-        )
-        tuple_clause, tuple_params = chunk_eligibility_sql("chunks", snapshot)
-        rows = conn.execute(
-            f"""
-            SELECT chunks.id AS chunk_id, chunks.vault_id, chunks.source_id, chunks.text, chunks.embedding, sources.title
-            FROM source_chunks chunks
-            JOIN sources ON sources.id = chunks.source_id
-            WHERE chunks.vault_id = ?
-              AND sources.state = 'indexed'
-              AND sources.deleted_at IS NULL
-              {tuple_clause}
-              {cluster_clause}
-            """,
-            [params[0], *tuple_params, *params[1:]],
-        ).fetchall()
-        rows = [chunk_from_encrypted_row(conn, row) for row in rows]
-        best: dict[str, dict] = {}
-        for row in rows:
-            score = cosine_similarity(query_embedding, decode_embedding(row["embedding"]))
-            current = best.get(row["source_id"])
-            if current is None or score > current["score"]:
-                best[row["source_id"]] = {
-                    "source_id": row["source_id"],
-                    "source_title": row["title"],
-                    "score": score,
-                    "excerpt": row["text"],
-                }
         conn.execute("DELETE FROM analysis_evidence_packets WHERE job_id = ?", (job_id,))
         now = utc_now()
-        for packet in sorted(best.values(), key=lambda item: item["score"], reverse=True)[:limit]:
+        for packet in packet_bundle["packets"]:
             conn.execute(
                 """
                 INSERT INTO analysis_evidence_packets (
                     id, job_id, vault_id, cluster_id, query, source_id, source_title,
                     relevance_score, status, read_error, evidence_excerpt, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready', '', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
                 """,
                 (
                     f"evidence-{uuid4()}",
@@ -764,7 +760,8 @@ def _run_expanded_analysis(payload: dict, job_id: str) -> None:
                     packet["source_id"],
                     packet["source_title"],
                     round(float(packet["score"]), 4),
-                    str(packet["excerpt"])[:1200],
+                    packet["status"],
+                    packet["evidence_excerpt"],
                     now,
                 ),
             )

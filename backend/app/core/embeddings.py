@@ -3,6 +3,7 @@ import importlib.util
 import json
 import math
 import re
+import ast
 import threading
 import time
 from pathlib import Path
@@ -398,19 +399,336 @@ def decode_embedding(raw: str) -> list[float]:
 
 
 def chunk_text(text: str) -> list[str]:
+    return [item["text"] for item in chunk_text_for_source({}, text)]
+
+
+def chunk_text_for_source(source: dict, text: str) -> list[dict[str, str]]:
+    normalized = str(text or "").replace("\r\n", "\n")
+    profile = detect_content_profile(source, normalized)
+    if profile == "conversation":
+        return _conversation_chunks(normalized)
+    if profile == "markdown":
+        return _markdown_chunks(normalized)
+    if profile == "code":
+        return _code_chunks(source, normalized)
+    if profile == "diff":
+        return _diff_chunks(normalized)
+    if profile == "log":
+        return _log_chunks(normalized)
+    if profile == "structured_json":
+        return _structured_chunks(normalized, profile=profile)
+    if profile == "table_csv":
+        return _csv_chunks(normalized, delimiter="\t" if _looks_like_tsv(source, normalized) else ",")
+    return _word_window_chunks(normalized, profile=profile)
+
+
+def detect_content_profile(source: dict, text: str) -> str:
+    source_type = str(source.get("source_type") or "").lower()
+    title = str(source.get("title") or "")
+    path = str(source.get("original_path") or "")
+    suffix = Path(path or title).suffix.lower()
+    if source_type in {"chat_transcript", "external_transcript"}:
+        return "conversation"
+    if suffix in {".md", ".markdown"}:
+        return "markdown"
+    if suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".java", ".rs", ".c", ".cpp", ".cs"}:
+        return "code"
+    if suffix in {".json", ".yaml", ".yml", ".toml"}:
+        return "structured_json"
+    if suffix in {".csv", ".tsv"}:
+        return "table_csv"
+    if "diff --git" in text or "\n@@" in text:
+        return "diff"
+    if "traceback (most recent call last)" in text.lower() or _looks_like_log(text):
+        return "log"
+    if re.search(r"^\s{0,3}(def |class |function |export function |const [A-Za-z_][A-Za-z0-9_]*\s*=)", text, re.MULTILINE):
+        return "code"
+    if re.search(r"^#{1,6}\s", text, re.MULTILINE):
+        return "markdown"
+    if re.search(r"^\s*[\{\[]", text) and re.search(r"[\}\]]\s*$", text):
+        return "structured_json"
+    if re.search(r"^[A-Za-z0-9_\" ]+(,|\t)[A-Za-z0-9_\" ]+", text, re.MULTILINE):
+        return "table_csv"
+    return "prose"
+
+
+def _word_window_chunks(text: str, *, profile: str) -> list[dict[str, str]]:
     words = text.split()
     if not words:
         return []
 
-    chunks: list[str] = []
+    chunks: list[dict[str, str]] = []
     step = max(1, CHUNK_SIZE_WORDS - CHUNK_OVERLAP_WORDS)
     for start in range(0, len(words), step):
-        chunk = " ".join(words[start : start + CHUNK_SIZE_WORDS]).strip()
-        if chunk:
-            chunks.append(chunk)
+        chunk_text = " ".join(words[start : start + CHUNK_SIZE_WORDS]).strip()
+        if chunk_text:
+            chunks.append(
+                {
+                    "text": chunk_text,
+                    "content_profile": profile,
+                    "chunk_strategy": "word_window",
+                    "chunk_meta_json": json.dumps({"start_word": start}, separators=(",", ":")),
+                }
+            )
         if start + CHUNK_SIZE_WORDS >= len(words):
             break
     return chunks
+
+
+def _conversation_chunks(text: str) -> list[dict[str, str]]:
+    turns = [block.strip() for block in re.split(r"\n{2,}", text) if block.strip()]
+    if not turns:
+        return []
+    chunks: list[dict[str, str]] = []
+    current: list[str] = []
+    for turn in turns:
+        current.append(turn)
+        if len(current) >= 6 or sum(len(item.split()) for item in current) >= CHUNK_SIZE_WORDS:
+            chunks.append(_chunk_payload("\n\n".join(current), "conversation", "turn_group"))
+            current = current[-1:]
+    if current:
+        chunks.append(_chunk_payload("\n\n".join(current), "conversation", "turn_group"))
+    return chunks
+
+
+def _markdown_chunks(text: str) -> list[dict[str, str]]:
+    sections = re.split(r"(?=^#{1,6}\s)", text, flags=re.MULTILINE)
+    chunks = [_chunk_payload(section.strip(), "markdown", "markdown_section") for section in sections if section.strip()]
+    return chunks or _word_window_chunks(text, profile="markdown")
+
+
+def _code_chunks(source: dict, text: str) -> list[dict[str, str]]:
+    suffix = Path(str(source.get("original_path") or source.get("title") or "")).suffix.lower()
+    if suffix == ".py":
+        chunks = _python_symbol_chunks(text)
+        if chunks:
+            return chunks
+    if suffix in {".js", ".jsx", ".ts", ".tsx", ".go", ".java", ".cs", ".c", ".cpp", ".rs"}:
+        chunks = _brace_language_symbol_chunks(text, suffix=suffix)
+        if chunks:
+            return chunks
+    chunks = _generic_code_chunks(text)
+    return chunks or _word_window_chunks(text, profile="code")
+
+
+def _python_symbol_chunks(text: str) -> list[dict[str, str]]:
+    parse_text = _strip_leading_code_label(text)
+    try:
+        tree = ast.parse(parse_text)
+    except SyntaxError:
+        return []
+    lines = parse_text.splitlines()
+    chunks: list[dict[str, str]] = []
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        start = max(0, int(getattr(node, "lineno", 1)) - 1)
+        end = max(start + 1, int(getattr(node, "end_lineno", start + 1)))
+        snippet = "\n".join(lines[start:end]).strip()
+        if snippet:
+            chunks.append(
+                _chunk_payload(
+                    snippet,
+                    "code",
+                    "python_ast_symbol",
+                    {"symbol": getattr(node, "name", ""), "line_start": start + 1, "line_end": end},
+                )
+            )
+    return chunks
+
+
+def _generic_code_chunks(text: str) -> list[dict[str, str]]:
+    lines = _strip_leading_code_label(text).splitlines()
+    if not lines:
+        return []
+    boundary = re.compile(r"^\s*(class |def |async def |function |export function |const [A-Za-z_][A-Za-z0-9_]*\s*=|func )")
+    chunks: list[dict[str, str]] = []
+    current: list[str] = []
+    for line in lines:
+        if current and boundary.search(line):
+            chunks.append(_chunk_payload("\n".join(current).strip(), "code", "line_symbol_group"))
+            current = []
+        current.append(line)
+        if len(current) >= 80:
+            chunks.append(_chunk_payload("\n".join(current).strip(), "code", "line_symbol_group"))
+            current = []
+    if current:
+        chunks.append(_chunk_payload("\n".join(current).strip(), "code", "line_symbol_group"))
+    return [chunk for chunk in chunks if chunk["text"]]
+
+
+def _brace_language_symbol_chunks(text: str, *, suffix: str) -> list[dict[str, str]]:
+    parse_text = _strip_leading_code_label(text)
+    lines = parse_text.splitlines()
+    if not lines:
+        return []
+    boundaries = _brace_language_boundaries(suffix)
+    if not boundaries:
+        return []
+    chunks: list[dict[str, str]] = []
+    start_index = 0
+    while start_index < len(lines):
+        matched = None
+        for index in range(start_index, len(lines)):
+            line = lines[index]
+            for pattern in boundaries:
+                match = pattern.search(line)
+                if match:
+                    matched = (index, match)
+                    break
+            if matched:
+                break
+        if not matched:
+            break
+        symbol_start, match = matched
+        symbol_name = _extract_symbol_name(match)
+        symbol_end = _brace_block_end(lines, symbol_start)
+        if symbol_end <= symbol_start:
+            start_index = symbol_start + 1
+            continue
+        snippet = "\n".join(lines[symbol_start:symbol_end]).strip()
+        if snippet:
+            chunks.append(
+                _chunk_payload(
+                    snippet,
+                    "code",
+                    "brace_symbol_block",
+                    {"symbol": symbol_name, "line_start": symbol_start + 1, "line_end": symbol_end},
+                )
+            )
+        start_index = max(symbol_end, symbol_start + 1)
+    return chunks
+
+
+def _brace_language_boundaries(suffix: str) -> list[re.Pattern[str]]:
+    common = [
+        re.compile(r"^\s*class\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"),
+        re.compile(r"^\s*export\s+class\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"),
+        re.compile(r"^\s*export\s+function\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"),
+        re.compile(r"^\s*function\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"),
+        re.compile(r"^\s*(?:const|let|var)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?\("),
+        re.compile(r"^\s*(?:const|let|var)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?[A-Za-z_][A-Za-z0-9_]*\s*=>"),
+    ]
+    if suffix in {".js", ".jsx", ".ts", ".tsx"}:
+        return common + [
+            re.compile(r"^\s*interface\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"),
+            re.compile(r"^\s*type\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*="),
+        ]
+    if suffix == ".go":
+        return [
+            re.compile(r"^\s*type\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s+struct\b"),
+            re.compile(r"^\s*func\s*(?:\([^\)]*\)\s*)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\("),
+        ]
+    if suffix == ".rs":
+        return [
+            re.compile(r"^\s*(?:pub\s+)?struct\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"),
+            re.compile(r"^\s*(?:pub\s+)?enum\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"),
+            re.compile(r"^\s*(?:pub\s+)?fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\("),
+            re.compile(r"^\s*impl\b.*\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"),
+        ]
+    if suffix in {".java", ".cs", ".c", ".cpp"}:
+        return [
+            re.compile(r"^\s*(?:public|private|protected|static|final|sealed|abstract|\s)*class\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"),
+            re.compile(r"^\s*(?:public|private|protected|static|final|sealed|abstract|\s)*(?:interface|enum)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"),
+            re.compile(r"^\s*(?:public|private|protected|static|virtual|async|inline|constexpr|template<.*>\s*)*[\w:<>\[\]]+\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*\{?"),
+        ]
+    return []
+
+
+def _extract_symbol_name(match: re.Match[str]) -> str:
+    try:
+        return str(match.group("name") or "")
+    except IndexError:
+        return ""
+
+
+def _brace_block_end(lines: list[str], start_index: int) -> int:
+    brace_depth = 0
+    seen_open = False
+    for index in range(start_index, len(lines)):
+        line = re.sub(r"//.*$", "", lines[index])
+        brace_depth += line.count("{")
+        if line.count("{") > 0:
+            seen_open = True
+        brace_depth -= line.count("}")
+        if seen_open and brace_depth <= 0:
+            return index + 1
+        if not seen_open and index > start_index and line.strip().endswith(";"):
+            return index + 1
+    return len(lines) if seen_open else start_index
+
+
+def _strip_leading_code_label(text: str) -> str:
+    lines = text.splitlines()
+    if lines and lines[0].lower().startswith("code file:"):
+        return "\n".join(lines[1:]).lstrip()
+    return text
+
+
+def _diff_chunks(text: str) -> list[dict[str, str]]:
+    sections = re.split(r"(?=^diff --git )", text, flags=re.MULTILINE)
+    chunks = [_chunk_payload(section.strip(), "diff", "diff_file_or_hunk") for section in sections if section.strip()]
+    return chunks or _word_window_chunks(text, profile="diff")
+
+
+def _log_chunks(text: str) -> list[dict[str, str]]:
+    sections = re.split(r"(?=^\d{4}-\d{2}-\d{2}[ T])|(?=^Traceback )", text, flags=re.MULTILINE)
+    chunks = [_chunk_payload(section.strip(), "log", "log_event") for section in sections if section.strip()]
+    return chunks or _word_window_chunks(text, profile="log")
+
+
+def _structured_chunks(text: str, *, profile: str) -> list[dict[str, str]]:
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return []
+    chunks: list[dict[str, str]] = []
+    current: list[str] = []
+    for line in lines:
+        if current and (line.endswith("{") or re.match(r"^[A-Za-z0-9_.-]+\s*:", line)):
+            chunks.append(_chunk_payload("\n".join(current).strip(), profile, "structured_section"))
+            current = []
+        current.append(line)
+        if len(current) >= 60:
+            chunks.append(_chunk_payload("\n".join(current).strip(), profile, "structured_section"))
+            current = []
+    if current:
+        chunks.append(_chunk_payload("\n".join(current).strip(), profile, "structured_section"))
+    return chunks or _word_window_chunks(text, profile=profile)
+
+
+def _csv_chunks(text: str, *, delimiter: str) -> list[dict[str, str]]:
+    rows = [line for line in text.splitlines() if line.strip()]
+    if not rows:
+        return []
+    header = rows[0]
+    data_rows = rows[1:]
+    if not data_rows:
+        return [_chunk_payload(header, "table_csv", "tabular_rows", {"rows": 0})]
+    chunks: list[dict[str, str]] = []
+    batch_size = 40
+    for start in range(0, len(data_rows), batch_size):
+        batch = data_rows[start : start + batch_size]
+        payload = "\n".join([header, *batch]).strip()
+        chunks.append(_chunk_payload(payload, "table_csv", "tabular_rows", {"start_row": start + 1, "rows": len(batch)}))
+    return chunks
+
+
+def _chunk_payload(text: str, profile: str, strategy: str, meta: dict | None = None) -> dict[str, str]:
+    return {
+        "text": text,
+        "content_profile": profile,
+        "chunk_strategy": strategy,
+        "chunk_meta_json": json.dumps(meta or {}, separators=(",", ":")),
+    }
+
+
+def _looks_like_log(text: str) -> bool:
+    return bool(re.search(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", text, re.MULTILINE))
+
+
+def _looks_like_tsv(source: dict, text: str) -> bool:
+    suffix = Path(str(source.get("original_path") or source.get("title") or "")).suffix.lower()
+    return suffix == ".tsv" or ("\t" in text and "," not in text.splitlines()[0])
 
 
 def reindex_source_chunks(conn, source: dict) -> int:
@@ -446,22 +764,23 @@ def reindex_source_chunks(conn, source: dict) -> int:
     tuple_values = chunk_tuple_values(tuple_snapshot)
     for page in pages:
         page_data = page_from_encrypted_row(conn, page)
-        chunks = chunk_text(page_data["raw_text"])
+        chunks = chunk_text_for_source(source, page_data["raw_text"])
         for index, chunk in enumerate(chunks):
             chunk_id = f"chunk-{uuid4()}"
-            embedding = encode_embedding(embed_text(chunk))
+            embedding = encode_embedding(embed_text(chunk["text"]))
             conn.execute(
                 """
                 INSERT INTO source_chunks (
                     id, source_id, page_id, vault_id, cluster_id, chunk_index, text, embedding,
-                    embedding_model_id, content_hash, index_version, normalization_version,
-                    extraction_version, derived_state_epoch, indexed_at, created_at
+                    embedding_model_id, content_profile, chunk_strategy, chunk_meta_json,
+                    content_hash, index_version, normalization_version, extraction_version,
+                    derived_state_epoch, indexed_at, created_at
                 )
                 VALUES (
                     :id, :source_id, :page_id, :vault_id, :cluster_id, :chunk_index, :text,
-                    :embedding, :embedding_model_id, :content_hash, :index_version,
-                    :normalization_version, :extraction_version, :derived_state_epoch,
-                    :indexed_at, :created_at
+                    :embedding, :embedding_model_id, :content_profile, :chunk_strategy,
+                    :chunk_meta_json, :content_hash, :index_version, :normalization_version,
+                    :extraction_version, :derived_state_epoch, :indexed_at, :created_at
                 )
                 """,
                 {
@@ -477,12 +796,15 @@ def reindex_source_chunks(conn, source: dict) -> int:
                         entity_type="source_chunk",
                         entity_id=chunk_id,
                         field_name="text",
-                        text=chunk,
+                        text=chunk["text"],
                         now=now,
                     ),
                     "embedding": embedding,
                     "embedding_model_id": model_id,
-                    "content_hash": content_hash(chunk),
+                    "content_profile": chunk["content_profile"],
+                    "chunk_strategy": chunk["chunk_strategy"],
+                    "chunk_meta_json": chunk["chunk_meta_json"],
+                    "content_hash": content_hash(chunk["text"]),
                     "index_version": "v1",
                     **tuple_values,
                     "indexed_at": now,

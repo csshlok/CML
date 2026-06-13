@@ -9,7 +9,6 @@ from fastapi.responses import StreamingResponse
 
 from backend.app.api.routes.search import semantic_search
 from backend.app.core.background_jobs import enqueue_job
-from backend.app.core.config import get_settings
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.derived_state import chunk_eligibility_sql, query_epoch_snapshot_conn
 from backend.app.core.embeddings import (
@@ -27,7 +26,6 @@ from backend.app.core.encrypted_storage import (
     plaintext_column_for_text,
     source_from_encrypted_row,
     store_source_content_fields,
-    update_source_content_fields,
 )
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path
@@ -46,8 +44,12 @@ from backend.app.core.retrieval_trust import (
     is_low_trust,
     trust_weight,
 )
+from backend.app.core.context_budget_policy import select_context_budget
 from backend.app.core.vector_maintenance import active_embedding_selector
 from backend.app.core.turbovec_runtime import maybe_remove_source_chunks_from_sidecar
+from backend.app.core.context_memory import get_context_memory
+from backend.app.core.synthesis_guard import analyze_synthesis_readiness
+from backend.app.core.analysis_packets import build_analysis_packets
 from backend.app.core.chat_retention import (
     chat_evidence_retention_policy,
     compact_retrieval_snapshots,
@@ -411,7 +413,10 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
             })
             if context["intent"] == "general_chat" and context["runtime_state"] == "ready":
                 try:
-                    for chunk in stream_direct_answer(prompt=active_payload.prompt):
+                    for chunk in stream_direct_answer(
+                        prompt=active_payload.prompt,
+                        recent_turns=context.get("recent_turns"),
+                    ):
                         answer_parts.append(chunk)
                         yield _sse("token", {"text": chunk})
                     warnings.append("Answered by local LLM runtime without vault retrieval.")
@@ -419,6 +424,26 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                     fallback = _build_runtime_unavailable_answer(active_payload.prompt, str(exc))
                     warnings.append(f"Local LLM runtime became unavailable during chat: {exc}")
                     context["coverage_ledger"]["partial_failure_mode"] = "general_chat_runtime_unavailable"
+                    for chunk in _chunk_text(fallback):
+                        answer_parts.append(chunk)
+                        yield _sse("token", {"text": chunk})
+            elif context.get("direct_answer_fallback") and context["runtime_state"] == "ready":
+                try:
+                    prefix = context.get("direct_answer_prefix") or ""
+                    if prefix:
+                        for chunk in _chunk_text(prefix, size=32):
+                            answer_parts.append(chunk)
+                            yield _sse("token", {"text": chunk})
+                    for chunk in stream_direct_answer(
+                        prompt=active_payload.prompt,
+                        recent_turns=context.get("recent_turns"),
+                    ):
+                        answer_parts.append(chunk)
+                        yield _sse("token", {"text": chunk})
+                    warnings.append("Answered by local LLM runtime without grounded vault evidence.")
+                except LLMRuntimeError as exc:
+                    fallback = context.get("answer") or _build_runtime_unavailable_answer(active_payload.prompt, str(exc))
+                    warnings.append(f"Local LLM runtime became unavailable during ungrounded fallback: {exc}")
                     for chunk in _chunk_text(fallback):
                         answer_parts.append(chunk)
                         yield _sse("token", {"text": chunk})
@@ -434,6 +459,10 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                         citations=synthesis_citations,
                         clusters_used=clusters_used,
                         expert_assist=context.get("expert_assist"),
+                        recent_turns=context.get("recent_turns"),
+                        memory_items=context.get("memory_items"),
+                        working_memory=context.get("working_memory"),
+                        supported_claims=context.get("supported_claims"),
                     )):
                         answer_parts.append(chunk)
                         yield _sse("token", {"text": chunk})
@@ -505,45 +534,87 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
             ).fetchone()
             if session is None:
                 raise HTTPException(status_code=404, detail="Chat session not found")
+        source_count = _count_indexed_sources(conn, vault_id=payload.vault_id, cluster_id=payload.cluster_id)
+        recent_turns = _load_recent_chat_turns(
+            conn,
+            session_id=payload.session_id,
+            vault_id=payload.vault_id,
+            current_prompt=payload.prompt,
+        )
 
-    intent = _classify_chat_intent(payload)
+    route = _classify_chat_route(payload, source_count=source_count)
+    intent = route["intent"]
     runtime = runtime_status()
     if intent == "general_chat":
-        return _build_direct_chat_context(payload, runtime_state=runtime["state"], synthesize=synthesize)
+        return _build_direct_chat_context(
+            payload,
+            runtime_state=runtime["state"],
+            synthesize=synthesize,
+            recent_turns=recent_turns,
+            route_reason=route["reason"],
+            source_count=source_count,
+        )
 
     include_chat_transcripts = _should_include_chat_transcripts(payload.prompt)
     if intent != "general_chat":
         try:
             require_embeddings_available("Vault retrieval chat")
         except RuntimeError as exc:
-            return _build_embedding_unavailable_context(payload, intent=intent, detail=str(exc))
+            return _build_embedding_unavailable_context(
+                payload,
+                intent=intent,
+                detail=str(exc),
+                runtime_state=runtime["state"],
+                synthesize=synthesize,
+                recent_turns=recent_turns,
+                route_reason=route["reason"],
+            )
 
-    effective_limit = 12 if payload.expanded_analysis else payload.limit
-    search_response = semantic_search(
-        SemanticSearchRequest(
-            vault_id=payload.vault_id,
-            cluster_id=payload.cluster_id,
-            query=payload.prompt,
-            limit=min(30, max(effective_limit * 4, 12)),
-        )
-    )
-    candidate_results = [
-        result for result in search_response["results"]
-        if include_chat_transcripts or not _is_chat_transcript_result(result)
-    ]
-    if payload.expanded_analysis:
-        source_scores = _score_sources_for_query(
+    complete_scope_requested = bool(payload.complete_analysis)
+    expanded_scope_requested = bool(payload.expanded_analysis)
+    scope_analysis_requested = complete_scope_requested or expanded_scope_requested
+    effective_limit = source_count if complete_scope_requested else 12 if expanded_scope_requested else payload.limit
+    if scope_analysis_requested:
+        analysis_packets = build_analysis_packets(
             vault_id=payload.vault_id,
             cluster_id=payload.cluster_id,
             query=payload.prompt,
             include_chat_transcripts=include_chat_transcripts,
+            limit=None if complete_scope_requested else effective_limit,
+            full_scope=complete_scope_requested,
         )
-        analyzed_source_ids = [item["source_id"] for item in source_scores[: effective_limit]]
+        analyzed_source_ids = analysis_packets["analyzed_source_ids"]
+        packet_rows = analysis_packets["packets"]
         results = [
-            result for result in candidate_results
-            if (not analyzed_source_ids or result["source_id"] in analyzed_source_ids)
+            {
+                "source_id": item["source_id"],
+                "source_title": item["source_title"],
+                "chunk_id": item.get("chunk_id"),
+                "page_id": item.get("page_id"),
+                "page_number": item.get("page_number"),
+                "snippet": item.get("evidence_excerpt") or item.get("excerpt") or "",
+                "score": item["score"],
+                "provenance": item.get("provenance"),
+                "trust_tier": item.get("trust_tier"),
+                "security_labels": item.get("security_labels"),
+                "low_trust": item.get("low_trust", False),
+            }
+            for item in packet_rows
+            if item.get("status") == "ready"
         ]
     else:
+        search_response = semantic_search(
+            SemanticSearchRequest(
+                vault_id=payload.vault_id,
+                cluster_id=payload.cluster_id,
+                query=payload.prompt,
+                limit=min(30, max(effective_limit * 4, 12)),
+            )
+        )
+        candidate_results = [
+            result for result in search_response["results"]
+            if include_chat_transcripts or not _is_chat_transcript_result(result)
+        ]
         results = candidate_results
         analyzed_source_ids = _top_source_ids_from_results(results, limit=effective_limit)
     source_ids = list(OrderedDict.fromkeys(result["source_id"] for result in results))
@@ -551,6 +622,15 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         vault_id=payload.vault_id,
         cluster_id=payload.cluster_id,
         analyzed_source_ids=analyzed_source_ids,
+        sources_considered_override=(
+            analysis_packets["sources_considered"] if scope_analysis_requested else None
+        ),
+        sources_analyzed_override=(
+            len(analysis_packets["analyzed_source_ids"]) if scope_analysis_requested else None
+        ),
+        sources_low_relevance_override=(
+            analysis_packets["low_relevance_source_count"] if scope_analysis_requested else None
+        ),
     )
 
     clusters_used = []
@@ -574,7 +654,7 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
             for row in rows
         ]
 
-    citations = [
+    candidate_citations = [
         {
             "source_id": result["source_id"],
             "source_title": result["source_title"],
@@ -589,18 +669,39 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
             "low_trust": bool(result.get("low_trust")),
             "state": "current",
         }
-        for result in results[:4]
+        for result in results
     ]
-    trust_gate = classify_evidence_trust(payload.prompt, citations)
-    synthesis_citations = citations_for_synthesis(citations, trust_gate)
-    token_budget = max(int(get_settings().llm_context_token_budget), 128)
+    with connect() as conn:
+        memory_items, working_memory = get_context_memory(
+            conn,
+            vault_id=payload.vault_id,
+            cluster_id=payload.cluster_id,
+            query=payload.prompt,
+        )
+    trust_gate = classify_evidence_trust(payload.prompt, candidate_citations)
+    synthesis_candidates = citations_for_synthesis(candidate_citations, trust_gate)
+    budget_selection = select_context_budget(
+        prompt=payload.prompt,
+        runtime_state=runtime["state"],
+        expanded_analysis=payload.expanded_analysis or payload.complete_analysis,
+        trust_gate=trust_gate,
+        cluster_count_used=len(clusters_used),
+        candidate_citation_count=len(synthesis_candidates),
+    )
+    token_budget = budget_selection["token_budget"]
     budget_plan = _apply_synthesis_token_budget(
         prompt=payload.prompt,
         clusters_used=clusters_used,
-        citations=synthesis_citations,
+        citations=synthesis_candidates,
         token_budget=token_budget,
+        recent_turns=recent_turns,
+        memory_items=memory_items,
+        working_memory=working_memory,
     )
     synthesis_citations = budget_plan["citations"]
+    recent_turns = budget_plan["recent_turns"]
+    citations = synthesis_citations or candidate_citations[: max(1, min(4, len(candidate_citations)))]
+    synthesis_guard = analyze_synthesis_readiness(payload.prompt, synthesis_citations)
     expert_assist = _maybe_run_cluster_expert_assist(
         payload=payload,
         intent=intent,
@@ -608,7 +709,16 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     )
 
     warnings = []
-    if payload.expanded_analysis:
+    if payload.complete_analysis:
+        warnings.append(
+            "Complete analysis mode: evaluated every indexed source in scope, built per-source evidence packets, and reduced the relevant evidence into the final answer."
+        )
+        _queue_complete_analysis_job(
+            vault_id=payload.vault_id,
+            cluster_id=payload.cluster_id,
+            query=payload.prompt,
+        )
+    elif payload.expanded_analysis:
         warnings.append("Expanded analysis mode: scored every indexed source in scope before selecting the analysis set.")
         _queue_expanded_analysis_job(
             vault_id=payload.vault_id,
@@ -623,17 +733,45 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         f"{coverage_ledger['sources_low_relevance']} low relevance."
     )
     warnings.extend(trust_gate["warnings"])
+    warnings.extend(synthesis_guard["warnings"])
     coverage_ledger = {
         **coverage_ledger,
         "trust_gate_mode": trust_gate["mode"],
         "trusted_evidence_count": trust_gate["trusted_count"],
         "low_trust_evidence_count": trust_gate["low_trust_count"],
         "trust_gate_latency_ms": trust_gate["latency_ms"],
+        "route_policy": "retrieval_first",
+        "route_reason": route["reason"],
+        "analysis_mode": (
+            "complete_analysis"
+            if payload.complete_analysis
+            else "expanded_analysis"
+            if payload.expanded_analysis
+            else "standard"
+        ),
+        "retrieval_attempted": True,
         "token_budget": token_budget,
+        "budget_hardware_tier": budget_selection["hardware_tier"],
+        "budget_model_tier": budget_selection["model_tier"],
+        "budget_query_type": budget_selection["query_type"],
+        "budget_trust_mode": budget_selection["trust_mode"],
+        "budget_widening_applied": budget_selection["widening_applied"],
+        "budget_narrowing_applied": budget_selection["narrowing_applied"],
+        "budget_widening_reason": budget_selection["widening_reason"],
+        "budget_narrowing_reason": budget_selection["narrowing_reason"],
         "prompt_tokens_estimate": budget_plan["prompt_tokens_estimate"],
         "evidence_tokens_estimate": budget_plan["evidence_tokens_estimate"],
+        "history_tokens_estimate": budget_plan["history_tokens_estimate"],
+        "history_turns_selected": len(recent_turns),
+        "history_turns_trimmed": budget_plan["history_turns_trimmed"],
+        "memory_items_selected": len(memory_items),
         "citations_selected": len(synthesis_citations),
         "citations_trimmed": budget_plan["citations_trimmed"],
+        "candidate_citations": len(synthesis_candidates),
+        "supported_claims_count": len(synthesis_guard["supported_claims"]),
+        "unsupported_claims_count": len(synthesis_guard["unsupported_claims"]),
+        "contradiction_detected": bool(synthesis_guard["contradiction_detected"]),
+        "synthesis_guard_mode": synthesis_guard["mode"],
         "budget_applied": bool(budget_plan["budget_applied"]),
         "partial_failure_mode": "none",
         "expert_route_mode": expert_assist["mode"],
@@ -644,6 +782,12 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         warnings.append(
             "Synthesis context was trimmed to stay within the local token budget for this machine."
         )
+    if recent_turns:
+        warnings.append(
+            f"Included {len(recent_turns)} recent chat turn(s) to preserve short-horizon conversation context."
+        )
+    if memory_items:
+        warnings.append(f"Included {len(memory_items)} distilled memory item(s) in the grounded context packet.")
     if expert_assist["used"]:
         warnings.append(
             "A verified local cluster expert was used as a reasoning aid. Retrieval citations still remain the authority."
@@ -653,12 +797,24 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
             f"Cluster expert assist was unavailable, so this answer stayed retrieval-first: {expert_assist['detail']}"
         )
     if not citations:
-        answer = (
-            "I could not find matching indexed context for this prompt yet. "
-            "Try adding sources, reindexing the vault, or asking with more specific terms."
-        )
         warnings.append("No semantic citations were found.")
-        coverage_ledger["partial_failure_mode"] = "no_citations"
+        if runtime["state"] == "ready":
+            warnings.append("No grounded vault evidence was found, so CML is falling back to an ungrounded direct answer.")
+            coverage_ledger["partial_failure_mode"] = "no_citations_direct_answer"
+            if synthesize:
+                answer = _generate_ungrounded_direct_answer(
+                    payload.prompt,
+                    recent_turns=recent_turns,
+                    prefix=_ungrounded_direct_answer_prefix("I could not find matching indexed context for this prompt."),
+                )
+            else:
+                answer = _ungrounded_direct_answer_fallback(payload.prompt)
+        else:
+            answer = (
+                "I could not find matching indexed context for this prompt yet. "
+                "Try adding sources, reindexing the vault, or asking with more specific terms."
+            )
+            coverage_ledger["partial_failure_mode"] = "no_citations"
     elif trust_gate["mode"] == "refuse_sensitive_low_trust":
         answer = (
             "I found only low-trust evidence for a sensitive request, so I will not answer from it. "
@@ -668,6 +824,13 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     elif not trust_gate["allow_synthesis"]:
         answer = _build_extract_answer(payload.prompt, citations)
         coverage_ledger["partial_failure_mode"] = "low_trust_extract_only"
+    elif not synthesis_guard["allow_synthesis"]:
+        answer = _build_extract_answer(payload.prompt, citations)
+        coverage_ledger["partial_failure_mode"] = (
+            "conflicting_evidence_extract_only"
+            if synthesis_guard["contradiction_detected"]
+            else "weak_support_extract_only"
+        )
     elif synthesize:
         try:
             result = generate_grounded_answer(**_grounded_answer_kwargs(
@@ -675,6 +838,10 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
                 citations=synthesis_citations,
                 clusters_used=clusters_used,
                 expert_assist=expert_assist["text"],
+                recent_turns=recent_turns,
+                memory_items=memory_items,
+                working_memory=working_memory,
+                supported_claims=synthesis_guard["supported_claims"],
             ))
             answer = result.text
             warnings.append(f"Answered by local model runtime: {result.provider} / {result.model}.")
@@ -704,37 +871,102 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "runtime_state": runtime["state"],
         "warnings": warnings,
         "expert_assist": expert_assist["text"],
+        "supported_claims": synthesis_guard["supported_claims"],
+        "memory_items": memory_items,
+        "working_memory": working_memory,
+        "recent_turns": recent_turns,
+        "direct_answer_fallback": coverage_ledger["partial_failure_mode"] in {
+            "embedding_unavailable_direct_answer",
+            "no_citations_direct_answer",
+        },
+        "direct_answer_prefix": (
+            _ungrounded_direct_answer_prefix("Semantic retrieval is unavailable for this question.")
+            if coverage_ledger["partial_failure_mode"] == "embedding_unavailable_direct_answer"
+            else _ungrounded_direct_answer_prefix("I could not find matching indexed context for this prompt.")
+            if coverage_ledger["partial_failure_mode"] == "no_citations_direct_answer"
+            else ""
+        ),
     }
 
 
-def _build_embedding_unavailable_context(payload: ChatContextRequest, *, intent: str, detail: str) -> dict:
+def _build_embedding_unavailable_context(
+    payload: ChatContextRequest,
+    *,
+    intent: str,
+    detail: str,
+    runtime_state: str,
+    synthesize: bool,
+    recent_turns: list[dict[str, str]],
+    route_reason: str,
+) -> dict:
     coverage_ledger = _build_coverage_ledger(
         vault_id=payload.vault_id,
         cluster_id=payload.cluster_id,
         analyzed_source_ids=[],
     )
+    budget_selection = select_context_budget(
+        prompt=payload.prompt,
+        runtime_state=runtime_state,
+        expanded_analysis=payload.expanded_analysis or payload.complete_analysis,
+        trust_gate=None,
+        cluster_count_used=0,
+        candidate_citation_count=0,
+    )
+    answer = (
+        "This question needs your local memory, but semantic search is unavailable because the embedding model "
+        "is missing or not configured. Set up the embedding model to get a sourced answer, or ask a general question."
+    )
+    partial_failure_mode = "embedding_unavailable"
+    warnings = [detail]
+    if runtime_state == "ready":
+        warnings.append(
+            "Semantic retrieval is unavailable, so CML is falling back to an ungrounded direct answer."
+        )
+        partial_failure_mode = "embedding_unavailable_direct_answer"
+        if synthesize:
+            answer = _generate_ungrounded_direct_answer(
+                payload.prompt,
+                recent_turns=recent_turns,
+                prefix=_ungrounded_direct_answer_prefix(
+                    "Semantic retrieval is unavailable for this question."
+                ),
+            )
+        else:
+            answer = _ungrounded_direct_answer_fallback(payload.prompt)
     return {
-        "answer": (
-            "This question needs your local memory, but semantic search is unavailable because the embedding model "
-            "is missing or not configured. Set up the embedding model to get a sourced answer, or ask a general question."
-        ),
+        "answer": answer,
         "clusters_used": [],
         "citations": [],
         "coverage_ledger": {
             **coverage_ledger,
+            "route_policy": "retrieval_first",
+            "route_reason": route_reason,
+            "retrieval_attempted": False,
             "sources_analyzed": 0,
             "sources_low_relevance": coverage_ledger["sources_considered"],
-            "token_budget": max(int(get_settings().llm_context_token_budget), 128),
+            "token_budget": budget_selection["token_budget"],
+            "budget_hardware_tier": budget_selection["hardware_tier"],
+            "budget_model_tier": budget_selection["model_tier"],
+            "budget_query_type": budget_selection["query_type"],
+            "budget_trust_mode": budget_selection["trust_mode"],
             "prompt_tokens_estimate": _estimate_tokens(payload.prompt),
             "evidence_tokens_estimate": 0,
+            "history_tokens_estimate": sum(_estimate_tokens(turn.get("content", "")) for turn in recent_turns),
+            "history_turns_selected": len(recent_turns),
+            "history_turns_trimmed": 0,
             "citations_selected": 0,
             "citations_trimmed": 0,
             "budget_applied": False,
-            "partial_failure_mode": "embedding_unavailable",
+            "partial_failure_mode": partial_failure_mode,
         },
         "intent": intent,
-        "runtime_state": runtime_status()["state"],
-        "warnings": [detail],
+        "runtime_state": runtime_state,
+        "warnings": warnings,
+        "recent_turns": recent_turns,
+        "direct_answer_fallback": partial_failure_mode == "embedding_unavailable_direct_answer",
+        "direct_answer_prefix": _ungrounded_direct_answer_prefix(
+            "Semantic retrieval is unavailable for this question."
+        ) if partial_failure_mode == "embedding_unavailable_direct_answer" else "",
     }
 
 
@@ -762,19 +994,53 @@ def _queue_expanded_analysis_job(
         )
 
 
-def _build_direct_chat_context(payload: ChatContextRequest, *, runtime_state: str, synthesize: bool) -> dict:
+def _queue_complete_analysis_job(
+    *,
+    vault_id: str,
+    cluster_id: str | None,
+    query: str,
+) -> None:
+    fingerprint = content_hash(f"{vault_id}|{cluster_id or ''}|{query.strip().lower()}|complete")
+    with connect() as conn:
+        enqueue_job(
+            conn,
+            job_type="complete_analysis",
+            payload={
+                "vault_id": vault_id,
+                "cluster_id": cluster_id,
+                "query": query,
+            },
+            dedupe_key=f"complete-analysis:{fingerprint}",
+            scope_id=f"{vault_id}:{cluster_id or 'all'}",
+            user_initiated=True,
+        )
+
+
+def _build_direct_chat_context(
+    payload: ChatContextRequest,
+    *,
+    runtime_state: str,
+    synthesize: bool,
+    recent_turns: list[dict[str, str]],
+    route_reason: str,
+    source_count: int,
+) -> dict:
     coverage_ledger = _build_coverage_ledger(
         vault_id=payload.vault_id,
         cluster_id=payload.cluster_id,
         analyzed_source_ids=[],
     )
     warnings = ["Vault retrieval was not used for this general chat message."]
+    if route_reason == "empty_scope":
+        warnings.append("No indexed vault sources exist in this scope yet, so CML answered directly.")
+    elif route_reason != "conversational":
+        warnings.append(f"Routing policy selected direct chat: {route_reason}.")
     if _is_conversational_prompt(payload.prompt):
         answer = _build_direct_chat_answer(payload.prompt)
         warnings.append("Answered directly because this was conversational chat.")
     elif synthesize and runtime_state == "ready":
         try:
-            result = generate_direct_answer(prompt=payload.prompt)
+            result = generate_direct_answer(prompt=payload.prompt, recent_turns=recent_turns)
             answer = result.text
             warnings.append(f"Answered by local LLM runtime: {result.provider} / {result.model}.")
         except LLMRuntimeError as exc:
@@ -791,11 +1057,18 @@ def _build_direct_chat_context(payload: ChatContextRequest, *, runtime_state: st
         "citations": [],
         "coverage_ledger": {
             **coverage_ledger,
+            "route_policy": "retrieval_first",
+            "route_reason": route_reason,
+            "retrieval_attempted": False,
+            "scope_source_count": source_count,
             "sources_analyzed": 0,
             "sources_low_relevance": coverage_ledger["sources_considered"],
             "token_budget": 0,
             "prompt_tokens_estimate": _estimate_tokens(payload.prompt),
             "evidence_tokens_estimate": 0,
+            "history_tokens_estimate": sum(_estimate_tokens(turn.get("content", "")) for turn in recent_turns),
+            "history_turns_selected": len(recent_turns),
+            "history_turns_trimmed": 0,
             "citations_selected": 0,
             "citations_trimmed": 0,
             "budget_applied": False,
@@ -806,6 +1079,9 @@ def _build_direct_chat_context(payload: ChatContextRequest, *, runtime_state: st
         "intent": "general_chat",
         "runtime_state": runtime_state,
         "warnings": warnings,
+        "recent_turns": recent_turns,
+        "direct_answer_fallback": False,
+        "direct_answer_prefix": "",
     }
 
 
@@ -815,6 +1091,10 @@ def _grounded_answer_kwargs(
     citations: list[dict],
     clusters_used: list[dict],
     expert_assist: str | None = None,
+    recent_turns: list[dict[str, str]] | None = None,
+    memory_items: list[dict] | None = None,
+    working_memory: dict | None = None,
+    supported_claims: list[str] | None = None,
 ) -> dict:
     payload = {
         "prompt": prompt,
@@ -823,17 +1103,60 @@ def _grounded_answer_kwargs(
     }
     if expert_assist:
         payload["expert_assist"] = expert_assist
+    if recent_turns:
+        payload["recent_turns"] = recent_turns
+    if memory_items:
+        payload["memory_items"] = memory_items
+    if working_memory:
+        payload["working_memory"] = working_memory
+    if supported_claims:
+        payload["supported_claims"] = supported_claims
     return payload
 
 
-def _build_coverage_ledger(*, vault_id: str, cluster_id: str | None, analyzed_source_ids: list[str]) -> dict:
+def _build_coverage_ledger(
+    *,
+    vault_id: str,
+    cluster_id: str | None,
+    analyzed_source_ids: list[str],
+    sources_considered_override: int | None = None,
+    sources_analyzed_override: int | None = None,
+    sources_low_relevance_override: int | None = None,
+) -> dict:
+    considered = (
+        int(sources_considered_override)
+        if sources_considered_override is not None
+        else _count_indexed_sources(vault_id=vault_id, cluster_id=cluster_id)
+    )
+    analyzed = (
+        int(sources_analyzed_override)
+        if sources_analyzed_override is not None
+        else min(len(set(analyzed_source_ids)), considered)
+    )
+    low_relevance = (
+        int(sources_low_relevance_override)
+        if sources_low_relevance_override is not None
+        else max(considered - analyzed, 0)
+    )
+    return {
+        "sources_considered": considered,
+        "sources_analyzed": analyzed,
+        "sources_low_relevance": low_relevance,
+        "relevance_threshold": 0.0,
+        "scope": "cluster" if cluster_id else "vault",
+    }
+
+
+def _count_indexed_sources(conn=None, *, vault_id: str, cluster_id: str | None) -> int:
     params: list[str] = [vault_id]
     cluster_clause = ""
     if cluster_id:
         cluster_clause = "AND cluster_id = ?"
         params.append(cluster_id)
-    with connect() as conn:
-        row = conn.execute(
+    if conn is None:
+        with connect() as local_conn:
+            return _count_indexed_sources(local_conn, vault_id=vault_id, cluster_id=cluster_id)
+    row = conn.execute(
             f"""
             SELECT COUNT(DISTINCT id) AS source_count
             FROM sources
@@ -841,15 +1164,7 @@ def _build_coverage_ledger(*, vault_id: str, cluster_id: str | None, analyzed_so
             """,
             params,
         ).fetchone()
-    considered = int(row["source_count"] if row else 0)
-    analyzed = min(len(set(analyzed_source_ids)), considered)
-    return {
-        "sources_considered": considered,
-        "sources_analyzed": analyzed,
-        "sources_low_relevance": max(considered - analyzed, 0),
-        "relevance_threshold": 0.0,
-        "scope": "cluster" if cluster_id else "vault",
-    }
+    return int(row["source_count"] if row else 0)
 
 
 def _score_sources_for_query(
@@ -925,6 +1240,45 @@ def _top_source_ids_from_results(results: list[dict], *, limit: int) -> list[str
     return source_ids
 
 
+def _load_recent_chat_turns(
+    conn,
+    *,
+    session_id: str | None,
+    vault_id: str,
+    current_prompt: str,
+    limit: int = 6,
+) -> list[dict[str, str]]:
+    if not session_id:
+        return []
+    rows = conn.execute(
+        """
+        SELECT role, content
+        FROM chat_messages
+        WHERE session_id = ?
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        (session_id, max(limit + 1, 2)),
+    ).fetchall()
+    turns: list[dict[str, str]] = []
+    skipped_current_prompt = False
+    current_clean = " ".join(str(current_prompt or "").split()).strip()
+    for row in rows:
+        role = str(row["role"] or "").strip().lower()
+        content = str(row["content"] or "").strip()
+        if role not in {"user", "assistant"} or not content:
+            continue
+        normalized = " ".join(content.split()).strip()
+        if not skipped_current_prompt and role == "user" and normalized == current_clean:
+            skipped_current_prompt = True
+            continue
+        turns.append({"role": role, "content": content})
+        if len(turns) >= limit:
+            break
+    turns.reverse()
+    return turns
+
+
 def _is_conversational_prompt(prompt: str) -> bool:
     normalized = " ".join(prompt.lower().strip().split())
     trimmed = normalized.strip(" .!?")
@@ -946,44 +1300,105 @@ def _is_conversational_prompt(prompt: str) -> bool:
     return False
 
 
-def _classify_chat_intent(payload: ChatContextRequest) -> str:
-    prompt = payload.prompt.lower()
+def _classify_chat_route(payload: ChatContextRequest, *, source_count: int) -> dict[str, str]:
     if payload.attachments:
-        return "attachment_ingestion"
+        return {"intent": "attachment_ingestion", "reason": "attachments_present"}
+    if payload.complete_analysis:
+        return {"intent": "complete_analysis", "reason": "complete_analysis_requested"}
     if payload.expanded_analysis:
-        return "expanded_analysis"
+        return {"intent": "expanded_analysis", "reason": "expanded_analysis_requested"}
     if payload.cluster_id:
-        return "cluster_question"
+        return {"intent": "cluster_question", "reason": "cluster_scope_selected"}
     if _is_conversational_prompt(payload.prompt):
-        return "general_chat"
-    retrieval_markers = (
-        "vault",
-        "source",
-        "sources",
-        "cluster",
-        "clusters",
-        "document",
-        "documents",
-        "file",
-        "files",
-        "pdf",
-        "note",
-        "notes",
-        "citation",
-        "citations",
-        "context",
-        "indexed",
-        "stored",
-        "memory",
-        "summarize my",
-        "what do you know about",
-        "what context",
-        "according to",
-        "based on",
+        return {"intent": "general_chat", "reason": "conversational"}
+    if _is_explicit_no_vault_prompt(payload.prompt):
+        return {"intent": "general_chat", "reason": "explicit_no_vault"}
+    if source_count <= 0:
+        return {"intent": "general_chat", "reason": "empty_scope"}
+    if _is_direct_task_prompt(payload.prompt):
+        return {"intent": "general_chat", "reason": "direct_task"}
+    if _is_obvious_world_knowledge_prompt(payload.prompt):
+        return {"intent": "general_chat", "reason": "obvious_world_knowledge"}
+    return {"intent": "vault_question", "reason": "retrieval_first_default"}
+
+
+def _classify_chat_intent(payload: ChatContextRequest) -> str:
+    return _classify_chat_route(payload, source_count=1)["intent"]
+
+
+def _is_explicit_no_vault_prompt(prompt: str) -> bool:
+    normalized = " ".join(prompt.lower().split())
+    return any(
+        phrase in normalized
+        for phrase in (
+            "just chat",
+            "general question",
+            "without using my vault",
+            "without using the vault",
+            "don't use my vault",
+            "do not use my vault",
+            "don't use the vault",
+            "do not use the vault",
+            "no vault",
+            "ignore my notes",
+            "ignore the vault",
+        )
     )
-    if any(marker in prompt for marker in retrieval_markers):
-        return "vault_question"
-    return "general_chat"
+
+
+def _is_obvious_world_knowledge_prompt(prompt: str) -> bool:
+    normalized = " ".join(prompt.lower().split()).strip(" .!?")
+    if not normalized:
+        return False
+    if any(
+        anchor in normalized
+        for anchor in (
+            " my ",
+            " our ",
+            " we ",
+            " i ",
+            " yesterday",
+            " last time",
+            " last week",
+            " last month",
+            " previous chat",
+            " our conversation",
+            " the project",
+            " the document",
+            " the file",
+            " the note",
+            " the vault",
+        )
+    ):
+        return False
+    if normalized.startswith(("what is the capital of", "who is ", "where is ", "when did ", "translate ", "define ")):
+        return True
+    if normalized.startswith(("what is ", "what's ", "how many ", "calculate ")) and _looks_like_math_prompt(normalized):
+        return True
+    return _looks_like_math_prompt(normalized)
+
+
+def _is_direct_task_prompt(prompt: str) -> bool:
+    normalized = " ".join(prompt.lower().split()).strip()
+    return normalized.startswith(
+        (
+            "write ",
+            "draft ",
+            "brainstorm ",
+            "rewrite ",
+            "improve this ",
+            "fix this ",
+            "translate ",
+            "summarize this text",
+        )
+    )
+
+
+def _looks_like_math_prompt(prompt: str) -> bool:
+    stripped = prompt.replace(" ", "")
+    if stripped and all(ch in "0123456789+-*/().=?" for ch in stripped):
+        return True
+    return False
 
 
 def _should_include_chat_transcripts(prompt: str) -> bool:
@@ -1058,6 +1473,32 @@ def _build_runtime_unavailable_answer(prompt: str, detail: str) -> str:
     )
 
 
+def _ungrounded_direct_answer_prefix(reason: str) -> str:
+    return (
+        f"{reason} The answer below is a direct model response without grounded vault evidence.\n\n"
+    )
+
+
+def _ungrounded_direct_answer_fallback(prompt: str) -> str:
+    return (
+        "CML could not ground this answer in vault evidence. "
+        "If you still want a general answer, keep the local runtime available and retry."
+    )
+
+
+def _generate_ungrounded_direct_answer(
+    prompt: str,
+    *,
+    recent_turns: list[dict[str, str]],
+    prefix: str,
+) -> str:
+    try:
+        result = generate_direct_answer(prompt=prompt, recent_turns=recent_turns)
+        return prefix + result.text
+    except LLMRuntimeError as exc:
+        return prefix + _build_runtime_unavailable_answer(prompt, str(exc))
+
+
 def _sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
 
@@ -1116,15 +1557,30 @@ def _apply_synthesis_token_budget(
     clusters_used: list[dict],
     citations: list[dict],
     token_budget: int,
+    recent_turns: list[dict[str, str]] | None = None,
+    memory_items: list[dict] | None = None,
+    working_memory: dict | None = None,
 ) -> dict:
+    trimmed_turns = _trim_recent_turns_to_budget(recent_turns or [], token_budget=token_budget)
+    history_tokens_estimate = sum(_estimate_tokens(turn.get("content", "")) for turn in trimmed_turns)
+    history_turns_trimmed = max(0, len(recent_turns or []) - len(trimmed_turns))
     base_tokens = _estimate_tokens(prompt) + _estimate_tokens(
         "\n".join(f"{cluster['cluster_name']} {cluster['reason']}" for cluster in clusters_used)
-    ) + 120
+    ) + history_tokens_estimate + _estimate_tokens(
+        " ".join(item.get("summary", "") for item in (memory_items or [])[:6])
+    ) + _estimate_tokens(str((working_memory or {}).get("summary") or "")) + 120
     remaining = max(token_budget - base_tokens, 80)
     trimmed: list[dict] = []
     citations_trimmed = 0
     evidence_tokens_estimate = 0
-    max_citations = min(len(citations), 4)
+    if remaining >= 2400:
+        max_citations = min(len(citations), 12)
+    elif remaining >= 1400:
+        max_citations = min(len(citations), 8)
+    elif remaining >= 900:
+        max_citations = min(len(citations), 6)
+    else:
+        max_citations = min(len(citations), 4)
     per_citation_budget = max(40, remaining // max(max_citations, 1))
     for citation in citations[:max_citations]:
         trimmed_citation = dict(citation)
@@ -1142,8 +1598,11 @@ def _apply_synthesis_token_budget(
         "citations": trimmed,
         "prompt_tokens_estimate": base_tokens + evidence_tokens_estimate,
         "evidence_tokens_estimate": evidence_tokens_estimate,
-        "citations_trimmed": citations_trimmed,
-        "budget_applied": citations_trimmed > 0,
+        "history_tokens_estimate": history_tokens_estimate,
+        "history_turns_trimmed": history_turns_trimmed,
+        "recent_turns": trimmed_turns,
+        "citations_trimmed": citations_trimmed + max(0, len(citations) - len(trimmed)),
+        "budget_applied": citations_trimmed > 0 or history_turns_trimmed > 0 or len(citations) > len(trimmed),
     }
 
 
@@ -1153,6 +1612,32 @@ def _trim_text_to_token_budget(text: str, token_budget: int) -> str:
         return cleaned
     max_chars = max(32, token_budget * 4)
     return cleaned[: max_chars - 3].rstrip() + "..."
+
+
+def _trim_recent_turns_to_budget(recent_turns: list[dict[str, str]], *, token_budget: int) -> list[dict[str, str]]:
+    if not recent_turns:
+        return []
+    history_budget = min(max(int(token_budget * 0.25), 96), 384)
+    selected: list[dict[str, str]] = []
+    used = 0
+    for turn in reversed(recent_turns):
+        content = str(turn.get("content") or "").strip()
+        role = str(turn.get("role") or "").strip().lower()
+        if role not in {"user", "assistant"} or not content:
+            continue
+        trimmed_content = _trim_text_to_token_budget(content, min(96, max(history_budget // 2, 32)))
+        turn_tokens = _estimate_tokens(trimmed_content)
+        if selected and used + turn_tokens > history_budget:
+            break
+        if not selected and turn_tokens > history_budget:
+            trimmed_content = _trim_text_to_token_budget(content, history_budget)
+            turn_tokens = _estimate_tokens(trimmed_content)
+        selected.append({"role": role, "content": trimmed_content})
+        used += turn_tokens
+        if used >= history_budget:
+            break
+    selected.reverse()
+    return selected
 
 
 def _maybe_run_cluster_expert_assist(*, payload: ChatContextRequest, intent: str, citations: list[dict]) -> dict:

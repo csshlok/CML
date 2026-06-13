@@ -6,13 +6,28 @@ from time import perf_counter
 LOW_TRUST_TIERS = {"low_trust_web", "quarantined"}
 TRUSTED_TIERS = {"trusted_local", "imported_local", "trusted_reviewed"}
 MEDIUM_TRUST_TIERS = {"imported_web", "web_static", "external_capture"}
-LOW_TRUST_LABELS = {"low_trust", "browser_derived", "defender_failed"}
+LOW_TRUST_LABELS = {
+    "low_trust",
+    "browser_derived",
+    "defender_failed",
+    "review_needed",
+    "ungrounded_external",
+    "partial_external",
+}
+EXCLUDED_FROM_SYNTHESIS_LABELS = {"review_needed", "ungrounded_external", "partial_external"}
 SYNTHESIS_LOW_TRUST_CAP = 1
 LOW_TRUST_DOMINANCE_RATIO = 0.5
 SENSITIVE_QUERY_PATTERN = re.compile(
     r"\b("
     r"password|passphrase|recovery key|api key|token|secret|private key|ssh key|"
-    r"bank|financial|tax|ssn|social security|credit card|seed phrase|wallet"
+    r"bank|financial|finance|tax|ssn|social security|credit card|seed phrase|wallet|"
+    r"doctor|medical|medication|medicine|prescription|diagnosis|diagnoses|lab result|test result|"
+    r"therapy|therapist|counseling|counselling|mental health|trauma|addiction|"
+    r"attorney|lawyer|legal|nda|contract|agreement|lawsuit|court|"
+    r"passport|license|licence|immigration|visa|identity|birth certificate|"
+    r"salary|payroll|termination|performance review|hr|employment|"
+    r"private correspondence|family|relationship|child|children|custody|"
+    r"safety|threat|abuse|police|incident"
     r")\b",
     re.IGNORECASE,
 )
@@ -84,8 +99,9 @@ def classify_evidence_trust(prompt: str, citations: list[dict]) -> dict:
 def citations_for_synthesis(citations: list[dict], trust_gate: dict) -> list[dict]:
     if not trust_gate.get("allow_synthesis"):
         return []
-    trusted_or_medium = [citation for citation in citations if not is_low_trust(citation)]
-    low_trust = [citation for citation in citations if is_low_trust(citation)]
+    eligible = [citation for citation in citations if not _has_excluded_synthesis_label(citation)]
+    trusted_or_medium = [citation for citation in eligible if not is_low_trust(citation)]
+    low_trust = [citation for citation in eligible if is_low_trust(citation)]
     return [*trusted_or_medium, *low_trust[:SYNTHESIS_LOW_TRUST_CAP]]
 
 
@@ -125,6 +141,11 @@ def _labels(value) -> list:
     except (TypeError, json.JSONDecodeError):
         return []
     return parsed if isinstance(parsed, list) else []
+
+
+def _has_excluded_synthesis_label(candidate: dict) -> bool:
+    labels = {str(label).lower() for label in _labels(_value(candidate, "security_labels"))}
+    return bool(labels & EXCLUDED_FROM_SYNTHESIS_LABELS)
 
 
 def _value(candidate, key: str):

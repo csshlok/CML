@@ -40,7 +40,7 @@ def build_cluster_dataset(cluster_id: str) -> dict:
 
     for source in source_rows:
         text = source.get("extracted_text") or ""
-        if not text.strip() or source.get("deleted_at"):
+        if not text.strip() or source.get("deleted_at") or _exclude_from_training(source):
             continue
 
         total_text_chars += len(text)
@@ -180,3 +180,19 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 def _estimate_tokens(text_chars: int) -> int:
     # Conservative language-agnostic estimate for graduation gates.
     return max(0, text_chars // 4)
+
+
+def _exclude_from_training(source: dict) -> bool:
+    try:
+        labels = json.loads(source.get("security_labels") or "[]")
+    except json.JSONDecodeError:
+        labels = []
+    if not isinstance(labels, list):
+        labels = []
+    lowered = {str(label).lower() for label in labels}
+    return (
+        "lora_excluded" in lowered
+        or "review_needed" in lowered
+        or "ungrounded_external" in lowered
+        or "partial_external" in lowered
+    )

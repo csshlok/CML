@@ -28,14 +28,26 @@ from backend.app.core.bridge_security import (
 )
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.background_jobs import enqueue_job
+from backend.app.core.context_packets import build_bridge_context_packet, render_context_packet
 from backend.app.core.embeddings import content_hash
 from backend.app.core.encrypted_storage import (
+    chunk_from_encrypted_row,
     get_encrypted_text,
     is_vault_secured,
+    page_from_encrypted_row,
     plaintext_column_for_text,
+    source_from_encrypted_row,
     store_source_content_fields,
 )
 from backend.app.core.memory_card import summarize_text
+from backend.app.core.context_memory import (
+    apply_bridge_quality_to_source,
+    classify_external_response_quality,
+    get_context_memory,
+    persist_bridge_writeback_review,
+    rebuild_source_memory,
+    set_bridge_writeback_review_approval,
+)
 from backend.app.core.unlock_state import current_unlock_state, security_gate_active
 from backend.app.schemas import (
     BridgeApprovalDecision,
@@ -45,9 +57,12 @@ from backend.app.schemas import (
     BridgeApprovalRequestRead,
     BridgeAuditEventRead,
     BridgeArtifactCapture,
+    BridgeContextExpandRequest,
+    BridgeContextExpandResponse,
     BridgeContextRequest,
     BridgeContextResponse,
     BridgeCaptureResponse,
+    BridgeCaptureListItem,
     BridgeClientCreate,
     BridgeClientCreateResponse,
     BridgeClientRead,
@@ -57,6 +72,8 @@ from backend.app.schemas import (
     BridgeSettingsUpdate,
     BridgeStatus,
     BridgeTokenRotationRead,
+    BridgeWritebackReviewDecision,
+    BridgeWritebackReviewRead,
     SemanticSearchRequest,
 )
 
@@ -566,6 +583,7 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
             cluster_ids.append(cluster_id)
 
     warnings = []
+    context_request_id = payload.context_request_id or f"bridge-context-{uuid4()}"
     with connect() as conn:
         if cluster_ids:
             cluster_rows = conn.execute(
@@ -598,6 +616,12 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
             ).fetchall()
         else:
             warnings.append("Add or reindex sources before relying on Bridge context.")
+        memory_items, working_memory = get_context_memory(
+            conn,
+            vault_id=vault_id,
+            cluster_id=payload.cluster_id,
+            query=payload.query,
+        )
 
     sources_by_id = {
         row["id"]: _bridge_source_from_row(row, conn=None, allow_raw_snippets=bool(permissions["allow_raw_snippets"]))
@@ -608,14 +632,56 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
         warnings.append("Raw source text is redacted by Bridge permissions.")
     if results:
         warnings.append("Bridge context is ranked by local semantic search.")
+    packet = build_bridge_context_packet(
+        query=payload.query,
+        context_request_id=context_request_id,
+        selected_clusters=[dict_from_row(row) for row in cluster_rows],
+        source_snippets=ordered_sources,
+        warnings=warnings,
+        memory_items=memory_items,
+        working_memory=working_memory,
+    )
     response = {
+        "context_request_id": context_request_id,
         "query": payload.query,
         "selected_clusters": [dict_from_row(row) for row in cluster_rows],
         "source_snippets": ordered_sources,
         "warnings": warnings,
+        "packet_text": render_context_packet(packet),
+        "expansion_handles": [item["handle"] for item in packet["evidence"]],
+        "memory_items": memory_items,
+        "working_memory": working_memory,
     }
     response_bytes = len(json.dumps(response, ensure_ascii=False).encode("utf-8"))
     with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO bridge_context_packets (
+                id, vault_id, cluster_id, client_name, query, packet_text, evidence_handles_json, source_titles_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                vault_id = excluded.vault_id,
+                cluster_id = excluded.cluster_id,
+                client_name = excluded.client_name,
+                query = excluded.query,
+                packet_text = excluded.packet_text,
+                evidence_handles_json = excluded.evidence_handles_json,
+                source_titles_json = excluded.source_titles_json,
+                created_at = excluded.created_at
+            """,
+            (
+                context_request_id,
+                vault_id,
+                payload.cluster_id,
+                payload.client_name,
+                payload.query,
+                response["packet_text"] or "",
+                json.dumps(response["expansion_handles"], separators=(",", ":")),
+                json.dumps([item["title"] for item in packet["evidence"]], separators=(",", ":")),
+                utc_now(),
+            ),
+        )
         _insert_bridge_request(
             conn,
             payload.client_name,
@@ -662,16 +728,143 @@ def log_external_turn(
         )
         if part
     )
+    quality = None
+    with connect() as conn:
+        quality = classify_external_response_quality(
+            conn,
+            vault_id=vault_id,
+            context_request_id=payload.context_request_id,
+            response_text=payload.model_response,
+            artifact_mode=False,
+        )
     return _capture_bridge_source(
         vault_id=vault_id,
         cluster_id=cluster_id,
         title=title,
         source_type="external_transcript",
         text=body,
+        context_request_id=payload.context_request_id,
+        quality_state=quality["quality_state"],
+        quality_reasons=quality["reasons"],
         client_name=payload.client_name,
         mode="external_turn",
         client_id=client_permissions["id"] if client_permissions else None,
     )
+
+
+@router.post("/context/expand", response_model=BridgeContextExpandResponse)
+def expand_context_item(
+    payload: BridgeContextExpandRequest,
+    x_cml_bridge_token: str | None = Header(default=None),
+) -> dict:
+    settings, client_permissions, auth_mode = _authorize_bridge_runtime_token(x_cml_bridge_token)
+    permissions = client_permissions or settings
+    with connect() as conn:
+        _enforce_runtime_rate_limits(conn, client_permissions, auth_mode)
+        vault_id = _resolve_bridge_vault_id(
+            conn,
+            requested_vault_id=payload.vault_id,
+            requested_cluster_id=payload.cluster_id,
+            permissions=permissions,
+        )
+        expanded = _expand_bridge_handle(
+            conn,
+            vault_id=vault_id,
+            handle=payload.handle,
+            allow_raw_snippets=bool(permissions["allow_raw_snippets"]),
+        )
+        if permissions["allowed_cluster_ids"] and expanded.get("cluster_id") and expanded["cluster_id"] not in permissions["allowed_cluster_ids"]:
+            raise HTTPException(status_code=403, detail="cluster_not_allowed")
+        if permissions["allowed_vault_ids"] and vault_id not in permissions["allowed_vault_ids"]:
+            raise HTTPException(status_code=403, detail="vault_not_allowed")
+        compact_bridge_tables(conn)
+    return expanded
+
+
+@router.get("/reviews", response_model=list[BridgeWritebackReviewRead])
+def list_bridge_writeback_reviews(vault_id: str | None = None, pending_only: bool = False) -> list[dict]:
+    params: list = []
+    clauses: list[str] = []
+    if vault_id:
+        clauses.append("reviews.vault_id = ?")
+        params.append(vault_id)
+    if pending_only:
+        clauses.append("reviews.approved = 0")
+        clauses.append("reviews.quality_state <> 'grounded'")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT reviews.*, sources.title, sources.trust_tier, sources.security_labels
+            FROM bridge_writeback_reviews reviews
+            JOIN sources ON sources.id = reviews.source_id
+            {where}
+            ORDER BY reviews.updated_at DESC
+            LIMIT 200
+            """,
+            params,
+        ).fetchall()
+    return [_bridge_review_from_row(row) for row in rows]
+
+
+@router.get("/captures", response_model=list[BridgeCaptureListItem])
+def list_bridge_captures(vault_id: str | None = None, limit: int = 50) -> list[dict]:
+    params: list[object] = []
+    clauses = ["sources.deleted_at IS NULL", "sources.source_type IN ('external_transcript', 'external_artifact')"]
+    if vault_id:
+        clauses.append("sources.vault_id = ?")
+        params.append(vault_id)
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                sources.id AS source_id,
+                sources.vault_id,
+                sources.cluster_id,
+                sources.title,
+                sources.source_type,
+                COALESCE(reviews.quality_state, 'unknown') AS quality_state,
+                COALESCE(reviews.approved, 0) AS approved,
+                sources.created_at
+            FROM sources
+            LEFT JOIN bridge_writeback_reviews reviews ON reviews.source_id = sources.id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY sources.created_at DESC
+            LIMIT ?
+            """,
+            [*params, max(1, min(limit, 200))],
+        ).fetchall()
+    return [
+        {
+            "source_id": row["source_id"],
+            "vault_id": row["vault_id"],
+            "cluster_id": row["cluster_id"],
+            "title": row["title"],
+            "source_type": row["source_type"],
+            "quality_state": row["quality_state"],
+            "approved": bool(row["approved"]),
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+@router.post("/reviews/{source_id}", response_model=BridgeWritebackReviewRead)
+def decide_bridge_writeback_review(source_id: str, payload: BridgeWritebackReviewDecision) -> dict:
+    with connect() as conn:
+        updated = set_bridge_writeback_review_approval(conn, source_id=source_id, approved=payload.approved)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="bridge_review_not_found")
+        row = conn.execute(
+            """
+            SELECT reviews.*, sources.title, sources.trust_tier, sources.security_labels
+            FROM bridge_writeback_reviews reviews
+            JOIN sources ON sources.id = reviews.source_id
+            WHERE reviews.source_id = ?
+            """,
+            (source_id,),
+        ).fetchone()
+    return _bridge_review_from_row(row)
 
 
 @router.post("/artifacts", response_model=BridgeCaptureResponse)
@@ -696,12 +889,16 @@ def capture_external_artifact(
         )
         if part
     )
+    quality = {"quality_state": "user_artifact", "reasons": ["explicit_artifact_capture"]}
     return _capture_bridge_source(
         vault_id=vault_id,
         cluster_id=cluster_id,
         title=payload.title,
         source_type="external_artifact",
         text=body,
+        context_request_id=None,
+        quality_state=quality["quality_state"],
+        quality_reasons=quality["reasons"],
         client_name=payload.client_name,
         mode="external_artifact",
         client_id=client_permissions["id"] if client_permissions else None,
@@ -1281,6 +1478,21 @@ def _bridge_audit_event_from_row(conn, row) -> dict:
     }
 
 
+def _bridge_review_from_row(row) -> dict:
+    return {
+        "source_id": row["source_id"],
+        "vault_id": row["vault_id"],
+        "context_request_id": row["context_request_id"],
+        "quality_state": row["quality_state"],
+        "approved": bool(row["approved"]),
+        "reasons": json.loads(row["reasons_json"] or "[]"),
+        "title": row["title"] or "",
+        "trust_tier": row["trust_tier"] or "",
+        "security_labels": json.loads(row["security_labels"] or "[]"),
+        "updated_at": row["updated_at"],
+    }
+
+
 def _authorize_bridge_runtime_token(token: str | None) -> tuple[dict, dict | None, str]:
     settings = _get_bridge_settings()
     client_permissions = _bridge_client_for_token(token)
@@ -1333,6 +1545,9 @@ def _capture_bridge_source(
     title: str,
     source_type: str,
     text: str,
+    context_request_id: str | None,
+    quality_state: str,
+    quality_reasons: list[str],
     client_name: str,
     mode: str,
     client_id: str | None,
@@ -1403,6 +1618,21 @@ def _capture_bridge_source(
                 now,
             ),
         )
+        persist_bridge_writeback_review(
+            conn,
+            source_id=source_id,
+            vault_id=vault_id,
+            context_request_id=context_request_id,
+            quality_state=quality_state,
+            reasons=quality_reasons,
+        )
+        apply_bridge_quality_to_source(
+            conn,
+            source_id=source_id,
+            quality_state=quality_state,
+            reasons=quality_reasons,
+        )
+        rebuild_source_memory(conn, source_id=source_id)
         enqueue_job(
             conn,
             job_type="reindex_source",
@@ -1433,8 +1663,101 @@ def _capture_bridge_source(
         "cluster_id": cluster_id,
         "source_type": source_type,
         "indexed": True,
-        "warnings": ["External model output was saved as derived transcript/artifact data."],
+        "warnings": [
+            "External model output was saved as derived transcript/artifact data.",
+            f"Bridge quality state: {quality_state}.",
+        ],
     }
+
+
+def _expand_bridge_handle(conn, *, vault_id: str, handle: str, allow_raw_snippets: bool) -> dict:
+    normalized = str(handle or "").strip()
+    if not normalized or ":" not in normalized:
+        raise HTTPException(status_code=400, detail="invalid_context_handle")
+    kind, identifier = normalized.split(":", 1)
+    if kind == "source":
+        row = conn.execute(
+            "SELECT * FROM sources WHERE id = ? AND vault_id = ? AND deleted_at IS NULL",
+            (identifier, vault_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="context_handle_not_found")
+        source = source_from_encrypted_row(conn, row)
+        text = _expanded_source_text(source, allow_raw_snippets=allow_raw_snippets)
+        warnings = []
+        if not allow_raw_snippets:
+            warnings.append("Expansion returned redacted source text because raw snippet permission is disabled.")
+        return {
+            "handle": normalized,
+            "source_id": source["id"],
+            "chunk_id": None,
+            "page_id": None,
+            "cluster_id": source.get("cluster_id"),
+            "title": source["title"],
+            "source_type": source["source_type"],
+            "trust_tier": source.get("trust_tier") or "trusted_local",
+            "text": text,
+            "warnings": warnings,
+        }
+    if kind == "chunk":
+        row = conn.execute(
+            """
+            SELECT chunks.*, sources.title AS source_title, sources.source_type, sources.trust_tier, sources.cluster_id
+            FROM source_chunks chunks
+            JOIN sources ON sources.id = chunks.source_id
+            WHERE chunks.id = ? AND chunks.vault_id = ? AND sources.deleted_at IS NULL
+            """,
+            (identifier, vault_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="context_handle_not_found")
+        chunk = chunk_from_encrypted_row(conn, row)
+        text = str(chunk.get("text") or "").strip()
+        return {
+            "handle": normalized,
+            "source_id": chunk["source_id"],
+            "chunk_id": chunk["id"],
+            "page_id": chunk.get("page_id"),
+            "cluster_id": chunk.get("cluster_id"),
+            "title": chunk.get("source_title") or "",
+            "source_type": chunk.get("source_type") or "",
+            "trust_tier": chunk.get("trust_tier") or "trusted_local",
+            "text": text,
+            "warnings": [],
+        }
+    if kind == "page":
+        row = conn.execute(
+            """
+            SELECT pages.*, sources.title AS source_title, sources.source_type, sources.trust_tier, sources.cluster_id
+            FROM source_pages pages
+            JOIN sources ON sources.id = pages.source_id
+            WHERE pages.id = ? AND pages.vault_id = ? AND sources.deleted_at IS NULL
+            """,
+            (identifier, vault_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="context_handle_not_found")
+        page = page_from_encrypted_row(conn, row)
+        return {
+            "handle": normalized,
+            "source_id": page["source_id"],
+            "chunk_id": None,
+            "page_id": page["id"],
+            "cluster_id": page.get("cluster_id"),
+            "title": page.get("source_title") or "",
+            "source_type": page.get("source_type") or "",
+            "trust_tier": page.get("trust_tier") or "trusted_local",
+            "text": str(page.get("raw_text") or "").strip(),
+            "warnings": [],
+        }
+    raise HTTPException(status_code=400, detail="unsupported_context_handle")
+
+
+def _expanded_source_text(source: dict, *, allow_raw_snippets: bool) -> str:
+    if allow_raw_snippets:
+        text = str(source.get("extracted_text") or source.get("raw_text") or source.get("summary") or "").strip()
+        return text
+    return str(source.get("summary") or "").strip()
 
 
 def _insert_bridge_request(
