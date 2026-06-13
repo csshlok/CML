@@ -6,6 +6,30 @@ Last updated: 2026-06-13
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
+## 2026-06-13 Backend Audit Closure Snapshot
+
+Completed:
+
+- Closed the current non-LoRA backend audit after the pass 1/2/3 fixes and one final scale/security pass.
+- Managed-model downloads now require a trusted release pin for the download path; stale local `integrity.json` values can still describe installed state but cannot authorize a managed download.
+- Local text, Markdown, and code ingestion now uses validated in-process parsing instead of spawning a parser worker per inert file. Riskier document/media formats still use the isolated worker path. This removed the 1200-file smoke timeout/failure mode and keeps large local-folder refreshes bounded.
+- `scripts/security/run-security-e2e.ps1` now runs each smoke script in a fresh PowerShell process, fails nonzero when the aggregate report has `pass: false`, and avoids cross-smoke session leakage.
+
+Verification:
+
+- Full backend pytest: `.venv\Scripts\python.exe -m pytest backend\tests -q --durations=20` passed with `312 passed, 3 skipped`.
+- Focused parser/model regressions passed, including the large local Markdown import and managed-model trusted-pin tests.
+- Desktop/package/security checks passed: `npm run lint`, `npm run build`, `npm run security:renderer`, `npm run security:package`.
+- Sanity checks passed: `python -m compileall -q backend/app` and `git diff --check`.
+- Isolated security e2e passed on 2026-06-13: `scripts/security/run-security-e2e.ps1 -LargeVaultSources 1200` reported overall `pass: true`; the large-vault phase imported `1200/1200`, failed `0`, indexed `1200` chunks, completed reconciliation, and refreshed in `15.53` seconds.
+
+Still not completed:
+
+- Clean Windows VM validation remains required before public release claims.
+- Larger user-owned/natural-corpus vault benchmarks remain required.
+- Hardware-aware model recommendation QA remains required.
+- LoRA-specific Security Phase 11 remains deferred until the real LoRA runtime/training path is ready to harden.
+
 ## 2026-06-13 Context-Layer First-Pass Snapshot
 
 Completed:
@@ -79,10 +103,9 @@ Verification:
 - `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "import_model_checkpoint_rejects_overlapping or source_and_cluster_list_routes"` passed with `2` tests.
 - `.venv\Scripts\python.exe -m compileall -q backend/app` passed.
 
-Still not completed:
+Historical note:
 
-- This is pass 3 of the requested backend audit, not the final audit closure.
-- The full backend test suite, build/security checks, and remaining backend file audit still need to run before closing the goal.
+- This pass was superseded by the 2026-06-13 backend audit closure snapshot above, which completed the final backend suite, build/security checks, and isolated e2e verification for the current non-LoRA scope.
 
 ## 2026-06-12 Backend Audit Pass 2 Scale And Cleanup Snapshot
 
@@ -98,10 +121,9 @@ Verification:
 - `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "delete_source_cleanup_removes_secured_encrypted_payloads or delete_source_tombstones"` passed with `2` tests.
 - `.venv\Scripts\python.exe -m compileall -q backend/app` passed.
 
-Still not completed:
+Historical note:
 
-- This is pass 2 of the requested backend audit, not the final audit closure.
-- The full backend test suite, build/security checks, and remaining backend file audit still need to run before closing the goal.
+- This pass was superseded by the 2026-06-13 backend audit closure snapshot above.
 
 ## 2026-06-12 Backend Audit Pass 1 Security And Release Snapshot
 
@@ -123,10 +145,9 @@ Verification:
 - `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "safe_open or run_migrations"` passed with `5` tests.
 - `.venv\Scripts\python.exe -m pytest -q backend/tests/test_system_vault_lock_and_embeddings.py -k "vault_lock or startup_repair_reports or model_integrity or model_download or download_cancel"` passed with `64` tests.
 
-Still not completed:
+Historical note:
 
-- This is pass 1 of the requested backend audit, not the final audit closure.
-- The full backend test suite, desktop build/security checks, and final current-state backend audit remain to run after the next audit passes.
+- This pass was superseded by the 2026-06-13 backend audit closure snapshot above.
 - Clean Windows VM package validation and real LoRA trainer/runtime/quality validation remain public-V1 gates.
 
 ## 2026-06-12 Chat Attachment Ownership And Secure Cleanup Snapshot
@@ -306,7 +327,7 @@ Implementation baseline:
 
 - Local-only security specs now exist for architecture, unlock state machine, derived-state/migration rules, the security build plan, and the Phase 0 baseline audit. These are intentionally ignored by git.
 - The build plan is phased from baseline audit through crypto/storage, unlock gating, derived-state publication, parser/browser isolation, retrieval trust, renderer hardening, Bridge approval, LoRA manifest/hash verification, reconciliation logs, packaging hardening, and end-to-end security QA.
-- As of 2026-06-07, non-LoRA security phases are complete through Phase 14: helper manifest verification, package-layout overlap auditing, clean-vault and offline-at-rest smokes, interrupted-flow drills, and a `1200`-document large-vault security smoke all passed on the current dev machine. Only LoRA-specific Phase 11 remains intentionally deferred.
+- As of 2026-06-13, non-LoRA security phases are complete through Phase 14: helper manifest verification, package-layout overlap auditing, clean-vault and offline-at-rest smokes, interrupted-flow drills, isolated aggregate e2e gating, and a `1200`-document large-vault security smoke all passed on the current dev machine. Only LoRA-specific Phase 11 remains intentionally deferred.
 - Phase 0 is complete: backend route classification, renderer raw-HTML audit, helper executable/writable-directory map, ingestion/parser/browser surface list, and the security build-freeze rule are written down before implementation starts.
 - Phase 1 is complete: the backend now has compact vault security metadata, Argon2id passphrase/recovery wrapping primitives, random vault master keys, derived subkeys, recovery unlock/reset, sensitive-action passphrase verification, public metadata redaction, and process-memory-only unlocked key state.
 - Phase 2 is complete: the backend has the locked/unlocking/verifying/repair-required/ready state manager, unlock/recovery/lock/settings/sensitive-action endpoints, protected-route middleware, locked background-job pause, restart-to-locked behavior for secured vaults, and Settings controls for convenience/strict/PIN visibility.
