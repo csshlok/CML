@@ -1,313 +1,176 @@
 # Dynamic Context Budgeting Design
 
-Last updated: 2026-06-13
+Last updated: 2026-06-14
 
-## Problem
+## Current Status
 
-Current chat synthesis budgeting is intentionally conservative but too static:
+This design is implemented in backend code for current scope.
+
+Primary implementation points:
+
+- `backend/app/core/context_budget_policy.py`
+- `backend/app/api/routes/chat.py`
+- `backend/tests/test_source_pages.py`
+
+Implemented behavior:
+
+- context budget now scales by hardware tier
+- context budget now scales by active chat-model tier
+- context budget now adapts by query type
+- context budget now adapts by trust mode
+- busy/degraded runtime states can narrow the budget
+- chat coverage metadata now records the selected budget policy fields
+
+This is no longer a doc-only design.
+
+## Problem It Solved
+
+The previous static approach was too blunt:
 
 - one global `llm_context_token_budget` default of `1200`
-- snippets are pre-trimmed before budget selection
-- citations are capped too early
-- the same effective ceiling applies across low-tier and high-tier machines
-- the same ceiling applies across 4B and 8B model paths
+- early hard caps on evidence selection
+- no meaningful distinction between low-tier and high-tier hardware/model setups
 
-This creates three product problems:
+That was inconsistent with the product’s hardware-aware runtime story and underfed stronger local model paths.
 
-1. Higher-quality model options are underfed and do not benefit enough from their larger usable context.
-2. Evidence shaping is determined by early hard caps instead of an explicit allocation policy.
-3. Token management is not aligned with the product's hardware-aware runtime story.
+## What The Repo Now Does
 
-## Goal
+### Selector Module
 
-Replace the single static evidence ceiling with a dynamic budget policy that:
+`select_context_budget(...)` now exists in `backend/app/core/context_budget_policy.py`.
 
-- scales by hardware tier
-- scales by active chat-model tier
-- adapts by query type
-- adapts by trust mode
-- leaves explicit safety margin for prompt, system instructions, and answer generation
-- records what budget was chosen and how it was used
+It currently uses:
 
-This design applies to internal chat first and should later become the default budget policy for shared context packets.
+- hardware tier
+- active chat model tier
+- prompt/query type
+- expanded-analysis state
+- trust gate state
+- runtime state
+- candidate citation count
+- cluster count used
 
-## Non-Goals
+### Current Hardware Base Budgets
 
-- Do not use the full raw model context window.
-- Do not widen context without preserving latency guardrails.
-- Do not bypass trust gating just because more context is available.
-- Do not keep the current fixed citation-count and snippet-length caps as the main control surface.
+Implemented:
 
-## Design Summary
-
-Budgeting becomes a two-stage policy:
-
-1. `select_context_budget(...)`
-   Chooses an evidence budget from runtime and query signals.
-2. `allocate_context_budget(...)`
-   Spends that budget across citations, summaries, and evidence snippets.
-
-The old global default becomes only a floor / fallback, not the normal final budget.
-
-## Inputs
-
-The budget selector should consume:
-
-- `hardware_tier`
-  - `unsupported`
-  - `unknown`
-  - `cpu_minimum_spec`
-  - `cpu_high_spec`
-  - `gpu_or_high_spec_candidate`
-- `active_chat_model`
-  - default 4B
-  - low-spec fallback 4B-class
-  - quality 8B
-  - later larger accepted models
-- `runtime_state`
-  - ready
-  - busy
-  - degraded
-- `query_type`
-  - direct / general
-  - fact lookup
-  - compare / synthesis
-  - plan / multi-step
-  - expanded analysis
-- `trust_mode`
-  - trusted
-  - mixed
-  - low-trust-heavy
-- `cluster_count_used`
-- `candidate_citation_count`
-- `expanded_analysis`
-
-## Stage 1: Budget Selection
-
-### Base budget by hardware tier
-
-Suggested first-pass ranges:
-
-- `unsupported` or `unknown`: `1200`
+- `unsupported`: `1200`
+- `unknown`: `1200`
 - `cpu_minimum_spec`: `1600`
 - `cpu_high_spec`: `2800`
 - `gpu_or_high_spec_candidate`: `4200`
 
-### Model multiplier
+### Current Model Multipliers
 
-Suggested first-pass adjustments:
+Implemented:
 
-- 4B-class chat model: `1.0x`
-- 8B-class chat model: `1.35x`
-- larger approved chat model: `1.5x`
+- `small`: `1.0x`
+- `standard`: `1.0x`
+- `quality`: `1.35x`
+- `large`: `1.5x`
 
-### Query multiplier
+### Current Query Multipliers
 
-Suggested first-pass adjustments:
+Implemented:
 
-- direct / general: `0.75x`
-- fact lookup: `0.9x`
-- compare / synthesis: `1.1x`
-- plan / multi-step: `1.25x`
-- expanded analysis: `1.5x`
+- `general`: `0.75x`
+- `fact_lookup`: `0.9x`
+- `compare_synthesis`: `1.1x`
+- `plan_multistep`: `1.25x`
+- `expanded_analysis`: `1.5x`
 
-### Trust adjustment
+### Current Trust Multipliers
 
-Suggested first-pass adjustments:
+Implemented:
 
-- trusted evidence set: no reduction
-- mixed-trust evidence: `0.85x`
-- low-trust-heavy evidence: `0.65x` and prefer extract/degrade path
+- `trusted`: `1.0x`
+- `mixed`: `0.85x`
+- `low_trust_heavy`: `0.65x`
 
-### Hard floor and ceiling
+### Runtime-Aware Narrowing
 
-- minimum final evidence budget: `1200`
-- first-pass maximum final evidence budget: `8000`
+Implemented:
 
-Rationale:
+- `busy` runtime narrows the selected budget
+- degraded/non-ready runtime narrows it further
 
-- `1200` preserves the current conservative fallback path.
-- `8000` is wide enough to materially improve quality on stronger setups without consuming the whole model window.
+### Floor And Ceiling
 
-### Safety reserve
+Implemented:
 
-Reserve a separate share of the model window for:
+- floor remains tied to `llm_context_token_budget`, with a hard minimum of `1200`
+- ceiling is capped at `8000`
 
-- system prompt
-- user prompt
-- routing/cluster labels
-- answer generation
-- response-time and truncation safety
+## Telemetry Now Recorded
 
-The evidence budget should be the amount left after reserve, not the entire prompt budget.
+The chat coverage ledger now records dynamic-budget metadata such as:
 
-## Stage 2: Budget Allocation
+- `budget_token_budget`
+- `budget_floor_budget`
+- `budget_hardware_tier`
+- `budget_model_tier`
+- `budget_query_type`
+- `budget_trust_mode`
+- `budget_widening_applied`
+- `budget_narrowing_applied`
+- `budget_widening_reason`
+- `budget_narrowing_reason`
 
-The allocator should operate on full candidate evidence before hard truncation.
+This satisfies the core observability requirement from the original design.
 
-### Remove early fixed caps
+## What Changed Relative To The Original Design
 
-Replace:
+The original design called for a two-stage policy:
 
-- fixed `results[:4]`
-- fixed `420`-char default snippet trim
+1. `select_context_budget(...)`
+2. `allocate_context_budget(...)`
 
-With:
+Current repo state:
 
-- citation count selected from budget
-- snippet size selected from budget
-- content-type-aware shaping before final trim
+- Stage 1 is implemented.
+- The allocator behavior is partially reflected in the grounded chat route and evidence-selection flow.
+- The design’s broader “full allocator over all evidence classes” intent is only partially realized.
 
-### Suggested allocation policy
+So the honest status is:
 
-1. Estimate prompt + metadata cost.
-2. Reserve budget for:
-   - cluster labels
-   - distilled memory / working memory
-   - warnings / trust notes
-3. Use remaining budget for evidence.
-4. Allocate evidence budget in descending priority:
-   - diverse top-ranked citations
-   - contradiction-supporting citations when conflict is detected
-   - wider excerpts only when budget remains
+- dynamic budget selection: complete for current scope
+- allocator sophistication: partially complete
+- eval/UI proof breadth: still open
 
-### Citation-count guidance
+## Verification
 
-Suggested starting policy:
+Current focused regression coverage includes:
 
-- low budget: `3-4` citations
-- medium budget: `5-8` citations
-- high budget: `8-12` citations
-- expanded analysis: `10-16` evidence items, some may be compressed summaries rather than raw snippets
+- dynamic budget widens for a quality model on high-spec hardware
+- coverage ledger exposes budget hardware/model/query metadata
+- grounded chat passes the selected budget metadata through the current path
 
-### Snippet-width guidance
+Primary references:
 
-Suggested starting policy:
+- `backend/tests/test_source_pages.py`
+- `backend/app/api/routes/chat.py`
 
-- low budget: short evidence snippets
-- medium budget: standard snippet windows
-- high budget: larger snippet windows or paired evidence windows
-- table/JSON/code/log payloads should use content-type-aware shaping, not plain prose truncation
+## Remaining Work
 
-## Content-Type-Aware Allocation
+Not missing architecture, but still open:
 
-Budget allocation should not flatten all evidence into prose.
+- broader real-vault budget-quality proof
+- latency/quality evaluation across more hardware tiers and model tiers
+- deeper allocator improvements for evidence-width and citation-allocation behavior
+- richer diagnostics/UI surfacing of why a budget was chosen
+- reuse of the same selector/allocation policy as the standard policy for every shared context-packet path
 
-Required content classes:
+## Acceptance Status
 
-- prose
-- code
-- logs
-- tables / JSON
-- transcript history
+### Completed For Current Scope
 
-Examples:
+- static single-ceiling behavior is no longer the only policy
+- higher-tier hardware/model paths can widen the budget
+- lower-trust or degraded-runtime cases can narrow the budget
+- selected budget metadata is observable in coverage telemetry
 
-- code: keep fewer but structurally larger spans
-- logs: keep error clusters and timestamps, not broad raw log walls
-- tables / JSON: compact into schema-aware summary plus expansion handle
-- transcript history: compact into turn summaries first, expand only if needed
+### Still Open As Release-Proof Work
 
-## Runtime-Aware Degradation Rules
-
-Budget selection should narrow automatically when:
-
-- runtime is busy
-- runtime latency exceeds threshold
-- memory pressure is high
-- trust mode is low-trust-heavy
-
-This means the policy remains dynamic in both directions:
-
-- widen on stronger setups
-- shrink when local conditions are poor
-
-## Telemetry
-
-Record for each generation:
-
-- selected budget
-- hardware tier
-- model tier
-- query type
-- trust mode
-- prompt token estimate
-- evidence token estimate
-- citation count selected
-- citation count trimmed
-- snippet tokens before trim
-- snippet tokens after trim
-- whether dynamic widening was applied
-- whether dynamic narrowing was applied
-
-Store these in the existing retrieval / coverage reporting path where possible.
-
-## UI / Diagnostics
-
-Expose in diagnostics and later UI:
-
-- why this budget was chosen
-- what limited it
-- whether a higher-capacity machine/model path would have widened it
-- how much evidence was excluded
-
-This is important because the product promises hardware-aware model recommendations. Evidence budgeting should reflect that same logic.
-
-## Implementation Plan
-
-### Backend
-
-1. Add new module:
-   - `backend/app/core/context_budget_policy.py`
-2. Move budget selection logic out of route-local constant usage.
-3. Add runtime/model-tier helpers for chat model classes.
-4. Replace early fixed citation/snippet caps in `chat.py` with allocator-driven selection.
-5. Extend coverage ledger fields for dynamic-budget metadata.
-6. Reuse the same selector later for shared context packets.
-
-### Config
-
-Keep `llm_context_token_budget` only as:
-
-- fallback minimum
-- test override
-- operator emergency override
-
-Add optional policy knobs:
-
-- per-tier base budgets
-- max evidence budget
-- busy-runtime penalty
-- expanded-analysis multiplier
-
-### Tests
-
-Add coverage for:
-
-- low-tier vs high-tier budget selection
-- 4B vs 8B budget widening
-- fact lookup vs synthesis vs expanded analysis
-- trusted vs low-trust-heavy evidence
-- allocator choosing more citations when budget allows
-- allocator widening snippets when budget allows
-- regression that large models are no longer stuck at the same fixed evidence ceiling
-
-### Evals
-
-Measure:
-
-- answer quality lift from wider dynamic budgets
-- latency delta by tier
-- token usage by tier
-- contradiction handling under wider evidence windows
-- whether higher-tier models actually benefit from wider evidence packets
-
-## Release Gate
-
-Do not keep the current static ceiling as the public V1 behavior if:
-
-- the product still markets hardware-aware model tiers
-- the product still markets a quality model option
-- the product still claims to be an intelligent context-management layer
-
-Public V1 should ship with dynamic evidence budgeting or explicitly downgrade any hardware-aware / higher-quality model positioning.
+- broader real-vault answer-quality validation
+- stronger allocator/evidence-packet proof on larger mixed corpora
+- clearer UI/diagnostics presentation of budget selection outcomes

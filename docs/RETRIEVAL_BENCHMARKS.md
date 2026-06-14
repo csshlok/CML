@@ -1,24 +1,33 @@
 # Retrieval Benchmarks
 
-Date: 2026-06-10
-
-Audit source: `docs/RELEASE_AUDIT.md`
+Last updated: 2026-06-14
 
 ## Release Gate
 
-The release audit treats retrieval validation as part of the public V1 release evidence. It calls out larger user-owned vault benchmarks and broader retrieval threshold tuning as remaining release-risk work.
+Retrieval validation is now materially stronger than the original Phase 5 synthetic-only state, but it is still part of public V1 release proof.
+
+The repo now has:
+
+- synthetic benchmark evidence
+- larger-scale benchmark evidence
+- broader user-owned real-vault benchmark evidence
+- exact-search scale-fix evidence
+- turbovec Phase C wiring and benchmark gate coverage
+
+Remaining release-proof work is broader natural-corpus threshold confidence and clean-machine/release-environment proof around the overall product, not missing basic retrieval instrumentation.
 
 ## Current Evidence
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Desktop build sanity | Passed | `npm run build` completed successfully after rerunning outside the filesystem sandbox. Vite built both client and SSR bundles. |
-| 100-source retrieval benchmark | Passed | `.tmp\phase5-retrieval-100\retrieval-benchmark-report.json` and `.md` were written. Max query latency was `0.0558s`; low-spec targets passed. |
-| 1k retrieval benchmark | Passed | `.tmp\phase5-retrieval-1k\retrieval-benchmark-report.json` and `.md` were written. Max query latency was `0.4679s`; low-spec targets passed. |
-| Backend test baseline | Passed | Full backend suite: `260 passed, 3 skipped` on 2026-06-10. |
-| Active embedding filter regression | Fixed and verified | `test_semantic_search_filters_to_active_embedding_model_and_index_version` now passes; exact semantic search uses the active vector-index policy selector. |
+| 100-source retrieval benchmark | Passed | `.tmp\\phase5-retrieval-100\\retrieval-benchmark-report.json` was generated; max query latency was `0.0558s`. |
+| 1k retrieval benchmark | Passed | `.tmp\\phase5-retrieval-1k\\retrieval-benchmark-report.json` was generated; max query latency was `0.4679s`. |
+| 1500-source retrieval benchmark | Passed | `.tmp\\retrieval-1500-validation\\retrieval-benchmark-report.json` reported `index_seconds=2.7404`, `max_query_latency_seconds=0.5899`, and `15/15` fixtures passing low-spec targets. |
+| User-owned real-vault benchmark | Passed on current capped run | `.tmp\\user-owned-vault-broader-validation-v8.json` completed with `400/400` imported, `0` failed, `11764` chunks indexed, and `313.74ms` query p95 after the import and exact-search fixes. |
+| Exact-search scale fix | Passed and verified | Repeated exact queries now reuse a cached pre-decoded snapshot and hydrate only top-hit chunk ids; the broader capped repo-root run improved query p95 from `10172.38ms` to `228.85ms` before the final import-quality cleanup pass. |
+| Turbovec Phase C wiring | Implemented | Auto-backend gating, sidecar health checks, and per-vault approval benchmark flows are now in product code and covered by `backend/tests/test_turbovec_runtime.py`. |
 
-## Command Evidence
+## Representative Command Evidence
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\benchmark-retrieval.ps1 -Sources 100 -ReportPath .tmp\phase5-retrieval-100\retrieval-benchmark-report.json
@@ -41,17 +50,38 @@ source_count=1000; fixture_count=3; passing_fixture_count=15; max_query_latency_
 ```
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q backend/tests
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\benchmark-1k-vault.ps1 -ReportRoot .tmp\retrieval-1500-validation -Sources 1500
 ```
 
 Result:
 
 ```text
-260 passed, 3 skipped, 1 warning in 170.08s
+index_seconds=2.7404; max_query_latency_seconds=0.5899; passing_fixture_count=15/15; passes_low_spec_targets=true
 ```
 
-## Release Assessment
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\benchmark-user-owned-vault.ps1 -SourceRoot . -MaxFiles 400 -ReportPath .tmp\user-owned-vault-broader-validation-v8.json
+```
 
-Status: partially release-cleared.
+Result:
 
-Synthetic 100-source and 1k-source retrieval benchmark gates now have durable local evidence. Public V1 still needs larger user-owned or equivalent natural-corpus benchmark evidence and the turbovec Phase C acceptance benchmark before default-on rollout.
+```text
+supported_count=400; imported_count=400; failed_count=0; chunks_indexed=11764; query_p95_ms=313.74
+```
+
+## Current Assessment
+
+Status: materially stronger than the old partial synthetic-only state, but still not the final release-proof endpoint.
+
+What is now true:
+
+- retrieval benchmark evidence is no longer limited to 100 and 1k synthetic runs
+- larger-scale and capped real-vault evidence exist
+- the exact backend path has already been hardened for larger corpora
+- turbovec Phase C is implemented as a gated product path, not a doc-only plan
+
+What still remains:
+
+- broader natural-corpus and user-owned corpus threshold confidence
+- continued mixed-artifact retrieval/chunking evaluation breadth
+- the final default-policy confidence story for turbovec-backed large-vault auto mode

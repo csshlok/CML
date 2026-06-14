@@ -1,79 +1,74 @@
 # Windows VM Validation
 
-Date: 2026-06-10
-
-Audit source: `docs/RELEASE_AUDIT.md`
+Last updated: 2026-06-14
 
 ## Release Gate
 
-The audit marks clean Windows VM package validation as a release blocker. The required environment is a fresh Windows VM with no dev Python, no Node, no preinstalled OCR tools, and a cold first run from the packaged artifact.
+Clean Windows VM validation remains a release blocker.
 
-## Historical Probe
+Required environment:
 
-Command:
+- fresh Windows VM
+- no dev Python on PATH
+- no Node on PATH
+- no preinstalled OCR tools
+- cold first run from the current packaged artifact
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\validate-clean-machine-package.ps1 -PackageRoot apps\desktop\release\win-unpacked -ReportPath .tmp\phase4-clean-machine-package-validation.json
-```
+## Current State
 
-Result at that time: failed.
+The package has already moved past the old missing-resources failure mode.
 
-The generated report is `.tmp\phase4-clean-machine-package-validation.json`.
+That older state is useful only as historical context now.
 
-Phase 5 rerun:
+The active blocker is:
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\validate-clean-machine-package.ps1 -PackageRoot apps\desktop\release\win-unpacked -ReportPath .tmp\phase5-clean-machine-package-validation.json
-```
+- rerun the current installer and installed-app smoke sequence on a healthier clean VM image
+- verify first-run parity for the current package
+- capture installer/startup evidence from the actual VM run
 
-Result at that time: failed with the same missing packaged resource checks.
+## Current Known VM Problem
 
-Packaged runtime smoke:
+The latest context docs record that the recent Hyper-V attempt was not a trustworthy gate because the environment itself was unhealthy.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\smoke-packaged-runtime.ps1 -PackageRoot apps\desktop\release\win-unpacked
-```
+Observed issues in that run:
 
-Result:
+- the packaged installer `CML-0.1.0-Setup.exe` crashed inside the guest with `System.dll` / `0xc0000005`
+- the guest also showed Windows servicing/component-store failures
+- PowerShell Direct sessions were unstable
 
-```text
-Packaged Python runtime not found: C:\Users\KIIT0001\Desktop\Project-2\CML\apps\desktop\release\win-unpacked\resources\python-runtime\Scripts\python.exe
-```
+That means the VM image itself was not reliable enough to certify or reject the package cleanly.
 
-## Historical Failed Checks
+## Historical Context
 
-| Check | Expected path | Result |
-| --- | --- | --- |
-| `backend_exists` | `apps\desktop\release\win-unpacked\resources\backend` | Missing |
-| `python_runtime_exists` | `apps\desktop\release\win-unpacked\resources\python-runtime\Scripts\python.exe` | Missing |
-| `expert_python_runtime_exists` | `apps\desktop\release\win-unpacked\resources\expert-python-runtime\Scripts\python.exe` | Missing |
-| `playwright_runtime_exists` | `apps\desktop\release\win-unpacked\resources\ms-playwright` | Missing |
-| `ocr_manifest_exists` | `apps\desktop\release\win-unpacked\resources\backend\bin\ocr\manifest.json` | Missing |
-| `helper_manifest_exists` | `apps\desktop\release\win-unpacked\resources\helper-manifest.json` | Missing |
+Earlier package validation failures were dominated by missing packaged resources and non-portable runtime layout.
 
-Package contents observed under `apps\desktop\release\win-unpacked\resources`:
+Those are no longer the primary live issue.
 
-```text
-app.asar
-app.asar.unpacked
-elevate.exe
-```
+Keep the old failures in mind only to avoid regression:
 
-## Host Tool Findings
+- missing `resources/backend`
+- missing packaged Python runtime
+- missing expert runtime
+- missing Playwright payload
+- missing OCR manifest
+- missing helper manifest
 
-The validator also reported:
+## What Must Happen Next
 
-| Host tool | Detected |
-| --- | --- |
-| Python on PATH | No |
-| Node on PATH | Yes |
-| Tesseract on PATH | No |
-| Ghostscript on PATH | No |
+1. Use a healthier clean Windows VM image.
+2. Run the current packaged installer.
+3. Validate installed-app first run, not only `win-unpacked`.
+4. Capture:
+   - installer outcome
+   - `startup-status.json`
+   - `desktop-runtime.log`
+   - `backend-stdout.log`
+   - `backend-stderr.log`
+5. Treat the gate as passed only after the current package succeeds in that environment.
 
-Because Node is present and this is not a fresh VM, this machine does not satisfy the clean-VM requirement even if package structure were fixed.
-
-## Current Release Assessment
+## Current Assessment
 
 Status: not release-cleared.
 
-This document preserves the old missing-resources evidence only as historical context. The current packaging path has since moved past that state; the active blocker is still a healthy clean-VM validation run plus installed-app first-run evidence from a current package.
+The blocker is no longer “the package is obviously incomplete.”
+The blocker is “the current package still needs a trustworthy clean-VM pass.”
