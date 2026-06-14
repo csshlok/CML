@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld("cmlDesktop", {
     };
   },
   copyText: (value) => ipcRenderer.invoke("cml:copy-text", value),
+  readClipboardText: () => ipcRenderer.invoke("cml:read-clipboard-text"),
   retryStartup: () => ipcRenderer.invoke("cml:retry-startup"),
   openVaultAnyway: () => ipcRenderer.invoke("cml:open-vault-anyway"),
   listSupportedFiles: (targetPaths) => ipcRenderer.invoke("cml:list-supported-files", targetPaths),

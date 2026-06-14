@@ -19,6 +19,7 @@ import {
   LockKeyhole,
 } from "lucide-react";
 import { CommandPalette, useCommandPalette } from "@/components/CommandPalette";
+import { QuickCaptureDialog } from "@/components/QuickCaptureDialog";
 import { BrandLogo } from "@/components/BrandLogo";
 import { useEffect, useState } from "react";
 import {
@@ -33,6 +34,7 @@ import {
   type JobQueueStatus,
   type VaultRecord,
 } from "@/lib/backend";
+import { useQuickCaptureDialog } from "@/lib/quick-capture-store";
 
 type NavItem = {
   to:
@@ -70,6 +72,7 @@ export function AppShell() {
   const pathname = useRouterState({ select: (r) => r.location.pathname });
   const navigate = useNavigate();
   const { open: openPalette, setOpen } = useCommandPalette();
+  const { openDialog: openQuickCapture } = useQuickCaptureDialog();
   const backend = useBackendHealth();
   const [vault, setVault] = useState<VaultRecord | null>(null);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
@@ -99,10 +102,14 @@ export function AppShell() {
         e.preventDefault();
         navigate({ to: "/settings" });
       }
+      if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        openQuickCapture({ mode: "artifact", seedFromClipboard: true });
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [navigate, setOpen]);
+  }, [navigate, openQuickCapture, setOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -225,6 +232,15 @@ export function AppShell() {
               <span className="min-w-0 flex-1">Search</span>
               <span className="text-[11px] text-[var(--text-subtle)]">⌘K</span>
             </button>
+            <button
+              type="button"
+              onClick={() => openQuickCapture({ mode: "artifact", seedFromClipboard: true })}
+              className="mt-2 flex h-8 w-full items-center gap-2 rounded-md border border-[var(--border-input)] bg-[var(--bg-card)] px-3 text-left text-[13px] text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+            >
+              <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+              <span className="min-w-0 flex-1">Quick save to CML</span>
+              <span className="text-[11px] text-[var(--text-subtle)]">Ctrl/Cmd Shift S</span>
+            </button>
           </div>
 
           <nav className="flex-1 overflow-y-auto px-4 pb-4 pt-2">
@@ -335,12 +351,15 @@ export function AppShell() {
           <span>/</span>
           <span>Ctrl/Cmd N new chat</span>
           <span>/</span>
+          <span>Ctrl/Cmd Shift S quick save</span>
+          <span>/</span>
           <LockKeyhole className="h-3 w-3" strokeWidth={1.5} />
           <span>All data stays on your device</span>
         </div>
       </footer>
 
       <CommandPalette open={openPalette} onOpenChange={setOpen} />
+      <QuickCaptureDialog />
     </div>
   );
 }

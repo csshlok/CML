@@ -16,6 +16,7 @@ function loadMainModule() {
 
   const appHandlers = {};
   const dialogCalls = [];
+  const ipcHandlers = {};
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cml-electron-"));
   const electronStub = {
     app: {
@@ -41,9 +42,12 @@ function loadMainModule() {
     },
     clipboard: {
       writeText: () => {},
+      readText: () => "clipboard text from electron",
     },
     ipcMain: {
-      handle: () => {},
+      handle: (name, handler) => {
+        ipcHandlers[name] = handler;
+      },
     },
     shell: {
       openExternal: () => {},
@@ -85,6 +89,7 @@ function loadMainModule() {
     exported: sandbox.module.exports,
     appHandlers,
     dialogCalls,
+    ipcHandlers,
   };
 }
 

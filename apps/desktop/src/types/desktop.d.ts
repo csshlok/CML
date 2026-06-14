@@ -17,6 +17,7 @@ declare global {
       notifyRendererReady: (detail?: string) => Promise<boolean>;
       onBackendUrlChanged: (listener: (nextUrl: string | null) => void) => () => void;
       copyText: (value: string) => Promise<boolean>;
+      readClipboardText: () => Promise<string>;
       openVaultAnyway: () => Promise<string | null>;
       listSupportedFiles: (targetPaths: string[]) => Promise<string[]>;
       getDroppedFilePaths: (files: File[] | FileList) => string[];

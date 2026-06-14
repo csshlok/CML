@@ -541,6 +541,7 @@ if (gotSingleInstanceLock) {
       clipboard.writeText(typeof value === "string" ? value : String(value ?? ""));
       return true;
     });
+    ipcMain.handle("cml:read-clipboard-text", async () => clipboard.readText());
     ipcMain.handle("cml:retry-startup", async () => {
       writeDesktopRuntimeLog("manual startup retry requested");
       app.relaunch();
