@@ -1,8 +1,8 @@
 from uuid import uuid4
 
 from backend.app.core.database import dict_from_row, utc_now
+from backend.app.core.expert_runtime import runtime_adapter_load_plan
 from backend.app.core.hardware import hardware_status
-from backend.app.core.lora_training import runtime_adapter_load_plan
 from backend.app.core.training_dataset import build_cluster_dataset
 
 

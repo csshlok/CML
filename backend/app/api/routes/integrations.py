@@ -23,19 +23,14 @@ from backend.app.core.reconciliation_log import (
     run_from_row,
 )
 from backend.app.core.database import dict_from_row
-from backend.app.api.routes.sources import (
-    _create_source_record,
-    _file_checksum,
-    _replace_source_pages,
-    _source_type_for_suffix,
-    delete_source,
-)
+from backend.app.api.routes.sources import _create_source_record, delete_source
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.embeddings import require_embeddings_available
 from backend.app.core.encrypted_storage import update_source_content_fields
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path
 from backend.app.core.memory_card import generate_tags, summarize_text
+from backend.app.core.source_records import file_checksum, replace_source_pages, source_type_for_suffix
 from backend.app.schemas import (
     IntegrationImportRead,
     IntegrationImportUpdate,
@@ -642,7 +637,7 @@ def _create_source_from_local_file(*, vault_id: str, file_path: str, checksum: s
         SourceCreate(
             vault_id=vault_id,
             title=title,
-            source_type=_source_type_for_suffix(Path(file_path).suffix.lower()),
+            source_type=source_type_for_suffix(Path(file_path).suffix.lower()),
             original_path=file_path,
             checksum=checksum,
             raw_text=text,
@@ -670,7 +665,7 @@ def _update_source_from_local_file(existing, *, file_path: str, checksum: str) -
     title, pages = extract_pages_from_path(file_path)
     text = "\n\n".join(page for page in pages if page.strip()).strip()
     now = utc_now()
-    tags = generate_tags(title, text, _source_type_for_suffix(Path(file_path).suffix.lower()))
+    tags = generate_tags(title, text, source_type_for_suffix(Path(file_path).suffix.lower()))
     with connect() as conn:
         stored_updates = update_source_content_fields(
             conn,
@@ -694,7 +689,7 @@ def _update_source_from_local_file(existing, *, file_path: str, checksum: str) -
             """,
             (
                 title,
-                _source_type_for_suffix(Path(file_path).suffix.lower()),
+                source_type_for_suffix(Path(file_path).suffix.lower()),
                 file_path,
                 checksum,
                 stored_updates["raw_text"],
@@ -705,7 +700,7 @@ def _update_source_from_local_file(existing, *, file_path: str, checksum: str) -
                 existing["id"],
             ),
         )
-        _replace_source_pages(
+        replace_source_pages(
             conn,
             source_id=existing["id"],
             vault_id=existing["vault_id"],
@@ -731,7 +726,7 @@ def _reconcile_single_supported_file(
     seen_paths: set[str] | None = None,
 ) -> dict:
     normalized = _normalize_path(file_path)
-    checksum = _file_checksum(Path(file_path))
+    checksum = file_checksum(Path(file_path))
     existing = by_path.get(normalized)
     moved = False
     if existing is None:

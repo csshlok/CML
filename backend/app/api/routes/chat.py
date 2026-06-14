@@ -1,5 +1,4 @@
 from collections import OrderedDict
-import hashlib
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -22,8 +21,6 @@ from backend.app.core.embeddings import (
 from backend.app.core.expert_runtime import run_cluster_expert_prompt
 from backend.app.core.encrypted_storage import (
     delete_source_encrypted_content,
-    delete_source_derived_encrypted_content,
-    plaintext_column_for_text,
     source_from_encrypted_row,
     store_source_content_fields,
 )
@@ -56,8 +53,9 @@ from backend.app.core.chat_retention import (
     enforce_chat_evidence_retention,
     paginated_messages,
 )
+from backend.app.core.retrieval_cache import invalidate_caches_for_source
+from backend.app.core.source_records import file_checksum, replace_source_pages, source_type_for_suffix
 from backend.app.core.sql import build_update_assignments
-from backend.app.services.source_service import mark_source_deleted
 from backend.app.schemas import (
     ChatContextRequest,
     ChatContextResponse,
@@ -2031,7 +2029,7 @@ def _ingest_chat_attachments(
         text = "\n\n".join(page for page in pages if page.strip()).strip()
         if not text:
             raise HTTPException(status_code=400, detail=f"Chat attachment {Path(path).name} had no readable text.")
-        checksum = _file_checksum(Path(path))
+        checksum = file_checksum(Path(path))
         existing_rows = conn.execute(
             """
             SELECT * FROM sources
@@ -2056,7 +2054,7 @@ def _ingest_chat_attachments(
                 "vault_id": vault_id,
                 "cluster_id": target_cluster_id,
                 "title": title,
-                "source_type": _source_type_for_suffix(Path(path).suffix.lower()),
+                "source_type": source_type_for_suffix(Path(path).suffix.lower()),
                 "state": "indexed",
                 "original_path": path,
                 "url": None,
@@ -2085,7 +2083,7 @@ def _ingest_chat_attachments(
                 """,
                 stored_source,
             )
-            _replace_source_pages(conn, source_id=source["id"], vault_id=vault_id, page_texts=pages, now=now)
+            replace_source_pages(conn, source_id=source["id"], vault_id=vault_id, page_texts=pages, now=now)
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source["id"],)).fetchone()
         if row is not None:
             source = dict_from_row(row)
@@ -2103,65 +2101,6 @@ def _ingest_chat_attachments(
             mark_cluster_needs_update(conn, source["cluster_id"], "Chat attachment was added to this cluster.")
         stored_sources.append({"source_id": source["id"], "title": source["title"], "cluster_id": source.get("cluster_id")})
     return stored_sources
-
-
-def _replace_source_pages(conn, *, source_id: str, vault_id: str, page_texts: list[str], now: str) -> None:
-    delete_source_derived_encrypted_content(conn, source_id=source_id, vault_id=vault_id)
-    conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
-    for index, text in enumerate(page_texts, start=1):
-        page_text = (text or "").strip()
-        if not page_text:
-            continue
-        page_id = f"page-{uuid4()}"
-        conn.execute(
-            """
-            INSERT INTO source_pages (
-                id, source_id, vault_id, page_number, raw_text, extraction_version,
-                content_hash, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, 'v1', ?, ?, ?)
-            """,
-            (
-                page_id,
-                source_id,
-                vault_id,
-                index,
-                plaintext_column_for_text(
-                    conn,
-                    vault_id=vault_id,
-                    entity_type="source_page",
-                    entity_id=page_id,
-                    field_name="raw_text",
-                    text=page_text,
-                    now=now,
-                ),
-                content_hash(page_text),
-                now,
-                now,
-            ),
-        )
-
-
-def _file_checksum(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _source_type_for_suffix(suffix: str) -> str:
-    if suffix in {".md", ".markdown", ".txt", ".text"}:
-        return "note"
-    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
-        return "image"
-    if suffix in {".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg"}:
-        return "audio"
-    if suffix in {".mp4", ".mov", ".webm"}:
-        return "video"
-    if suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".cpp", ".c"}:
-        return "code"
-    return "file"
 
 
 def _delete_chat_owned_source(conn, *, session_id: str, source: dict) -> None:
@@ -2209,7 +2148,7 @@ def _delete_chat_owned_source(conn, *, session_id: str, source: dict) -> None:
             str(source["cluster_id"]),
             "Chat session was deleted and its derived sources were removed.",
         )
-    mark_source_deleted(source_id, conn=conn)
+    invalidate_caches_for_source(source_id, conn=conn)
 
 
 def _title_from_prompt(prompt: str) -> str:
@@ -2241,16 +2180,6 @@ def _session_from_row(row, messages: list[dict]) -> dict:
     session["memory_updated_at"] = session.get("memory_updated_at")
     session["messages"] = messages
     return session
-
-
-def _message_from_row(conn, row) -> dict:
-    message = dict_from_row(row)
-    message["clusters_used"] = _json_list(message.get("clusters_used"))
-    message["citations"] = _snapshot_citations_for_message(conn, message) or _json_list(message.get("citations"))
-    message["warnings"] = _json_list(message.get("warnings"))
-    message["useful"] = None if message.get("useful") is None else bool(message["useful"])
-    message["saved"] = bool(message.get("saved", 0))
-    return message
 
 
 def _messages_from_rows(conn, rows: list[dict]) -> list[dict]:

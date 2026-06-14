@@ -1,7 +1,5 @@
 import json
-import hashlib
 from pathlib import Path
-from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 
@@ -11,9 +9,7 @@ from backend.app.core.database import connect, utc_now
 from backend.app.core.embeddings import content_hash, require_embeddings_available
 from backend.app.core.encrypted_storage import (
     delete_source_encrypted_content,
-    delete_source_derived_encrypted_content,
     page_from_encrypted_row,
-    plaintext_column_for_text,
     source_from_encrypted_row,
     store_source_content_fields,
     update_source_content_fields,
@@ -23,9 +19,10 @@ from backend.app.core.extraction import ExtractionError, extract_text_from_url_w
 from backend.app.core.memory_card import generate_tags, summarize_text
 from backend.app.core.network_security import strip_url_credentials
 from backend.app.core.quarantine import attach_quarantine_record, ingest_file_through_quarantine
+from backend.app.core.retrieval_cache import invalidate_caches_for_source
+from backend.app.core.source_records import replace_source_pages, source_type_for_suffix
 from backend.app.core.sql import build_update_assignments
 from backend.app.core.turbovec_runtime import maybe_remove_source_chunks_from_sidecar
-from backend.app.services.source_service import mark_source_changed, mark_source_deleted
 from backend.app.schemas import (
     SourceCreate,
     SourcePathCreate,
@@ -178,7 +175,7 @@ def _create_source_record(
             stored_source,
         )
         if page_texts:
-            _replace_source_pages(
+            replace_source_pages(
                 conn,
                 source_id=source["id"],
                 vault_id=source["vault_id"],
@@ -208,7 +205,7 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
     security = ingested["security"]
 
     suffix = Path(payload.path).suffix.lower()
-    source_type = _source_type_for_suffix(suffix)
+    source_type = source_type_for_suffix(suffix)
     checksum = security["validation"]["content_hash"]
     now = utc_now()
     with connect() as conn:
@@ -307,7 +304,7 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
                     source_id,
                 ),
             )
-            _replace_source_pages(
+            replace_source_pages(
                 conn,
                 source_id=source_id,
                 vault_id=payload.vault_id,
@@ -322,7 +319,7 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
             )
             mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
             mark_cluster_needs_update(conn, target_cluster_id, "Source changed or moved.")
-            mark_source_changed(source_id, conn=conn)
+            invalidate_caches_for_source(source_id, conn=conn)
         conn.execute(
             """
             UPDATE sources
@@ -464,7 +461,7 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
                     source_id,
                 ),
             )
-            _replace_source_pages(
+            replace_source_pages(
                 conn,
                 source_id=source_id,
                 vault_id=payload.vault_id,
@@ -479,7 +476,7 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
             )
             mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
             mark_cluster_needs_update(conn, target_cluster_id, "Source changed or moved.")
-            mark_source_changed(source_id, conn=conn)
+            invalidate_caches_for_source(source_id, conn=conn)
         conn.execute(
             """
             UPDATE sources
@@ -591,7 +588,7 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
         conn.execute(f"UPDATE sources SET {assignments} WHERE id = :id", params)
         if "raw_text" in updates or "extracted_text" in updates:
             text = str(updates.get("extracted_text") or updates.get("raw_text") or "")
-            _replace_source_pages(
+            replace_source_pages(
                 conn,
                 source_id=source_id,
                 vault_id=existing["vault_id"],
@@ -618,7 +615,7 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
                 conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
             mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
             mark_cluster_needs_update(conn, source["cluster_id"], "Source changed or moved.")
-            mark_source_changed(source_id, conn=conn)
+            invalidate_caches_for_source(source_id, conn=conn)
         return source_from_row(row, conn=conn)
 
 
@@ -695,7 +692,7 @@ def delete_source(source_id: str) -> None:
             user_initiated=True,
         )
         mark_cluster_needs_update(conn, source["cluster_id"], "Source was deleted.")
-        mark_source_deleted(source_id, conn=conn)
+        invalidate_caches_for_source(source_id, conn=conn)
 
 
 def source_from_row(row, conn=None) -> dict:
@@ -717,64 +714,3 @@ def _sanitize_source_text(text: str) -> str:
     return text.replace("\x00", "")
 
 
-def _replace_source_pages(conn, *, source_id: str, vault_id: str, page_texts: list[str], now: str) -> None:
-    delete_source_derived_encrypted_content(conn, source_id=source_id, vault_id=vault_id)
-    conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
-    for index, text in enumerate(page_texts, start=1):
-        page_text = (text or "").strip()
-        if not page_text:
-            continue
-        page_id = f"page-{uuid4()}"
-        conn.execute(
-            """
-            INSERT INTO source_pages (
-                id, source_id, vault_id, page_number, raw_text, extraction_version,
-                content_hash, created_at, updated_at
-            )
-            VALUES (
-                :id, :source_id, :vault_id, :page_number, :raw_text, :extraction_version,
-                :content_hash, :created_at, :updated_at
-            )
-            """,
-            {
-                "id": page_id,
-                "source_id": source_id,
-                "vault_id": vault_id,
-                "page_number": index,
-                "raw_text": plaintext_column_for_text(
-                    conn,
-                    vault_id=vault_id,
-                    entity_type="source_page",
-                    entity_id=page_id,
-                    field_name="raw_text",
-                    text=page_text,
-                    now=now,
-                ),
-                "extraction_version": "v1",
-                "content_hash": content_hash(page_text),
-                "created_at": now,
-                "updated_at": now,
-            },
-        )
-
-
-def _file_checksum(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _source_type_for_suffix(suffix: str) -> str:
-    if suffix in {".md", ".markdown", ".txt", ".text"}:
-        return "note"
-    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
-        return "image"
-    if suffix in {".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg"}:
-        return "audio"
-    if suffix in {".mp4", ".mov", ".webm"}:
-        return "video"
-    if suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".cpp", ".c"}:
-        return "code"
-    return "file"
