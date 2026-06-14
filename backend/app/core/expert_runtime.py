@@ -27,6 +27,11 @@ def runtime_adapter_load_plan(*, adapter_path: str | Path, base_model: str) -> d
         dependency_status["available"] or dependency_status["runtime_python"] != sys.executable
     )
     available = bool(validation["valid"] and resolved_model["available"] and dependency_ready)
+    failure_code = ""
+    if not validation["valid"]:
+        failure_code = "adapter_invalid"
+    elif not resolved_model["available"] or not dependency_ready:
+        failure_code = "runtime_load_failed"
     detail_parts: list[str] = []
     if validation["valid"]:
         detail_parts.append("Adapter artifacts validated.")
@@ -48,6 +53,7 @@ def runtime_adapter_load_plan(*, adapter_path: str | Path, base_model: str) -> d
         "adapter_path": str(adapter_dir),
         "base_model": base_model,
         "base_model_path": resolved_model.get("base_model_path"),
+        "failure_code": failure_code,
         "detail": " ".join(detail_parts),
         "validation": validation,
         "adapter_metadata": metadata_report,
@@ -209,13 +215,16 @@ def run_adapter_runtime_smoke(
         "stdout": "",
         "stderr": "",
         "unloaded": False,
+        "failure_code": plan.get("failure_code") or "",
     }
     if not plan["validation"]["valid"]:
         report["error"] = "; ".join(plan["validation"]["errors"])
+        report["failure_code"] = "adapter_invalid"
         LOGGER.warning("Cluster expert runtime smoke rejected invalid adapter at %s", adapter_dir)
         return report
     if not plan["resolved_base_model"]["available"]:
         report["error"] = plan["resolved_base_model"]["detail"]
+        report["failure_code"] = "runtime_load_failed"
         LOGGER.warning("Cluster expert runtime smoke could not resolve base model for %s", adapter_dir)
         return report
 
@@ -253,6 +262,7 @@ def run_adapter_runtime_smoke(
             )
         except Exception as exc:
             report["error"] = str(exc)
+            report["failure_code"] = "runtime_load_failed"
             LOGGER.warning(
                 "Cluster expert runtime smoke failed to launch for adapter=%s: %s",
                 adapter_dir,
@@ -270,7 +280,10 @@ def run_adapter_runtime_smoke(
                 report.update(payload_report)
         if completed.returncode != 0 and not report["error"]:
             report["error"] = f"Runtime smoke failed with exit code {completed.returncode}."
-        report["ok"] = bool(report.get("ok")) and completed.returncode == 0
+        completed_ok = bool(report.get("ok")) and completed.returncode == 0
+        if not completed_ok and not report.get("failure_code"):
+            report["failure_code"] = "runtime_load_failed"
+        report["ok"] = completed_ok
         report["unloaded"] = bool(report.get("unloaded"))
     if report["ok"]:
         LOGGER.info("Cluster expert runtime smoke succeeded for adapter=%s", adapter_dir)

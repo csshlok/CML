@@ -373,6 +373,7 @@ class AdditionalQACases(unittest.TestCase):
             plan = runtime_adapter_load_plan(adapter_path=adapter_dir, base_model="deps-model")
 
         self.assertFalse(plan["available"])
+        self.assertEqual(plan["failure_code"], "runtime_load_failed")
         self.assertIn("Install peft, transformers, and torch", plan["detail"])
 
     def test_run_adapter_runtime_smoke_reads_worker_report(self) -> None:
@@ -437,6 +438,7 @@ class AdditionalQACases(unittest.TestCase):
             report = run_adapter_runtime_smoke(adapter_path=adapter_dir, base_model="launch-model")
 
         self.assertFalse(report["ok"])
+        self.assertEqual(report["failure_code"], "runtime_load_failed")
         self.assertEqual(report["error"], "runtime python missing")
         self.assertEqual(report["stdout"], "")
         self.assertEqual(report["stderr"], "")
@@ -2456,6 +2458,7 @@ class AdditionalQACases(unittest.TestCase):
         from backend.app.core.config import get_settings
         from backend.app.core.expert_evaluation import (
             EVALUATION_CATEGORIES,
+            build_expert_benchmark_report,
             build_expert_evaluation_plan,
             compare_retrieval_vs_adapter,
             score_expert_response,
@@ -2482,6 +2485,43 @@ class AdditionalQACases(unittest.TestCase):
                 plan["cases"][0],
                 "According to source Evaluation source 0, adapter retrieval grounded evidence is present.",
             )
+            retrieval_scores = [
+                {
+                    **score_expert_response(
+                        case,
+                        f"According to source {case['source_title']}, adapter retrieval evidence is present.",
+                    ),
+                    "case_id": case["id"],
+                }
+                for case in plan["cases"]
+            ]
+            adapter_scores = [
+                {
+                    **score_expert_response(
+                        case,
+                        (
+                            f"According to source {case['source_title']}, adapter retrieval grounded citation "
+                            "evidence strict benchmark is present."
+                        ),
+                    ),
+                    "case_id": case["id"],
+                }
+                for case in plan["cases"]
+            ]
+            report = build_expert_benchmark_report(
+                plan,
+                retrieval_case_scores=retrieval_scores,
+                adapter_case_scores=adapter_scores,
+                mode="unit_strict_category_benchmark",
+                live_adapter_backed=True,
+            )
+            pending_report = build_expert_benchmark_report(
+                plan,
+                retrieval_case_scores=[],
+                adapter_case_scores=[],
+                mode="pending_live_adapter_benchmark",
+                live_adapter_backed=False,
+            )
             passing = compare_retrieval_vs_adapter([60, 62, 61], [65, 67, 66])
             failing = compare_retrieval_vs_adapter([60, 62, 61], [61, 62, 62])
         finally:
@@ -2492,6 +2532,14 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(plan["case_count"], 6)
         self.assertGreater(scored["score"], 70)
         self.assertTrue(scored["citation_present"])
+        self.assertEqual(report["status"], "passed")
+        self.assertTrue(report["passes"])
+        self.assertEqual(report["mode"], "unit_strict_category_benchmark")
+        self.assertFalse(report["missing_categories"])
+        self.assertEqual(set(report["category_scores"]), set(EVALUATION_CATEGORIES))
+        self.assertEqual(pending_report["status"], "pending_live_adapter_benchmark")
+        self.assertFalse(pending_report["live_adapter_backed"])
+        self.assertFalse(pending_report["passes"])
         self.assertTrue(passing["passes"])
         self.assertFalse(failing["passes"])
 
@@ -2509,6 +2557,8 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("retrieval-vs-adapter", policy_text.lower())
         self.assertIn("CML_LORA_TRAINER_COMMAND", expert_text)
         self.assertIn("AllowTestTrainer", expert_text)
+        self.assertIn("build_expert_benchmark_report", expert_text)
+        self.assertIn("ci_scaffold_non_release_benchmark", expert_text)
         self.assertIn("runtime_adapter_load_plan", runtime_text)
         self.assertNotIn("<<'PY'", expert_text)
         self.assertNotIn("<<'PY'", runtime_text)

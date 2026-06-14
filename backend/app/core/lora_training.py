@@ -36,6 +36,10 @@ FAILURE_CODES = [
 ]
 
 
+class LoraTrainerMissingError(RuntimeError):
+    """Raised when real LoRA training is requested without a configured trainer."""
+
+
 def graduation_contract() -> dict:
     settings = get_settings()
     return {
@@ -117,7 +121,7 @@ def run_lora_training_process(*, dataset_manifest: dict, output_dir: Path, confi
         }
 
     if not settings.lora_trainer_command:
-        raise RuntimeError("LoRA trainer command is not configured.")
+        raise LoraTrainerMissingError("LoRA trainer command is not configured.")
 
     env = {
         **os.environ,

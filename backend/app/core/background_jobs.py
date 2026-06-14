@@ -22,7 +22,9 @@ from backend.app.core.analysis_packets import build_analysis_packets
 from backend.app.core.training_dataset import build_cluster_dataset, write_cluster_training_dataset
 from backend.app.core.training_evaluation import evaluate_adapter_quality, evaluate_cluster_dataset
 from backend.app.core.unlock_state import should_pause_vault_job
+from backend.app.core.expert_evaluation import build_expert_benchmark_report, build_expert_evaluation_plan
 from backend.app.core.lora_training import (
+    LoraTrainerMissingError,
     adapter_validation_report,
     dataset_graduation_report,
     new_artifact_dir,
@@ -898,6 +900,7 @@ def _run_train_cluster_adapter(payload: dict) -> None:
                     ),
                 )
 
+            conn.commit()
             raise RuntimeError(hardware["detail"])
 
         conn.execute(
@@ -971,6 +974,16 @@ def _run_train_cluster_adapter(payload: dict) -> None:
                 output_dir=artifact_dir,
                 config=config,
             )
+        except LoraTrainerMissingError as exc:
+            _mark_expert_training_failed(
+                conn,
+                cluster_id=cluster_id,
+                expert_job_id=expert_job_id,
+                failure_code="trainer_missing",
+                detail=str(exc),
+                hardware_tier=hardware["hardware_tier"],
+            )
+            raise
         except Exception as exc:
             _mark_expert_training_failed(
                 conn,
@@ -1015,9 +1028,22 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             adapter_valid=True,
             validation_count=int(dataset_manifest["validation_count"]),
         )
+        evaluation_plan = build_expert_evaluation_plan(dataset)
         metrics["dataset_gate"] = dataset_gate
         metrics["adapter_validation"] = adapter_validation
         metrics["runtime_load"] = runtime_load
+        metrics["evaluation_plan"] = {
+            "case_count": evaluation_plan["case_count"],
+            "categories": evaluation_plan["categories"],
+            "dataset_hash": evaluation_plan.get("dataset_hash"),
+        }
+        metrics["benchmark_report"] = build_expert_benchmark_report(
+            evaluation_plan,
+            retrieval_case_scores=[],
+            adapter_case_scores=[],
+            mode="pending_live_adapter_benchmark",
+            live_adapter_backed=False,
+        )
         min_quality = get_settings().lora_min_quality_score
         min_delta = get_settings().lora_min_quality_delta
         if float(metrics["adapter_score"]) < min_quality or float(metrics["quality_delta"]) < min_delta:
@@ -1150,6 +1176,7 @@ def _mark_expert_training_failed(
             """,
             (failure_code, detail[:1000], hardware_tier, now, expert_job_id),
         )
+    conn.commit()
 
 
 def _mark_job_failed_or_retry(job: dict, error: str) -> None:

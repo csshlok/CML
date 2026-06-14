@@ -75,6 +75,95 @@ def compare_retrieval_vs_adapter(retrieval_scores: list[float], adapter_scores: 
     }
 
 
+def build_expert_benchmark_report(
+    evaluation_plan: dict,
+    *,
+    retrieval_case_scores: list[dict] | None = None,
+    adapter_case_scores: list[dict] | None = None,
+    mode: str = "live_adapter_benchmark",
+    live_adapter_backed: bool = True,
+) -> dict:
+    cases = list(evaluation_plan.get("cases") or [])
+    retrieval_by_case = _scores_by_case_id(retrieval_case_scores or [])
+    adapter_by_case = _scores_by_case_id(adapter_case_scores or [])
+    category_scores = {}
+    for category in EVALUATION_CATEGORIES:
+        category_cases = [case for case in cases if case.get("category") == category]
+        retrieval_scores = [
+            float(retrieval_by_case[case["id"]]["score"])
+            for case in category_cases
+            if case.get("id") in retrieval_by_case
+        ]
+        adapter_scores = [
+            float(adapter_by_case[case["id"]]["score"])
+            for case in category_cases
+            if case.get("id") in adapter_by_case
+        ]
+        comparison = compare_retrieval_vs_adapter(retrieval_scores, adapter_scores)
+        category_scores[category] = {
+            "case_count": len(category_cases),
+            "retrieval_scored_count": len(retrieval_scores),
+            "adapter_scored_count": len(adapter_scores),
+            "retrieval_only_score": comparison["retrieval_only_score"],
+            "adapter_score": comparison["adapter_score"],
+            "quality_delta": comparison["quality_delta"],
+            "minimum_quality_delta": comparison["minimum_quality_delta"],
+            "passes": bool(
+                category_cases
+                and len(retrieval_scores) == len(category_cases)
+                and len(adapter_scores) == len(category_cases)
+                and comparison["passes"]
+            ),
+        }
+
+    all_retrieval_scores = [float(item["score"]) for item in retrieval_by_case.values()]
+    all_adapter_scores = [float(item["score"]) for item in adapter_by_case.values()]
+    overall = compare_retrieval_vs_adapter(all_retrieval_scores, all_adapter_scores)
+    missing_categories = [
+        category
+        for category, report in category_scores.items()
+        if report["case_count"] == 0
+    ]
+    incomplete_categories = [
+        category
+        for category, report in category_scores.items()
+        if report["case_count"] > 0
+        and (
+            report["retrieval_scored_count"] < report["case_count"]
+            or report["adapter_scored_count"] < report["case_count"]
+        )
+    ]
+    scored_case_count = len({*retrieval_by_case.keys(), *adapter_by_case.keys()})
+    passes = bool(
+        live_adapter_backed
+        and not missing_categories
+        and not incomplete_categories
+        and overall["passes"]
+        and all(report["passes"] for report in category_scores.values())
+    )
+    if not live_adapter_backed:
+        status = "pending_live_adapter_benchmark"
+    elif passes:
+        status = "passed"
+    else:
+        status = "failed"
+    return {
+        "cluster_id": evaluation_plan.get("cluster_id"),
+        "dataset_hash": evaluation_plan.get("dataset_hash"),
+        "mode": mode,
+        "live_adapter_backed": live_adapter_backed,
+        "status": status,
+        "passes": passes,
+        "case_count": len(cases),
+        "scored_case_count": scored_case_count,
+        "categories": list(EVALUATION_CATEGORIES),
+        "missing_categories": missing_categories,
+        "incomplete_categories": incomplete_categories,
+        "category_scores": category_scores,
+        "overall": overall,
+    }
+
+
 def _prompt_for_category(category: str, title: str) -> str:
     if category == "summarization":
         return f"Summarize the local source titled '{title}' in three grounded bullets."
@@ -113,3 +202,19 @@ def _average(values: list[float]) -> float:
     if not values:
         return 0.0
     return round(sum(float(value) for value in values) / len(values), 2)
+
+
+def _scores_by_case_id(scores: list[dict]) -> dict[str, dict]:
+    normalized = {}
+    for item in scores:
+        if not isinstance(item, dict):
+            continue
+        case_id = str(item.get("case_id") or item.get("id") or "")
+        if not case_id:
+            continue
+        try:
+            score = float(item.get("score"))
+        except (TypeError, ValueError):
+            continue
+        normalized[case_id] = {**item, "case_id": case_id, "score": score}
+    return normalized

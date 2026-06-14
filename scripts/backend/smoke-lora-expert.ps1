@@ -53,7 +53,12 @@ from backend.app.api.routes.clusters import get_expert_status, list_expert_artif
 from backend.app.api.routes.sources import create_source
 from backend.app.core.background_jobs import job_queue_status, run_due_jobs_once
 from backend.app.core.database import connect, init_db, utc_now
-from backend.app.core.expert_evaluation import build_expert_evaluation_plan, compare_retrieval_vs_adapter
+from backend.app.core.expert_evaluation import (
+    build_expert_benchmark_report,
+    build_expert_evaluation_plan,
+    compare_retrieval_vs_adapter,
+    score_expert_response,
+)
 from backend.app.core.training_dataset import build_cluster_dataset
 from backend.app.schemas import SourceCreate
 
@@ -114,6 +119,30 @@ with ExitStack() as stack:
 dataset = build_cluster_dataset("cluster-smoke")
 plan = build_expert_evaluation_plan(dataset)
 comparison = compare_retrieval_vs_adapter([60.0, 62.0, 61.0], [66.0, 68.0, 67.0])
+retrieval_case_scores = [
+    score_expert_response(
+        case,
+        f"According to source {case['source_title']}, lora smoke adapter evidence is present.",
+    )
+    for case in plan["cases"]
+]
+adapter_case_scores = [
+    score_expert_response(
+        case,
+        (
+            f"According to source {case['source_title']}, lora smoke adapter evidence "
+            "strict evaluation retrieval baseline is present."
+        ),
+    )
+    for case in plan["cases"]
+]
+benchmark_report = build_expert_benchmark_report(
+    plan,
+    retrieval_case_scores=retrieval_case_scores,
+    adapter_case_scores=adapter_case_scores,
+    mode="ci_scaffold_non_release_benchmark",
+    live_adapter_backed=False,
+)
 artifacts = list_expert_artifacts("cluster-smoke")
 status = get_expert_status("cluster-smoke")
 report = {
@@ -125,6 +154,7 @@ report = {
     "artifacts": artifacts,
     "expert_status": status,
     "evaluation_plan": {"case_count": plan["case_count"], "categories": plan["categories"]},
+    "benchmark_report": benchmark_report,
     "retrieval_vs_adapter": comparison,
 }
 repo_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
