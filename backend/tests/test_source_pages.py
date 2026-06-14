@@ -33,6 +33,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         os.environ.pop("CML_ALLOW_HASH_EMBEDDINGS", None)
         os.environ.pop("CML_ALLOW_LORA_TEST_TRAINER", None)
         os.environ.pop("CML_LORA_MODEL_DIRS", None)
+        os.environ.pop("CML_LORA_TRAINER_COMMAND", None)
         os.environ.pop("CML_LLM_MODEL", None)
         os.environ.pop("CML_LLM_CONTEXT_TOKEN_BUDGET", None)
         self.tmp.cleanup()
@@ -3870,9 +3871,18 @@ class SourcePageIndexingTests(unittest.TestCase):
         metrics = json.loads(artifact["metrics_json"])
         self.assertTrue(metrics["adapter_validation"]["valid"])
         self.assertTrue(metrics["runtime_load"]["available"])
+        self.assertEqual(
+            metrics["benchmark_report"]["status"],
+            "pending_live_adapter_benchmark",
+        )
+        self.assertFalse(metrics["benchmark_report"]["live_adapter_backed"])
+        self.assertEqual(metrics["evaluation_plan"]["case_count"], 1)
         with connect() as conn:
             cluster = conn.execute("SELECT expert_status FROM clusters WHERE id = 'cluster-1'").fetchone()
-            job = conn.execute("SELECT status, failure_code, detail FROM cluster_expert_jobs WHERE id = ?", (expert_job["id"],)).fetchone()
+            job = conn.execute(
+                "SELECT status, failure_code, detail FROM cluster_expert_jobs WHERE id = ?",
+                (expert_job["id"],),
+            ).fetchone()
         self.assertEqual(cluster["expert_status"], "training_ready")
         self.assertEqual(job["status"], "completed")
         self.assertEqual(job["failure_code"], "")
@@ -3882,6 +3892,90 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(status["user_status"], "Ready")
         self.assertTrue(status["trained"])
         self.assertTrue(status["runtime_load"]["available"])
+
+    def test_lora_training_without_configured_trainer_records_trainer_missing(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes.clusters import queue_expert_retrain
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.config import get_settings
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourceCreate
+
+        os.environ.pop("CML_ALLOW_LORA_TEST_TRAINER", None)
+        os.environ["CML_LORA_TRAINER_COMMAND"] = ""
+        model_name = self._write_fake_local_transformers_model("missing-trainer-base")
+        get_settings.cache_clear()
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', 'retrieval_ready', ?, ?)
+                """,
+                (now, now),
+            )
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                cluster_id="cluster-1",
+                title="LoRA source",
+                source_type="note",
+                raw_text="verified lora trainer missing failure code evidence " * 320,
+                summary="A sufficiently descriptive local source summary for adapter training.",
+            )
+        )
+
+        hardware = {
+            "training_supported": True,
+            "hardware_tier": "cpu_minimum_spec",
+            "detail": "test hardware",
+        }
+        preferred_model = {
+            "id": model_name,
+            "name": "Missing trainer base",
+            "family": "llama",
+            "local_path": str(Path(self.tmp.name) / "models" / model_name),
+            "compatibility": {"accepted": True, "expert_role_accepted": True},
+            "source_kind": "test",
+        }
+        with (
+            patch("backend.app.core.expert_lifecycle.hardware_status", return_value=hardware),
+            patch("backend.app.core.hardware.hardware_status", return_value=hardware),
+            patch(
+                "backend.app.core.background_jobs.preferred_expert_base_model",
+                return_value=preferred_model,
+            ),
+        ):
+            expert_job = queue_expert_retrain("cluster-1")
+            processed = 0
+            for _ in range(3):
+                processed += run_due_jobs_once(limit=1)
+                with connect() as conn:
+                    cluster = conn.execute(
+                        "SELECT expert_status FROM clusters WHERE id = 'cluster-1'"
+                    ).fetchone()
+                if cluster["expert_status"] == "training_failed":
+                    break
+
+        self.assertGreaterEqual(processed, 1)
+        with connect() as conn:
+            cluster = conn.execute("SELECT expert_status FROM clusters WHERE id = 'cluster-1'").fetchone()
+            job = conn.execute(
+                "SELECT status, failure_code, detail FROM cluster_expert_jobs WHERE id = ?",
+                (expert_job["id"],),
+            ).fetchone()
+        self.assertEqual(cluster["expert_status"], "training_failed")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["failure_code"], "trainer_missing")
+        self.assertIn("trainer command is not configured", job["detail"])
 
     def test_lora_adapter_rollback_and_delete_guardrails(self) -> None:
         from backend.app.api.routes.clusters import (
