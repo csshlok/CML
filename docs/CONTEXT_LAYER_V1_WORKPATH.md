@@ -1,6 +1,6 @@
 # Context Layer V1 Work Path
 
-Last updated: 2026-06-13
+Last updated: 2026-06-14
 
 ## Goal
 
@@ -494,7 +494,7 @@ Exit criteria:
 
 ## Current Build-Step Status
 
-Completed in backend:
+Completed:
 
 1. Distilled memory schema
 2. Memory extraction and writeback
@@ -505,11 +505,11 @@ Completed in backend:
 7. External response quality gate plus approval loop
 8. Chat-model hardening foundation with supported-claim extraction and contradiction-aware degradation
 9. Dynamic evidence budgeting
+10. Capture UX
+   Current state: desktop has the quick-capture sidebar button, command-palette actions, keyboard shortcut, Bridge save/review surfaces, extension pairing/scope/audit/history flows, a packaged MV3 browser extension with page capture, selected-text capture, PDF-url capture, downloaded-file upload, and screenshot upload, plus a live loopback HTTP smoke for the extension-only status/capture/upload contract and a live Chromium popup smoke for the browser UI import/status/upload path.
 
 Still open:
 
-10. Capture UX
-   Current state: Bridge desktop now has review/capture operator surfaces, but the broader everyday save flow and extension packaging are still incomplete.
 11. Evals and release proof
 
 ## Release Rule
