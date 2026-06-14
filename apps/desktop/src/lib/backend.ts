@@ -241,6 +241,8 @@ export type BridgeCaptureRecord = {
   source_type: string;
   quality_state: string;
   approved: boolean;
+  trust_tier: string;
+  security_labels: string[];
   created_at: string;
 };
 
@@ -250,6 +252,12 @@ export type BridgeCaptureResponse = {
   cluster_id?: string | null;
   source_type: string;
   indexed: boolean;
+  quality_state: string;
+  approved: boolean;
+  review_required: boolean;
+  trust_tier: string;
+  reasons: string[];
+  security_labels: string[];
   warnings: string[];
 };
 
@@ -921,6 +929,15 @@ export type ExtensionStatusResponse = {
   ok: boolean;
   client_id?: string | null;
   detail: string;
+};
+
+export type ExtensionPermissionAuditRecord = {
+  id: string;
+  client_id: string | null;
+  event_type: string;
+  vault_id: string | null;
+  detail: string;
+  created_at: string;
 };
 
 export type VaultLockAuditRecord = {
@@ -1815,6 +1832,12 @@ export async function revokeExtensionClient(clientId: string) {
 export async function listExtensionCaptures(vaultId?: string) {
   const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
   return request<ExtensionCaptureRecord[]>(`/api/v1/extension/captures${query}`);
+}
+
+export async function listExtensionPermissionAudit(limit = 20) {
+  return request<ExtensionPermissionAuditRecord[]>(
+    `/api/v1/extension/permission-audit?limit=${encodeURIComponent(String(limit))}`,
+  );
 }
 
 export async function startModelDownload(modelId: string) {

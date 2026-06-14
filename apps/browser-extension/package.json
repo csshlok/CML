@@ -1,0 +1,5 @@
+{
+  "name": "@cml/browser-extension",
+  "private": true,
+  "type": "module"
+}

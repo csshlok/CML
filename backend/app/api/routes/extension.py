@@ -1,13 +1,19 @@
+import base64
 import hashlib
+import binascii
 import json
 import secrets
+import tempfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException
 
-from backend.app.api.routes.sources import create_source
+from backend.app.api.routes.sources import _create_source_record, create_source
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.extraction import ExtractionError
+from backend.app.core.quarantine import attach_quarantine_record, ingest_file_through_quarantine
 from backend.app.schemas import (
     ExtensionCaptureRequest,
     ExtensionCaptureRead,
@@ -20,10 +26,12 @@ from backend.app.schemas import (
     ExtensionPairingStartRequest,
     ExtensionPermissionAuditRead,
     ExtensionStatusResponse,
+    ExtensionUploadCaptureRequest,
     SourceCreate,
 )
 
 router = APIRouter(prefix="/extension", tags=["extension"])
+MAX_EXTENSION_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
 @router.get("/clients", response_model=list[ExtensionClientRead])
@@ -298,6 +306,57 @@ def capture_from_extension(
     return {"capture_id": capture_id, "source_id": source["id"], "status": "stored"}
 
 
+@router.post("/capture-upload", response_model=ExtensionCaptureResponse)
+def capture_uploaded_file_from_extension(
+    payload: ExtensionUploadCaptureRequest,
+    x_cml_extension_token: str | None = Header(default=None),
+) -> dict:
+    client = _client_for_token(x_cml_extension_token)
+    if client is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid extension token")
+    if not _client_allows_vault(client, payload.vault_id):
+        with connect() as conn:
+            _insert_extension_audit(
+                conn,
+                client_id=client["id"],
+                event_type="capture_denied",
+                vault_id=payload.vault_id,
+                detail="vault_not_allowed",
+            )
+        raise HTTPException(status_code=403, detail="Extension client is not allowed to capture into this vault")
+
+    source = _create_uploaded_extension_source(payload)
+    now = utc_now()
+    capture_id = f"extension-capture-{uuid4()}"
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO extension_captures (
+                id, client_id, vault_id, source_id, capture_type, title, url, status, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'stored', ?)
+            """,
+            (
+                capture_id,
+                client["id"],
+                payload.vault_id,
+                source["id"],
+                payload.capture_type,
+                payload.title,
+                payload.url,
+                now,
+            ),
+        )
+        _insert_extension_audit(
+            conn,
+            client_id=client["id"],
+            event_type="capture_stored",
+            vault_id=payload.vault_id,
+            detail=json.dumps({"capture_id": capture_id, "source_id": source["id"]}),
+        )
+    return {"capture_id": capture_id, "source_id": source["id"], "status": "stored"}
+
+
 def _client_for_token(token: str | None):
     if not token:
         return None
@@ -388,3 +447,112 @@ def _insert_extension_audit(conn, *, client_id: str | None, event_type: str, vau
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _create_uploaded_extension_source(payload: ExtensionUploadCaptureRequest) -> dict:
+    file_name = _safe_upload_file_name(payload.file_name, payload.mime_type, payload.capture_type)
+    file_bytes = _decode_upload_bytes(payload.content_base64)
+    suffix = Path(file_name).suffix.lower()
+    with tempfile.TemporaryDirectory(prefix="cml-extension-upload-") as temp_dir:
+        temp_path = Path(temp_dir) / file_name
+        temp_path.write_bytes(file_bytes)
+        try:
+            ingested = ingest_file_through_quarantine(payload.vault_id, str(temp_path))
+        except ExtractionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    pages = ingested["pages"]
+    raw_text = "\n\n".join(page for page in pages if page.strip()).strip()
+    security = ingested["security"]
+    checksum = security["validation"]["content_hash"]
+    source_type = _uploaded_extension_source_type(payload.capture_type, suffix)
+    source = _create_source_record(
+        SourceCreate(
+            vault_id=payload.vault_id,
+            cluster_id=payload.cluster_id,
+            title=payload.title,
+            source_type=source_type,
+            url=payload.url or None,
+            checksum=checksum,
+            raw_text=raw_text,
+            tags=security["security_labels"],
+        ),
+        page_texts=pages,
+    )
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE sources
+            SET provenance = ?,
+                trust_tier = ?,
+                security_labels = ?,
+                parser_security_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                security["provenance"],
+                security["trust_tier"],
+                json.dumps(security["security_labels"], sort_keys=True),
+                json.dumps(security, sort_keys=True),
+                utc_now(),
+                source["id"],
+            ),
+        )
+    attach_quarantine_record(ingested["quarantine_record_id"], source["id"])
+    return source
+
+
+def _decode_upload_bytes(content_base64: str) -> bytes:
+    try:
+        payload = base64.b64decode(content_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Uploaded file payload is not valid base64.") from exc
+    if not payload:
+        raise HTTPException(status_code=400, detail="Uploaded file payload is empty.")
+    if len(payload) > MAX_EXTENSION_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Uploaded file exceeds the 20 MB extension upload limit.")
+    return payload
+
+
+def _safe_upload_file_name(file_name: str, mime_type: str, capture_type: str) -> str:
+    raw = Path(str(file_name or "").replace("\\", "/")).name.strip()
+    if raw:
+        return raw
+    suffix = _suffix_for_mime_type(mime_type, capture_type)
+    return f"extension-capture{suffix}"
+
+
+def _suffix_for_mime_type(mime_type: str, capture_type: str) -> str:
+    normalized = str(mime_type or "").strip().lower()
+    if normalized == "application/pdf":
+        return ".pdf"
+    if normalized in {"image/png", "image/x-png"}:
+        return ".png"
+    if normalized in {"image/jpeg", "image/jpg"}:
+        return ".jpg"
+    if normalized == "image/webp":
+        return ".webp"
+    if normalized == "image/gif":
+        return ".gif"
+    if normalized == "text/markdown":
+        return ".md"
+    if normalized in {"application/json", "text/json"}:
+        return ".json"
+    if normalized in {"text/plain", "text/csv"}:
+        return ".txt" if normalized == "text/plain" else ".csv"
+    if capture_type == "screenshot":
+        return ".png"
+    return ".bin"
+
+
+def _uploaded_extension_source_type(capture_type: str, suffix: str) -> str:
+    if capture_type == "screenshot":
+        return "extension_screenshot"
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+        return "extension_image"
+    if suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".cpp", ".c"}:
+        return "extension_code"
+    if suffix in {".md", ".markdown", ".txt", ".text"}:
+        return "extension_note"
+    return "extension_file"

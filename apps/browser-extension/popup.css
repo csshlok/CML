@@ -1,0 +1,135 @@
+:root {
+  color-scheme: light;
+  --bg: #f7f3ec;
+  --card: #fffdf9;
+  --border: #dbcfc0;
+  --text: #1f1a17;
+  --muted: #6e6258;
+  --accent: #7c624a;
+  --accent-strong: #624a35;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: linear-gradient(180deg, #faf6ef 0%, var(--bg) 100%);
+  color: var(--text);
+  font: 13px/1.45 "Segoe UI", "Inter", system-ui, sans-serif;
+}
+
+.shell {
+  width: 360px;
+  padding: 16px;
+}
+
+.header h1 {
+  margin: 6px 0 4px;
+  font-size: 22px;
+  line-height: 1.1;
+}
+
+.header p,
+.eyebrow,
+.status,
+.field span {
+  color: var(--muted);
+}
+
+.eyebrow {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.card {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+}
+
+.field {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.field span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+input,
+textarea,
+.button {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font: inherit;
+}
+
+input,
+textarea {
+  padding: 10px 11px;
+  background: #fff;
+  color: var(--text);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 92px;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.stack {
+  display: grid;
+  gap: 8px;
+}
+
+.button {
+  padding: 10px 12px;
+  background: #f4ede4;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: #efe4d7;
+}
+
+.button-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.button-primary:hover {
+  background: var(--accent-strong);
+}
+
+.status {
+  margin-top: 12px;
+  min-height: 36px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.status[data-state="error"] {
+  color: #8b2d2d;
+}
+
+.status[data-state="success"] {
+  color: #215b36;
+}

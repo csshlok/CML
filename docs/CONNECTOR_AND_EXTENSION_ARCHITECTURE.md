@@ -1,6 +1,6 @@
 # Connector And Extension Architecture
 
-Last updated: 2026-05-31
+Last updated: 2026-06-14
 
 ## Goal
 
@@ -21,8 +21,8 @@ Vault should accept memory from local files first, then cloud folders, then brow
 3. Browser extension:
    - save current page
    - save selected text
-   - save PDF URL or downloaded PDF
-   - save screenshot/image later after OCR is stable
+   - save PDF URL or a downloaded local file through popup upload
+   - save screenshot/image through visible-tab capture plus local upload
 4. Cloud OAuth connectors:
    - Google Drive first
    - Dropbox second
@@ -50,27 +50,45 @@ The scan endpoint does not ingest by itself. Import remains an explicit user act
 ## Browser Extension Contract
 
 The browser extension should not talk directly to SQLite. It sends capture requests to Vault's local authenticated API.
+The local API auth layer intentionally leaves the public extension contract callable without the desktop API token; the extension endpoints are instead guarded by the extension-scoped token itself.
+The intended user surface is the browser action popup, not a standalone extension page workflow.
 
-Minimum endpoints needed:
+Minimum endpoints used by the current V1 package:
 
 ```txt
 GET  /api/v1/extension/status
-POST /api/v1/extension/capture/page
-POST /api/v1/extension/capture/selection
-POST /api/v1/extension/capture/file
+POST /api/v1/extension/capture
+POST /api/v1/extension/capture-upload
 ```
 
 Each request must include:
 
-- local API token or extension-scoped token
+- extension-scoped token
 - target vault ID
 - optional cluster ID
 - source URL
 - title
-- content payload or file reference
+- `capture_type` such as `page` or `selection`
+- text payload
 - capture timestamp
 
-The extension cannot be advertised until core loopback auth and per-client Bridge/extension identities are finished.
+Current package path:
+
+- `apps/browser-extension`
+
+Current packaging script:
+
+- `scripts/extension/package-browser-extension.ps1`
+
+The extension now has a real local package and setup flow, but it should still stay conservative in public claims until live browser smoke and richer capture modes are verified.
+
+Current shipped capture modes:
+
+- current page text
+- selected text
+- PDF URL capture for tabs whose URL ends in `.pdf`
+- downloaded local file upload through the popup file picker
+- visible-tab screenshot upload
 
 ## Cloud OAuth Contract
 

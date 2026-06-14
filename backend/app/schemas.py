@@ -335,6 +335,12 @@ class BridgeCaptureResponse(BaseModel):
     cluster_id: str | None = None
     source_type: str
     indexed: bool
+    quality_state: str = "unknown"
+    approved: bool = False
+    review_required: bool = False
+    trust_tier: str = ""
+    reasons: list[str] = []
+    security_labels: list[str] = []
     warnings: list[str] = []
 
 
@@ -363,6 +369,8 @@ class BridgeCaptureListItem(BaseModel):
     source_type: str
     quality_state: str = "unknown"
     approved: bool = False
+    trust_tier: str = ""
+    security_labels: list[str] = []
     created_at: str
 
 
@@ -1017,6 +1025,17 @@ class ExtensionCaptureResponse(BaseModel):
     capture_id: str
     source_id: str
     status: str
+
+
+class ExtensionUploadCaptureRequest(BaseModel):
+    vault_id: str
+    cluster_id: str | None = None
+    capture_type: str = "file"
+    title: str = Field(min_length=1, max_length=240)
+    url: str = ""
+    file_name: str = Field(min_length=1, max_length=240)
+    mime_type: str = ""
+    content_base64: str = Field(min_length=1)
 
 
 class ExtensionCaptureRead(BaseModel):

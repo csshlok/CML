@@ -21,6 +21,13 @@ def _api_path(api_prefix: str, suffix: str) -> str:
 def _is_public_path(path: str, method: str, api_prefix: str = "/api/v1") -> bool:
     if path in PUBLIC_PATHS:
         return True
+    extension_public_paths = {
+        ("GET", _api_path(api_prefix, "/extension/status")),
+        ("POST", _api_path(api_prefix, "/extension/capture")),
+        ("POST", _api_path(api_prefix, "/extension/capture-upload")),
+    }
+    if (method.upper(), path) in extension_public_paths:
+        return True
     public_bridge_prefixes = (
         _api_path(api_prefix, "/bridge/context"),
         _api_path(api_prefix, "/bridge/clusters"),

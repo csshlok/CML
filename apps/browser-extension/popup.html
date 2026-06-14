@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CML Capture</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <div class="eyebrow">CML Extension</div>
+        <h1>Save To CML</h1>
+        <p>Import setup JSON from the CML desktop app, then save this page or the current selection.</p>
+      </header>
+
+      <section class="card">
+        <label class="field">
+          <span>Import setup JSON</span>
+          <textarea id="setupJson" rows="5" placeholder='{"backend_url":"http://127.0.0.1:7343","extension_token":"..."}'></textarea>
+        </label>
+        <div class="row">
+          <button id="importSetup" class="button button-primary">Import setup</button>
+          <button id="checkStatus" class="button">Check connection</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <label class="field">
+          <span>Backend URL</span>
+          <input id="backendUrl" type="text" placeholder="http://127.0.0.1:7343" />
+        </label>
+        <label class="field">
+          <span>Extension token</span>
+          <input id="token" type="password" placeholder="Paste extension token" />
+        </label>
+        <label class="field">
+          <span>Default vault ID</span>
+          <input id="vaultId" type="text" placeholder="vault-..." />
+        </label>
+        <label class="field">
+          <span>Optional cluster ID</span>
+          <input id="clusterId" type="text" placeholder="cluster-..." />
+        </label>
+        <div class="row">
+          <button id="saveConfig" class="button">Save config</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="stack">
+          <button id="capturePage" class="button button-primary">Save current page</button>
+          <button id="captureSelection" class="button">Save selected text</button>
+          <button id="capturePdfUrl" class="button">Save PDF URL</button>
+          <button id="captureScreenshot" class="button">Save screenshot</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <label class="field">
+          <span>Upload downloaded file</span>
+          <input
+            id="uploadFile"
+            type="file"
+            accept=".pdf,.txt,.md,.markdown,.json,.yaml,.yml,.toml,.csv,.tsv,.py,.js,.ts,.tsx,.jsx,.go,.rs,.java,.cs,.cpp,.c,.docx,.png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff"
+          />
+        </label>
+        <div class="row">
+          <button id="uploadFileButton" class="button">Save selected file</button>
+        </div>
+      </section>
+
+      <section class="status" id="status">Waiting for setup.</section>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+  </html>
