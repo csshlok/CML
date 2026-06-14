@@ -190,14 +190,6 @@ def dataset_graduation_report(dataset: dict, *, validation_count: int | None = N
         "minimum_validation_records": settings.lora_min_validation_records,
         "maximum_duplicate_ratio": settings.lora_max_duplicate_ratio,
     }
-
-
-def runtime_adapter_load_plan(*, adapter_path: str | Path, base_model: str) -> dict:
-    from backend.app.core.expert_runtime import runtime_adapter_load_plan as build_runtime_adapter_load_plan
-
-    return build_runtime_adapter_load_plan(adapter_path=adapter_path, base_model=base_model)
-
-
 def new_artifact_dir(cluster_id: str) -> Path:
     return get_settings().data_dir / "experts" / cluster_id / f"adapter-{uuid4()}"
 

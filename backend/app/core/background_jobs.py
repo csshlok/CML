@@ -15,6 +15,7 @@ from backend.app.core.encrypted_storage import (
 )
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.config import get_settings
+from backend.app.core.expert_runtime import runtime_adapter_load_plan
 from backend.app.core.model_registry import preferred_expert_base_model
 from backend.app.core.vector_maintenance import vector_repair_plan
 from backend.app.core.context_memory import rebuild_chat_session_memory, rebuild_source_memory
@@ -29,7 +30,6 @@ from backend.app.core.lora_training import (
     dataset_graduation_report,
     new_artifact_dir,
     run_lora_training_process,
-    runtime_adapter_load_plan,
     training_config,
 )
 
