@@ -48,6 +48,7 @@ from backend.app.core.context_memory import (
     rebuild_source_memory,
     set_bridge_writeback_review_approval,
 )
+from backend.app.core.retrieval_trust import sensitive_query_categories
 from backend.app.core.unlock_state import current_unlock_state, security_gate_active
 from backend.app.schemas import (
     BridgeApprovalDecision,
@@ -82,28 +83,21 @@ router = APIRouter(prefix="/bridge", tags=["bridge"])
 
 @router.get("/status", response_model=BridgeStatus)
 def bridge_status() -> dict[str, str | bool]:
-    settings = _get_bridge_settings()
-    return {
-        **settings,
-        "mcp": "planned",
-        "http_api": "available",
-        "cli": "planned",
-        "approval_requests_pending": _pending_approval_count(),
-        "last_refreshed_at": utc_now(),
-    }
+    with connect() as conn:
+        return _bridge_status_from_conn(conn)
 
 
 @router.patch("/settings", response_model=BridgeStatus)
 def update_bridge_settings(payload: BridgeSettingsUpdate) -> dict:
     updates = payload.model_dump(exclude_unset=True)
-    settings = _get_bridge_settings()
-    next_settings = {**settings, **updates}
-    rotating = bool(updates.get("rotate_token") or not next_settings.get("bridge_token"))
-    previous_token = str(settings.get("bridge_token") or "")
-    if rotating:
-        next_settings["bridge_token"] = secrets.token_urlsafe(24)
-    now = utc_now()
     with connect() as conn:
+        settings = _get_bridge_settings(conn)
+        next_settings = {**settings, **updates}
+        rotating = bool(updates.get("rotate_token") or not next_settings.get("bridge_token"))
+        previous_token = str(settings.get("bridge_token") or "")
+        if rotating:
+            next_settings["bridge_token"] = secrets.token_urlsafe(24)
+        now = utc_now()
         _ensure_bridge_settings(conn)
         conn.execute(
             """
@@ -145,7 +139,7 @@ def update_bridge_settings(payload: BridgeSettingsUpdate) -> dict:
                     _token_hash(next_settings["bridge_token"]),
                 ),
             )
-    return bridge_status()
+        return _bridge_status_from_conn(conn)
 
 
 @router.post("/approval-requests", response_model=BridgeApprovalRequestCreateResponse)
@@ -315,7 +309,9 @@ def poll_bridge_approval_request(
 
 
 @router.get("/approval-requests", response_model=list[BridgeApprovalRequestRead])
-def list_bridge_approval_requests() -> list[dict]:
+def list_bridge_approval_requests(limit: int = 100, offset: int = 0) -> list[dict]:
+    bounded_limit = max(1, min(limit, 200))
+    bounded_offset = max(offset, 0)
     with connect() as conn:
         _expire_pending_approval_requests(conn)
         rows = conn.execute(
@@ -323,9 +319,12 @@ def list_bridge_approval_requests() -> list[dict]:
             SELECT * FROM bridge_approval_requests
             ORDER BY
                 CASE status WHEN 'pending' THEN 0 ELSE 1 END,
-                updated_at DESC
-            LIMIT 200
+                updated_at DESC,
+                id DESC
+            LIMIT ? OFFSET ?
             """
+            ,
+            (bounded_limit, bounded_offset),
         ).fetchall()
         return [_approval_request_from_row(conn, row) for row in rows]
 
@@ -515,14 +514,18 @@ def reject_bridge_approval_request(request_id: str, payload: BridgeApprovalDecis
 
 
 @router.get("/audit-events", response_model=list[BridgeAuditEventRead])
-def list_bridge_audit_events() -> list[dict]:
+def list_bridge_audit_events(limit: int = 100, offset: int = 0) -> list[dict]:
+    bounded_limit = max(1, min(limit, 200))
+    bounded_offset = max(offset, 0)
     with connect() as conn:
         rows = conn.execute(
             """
             SELECT * FROM bridge_audit_events
-            ORDER BY created_at DESC
-            LIMIT 200
+            ORDER BY created_at DESC, id DESC
+            LIMIT ? OFFSET ?
             """
+            ,
+            (bounded_limit, bounded_offset),
         ).fetchall()
         return [_bridge_audit_event_from_row(conn, row) for row in rows]
 
@@ -583,7 +586,13 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
             cluster_ids.append(cluster_id)
 
     warnings = []
+    sensitive_categories = sensitive_query_categories(payload.query)
+    if sensitive_categories:
+        warnings.append(
+            "Sensitive query categories detected: " + ", ".join(sensitive_categories) + "."
+        )
     context_request_id = payload.context_request_id or f"bridge-context-{uuid4()}"
+    ordered_sources: list[dict] = []
     with connect() as conn:
         if cluster_ids:
             cluster_rows = conn.execute(
@@ -622,12 +631,15 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
             cluster_id=payload.cluster_id,
             query=payload.query,
         )
-
-    sources_by_id = {
-        row["id"]: _bridge_source_from_row(row, conn=None, allow_raw_snippets=bool(permissions["allow_raw_snippets"]))
-        for row in source_rows
-    }
-    ordered_sources = [sources_by_id[source_id] for source_id in source_ids if source_id in sources_by_id]
+        sources_by_id = {
+            row["id"]: _bridge_source_from_row(
+                row,
+                conn=conn,
+                allow_raw_snippets=bool(permissions["allow_raw_snippets"]),
+            )
+            for row in source_rows
+        }
+        ordered_sources = [sources_by_id[source_id] for source_id in source_ids if source_id in sources_by_id]
     if not permissions["allow_raw_snippets"] and ordered_sources:
         warnings.append("Raw source text is redacted by Bridge permissions.")
     if results:
@@ -782,7 +794,12 @@ def expand_context_item(
 
 
 @router.get("/reviews", response_model=list[BridgeWritebackReviewRead])
-def list_bridge_writeback_reviews(vault_id: str | None = None, pending_only: bool = False) -> list[dict]:
+def list_bridge_writeback_reviews(
+    vault_id: str | None = None,
+    pending_only: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
     params: list = []
     clauses: list[str] = []
     if vault_id:
@@ -792,6 +809,8 @@ def list_bridge_writeback_reviews(vault_id: str | None = None, pending_only: boo
         clauses.append("reviews.approved = 0")
         clauses.append("reviews.quality_state <> 'grounded'")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    bounded_limit = max(1, min(limit, 200))
+    bounded_offset = max(offset, 0)
     with connect() as conn:
         rows = conn.execute(
             f"""
@@ -799,21 +818,23 @@ def list_bridge_writeback_reviews(vault_id: str | None = None, pending_only: boo
             FROM bridge_writeback_reviews reviews
             JOIN sources ON sources.id = reviews.source_id
             {where}
-            ORDER BY reviews.updated_at DESC
-            LIMIT 200
+            ORDER BY reviews.updated_at DESC, reviews.source_id DESC
+            LIMIT ? OFFSET ?
             """,
-            params,
+            [*params, bounded_limit, bounded_offset],
         ).fetchall()
     return [_bridge_review_from_row(row) for row in rows]
 
 
 @router.get("/captures", response_model=list[BridgeCaptureListItem])
-def list_bridge_captures(vault_id: str | None = None, limit: int = 50) -> list[dict]:
+def list_bridge_captures(vault_id: str | None = None, limit: int = 50, offset: int = 0) -> list[dict]:
     params: list[object] = []
     clauses = ["sources.deleted_at IS NULL", "sources.source_type IN ('external_transcript', 'external_artifact')"]
     if vault_id:
         clauses.append("sources.vault_id = ?")
         params.append(vault_id)
+    bounded_limit = max(1, min(limit, 200))
+    bounded_offset = max(offset, 0)
     with connect() as conn:
         rows = conn.execute(
             f"""
@@ -831,10 +852,10 @@ def list_bridge_captures(vault_id: str | None = None, limit: int = 50) -> list[d
             FROM sources
             LEFT JOIN bridge_writeback_reviews reviews ON reviews.source_id = sources.id
             WHERE {' AND '.join(clauses)}
-            ORDER BY sources.created_at DESC
-            LIMIT ?
+            ORDER BY sources.created_at DESC, sources.id DESC
+            LIMIT ? OFFSET ?
             """,
-            [*params, max(1, min(limit, 200))],
+            [*params, bounded_limit, bounded_offset],
         ).fetchall()
     return [
         {
@@ -910,37 +931,48 @@ def capture_external_artifact(
 
 
 @router.get("/requests", response_model=list[BridgeRequestRead])
-def list_bridge_requests() -> list[dict]:
+def list_bridge_requests(limit: int = 50, offset: int = 0) -> list[dict]:
+    bounded_limit = max(1, min(limit, 200))
+    bounded_offset = max(offset, 0)
     with connect() as conn:
         rows = conn.execute(
             """
             SELECT * FROM bridge_requests
-            ORDER BY created_at DESC
-            LIMIT 50
+            ORDER BY created_at DESC, id DESC
+            LIMIT ? OFFSET ?
             """
+            ,
+            (bounded_limit, bounded_offset),
         ).fetchall()
     return [dict_from_row(row) for row in rows]
 
 
 @router.get("/token-rotations", response_model=list[BridgeTokenRotationRead])
-def list_bridge_token_rotations() -> list[dict]:
+def list_bridge_token_rotations(limit: int = 20, offset: int = 0) -> list[dict]:
+    bounded_limit = max(1, min(limit, 100))
+    bounded_offset = max(offset, 0)
     with connect() as conn:
         rows = conn.execute(
             """
             SELECT id, rotated_at, reason
             FROM bridge_token_rotations
-            ORDER BY rotated_at DESC
-            LIMIT 20
+            ORDER BY rotated_at DESC, id DESC
+            LIMIT ? OFFSET ?
             """
+            ,
+            (bounded_limit, bounded_offset),
         ).fetchall()
     return [dict_from_row(row) for row in rows]
 
 
 @router.get("/clients", response_model=list[BridgeClientRead])
-def list_bridge_clients() -> list[dict]:
+def list_bridge_clients(limit: int = 100, offset: int = 0) -> list[dict]:
+    bounded_limit = max(1, min(limit, 200))
+    bounded_offset = max(offset, 0)
     with connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM bridge_clients ORDER BY updated_at DESC"
+            "SELECT * FROM bridge_clients ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+            (bounded_limit, bounded_offset),
         ).fetchall()
         return [_bridge_client_from_row(conn, row) for row in rows]
 
@@ -1148,13 +1180,15 @@ def list_bridge_clusters(
     limit: int = 500,
     offset: int = 0,
 ) -> dict:
-    settings, client_permissions, auth_mode = _authorize_bridge_runtime_token(x_cml_bridge_token)
-    permissions = client_permissions or settings
     safe_limit = max(1, min(int(limit), 1000))
     safe_offset = max(0, int(offset))
     with connect() as conn:
+        settings, client_permissions, auth_mode = _authorize_bridge_runtime_token(
+            x_cml_bridge_token,
+            conn=conn,
+        )
+        permissions = client_permissions or settings
         _enforce_runtime_rate_limits(conn, client_permissions, auth_mode)
-    with connect() as conn:
         params: list[object] = []
         clauses: list[str] = []
         if permissions["allowed_vault_ids"]:
@@ -1189,32 +1223,34 @@ def _ensure_bridge_settings(conn) -> None:
     )
 
 
-def _get_bridge_settings() -> dict:
-    with connect() as conn:
-        _ensure_bridge_settings(conn)
-        row = conn.execute("SELECT * FROM bridge_settings WHERE id = 'default'").fetchone()
-        configured_vault_ids = [str(item) for item in _json_list(row["allowed_vault_ids"])]
-        configured_cluster_ids = [str(item) for item in _json_list(row["allowed_cluster_ids"])]
-        existing_vault_ids = _existing_ids(conn, table="vaults", ids=configured_vault_ids)
-        existing_cluster_ids = _existing_ids(conn, table="clusters", ids=configured_cluster_ids)
-        allowed_vault_ids = [
-            item for item in configured_vault_ids if item in existing_vault_ids
-        ]
-        allowed_cluster_ids = [
-            item for item in configured_cluster_ids if item in existing_cluster_ids
-        ]
-        if (
-            allowed_vault_ids != configured_vault_ids
-            or allowed_cluster_ids != configured_cluster_ids
-        ):
-            conn.execute(
-                """
-                UPDATE bridge_settings
-                SET allowed_vault_ids = ?, allowed_cluster_ids = ?, updated_at = ?
-                WHERE id = 'default'
-                """,
-                (json.dumps(allowed_vault_ids), json.dumps(allowed_cluster_ids), utc_now()),
-            )
+def _get_bridge_settings(conn=None) -> dict:
+    if conn is None:
+        with connect() as local_conn:
+            return _get_bridge_settings(local_conn)
+    _ensure_bridge_settings(conn)
+    row = conn.execute("SELECT * FROM bridge_settings WHERE id = 'default'").fetchone()
+    configured_vault_ids = [str(item) for item in _json_list(row["allowed_vault_ids"])]
+    configured_cluster_ids = [str(item) for item in _json_list(row["allowed_cluster_ids"])]
+    existing_vault_ids = _existing_ids(conn, table="vaults", ids=configured_vault_ids)
+    existing_cluster_ids = _existing_ids(conn, table="clusters", ids=configured_cluster_ids)
+    allowed_vault_ids = [
+        item for item in configured_vault_ids if item in existing_vault_ids
+    ]
+    allowed_cluster_ids = [
+        item for item in configured_cluster_ids if item in existing_cluster_ids
+    ]
+    if (
+        allowed_vault_ids != configured_vault_ids
+        or allowed_cluster_ids != configured_cluster_ids
+    ):
+        conn.execute(
+            """
+            UPDATE bridge_settings
+            SET allowed_vault_ids = ?, allowed_cluster_ids = ?, updated_at = ?
+            WHERE id = 'default'
+            """,
+            (json.dumps(allowed_vault_ids), json.dumps(allowed_cluster_ids), utc_now()),
+        )
     return {
         "enabled": bool(row["enabled"]),
         "allowed_vault_ids": allowed_vault_ids,
@@ -1226,13 +1262,27 @@ def _get_bridge_settings() -> dict:
     }
 
 
-def _pending_approval_count() -> int:
-    with connect() as conn:
-        _expire_pending_approval_requests(conn)
-        row = conn.execute(
-            "SELECT COUNT(*) AS count FROM bridge_approval_requests WHERE status = 'pending'"
-        ).fetchone()
+def _pending_approval_count(conn=None) -> int:
+    if conn is None:
+        with connect() as local_conn:
+            return _pending_approval_count(local_conn)
+    _expire_pending_approval_requests(conn)
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM bridge_approval_requests WHERE status = 'pending'"
+    ).fetchone()
     return int(row["count"] or 0)
+
+
+def _bridge_status_from_conn(conn) -> dict[str, str | bool]:
+    settings = _get_bridge_settings(conn)
+    return {
+        **settings,
+        "mcp": "planned",
+        "http_api": "available",
+        "cli": "planned",
+        "approval_requests_pending": _pending_approval_count(conn),
+        "last_refreshed_at": utc_now(),
+    }
 
 
 def _json_list(value: str | None) -> list:
@@ -1265,19 +1315,21 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _bridge_client_for_token(token: str | None) -> dict | None:
+def _bridge_client_for_token(token: str | None, conn=None) -> dict | None:
     if token and len(token) > 512:
         return None
     token_hash = _token_hash(token or "")
     if not token_hash:
         return None
-    with connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM bridge_clients WHERE enabled = 1"
-        ).fetchall()
-        for row in rows:
-            if secrets.compare_digest(str(row["token_hash"]), token_hash):
-                return _bridge_client_from_row(conn, row)
+    if conn is None:
+        with connect() as local_conn:
+            return _bridge_client_for_token(token, conn=local_conn)
+    row = conn.execute(
+        "SELECT * FROM bridge_clients WHERE enabled = 1 AND token_hash = ? LIMIT 1",
+        (token_hash,),
+    ).fetchone()
+    if row is not None:
+        return _bridge_client_from_row(conn, row)
     return None
 
 
@@ -1497,9 +1549,9 @@ def _bridge_review_from_row(row) -> dict:
     }
 
 
-def _authorize_bridge_runtime_token(token: str | None) -> tuple[dict, dict | None, str]:
-    settings = _get_bridge_settings()
-    client_permissions = _bridge_client_for_token(token)
+def _authorize_bridge_runtime_token(token: str | None, *, conn=None) -> tuple[dict, dict | None, str]:
+    settings = _get_bridge_settings(conn)
+    client_permissions = _bridge_client_for_token(token, conn=conn)
     if not settings["enabled"]:
         raise HTTPException(status_code=403, detail="bridge_disabled")
     if client_permissions is not None:
@@ -1835,13 +1887,45 @@ def _approval_vault_id(requested_vault_ids: list[str], current_vault_id: str | N
 
 
 def _existing_vault_ids(conn, ids: list[str]) -> list[str]:
-    existing = {row["id"] for row in conn.execute("SELECT id FROM vaults").fetchall()}
-    return [str(item) for item in ids if str(item) in existing]
+    ordered_ids = _normalized_unique_ids(ids)
+    if not ordered_ids:
+        return []
+    placeholders = ",".join("?" for _ in ordered_ids)
+    existing = {
+        row["id"]
+        for row in conn.execute(
+            f"SELECT id FROM vaults WHERE id IN ({placeholders})",
+            ordered_ids,
+        ).fetchall()
+    }
+    return [item for item in ordered_ids if item in existing]
 
 
 def _existing_cluster_ids(conn, ids: list[str]) -> list[str]:
-    existing = {row["id"] for row in conn.execute("SELECT id FROM clusters").fetchall()}
-    return [str(item) for item in ids if str(item) in existing]
+    ordered_ids = _normalized_unique_ids(ids)
+    if not ordered_ids:
+        return []
+    placeholders = ",".join("?" for _ in ordered_ids)
+    existing = {
+        row["id"]
+        for row in conn.execute(
+            f"SELECT id FROM clusters WHERE id IN ({placeholders})",
+            ordered_ids,
+        ).fetchall()
+    }
+    return [item for item in ordered_ids if item in existing]
+
+
+def _normalized_unique_ids(ids: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in ids:
+        normalized = str(item or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
 
 
 def _store_approval_delivery_token(conn, vault_id: str, request_id: str, token: str, *, now: str) -> None:

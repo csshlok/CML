@@ -356,6 +356,11 @@ class SourcePageIndexingTests(unittest.TestCase):
         text = script.read_text(encoding="utf-8")
         self.assertIn("export_context_layer_report", text)
         self.assertIn("CML_CONTEXT_LAYER_REPORT_PATH", text)
+        self.assertIn("CML_CONTEXT_LAYER_BENCHMARK_CLUSTERS", text)
+        self.assertIn("CML_CONTEXT_LAYER_BENCHMARK_HOSTILE", text)
+        self.assertIn("hostile_fixture_count", text)
+        self.assertIn("adversarial_query_count", text)
+        self.assertIn("context-hostile-source-003", text)
 
     def test_persisted_chat_builds_distilled_memory_and_working_memory(self) -> None:
         from unittest.mock import patch
@@ -446,6 +451,53 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertGreaterEqual(len(response["memory_items"]), 1)
         self.assertTrue(response["working_memory"]["summary"])
         self.assertIn("Context request ID", response["packet_text"])
+
+    def test_context_memory_query_can_reach_relevant_items_beyond_latest_fifty(self) -> None:
+        from backend.app.core.context_memory import get_context_memory
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            for index in range(60):
+                created_at = f"2026-06-14T00:00:{index:02d}Z"
+                summary = f"Recent memory {index}"
+                detail_text = "generic detail text"
+                if index == 4:
+                    summary = "Rare anchor memory"
+                    detail_text = "This item mentions the rare anchor topic directly."
+                conn.execute(
+                    """
+                    INSERT INTO memory_items (
+                        id, vault_id, cluster_id, source_id, session_id, kind, summary, detail_text,
+                        confidence, freshness, review_state, status, origin_fingerprint, created_at, updated_at, invalidated_at
+                    )
+                    VALUES (?, 'vault-1', NULL, NULL, NULL, 'fact', ?, ?, ?, 0.9, 'auto', 'active', ?, ?, ?, NULL)
+                    """,
+                    (
+                        f"memory-{index}",
+                        summary,
+                        detail_text,
+                        0.95 if index == 4 else 0.4,
+                        f"origin-{index}",
+                        created_at,
+                        created_at,
+                    ),
+                )
+
+            memory_items, working_memory = get_context_memory(
+                conn,
+                vault_id="vault-1",
+                cluster_id=None,
+                query="rare anchor",
+                limit=3,
+            )
+
+        self.assertTrue(any(item["id"] == "memory-4" for item in memory_items))
+        self.assertTrue(working_memory["summary"])
 
     def test_grounded_external_turn_keeps_medium_trust_and_memory(self) -> None:
         from backend.app.api.routes.bridge import build_context, log_external_turn, update_bridge_settings
@@ -667,6 +719,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(result["quality_state"], "partially_grounded")
         self.assertTrue(result["review_required"])
         self.assertIn("matched_source_title", result["reasons"])
+        self.assertIn("unsupported_claims_detected", result["reasons"])
         self.assertFalse(bool(review["approved"]))
         self.assertEqual(source_row["trust_tier"], "external_capture")
         self.assertIn("review_needed", source_row["security_labels"])
@@ -716,6 +769,57 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(artifact_row["quality_state"], "user_artifact")
         self.assertEqual(artifact_row["trust_tier"], "external_capture")
         self.assertIn("lora_excluded", artifact_row["security_labels"])
+
+    def test_external_turn_that_only_mentions_source_title_stays_reviewed_partial(self) -> None:
+        from backend.app.api.routes.bridge import build_context, log_external_turn, update_bridge_settings
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import (
+            BridgeContextRequest,
+            BridgeExternalTurnCapture,
+            BridgeSettingsUpdate,
+            SourceCreate,
+        )
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True, allowed_vault_ids=["vault-1"], rotate_token=True))
+        settings = update_bridge_settings(BridgeSettingsUpdate())
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Architecture decision",
+                source_type="note",
+                raw_text="The architecture decision is retrieval first. Compact packets reduce token cost.",
+            )
+        )
+        run_due_jobs_once(limit=1)
+        context = build_context(
+            BridgeContextRequest(vault_id="vault-1", query="architecture decision", client_name="bridge-client"),
+            x_cml_bridge_token=settings["bridge_token"],
+        )
+
+        result = log_external_turn(
+            BridgeExternalTurnCapture(
+                vault_id="vault-1",
+                client_name="bridge-client",
+                user_prompt="What is the architecture decision?",
+                model_response="According to Architecture decision, bananas are blue.",
+                context_request_id=context["context_request_id"],
+            ),
+            x_cml_bridge_token=settings["bridge_token"],
+        )
+
+        self.assertEqual(result["quality_state"], "partially_grounded")
+        self.assertTrue(result["review_required"])
+        self.assertIn("matched_source_title", result["reasons"])
+        self.assertIn("unsupported_claims_detected", result["reasons"])
+        self.assertIn("insufficient_packet_support", result["reasons"])
 
     def test_deleted_source_is_hidden_and_content_removed_immediately(self) -> None:
         from backend.app.api.routes.search import semantic_search
@@ -2460,6 +2564,81 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(status["allowed_cluster_ids"], [])
         self.assertTrue(status["last_refreshed_at"])
 
+    def test_bridge_status_uses_single_connection_path(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes import bridge as bridge_module
+        from backend.app.api.routes.bridge import bridge_status, update_bridge_settings
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import BridgeSettingsUpdate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        update_bridge_settings(BridgeSettingsUpdate(allowed_vault_ids=["vault-1", "deleted-vault"]))
+
+        enter_count = {"count": 0}
+        real_connect = connect
+
+        class RecordingConnect:
+            def __enter__(self_inner):
+                enter_count["count"] += 1
+                self_inner._ctx = real_connect()
+                return self_inner._ctx.__enter__()
+
+            def __exit__(self_inner, exc_type, exc, tb):
+                return self_inner._ctx.__exit__(exc_type, exc, tb)
+
+        with patch.object(bridge_module, "connect", return_value=RecordingConnect()):
+            status = bridge_status()
+
+        self.assertEqual(enter_count["count"], 1)
+        self.assertEqual(status["allowed_vault_ids"], ["vault-1"])
+
+    def test_update_bridge_settings_uses_single_connection_path(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes import bridge as bridge_module
+        from backend.app.api.routes.bridge import update_bridge_settings
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import BridgeSettingsUpdate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        enter_count = {"count": 0}
+        real_connect = connect
+
+        class RecordingConnect:
+            def __enter__(self_inner):
+                enter_count["count"] += 1
+                self_inner._ctx = real_connect()
+                return self_inner._ctx.__enter__()
+
+            def __exit__(self_inner, exc_type, exc, tb):
+                return self_inner._ctx.__exit__(exc_type, exc, tb)
+
+        with patch.object(bridge_module, "connect", return_value=RecordingConnect()):
+            status = update_bridge_settings(
+                BridgeSettingsUpdate(
+                    enabled=True,
+                    allowed_vault_ids=["vault-1", "deleted-vault"],
+                    rotate_token=True,
+                )
+            )
+
+        self.assertEqual(enter_count["count"], 1)
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["allowed_vault_ids"], ["vault-1"])
+        self.assertTrue(status["bridge_token"])
+
     def test_bridge_cluster_listing_is_bounded_and_stable(self) -> None:
         from backend.app.api.routes.bridge import list_bridge_clusters, update_bridge_settings
         from backend.app.core.database import connect, utc_now
@@ -2492,6 +2671,50 @@ class SourcePageIndexingTests(unittest.TestCase):
             ["bridge-cluster-2", "bridge-cluster-1"],
         )
         self.assertEqual([cluster["id"] for cluster in second_page["clusters"]], ["bridge-cluster-0"])
+
+    def test_bridge_cluster_listing_uses_single_connection_path(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes import bridge as bridge_module
+        from backend.app.api.routes.bridge import list_bridge_clusters, update_bridge_settings
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import BridgeSettingsUpdate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
+                VALUES ('bridge-cluster-single', 'vault-1', 'Cluster', '', 'sage', 'setting-up', ?, ?)
+                """,
+                (now, now),
+            )
+
+        status = update_bridge_settings(
+            BridgeSettingsUpdate(enabled=True, allowed_vault_ids=["vault-1"], rotate_token=True)
+        )
+
+        enter_count = {"count": 0}
+        real_connect = connect
+
+        class RecordingConnect:
+            def __enter__(self_inner):
+                enter_count["count"] += 1
+                self_inner._ctx = real_connect()
+                return self_inner._ctx.__enter__()
+
+            def __exit__(self_inner, exc_type, exc, tb):
+                return self_inner._ctx.__exit__(exc_type, exc, tb)
+
+        with patch.object(bridge_module, "connect", return_value=RecordingConnect()):
+            response = list_bridge_clusters(x_cml_bridge_token=status["bridge_token"], limit=1)
+
+        self.assertEqual(enter_count["count"], 1)
+        self.assertEqual([cluster["id"] for cluster in response["clusters"]], ["bridge-cluster-single"])
 
     def test_bridge_requires_explicit_allowed_vault_when_vault_omitted(self) -> None:
         from fastapi import HTTPException
@@ -3283,6 +3506,14 @@ class SourcePageIndexingTests(unittest.TestCase):
         )
 
         self.assertEqual(limit, 1700)
+
+    def test_bounded_scan_limit_honors_explicit_override(self) -> None:
+        from backend.app.api.routes.integrations import _bounded_scan_limit
+        from backend.app.core.local_integrations import MAX_SCAN_LIMIT
+
+        self.assertEqual(_bounded_scan_limit(400), 400)
+        self.assertEqual(_bounded_scan_limit(MAX_SCAN_LIMIT + 999), MAX_SCAN_LIMIT)
+        self.assertIsNone(_bounded_scan_limit(None))
 
     def test_obsidian_markdown_ingestion_extracts_frontmatter_links_and_attachments(self) -> None:
         from backend.app.api.routes.sources import create_source_from_path

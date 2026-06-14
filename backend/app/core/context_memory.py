@@ -183,8 +183,16 @@ def classify_external_response_quality(
     normalized = " ".join(response_text.lower().split())
     matched_handles = [handle for handle in handles if handle.lower() in normalized]
     matched_titles = [title for title in titles if str(title).lower() in normalized]
-    supported_sentences = _supported_response_sentences(normalized, packet_text)
-    total_sentences = _response_sentence_count(response_text)
+    sentence_profile = _response_sentence_support_profile(
+        response_text=response_text,
+        packet_text=packet_text,
+        handles=handles,
+        titles=titles,
+    )
+    supported_sentences = sentence_profile["supported_count"]
+    unsupported_sentences = sentence_profile["unsupported_count"]
+    total_sentences = sentence_profile["total_sentences"]
+    referenced_only_sentences = sentence_profile["referenced_only_count"]
     contradiction = _response_contradicts_packet(normalized, packet_text)
     reasons = []
     if matched_handles:
@@ -193,18 +201,26 @@ def classify_external_response_quality(
         reasons.append("matched_source_title")
     if supported_sentences:
         reasons.append("matched_packet_terms")
+    if referenced_only_sentences:
+        reasons.append("insufficient_packet_support")
+    if unsupported_sentences:
+        reasons.append("unsupported_claims_detected")
     if contradiction:
         reasons.append("contradiction_detected")
-    if contradiction and not supported_sentences and not matched_titles and not matched_handles:
-        return {"quality_state": "ungrounded", "reasons": reasons or ["contradiction_detected"]}
-    if supported_sentences == total_sentences and total_sentences > 0 and not contradiction:
-        return {"quality_state": "grounded", "reasons": reasons or ["full_packet_support"]}
-    if supported_sentences > 0 and total_sentences > supported_sentences:
-        return {"quality_state": "partially_grounded", "reasons": reasons or ["partial_packet_support"]}
+        if supported_sentences or matched_titles or matched_handles:
+            return {"quality_state": "partially_grounded", "reasons": _unique_reasons(reasons)}
+        return {"quality_state": "ungrounded", "reasons": _unique_reasons(reasons) or ["contradiction_detected"]}
+    if supported_sentences == total_sentences and total_sentences > 0 and unsupported_sentences == 0:
+        return {"quality_state": "grounded", "reasons": _unique_reasons(reasons) or ["full_packet_support"]}
+    if supported_sentences > 0 or referenced_only_sentences > 0:
+        return {"quality_state": "partially_grounded", "reasons": _unique_reasons(reasons) or ["partial_packet_support"]}
     if matched_handles or matched_titles:
-        return {"quality_state": "grounded", "reasons": reasons}
+        return {"quality_state": "partially_grounded", "reasons": _unique_reasons(reasons)}
+    if unsupported_sentences:
+        reasons.append("no_packet_overlap_detected")
+        return {"quality_state": "ungrounded", "reasons": _unique_reasons(reasons)}
     if titles:
-        return {"quality_state": "ungrounded", "reasons": reasons or ["no_packet_overlap_detected"]}
+        return {"quality_state": "ungrounded", "reasons": _unique_reasons(reasons) or ["no_packet_overlap_detected"]}
     return {"quality_state": "unknown", "reasons": ["packet_had_no_evidence"]}
 
 
@@ -434,19 +450,49 @@ def _extract_memory_candidates(text: str) -> list[dict]:
     return items[:10]
 
 
-def _supported_response_sentences(response_text: str, packet_text: str) -> int:
-    count = 0
+def _response_sentence_support_profile(
+    *,
+    response_text: str,
+    packet_text: str,
+    handles: list[str],
+    titles: list[str],
+) -> dict:
+    supported = 0
+    referenced_only = 0
+    unsupported = 0
     packet_terms = {term for term in re.findall(r"[a-z0-9]{4,}", packet_text)}
-    for sentence in re.split(r"(?<=[.!?])\s+", response_text):
+    normalized_handles = [str(handle).lower() for handle in handles if str(handle).strip()]
+    normalized_titles = [str(title).lower() for title in titles if str(title).strip()]
+    reference_terms = {
+        term
+        for value in [*normalized_handles, *normalized_titles]
+        for term in re.findall(r"[a-z0-9]{4,}", value)
+    }
+    for sentence in _split_response_sentences(response_text):
+        normalized_sentence = " ".join(sentence.lower().split())
         sentence_terms = {term for term in re.findall(r"[a-z0-9]{4,}", sentence)}
-        if len(sentence_terms & packet_terms) >= 3:
-            count += 1
-    return count
+        has_term_support = len(sentence_terms & packet_terms) >= 3
+        has_handle_support = any(handle in normalized_sentence for handle in normalized_handles)
+        has_title_support = any(title in normalized_sentence for title in normalized_titles)
+        if has_term_support:
+            supported += 1
+        elif has_handle_support or has_title_support:
+            referenced_only += 1
+            unsupported_terms = sentence_terms - packet_terms - reference_terms
+            if unsupported_terms:
+                unsupported += 1
+        else:
+            unsupported += 1
+    return {
+        "supported_count": supported,
+        "referenced_only_count": referenced_only,
+        "unsupported_count": unsupported,
+        "total_sentences": max(supported + referenced_only + unsupported, 1 if response_text.strip() else 0),
+    }
 
 
 def _response_sentence_count(response_text: str) -> int:
-    sentences = [segment for segment in re.split(r"(?<=[.!?])\s+", response_text) if segment.strip()]
-    return max(len(sentences), 1 if response_text.strip() else 0)
+    return max(len(_split_response_sentences(response_text)), 1 if response_text.strip() else 0)
 
 
 def _response_contradicts_packet(response_text: str, packet_text: str) -> bool:
@@ -462,6 +508,22 @@ def _response_contradicts_packet(response_text: str, packet_text: str) -> bool:
         if right in packet_text and left in response_text:
             return True
     return False
+
+
+def _split_response_sentences(response_text: str) -> list[str]:
+    return [segment.strip() for segment in re.split(r"(?<=[.!?])\s+", response_text) if segment.strip()]
+
+
+def _unique_reasons(reasons: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        normalized = str(reason or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
 
 
 def _invalidate_memory_items(conn, *, source_id: str | None = None, session_id: str | None = None) -> None:
@@ -486,15 +548,17 @@ def _select_memory_items(conn, *, vault_id: str, cluster_id: str | None, query: 
     if cluster_id:
         cluster_clause = "AND (cluster_id = ? OR cluster_id IS NULL)"
         params.append(cluster_id)
+    bounded_limit = max(1, min(limit, 50))
+    candidate_limit = min(500, max(100, bounded_limit * 12))
     rows = conn.execute(
         f"""
         SELECT *
         FROM memory_items
         WHERE vault_id = ? AND status = 'active' {cluster_clause}
         ORDER BY updated_at DESC
-        LIMIT 50
+        LIMIT ?
         """,
-        params,
+        [*params, candidate_limit],
     ).fetchall()
     query_terms = {term for term in re.findall(r"[a-z0-9]{3,}", query.lower())}
     scored = []
@@ -504,7 +568,7 @@ def _select_memory_items(conn, *, vault_id: str, cluster_id: str | None, query: 
         overlap = sum(1 for term in query_terms if term in haystack)
         scored.append((overlap, item["confidence"], item))
     scored.sort(key=lambda value: (value[0], value[1], value[2]["updated_at"]), reverse=True)
-    return [item for _, _, item in scored[:limit]]
+    return [item for _, _, item in scored[:bounded_limit]]
 
 
 def _latest_working_memory(conn, *, vault_id: str, cluster_id: str | None) -> dict | None:

@@ -72,18 +72,20 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.get("/sessions", response_model=list[ChatSessionRead])
-def list_chat_sessions(vault_id: str | None = None) -> list[dict]:
+def list_chat_sessions(vault_id: str | None = None, limit: int = 100, offset: int = 0) -> list[dict]:
     clauses: list[str] = []
-    params: list[str] = []
+    params: list[object] = []
     if vault_id:
         clauses.append("vault_id = ?")
         params.append(vault_id)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    bounded_limit = max(1, min(limit, 200))
+    bounded_offset = max(offset, 0)
 
     with connect() as conn:
         rows = conn.execute(
-            f"SELECT * FROM chat_sessions {where} ORDER BY updated_at DESC",
-            params,
+            f"SELECT * FROM chat_sessions {where} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+            [*params, bounded_limit, bounded_offset],
         ).fetchall()
     return [_session_from_row(row, messages=[]) for row in rows]
 
@@ -122,40 +124,45 @@ def create_chat_session(payload: ChatSessionCreate) -> dict:
 
 
 @router.get("/sessions/{session_id}", response_model=ChatSessionRead)
-def get_chat_session(session_id: str) -> dict:
+def get_chat_session(session_id: str, limit: int = 200, offset: int = 0) -> dict:
+    bounded_limit = max(1, min(limit, 500))
+    bounded_offset = max(offset, 0)
     with connect() as conn:
         row = conn.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Chat session not found")
-        messages = conn.execute(
-            "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC",
-            (session_id,),
-        ).fetchall()
-        hydrated_messages = [_message_from_row(conn, message) for message in messages]
+        messages = _chat_messages_window(
+            conn,
+            session_id=session_id,
+            limit=bounded_limit,
+            offset=bounded_offset,
+        )
+        hydrated_messages = _messages_from_rows(conn, messages)
     return _session_from_row(row, hydrated_messages)
 
 
 @router.get("/sessions/{session_id}/timeline")
-def get_chat_timeline(session_id: str) -> dict:
+def get_chat_timeline(session_id: str, limit: int = 200, offset: int = 0) -> dict:
+    bounded_limit = max(1, min(limit, 500))
+    bounded_offset = max(offset, 0)
     with connect() as conn:
         session = conn.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
         if session is None:
             raise HTTPException(status_code=404, detail="Chat session not found")
-        messages = conn.execute(
-            "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC",
-            (session_id,),
-        ).fetchall()
-        generations = conn.execute(
-            """
-            SELECT * FROM chat_generations
-            WHERE session_id = ? AND state = 'retriable'
-            ORDER BY updated_at ASC
-            """,
-            (session_id,),
-        ).fetchall()
+        generations = _chat_retriable_generations_window(
+            conn,
+            session_id=session_id,
+            limit=bounded_limit + bounded_offset,
+        )
+        messages = _chat_messages_window(
+            conn,
+            session_id=session_id,
+            limit=bounded_limit + bounded_offset + len(generations),
+            offset=0,
+        )
+        hydrated_messages = _messages_from_rows(conn, messages)
         items = []
-        for message in messages:
-            hydrated = _message_from_row(conn, message)
+        for hydrated in hydrated_messages:
             items.append({
                 "message_type": f"{hydrated['role']}_message",
                 "sort_key": hydrated["created_at"],
@@ -176,6 +183,14 @@ def get_chat_timeline(session_id: str) -> dict:
                 "sort_key": row["updated_at"] or row["created_at"],
             })
         items.sort(key=lambda item: (item.get("sort_key") or "", item.get("id") or ""))
+        if items:
+            desc_items = sorted(
+                items,
+                key=lambda item: (item.get("sort_key") or "", item.get("id") or ""),
+                reverse=True,
+            )
+            window = desc_items[bounded_offset : bounded_offset + bounded_limit]
+            items = list(reversed(window))
     return {"session_id": session_id, "items": items}
 
 
@@ -737,6 +752,7 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     coverage_ledger = {
         **coverage_ledger,
         "trust_gate_mode": trust_gate["mode"],
+        "sensitive_query_categories": trust_gate.get("sensitive_query_categories") or [],
         "trusted_evidence_count": trust_gate["trusted_count"],
         "low_trust_evidence_count": trust_gate["low_trust_count"],
         "trust_gate_latency_ms": trust_gate["latency_ms"],
@@ -2237,18 +2253,59 @@ def _message_from_row(conn, row) -> dict:
     return message
 
 
+def _messages_from_rows(conn, rows: list[dict]) -> list[dict]:
+    hydrated_messages = [dict_from_row(row) for row in rows]
+    snapshot_citations = _snapshot_citations_for_messages(
+        conn,
+        [message["id"] for message in hydrated_messages if str(message.get("role") or "").strip().lower() == "assistant"],
+    )
+    for message in hydrated_messages:
+        message["clusters_used"] = _json_list(message.get("clusters_used"))
+        message["citations"] = snapshot_citations.get(message["id"]) or _json_list(message.get("citations"))
+        message["warnings"] = _json_list(message.get("warnings"))
+        message["useful"] = None if message.get("useful") is None else bool(message["useful"])
+        message["saved"] = bool(message.get("saved", 0))
+    return hydrated_messages
+
+
 def _snapshot_citations_for_message(conn, message: dict) -> list[dict]:
     if message.get("role") != "assistant":
         return []
-    snapshot = conn.execute(
-        "SELECT * FROM retrieval_snapshots WHERE message_id = ? ORDER BY created_at DESC LIMIT 1",
-        (message["id"],),
-    ).fetchone()
-    if snapshot is None:
-        return []
+    return _snapshot_citations_for_messages(conn, [message["id"]]).get(message["id"], [])
+
+
+def _snapshot_citations_for_messages(conn, message_ids: list[str]) -> dict[str, list[dict]]:
+    ordered_message_ids = [str(message_id or "").strip() for message_id in message_ids if str(message_id or "").strip()]
+    if not ordered_message_ids:
+        return {}
+    snapshot_placeholders = ",".join("?" for _ in ordered_message_ids)
+    snapshot_rows = conn.execute(
+        f"""
+        SELECT *
+        FROM (
+            SELECT
+                retrieval_snapshots.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY message_id
+                    ORDER BY created_at DESC, id DESC
+                ) AS rank_index
+            FROM retrieval_snapshots
+            WHERE message_id IN ({snapshot_placeholders})
+        )
+        WHERE rank_index = 1
+        """,
+        ordered_message_ids,
+    ).fetchall()
+    if not snapshot_rows:
+        return {}
+    snapshots_by_message_id = {str(row["message_id"]): row for row in snapshot_rows}
+    snapshots_by_id = {str(row["id"]): row for row in snapshot_rows}
+    snapshot_ids = [str(row["id"]) for row in snapshot_rows]
+    item_placeholders = ",".join("?" for _ in snapshot_ids)
     rows = conn.execute(
-        """
+        f"""
         SELECT
+            items.snapshot_id,
             items.*,
             sources.deleted_at AS source_deleted_at,
             sources.updated_at AS source_updated_at,
@@ -2259,21 +2316,23 @@ def _snapshot_citations_for_message(conn, message: dict) -> list[dict]:
         FROM retrieval_snapshot_items items
         LEFT JOIN sources ON sources.id = items.source_id
         LEFT JOIN source_chunks chunks ON chunks.id = items.chunk_id
-        WHERE items.snapshot_id = ?
+        WHERE items.snapshot_id IN ({item_placeholders})
         ORDER BY items.item_rank ASC
         """,
-        (snapshot["id"],),
+        snapshot_ids,
     ).fetchall()
-    citations = []
+    citations_by_snapshot_id: dict[str, list[dict]] = {snapshot_id: [] for snapshot_id in snapshot_ids}
     for row in rows:
         state = "current"
         if row["source_id"] is None or row["source_deleted_at"]:
             state = "source_deleted"
-        elif row["chunk_id"] and row["chunk_indexed_at"] is None:
-            state = "source_reindexed"
-        elif row["source_updated_at"] and row["source_updated_at"] > snapshot["created_at"]:
-            state = "source_reindexed"
-        citations.append(
+        else:
+            snapshot = snapshots_by_id.get(str(row["snapshot_id"]))
+            if row["chunk_id"] and row["chunk_indexed_at"] is None:
+                state = "source_reindexed"
+            elif snapshot and row["source_updated_at"] and row["source_updated_at"] > snapshot["created_at"]:
+                state = "source_reindexed"
+        citations_by_snapshot_id[str(row["snapshot_id"])].append(
             {
                 "source_id": row["source_id"] or "",
                 "source_title": row["source_title_at_answer_time"],
@@ -2294,7 +2353,43 @@ def _snapshot_citations_for_message(conn, message: dict) -> list[dict]:
                 "state": state,
             }
         )
-    return citations
+    citations_by_message_id: dict[str, list[dict]] = {}
+    for message_id, snapshot in snapshots_by_message_id.items():
+        citations_by_message_id[message_id] = citations_by_snapshot_id.get(str(snapshot["id"]), [])
+    return citations_by_message_id
+
+
+def _chat_messages_window(conn, *, session_id: str, limit: int, offset: int) -> list[dict]:
+    bounded_limit = max(1, min(limit, 1000))
+    bounded_offset = max(offset, 0)
+    return conn.execute(
+        """
+        SELECT *
+        FROM (
+            SELECT *
+            FROM chat_messages
+            WHERE session_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ? OFFSET ?
+        )
+        ORDER BY created_at ASC, id ASC
+        """,
+        (session_id, bounded_limit, bounded_offset),
+    ).fetchall()
+
+
+def _chat_retriable_generations_window(conn, *, session_id: str, limit: int) -> list[dict]:
+    bounded_limit = max(1, min(limit, 1000))
+    return conn.execute(
+        """
+        SELECT *
+        FROM chat_generations
+        WHERE session_id = ? AND state = 'retriable'
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?
+        """,
+        (session_id, bounded_limit),
+    ).fetchall()
 
 
 def _json_list(value: str | None) -> list:

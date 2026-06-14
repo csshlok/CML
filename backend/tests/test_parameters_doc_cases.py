@@ -282,6 +282,60 @@ class TestingParametersDocCases(unittest.TestCase):
         self.assertNotIn("extracted_text", requested_fields)
         self.assertTrue(set(requested_fields).issubset({"summary", "tags"}))
 
+    def test_bridge_context_reuses_active_connection_when_redacting_sources(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes.bridge import build_context, update_bridge_settings
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import BridgeContextRequest, BridgeSettingsUpdate, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        for index in range(3):
+            create_source(
+                SourceCreate(
+                    vault_id="vault-1",
+                    title=f"Bridge note {index}",
+                    source_type="note",
+                    raw_text=(f"bridge connection reuse note {index} " * 80).strip(),
+                )
+            )
+        run_due_jobs_once(limit=3)
+        update_bridge_settings(
+            BridgeSettingsUpdate(
+                enabled=True,
+                allow_raw_snippets=False,
+                allowed_vault_ids=["vault-1"],
+                rotate_token=True,
+            )
+        )
+        settings = update_bridge_settings(BridgeSettingsUpdate())
+        received_conn_flags: list[bool] = []
+        from backend.app.api.routes import bridge as bridge_module
+
+        real_bridge_source_from_row = bridge_module._bridge_source_from_row
+
+        def tracking_bridge_source(row, *, conn=None, allow_raw_snippets):
+            received_conn_flags.append(conn is not None)
+            return real_bridge_source_from_row(row, conn=conn, allow_raw_snippets=allow_raw_snippets)
+
+        with patch("backend.app.api.routes.bridge._bridge_source_from_row", side_effect=tracking_bridge_source):
+            response = build_context(
+                BridgeContextRequest(vault_id="vault-1", client_name="test-client", query="bridge connection reuse"),
+                x_cml_bridge_token=settings["bridge_token"],
+            )
+
+        self.assertGreaterEqual(len(response["source_snippets"]), 1)
+        self.assertTrue(received_conn_flags)
+        self.assertTrue(all(received_conn_flags))
+
     def _client(self) -> TestClient:
         from backend.app.core.config import get_settings
 

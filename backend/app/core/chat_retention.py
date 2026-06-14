@@ -49,45 +49,76 @@ def compact_retrieval_snapshots(*, message_id: str | None = None, keep_latest_pe
     if message_id:
         message_clause = "WHERE message_id = ?"
         params.append(message_id)
-    compacted = 0
     now = utc_now()
     with connect() as conn:
-        messages = conn.execute(
-            f"SELECT DISTINCT message_id FROM retrieval_snapshots {message_clause}",
-            params,
-        ).fetchall()
-        for message in messages:
-            rows = conn.execute(
-                """
-                SELECT id
+        count_row = conn.execute(
+            f"""
+            WITH ranked AS (
+                SELECT
+                    id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY message_id
+                        ORDER BY created_at DESC, id DESC
+                    ) AS rank_index
                 FROM retrieval_snapshots
-                WHERE message_id = ?
-                ORDER BY created_at DESC
+                {message_clause}
+            )
+            SELECT COUNT(*) AS count
+            FROM ranked
+            WHERE rank_index > ?
+            """,
+            [*params, safe_keep],
+        ).fetchone()
+        compacted = int(count_row["count"] or 0)
+        if compacted:
+            conn.execute(
+                f"""
+                WITH stale AS (
+                    SELECT id
+                    FROM (
+                        SELECT
+                            id,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY message_id
+                                ORDER BY created_at DESC, id DESC
+                            ) AS rank_index
+                        FROM retrieval_snapshots
+                        {message_clause}
+                    )
+                    WHERE rank_index > ?
+                )
+                UPDATE retrieval_snapshot_items
+                SET chunk_id = NULL,
+                    page_id = NULL,
+                    short_snippet_excerpt = SUBSTR(short_snippet_excerpt, 1, 240),
+                    state = CASE WHEN state = 'current' THEN 'compacted' ELSE state END
+                WHERE snapshot_id IN (SELECT id FROM stale)
                 """,
-                (message["message_id"],),
-            ).fetchall()
-            stale_ids = [row["id"] for row in rows[safe_keep:]]
-            for snapshot_id in stale_ids:
-                conn.execute(
-                    """
-                    UPDATE retrieval_snapshot_items
-                    SET chunk_id = NULL,
-                        page_id = NULL,
-                        short_snippet_excerpt = SUBSTR(short_snippet_excerpt, 1, 240),
-                        state = CASE WHEN state = 'current' THEN 'compacted' ELSE state END
-                    WHERE snapshot_id = ?
-                    """,
-                    (snapshot_id,),
+                [*params, safe_keep],
+            )
+            conn.execute(
+                f"""
+                WITH stale AS (
+                    SELECT id
+                    FROM (
+                        SELECT
+                            id,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY message_id
+                                ORDER BY created_at DESC, id DESC
+                            ) AS rank_index
+                        FROM retrieval_snapshots
+                        {message_clause}
+                    )
+                    WHERE rank_index > ?
                 )
-                conn.execute(
-                    """
-                    UPDATE retrieval_snapshots
-                    SET retrieval_mode = retrieval_mode || ':compacted'
-                    WHERE id = ? AND retrieval_mode NOT LIKE '%:compacted'
-                    """,
-                    (snapshot_id,),
-                )
-                compacted += 1
+                UPDATE retrieval_snapshots
+                SET retrieval_mode = retrieval_mode || ':compacted'
+                WHERE id IN (SELECT id FROM stale)
+                  AND retrieval_mode NOT LIKE '%:compacted'
+                """,
+                [*params, safe_keep],
+            )
     return {"compacted_snapshots": compacted, "compacted_at": now}
 
 
@@ -123,9 +154,9 @@ def enforce_chat_evidence_retention(
         message_clause = "AND snapshots.message_id = ?"
         params.append(message_id)
     with connect() as conn:
-        tombstone_rows = conn.execute(
+        tombstone_count_row = conn.execute(
             f"""
-            SELECT items.id
+            SELECT COUNT(*) AS count
             FROM retrieval_snapshot_items items
             JOIN retrieval_snapshots snapshots ON snapshots.id = items.snapshot_id
             LEFT JOIN sources ON sources.id = items.source_id
@@ -134,37 +165,51 @@ def enforce_chat_evidence_retention(
               {message_clause}
             """,
             params,
-        ).fetchall()
-        for row in tombstone_rows:
+        ).fetchone()
+        tombstoned = int(tombstone_count_row["count"] or 0)
+        if tombstoned:
             conn.execute(
-                """
+                f"""
                 UPDATE retrieval_snapshot_items
                 SET state = 'source_deleted', source_id = NULL, chunk_id = NULL, page_id = NULL
-                WHERE id = ?
+                WHERE id IN (
+                    SELECT items.id
+                    FROM retrieval_snapshot_items items
+                    JOIN retrieval_snapshots snapshots ON snapshots.id = items.snapshot_id
+                    LEFT JOIN sources ON sources.id = items.source_id
+                    WHERE items.source_id IS NOT NULL
+                      AND (sources.id IS NULL OR sources.deleted_at IS NOT NULL)
+                      {message_clause}
+                )
                 """,
-                (row["id"],),
+                params,
             )
-            tombstoned += 1
-        trim_rows = conn.execute(
+        trim_count_row = conn.execute(
             f"""
-            SELECT items.id
+            SELECT COUNT(*) AS count
             FROM retrieval_snapshot_items items
             JOIN retrieval_snapshots snapshots ON snapshots.id = items.snapshot_id
             WHERE LENGTH(items.short_snippet_excerpt) > ?
               {message_clause}
             """,
             [safe_excerpt, *params],
-        ).fetchall()
-        for row in trim_rows:
+        ).fetchone()
+        trimmed = int(trim_count_row["count"] or 0)
+        if trimmed:
             conn.execute(
-                """
+                f"""
                 UPDATE retrieval_snapshot_items
                 SET short_snippet_excerpt = SUBSTR(short_snippet_excerpt, 1, ?)
-                WHERE id = ?
+                WHERE id IN (
+                    SELECT items.id
+                    FROM retrieval_snapshot_items items
+                    JOIN retrieval_snapshots snapshots ON snapshots.id = items.snapshot_id
+                    WHERE LENGTH(items.short_snippet_excerpt) > ?
+                      {message_clause}
+                )
                 """,
-                (safe_excerpt, row["id"]),
+                [safe_excerpt, safe_excerpt, *params],
             )
-            trimmed += 1
     return {
         "message_id": message_id,
         "keep_latest_per_message": safe_keep,
