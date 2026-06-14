@@ -541,6 +541,93 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["ok"])
 
+    def test_extension_http_contract_accepts_extension_token_without_local_api_token(self) -> None:
+        from backend.app.api.routes.extension import create_extension_client
+        from backend.app.core.config import get_settings
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ExtensionClientCreate
+
+        os.environ["CML_API_TOKEN"] = "local-api-token"
+        os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "0"
+        get_settings.cache_clear()
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+        extension_client = create_extension_client(ExtensionClientCreate(name="browser", allowed_vault_ids=["vault-1"]))
+
+        client = self._client()
+        try:
+            status_response = client.get(
+                "/api/v1/extension/status",
+                headers={"x-cml-extension-token": extension_client["token"]},
+            )
+            capture_response = client.post(
+                "/api/v1/extension/capture",
+                headers={"x-cml-extension-token": extension_client["token"]},
+                json={
+                    "vault_id": "vault-1",
+                    "capture_type": "selection",
+                    "title": "Saved selection",
+                    "url": "https://example.com",
+                    "text": "captured through http extension contract",
+                },
+            )
+        finally:
+            client.close()
+            os.environ.pop("CML_API_TOKEN", None)
+            os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "1"
+            get_settings.cache_clear()
+
+        self.assertEqual(status_response.status_code, 200)
+        self.assertTrue(status_response.json()["ok"])
+        self.assertEqual(capture_response.status_code, 200)
+        self.assertEqual(capture_response.json()["status"], "stored")
+
+    def test_extension_upload_http_contract_accepts_extension_token_without_local_api_token(self) -> None:
+        from backend.app.api.routes.extension import create_extension_client
+        from backend.app.core.config import get_settings
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ExtensionClientCreate
+
+        os.environ["CML_API_TOKEN"] = "local-api-token"
+        os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "0"
+        get_settings.cache_clear()
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+        extension_client = create_extension_client(ExtensionClientCreate(name="browser", allowed_vault_ids=["vault-1"]))
+
+        client = self._client()
+        try:
+            upload_response = client.post(
+                "/api/v1/extension/capture-upload",
+                headers={"x-cml-extension-token": extension_client["token"]},
+                json={
+                    "vault_id": "vault-1",
+                    "capture_type": "file",
+                    "title": "notes.txt",
+                    "file_name": "notes.txt",
+                    "mime_type": "text/plain",
+                    "content_base64": "bm90ZXMgdmlhIGV4dGVuc2lvbiB1cGxvYWQ=",
+                },
+            )
+        finally:
+            client.close()
+            os.environ.pop("CML_API_TOKEN", None)
+            os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "1"
+            get_settings.cache_clear()
+
+        self.assertEqual(upload_response.status_code, 200)
+        self.assertEqual(upload_response.json()["status"], "stored")
+
     def test_options_cors_allows_vite_dev_origin(self) -> None:
         client = self._client()
         try:
@@ -1594,6 +1681,45 @@ class AdditionalQACases(unittest.TestCase):
             os.environ.pop("CML_API_TOKEN", None)
 
         self.assertEqual(response.status_code, 401)
+
+    def test_extension_upload_rejects_core_api_token_and_invalid_base64(self) -> None:
+        from backend.app.api.routes.extension import capture_uploaded_file_from_extension, create_extension_client
+        from backend.app.schemas import ExtensionClientCreate, ExtensionUploadCaptureRequest
+
+        os.environ["CML_API_TOKEN"] = "core-token"
+        extension_client = create_extension_client(ExtensionClientCreate(name="browser"))
+        client = self._client()
+        try:
+            token_response = client.post(
+                "/api/v1/extension/capture-upload",
+                headers={"x-cml-extension-token": "core-token"},
+                json={
+                    "vault_id": "vault-1",
+                    "capture_type": "file",
+                    "title": "notes.txt",
+                    "file_name": "notes.txt",
+                    "mime_type": "text/plain",
+                    "content_base64": "bm90ZXM=",
+                },
+            )
+            with self.assertRaises(Exception) as invalid_error:
+                capture_uploaded_file_from_extension(
+                    ExtensionUploadCaptureRequest(
+                        vault_id="vault-1",
+                        capture_type="file",
+                        title="broken.txt",
+                        file_name="broken.txt",
+                        mime_type="text/plain",
+                        content_base64="not-valid-base64***",
+                    ),
+                    x_cml_extension_token=extension_client["token"],
+                )
+        finally:
+            client.close()
+            os.environ.pop("CML_API_TOKEN", None)
+
+        self.assertEqual(token_response.status_code, 401)
+        self.assertIn("valid base64", str(invalid_error.exception))
 
     def test_run_migrations_detects_interrupted_running_record(self) -> None:
         from backend.app.core.database import connect

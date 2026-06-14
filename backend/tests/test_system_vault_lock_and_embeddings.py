@@ -1347,12 +1347,47 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
     def test_new_smoke_scripts_are_codex_dynamic_and_second_embedding_aware(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         codex = (repo_root / "scripts" / "backend" / "smoke-codex-mcp.ps1").read_text(encoding="utf-8")
+        extension_http = (repo_root / "scripts" / "backend" / "smoke-browser-extension-http.ps1").read_text(encoding="utf-8")
+        extension_browser = (repo_root / "scripts" / "backend" / "smoke-browser-extension-playwright.ps1").read_text(encoding="utf-8")
         dynamic = (repo_root / "scripts" / "backend" / "smoke-dynamic-link.ps1").read_text(encoding="utf-8")
         second = (repo_root / "scripts" / "backend" / "smoke-second-embedding-index.ps1").read_text(encoding="utf-8")
 
         self.assertIn("codex_style_jsonrpc", codex)
+        self.assertIn("list_writeback_reviews", codex)
+        self.assertIn("decide_writeback_review", codex)
+        self.assertIn("list_captures", codex)
+        self.assertIn("/api/v1/extension/capture-upload", extension_http)
+        self.assertIn("x-cml-extension-token", extension_http)
+        self.assertIn("x-cml-api-token", extension_http)
+        self.assertIn("playwright.chromium.launch_persistent_context", extension_browser)
+        self.assertIn("Save selected file", extension_browser)
+        self.assertIn("popup_button_labels", extension_browser)
+        self.assertIn("real_popup_target_seen", extension_browser)
+        self.assertIn("real_popup_target_title", extension_browser)
         self.assertIn("browser_runtime_available", dynamic)
         self.assertIn("real_second_cache_observed", second)
+
+    def test_bridge_runtime_files_do_not_hardcode_machine_specific_paths(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        targets = [
+            repo_root / "backend" / "app" / "bridge_mcp.py",
+            repo_root / "backend" / "app" / "bridge_cli.py",
+            repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts",
+            repo_root / "apps" / "desktop" / "src" / "routes" / "_app.bridge.tsx",
+            repo_root / "scripts" / "backend" / "smoke-codex-mcp.ps1",
+            repo_root / "scripts" / "backend" / "smoke-browser-extension-http.ps1",
+            repo_root / "scripts" / "backend" / "smoke-browser-extension-playwright.ps1",
+        ]
+        forbidden = [
+            r"C:\\Users\\csshl",
+            r"Desktop\\CML",
+            r"T:\\",
+        ]
+
+        for target in targets:
+            text = target.read_text(encoding="utf-8")
+            for pattern in forbidden:
+                self.assertNotRegex(text, pattern, msg=f"{target} should not hardcode machine-specific path {pattern}")
 
     def test_model_integrity_manifest_reports_recorded_and_mismatch(self) -> None:
         from backend.app.core.config import get_settings

@@ -15,18 +15,23 @@ def export_context_layer_report(
     vault_id: str,
     *,
     cluster_id: str | None = None,
-    queries: list[str] | None = None,
+    queries: list[str | dict] | None = None,
     limit: int = 5,
 ) -> dict:
-    selected_queries = [query.strip() for query in (queries or _default_queries(vault_id)) if query.strip()]
+    selected_queries = _normalize_query_specs(queries or _default_queries(vault_id))
     rows = []
-    for query in selected_queries:
-        row = _context_layer_row(vault_id, query=query, cluster_id=cluster_id, limit=limit)
+    for query_spec in selected_queries:
+        row = _context_layer_row(vault_id, query_spec=query_spec, cluster_id=cluster_id, limit=limit)
         rows.append(row)
 
     avg_savings = round(sum(row["packet_savings_percent"] for row in rows) / max(len(rows), 1), 2) if rows else 0.0
     max_savings = round(max((row["packet_savings_percent"] for row in rows), default=0.0), 2)
     min_savings = round(min((row["packet_savings_percent"] for row in rows), default=0.0), 2)
+    average_token_budget = round(sum(row["token_budget"] for row in rows) / max(len(rows), 1), 2) if rows else 0.0
+    degraded_query_count = sum(1 for row in rows if row["partial_failure_mode"] != "none")
+    hostile_detected_query_count = sum(1 for row in rows if row["hostile_instruction_detected"])
+    analysis_mode_counts = _counts(row["analysis_mode"] for row in rows)
+    partial_failure_counts = _counts(row["partial_failure_mode"] for row in rows)
     report_id = f"context-layer-report-{uuid4()}"
     payload = {
         "report_id": report_id,
@@ -37,6 +42,11 @@ def export_context_layer_report(
         "average_packet_savings_percent": avg_savings,
         "max_packet_savings_percent": max_savings,
         "min_packet_savings_percent": min_savings,
+        "average_token_budget": average_token_budget,
+        "degraded_query_count": degraded_query_count,
+        "hostile_detected_query_count": hostile_detected_query_count,
+        "analysis_mode_counts": analysis_mode_counts,
+        "partial_failure_counts": partial_failure_counts,
         "rows": rows,
     }
     output_dir = get_settings().data_dir / "benchmark-reports"
@@ -51,10 +61,14 @@ def export_context_layer_report(
         "markdown_path": str(markdown_path),
         "query_count": len(rows),
         "average_packet_savings_percent": avg_savings,
+        "average_token_budget": average_token_budget,
     }
 
 
-def _context_layer_row(vault_id: str, *, query: str, cluster_id: str | None, limit: int) -> dict:
+def _context_layer_row(vault_id: str, *, query_spec: dict, cluster_id: str | None, limit: int) -> dict:
+    query = str(query_spec["prompt"])
+    expanded_analysis = bool(query_spec.get("expanded_analysis"))
+    complete_analysis = bool(query_spec.get("complete_analysis"))
     search = semantic_search_results(
         vault_id,
         embed_text(query),
@@ -118,8 +132,18 @@ def _context_layer_row(vault_id: str, *, query: str, cluster_id: str | None, lim
     raw_bytes = len(json.dumps(raw_payload, ensure_ascii=False).encode("utf-8"))
     packet_bytes = len(packet_text.encode("utf-8"))
     savings_percent = round(max(0.0, ((raw_bytes - packet_bytes) / max(raw_bytes, 1)) * 100.0), 2)
+    behavior = _behavior_row(
+        vault_id=vault_id,
+        cluster_id=cluster_id,
+        query=query,
+        expanded_analysis=expanded_analysis,
+        complete_analysis=complete_analysis,
+    )
     return {
         "query": query,
+        "requested_analysis_mode": (
+            "complete_analysis" if complete_analysis else "expanded_analysis" if expanded_analysis else "standard"
+        ),
         "result_count": len(results),
         "cluster_count": len(cluster_rows),
         "memory_item_count": len(memory_items),
@@ -129,10 +153,11 @@ def _context_layer_row(vault_id: str, *, query: str, cluster_id: str | None, lim
         "packet_savings_percent": savings_percent,
         "expansion_handle_count": len(packet["evidence"]),
         "source_titles": [item["title"] for item in packet["evidence"]],
+        **behavior,
     }
 
 
-def _default_queries(vault_id: str) -> list[str]:
+def _default_queries(vault_id: str) -> list[dict]:
     with connect() as conn:
         rows = conn.execute(
             """
@@ -144,14 +169,86 @@ def _default_queries(vault_id: str) -> list[str]:
             """,
             (vault_id,),
         ).fetchall()
-    queries = []
+    prompts = []
     for row in rows:
         title = str(row["title"] or "").strip()
         summary = " ".join(str(row["summary"] or "").split())
         query = title or summary[:80]
         if query:
-            queries.append(query)
-    return queries or ["project context", "bridge context", "chat memory"]
+            prompts.append(query)
+    prompts = prompts or ["project context", "bridge context", "chat memory"]
+    specs = [{"prompt": prompt} for prompt in prompts[:3]]
+    primary = prompts[0]
+    specs.append({"prompt": primary, "expanded_analysis": True})
+    specs.append({"prompt": primary, "complete_analysis": True})
+    return specs
+
+
+def _normalize_query_specs(queries: list[str | dict]) -> list[dict]:
+    normalized = []
+    for query in queries:
+        if isinstance(query, str):
+            prompt = query.strip()
+            if prompt:
+                normalized.append({"prompt": prompt})
+            continue
+        if isinstance(query, dict):
+            prompt = str(query.get("prompt") or query.get("query") or "").strip()
+            if not prompt:
+                continue
+            normalized.append(
+                {
+                    "prompt": prompt,
+                    "expanded_analysis": bool(query.get("expanded_analysis")),
+                    "complete_analysis": bool(query.get("complete_analysis")),
+                }
+            )
+    return normalized
+
+
+def _behavior_row(
+    *,
+    vault_id: str,
+    cluster_id: str | None,
+    query: str,
+    expanded_analysis: bool,
+    complete_analysis: bool,
+) -> dict:
+    from backend.app.api.routes.chat import _build_retrieval_context
+    from backend.app.schemas import ChatContextRequest
+
+    context = _build_retrieval_context(
+        ChatContextRequest(
+            vault_id=vault_id,
+            cluster_id=cluster_id,
+            prompt=query,
+            persist=False,
+            expanded_analysis=expanded_analysis,
+            complete_analysis=complete_analysis,
+        ),
+        synthesize=False,
+    )
+    coverage = context.get("coverage_ledger") or {}
+    return {
+        "intent": context.get("intent") or "unknown",
+        "analysis_mode": coverage.get("analysis_mode") or "standard",
+        "runtime_state": context.get("runtime_state"),
+        "partial_failure_mode": coverage.get("partial_failure_mode") or "none",
+        "trust_gate_mode": coverage.get("trust_gate_mode") or "normal",
+        "token_budget": int(coverage.get("token_budget") or 0),
+        "citations_selected": int(coverage.get("citations_selected") or 0),
+        "warnings_count": len(context.get("warnings") or []),
+        "contradiction_detected": bool(coverage.get("contradiction_detected")),
+        "hostile_instruction_detected": bool(coverage.get("hostile_instruction_detected")),
+    }
+
+
+def _counts(values) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        key = str(value or "unknown")
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _source_snippet_from_row(row) -> dict:
@@ -177,9 +274,12 @@ def _context_layer_markdown(payload: dict) -> str:
         f"- Average packet savings: {payload['average_packet_savings_percent']}%",
         f"- Max packet savings: {payload['max_packet_savings_percent']}%",
         f"- Min packet savings: {payload['min_packet_savings_percent']}%",
+        f"- Average token budget: {payload['average_token_budget']}",
+        f"- Degraded query count: {payload['degraded_query_count']}",
+        f"- Hostile-detected query count: {payload['hostile_detected_query_count']}",
         "",
-        "| Query | Results | Memory items | Working memory | Raw bytes | Packet bytes | Savings |",
-        "| --- | ---: | ---: | --- | ---: | ---: | ---: |",
+        "| Query | Mode | Partial failure | Results | Memory items | Working memory | Raw bytes | Packet bytes | Savings |",
+        "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: |",
     ]
     for row in payload["rows"]:
         lines.append(
@@ -187,6 +287,8 @@ def _context_layer_markdown(payload: dict) -> str:
             + " | ".join(
                 [
                     row["query"].replace("|", "/"),
+                    row["analysis_mode"],
+                    row["partial_failure_mode"],
                     str(row["result_count"]),
                     str(row["memory_item_count"]),
                     "yes" if row["working_memory_present"] else "no",

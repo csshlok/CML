@@ -4,7 +4,7 @@ Last updated: 2026-06-13
 
 ## Problem
 
-The current MCP Bridge returns raw API JSON to external clients. In `backend/app/bridge_mcp.py`, `get_cluster_context`, `log_external_turn`, and `capture_external_artifact` wrap backend responses as `json.dumps(data, indent=2)`.
+The current MCP Bridge originally returned raw API JSON to external clients. `get_cluster_context` now defaults to a model-readable packet, and `log_external_turn` plus `capture_external_artifact` now default to human-readable capture receipts with raw JSON remaining opt-in.
 
 That makes Claude, Codex, ChatGPT, or any other MCP client spend prompt context on schema plumbing instead of usable context. The consuming model must infer how to interpret fields such as `source_snippets`, trust labels, source metadata, warnings, and relevance scores without being given a stable instruction contract.
 
@@ -31,7 +31,7 @@ Token savings should come from:
 
 Public V1 Bridge/MCP context calls must return model-ready context packets by default.
 
-Raw JSON can remain available as a diagnostics/debug mode, but it should not be the default payload sent into an external model's context window.
+Raw JSON can remain available as a diagnostics/debug mode, but it should not be the default payload sent into an external model's context window or normal operator flow.
 
 ## Packet Shape
 
@@ -67,7 +67,7 @@ Raw JSON should be available only when explicitly requested:
 - developer CLI diagnostics
 - internal regression tests
 
-The default MCP tool response should be `format=packet`.
+The default MCP tool response should be `format=packet` for context and `format=receipt` for capture flows.
 
 ## Implementation Scope Split
 
@@ -179,7 +179,7 @@ Verifier approach:
    - approximate savings percentage
    - source count
    - warning count
-6. Keep `list_clusters`, `log_external_turn`, and `capture_external_artifact` JSON-shaped for now because they are not evidence packets.
+6. Keep `list_clusters` JSON-shaped for now; `log_external_turn` and `capture_external_artifact` may move to receipt-style summaries once quality-state visibility is ready.
 7. Add unit tests in `backend/tests/test_bridge_mcp.py` with mocked `http_json`.
 8. Add MCP smoke coverage proving default context output is packet text and raw JSON is opt-in.
 
@@ -206,6 +206,8 @@ Verifier approach:
 ## V1 Acceptance Criteria
 
 - MCP `get_cluster_context` clients receive model-ready context packets by default.
+- MCP capture tools return compact human-readable receipts by default, including quality state, trust tier, review-needed status, and reasons.
+- MCP review queue tools let outside clients inspect pending downgraded captures and approve or keep them gated without dropping to raw HTTP.
 - External models get explicit instructions for trust, citations, limits, and expansion.
 - Raw JSON remains available only as an explicit diagnostics/debug format.
 - Bridge packet telemetry proves size reduction versus raw API JSON.

@@ -133,6 +133,26 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn("token=[redacted]", backend_stdout)
         self.assertIn("authorization: bearer [redacted]", backend_stderr.lower())
 
+    def test_bridge_entrypoints_use_only_loopback_defaults_and_no_contributor_machine_paths(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        bridge_mcp = (repo_root / "backend" / "app" / "bridge_mcp.py").read_text(encoding="utf-8")
+        bridge_cli = (repo_root / "backend" / "app" / "bridge_cli.py").read_text(encoding="utf-8")
+        bridge_script = (repo_root / "scripts" / "bridge" / "cml-bridge.ps1").read_text(encoding="utf-8")
+        desktop_backend = (repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
+
+        for text in (bridge_mcp, bridge_cli, bridge_script, desktop_backend):
+            self.assertNotIn("C:\\Users\\csshl", text)
+            self.assertNotIn("Desktop\\CML", text)
+            self.assertNotIn("T:\\", text)
+
+        self.assertIn("http://127.0.0.1:7343", bridge_mcp)
+        self.assertIn("http://127.0.0.1:7343", bridge_cli)
+        self.assertIn("http://127.0.0.1:7343", bridge_script)
+        self.assertIn("http://127.0.0.1:7343", desktop_backend)
+        self.assertNotIn("http://0.0.0.0", bridge_mcp)
+        self.assertNotIn("http://0.0.0.0", bridge_cli)
+        self.assertNotIn("http://0.0.0.0", bridge_script)
+
 
 if __name__ == "__main__":
     unittest.main()

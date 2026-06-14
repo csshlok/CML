@@ -823,6 +823,8 @@ def list_bridge_captures(vault_id: str | None = None, limit: int = 50) -> list[d
                 sources.cluster_id,
                 sources.title,
                 sources.source_type,
+                sources.trust_tier,
+                sources.security_labels,
                 COALESCE(reviews.quality_state, 'unknown') AS quality_state,
                 COALESCE(reviews.approved, 0) AS approved,
                 sources.created_at
@@ -843,6 +845,8 @@ def list_bridge_captures(vault_id: str | None = None, limit: int = 50) -> list[d
             "source_type": row["source_type"],
             "quality_state": row["quality_state"],
             "approved": bool(row["approved"]),
+            "trust_tier": row["trust_tier"],
+            "security_labels": _json_list(row["security_labels"]),
             "created_at": row["created_at"],
         }
         for row in rows
@@ -1633,6 +1637,10 @@ def _capture_bridge_source(
             reasons=quality_reasons,
         )
         rebuild_source_memory(conn, source_id=source_id)
+        source_row = conn.execute(
+            "SELECT trust_tier, security_labels FROM sources WHERE id = ?",
+            (source_id,),
+        ).fetchone()
         enqueue_job(
             conn,
             job_type="reindex_source",
@@ -1657,12 +1665,27 @@ def _capture_bridge_source(
             if client_row is not None:
                 _record_bridge_client_usage(conn, _bridge_client_from_row(conn, client_row), response_bytes=response_bytes)
         compact_bridge_tables(conn)
+    security_labels = []
+    trust_tier = ""
+    if source_row is not None:
+        trust_tier = str(source_row["trust_tier"] or "")
+        try:
+            parsed_labels = json.loads(source_row["security_labels"] or "[]")
+            security_labels = parsed_labels if isinstance(parsed_labels, list) else []
+        except json.JSONDecodeError:
+            security_labels = []
     return {
         "source_id": source_id,
         "vault_id": vault_id,
         "cluster_id": cluster_id,
         "source_type": source_type,
         "indexed": True,
+        "quality_state": quality_state,
+        "approved": False,
+        "review_required": "review_needed" in security_labels,
+        "trust_tier": trust_tier,
+        "reasons": quality_reasons,
+        "security_labels": security_labels,
         "warnings": [
             "External model output was saved as derived transcript/artifact data.",
             f"Bridge quality state: {quality_state}.",

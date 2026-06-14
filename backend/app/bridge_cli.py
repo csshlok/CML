@@ -53,6 +53,9 @@ def bridge_request(backend_url: str, token: str, payload: dict) -> dict:
 
 
 def format_context(response: dict) -> str:
+    packet_text = str(response.get("packet_text") or "").strip()
+    if packet_text:
+        return packet_text
     lines = [f"CML context for: {response.get('query', '')}", ""]
     warnings = response.get("warnings") or []
     if warnings:

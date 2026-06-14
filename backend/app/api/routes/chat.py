@@ -771,6 +771,7 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "supported_claims_count": len(synthesis_guard["supported_claims"]),
         "unsupported_claims_count": len(synthesis_guard["unsupported_claims"]),
         "contradiction_detected": bool(synthesis_guard["contradiction_detected"]),
+        "hostile_instruction_detected": bool(synthesis_guard.get("hostile_instruction_detected")),
         "synthesis_guard_mode": synthesis_guard["mode"],
         "budget_applied": bool(budget_plan["budget_applied"]),
         "partial_failure_mode": "none",
@@ -827,6 +828,9 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     elif not synthesis_guard["allow_synthesis"]:
         answer = _build_extract_answer(payload.prompt, citations)
         coverage_ledger["partial_failure_mode"] = (
+            "hostile_evidence_extract_only"
+            if synthesis_guard["mode"] == "hostile_evidence"
+            else
             "conflicting_evidence_extract_only"
             if synthesis_guard["contradiction_detected"]
             else "weak_support_extract_only"

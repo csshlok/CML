@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -68,6 +69,12 @@ def handle_message(message: dict) -> dict:
             return result(request_id, call_expand_context_item(arguments, request_id))
         if name == "list_clusters":
             return result(request_id, call_list_clusters(request_id))
+        if name == "list_writeback_reviews":
+            return result(request_id, call_list_writeback_reviews(arguments, request_id))
+        if name == "decide_writeback_review":
+            return result(request_id, call_decide_writeback_review(arguments, request_id))
+        if name == "list_captures":
+            return result(request_id, call_list_captures(arguments, request_id))
         if name == "log_external_turn":
             return result(request_id, call_log_external_turn(arguments, request_id))
         if name == "capture_external_artifact":
@@ -114,6 +121,46 @@ def tools() -> list[dict]:
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
+            "name": "list_writeback_reviews",
+            "description": "List Bridge writeback reviews, especially downgraded captures that still need approval.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "vault_id": {"type": "string"},
+                    "pending_only": {"type": "boolean"},
+                    "format": {"type": "string", "enum": ["summary", "json"]},
+                    "debug": {"type": "boolean"},
+                },
+            },
+        },
+        {
+            "name": "decide_writeback_review",
+            "description": "Approve or keep gated one downgraded Bridge writeback capture.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source_id": {"type": "string"},
+                    "approved": {"type": "boolean"},
+                    "format": {"type": "string", "enum": ["receipt", "json"]},
+                    "debug": {"type": "boolean"},
+                },
+                "required": ["source_id", "approved"],
+            },
+        },
+        {
+            "name": "list_captures",
+            "description": "List recent Bridge-stored external transcripts and artifacts with quality state.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "vault_id": {"type": "string"},
+                    "limit": {"type": "number"},
+                    "format": {"type": "string", "enum": ["summary", "json"]},
+                    "debug": {"type": "boolean"},
+                },
+            },
+        },
+        {
             "name": "log_external_turn",
             "description": "Save an outside model prompt/response transcript into an allowed CML vault or cluster.",
             "inputSchema": {
@@ -125,6 +172,8 @@ def tools() -> list[dict]:
                     "model_response": {"type": "string"},
                     "context_request_id": {"type": "string"},
                     "model_name": {"type": "string"},
+                    "format": {"type": "string", "enum": ["receipt", "json"]},
+                    "debug": {"type": "boolean"},
                 },
                 "required": ["user_prompt", "model_response"],
             },
@@ -140,6 +189,8 @@ def tools() -> list[dict]:
                     "title": {"type": "string"},
                     "content": {"type": "string"},
                     "artifact_type": {"type": "string"},
+                    "format": {"type": "string", "enum": ["receipt", "json"]},
+                    "debug": {"type": "boolean"},
                 },
                 "required": ["title", "content"],
             },
@@ -191,6 +242,74 @@ def call_list_clusters(request_id) -> dict:
     }
 
 
+def call_list_writeback_reviews(arguments: dict, request_id) -> dict:
+    output_format = str(arguments.get("format") or "summary").strip().lower() or "summary"
+    debug = bool(arguments.get("debug"))
+    query = _query_string(
+        vault_id=arguments.get("vault_id"),
+        pending_only="true" if bool(arguments.get("pending_only", True)) else None,
+    )
+    data = http_json(
+        f"/api/v1/bridge/reviews{query}",
+        headers={"x-cml-bridge-token": BRIDGE_TOKEN},
+        request_id=request_id,
+    )
+    raw_text = json.dumps(data, indent=2, ensure_ascii=False)
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": raw_text if output_format == "json" or debug else _format_reviews_summary(data),
+            }
+        ]
+    }
+
+
+def call_decide_writeback_review(arguments: dict, request_id) -> dict:
+    output_format = str(arguments.get("format") or "receipt").strip().lower() or "receipt"
+    debug = bool(arguments.get("debug"))
+    source_id = str(arguments.get("source_id") or "").strip()
+    data = http_json(
+        f"/api/v1/bridge/reviews/{source_id}",
+        method="POST",
+        payload={"approved": bool(arguments.get("approved"))},
+        headers={"x-cml-bridge-token": BRIDGE_TOKEN},
+        request_id=request_id,
+    )
+    raw_text = json.dumps(data, indent=2, ensure_ascii=False)
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": raw_text if output_format == "json" or debug else _format_review_decision_receipt(data),
+            }
+        ]
+    }
+
+
+def call_list_captures(arguments: dict, request_id) -> dict:
+    output_format = str(arguments.get("format") or "summary").strip().lower() or "summary"
+    debug = bool(arguments.get("debug"))
+    query = _query_string(
+        vault_id=arguments.get("vault_id"),
+        limit=int(arguments.get("limit") or 50),
+    )
+    data = http_json(
+        f"/api/v1/bridge/captures{query}",
+        headers={"x-cml-bridge-token": BRIDGE_TOKEN},
+        request_id=request_id,
+    )
+    raw_text = json.dumps(data, indent=2, ensure_ascii=False)
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": raw_text if output_format == "json" or debug else _format_captures_summary(data),
+            }
+        ]
+    }
+
+
 def call_expand_context_item(arguments: dict, request_id) -> dict:
     payload = {
         "handle": arguments.get("handle", ""),
@@ -210,6 +329,8 @@ def call_expand_context_item(arguments: dict, request_id) -> dict:
 
 
 def call_log_external_turn(arguments: dict, request_id) -> dict:
+    output_format = str(arguments.get("format") or "receipt").strip().lower() or "receipt"
+    debug = bool(arguments.get("debug"))
     payload = {
         "vault_id": arguments.get("vault_id"),
         "cluster_id": arguments.get("cluster_id"),
@@ -227,10 +348,20 @@ def call_log_external_turn(arguments: dict, request_id) -> dict:
         headers={"x-cml-bridge-token": BRIDGE_TOKEN},
         request_id=request_id,
     )
-    return {"content": [{"type": "text", "text": json.dumps(data, indent=2)}]}
+    raw_text = json.dumps(data, indent=2, ensure_ascii=False)
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": raw_text if output_format == "json" or debug else _format_capture_receipt(data, capture_kind="external_turn"),
+            }
+        ]
+    }
 
 
 def call_capture_external_artifact(arguments: dict, request_id) -> dict:
+    output_format = str(arguments.get("format") or "receipt").strip().lower() or "receipt"
+    debug = bool(arguments.get("debug"))
     payload = {
         "vault_id": arguments.get("vault_id"),
         "cluster_id": arguments.get("cluster_id"),
@@ -247,7 +378,15 @@ def call_capture_external_artifact(arguments: dict, request_id) -> dict:
         headers={"x-cml-bridge-token": BRIDGE_TOKEN},
         request_id=request_id,
     )
-    return {"content": [{"type": "text", "text": json.dumps(data, indent=2)}]}
+    raw_text = json.dumps(data, indent=2, ensure_ascii=False)
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": raw_text if output_format == "json" or debug else _format_capture_receipt(data, capture_kind="external_artifact"),
+            }
+        ]
+    }
 
 
 def validate_tool_arguments(name, arguments) -> str | None:
@@ -269,14 +408,36 @@ def validate_tool_arguments(name, arguments) -> str | None:
             return "log_external_turn requires user_prompt."
         if not str(arguments.get("model_response") or "").strip():
             return "log_external_turn requires model_response."
+        requested_format = str(arguments.get("format") or "receipt").strip().lower()
+        if requested_format and requested_format not in {"receipt", "json"}:
+            return "log_external_turn format must be receipt or json."
     if name == "expand_context_item":
         if not str(arguments.get("handle") or "").strip():
             return "expand_context_item requires handle."
+    if name == "list_writeback_reviews":
+        requested_format = str(arguments.get("format") or "summary").strip().lower()
+        if requested_format and requested_format not in {"summary", "json"}:
+            return "list_writeback_reviews format must be summary or json."
+    if name == "decide_writeback_review":
+        if not str(arguments.get("source_id") or "").strip():
+            return "decide_writeback_review requires source_id."
+        if "approved" not in arguments or not isinstance(arguments.get("approved"), bool):
+            return "decide_writeback_review requires boolean approved."
+        requested_format = str(arguments.get("format") or "receipt").strip().lower()
+        if requested_format and requested_format not in {"receipt", "json"}:
+            return "decide_writeback_review format must be receipt or json."
+    if name == "list_captures":
+        requested_format = str(arguments.get("format") or "summary").strip().lower()
+        if requested_format and requested_format not in {"summary", "json"}:
+            return "list_captures format must be summary or json."
     if name == "capture_external_artifact":
         if not str(arguments.get("title") or "").strip():
             return "capture_external_artifact requires title."
         if not str(arguments.get("content") or "").strip():
             return "capture_external_artifact requires content."
+        requested_format = str(arguments.get("format") or "receipt").strip().lower()
+        if requested_format and requested_format not in {"receipt", "json"}:
+            return "capture_external_artifact format must be receipt or json."
     return None
 
 
@@ -357,6 +518,111 @@ def _format_context_packet(data: dict, *, raw_text: str) -> str:
         f"- Packet bytes: {telemetry['packet_bytes']}\n"
         f"- Approx savings vs raw JSON: {telemetry['savings_percent']:.1f}%"
     )
+
+
+def _format_capture_receipt(data: dict, *, capture_kind: str) -> str:
+    quality_state = str(data.get("quality_state") or "unknown")
+    review_required = bool(data.get("review_required"))
+    trust_tier = str(data.get("trust_tier") or "unknown")
+    warnings = [str(item).strip() for item in data.get("warnings") or [] if str(item).strip()]
+    reasons = [str(item).strip() for item in data.get("reasons") or [] if str(item).strip()]
+    security_labels = [str(item).strip() for item in data.get("security_labels") or [] if str(item).strip()]
+    title = "External Turn Saved" if capture_kind == "external_turn" else "External Artifact Saved"
+    lines = [
+        f"CML Capture Receipt: {title}",
+        f"- Source ID: {data.get('source_id') or ''}",
+        f"- Source type: {data.get('source_type') or capture_kind}",
+        f"- Vault ID: {data.get('vault_id') or ''}",
+    ]
+    cluster_id = str(data.get("cluster_id") or "").strip()
+    if cluster_id:
+        lines.append(f"- Cluster ID: {cluster_id}")
+    lines.extend(
+        [
+            f"- Quality state: {quality_state}",
+            f"- Trust tier: {trust_tier}",
+            f"- Review required: {'yes' if review_required else 'no'}",
+            f"- Indexed: {'yes' if bool(data.get('indexed')) else 'no'}",
+        ]
+    )
+    if reasons:
+        lines.append("Reasons")
+        lines.extend(f"- {reason}" for reason in reasons)
+    if security_labels:
+        lines.append("Security Labels")
+        lines.extend(f"- {label}" for label in security_labels)
+    if warnings:
+        lines.append("Warnings")
+        lines.extend(f"- {warning}" for warning in warnings)
+    lines.append("Next Step")
+    if review_required:
+        lines.append("- Keep this capture as audit/history until a user reviews and approves it in CML.")
+    elif quality_state == "user_artifact":
+        lines.append("- This was stored as a user artifact, not auto-promoted as grounded memory.")
+    else:
+        lines.append("- This capture is available to CML with the trust state shown above.")
+    return "\n".join(lines)
+
+
+def _format_reviews_summary(data: list[dict]) -> str:
+    rows = [item for item in data if isinstance(item, dict)]
+    lines = ["CML Writeback Review Queue", f"- Review count: {len(rows)}"]
+    if not rows:
+        lines.append("- No downgraded writebacks need review right now.")
+        return "\n".join(lines)
+    for item in rows:
+        source_id = str(item.get("source_id") or "")
+        title = str(item.get("title") or "")
+        quality_state = str(item.get("quality_state") or "unknown")
+        trust_tier = str(item.get("trust_tier") or "unknown")
+        approved = bool(item.get("approved"))
+        lines.append(
+            f"- {source_id}: {title} | quality={quality_state} | trust={trust_tier} | approved={'yes' if approved else 'no'}"
+        )
+    lines.append("Next Step")
+    lines.append("- Use decide_writeback_review with one source_id after checking the capture in CML.")
+    return "\n".join(lines)
+
+
+def _format_review_decision_receipt(data: dict) -> str:
+    lines = [
+        "CML Writeback Review Decision",
+        f"- Source ID: {data.get('source_id') or ''}",
+        f"- Title: {data.get('title') or ''}",
+        f"- Quality state: {data.get('quality_state') or 'unknown'}",
+        f"- Approved: {'yes' if bool(data.get('approved')) else 'no'}",
+        f"- Trust tier: {data.get('trust_tier') or 'unknown'}",
+    ]
+    reasons = [str(item).strip() for item in data.get("reasons") or [] if str(item).strip()]
+    security_labels = [str(item).strip() for item in data.get("security_labels") or [] if str(item).strip()]
+    if reasons:
+        lines.append("Reasons")
+        lines.extend(f"- {reason}" for reason in reasons)
+    if security_labels:
+        lines.append("Security Labels")
+        lines.extend(f"- {label}" for label in security_labels)
+    return "\n".join(lines)
+
+
+def _format_captures_summary(data: list[dict]) -> str:
+    rows = [item for item in data if isinstance(item, dict)]
+    lines = ["CML Recent Captures", f"- Capture count: {len(rows)}"]
+    if not rows:
+        lines.append("- No external captures are stored yet.")
+        return "\n".join(lines)
+    for item in rows:
+        lines.append(
+            f"- {item.get('source_id') or ''}: {item.get('title') or ''} | type={item.get('source_type') or ''} | "
+            f"quality={item.get('quality_state') or 'unknown'} | approved={'yes' if bool(item.get('approved')) else 'no'}"
+        )
+    return "\n".join(lines)
+
+
+def _query_string(**params: object) -> str:
+    filtered = {key: value for key, value in params.items() if value is not None and value != ""}
+    if not filtered:
+        return ""
+    return f"?{urlencode(filtered)}"
 
 
 if __name__ == "__main__":
