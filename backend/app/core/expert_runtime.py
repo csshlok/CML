@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,9 +24,7 @@ def runtime_adapter_load_plan(*, adapter_path: str | Path, base_model: str) -> d
     metadata_report = adapter_metadata_report(adapter_dir)
     resolved_model = resolve_local_base_model(base_model, adapter_dir=adapter_dir)
     dependency_status = runtime_dependency_status()
-    dependency_ready = bool(
-        dependency_status["available"] or dependency_status["runtime_python"] != sys.executable
-    )
+    dependency_ready = bool(dependency_status["available"])
     available = bool(validation["valid"] and resolved_model["available"] and dependency_ready)
     failure_code = ""
     if not validation["valid"]:
@@ -41,12 +40,15 @@ def runtime_adapter_load_plan(*, adapter_path: str | Path, base_model: str) -> d
         detail_parts.append(f"Resolved local base model at {resolved_model['base_model_path']}.")
     else:
         detail_parts.append(resolved_model["detail"])
-    if dependency_status["available"]:
+    if dependency_status["available"] and dependency_status.get("external_runtime"):
+        detail_parts.append(
+            f"Runtime dependencies are importable in configured runtime python "
+            f"{dependency_status.get('resolved_runtime_python') or dependency_status['runtime_python']}."
+        )
+    elif dependency_status["available"]:
         detail_parts.append("Runtime dependencies are importable in the active backend environment.")
-    elif dependency_ready:
-        detail_parts.append(f"Live runtime smoke can use {dependency_status['runtime_python']}.")
     else:
-        detail_parts.append("Install peft, transformers, and torch or configure CML_LORA_RUNTIME_PYTHON.")
+        detail_parts.append(_runtime_dependency_detail(dependency_status))
     return {
         "available": available,
         "runtime": "transformers-peft-local",
@@ -109,18 +111,22 @@ def adapter_metadata_report(adapter_path: str | Path) -> dict:
 
 
 def runtime_dependency_status() -> dict:
-    packages = {name: _package_status(name) for name in ("torch", "transformers", "peft")}
     runtime_python = runtime_python_executable()
+    if not _same_executable(runtime_python, sys.executable):
+        return _external_runtime_dependency_status(runtime_python)
+
+    packages = {name: _package_status(name) for name in ("torch", "transformers", "peft")}
     available = all(item["importable"] for item in packages.values())
     issues = []
     for name, status in packages.items():
         if not status["importable"]:
             issues.append(f"{name} is not importable")
-    if not available and runtime_python != sys.executable:
-        issues.append(f"Will defer live smoke to configured runtime python: {runtime_python}")
     return {
         "available": available,
         "runtime_python": runtime_python,
+        "resolved_runtime_python": sys.executable,
+        "external_runtime": False,
+        "runtime_python_exists": True,
         "packages": packages,
         "issues": issues,
     }
@@ -447,3 +453,132 @@ def _package_status(name: str) -> dict:
         "importable": find_spec(name.replace("-", "_")) is not None,
         "version": version,
     }
+
+
+def _external_runtime_dependency_status(runtime_python: str) -> dict:
+    resolved = _resolve_runtime_python(runtime_python)
+    if resolved is None:
+        return {
+            "available": False,
+            "runtime_python": runtime_python,
+            "resolved_runtime_python": "",
+            "external_runtime": True,
+            "runtime_python_exists": False,
+            "packages": _missing_runtime_packages(),
+            "issues": [f"Configured LoRA runtime python was not found: {runtime_python}"],
+        }
+
+    script = """
+import importlib.util
+import json
+from importlib import metadata
+
+packages = {}
+for name in ("torch", "transformers", "peft"):
+    try:
+        version = metadata.version(name)
+    except metadata.PackageNotFoundError:
+        version = None
+    packages[name] = {
+        "installed": version is not None,
+        "importable": importlib.util.find_spec(name.replace("-", "_")) is not None,
+        "version": version,
+    }
+print(json.dumps(packages, separators=(",", ":")))
+"""
+    try:
+        completed = subprocess.run(
+            [resolved, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            cwd=str(ROOT_DIR),
+        )
+    except Exception as exc:
+        return {
+            "available": False,
+            "runtime_python": runtime_python,
+            "resolved_runtime_python": resolved,
+            "external_runtime": True,
+            "runtime_python_exists": True,
+            "packages": _missing_runtime_packages(),
+            "issues": [f"Configured LoRA runtime python could not be inspected: {exc}"],
+        }
+    if completed.returncode != 0:
+        return {
+            "available": False,
+            "runtime_python": runtime_python,
+            "resolved_runtime_python": resolved,
+            "external_runtime": True,
+            "runtime_python_exists": True,
+            "packages": _missing_runtime_packages(),
+            "issues": [
+                "Configured LoRA runtime python failed dependency inspection"
+                + (f": {completed.stderr[-500:]}" if completed.stderr else ".")
+            ],
+        }
+    try:
+        parsed_packages = json.loads(completed.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        packages = _missing_runtime_packages()
+        issues = ["Configured LoRA runtime python returned invalid dependency inspection output."]
+    else:
+        if not isinstance(parsed_packages, dict):
+            packages = _missing_runtime_packages()
+            issues = ["Configured LoRA runtime python returned invalid dependency inspection output."]
+        else:
+            packages = parsed_packages
+            issues = [
+                f"{name} is not importable in configured runtime python"
+                for name, status in packages.items()
+                if not isinstance(status, dict) or not status.get("importable")
+            ]
+    return {
+        "available": not issues,
+        "runtime_python": runtime_python,
+        "resolved_runtime_python": resolved,
+        "external_runtime": True,
+        "runtime_python_exists": True,
+        "packages": packages,
+        "issues": issues,
+    }
+
+
+def _resolve_runtime_python(runtime_python: str) -> str | None:
+    if not runtime_python:
+        return None
+    candidate = Path(runtime_python)
+    if candidate.exists() and not candidate.is_dir():
+        return str(candidate.resolve())
+    resolved = shutil.which(runtime_python)
+    return resolved
+
+
+def _same_executable(left: str, right: str) -> bool:
+    try:
+        left_path = Path(left).resolve(strict=False)
+        right_path = Path(right).resolve(strict=False)
+    except OSError:
+        return left == right
+    return os.path.normcase(str(left_path)) == os.path.normcase(str(right_path))
+
+
+def _missing_runtime_packages() -> dict[str, dict]:
+    return {
+        name: {"installed": False, "importable": False, "version": None}
+        for name in ("torch", "transformers", "peft")
+    }
+
+
+def _runtime_dependency_detail(status: dict) -> str:
+    issues = [str(item) for item in status.get("issues") or [] if item]
+    if not status.get("external_runtime"):
+        if issues:
+            return (
+                "Install peft, transformers, and torch or configure CML_LORA_RUNTIME_PYTHON. "
+                "Missing: " + "; ".join(issues) + "."
+            )
+        return "Install peft, transformers, and torch or configure CML_LORA_RUNTIME_PYTHON."
+    if issues:
+        return "LoRA runtime dependency gate failed: " + "; ".join(issues) + "."
+    return "Install peft, transformers, and torch or configure CML_LORA_RUNTIME_PYTHON."

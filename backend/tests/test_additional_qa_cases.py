@@ -45,6 +45,7 @@ class AdditionalQACases(unittest.TestCase):
         os.environ.pop("CML_LORA_MIN_UNIQUE_SOURCES", None)
         os.environ.pop("CML_LORA_MAX_DUPLICATE_RATIO", None)
         os.environ.pop("CML_LORA_MODEL_DIRS", None)
+        os.environ.pop("CML_LORA_RUNTIME_PYTHON", None)
         os.environ.pop("CML_MODEL_SCAN_ROOTS", None)
         os.environ.pop("CML_MODEL_SCAN_CACHE_SECONDS", None)
         os.environ.pop("CML_MODELS_DIR", None)
@@ -375,6 +376,32 @@ class AdditionalQACases(unittest.TestCase):
         self.assertFalse(plan["available"])
         self.assertEqual(plan["failure_code"], "runtime_load_failed")
         self.assertIn("Install peft, transformers, and torch", plan["detail"])
+
+    def test_runtime_adapter_load_plan_rejects_missing_configured_runtime_python(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.expert_runtime import runtime_adapter_load_plan
+
+        self._write_fake_local_transformers_model("missing-runtime-model")
+        adapter_dir = Path(self.tmp.name) / "adapter-missing-runtime"
+        adapter_dir.mkdir()
+        (adapter_dir / "adapter_config.json").write_text(
+            '{"peft_type":"LORA","base_model_name_or_path":"missing-runtime-model"}',
+            encoding="utf-8",
+        )
+        (adapter_dir / "adapter_model.safetensors").write_bytes(b"adapter")
+        os.environ["CML_LORA_RUNTIME_PYTHON"] = str(Path(self.tmp.name) / "missing-runtime-python.exe")
+        get_settings.cache_clear()
+        try:
+            plan = runtime_adapter_load_plan(adapter_path=adapter_dir, base_model="missing-runtime-model")
+        finally:
+            os.environ.pop("CML_LORA_RUNTIME_PYTHON", None)
+            get_settings.cache_clear()
+
+        self.assertFalse(plan["available"])
+        self.assertEqual(plan["failure_code"], "runtime_load_failed")
+        self.assertFalse(plan["runtime_dependencies"]["runtime_python_exists"])
+        self.assertTrue(plan["runtime_dependencies"]["external_runtime"])
+        self.assertIn("Configured LoRA runtime python was not found", plan["detail"])
 
     def test_run_adapter_runtime_smoke_reads_worker_report(self) -> None:
         import subprocess

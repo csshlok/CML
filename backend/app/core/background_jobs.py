@@ -1022,6 +1022,18 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             )
             raise RuntimeError("Adapter runtime load contract is unavailable.")
 
+        current_dataset = build_cluster_dataset(cluster_id)
+        if str(current_dataset.get("dataset_hash") or "") != str(dataset.get("dataset_hash") or ""):
+            _mark_expert_training_failed(
+                conn,
+                cluster_id=cluster_id,
+                expert_job_id=expert_job_id,
+                failure_code="dataset_changed",
+                detail="Cluster sources changed before the adapter could be activated. Queue a fresh retrain pass.",
+                hardware_tier=hardware["hardware_tier"],
+            )
+            raise RuntimeError("Cluster sources changed before adapter activation.")
+
         metrics = evaluate_adapter_quality(
             dataset_score=quality_score,
             adapter_dir_exists=True,
