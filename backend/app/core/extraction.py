@@ -69,6 +69,7 @@ MAX_LOCAL_FILE_BYTES = 50 * 1024 * 1024
 MAX_LOCAL_MEDIA_BYTES = 250 * 1024 * 1024
 MAX_LINK_BYTES = 2_000_000
 MAX_REDIRECTS = 5
+MAX_TEXT_PAGE_BYTES = 256 * 1024
 
 
 class ExtractionError(Exception):
@@ -105,12 +106,12 @@ def extract_pages_from_validated_path(path: str) -> tuple[str, list[str]]:
 
     if suffix in SUPPORTED_TEXT_EXTENSIONS:
         if suffix in {".md", ".markdown"}:
-            return source_path.name, [_extract_markdown_text(source_path)]
-        return source_path.name, [_extract_plain_text(source_path)]
+            return source_path.name, _split_text_pages(_extract_markdown_text(source_path))
+        return source_path.name, _split_text_pages(_extract_plain_text(source_path))
     if suffix in SUPPORTED_CODE_EXTENSIONS:
-        return source_path.name, [_extract_code_text(source_path)]
+        return source_path.name, _split_text_pages(_extract_code_text(source_path))
     if suffix == ".docx":
-        return source_path.name, [_extract_docx_text(source_path)]
+        return source_path.name, _split_text_pages(_extract_docx_text(source_path))
     if suffix == ".pdf":
         return source_path.name, _extract_pdf_pages(source_path)
     if suffix in SUPPORTED_IMAGE_EXTENSIONS:
@@ -123,15 +124,20 @@ def extract_pages_from_validated_path(path: str) -> tuple[str, list[str]]:
 
 def _extract_plain_text(source_path: Path) -> str:
     try:
-        text = source_path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        try:
-            text = source_path.read_text(encoding="utf-8-sig")
-        except UnicodeDecodeError:
-            text = source_path.read_text(encoding="cp1252")
+        raw = source_path.read_bytes()
     except OSError as exc:
         raise ExtractionError(str(exc)) from exc
+    text = _decode_plain_text_bytes(raw)
     return _clean_text_payload(source_path, text)
+
+
+def _decode_plain_text_bytes(raw: bytes) -> str:
+    for encoding in ("utf-8", "utf-8-sig", "cp1252"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("cp1252", errors="replace")
 
 
 def _extract_code_text(source_path: Path) -> str:
@@ -220,12 +226,12 @@ def _extract_pdf_pages(source_path: Path) -> list[str]:
         try:
             ocr_pages = ocr_pdf_pages(source_path)
         except OCRError as exc:
-            raise ExtractionError(f"No readable text was found in this PDF file. {exc}") from exc
+            return [_pdf_metadata_fallback(source_path, detail=str(exc))]
         readable_ocr_pages = [page for page in ocr_pages if page.strip()]
         if not readable_ocr_pages:
-            raise ExtractionError("No readable text was found in this PDF file, including after local OCR.")
-        return ocr_pages
-    return pages
+            return [_pdf_metadata_fallback(source_path)]
+        return _split_text_pages("\n\n".join(readable_ocr_pages))
+    return _split_text_pages("\n\n".join(readable_pages))
 
 
 def _extract_image_text(source_path: Path) -> str:
@@ -262,6 +268,58 @@ def _clean_text_payload(source_path: Path, text: str) -> str:
     if not cleaned:
         raise ExtractionError(f"No readable text was found in {source_path.name}")
     return cleaned
+
+
+def _split_text_pages(text: str, *, max_page_bytes: int = MAX_TEXT_PAGE_BYTES) -> list[str]:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return []
+    pages: list[str] = []
+    current: list[str] = []
+    current_bytes = 0
+    for line in normalized.splitlines():
+        candidate = line if not current else f"\n{line}"
+        candidate_bytes = len(candidate.encode("utf-8"))
+        if candidate_bytes > max_page_bytes:
+            if current:
+                pages.append("".join(current).strip())
+                current = []
+                current_bytes = 0
+            pages.extend(_split_long_text_line(line, max_page_bytes=max_page_bytes))
+            continue
+        if current and current_bytes + candidate_bytes > max_page_bytes:
+            pages.append("".join(current).strip())
+            current = [line]
+            current_bytes = len(line.encode("utf-8"))
+            continue
+        current.append(candidate if current else line)
+        current_bytes += candidate_bytes
+    if current:
+        pages.append("".join(current).strip())
+    return [page for page in pages if page.strip()]
+
+
+def _split_long_text_line(text: str, *, max_page_bytes: int) -> list[str]:
+    chunks: list[str] = []
+    remaining = text.strip()
+    while remaining:
+        end = min(len(remaining), max_page_bytes)
+        while end > 1 and len(remaining[:end].encode("utf-8")) > max_page_bytes:
+            end -= 1
+        if end <= 1:
+            end = 1
+        chunk = remaining[:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[end:].strip()
+    return chunks
+
+
+def _pdf_metadata_fallback(source_path: Path, detail: str | None = None) -> str:
+    note = "PDF stored in vault metadata. No readable text was found, including after local OCR."
+    if detail:
+        note = f"{note} OCR detail: {detail}"
+    return _file_metadata_text(source_path, note=note)
 
 
 class _TextHTMLParser(HTMLParser):

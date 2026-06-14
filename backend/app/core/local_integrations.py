@@ -9,7 +9,7 @@ SUPPORTED_SOURCE_EXTENSIONS = {
     ".ts", ".tsv", ".tsx", ".txt", ".wav", ".webm", ".webp", ".xml", ".yaml", ".yml",
 }
 
-SKIPPED_FOLDER_NAMES = {".git", "node_modules", ".venv", "dist", "build"}
+SKIPPED_FOLDER_NAMES = {".git", ".tmp", "node_modules", ".venv", "dist", "build"}
 DEFAULT_SCAN_LIMIT = 500
 MAX_SCAN_LIMIT = 5000
 WATCHED_FOLDER_SCAN_LIMIT = 1000

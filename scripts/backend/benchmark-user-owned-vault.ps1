@@ -72,6 +72,18 @@ try {
     -Body (@{ name = "User-owned retrieval benchmark"; path = $sourcePath } | ConvertTo-Json) `
     -TimeoutSec 10
 
+  Invoke-RestMethod `
+    -Uri "$baseUrl/api/v1/system/unlock/initialize" `
+    -Method Post `
+    -Headers $headers `
+    -ContentType "application/json" `
+    -Body (@{
+      vault_id = $vault.id
+      passphrase = "user-owned-benchmark-passphrase"
+      unlock_mode = "convenience"
+    } | ConvertTo-Json) `
+    -TimeoutSec 30 | Out-Null
+
   $scanStarted = Get-Date
   $scan = Invoke-RestMethod `
     -Uri "$baseUrl/api/v1/integrations/local-folder/scan" `
@@ -81,6 +93,14 @@ try {
     -Body (@{ vault_id = $vault.id; path = $sourcePath; max_files = $MaxFiles } | ConvertTo-Json) `
     -TimeoutSec 180
   $scanSeconds = ((Get-Date) - $scanStarted).TotalSeconds
+
+  $refreshStarted = Get-Date
+  $refresh = Invoke-RestMethod `
+    -Uri "$baseUrl/api/v1/integrations/imports/$($scan.import_id)/refresh?import_files=true&tombstone_missing=true&scan_limit=$MaxFiles" `
+    -Method Post `
+    -Headers $headers `
+    -TimeoutSec 600
+  $refreshSeconds = ((Get-Date) - $refreshStarted).TotalSeconds
 
   $indexStarted = Get-Date
   $index = Invoke-RestMethod `
@@ -126,11 +146,12 @@ try {
     source_root = $sourcePath
     max_files = $MaxFiles
     supported_count = $scan.supported_count
-    imported_count = $scan.imported_count
-    updated_count = $scan.updated_count
-    failed_count = $scan.failed_count
+    imported_count = $refresh.imported_count
+    updated_count = $refresh.updated_count
+    failed_count = $refresh.failed_count
     chunks_indexed = $index.chunks_indexed
     scan_seconds = [math]::Round($scanSeconds, 2)
+    refresh_seconds = [math]::Round($refreshSeconds, 2)
     index_seconds = [math]::Round($indexSeconds, 2)
     query_p95_ms = $p95
     threshold_targets = [ordered]@{
@@ -140,10 +161,10 @@ try {
       max_failed_files = 0
     }
     passed = (
-      $scan.imported_count -ge [math]::Min(100, $MaxFiles) -and
+      $refresh.imported_count -ge [math]::Min(100, $MaxFiles) -and
       $index.chunks_indexed -ge [math]::Min(100, $MaxFiles) -and
       ($null -ne $p95 -and $p95 -le 1500) -and
-      $scan.failed_count -eq 0
+      $refresh.failed_count -eq 0
     )
     queries = $queryResults
     report_path = [System.IO.Path]::GetFullPath($ReportPath)

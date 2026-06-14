@@ -304,6 +304,7 @@ def refresh_integration_import(
     import_files: bool = False,
     tombstone_missing: bool = False,
     trigger_source: str = "manual_refresh",
+    scan_limit: int | None = None,
 ) -> dict:
     with connect() as conn:
         row = conn.execute("SELECT * FROM integration_imports WHERE id = ?", (import_id,)).fetchone()
@@ -324,7 +325,10 @@ def refresh_integration_import(
                 tombstone_missing=tombstone_missing,
             )
     try:
-        result = scan_local_folder(row["root_path"], _refresh_scan_limit(row, trigger_source=trigger_source))
+        resolved_scan_limit = _bounded_scan_limit(scan_limit)
+        if resolved_scan_limit is None:
+            resolved_scan_limit = _refresh_scan_limit(row, trigger_source=trigger_source)
+        result = scan_local_folder(row["root_path"], resolved_scan_limit)
     except OSError as exc:
         now = utc_now()
         with connect() as conn:
@@ -510,6 +514,12 @@ def _refresh_scan_limit(row, *, trigger_source: str) -> int:
     if bool(row["truncated"]):
         base_limit = max(base_limit, supported_count + 500, imported_count + 500)
     return max(1, min(base_limit, MAX_SCAN_LIMIT))
+
+
+def _bounded_scan_limit(limit: int | None) -> int | None:
+    if limit is None:
+        return None
+    return max(1, min(int(limit), MAX_SCAN_LIMIT))
 
 
 def _reconcile_import_sources(

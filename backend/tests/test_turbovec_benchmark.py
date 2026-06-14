@@ -101,6 +101,15 @@ class TurbovecBenchmarkTests(unittest.TestCase):
         self.assertIn("benchmark_turbovec_scan", text)
         self.assertIn("projected_100k_chunk_costs", text)
 
+    def test_user_owned_vault_benchmark_script_imports_after_scan(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        script = repo_root / "scripts" / "backend" / "benchmark-user-owned-vault.ps1"
+        text = script.read_text(encoding="utf-8")
+
+        self.assertIn("/api/v1/system/unlock/initialize", text)
+        self.assertIn("/api/v1/integrations/imports/$($scan.import_id)/refresh?import_files=true&tombstone_missing=true&scan_limit=$MaxFiles", text)
+        self.assertIn("refresh_seconds", text)
+
 
 if __name__ == "__main__":
     unittest.main()

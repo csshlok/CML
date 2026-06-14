@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import threading
 import time
+from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +40,18 @@ PHASE_C_MIN_CLUSTER_OVERLAP = 0.88
 PHASE_C_MIN_LATENCY_IMPROVEMENT = 3.0
 PHASE_C_MAX_SIZE_RATIO = 0.25
 PHASE_C_MAX_COLD_LOAD_SECONDS = 1.5
+EXACT_CACHE_MAX_ITEMS = 8
+
+
+@dataclass
+class ExactSearchSnapshot:
+    chunk_ids: list[str]
+    vectors: np.ndarray
+    trust_weights: np.ndarray
+
+
+_EXACT_SEARCH_CACHE: "OrderedDict[tuple[Any, ...], ExactSearchSnapshot]" = OrderedDict()
+_EXACT_SEARCH_CACHE_LOCK = threading.Lock()
 
 
 class TurbovecSidecarError(RuntimeError):
@@ -438,16 +453,42 @@ def _semantic_search_exact(
     cluster_id: str | None,
     limit: int,
 ) -> list[dict[str, Any]]:
-    rows = _hydrate_candidate_rows(
+    snapshot_cache = _exact_search_snapshot(
         conn,
         vault_id,
         snapshot=snapshot,
         cluster_id=cluster_id,
-        chunk_ids=None,
+        expected_dim=len(query_vector),
     )
-    scored = _score_rows(rows, query_vector)
-    scored.sort(key=lambda item: item["score"], reverse=True)
-    return scored[:limit]
+    if not snapshot_cache.chunk_ids:
+        return []
+    query = np.ascontiguousarray(np.array(query_vector, dtype=np.float32))
+    raw_scores = snapshot_cache.vectors @ query
+    weighted_scores = raw_scores * snapshot_cache.trust_weights
+    positive_indices = np.flatnonzero(weighted_scores > 0)
+    if positive_indices.size == 0:
+        return []
+    top_count = min(int(limit), int(positive_indices.size))
+    top_positions = positive_indices[np.argpartition(weighted_scores[positive_indices], -top_count)[-top_count:]]
+    ordered_positions = top_positions[np.argsort(weighted_scores[top_positions])[::-1]]
+    chunk_ids = [snapshot_cache.chunk_ids[int(index)] for index in ordered_positions.tolist()]
+    raw_score_by_chunk = {
+        snapshot_cache.chunk_ids[int(index)]: round(float(raw_scores[int(index)]), 4)
+        for index in ordered_positions.tolist()
+    }
+    weighted_score_by_chunk = {
+        snapshot_cache.chunk_ids[int(index)]: round(float(weighted_scores[int(index)]), 4)
+        for index in ordered_positions.tolist()
+    }
+    return _hydrate_scored_rows(
+        conn,
+        vault_id,
+        snapshot=snapshot,
+        cluster_id=cluster_id,
+        chunk_ids=chunk_ids,
+        raw_score_by_chunk=raw_score_by_chunk,
+        weighted_score_by_chunk=weighted_score_by_chunk,
+    )
 
 
 def _semantic_search_turbovec(
@@ -530,6 +571,144 @@ def _score_rows(rows: list[dict[str, Any]], query_vector: list[float]) -> list[d
             }
         )
     return scored
+
+
+def _hydrate_scored_rows(
+    conn,
+    vault_id: str,
+    *,
+    snapshot: dict,
+    cluster_id: str | None,
+    chunk_ids: list[str],
+    raw_score_by_chunk: dict[str, float],
+    weighted_score_by_chunk: dict[str, float],
+) -> list[dict[str, Any]]:
+    rows = _hydrate_candidate_rows(
+        conn,
+        vault_id,
+        snapshot=snapshot,
+        cluster_id=cluster_id,
+        chunk_ids=chunk_ids,
+    )
+    rows_by_chunk = {str(row["chunk_id"]): row for row in rows}
+    scored: list[dict[str, Any]] = []
+    for chunk_id in chunk_ids:
+        row = rows_by_chunk.get(chunk_id)
+        if row is None:
+            continue
+        scored.append(
+            {
+                "source_id": row["source_id"],
+                "source_title": row["source_title"],
+                "source_type": row["source_type"],
+                "cluster_id": row["cluster_id"],
+                "chunk_id": row["chunk_id"],
+                "page_id": row["page_id"],
+                "page_number": row["page_number"],
+                "chunk_index": row["chunk_index"],
+                "snippet": row["text"],
+                "provenance": row["provenance"],
+                "trust_tier": row["trust_tier"],
+                "security_labels": row["security_labels"],
+                "low_trust": is_low_trust(row),
+                "raw_score": raw_score_by_chunk[chunk_id],
+                "score": weighted_score_by_chunk[chunk_id],
+            }
+        )
+    return scored
+
+
+def _exact_search_snapshot(
+    conn,
+    vault_id: str,
+    *,
+    snapshot: dict,
+    cluster_id: str | None,
+    expected_dim: int,
+) -> ExactSearchSnapshot:
+    cache_key = _exact_cache_key(conn, vault_id, snapshot=snapshot, cluster_id=cluster_id)
+    with _EXACT_SEARCH_CACHE_LOCK:
+        cached = _EXACT_SEARCH_CACHE.get(cache_key)
+        if cached is not None:
+            _EXACT_SEARCH_CACHE.move_to_end(cache_key)
+            return cached
+    built = _build_exact_search_snapshot(
+        conn,
+        vault_id,
+        snapshot=snapshot,
+        cluster_id=cluster_id,
+        expected_dim=expected_dim,
+    )
+    with _EXACT_SEARCH_CACHE_LOCK:
+        _EXACT_SEARCH_CACHE[cache_key] = built
+        _EXACT_SEARCH_CACHE.move_to_end(cache_key)
+        while len(_EXACT_SEARCH_CACHE) > EXACT_CACHE_MAX_ITEMS:
+            _EXACT_SEARCH_CACHE.popitem(last=False)
+    return built
+
+
+def _build_exact_search_snapshot(
+    conn,
+    vault_id: str,
+    *,
+    snapshot: dict,
+    cluster_id: str | None,
+    expected_dim: int,
+) -> ExactSearchSnapshot:
+    params: list[Any] = [vault_id]
+    cluster_clause = ""
+    if cluster_id:
+        cluster_clause = "AND chunks.cluster_id = ?"
+        params.append(cluster_id)
+    tuple_clause, tuple_params = chunk_eligibility_sql("chunks", snapshot)
+    rows = conn.execute(
+        f"""
+        SELECT
+            chunks.id AS chunk_id,
+            chunks.embedding,
+            sources.trust_tier,
+            sources.security_labels
+        FROM source_chunks chunks
+        JOIN sources ON sources.id = chunks.source_id
+        WHERE chunks.vault_id = ?
+          AND sources.deleted_at IS NULL
+          {cluster_clause}
+          {tuple_clause}
+        ORDER BY chunks.created_at ASC
+        """,
+        [*params, *tuple_params],
+    ).fetchall()
+    expected_dim = max(1, int(expected_dim or 0))
+    chunk_ids: list[str] = []
+    decoded_vectors: list[list[float]] = []
+    weights: list[float] = []
+    for row in rows:
+        decoded = _decode_embedding(str(row["embedding"] or ""))
+        if len(decoded) != expected_dim:
+            continue
+        chunk_ids.append(str(row["chunk_id"]))
+        decoded_vectors.append(decoded)
+        weights.append(float(trust_weight(row)))
+    if decoded_vectors:
+        vectors = np.ascontiguousarray(np.array(decoded_vectors, dtype=np.float32))
+        trust_weights = np.ascontiguousarray(np.array(weights, dtype=np.float32))
+    else:
+        vectors = np.empty((0, expected_dim), dtype=np.float32)
+        trust_weights = np.empty((0,), dtype=np.float32)
+    return ExactSearchSnapshot(chunk_ids=chunk_ids, vectors=vectors, trust_weights=trust_weights)
+
+
+def _exact_cache_key(conn, vault_id: str, *, snapshot: dict, cluster_id: str | None) -> tuple[Any, ...]:
+    return (
+        str(get_settings().database_path),
+        vault_id,
+        cluster_id or "",
+        int(snapshot["epoch"]),
+        str(snapshot["embedding_model_id"]),
+        str(snapshot["index_version"]),
+        str(snapshot["normalization_version"]),
+        str(snapshot["extraction_version"]),
+    )
 
 
 def _eligible_chunk_count(conn, vault_id: str, snapshot: dict, *, cluster_id: str | None) -> int:

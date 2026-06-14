@@ -474,6 +474,99 @@ class TurbovecRuntimeTests(unittest.TestCase):
         self.assertEqual(after.status_code, 200)
         self.assertEqual(after.json()["backend"], "turbovec")
 
+    def test_exact_search_reuses_cached_snapshot_and_only_hydrates_top_hits(self) -> None:
+        from backend.app.core.database import connect
+        import backend.app.core.turbovec_runtime as turbovec_runtime
+
+        turbovec_runtime._EXACT_SEARCH_CACHE.clear()
+        snapshot = {
+            "epoch": 1,
+            "embedding_model_id": "hash",
+            "index_version": "v1",
+            "normalization_version": "norm-v1",
+            "extraction_version": "extract-v1",
+        }
+        cached_snapshot = turbovec_runtime.ExactSearchSnapshot(
+            chunk_ids=["chunk-a", "chunk-b", "chunk-c"],
+            vectors=np.array(
+                [
+                    [1.0, 0.0, 0.0],
+                    [0.8, 0.0, 0.0],
+                    [0.1, 0.0, 0.0],
+                ],
+                dtype=np.float32,
+            ),
+            trust_weights=np.array([1.0, 1.0, 1.0], dtype=np.float32),
+        )
+        build_calls: list[str] = []
+        hydrate_calls: list[list[str]] = []
+
+        def fake_build(_conn, _vault_id, *, snapshot, cluster_id, expected_dim):
+            build_calls.append(f"{snapshot['epoch']}:{cluster_id or ''}")
+            self.assertEqual(expected_dim, 3)
+            return cached_snapshot
+
+        def fake_hydrate(_conn, _vault_id, *, snapshot, cluster_id, chunk_ids):
+            hydrate_calls.append(list(chunk_ids or []))
+            rows = {
+                "chunk-a": {
+                    "chunk_id": "chunk-a",
+                    "source_id": "source-a",
+                    "source_title": "Alpha",
+                    "source_type": "note",
+                    "cluster_id": None,
+                    "page_id": None,
+                    "page_number": None,
+                    "chunk_index": 0,
+                    "text": "alpha",
+                    "provenance": "local",
+                    "trust_tier": "trusted_local",
+                    "security_labels": "[]",
+                },
+                "chunk-b": {
+                    "chunk_id": "chunk-b",
+                    "source_id": "source-b",
+                    "source_title": "Beta",
+                    "source_type": "note",
+                    "cluster_id": None,
+                    "page_id": None,
+                    "page_number": None,
+                    "chunk_index": 1,
+                    "text": "beta",
+                    "provenance": "local",
+                    "trust_tier": "trusted_local",
+                    "security_labels": "[]",
+                },
+            }
+            return [rows[chunk_id] for chunk_id in reversed(chunk_ids or []) if chunk_id in rows]
+
+        with (
+            patch.object(turbovec_runtime, "_build_exact_search_snapshot", side_effect=fake_build),
+            patch.object(turbovec_runtime, "_hydrate_candidate_rows", side_effect=fake_hydrate),
+            connect() as conn,
+        ):
+            first = turbovec_runtime._semantic_search_exact(
+                conn,
+                "vault-1",
+                [1.0, 0.0, 0.0],
+                snapshot=snapshot,
+                cluster_id=None,
+                limit=2,
+            )
+            second = turbovec_runtime._semantic_search_exact(
+                conn,
+                "vault-1",
+                [1.0, 0.0, 0.0],
+                snapshot=snapshot,
+                cluster_id=None,
+                limit=2,
+            )
+
+        self.assertEqual(build_calls, ["1:"])
+        self.assertEqual(hydrate_calls, [["chunk-a", "chunk-b"], ["chunk-a", "chunk-b"]])
+        self.assertEqual([item["chunk_id"] for item in first], ["chunk-a", "chunk-b"])
+        self.assertEqual([item["chunk_id"] for item in second], ["chunk-a", "chunk-b"])
+
     def _client(self) -> TestClient:
         from backend.app.core.config import get_settings
 

@@ -1295,6 +1295,78 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertIsNotNone(page["next_cursor"])
         self.assertEqual(compacted["compacted_snapshots"], 1)
 
+    def test_retrieval_snapshot_compaction_applies_per_message_across_multiple_messages(self) -> None:
+        from backend.app.api.routes.chat import compact_chat_retrieval_snapshots
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+            conn.execute(
+                "INSERT INTO chat_sessions (id, vault_id, title, saved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("chat-retention", "vault-1", "Retention", 1, now, now),
+            )
+            for message_id in ("msg-a", "msg-b"):
+                conn.execute(
+                    "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (message_id, "chat-retention", "assistant", message_id, now),
+                )
+                for index in range(3):
+                    snapshot_id = f"{message_id}-snapshot-{index}"
+                    conn.execute(
+                        """
+                        INSERT INTO retrieval_snapshots (
+                            id, message_id, session_id, vault_id, query, retrieval_mode, embedding_model_id, created_at
+                        )
+                        VALUES (?, ?, 'chat-retention', 'vault-1', 'q', 'semantic', 'hash', ?)
+                        """,
+                        (snapshot_id, message_id, f"{now}-{message_id}-{index}"),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO retrieval_snapshot_items (
+                            id, snapshot_id, source_title_at_answer_time, short_snippet_excerpt,
+                            relevance_score, item_rank, created_at
+                        )
+                        VALUES (?, ?, 'Source', ?, 1, 1, ?)
+                        """,
+                        (f"{snapshot_id}-item", snapshot_id, "y" * 500, now),
+                    )
+
+        compacted = compact_chat_retrieval_snapshots(keep_latest_per_message=1)
+
+        with connect() as conn:
+            snapshot_rows = conn.execute(
+                """
+                SELECT message_id, id, retrieval_mode
+                FROM retrieval_snapshots
+                ORDER BY message_id ASC, created_at DESC, id DESC
+                """
+            ).fetchall()
+            item_rows = conn.execute(
+                """
+                SELECT snapshot_id, state, LENGTH(short_snippet_excerpt) AS excerpt_length
+                FROM retrieval_snapshot_items
+                ORDER BY snapshot_id ASC
+                """
+            ).fetchall()
+
+        self.assertEqual(compacted["compacted_snapshots"], 4)
+        compacted_modes = {
+            row["id"]: row["retrieval_mode"]
+            for row in snapshot_rows
+            if row["retrieval_mode"].endswith(":compacted")
+        }
+        self.assertEqual(len(compacted_modes), 4)
+        latest_ids = {f"msg-a-snapshot-2", f"msg-b-snapshot-2"}
+        self.assertTrue(all(row["retrieval_mode"] == "semantic" for row in snapshot_rows if row["id"] in latest_ids))
+        stale_items = [row for row in item_rows if row["snapshot_id"] not in latest_ids]
+        self.assertTrue(all(row["state"] == "compacted" for row in stale_items))
+        self.assertTrue(all(row["excerpt_length"] == 240 for row in stale_items))
+
     def test_chat_pagination_cursor_is_stable_when_messages_share_timestamp(self) -> None:
         from backend.app.api.routes.chat import get_chat_messages_page
         from backend.app.core.database import connect, utc_now
@@ -1362,8 +1434,11 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertIn("playwright.chromium.launch_persistent_context", extension_browser)
         self.assertIn("Save selected file", extension_browser)
         self.assertIn("popup_button_labels", extension_browser)
+        self.assertIn("popup_mode", extension_browser)
         self.assertIn("real_popup_target_seen", extension_browser)
         self.assertIn("real_popup_target_title", extension_browser)
+        self.assertIn("selection_source_type", extension_browser)
+        self.assertIn("screenshot_source_type", extension_browser)
         self.assertIn("browser_runtime_available", dynamic)
         self.assertIn("real_second_cache_observed", second)
 
