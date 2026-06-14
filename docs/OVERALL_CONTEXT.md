@@ -6,6 +6,253 @@ Last updated: 2026-06-14
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
+## 2026-06-14 Backend/Chat/Bridge Scale Safety Snapshot
+
+Completed:
+
+- Chat session listing is now bounded and paginated with stable ordering instead of returning an unbounded session list.
+- `get_chat_session()` and `get_chat_timeline()` now return bounded latest-history windows in chronological order instead of loading entire long-lived sessions into memory on every read.
+- Bridge operator and support endpoints are now bounded and paginated with stable ordering for approval requests, audit events, clients, requests, reviews, captures, and token rotations.
+- Bridge manual-client permission validation no longer scans the full vault or cluster tables just to validate a small requested allowlist; it now resolves only the requested IDs and preserves deduplicated input order.
+- These changes were intentionally kept contract-compatible for existing callers by making pagination optional and clamped.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "list_chat_sessions_is_bounded_and_paginates or bridge_operator_lists_are_bounded_and_preserve_order or chat_timeline_includes_retriable_generation_item"` passed with `3` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "get_chat_session_returns_latest_message_window_in_chronological_order or chat_timeline_returns_latest_window_with_retriable_items"` passed with `2` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_bridge_phase10.py -k "cluster_scoped_manual_client_is_anchored_to_single_vault"` passed with `1` test.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- This pass hardens list-path scale behavior, but it does not complete the broader backend/chat/Bridge release work: larger real-vault evals, broader adversarial chat proof, broader external-client/browser proof, and clean-VM/package validation are still open.
+
+## 2026-06-14 Sensitive Query Category Snapshot
+
+Completed:
+
+- The trust gate no longer treats sensitivity as only a boolean. It now records category-specific matches for credentials/secrets, finance, medical, therapy/mental-health, legal, identity, employment, family/private correspondence, and safety.
+- Chat coverage metadata now exposes the matched sensitive-query categories, which makes trust-gated degradations easier to diagnose in tests and later diagnostics/UI.
+- Bridge context warnings now surface matched sensitive-query categories directly for external clients/operators.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_retrieval_trust_phase8.py -k "therapy_query_is_treated_as_sensitive_for_low_trust_only_evidence or employment_identity_and_family_categories_are_exposed_in_coverage_ledger or safety_query_is_treated_as_sensitive_for_low_trust_only_evidence or bridge_context_warns_when_query_matches_sensitive_categories or legal_query_is_treated_as_sensitive_for_low_trust_only_evidence"` passed with `5` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- This pass improves backend sensitivity classification and telemetry, but broader adversarial proof and larger real-vault validation for these paths are still open.
+
+## 2026-06-14 Bridge Grounding Quality Snapshot
+
+Completed:
+
+- Bridge external-response verification no longer treats source-title overlap by itself as enough evidence to mark an outside answer `grounded`.
+- The verifier now separates real packet-term support from reference-only overlap, so answers can be downgraded correctly when they cite a source title or handle but add unsupported content.
+- Fully ungrounded answers now preserve the explicit `no_packet_overlap_detected` reason again, which keeps review/debug output honest for operators and tests.
+- Mixed responses that partly reference the packet but still hallucinate extra claims stay `partially_grounded` and review-gated instead of being promoted to trusted memory automatically.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "grounded_external_turn_keeps_medium_trust_and_memory or ungrounded_external_turn_is_downgraded_and_excluded_from_memory or partially_grounded_external_turn_requires_review_and_can_be_approved or external_turn_that_only_mentions_source_title_stays_reviewed_partial"` passed with `4` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- This pass hardens the verifier decision boundary, but broader external-client/browser proof and larger adversarial grounding eval coverage are still open.
+
+## 2026-06-14 Chat Timeline Scale Snapshot
+
+Completed:
+
+- `get_chat_timeline()` no longer fetches every retriable generation for a session before applying the response window.
+- Retriable-generation reads are now bounded to the requested `limit + offset` window, which keeps timeline reads stable for long-lived sessions that accumulate many interrupted generations.
+- The timeline contract remains unchanged for callers: latest-window ordering and retriable-generation visibility are preserved.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "list_chat_sessions_is_bounded_and_paginates or chat_timeline_includes_retriable_generation_item or get_chat_session_returns_latest_message_window_in_chronological_order or chat_timeline_returns_latest_window_with_retriable_items or chat_timeline_paginates_across_many_retriable_generations"` passed with `5` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- This pass removes one more unbounded chat read, but larger real-vault chat benchmarks and broader adversarial chat proof are still open.
+
+## 2026-06-14 Bridge Auth Scale Snapshot
+
+Completed:
+
+- Bridge runtime token auth no longer scans the entire enabled-client table on each request.
+- `_bridge_client_for_token()` now performs a direct lookup by `enabled = 1` plus `token_hash`, which keeps Bridge auth-path cost stable as approved-client counts grow.
+- Focused regression coverage now records the executed SQL and verifies the auth path uses the direct hash query instead of a full enabled-client scan.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "bridge_client_token_lookup_uses_direct_hash_query or bridge_operator_lists_are_bounded_and_preserve_order or chat_timeline_paginates_across_many_retriable_generations"` passed with `3` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_bridge_phase10.py -k "cluster_scoped_manual_client_is_anchored_to_single_vault or revoked_approved_client_token_is_blocked_and_shared_token_is_disabled_for_secured_vaults"` passed with `2` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- This pass removes the worst per-request approved-client scan, but broader external-client/browser proof and larger real-vault Bridge load validation are still open.
+
+## 2026-06-14 Bridge Packet Hydration Scale Snapshot
+
+Completed:
+
+- Redacted Bridge packet generation no longer reopens a fresh database connection per source while shaping `source_snippets`.
+- `build_context()` now reuses the active route connection when calling `_bridge_source_from_row(...)`, removing an N+1 connection pattern from redacted Bridge context responses.
+- Focused regression coverage now proves redacted source hydration receives a live connection instead of silently falling back to the helper’s reconnect path.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_parameters_doc_cases.py -k "bridge_context_redacts_raw_text_when_permission_is_disabled or bridge_context_does_not_decrypt_raw_source_fields_when_permission_is_disabled or bridge_context_reuses_active_connection_when_redacting_sources"` passed with `3` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_bridge_phase10.py -k "cluster_scoped_client_can_infer_vault_for_context_requests or cluster_scoped_manual_client_is_anchored_to_single_vault"` passed with `2` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- This pass removes another Bridge request-path scale hazard, but broader external-client/browser proof and larger real-vault Bridge load validation are still open.
+
+## 2026-06-14 Chat Retention Scale Snapshot
+
+Completed:
+
+- Retrieval-snapshot compaction no longer loops message-by-message and snapshot-by-snapshot in Python.
+- The compaction path now uses set-based SQL with per-message ranking, so stale retrieval snapshots are compacted in bulk while preserving the latest `keep_latest_per_message` snapshots for each message.
+- Evidence-retention enforcement also moved from row-by-row Python updates to set-based SQL for deleted-source tombstones and overlong snippet trimming.
+- Focused regression coverage now proves the compaction rule applies correctly across multiple messages, not only the single-message case.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_system_vault_lock_and_embeddings.py -k "chat_pagination_and_retrieval_snapshot_compaction or retrieval_snapshot_compaction_applies_per_message_across_multiple_messages or chat_evidence_retention"` passed with `3` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- This pass removes a real chat-maintenance scale hazard, but broader real-vault chat benchmarks and broader adversarial chat proof are still open.
+
+## 2026-06-14 Chat Session Hydration Scale Snapshot
+
+Completed:
+
+- `get_chat_session()` and `get_chat_timeline()` no longer fetch retrieval snapshots one assistant message at a time.
+- Assistant-message citation hydration is now batched through one latest-snapshot query plus one snapshot-item query for the whole message window, removing an N+1 read pattern from long chat loads.
+- Existing citation-state behavior is preserved, including deleted-source and reindexed-source state handling.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "get_chat_session_returns_latest_message_window_in_chronological_order or chat_timeline_returns_latest_window_with_retriable_items or chat_timeline_paginates_across_many_retriable_generations or get_chat_session_batches_snapshot_hydration_for_assistant_messages"` passed with `4` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "delete_source_marks_existing_citation_snapshot_deleted or chat_answer_writes_generation_and_retrieval_snapshot"` passed with `2` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- This pass removes another chat-read scale hazard, but broader real-vault chat benchmarks and broader adversarial chat proof are still open.
+
+## 2026-06-14 Context Memory Scale Snapshot
+
+Completed:
+
+- Context-memory relevance selection no longer hard-clips scoring to the latest 50 active memory items.
+- The memory candidate pool now scales with the requested memory limit while staying bounded, which preserves a scale guard but lets older relevant distilled memory survive beyond the old 50-item window in larger vaults.
+- Existing chat and Bridge memory-backed behavior still works after the selector change, including working-memory rebuilds and grounded Bridge writeback memory updates.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "persisted_chat_builds_distilled_memory_and_working_memory or bridge_context_includes_memory_items_and_working_memory or context_memory_query_can_reach_relevant_items_beyond_latest_fifty or grounded_external_turn_keeps_medium_trust_and_memory"` passed with `4` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- This pass removes a real context-memory recall/scale cap, but broader real-vault memory-quality validation and broader adversarial chat/Bridge proof are still open.
+
+## 2026-06-14 Bridge Helper Connection Snapshot
+
+Completed:
+
+- `bridge_status()` no longer opens separate database connections for settings pruning and pending-approval counting.
+- `update_bridge_settings()` now updates settings and returns refreshed Bridge status through the same active connection instead of bouncing back through a fresh status call.
+- `list_bridge_clusters()` now reuses one connection across Bridge token auth, rate-limit enforcement, and cluster listing instead of splitting those operations across multiple connections.
+- Focused regression coverage now proves the Bridge status and cluster-list paths stay on a single connection.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "bridge_status_prunes_deleted_permission_ids or bridge_status_uses_single_connection_path or bridge_cluster_listing_is_bounded_and_stable or bridge_cluster_listing_uses_single_connection_path"` passed with `4` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_bridge_phase10.py -k "cluster_scoped_client_can_list_clusters_without_explicit_vault_scope or cluster_scoped_client_can_infer_vault_for_context_requests"` passed with `2` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- This pass removes another Bridge helper overhead path, but broader external-client/browser proof and larger real-vault Bridge load validation are still open.
+
+## 2026-06-14 Broader Backend Chat Bridge Validation Snapshot
+
+Completed:
+
+- A broader backend/chat/Bridge regression sweep passed across the active suites: `test_additional_qa_cases.py`, `test_source_pages.py`, `test_bridge_phase10.py`, `test_parameters_doc_cases.py`, and `test_retrieval_trust_phase8.py`.
+- The context-layer benchmark harness now supports multi-cluster and hostile-fixture validation instead of only a smaller single-cluster synthetic run.
+- A broader context-layer validation run with `120` sources, `12` clusters, and hostile fixtures produced `.tmp/context-layer-broader-validation.json` with `query_count=4`, `average_packet_savings_percent=24.06`, `average_token_budget=1683.0`, `hostile_detected_query_count=1`, `analysis_mode_counts={standard:2, expanded_analysis:1, complete_analysis:1}`, and `partial_failure_counts={weak_support_extract_only:3, hostile_evidence_extract_only:1}`.
+- Live Bridge validation also passed through the extension HTTP smoke and the Codex-style MCP smoke, which broadens the verified external-client path beyond only pure unit tests.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py backend/tests/test_source_pages.py backend/tests/test_bridge_phase10.py backend/tests/test_parameters_doc_cases.py backend/tests/test_retrieval_trust_phase8.py` passed with `213 passed, 1 skipped` in about `2m 48s`.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "context_layer_benchmark_script_exports_context_report"` passed with `1` test.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/benchmark-context-layer.ps1 -Sources 120 -Clusters 12 -IncludeHostileFixtures -ReportPath .tmp\context-layer-broader-validation.json` passed.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/smoke-browser-extension-http.ps1 -ReportPath .tmp\extension-http-broader-validation.json` passed with `pass: true`.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/smoke-codex-mcp.ps1` passed and confirmed tool listing, context fetch, capture receipt, review queue, review approval, capture history, and malformed-call rejection.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- This pass materially broadens validation evidence, but it is still not the same as large real user-owned vault proof or full browser-popup/real-client coverage across every supported capture/review flow.
+
+## 2026-06-14 Larger Scale And Live Browser Validation Snapshot
+
+Completed:
+
+- Retrieval-scale validation now has a fresh `1500`-source benchmark proof at `.tmp\retrieval-1500-validation\retrieval-benchmark-report.json`.
+- Large-vault secured-flow validation now has a fresh `1500`-source smoke result at `.tmp\security-large-vault-1500.json`.
+- Live browser-popup Bridge verification now has a fresh Playwright run at `.tmp\extension-browser-broader-validation.json` confirming the real popup target titled `CML Capture`, expected setup/save controls, expected popup fields, and upload capture flow through the actual extension popup.
+
+Verification:
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/benchmark-1k-vault.ps1 -ReportRoot .tmp\retrieval-1500-validation -Sources 1500` passed with:
+  - `index_seconds=2.7404`
+  - `max_query_latency_seconds=0.5899`
+  - `compact_seconds=0.0484`
+  - `database_bytes=32735232`
+  - `passing_fixture_count=15/15`
+  - `passes_low_spec_targets=true`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/security/security-smoke-large-vault.ps1 -Sources 1500 -ReportPath .tmp\security-large-vault-1500.json` passed with:
+  - `supported_count=1500`
+  - `imported_count=1500`
+  - `failed_count=0`
+  - `chunks_indexed=1500`
+  - `query_ms=372.11`
+  - `reconciliation_status=completed`
+  - `pass=true`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/smoke-browser-extension-playwright.ps1 -ReportPath .tmp\extension-browser-broader-validation-v6.json` now passes with:
+  - `real_popup_target_seen=true`
+  - `real_popup_target_title="CML Capture"`
+  - popup buttons for page, selection, PDF URL, screenshot, and file save were present
+  - `selection_capture_attempt.ok=true`
+  - `screenshot_capture_attempt.ok=true`
+  - `screenshot_shortcut_attempt.ok=true`
+  - `selection_source_type="extension_selection"`
+  - `screenshot_source_type="extension_screenshot"`
+  - `upload_capture_status="stored"`
+  - overall `pass=true`
+
+Completed in this validation track:
+
+- Broader adversarial proof is now materially stronger: the context-layer harness seeds `3` hostile fixtures and `4` adversarial queries, and `.tmp\context-layer-broader-validation-v3.json` now shows `hostile_detected_query_count=4` with every hostile row downgraded to `hostile_evidence_extract_only` and `27.17%` average packet savings.
+- The user-owned real-vault benchmark harness was corrected to unlock the vault, run the real refresh-import path, respect an explicit `scan_limit`, and survive mixed Windows-byte text files without crashing reconciliation.
+- The semantic-search scale problem exposed by the first capped repo-root run is now fixed in the exact backend path: repeated exact queries reuse a cached pre-decoded snapshot keyed by vault/cluster/derived-state epoch, score the matrix first, and only hydrate the winning chunk IDs.
+- The broader repo-root real-vault benchmark now passes cleanly. Skipping transient `.tmp` subtrees, segmenting oversized text-like files into bounded pages, and degrading unreadable PDFs to metadata capture turned the follow-up run at `.tmp\user-owned-vault-broader-validation-v8.json` into a full pass with `400/400` imported, `0` failed, `11766` indexed chunks, and `query_p95_ms=363.68`.
+
 ## 2026-06-13 Backend Audit Closure Snapshot
 
 Completed:
@@ -741,7 +988,7 @@ Use this section for fast status checks. Detailed historical notes remain in the
 | Local backend foundation   | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only.                                                               |
 | Vault ingestion            | Complete for current scope | `[##########] 100%` | Clean VM confirmation only.                                                                      |
 | Embeddings and clustering  | Complete for current scope | `[##########] 100%` | Larger real-vault evidence now lives under QA/hardening.                                         |
-| Chat and context routing   | In progress                | `[##########] 99%`  | Runtime failure UI, broader hostile-content eval proof, and wider real-vault budget-quality validation. |
+| Chat and context routing   | Complete for current scope | `[##########] 100%` | Remaining work is UI/runtime polish rather than backend/chat routing correctness or scale. |
 | Compulsory cluster experts | In progress                | `[#######---] 70%`  | Real LLaMA Factory smoke and live runtime adapter loading against a real local model.            |
 | Context Bridge             | In progress                | `[##########] 98%`  | Full extension package, capture UX polish, and later external-client smoke.                      |
 | Packaging and installer    | In progress                | `[##########] 98%`  | Clean Windows VM validation.                                                                     |

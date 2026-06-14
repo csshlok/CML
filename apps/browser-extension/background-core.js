@@ -69,6 +69,13 @@ export function createBackgroundController(deps) {
       });
       return deps.postCapture(config, payload);
     },
+    async handleCommand(command) {
+      const normalized = String(command || "").trim().toLowerCase();
+      if (normalized === "capture_screenshot") {
+        return this.handleCapture({ captureMode: "screenshot" });
+      }
+      return null;
+    },
   };
 }
 

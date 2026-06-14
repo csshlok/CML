@@ -162,3 +162,38 @@ test("selection capture falls back to cached selection when live selection is em
   assert.equal(posted.capture_type, "selection");
   assert.equal(posted.text, "cached selected text from content script");
 });
+
+test("background controller command shortcut can trigger screenshot capture", async () => {
+  const mod = await import("../background-core.js");
+  let postedUpload = null;
+  const controller = mod.createBackgroundController({
+    loadConfig: async () => ({
+      backendUrl: "http://127.0.0.1:7343",
+      token: "token-123",
+      vaultId: "vault-1",
+      clusterId: "",
+    }),
+    getCaptureTab: async () => ({
+      id: 12,
+      windowId: 4,
+      title: "Docs",
+      url: "https://example.com/docs",
+    }),
+    focusTab: async () => {},
+    captureVisibleTab: async () => "data:image/png;base64,c2NyZWVuc2hvdA==",
+    readSelectionFromTab: async () => ({ title: "", text: "" }),
+    readPageFromTab: async () => ({ title: "", text: "" }),
+    postCapture: async () => {
+      throw new Error("command screenshot should use upload path");
+    },
+    postUploadCapture: async (_config, payload) => {
+      postedUpload = payload;
+      return { capture_id: "cap-shortcut" };
+    },
+  });
+
+  const result = await controller.handleCommand("capture_screenshot");
+
+  assert.equal(result.capture_id, "cap-shortcut");
+  assert.equal(postedUpload.capture_type, "screenshot");
+});
