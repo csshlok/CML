@@ -1,255 +1,229 @@
-Context Management Layer: local-first desktop AI workspace for turning a user's vault of files, links, screenshots, notes, and chat transcripts into clustered context, searchable source memory, compulsory per-cluster local experts, and structured context packets that can feed a larger synthesis model or external local LLM tools through a Context Bridge.
+<p align="center">
+  <img src="apps/desktop/public/brand/vault-logo.png" width="148" alt="CML logo">
+</p>
 
-## Repo map
+<h1 align="center">CML</h1>
 
-- `apps/desktop/` - Electron desktop shell and React/TanStack UI.
-- `backend/` - local FastAPI service for vaults, clusters, sources, bridge requests, and future ingestion/model jobs.
-- `docs/PRODUCT_PRD.md` - product requirements for the local Context Management Layer.
-- `docs/UI_PRD.md` - UI requirements for the chat-centered desktop workspace, map, sources, clusters, and bridge.
-- `docs/UI_ARCHITECTURE.md` - detailed UI architecture, visual system, color palette, tab requirements, and component contracts.
-- `docs/LORA_CLUSTER_EXPERT_MVP_POLICY.md` - strict LoRA cluster expert graduation, evaluation, runtime, staleness, and rollback gates.
-- `docs/PROJECT_CONTEXT.md` - living progress file with phase progress bars, week-by-week goals, completed work, and open work.
-- `docs/ARCHITECTURE.md` - current architecture notes for the desktop app, backend, storage, bridge, and model lifecycle.
-- `UI-ref/` - preserved UI reference material; not part of the production workspace.
-- `data/` - ignored local runtime data, SQLite database files, and development vault artifacts.
+<p align="center">
+  <em>A local-first context management layer for files, chats, retrieval, and cluster experts.</em>
+</p>
 
-## Product shape
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-Windows%20V1-111111?style=flat-square" alt="Windows V1">
+  <img src="https://img.shields.io/badge/runtime-Electron%20%2B%20FastAPI-111111?style=flat-square" alt="Electron and FastAPI">
+  <img src="https://img.shields.io/badge/storage-local--first-111111?style=flat-square" alt="Local first">
+  <img src="https://img.shields.io/badge/status-pre--release-111111?style=flat-square" alt="Pre-release">
+</p>
 
-The app is designed as a local downloadable desktop app, not a web-first product. V1 uses vault mode: the user explicitly chooses a local vault and adds files, folders, links, pasted text, screenshots, notes, and chat transcripts. The system stores source metadata locally, extracts text, clusters related material, and makes those clusters available to chat.
+<p align="center">
+  <strong>Compact context packets · retrieval-first chat · local vaults · verified cluster-expert path</strong>
+</p>
 
-The core product contract is:
+---
 
-- Chat stays at the center of the workspace.
-- Sources remain inspectable and removable.
-- Clusters are user-correctable spaces of context.
-- Every cluster has a visible local expert lifecycle.
-- Retrieval-backed context works before expert fine-tuning is ready.
-- The Context Bridge lets other local LLM tools ask the vault for selected context.
+CML is a downloadable desktop app that turns a user's local vault of files, notes, links, screenshots, PDFs, transcripts, and imported folders into:
 
-## Current state
+- inspectable source memory
+- semantic retrieval and clustering
+- distilled memory and working memory
+- compact reversible context packets for chat and Bridge/MCP
+- a per-cluster local expert lifecycle
 
-Stage 1 is in progress. The repo currently has a working Electron/Vite desktop workspace, a token-gated local FastAPI backend, SQLite-backed CRUD routes for vaults/clusters/sources, TXT/Markdown/DOCX/PDF/pasted-text/link ingestion, drag-and-drop document import in the desktop shell, local synced-folder import for Drive/Dropbox/OneDrive/iCloud-style folders, per-file batch import failure reporting, generated source summaries/tags, link title/image metadata, local chunk/embedding storage, semantic search, vector-based cluster move suggestions, retrieval-grounded chat context routing with citations, persisted chat sessions, local model registry/runtime endpoints, a bridge status/request API, backend-aware Settings/Sources/Clusters/Chat screens, a redesigned map prototype with cluster anchors, and repeatable Windows package/smoke scripts.
+This is not just a searchable vault. Public V1 is aiming at a real context-management layer between the user and an LLM: preserve long-lived context outside the model, reduce repeated transcript/file replay, and let external tools request compressed grounded context instead of re-reading raw history.
 
-Tracked local folder imports can be manually refreshed or watch-refreshed from Settings. Refresh reconciliation imports new files, updates changed files, detects moved files by checksum, tombstones deleted files when requested, and reports batch outcome counts/failures.
+## Why CML
 
-The next major build targets are clean Windows VM package validation, verified real LoRA training/runtime loading, hardware-aware model recommendation for low/mid/high-spec users, larger real-vault retrieval threshold tuning, and complete-scope chat synthesis. Claude Desktop-specific Bridge smoke is deferred for now.
+Most AI workspaces stop at “upload files and retrieve top-k chunks.”
 
-## Prerequisites
+CML is trying to solve a broader problem:
 
-- Node.js 18+.
-- Python 3.11+ recommended for future ML libraries. The current environment is using Python 3.14 for the lightweight backend.
-- Windows is the only public V1 target.
-- Optional later dependencies: local model runtime, embedding model, and OCR libraries.
+- long chats lose context
+- old decisions disappear
+- raw transcripts are expensive to replay
+- external tools cannot reuse your local memory cleanly
+- grounded answers need more than prompt wording
 
-Recommended Python virtual environment:
+CML’s current architecture addresses that with:
 
-```bash
+- retrieval-first routing
+- grounded chat with citations
+- distilled memory and working-memory summaries
+- compact context packets with expansion handles
+- trust gating for hostile or weak evidence
+- Bridge/MCP flows for external capture and context reuse
+
+## What Exists Today
+
+Current repo state already includes:
+
+- Electron desktop shell in `apps/desktop`
+- FastAPI backend in `backend`
+- local vault creation and storage under `.vault`
+- source ingestion for text, Markdown, DOCX, PDF, links, images/OCR, pasted text, and tracked folders
+- semantic search, chunking, clustering, and move suggestions
+- retrieval-grounded chat with citations, recent-turn handling, degraded fallback states, and dynamic context budgeting
+- distilled memory, working memory, bootstrap summaries, and memory-backed context packets
+- Bridge/MCP packet formatting, capture receipts, writeback review flows, expansion handles, and extension capture plumbing
+- browser extension package with page, selection, PDF URL, file-upload, and screenshot capture paths
+- turbovec sidecar integration with exact fallback, repair flows, and Phase C approval gating
+- packaging scripts, packaged smokes, security audits, and broader backend regression coverage
+
+The live source of truth for project status is [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md).
+
+## Current Release Gates
+
+CML is not public-release cleared yet.
+
+The biggest remaining gates are:
+
+- clean Windows VM validation of the current package
+- installed-app first-run parity on a healthy clean VM
+- real LoRA trainer/runtime proof on release-like hardware
+- live adapter quality benchmark versus retrieval baseline
+- hardware-aware model/setup QA
+- broader real-vault and context-layer release proof
+
+That release posture is intentional. If the public-quality bar is not met, release slips rather than turning into a private demo.
+
+## Quick Navigation
+
+- [Quick Start](#quick-start)
+- [Architecture](#architecture)
+- [Repo Map](#repo-map)
+- [Bridge And External Use](#bridge-and-external-use)
+- [Local Expert Path](#local-expert-path)
+- [Packaging And Validation](#packaging-and-validation)
+- [Development Workflow](#development-workflow)
+- [Important Docs](#important-docs)
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 18+
+- Python 3.11+ recommended
+- Windows is the public V1 target
+
+Create a virtual environment:
+
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
+.\.venv\Scripts\activate
 ```
 
-Install frontend dependencies:
+Install dependencies:
 
 ```bash
 npm install
-```
-
-Install backend dependencies if the virtual environment is new:
-
-```bash
 pip install -r requirements/contributors-backend.txt
 ```
 
-The backend reads local settings from the root `.env` file. Use `.env.example` as the committed template and keep machine-specific values in `.env`.
+The backend reads settings from `.env`. Start from `.env.example`.
 
-Dependency reproducibility for contributors is tracked in `requirements/`. Any change to Python imports, OCR packages, trainer packages, or test dependencies must update the matching requirements file and `docs/PROJECT_CONTEXT.md`.
-
-```powershell
-.\scripts\dev\update-requirements.ps1
-```
-
-## Quick start: local development
-
-Run the backend:
+### Run the backend
 
 ```bash
 npm run backend
 ```
 
-Private backend API routes fail closed unless a local API token is configured. `npm run backend` generates a per-process token for dev startup when `CML_API_TOKEN` is not already set. For direct curl testing, set your own token before starting the backend:
+If you want a fixed dev token for manual API calls:
 
 ```powershell
 $env:CML_API_TOKEN="dev-token"
 npm run backend
 ```
 
-Run the desktop app:
+### Run the desktop app
 
 ```bash
 npm run dev
 ```
 
-Useful checks:
+### Useful checks
 
 ```bash
 curl http://127.0.0.1:7343/health
 curl -H "x-cml-api-token: dev-token" http://127.0.0.1:7343/api/v1/system/backend-identity
-curl -H "x-cml-api-token: dev-token" http://127.0.0.1:7343/api/v1/vaults
-curl -H "x-cml-api-token: dev-token" http://127.0.0.1:7343/api/v1/sources
 curl -H "x-cml-api-token: dev-token" http://127.0.0.1:7343/api/v1/bridge/status
 ```
 
-The Vite development view is available at:
+Dev web UI:
 
 ```text
 http://127.0.0.1:5173/
 ```
 
-The Electron shell opens the same local UI through `npm run dev`.
+## Architecture
 
-## Backend API surface
+CML is currently built as:
 
-- `GET /health` - backend health.
-- `GET /api/v1/vaults` - list local vault records.
-- `POST /api/v1/vaults` - create a vault record.
-- `GET /api/v1/vaults/{vault_id}` - fetch one vault.
-- `PATCH /api/v1/vaults/{vault_id}` - update vault name/path.
-- `DELETE /api/v1/vaults/{vault_id}` - remove a vault record.
-- `GET /api/v1/clusters` - list clusters, optionally by `vault_id`.
-- `POST /api/v1/clusters` - create a cluster.
-- `GET /api/v1/clusters/{cluster_id}` - fetch one cluster.
-- `PATCH /api/v1/clusters/{cluster_id}` - update cluster metadata or expert status.
-- `DELETE /api/v1/clusters/{cluster_id}` - remove a cluster.
-- `GET /api/v1/sources` - list sources, optionally by `vault_id` or `cluster_id`.
-- `POST /api/v1/sources` - create a source record.
-- `POST /api/v1/sources/from-path` - import a local TXT/Markdown/DOCX/PDF file path.
-- `POST /api/v1/sources/from-text` - import pasted text.
-- `POST /api/v1/sources/from-url` - fetch and import readable link text.
-- `GET /api/v1/sources/{source_id}` - fetch one source.
-- `PATCH /api/v1/sources/{source_id}` - update source assignment, text, state, or summary.
-- `DELETE /api/v1/sources/{source_id}` - remove a source.
-- `POST /api/v1/search/semantic` - search indexed source chunks by local semantic similarity.
-- `POST /api/v1/search/reindex/{vault_id}` - rebuild local search chunks for indexed sources.
-- `GET /api/v1/search/vectors/repair-plan` - inspect missing/stale vector index work.
-- `POST /api/v1/search/vectors/repair` - repair missing/stale vectors for indexed sources.
-- `POST /api/v1/search/vectors/compact` - remove deleted/orphaned vector chunks and optimize SQLite.
-- `GET /api/v1/clusters/suggestions` - review vector-based source-to-cluster move suggestions.
-- `POST /api/v1/chat/context` - build a retrieval-grounded chat draft with clusters used and citations.
-- `GET /api/v1/models` - list recommended local model options and install status.
-- `GET /api/v1/models/runtime` - check whether a local OpenAI-compatible model runtime is reachable.
-- `GET /api/v1/models/embeddings` - inspect the active local embedding provider.
-- `POST /api/v1/models/embeddings/configure` - switch between hash embeddings and optional SentenceTransformers/MiniLM.
-- `GET /api/v1/models/{model_id}` - inspect one model option.
-- `POST /api/v1/models/{model_id}/download` - start an explicit GGUF model download into local app data.
-- `POST /api/v1/models/{model_id}/download/cancel` - cancel an active GGUF model download and clean up the partial file.
-- `GET /api/v1/system/startup-repair` - inspect startup integrity, interrupted jobs, and vector repair state.
-- `GET /api/v1/bridge/status` - Context Bridge status.
-- `POST /api/v1/bridge/context` - request selected context for an external local client.
-- `GET /api/v1/bridge/requests` - recent bridge request history.
-- `POST /api/v1/integrations/local-folder/scan` - scan a local/synced/Obsidian folder and optionally record import history.
-- `POST /api/v1/integrations/imports/{import_id}/refresh?import_files=true&tombstone_missing=true` - refresh a recorded folder and reconcile imported sources.
-- `PATCH /api/v1/integrations/imports/{import_id}` - enable or disable watched polling refresh for a tracked local import.
+- desktop shell: Electron
+- UI: React + TanStack
+- backend: FastAPI
+- metadata/state: SQLite
+- retrieval: local embeddings plus exact/turbovec vector backends
+- OCR: local Tesseract/OCRmyPDF/PyMuPDF path
+- external access: Bridge HTTP API, MCP server, CLI helpers, browser extension
 
-## Development workflow
+Core runtime rule:
 
-Frontend build:
+- SQLite is authoritative
+- vector indexes are derived state
+- Bridge is scoped access, not a magic anti-exfiltration wall
+- citations come from retrieval, not model memory
 
-```bash
-npm run build
-```
+## Repo Map
 
-Backend syntax check:
+- `apps/desktop/` — Electron shell and React desktop UI
+- `apps/browser-extension/` — packaged browser extension capture client
+- `backend/` — FastAPI service, retrieval, Bridge, ingestion, expert lifecycle, startup repair, security boundaries
+- `docs/` — PRDs, architecture, current context, release checklists, benchmark notes, design docs
+- `scripts/` — backend smokes, packaging scripts, OCR/model tooling, security checks, benchmark runners
+- `requirements/` — contributor dependency manifests
+- `UI-ref/` — preserved UI reference material
 
-```bash
-.venv\Scripts\python -m compileall backend\app
-```
+## Bridge And External Use
 
-Current progress is tracked in `docs/PROJECT_CONTEXT.md`. At the end of each task, update the progress bars, completed work, open work, and important running notes.
+CML exposes local context to outside tools through:
 
-## Context Bridge
+- MCP server
+- local HTTP API
+- CLI helpers
+- browser extension capture flows
 
-The bridge is the external access layer. It is intended to let tools like local Claude terminal workflows, MCP-compatible clients, CLIs, or developer tools request selected vault context without exposing the full vault by default.
+Current Bridge capabilities include:
 
-Planned bridge surfaces:
+- list clusters
+- request grounded context packets
+- expand packet handles
+- log external turns
+- capture artifacts
+- inspect downgraded writeback reviews
+- approve or keep gated external writebacks
 
-- MCP server for compatible AI tools.
-- Local HTTP API for developer workflows.
-- CLI for terminal use.
-- Copy-context helper for manual paste.
-
-V1 bridge work currently has status, request logging, semantic retrieval, permissions, and first CLI/MCP prototypes. Per-client setup and deeper MCP client testing are still open.
-
-Current development helpers:
+Current dev helpers:
 
 ```powershell
 $env:CML_BRIDGE_TOKEN="token-from-bridge-settings"
 .\scripts\bridge\cml-bridge.ps1 "retrieve context for my assignment"
-.venv\Scripts\python.exe -m backend.app.bridge_mcp
+.\.venv\Scripts\python.exe -m backend.app.bridge_mcp
 ```
 
-## Local expert model plan
+## Local Expert Path
 
-Current synthesis model ladder:
+Public V1 requires a real per-cluster expert path, but current claims stay conservative until real proof exists.
 
-- Qwen3-4B Q4_K_M as the default local synthesis model.
-- Phi-4-mini-instruct Q4_K_M as the low-spec fallback.
-- Qwen3-8B Q4_K_M as the higher-quality option.
-- Gemma 3 4B/12B Q4_K_M as optional later candidates.
+Current expert state surface includes:
 
-The app should not bundle model weights in the first installer. Model downloads are explicit and stored under local app data. Chat can call a local OpenAI-compatible endpoint when configured in `.env`:
+- dataset export and dataset-quality gates
+- trainer process handoff
+- adapter artifact validation
+- activation and rollback
+- runtime-load contract metadata
+- Expert tab/state visibility
+- deterministic scaffold smokes
 
-```bash
-CML_LLM_PROVIDER=openai-compatible
-CML_LLM_BASE_URL=http://127.0.0.1:8084/v1
-CML_LLM_MODEL=cml-local
-```
-
-If no local model runtime is configured or reachable, chat keeps using the retrieval-grounded extractive draft fallback.
-
-For local Windows GGUF testing:
-
-```powershell
-.\scripts\llm\download-llama-cpp.ps1
-.\scripts\llm\start-llama-server.ps1 -ModelId qwen3-4b-q4_k_m
-.\scripts\llm\test-local-model.ps1
-```
-
-For NVIDIA CUDA testing on Windows:
-
-```powershell
-.\scripts\llm\download-llama-cpp.ps1 -Runtime cuda -CudaVersion 12.4
-.\scripts\llm\start-llama-server.ps1 -Runtime cuda -ModelId qwen3-4b-q4_k_m
-.\scripts\llm\benchmark-local-models.ps1 -Runtime cuda
-```
-
-The current local test machine stores downloaded GGUFs under `T:\LLM` via `CML_MODELS_DIR`. Use `.\scripts\llm\benchmark-local-models.ps1` to compare the downloaded model ladder through llama.cpp.
-
-Public V1 model setup must recommend a model tier from the user's actual machine conditions:
-
-- Low-spec: safe default for limited RAM/CPU and no usable GPU.
-- Standard: balanced model for normal 8-16 GB Windows machines.
-- Quality: larger model only when RAM/GPU/disk/runtime conditions support it.
-- Existing runtime: connect to Ollama, llama.cpp, LM Studio, or another OpenAI-compatible endpoint when already installed.
-
-The recommendation system must consider RAM, CPU threads, OS/architecture, AVX2 where available, GPU/CUDA where available, free disk, and whether a local runtime is already configured. LoRA expert-training recommendations are separate from normal synthesis model recommendations because training has stricter hardware constraints.
-
-Backend-only ingestion/search/vector repair benchmark:
-
-```powershell
-.\scripts\backend\benchmark-backend.ps1 -Sources 250 -WordsPerSource 240 -ReportPath .tmp\backend-benchmark-report.md
-```
-
-Every cluster must have a verified local LoRA expert lifecycle for public V1. The app currently has the backend contract for dataset export, trainer process handoff, adapter artifact validation, quality metrics, activation, rollback, and cleanup guardrails. The deterministic test trainer is for CI only; real public-V1 validation must run through a LLaMA-Factory-compatible trainer command.
-
-Contributor setup for the separate trainer environment:
-
-```powershell
-py -3.11 -m venv .venv-lora
-.\.venv-lora\Scripts\python -m pip install -r requirements\contributors-lora-trainer.txt
-$env:CML_LORA_TRAINER_COMMAND = ".\.venv-lora\Scripts\llamafactory-cli.exe train --config {config_path}"
-```
-
-Current expert states are:
+Current expert states:
 
 - `retrieval_ready`
 - `training_pending`
@@ -259,53 +233,117 @@ Current expert states are:
 - `hardware_unsupported`
 - `rollback_ready`
 
-Trainer status is visible through:
+Important rule:
 
-```bash
-curl http://127.0.0.1:7343/api/v1/system/lora-trainer
-```
+- do not call a cluster expert “trained” in release language until a real adapter has passed graduation, runtime loading, and quality proof
 
-Cluster-level expert surfaces:
-
-- `GET /api/v1/clusters/{cluster_id}/expert/contract`
-- `GET /api/v1/clusters/{cluster_id}/expert/status`
-- `GET /api/v1/clusters/{cluster_id}/expert/artifacts`
-- `POST /api/v1/clusters/{cluster_id}/expert/retrain`
-- `POST /api/v1/clusters/{cluster_id}/expert/artifacts/{artifact_id}/activate`
-- `POST /api/v1/clusters/{cluster_id}/expert/rollback`
-- `DELETE /api/v1/clusters/{cluster_id}/expert/artifacts/{artifact_id}`
-
-The riskiest project area is still real local LoRA training and runtime adapter loading under free, reproducible, lightweight constraints. Retrieval-backed bootstrapping keeps the product usable while LoRA training is running, but public V1 should only claim a cluster expert is trained after an active adapter has metrics, version metadata, rollback support, and supported-hardware provenance.
-
-Repeatable expert smokes:
+Useful commands:
 
 ```powershell
+curl http://127.0.0.1:7343/api/v1/system/lora-trainer
 .\scripts\backend\smoke-lora-expert.ps1
 .\scripts\backend\smoke-lora-runtime.ps1 -AdapterPath <adapter-dir> -BaseModel <base-model> -RuntimeUrl http://127.0.0.1:8080/v1
 ```
 
-## OCR runtime packaging
+## Packaging And Validation
 
-CML does not call a remote OCR service. Windows packages stage local OCR tools under `backend/bin/ocr` before the backend is copied into the Electron resources:
+Windows packaging is driven through:
 
-```powershell
-.\scripts\packaging\stage-ocr-runtime.ps1
+```bash
+npm run package:win
 ```
 
-The expected local runtime is `tesseract.exe`, `tessdata\eng.traineddata`, qpdf, Ghostscript, and the packaged Python OCRmyPDF/PyMuPDF dependencies. Image OCR needs Tesseract plus tessdata. Scanned-PDF OCR prefers OCRmyPDF with qpdf/Ghostscript and falls back to PyMuPDF page rendering plus Tesseract when OCRmyPDF is incomplete.
+That delegates to:
 
-`package-windows.ps1` runs OCR staging by default; pass `-SkipOcrRuntimeDownload` only for dry package tests. If auto-detection misses a local tool install, pass `-TesseractExePath` or `-GhostscriptExePath`; use `-SkipGhostscriptInstaller -AllowPartialOcrRuntime` only when intentionally packaging the Tesseract/PyMuPDF fallback path.
-
-For local OCR accuracy smoke tests:
-
-```powershell
-.\scripts\ocr\benchmark-ocr.ps1 -PdfPath .tmp\sample.pdf -ReferenceTextPath .tmp\reference.txt
+```text
+scripts/packaging/package-windows.ps1
 ```
 
-## Notes and defaults
+Current validation coverage includes:
 
-- This is local-first and offline-first where possible.
-- V1 should avoid silent full-device scanning. Users explicitly choose vaults/folders/files.
-- `data/`, `.venv/`, generated build output, logs, and local databases should stay ignored.
-- Electron is the pragmatic first shell. Tauri can be reconsidered after the core flow is proven.
-- The public V1 packaging target is Windows only. macOS/Linux can be reconsidered after Windows V1 is public-quality.
+- clean-machine structure validation
+- packaged runtime smoke
+- packaged full-vault smoke
+- packaged dynamic-link smoke
+- packaged migration drill
+- packaged app-launch smoke
+- installed-app smoke
+
+The main packaging blocker is no longer the older missing-resource state. It is trustworthy clean-VM validation of the current package.
+
+## Development Workflow
+
+Build the desktop app:
+
+```bash
+npm run build
+```
+
+Electron behavior tests:
+
+```bash
+npm run lint
+```
+
+Backend syntax check:
+
+```powershell
+.\.venv\Scripts\python -m compileall backend\app
+```
+
+Renderer security audit:
+
+```bash
+npm run security:renderer
+```
+
+Package layout and helper manifest audit:
+
+```bash
+npm run security:package
+```
+
+At the end of meaningful work, keep [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md) current.
+
+## Important Docs
+
+### Product And Current State
+
+- [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md) — compact live project status
+- [docs/OVERALL_CONTEXT.md](docs/OVERALL_CONTEXT.md) — long-form fallback context
+- [docs/PRODUCT_PRD.md](docs/PRODUCT_PRD.md) — product requirements
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — high-level architecture
+
+### UI
+
+- [docs/UI_PRD.md](docs/UI_PRD.md) — UI requirements
+- [docs/UI_ARCHITECTURE.md](docs/UI_ARCHITECTURE.md) — concrete desktop UI architecture
+- [docs/ONBOARDING_PRD.md](docs/ONBOARDING_PRD.md) — first-run setup flow
+
+### Context Layer And Retrieval
+
+- [docs/CONTEXT_LAYER_V1_WORKPATH.md](docs/CONTEXT_LAYER_V1_WORKPATH.md) — context-layer implementation track
+- [docs/BRIDGE_CONTEXT_PACKET_DESIGN.md](docs/BRIDGE_CONTEXT_PACKET_DESIGN.md) — Bridge packet design and current implementation status
+- [docs/DYNAMIC_CONTEXT_BUDGETING_DESIGN.md](docs/DYNAMIC_CONTEXT_BUDGETING_DESIGN.md) — dynamic evidence budget design and current implementation status
+- [docs/TURBOVEC_INTEGRATION_PLAN.md](docs/TURBOVEC_INTEGRATION_PLAN.md) — turbovec rollout status and remaining evidence work
+- [docs/RETRIEVAL_BENCHMARKS.md](docs/RETRIEVAL_BENCHMARKS.md) — retrieval benchmark evidence
+
+### Release And Validation
+
+- [docs/V1_RELEASE_CHECKLIST.md](docs/V1_RELEASE_CHECKLIST.md) — live release-gate summary
+- [docs/WINDOWS_VM_VALIDATION.md](docs/WINDOWS_VM_VALIDATION.md) — clean-VM validation state
+- [docs/PACKAGING_INVESTIGATION.md](docs/PACKAGING_INVESTIGATION.md) — packaging state and remaining blocker
+- [docs/EXPERT_VALIDATION_REPORT.md](docs/EXPERT_VALIDATION_REPORT.md) — real LoRA proof status
+- [docs/RELEASE_AUDIT.md](docs/RELEASE_AUDIT.md) — release-readiness audit
+
+## Notes
+
+- Public V1 target is Windows-only.
+- Local-first and offline-first where practical.
+- No silent full-device scan in V1.
+- Model weights are not bundled in the first installer.
+- Hash embeddings are development-only, not the intended production setup path.
+
+## License
+
+This repository does not currently expose a root license file in the workspace snapshot I updated against. If you want public-distribution README polish to look complete, the next obvious repo hygiene step is to add an explicit top-level license file and reference it here.
