@@ -17,20 +17,44 @@ LOW_TRUST_LABELS = {
 EXCLUDED_FROM_SYNTHESIS_LABELS = {"review_needed", "ungrounded_external", "partial_external"}
 SYNTHESIS_LOW_TRUST_CAP = 1
 LOW_TRUST_DOMINANCE_RATIO = 0.5
-SENSITIVE_QUERY_PATTERN = re.compile(
-    r"\b("
-    r"password|passphrase|recovery key|api key|token|secret|private key|ssh key|"
-    r"bank|financial|finance|tax|ssn|social security|credit card|seed phrase|wallet|"
-    r"doctor|medical|medication|medicine|prescription|diagnosis|diagnoses|lab result|test result|"
-    r"therapy|therapist|counseling|counselling|mental health|trauma|addiction|"
-    r"attorney|lawyer|legal|nda|contract|agreement|lawsuit|court|"
-    r"passport|license|licence|immigration|visa|identity|birth certificate|"
-    r"salary|payroll|termination|performance review|hr|employment|"
-    r"private correspondence|family|relationship|child|children|custody|"
-    r"safety|threat|abuse|police|incident"
-    r")\b",
-    re.IGNORECASE,
-)
+SENSITIVE_QUERY_CATEGORY_PATTERNS: dict[str, re.Pattern[str]] = {
+    "credentials_secrets": re.compile(
+        r"\b(password|passphrase|recovery key|api key|token|secret|private key|ssh key|seed phrase)\b",
+        re.IGNORECASE,
+    ),
+    "finance": re.compile(
+        r"\b(bank|financial|finance|tax|ssn|social security|credit card|wallet)\b",
+        re.IGNORECASE,
+    ),
+    "medical": re.compile(
+        r"\b(doctor|medical|medication|medicine|prescription|diagnosis|diagnoses|lab result|test result|diagnosed|clinic)\b",
+        re.IGNORECASE,
+    ),
+    "therapy_mental_health": re.compile(
+        r"\b(therapy|therapist|counseling|counselling|mental health|trauma|addiction|depression|anxiety|psychiatrist)\b",
+        re.IGNORECASE,
+    ),
+    "legal": re.compile(
+        r"\b(attorney|lawyer|legal|nda|contract|agreement|lawsuit|court|settlement)\b",
+        re.IGNORECASE,
+    ),
+    "identity": re.compile(
+        r"\b(passport|license|licence|immigration|visa|identity|birth certificate|drivers license|driver's license)\b",
+        re.IGNORECASE,
+    ),
+    "employment": re.compile(
+        r"\b(salary|payroll|termination|performance review|hr|employment|manager feedback|promotion|job offer)\b",
+        re.IGNORECASE,
+    ),
+    "family_private_correspondence": re.compile(
+        r"\b(private correspondence|family|relationship|child|children|custody|spouse|partner|daughter|son)\b",
+        re.IGNORECASE,
+    ),
+    "safety": re.compile(
+        r"\b(safety|threat|abuse|police|incident|stalking|harassment|danger)\b",
+        re.IGNORECASE,
+    ),
+}
 
 
 def trust_weight(candidate: dict) -> float:
@@ -59,7 +83,8 @@ def classify_evidence_trust(prompt: str, citations: list[dict]) -> dict:
     total = len(citations)
     low_trust = [citation for citation in citations if is_low_trust(citation)]
     trusted = [citation for citation in citations if is_trusted(citation)]
-    sensitive = is_sensitive_query(prompt)
+    sensitive_categories = sensitive_query_categories(prompt)
+    sensitive = bool(sensitive_categories)
     low_count = len(low_trust)
     trusted_count = len(trusted)
     low_ratio = low_count / total if total else 0.0
@@ -73,6 +98,7 @@ def classify_evidence_trust(prompt: str, citations: list[dict]) -> dict:
         mode = "refuse_sensitive_low_trust"
         allow_synthesis = False
         reasons.append("sensitive_query_without_trusted_evidence")
+        reasons.extend(f"sensitive_category:{category}" for category in sensitive_categories)
     elif low_count == total:
         mode = "degraded_all_low_trust"
         allow_synthesis = False
@@ -85,6 +111,7 @@ def classify_evidence_trust(prompt: str, citations: list[dict]) -> dict:
         "mode": mode,
         "allow_synthesis": allow_synthesis,
         "sensitive_query": sensitive,
+        "sensitive_query_categories": sensitive_categories,
         "evidence_count": total,
         "trusted_count": trusted_count,
         "low_trust_count": low_count,
@@ -106,7 +133,18 @@ def citations_for_synthesis(citations: list[dict], trust_gate: dict) -> list[dic
 
 
 def is_sensitive_query(prompt: str) -> bool:
-    return bool(SENSITIVE_QUERY_PATTERN.search(prompt or ""))
+    return bool(sensitive_query_categories(prompt))
+
+
+def sensitive_query_categories(prompt: str) -> list[str]:
+    normalized = str(prompt or "").strip()
+    if not normalized:
+        return []
+    categories: list[str] = []
+    for category, pattern in SENSITIVE_QUERY_CATEGORY_PATTERNS.items():
+        if pattern.search(normalized):
+            categories.append(category)
+    return categories
 
 
 def _warnings(mode: str, total: int, low_count: int, trusted_count: int) -> list[str]:

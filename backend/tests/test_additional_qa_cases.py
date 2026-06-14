@@ -779,6 +779,22 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("note.md", joined)
         self.assertNotIn("secret.md", joined)
 
+    def test_local_folder_scan_skips_tmp_subtrees(self) -> None:
+        from backend.app.core.local_integrations import scan_local_folder
+
+        root = Path(self.tmp.name) / "scan-root"
+        root.mkdir()
+        (root / "keep.md").write_text("keep", encoding="utf-8")
+        tmp_dir = root / ".tmp"
+        tmp_dir.mkdir()
+        (tmp_dir / "skip.md").write_text("skip", encoding="utf-8")
+
+        result = scan_local_folder(str(root), 50)
+
+        joined = "\n".join(result["supported_files"])
+        self.assertIn("keep.md", joined)
+        self.assertNotIn("skip.md", joined)
+
     def test_unsupported_local_file_type_is_rejected(self) -> None:
         from backend.app.core.extraction import ExtractionError, extract_pages_from_path
 
@@ -1390,6 +1406,37 @@ class AdditionalQACases(unittest.TestCase):
             ).fetchone()["count"]
         self.assertEqual(remaining_sources, 0)
 
+    def test_list_chat_sessions_is_bounded_and_paginates(self) -> None:
+        from backend.app.api.routes.chat import list_chat_sessions
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+            for index in range(6):
+                session_now = f"2026-06-14T00:00:0{index}Z"
+                conn.execute(
+                    """
+                    INSERT INTO chat_sessions (
+                        id, vault_id, title, scope_cluster_id, saved, memory_status, memory_updated_at, created_at, updated_at
+                    )
+                    VALUES (?, 'vault-1', ?, NULL, 0, 'idle', NULL, ?, ?)
+                    """,
+                    (f"session-{index}", f"Session {index}", session_now, session_now),
+                )
+
+        first_page = list_chat_sessions("vault-1", limit=2, offset=0)
+        second_page = list_chat_sessions("vault-1", limit=2, offset=2)
+        clamped = list_chat_sessions("vault-1", limit=0, offset=-5)
+
+        self.assertEqual([item["id"] for item in first_page], ["session-5", "session-4"])
+        self.assertEqual([item["id"] for item in second_page], ["session-3", "session-2"])
+        self.assertEqual(len(clamped), 1)
+        self.assertEqual(clamped[0]["id"], "session-5")
+
     def test_chat_timeline_includes_retriable_generation_item(self) -> None:
         from backend.app.api.routes.chat import get_chat_timeline
         from backend.app.core.database import connect, utc_now
@@ -1434,6 +1481,320 @@ class AdditionalQACases(unittest.TestCase):
 
         self.assertEqual(len(retriable), 1)
         self.assertEqual(retriable[0]["prompt"], "Hello")
+
+    def test_get_chat_session_returns_latest_message_window_in_chronological_order(self) -> None:
+        from backend.app.api.routes.chat import get_chat_session
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id, vault_id, title, scope_cluster_id, saved, memory_status, memory_updated_at, created_at, updated_at
+                )
+                VALUES ('session-window', 'vault-1', 'Windowed', NULL, 0, 'idle', NULL, ?, ?)
+                """,
+                (now, now),
+            )
+            for index in range(5):
+                conn.execute(
+                    "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?, 'session-window', 'user', ?, ?)",
+                    (f"msg-{index}", f"message {index}", f"2026-06-14T00:00:0{index}Z"),
+                )
+
+        latest_two = get_chat_session("session-window", limit=2)
+        next_two = get_chat_session("session-window", limit=2, offset=2)
+
+        self.assertEqual([item["id"] for item in latest_two["messages"]], ["msg-3", "msg-4"])
+        self.assertEqual([item["id"] for item in next_two["messages"]], ["msg-1", "msg-2"])
+
+    def test_chat_timeline_returns_latest_window_with_retriable_items(self) -> None:
+        from backend.app.api.routes.chat import get_chat_timeline
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id, vault_id, title, scope_cluster_id, saved, memory_status, memory_updated_at, created_at, updated_at
+                )
+                VALUES ('timeline-window', 'vault-1', 'Timeline', NULL, 0, 'idle', NULL, ?, ?)
+                """,
+                (now, now),
+            )
+            for index in range(4):
+                conn.execute(
+                    "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?, 'timeline-window', 'user', ?, ?)",
+                    (f"msg-t{index}", f"message {index}", f"2026-06-14T00:00:0{index}Z"),
+                )
+            conn.execute(
+                """
+                INSERT INTO chat_generations (
+                    id, session_id, user_message_id, assistant_message_id, vault_id, prompt, state,
+                    runtime_provider, runtime_model, error, heartbeat_at, created_at, updated_at, completed_at
+                )
+                VALUES ('gen-window', 'timeline-window', 'msg-t1', NULL, 'vault-1', 'retry me', 'retriable', '', '', 'interrupted', NULL, ?, ?, NULL)
+                """,
+                ("2026-06-14T00:00:00Z", "2026-06-14T00:00:05Z"),
+            )
+
+        latest = get_chat_timeline("timeline-window", limit=2)
+        next_page = get_chat_timeline("timeline-window", limit=2, offset=2)
+
+        self.assertEqual([item["id"] for item in latest["items"]], ["msg-t3", "gen-window"])
+        self.assertEqual([item["message_type"] for item in latest["items"]], ["user_message", "retriable_generation"])
+        self.assertEqual([item["id"] for item in next_page["items"]], ["msg-t1", "msg-t2"])
+
+    def test_chat_timeline_paginates_across_many_retriable_generations(self) -> None:
+        from backend.app.api.routes.chat import get_chat_timeline
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id, vault_id, title, scope_cluster_id, saved, memory_status, memory_updated_at, created_at, updated_at
+                )
+                VALUES ('timeline-retry-window', 'vault-1', 'Timeline retries', NULL, 0, 'idle', NULL, ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                "INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES ('msg-base', 'timeline-retry-window', 'user', 'base', ?)",
+                ("2026-06-14T00:00:00Z",),
+            )
+            for index in range(6):
+                updated_at = f"2026-06-14T00:00:1{index}Z"
+                conn.execute(
+                    """
+                    INSERT INTO chat_generations (
+                        id, session_id, user_message_id, assistant_message_id, vault_id, prompt, state,
+                        runtime_provider, runtime_model, error, heartbeat_at, created_at, updated_at, completed_at
+                    )
+                    VALUES (?, 'timeline-retry-window', 'msg-base', NULL, 'vault-1', ?, 'retriable', '', '', 'interrupted', NULL, ?, ?, NULL)
+                    """,
+                    (f"gen-many-{index}", f"retry {index}", updated_at, updated_at),
+                )
+
+        latest = get_chat_timeline("timeline-retry-window", limit=2)
+        next_page = get_chat_timeline("timeline-retry-window", limit=2, offset=2)
+
+        self.assertEqual([item["id"] for item in latest["items"]], ["gen-many-4", "gen-many-5"])
+        self.assertEqual([item["id"] for item in next_page["items"]], ["gen-many-2", "gen-many-3"])
+        self.assertTrue(all(item["message_type"] == "retriable_generation" for item in latest["items"]))
+
+    def test_get_chat_session_batches_snapshot_hydration_for_assistant_messages(self) -> None:
+        from backend.app.api.routes.chat import get_chat_session
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id, vault_id, title, scope_cluster_id, saved, memory_status, memory_updated_at, created_at, updated_at
+                )
+                VALUES ('session-batch', 'vault-1', 'Batch hydrate', NULL, 0, 'idle', NULL, ?, ?)
+                """,
+                (now, now),
+            )
+            for index in range(3):
+                message_id = f"assistant-{index}"
+                created_at = f"2026-06-14T00:00:0{index}Z"
+                conn.execute(
+                    """
+                    INSERT INTO chat_messages (
+                        id, session_id, role, content, clusters_used, citations, warnings, useful, saved, created_at
+                    )
+                    VALUES (?, 'session-batch', 'assistant', ?, '[]', '[]', '[]', NULL, 0, ?)
+                    """,
+                    (message_id, f"answer {index}", created_at),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO retrieval_snapshots (
+                        id, message_id, session_id, vault_id, query, retrieval_mode, embedding_model_id, created_at
+                    )
+                    VALUES (?, ?, 'session-batch', 'vault-1', 'q', 'semantic', 'hash', ?)
+                    """,
+                    (f"snapshot-{index}", message_id, created_at),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO retrieval_snapshot_items (
+                        id, snapshot_id, source_id, source_title_at_answer_time, short_snippet_excerpt,
+                        relevance_score, item_rank, created_at
+                    )
+                    VALUES (?, ?, NULL, ?, ?, 1, 1, ?)
+                    """,
+                    (f"item-{index}", f"snapshot-{index}", f"Source {index}", f"snippet {index}", created_at),
+                )
+
+        query_log: list[str] = []
+
+        class RecordingConnection:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, params=()):
+                query_log.append(str(sql))
+                return self._inner.execute(sql, params)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        class RecordingConnect:
+            def __enter__(self_inner):
+                self_inner._ctx = connect()
+                inner = self_inner._ctx.__enter__()
+                self_inner._wrapped = RecordingConnection(inner)
+                return self_inner._wrapped
+
+            def __exit__(self_inner, exc_type, exc, tb):
+                return self_inner._ctx.__exit__(exc_type, exc, tb)
+
+        with patch("backend.app.api.routes.chat.connect", return_value=RecordingConnect()):
+            session = get_chat_session("session-batch", limit=3)
+
+        self.assertEqual(len(session["messages"]), 3)
+        self.assertTrue(all(message["citations"] for message in session["messages"]))
+        snapshot_queries = [sql for sql in query_log if "FROM retrieval_snapshots" in sql]
+        self.assertEqual(len(snapshot_queries), 1)
+        self.assertIn("WHERE message_id IN", snapshot_queries[0])
+        self.assertFalse(any("WHERE message_id = ?" in sql for sql in snapshot_queries))
+
+    def test_bridge_operator_lists_are_bounded_and_preserve_order(self) -> None:
+        from backend.app.api.routes.bridge import (
+            create_bridge_client,
+            list_bridge_clients,
+            list_bridge_requests,
+            update_bridge_settings,
+        )
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import BridgeClientCreate, BridgeSettingsUpdate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True))
+        created_ids: list[str] = []
+        for index in range(4):
+            created = create_bridge_client(
+                BridgeClientCreate(
+                    name=f"Client {index}",
+                    allowed_vault_ids=["vault-1", "vault-1"],
+                )
+            )
+            created_ids.append(created["id"])
+
+        with connect() as conn:
+            for index, client_id in enumerate(created_ids):
+                conn.execute(
+                    "UPDATE bridge_clients SET updated_at = ? WHERE id = ?",
+                    (f"2026-06-14T00:00:0{index}Z", client_id),
+                )
+            conn.execute(
+                """
+                INSERT INTO bridge_requests (
+                    id, client_id, client_name, query, mode, decision, source_count, response_bytes, created_at
+                )
+                VALUES
+                    ('req-1', NULL, 'alpha', 'q1', 'context', 'allowed', 1, 10, '2026-06-14T00:00:01Z'),
+                    ('req-2', NULL, 'beta', 'q2', 'context', 'allowed', 1, 10, '2026-06-14T00:00:02Z'),
+                    ('req-3', NULL, 'gamma', 'q3', 'context', 'allowed', 1, 10, '2026-06-14T00:00:03Z')
+                """
+            )
+
+        client_page = list_bridge_clients(limit=2, offset=1)
+        request_page = list_bridge_requests(limit=2, offset=1)
+        clamped_clients = list_bridge_clients(limit=500, offset=-2)
+
+        self.assertEqual(len(client_page), 2)
+        self.assertEqual(client_page[0]["id"], created_ids[2])
+        self.assertEqual(client_page[1]["id"], created_ids[1])
+        self.assertEqual(client_page[0]["allowed_vault_ids"], ["vault-1"])
+        self.assertEqual([item["id"] for item in request_page], ["req-2", "req-1"])
+        self.assertEqual(len(clamped_clients), 4)
+        self.assertEqual(clamped_clients[0]["id"], created_ids[3])
+
+    def test_bridge_client_token_lookup_uses_direct_hash_query(self) -> None:
+        from backend.app.api.routes.bridge import _bridge_client_for_token, create_bridge_client, update_bridge_settings
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import BridgeClientCreate, BridgeSettingsUpdate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True))
+        first = create_bridge_client(BridgeClientCreate(name="First", allowed_vault_ids=["vault-1"]))
+        second = create_bridge_client(BridgeClientCreate(name="Second", allowed_vault_ids=["vault-1"]))
+        with connect() as conn:
+            conn.execute("UPDATE bridge_clients SET enabled = 0 WHERE id = ?", (first["id"],))
+
+        query_log: list[tuple[str, tuple[object, ...] | None]] = []
+
+        class RecordingConnection:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, params=()):
+                normalized_params = tuple(params) if isinstance(params, (list, tuple)) else (params,)
+                query_log.append((str(sql), normalized_params))
+                return self._inner.execute(sql, params)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        class RecordingConnect:
+            def __enter__(self_inner):
+                self_inner._ctx = connect()
+                inner = self_inner._ctx.__enter__()
+                self_inner._wrapped = RecordingConnection(inner)
+                return self_inner._wrapped
+
+            def __exit__(self_inner, exc_type, exc, tb):
+                return self_inner._ctx.__exit__(exc_type, exc, tb)
+
+        with patch("backend.app.api.routes.bridge.connect", return_value=RecordingConnect()):
+            resolved = _bridge_client_for_token(second["token"])
+            missing = _bridge_client_for_token("not-a-real-token")
+
+        self.assertEqual(resolved["id"], second["id"])
+        self.assertIsNone(missing)
+        bridge_queries = [
+            (sql, params)
+            for sql, params in query_log
+            if "FROM bridge_clients" in sql
+        ]
+        self.assertTrue(bridge_queries)
+        self.assertTrue(
+            all("WHERE enabled = 1 AND token_hash = ? LIMIT 1" in sql for sql, _ in bridge_queries)
+        )
 
     def test_safe_open_stops_redirect_loops(self) -> None:
         from backend.app.core.extraction import ExtractionError, _safe_open
@@ -1895,6 +2256,52 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("“test”", text)
         self.assertIn("—", text)
         self.assertIn("café", text)
+
+    def test_mixed_windows_bytes_text_falls_back_without_crashing(self) -> None:
+        from backend.app.core.extraction import extract_text_from_path
+
+        target = Path(self.tmp.name) / "mixed-bytes.txt"
+        target.write_bytes(b"status:\x81 ready\x97 bridge packet")
+
+        _title, text = extract_text_from_path(str(target))
+
+        self.assertIn("status:", text)
+        self.assertIn("ready", text)
+        self.assertIn("bridge packet", text)
+
+    def test_large_text_file_is_split_into_multiple_pages_instead_of_failing(self) -> None:
+        from backend.app.core.extraction import extract_pages_from_path
+
+        target = Path(self.tmp.name) / "large.txt"
+        target.write_text(("alpha beta gamma delta\n" * 20000).strip(), encoding="utf-8")
+
+        title, pages = extract_pages_from_path(str(target))
+
+        self.assertEqual(title, "large.txt")
+        self.assertGreater(len(pages), 1)
+        self.assertTrue(all(page.strip() for page in pages))
+
+    def test_unreadable_pdf_falls_back_to_metadata_text(self) -> None:
+        from backend.app.core.extraction import extract_pages_from_validated_path
+        from backend.app.core.ocr import OCRError
+
+        target = Path(self.tmp.name) / "scan.pdf"
+        target.write_bytes(b"%PDF-1.4\n%mock\n")
+
+        class _EmptyReader:
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.pages = [type("_Page", (), {"extract_text": lambda self: ""})()]
+
+        with (
+            patch("pypdf.PdfReader", _EmptyReader),
+            patch("backend.app.core.extraction.ocr_pdf_pages", side_effect=OCRError("ocr unavailable")),
+        ):
+            title, pages = extract_pages_from_validated_path(str(target))
+
+        self.assertEqual(title, "scan.pdf")
+        self.assertEqual(len(pages), 1)
+        self.assertIn("PDF stored in vault metadata", pages[0])
+        self.assertIn("scan.pdf", pages[0])
 
     def test_extension_capture_cluster_must_belong_to_same_vault(self) -> None:
         from backend.app.api.routes.extension import capture_from_extension, create_extension_client
