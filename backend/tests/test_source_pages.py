@@ -4106,6 +4106,166 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIn("Queue a fresh retrain", job["detail"])
         self.assertEqual(artifact_count, 0)
 
+    def test_lora_training_dataset_changed_keeps_active_adapter_usable(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes.clusters import get_expert_status
+        from backend.app.core.background_jobs import _run_train_cluster_adapter
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        text = "dataset changed expert training evidence " * 240
+        adapter_dir = Path(self.tmp.name) / "adapter-ready-before-retrain"
+        adapter_dir.mkdir()
+        (adapter_dir / "adapter_config.json").write_text(
+            '{"peft_type":"LORA","base_model_name_or_path":"dataset-change-base"}',
+            encoding="utf-8",
+        )
+        (adapter_dir / "adapter_model.safetensors").write_bytes(b"adapter")
+
+        base_dataset = {
+            "cluster_id": "cluster-1",
+            "cluster_name": "Research",
+            "source_count": 1,
+            "unique_content_hash_count": 1,
+            "duplicate_content_count": 0,
+            "duplicate_content_ratio": 0.0,
+            "total_text_chars": len(text),
+            "estimated_token_count": len(text) // 4,
+            "dataset_hash": "dataset-before",
+            "documents": [
+                {
+                    "source_id": "source-before",
+                    "title": "Before",
+                    "summary": "A sufficiently descriptive local source summary for adapter training.",
+                    "text": text,
+                    "content_hash": "content-before",
+                }
+            ],
+        }
+        changed_dataset = {
+            **base_dataset,
+            "dataset_hash": "dataset-after",
+            "documents": [
+                {
+                    **base_dataset["documents"][0],
+                    "source_id": "source-after",
+                    "content_hash": "content-after",
+                }
+            ],
+        }
+
+        def fake_training_process(*, output_dir, **_kwargs):
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "adapter_config.json").write_text(
+                '{"peft_type":"LORA","base_model_name_or_path":"dataset-change-base"}',
+                encoding="utf-8",
+            )
+            (output_dir / "adapter_model.safetensors").write_bytes(b"adapter")
+            return {
+                "status": "succeeded",
+                "adapter_path": str(output_dir),
+                "stdout_path": str(output_dir / "trainer.stdout.log"),
+                "stderr_path": str(output_dir / "trainer.stderr.log"),
+            }
+
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', 'training_pending', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO cluster_expert_jobs (
+                    id, cluster_id, vault_id, action, status, detail, created_at, updated_at
+                )
+                VALUES ('expert-job-1', 'cluster-1', 'vault-1', 'retrain', 'running', '', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO expert_artifacts (
+                    id, cluster_id, vault_id, artifact_type, status, local_path,
+                    base_model, hardware_tier, quality_score, dataset_hash, active,
+                    created_at, updated_at
+                )
+                VALUES ('artifact-ready', 'cluster-1', 'vault-1', 'lora_adapter', 'ready', ?,
+                    'dataset-change-base', 'cpu', 80, 'dataset-before', 1, ?, ?)
+                """,
+                (str(adapter_dir), now, now),
+            )
+
+        hardware = {
+            "training_supported": True,
+            "hardware_tier": "cpu_minimum_spec",
+            "detail": "test hardware",
+        }
+        preferred_model = {
+            "id": "dataset-change-base",
+            "local_path": "dataset-change-base",
+            "compatibility": {"accepted": True, "expert_role_accepted": True},
+        }
+        with (
+            patch("backend.app.core.hardware.hardware_status", return_value=hardware),
+            patch(
+                "backend.app.core.background_jobs.preferred_expert_base_model",
+                return_value=preferred_model,
+            ),
+            patch(
+                "backend.app.core.background_jobs.build_cluster_dataset",
+                side_effect=[base_dataset, changed_dataset],
+            ),
+            patch(
+                "backend.app.core.background_jobs.run_lora_training_process",
+                side_effect=fake_training_process,
+            ),
+            patch(
+                "backend.app.core.background_jobs.runtime_adapter_load_plan",
+                return_value={"available": True, "detail": "runtime available"},
+            ),
+            patch(
+                "backend.app.core.expert_lifecycle.runtime_adapter_load_plan",
+                return_value={"available": True, "detail": "runtime available"},
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                _run_train_cluster_adapter(
+                    {
+                        "cluster_id": "cluster-1",
+                        "vault_id": "vault-1",
+                        "expert_job_id": "expert-job-1",
+                    }
+                )
+            status = get_expert_status("cluster-1")
+
+        with connect() as conn:
+            cluster = conn.execute("SELECT expert_status FROM clusters WHERE id = 'cluster-1'").fetchone()
+            job = conn.execute(
+                "SELECT status, failure_code, detail FROM cluster_expert_jobs WHERE id = 'expert-job-1'"
+            ).fetchone()
+            artifact_count = conn.execute("SELECT COUNT(*) AS count FROM expert_artifacts").fetchone()["count"]
+
+        self.assertEqual(cluster["expert_status"], "needs-update")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["failure_code"], "dataset_changed")
+        self.assertEqual(artifact_count, 1)
+        self.assertEqual(status["expert_status"], "needs-update")
+        self.assertEqual(status["user_status"], "Needs update")
+        self.assertTrue(status["stale"])
+        self.assertFalse(status["trained"])
+        self.assertEqual(status["failure_code"], "dataset_changed")
+        self.assertIn("Queue a fresh retrain", status["detail"])
+
     def test_lora_adapter_rollback_and_delete_guardrails(self) -> None:
         from backend.app.api.routes.clusters import (
             activate_expert_artifact,
