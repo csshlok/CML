@@ -6,6 +6,28 @@ Last updated: 2026-06-15
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
+## 2026-06-15 Real LoRA Trainer / Runtime Snapshot
+
+Completed:
+
+- Ran the compulsory cluster expert path against actual project context docs, not synthetic records, using `Qwen/Qwen2.5-0.5B-Instruct` as the local Transformers expert checkpoint and `CML_LORA_TRAINER_COMMAND='llamafactory-cli train {config_path}'`.
+- Fixed the real LLaMA Factory integration issues found by the smoke: generated a LLaMA Factory `.yaml` config to avoid the installed JSON parser bug, emitted explicit OpenAI `role`/`content` dataset tags, resolved bare `llamafactory-cli`, kept the active venv Scripts directory on subprocess `PATH`, stopped forcing single-process `torchrun`, preserved real smoke workdirs, and added batch adapter runtime generation.
+- The real CPU trainer smoke produced a LoRA adapter at `.tmp/lora-real-smoke-work/experts/cluster-smoke/adapter-5baaf88e-a9b5-4926-810e-9e3c53d0c778` with `adapter_model.safetensors` size `17,640,136` bytes.
+- Measured dataset/training facts: `12` real source sections, `14,203` estimated tokens, dataset hash `d0f85a6bf90dd9f0ef0489aef3ebf2e705fd896a91ad5a7f357196ba40c1c4b0`, one CPU training step, train runtime `753.997s`, and train loss `5.6621`.
+- Direct live Transformers/PEFT runtime evidence at `.tmp/lora-real-qwen05b-runtime-evidence.json` passed with `ok=true` and response `The V1 release is a major update`.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "lora_trainer_json_argv_uses_env_paths_with_spaces or lora_mvp_policy_and_smoke_scripts_are_present or run_adapter_runtime_smoke"` passed with `4` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "verified_lora_training_creates_active_adapter_with_metrics or lora_training_without_configured_trainer_records_trainer_missing or lora_adapter_rollback_and_delete_guardrails or expert_status_reports_issue_when_active_adapter_runtime_load_fails or expert_retrain_queues_adapter_job_or_hardware_gate"` passed with `5` tests.
+- `.venv\Scripts\python.exe -m compileall -q backend/app` passed.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/smoke-lora-expert.ps1 -AllowTestTrainer -ReportPath .tmp\lora-expert-harness-regression.json` passed and still marks scaffold output as non-release evidence.
+
+Still not completed:
+
+- The live adapter quality gate did not pass. The short one-case live benchmark scored adapter `24.0` vs retrieval `100.0`, delta `-76.0`, so public "trained expert" claims remain blocked.
+- The full strict-category benchmark, hardware matrix/time estimates beyond this CPU baseline, approved chat/expert pairing matrix, and LoRA-specific integrity hardening remain open.
+
 ## 2026-06-15 Parser / Benchmark / Extension Simplification Snapshot
 
 Completed:
@@ -603,7 +625,7 @@ Current decision:
 - Rerun the packaged installer and smoke sequence on a healthier clean VM image before treating the gate as passed.
 - The current NSIS packaging path already exposes install-location selection plus desktop and start-menu shortcut creation. Remaining packaging work here is clean-VM validation and installed-app parity, not restoring those installer toggles.
 
-Latest compact truth after the 2026-06-05 decision pass lives in `docs/PROJECT_CONTEXT.md`. Current product decision: V1 is Windows-only, public-release-only, and must include a working high-quality verified LoRA function; there is no private-demo fallback. Model policy is now explicit: strict `accepted` / `rejected` compatibility remains, but runtime architecture is now understood as dual-role rather than one lightweight unified path. Current Qwen/Phi/Gemma defaults remain the default recommendations, expert-capable onboarding still requires an app-managed approved local checkpoint, retrieval remains the citation authority, and public docs must stop implying that one approved family automatically means one cheap runtime path. Claude Desktop-specific smoke is deferred for now; clean Windows VM validation, real LoRA trainer/runtime smoke, live quality benchmarking, mixed-embedding correctness fixes, and hardware-aware model recommendations remain current external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
+Latest compact truth after the 2026-06-05 decision pass lives in `docs/PROJECT_CONTEXT.md`. Current product decision: V1 is Windows-only, public-release-only, and must include a working high-quality verified LoRA function; there is no private-demo fallback. Model policy is now explicit: strict `accepted` / `rejected` compatibility remains, but runtime architecture is now understood as dual-role rather than one lightweight unified path. Current Qwen/Phi/Gemma defaults remain the default recommendations, expert-capable onboarding still requires an app-managed approved local checkpoint, retrieval remains the citation authority, and public docs must stop implying that one approved family automatically means one cheap runtime path. Claude Desktop-specific smoke is deferred for now; clean Windows VM validation, full live LoRA quality benchmarking, mixed-embedding correctness fixes, and hardware-aware model recommendations remain current external gates. Refresh this fallback as a deliberate snapshot, not as an append-only task log.
 
 ## 2026-06-06 Security Architecture Snapshot
 
@@ -699,7 +721,7 @@ Current architectural reading from the codebase:
 
 Current unresolved gaps made explicit by the review:
 
-- LoRA expert quality is still not empirically proven on a real release-like machine; deterministic scaffolding is not enough.
+- LoRA expert trainer/runtime now has one real CPU smoke on the current machine, but quality is still not empirically proven on a release-like machine; deterministic scaffolding and the one-step failed benchmark are not enough.
 - Current training thresholds are scaffolding values, not benchmark-backed public gates.
 - Changing embedding models on a live vault currently risks mixed-space retrieval unless search/retrieval are hotfixed to respect the active embedding model/index.
 - Bridge uses tokens and vault/cluster scoping, but it is not a meaningful anti-exfiltration throttle against repeated corpus walking by a trusted client.
@@ -778,10 +800,9 @@ Verification:
 
 Still not completed:
 
-- Real LLaMA Factory trainer smoke needs an actual `CML_LORA_TRAINER_COMMAND` and local base model path.
-- Runtime adapter loading still needs a live local inference runtime smoke, not only the load-plan contract.
-- Live retrieval-vs-adapter quality benchmark remains to run against a real trained adapter.
-- Hardware matrix and training time/cost reporting remain to expand.
+- Real LLaMA Factory trainer smoke and live Transformers/PEFT adapter loading passed on 2026-06-15 against Qwen2.5 0.5B on CPU, using actual project docs as source data.
+- Live retrieval-vs-adapter quality benchmark remains to pass against a real trained adapter; the first one-case smoke failed adapter `24.0` vs retrieval `100.0`.
+- Hardware matrix and training time/cost reporting remain to expand beyond the measured one-step CPU baseline.
 
 ## 2026-06-04 Full Post-Review Implementation Snapshot
 
@@ -1012,7 +1033,7 @@ Use this section for fast status checks. Detailed historical notes remain in the
 | Vault ingestion            | Complete for current scope | `[##########] 100%` | Clean VM confirmation only.                                                                      |
 | Embeddings and clustering  | Complete for current scope | `[##########] 100%` | Larger real-vault evidence now lives under QA/hardening.                                         |
 | Chat and context routing   | Complete for current scope | `[##########] 100%` | Remaining work is UI/runtime polish rather than backend/chat routing correctness or scale. |
-| Compulsory cluster experts | In progress                | `[#######---] 70%`  | Real LLaMA Factory smoke and live runtime adapter loading against a real local model.            |
+| Compulsory cluster experts | In progress                | `[#########-] 95%`  | Full live adapter quality benchmark win plus hardware/pairing proof.                            |
 | Context Bridge             | In progress                | `[##########] 98%`  | Full extension package, capture UX polish, and later external-client smoke.                      |
 | Packaging and installer    | In progress                | `[##########] 98%`  | Clean Windows VM validation.                                                                     |
 | QA and hardening           | In progress                | `[##########] 99%`  | Clean VM package validation, larger scale/performance benchmarks, model recommendation QA.       |
@@ -1023,7 +1044,7 @@ Use this section for fast status checks. Detailed historical notes remain in the
 - Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
 - Keep the non-LoRA security patch closed while LoRA-specific Phase 11 remains intentionally deferred until LoRA is ready for real hardening work.
 - Keep Windows-only public V1 criteria; if blockers remain, delay release rather than ship a private demo.
-- Verify real adapter training/loading before using "trained expert" language in user-facing surfaces; current gates are stronger but still need real trainer/runtime proof.
+- Do not use "trained expert" language in user-facing surfaces until the live adapter quality benchmark beats retrieval; real trainer/runtime proof exists, but quality proof does not.
 - Build hardware-aware model recommendation for low-, mid-, and high-spec users.
 - Tune retrieval thresholds and run larger backend benchmarks on real vault-shaped data for QA evidence, not missing retrieval architecture.
 - Turbovec Phase C rollout wiring is complete: per-vault benchmark approval, epoch binding, and auto-backend gating now exist in code. Remaining work is corpus evidence collection, not new backend plumbing.
@@ -1070,7 +1091,7 @@ Chat and context routing:
 Compulsory cluster experts:
 
 - Done: expert lifecycle states, graduation contract API, deterministic dataset generation, source/token/validation/diversity gates, duplicate-ratio gate, train/validation split, dataset/config hashes, shell-free trainer process boundary, stdout/stderr capture, strict adapter config/weight validation, runtime-load plan metadata, metrics/quality-delta scaffold, deterministic evaluation harness, smoke scripts, active adapter selection, stale-adapter detection, rollback support, delete guardrails, artifact version metadata, backend/Desktop status surfaces, Expert tab, trainer dependency endpoint, contributor requirements, hardware gate, and Windows-path tests.
-- Remaining: real LLaMA Factory smoke, runtime adapter loading against a live local model, richer metrics/rollback/failure UI states, hardware matrix expansion, retrieval-vs-adapter quality benchmark, and packaging/runtime QA.
+- Remaining: full live adapter quality benchmark pass, richer metrics/rollback/failure UI states, hardware matrix expansion from the measured CPU baseline, approved pairing proof, LoRA integrity hardening, and packaging/runtime QA.
 
 Context Bridge:
 
@@ -1085,7 +1106,7 @@ Packaging and installer:
 QA and hardening:
 
 - Done: broad backend regression suite, atomic job concurrency tests, local API auth/identity tests, OCR preference/fallback/status tests, dynamic-link/security tests, IPv4-mapped URL blocking tests, vault-safety tests, deletion/search cleanup tests, citation tests, duplicate/reconciliation/retrieval snapshot tests, vector repair/compaction/policy tests, chat attachment/routing tests, Bridge/MCP/token tests, diagnostic redaction/runtime-summary tests, migration/startup repair tests, disk/model preflight tests, extension tests, cancellation/progress contract tests, expert lifecycle tests, vault-lock tests, reconciliation log/retry/retention tests, hardware-gate smoke, backend benchmark script smoke, Electron token-store regression, desktop UI build verification, clean Python/npm audits, packaged smoke suite, and Playwright UI audits.
-- Remaining: real adapter smoke, adapter runtime-load smoke, retrieval-vs-adapter quality benchmark, clean VM package validation, larger scale/performance benchmarks, map benchmarks, real MCP client smoke, disposable-vault destructive UI tests, and more failure-state tests.
+- Remaining: full live retrieval-vs-adapter quality benchmark pass, clean VM package validation, larger scale/performance benchmarks, map benchmarks, real MCP client smoke, disposable-vault destructive UI tests, and more failure-state tests.
 
 ## Week-By-Week Goals
 
@@ -1304,7 +1325,7 @@ Exit criteria:
   - added `scripts/dev/update-requirements.ps1` and a continuous-update rule for dependency changes
   - added tests for LoRA trainer status and contributor requirements coverage
   - updated [README.md](../README.md) with contributor setup, split LoRA trainer environment instructions, expert states, and expert API surfaces
-  - verified `pip check` has no broken requirements and `pip-audit` reports no known vulnerabilities in the active backend env; real LLaMA Factory smoke should run in the separate trainer env
+  - verified `pip check` had no broken requirements and `pip-audit` reported no known vulnerabilities in the active backend env; this older dependency note is superseded by the 2026-06-15 real trainer/runtime smoke in the active `.venv`
 - Completed the verified-LoRA foundation pass for public V1:
   - reviewed the merged contributor work and kept the useful dataset/profile/evaluation/artifact scaffold while replacing fake-success adapter behavior with a real training contract
   - added the public LoRA graduation contract with supported statuses, minimum dataset/quality gates, required adapter files, failure codes, and rollback behavior
@@ -1315,7 +1336,7 @@ Exit criteria:
   - expanded expert artifacts with dataset/config hashes, metrics JSON, active flag, rollback timestamp, and soft-delete timestamp
   - added API/client surfaces for expert contract, artifact activation, rollback, and deletion guardrails
   - added regression tests for verified adapter creation, activation metrics, rollback, and active-artifact delete blocking
-  - checked the active `.venv`: `llamafactory` and `peft` are not installed, so real external LLaMA Factory smoke remains blocked on ML dependency/runtime installation
+  - superseded by the 2026-06-15 real smoke: the active `.venv` now has the needed LLaMA Factory/PEFT runtime for local validation, and the remaining public blocker is live adapter quality rather than missing ML dependencies
   - verified backend tests, Electron tests, and desktop build without rebuilding the package
 - Completed the second 2026-06-02 ten-step hardening pass without starting a full package rebuild:
   - made dependent jobs enter `blocked_by_dependency` on enqueue and recover to queued when the parent succeeds
@@ -2247,7 +2268,7 @@ These items are not ordinary polish. If they are not implemented and verified, t
 - Add manual cluster override polish against backend state.
 - Decide whether multi-cluster chat transcripts should also create a separate linked chat-memory cluster later.
 - Replace expert lifecycle scaffold with real local training, adapter storage, evaluation, and rollback.
-- Because LoRA is now required in public V1, continue from the verified adapter-training foundation: run a real LLaMA Factory training smoke, verify runtime adapter loading, expand the hardware/failure matrix, add richer UI states, and benchmark quality against retrieval-only answers before any broad user-facing expert claim.
+- Because LoRA is now required in public V1, continue from the verified adapter-training foundation and the 2026-06-15 real trainer/runtime smoke: expand the hardware/failure matrix, add richer UI states, and make the live adapter quality benchmark beat retrieval-only answers before any broad user-facing expert claim.
 - Adapter artifact storage, training job registration, process runner boundary, dataset export, artifact layout, metrics, activation, rollback, cleanup guardrails, and tests now exist. Remaining LoRA work: real external trainer smoke, runtime adapter loading, broader evaluation harness, packaged QA, UI controls, and quality comparison on representative prompts.
 - Because cloud connectors and a full browser extension are now required in the expanded V1 scope, split connector work into local synced-folder import, extension local API identity/capture, and first OAuth connector rather than treating them as post-V1 nice-to-haves.
 - Browser extension local API identity/capture scaffolding now exists; Settings can create and revoke a local extension token, clients can be restricted by allowed vault IDs, and extension capture now rejects cross-vault cluster assignments. Remaining extension work: actual extension package, safer pairing flow, capture-current-page/readability extraction, screenshot/PDF handling, and richer per-client permissions.
@@ -2346,7 +2367,7 @@ These items are not ordinary polish. If they are not implemented and verified, t
 - Context Bridge HTTP retrieval is now semantic, local, and permission-gated by enabled state, token auth, vault/cluster allowlists, and raw-text redaction. Token rotations are recorded, missing/ambiguous vault scope returns `no_active_vault`, and MCP notifications now correctly produce no response. Before exposing it to external clients beyond trusted local testing, keep claims conservative and add external-client smoke when reprioritized; Claude Desktop-specific smoke is deferred for now.
 - Current-code backend is running on `http://127.0.0.1:7343` because `7342` is occupied by stale Windows listeners with non-existent PIDs. The `7343` backend exposes the new chat session/message routes, Bridge settings route, and semantic Bridge routes.
 - Chat streaming now uses `/api/v1/chat/context/stream`. When a local OpenAI-compatible runtime is available, CML parses runtime SSE chunks; otherwise retrieval fallback text is streamed in local chunks.
-- Expert lifecycle now has a verified LoRA training foundation. The deterministic test trainer can produce adapter-shaped artifacts for CI, while public V1 still requires a real LLaMA Factory run and runtime adapter-loading smoke before claiming production training.
+- Expert lifecycle now has a verified LoRA training foundation. The deterministic test trainer can produce adapter-shaped artifacts for CI, and the 2026-06-15 real Qwen2.5 CPU smoke proved trainer/runtime attachment on this machine; public V1 still requires a real live quality benchmark win before claiming production training.
 - Diagnosed the `{"detail":"Not Found"}` UI issue: `7342` is an older stale backend that lacks `/api/v1/chat/messages/{message_id}` and `/api/v1/bridge/settings`, while `7343` has the current routes. The desktop API client now probes configured URL, `7343`, then `7342`, and only uses a backend with the current chat routes. Also set local `.env` `VITE_CML_BACKEND_URL=http://127.0.0.1:7343`.
 - Restarted the desktop dev stack after unsetting `ELECTRON_RUN_AS_NODE`; Vite is reachable at `http://127.0.0.1:5173/` and the current backend routes are reachable on `7343`.
 - Electron now has a backend process manager for dev and packaged mode. Packaged mode now expects staged backend source plus a staged Python venv runtime under app resources.
@@ -2432,7 +2453,7 @@ These items are not ordinary polish. If they are not implemented and verified, t
 - Embedding setup now requires a local model/cache folder and uses local-files-only loading. The remaining UX gap is a clean model download/link flow with real byte progress, network-backed cancellation smoke, and clear destination paths.
 - Local integrations now have a backend scan primitive. It intentionally does not ingest automatically; import history, watched refresh, and source-to-folder reconciliation are the next implementation layer.
 - Local integration scans can now persist import history when a vault ID is supplied. Watched refresh and reconciliation are still not implemented.
-- LoRA readiness now has hardware status gates, expert job metadata, a trainer process boundary, dataset export, artifact schema, metrics, active adapter state, rollback, delete guardrails, and tests. Real external LLaMA Factory training and runtime adapter loading still need smoke verification.
+- LoRA readiness now has hardware status gates, expert job metadata, a trainer process boundary, dataset export, artifact schema, metrics, active adapter state, rollback, delete guardrails, tests, and one real external LLaMA Factory trainer/runtime smoke. The remaining public blocker is live quality benchmark success plus broader hardware/package proof.
 - The extension API scaffold creates tokened local extension clients and captures text into Vault sources. It is not a full browser extension yet, and it still needs pairing UI plus per-client permission controls before user exposure.
 - Job cancellation is now available for jobs marked cancellable, but it is cooperative. A running non-preemptable task may still finish its current operation; cancellation prevents final success marking where the worker observes the cancelled state.
 - Integration refresh is scan-only. It updates counts and status for a watched root, but it does not yet diff, import, delete, or move sources.

@@ -209,6 +209,30 @@ def run_adapter_runtime_smoke(
     prompt: str | None = None,
     max_new_tokens: int | None = None,
 ) -> dict:
+    batch = run_adapter_runtime_batch(
+        adapter_path=adapter_path,
+        base_model=base_model,
+        prompts=[prompt or getattr(get_settings(), "lora_runtime_prompt", "Reply with the single word CML.")],
+        max_new_tokens=max_new_tokens,
+    )
+    report = dict(batch)
+    first_response = (batch.get("responses") or [{}])[0]
+    report["prompt"] = first_response.get("prompt") or prompt or getattr(
+        get_settings(),
+        "lora_runtime_prompt",
+        "Reply with the single word CML.",
+    )
+    report["response_text"] = first_response.get("response_text") or batch.get("response_text") or ""
+    return report
+
+
+def run_adapter_runtime_batch(
+    *,
+    adapter_path: str | Path,
+    base_model: str,
+    prompts: list[str],
+    max_new_tokens: int | None = None,
+) -> dict:
     adapter_dir = Path(adapter_path)
     plan = runtime_adapter_load_plan(adapter_path=adapter_dir, base_model=base_model)
     report = {
@@ -216,7 +240,7 @@ def run_adapter_runtime_smoke(
         "adapter_path": str(adapter_dir),
         "base_model": base_model,
         "plan": plan,
-        "response_text": "",
+        "responses": [],
         "error": "",
         "stdout": "",
         "stderr": "",
@@ -240,7 +264,8 @@ def run_adapter_runtime_smoke(
         payload = {
             "adapter_path": str(adapter_dir.resolve()),
             "base_model_path": str(plan["resolved_base_model"]["base_model_path"]),
-            "prompt": prompt or getattr(get_settings(), "lora_runtime_prompt", "Reply with the single word CML."),
+            "prompt": prompts[0] if prompts else "",
+            "prompts": prompts,
             "max_new_tokens": int(max_new_tokens or getattr(get_settings(), "lora_runtime_max_new_tokens", 48)),
             "device": getattr(get_settings(), "lora_runtime_device", "auto"),
             "dtype": getattr(get_settings(), "lora_runtime_dtype", "auto"),

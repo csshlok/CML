@@ -33,8 +33,7 @@ import os
 from pathlib import Path
 
 from backend.app.core.config import get_settings
-from backend.app.core.expert_runtime import run_adapter_runtime_smoke
-from backend.app.core.lora_training import runtime_adapter_load_plan
+from backend.app.core.expert_runtime import run_adapter_runtime_smoke, runtime_adapter_load_plan
 
 get_settings.cache_clear()
 adapter_path = Path(os.environ["ADAPTER_PATH"])

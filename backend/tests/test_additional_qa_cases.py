@@ -2414,6 +2414,13 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(result["status"], "succeeded")
         self.assertTrue((output_dir / "adapter_config.json").exists())
         self.assertIn("train data.jsonl", (output_dir / "trainer.stdout.log").read_text(encoding="utf-8"))
+        llamafactory_config_path = output_dir / "llamafactory-train-config.yaml"
+        dataset_info = json.loads((dataset_dir / "dataset_info.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["llamafactory_config_path"], str(llamafactory_config_path))
+        self.assertTrue(llamafactory_config_path.exists())
+        self.assertEqual(dataset_info["cml_cluster_train"]["formatting"], "openai")
+        self.assertEqual(dataset_info["cml_cluster_train"]["tags"]["role_tag"], "role")
+        self.assertEqual(dataset_info["cml_cluster_train"]["tags"]["content_tag"], "content")
 
     def test_lora_adapter_validation_rejects_incomplete_or_malformed_artifacts(self) -> None:
         from backend.app.core.lora_training import adapter_validation_report, verify_adapter_artifact

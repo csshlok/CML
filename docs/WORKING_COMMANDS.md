@@ -375,10 +375,12 @@ Run the LoRA scaffold smoke:
 Run a real LoRA trainer smoke:
 
 ```powershell
-$env:CML_LORA_TRAINER_COMMAND = ".\.venv-lora\Scripts\llamafactory-cli.exe train --config {config_path}"
+$env:CML_LORA_TRAINER_COMMAND = ".\.venv-lora\Scripts\llamafactory-cli.exe train {config_path}"
 $env:CML_LORA_MODEL_DIRS = "D:\models\hf"
 $env:CML_LLM_MODEL = "Qwen2.5-3B-Instruct"
-.\scripts\backend\smoke-lora-expert.ps1
+$env:CML_LORA_TRAINING_MAX_STEPS = "1"
+$env:CML_LORA_TRAINING_CUTOFF_LEN = "512"
+.\scripts\backend\smoke-lora-expert.ps1 -RuntimeMaxNewTokens 8 -BenchmarkMaxNewTokens 8 -AllowBenchmarkFailure
 ```
 
 Run the local adapter smoke:

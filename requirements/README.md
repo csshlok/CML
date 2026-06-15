@@ -24,5 +24,7 @@ For real LoRA training smoke, use a separate ML environment:
 ```powershell
 py -3.11 -m venv .venv-lora
 .\.venv-lora\Scripts\python -m pip install -r requirements\contributors-lora-trainer.txt
-$env:CML_LORA_TRAINER_COMMAND = ".\.venv-lora\Scripts\llamafactory-cli.exe train --config {config_path}"
+$env:CML_LORA_TRAINER_COMMAND = ".\.venv-lora\Scripts\llamafactory-cli.exe train {config_path}"
 ```
+
+`{config_path}` resolves to the generated LLaMA Factory YAML config. Use `{cml_config_path}` only for wrappers that need CML's metadata JSON.

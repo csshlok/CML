@@ -21,9 +21,11 @@ def main() -> int:
         "device": payload.get("device") or "auto",
         "dtype": payload.get("dtype") or "auto",
         "prompt": payload["prompt"],
+        "prompts": payload.get("prompts") or [payload["prompt"]],
         "max_new_tokens": int(payload.get("max_new_tokens") or 48),
         "packages": _package_versions(),
         "response_text": "",
+        "responses": [],
         "error": "",
         "unloaded": False,
     }
@@ -47,7 +49,7 @@ def main() -> int:
             local_files_only=True,
             trust_remote_code=False,
             torch_dtype=dtype,
-            device_map=str(payload.get("device") or "auto"),
+            device_map=_device_map(str(payload.get("device") or "auto")),
         )
         adapter_model = PeftModel.from_pretrained(
             model,
@@ -56,19 +58,24 @@ def main() -> int:
             local_files_only=True,
         )
         adapter_model.eval()
-        inputs = tokenizer(payload["prompt"], return_tensors="pt")
         model_device = next(adapter_model.parameters()).device
-        inputs = {key: value.to(model_device) for key, value in inputs.items()}
-        generated = adapter_model.generate(
-            **inputs,
-            max_new_tokens=int(payload.get("max_new_tokens") or 48),
-            do_sample=False,
-            pad_token_id=tokenizer.pad_token_id,
-        )
-        text = tokenizer.decode(generated[0], skip_special_tokens=True).strip()
-        report["response_text"] = text
-        if not text:
-            raise RuntimeError("Adapter-backed generation returned an empty response.")
+        responses = []
+        for prompt in report["prompts"]:
+            inputs = _tokenize_prompt(tokenizer, str(prompt))
+            inputs = {key: value.to(model_device) for key, value in inputs.items()}
+            generated = adapter_model.generate(
+                **inputs,
+                max_new_tokens=int(payload.get("max_new_tokens") or 48),
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+            prompt_length = inputs["input_ids"].shape[-1]
+            text = tokenizer.decode(generated[0][prompt_length:], skip_special_tokens=True).strip()
+            responses.append({"prompt": str(prompt), "response_text": text})
+        report["responses"] = responses
+        report["response_text"] = responses[0]["response_text"] if responses else ""
+        if not any(item["response_text"] for item in responses):
+            raise RuntimeError("Adapter-backed generation returned empty responses.")
         report["ok"] = True
     except Exception as exc:
         report["error"] = str(exc)
@@ -101,6 +108,32 @@ def _torch_dtype(torch_module, raw_dtype: str):
     if value == "float32":
         return torch_module.float32
     raise RuntimeError(f"Unsupported runtime dtype: {raw_dtype}")
+
+
+def _device_map(raw_device: str):
+    value = raw_device.strip().lower()
+    if value in {"", "auto"}:
+        return "auto"
+    if value == "cpu":
+        return {"": "cpu"}
+    return {"": raw_device}
+
+
+def _tokenize_prompt(tokenizer, prompt: str) -> dict:
+    chat_template = getattr(tokenizer, "chat_template", None)
+    if chat_template:
+        try:
+            input_ids = tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                add_generation_prompt=True,
+                return_tensors="pt",
+            )
+            import torch
+
+            return {"input_ids": input_ids, "attention_mask": torch.ones_like(input_ids)}
+        except Exception:
+            pass
+    return tokenizer(prompt, return_tensors="pt")
 
 
 def _package_versions() -> dict[str, str | None]:

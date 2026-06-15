@@ -87,13 +87,14 @@ def trainer_dependency_status() -> dict:
 
 
 def training_config(base_model: str, dataset_hash: str) -> dict:
+    settings = get_settings()
     payload = {
         "trainer": "llama-factory-compatible",
         "base_model": base_model,
         "dataset_hash": dataset_hash,
         "finetuning_type": "lora",
         "template": "chatml",
-        "cutoff_len": 4096,
+        "cutoff_len": int(settings.lora_training_cutoff_len),
         "learning_rate": 0.0002,
         "num_train_epochs": 1,
     }
@@ -103,8 +104,12 @@ def training_config(base_model: str, dataset_hash: str) -> dict:
 
 def run_lora_training_process(*, dataset_manifest: dict, output_dir: Path, config: dict) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
-    config_path = output_dir / "training-config.json"
-    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    cml_config_path = output_dir / "training-config.json"
+    cml_config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    _write_llamafactory_dataset_info(dataset_manifest)
+    llamafactory_config_path = output_dir / "llamafactory-train-config.yaml"
+    llamafactory_config = _llamafactory_training_config(dataset_manifest, output_dir, config)
+    llamafactory_config_path.write_text(json.dumps(llamafactory_config, indent=2), encoding="utf-8")
     stdout_path = output_dir / "trainer.stdout.log"
     stderr_path = output_dir / "trainer.stderr.log"
 
@@ -129,9 +134,19 @@ def run_lora_training_process(*, dataset_manifest: dict, output_dir: Path, confi
         "CML_LORA_TRAIN_PATH": str(dataset_manifest["train_path"]),
         "CML_LORA_VALIDATION_PATH": str(dataset_manifest["validation_path"]),
         "CML_LORA_OUTPUT_DIR": str(output_dir),
-        "CML_LORA_CONFIG_PATH": str(config_path),
+        "CML_LORA_CONFIG_PATH": str(cml_config_path),
+        "CML_LORA_LLAMAFACTORY_CONFIG_PATH": str(llamafactory_config_path),
     }
-    command = _trainer_command_argv(settings.lora_trainer_command, dataset_manifest, output_dir, config_path)
+    env["PATH"] = _path_with_python_scripts(env.get("PATH", ""))
+    command = _trainer_command_argv(
+        settings.lora_trainer_command,
+        dataset_manifest,
+        output_dir,
+        llamafactory_config_path,
+        cml_config_path=cml_config_path,
+    )
+    if _looks_like_llamafactory_train_command(command):
+        env.setdefault("NPROC_PER_NODE", "1")
     result = subprocess.run(command, shell=False, capture_output=True, text=True, env=env, timeout=7200)
     stdout_path.write_text(result.stdout[-200_000:], encoding="utf-8")
     stderr_path.write_text(result.stderr[-200_000:], encoding="utf-8")
@@ -143,6 +158,8 @@ def run_lora_training_process(*, dataset_manifest: dict, output_dir: Path, confi
         "adapter_path": str(output_dir),
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),
+        "cml_config_path": str(cml_config_path),
+        "llamafactory_config_path": str(llamafactory_config_path),
     }
 
 
@@ -236,11 +253,77 @@ def _write_test_adapter(output_dir: Path, config: dict) -> None:
     (output_dir / "adapter_model.safetensors").write_bytes(b"CML test adapter placeholder\n")
 
 
+def _write_llamafactory_dataset_info(dataset_manifest: dict) -> Path:
+    dataset_dir = Path(dataset_manifest["dataset_dir"])
+    openai_tags = {
+        "role_tag": "role",
+        "content_tag": "content",
+        "user_tag": "user",
+        "assistant_tag": "assistant",
+        "observation_tag": "tool",
+        "function_tag": "function",
+        "system_tag": "system",
+    }
+    payload = {
+        "cml_cluster_train": {
+            "file_name": Path(dataset_manifest["train_path"]).name,
+            "formatting": "openai",
+            "columns": {"messages": "messages"},
+            "tags": openai_tags,
+        },
+        "cml_cluster_validation": {
+            "file_name": Path(dataset_manifest["validation_path"]).name,
+            "formatting": "openai",
+            "columns": {"messages": "messages"},
+            "tags": openai_tags,
+        },
+    }
+    path = dataset_dir / "dataset_info.json"
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
+def _llamafactory_training_config(dataset_manifest: dict, output_dir: Path, config: dict) -> dict:
+    settings = get_settings()
+    payload = {
+        "model_name_or_path": config["base_model"],
+        "stage": "sft",
+        "do_train": True,
+        "finetuning_type": "lora",
+        "lora_target": "all",
+        "lora_rank": 8,
+        "lora_alpha": 16,
+        "lora_dropout": 0.05,
+        "dataset_dir": str(dataset_manifest["dataset_dir"]),
+        "dataset": "cml_cluster_train",
+        "eval_dataset": "cml_cluster_validation",
+        "template": config.get("template") or "chatml",
+        "cutoff_len": int(config.get("cutoff_len") or 4096),
+        "learning_rate": float(config.get("learning_rate") or 0.0002),
+        "num_train_epochs": float(config.get("num_train_epochs") or 1),
+        "per_device_train_batch_size": int(settings.lora_training_batch_size),
+        "gradient_accumulation_steps": int(settings.lora_training_gradient_accumulation_steps),
+        "output_dir": str(output_dir),
+        "overwrite_output_dir": True,
+        "save_strategy": "epoch",
+        "logging_steps": 1,
+        "report_to": "none",
+        "use_cpu": True,
+        "fp16": False,
+        "bf16": False,
+    }
+    if settings.lora_training_max_steps is not None and int(settings.lora_training_max_steps) > 0:
+        payload["max_steps"] = int(settings.lora_training_max_steps)
+    return payload
+
+
 def _trainer_command_argv(
     command_template: str,
     dataset_manifest: dict,
     output_dir: Path,
     config_path: Path,
+    *,
+    cml_config_path: Path | None = None,
 ) -> list[str]:
     values = {
         "dataset_dir": str(dataset_manifest["dataset_dir"]),
@@ -248,6 +331,8 @@ def _trainer_command_argv(
         "validation_path": str(dataset_manifest["validation_path"]),
         "output_dir": str(output_dir),
         "config_path": str(config_path),
+        "llamafactory_config_path": str(config_path),
+        "cml_config_path": str(cml_config_path or config_path),
     }
     stripped = command_template.strip()
     if stripped.startswith("["):
@@ -262,7 +347,18 @@ def _trainer_command_argv(
         argv = shlex.split(_replace_trainer_placeholders(stripped, values), posix=os.name != "nt")
     if not argv:
         raise RuntimeError("LoRA trainer command is empty.")
+    if Path(argv[0]).name.lower() in {"llamafactory-cli", "llamafactory-cli.exe", "lmf", "lmf.exe"}:
+        resolved = _llamafactory_cli_path()
+        if resolved:
+            argv[0] = resolved
     return argv
+
+
+def _looks_like_llamafactory_train_command(command: list[str]) -> bool:
+    if len(command) < 2:
+        return False
+    executable = Path(command[0]).name.lower()
+    return executable in {"llamafactory-cli", "llamafactory-cli.exe", "lmf", "lmf.exe"} and command[1] == "train"
 
 
 def _replace_trainer_placeholders(template: str, values: dict[str, str]) -> str:
@@ -270,6 +366,14 @@ def _replace_trainer_placeholders(template: str, values: dict[str, str]) -> str:
     for key, value in values.items():
         result = result.replace(f"{{{key}}}", value)
     return result
+
+
+def _path_with_python_scripts(existing_path: str) -> str:
+    scripts_dir = str(sys_executable_dir())
+    entries = [item for item in existing_path.split(os.pathsep) if item]
+    if scripts_dir.lower() in {item.lower() for item in entries}:
+        return existing_path
+    return os.pathsep.join([scripts_dir, *entries])
 
 
 def _package_status(name: str) -> dict:
