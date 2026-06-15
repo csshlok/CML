@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     turbovec_min_chunk_count: int = 10000
     ocr_binary_path: Path | None = None
     ocrmypdf_binary_path: Path | None = None
+    pdf_parser_backend: str = "auto"
+    pdf_parser_runtime_python: str | None = None
+    opendataloader_pdf_command: str | None = None
+    pdf_parser_timeout_seconds: int = 180
     api_token: str | None = None
     allow_unauthenticated_api: bool = False
     lora_trainer_command: str | None = None

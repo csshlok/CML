@@ -71,6 +71,7 @@ def ingest_file_through_quarantine(vault_id: str, path: str) -> dict:
         "trust_tier": _trust_tier(candidate, defender),
         "provenance": "local_import",
         "security_labels": _security_labels(candidate, defender),
+        "parser": parsed.get("parser") or {},
     }
     return parsed
 
@@ -258,9 +259,11 @@ def validate_worker_output(payload: object) -> dict:
             clean_pages.append(text)
     if not clean_pages:
         raise QuarantineError("Parser worker produced no readable text")
+    parser = payload.get("parser") if isinstance(payload.get("parser"), dict) else {}
     return {
         "title": title[:240],
         "pages": clean_pages,
+        "parser": parser,
     }
 
 

@@ -11,7 +11,8 @@ from backend.app.core.network_security import (
     validate_public_http_url,
     validate_response_peer,
 )
-from backend.app.core.ocr import OCRError, ocr_image, ocr_pdf_pages
+from backend.app.core.ocr import OCRError, ocr_image
+from backend.app.core.pdf_pipeline import PdfPipelineError, extract_pdf_document
 
 
 SUPPORTED_TEXT_EXTENSIONS = {
@@ -211,27 +212,10 @@ def _extract_pdf_text(source_path: Path) -> str:
 
 def _extract_pdf_pages(source_path: Path) -> list[str]:
     try:
-        from pypdf import PdfReader
-    except ImportError as exc:
-        raise ExtractionError("PDF extraction requires pypdf to be installed") from exc
-
-    try:
-        reader = PdfReader(str(source_path))
-        pages = [(page.extract_text() or "").strip() for page in reader.pages]
-    except Exception as exc:
-        raise ExtractionError(f"Could not read PDF file: {exc}") from exc
-
-    readable_pages = [page for page in pages if page.strip()]
-    if not readable_pages:
-        try:
-            ocr_pages = ocr_pdf_pages(source_path)
-        except OCRError as exc:
-            return [_pdf_metadata_fallback(source_path, detail=str(exc))]
-        readable_ocr_pages = [page for page in ocr_pages if page.strip()]
-        if not readable_ocr_pages:
-            return [_pdf_metadata_fallback(source_path)]
-        return _split_text_pages("\n\n".join(readable_ocr_pages))
-    return _split_text_pages("\n\n".join(readable_pages))
+        document = extract_pdf_document(source_path)
+    except PdfPipelineError as exc:
+        raise ExtractionError(str(exc)) from exc
+    return [str(page).strip() for page in document.get("pages") or [] if str(page).strip()]
 
 
 def _extract_image_text(source_path: Path) -> str:
@@ -313,13 +297,6 @@ def _split_long_text_line(text: str, *, max_page_bytes: int) -> list[str]:
             chunks.append(chunk)
         remaining = remaining[end:].strip()
     return chunks
-
-
-def _pdf_metadata_fallback(source_path: Path, detail: str | None = None) -> str:
-    note = "PDF stored in vault metadata. No readable text was found, including after local OCR."
-    if detail:
-        note = f"{note} OCR detail: {detail}"
-    return _file_metadata_text(source_path, note=note)
 
 
 class _TextHTMLParser(HTMLParser):

@@ -42,6 +42,7 @@ from backend.app.core.retrieval_trust import (
     trust_weight,
 )
 from backend.app.core.context_budget_policy import select_context_budget
+from backend.app.core.context_reduction import build_context_reduction_plan
 from backend.app.core.vector_maintenance import active_embedding_selector
 from backend.app.core.turbovec_runtime import maybe_remove_source_chunks_from_sidecar
 from backend.app.core.context_memory import get_context_memory
@@ -713,6 +714,8 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     )
     synthesis_citations = budget_plan["citations"]
     recent_turns = budget_plan["recent_turns"]
+    memory_items = budget_plan["memory_items"]
+    working_memory = budget_plan["working_memory"]
     citations = synthesis_citations or candidate_citations[: max(1, min(4, len(candidate_citations)))]
     synthesis_guard = analyze_synthesis_readiness(payload.prompt, synthesis_citations)
     expert_assist = _maybe_run_cluster_expert_assist(
@@ -781,6 +784,7 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "memory_items_selected": len(memory_items),
         "citations_selected": len(synthesis_citations),
         "citations_trimmed": budget_plan["citations_trimmed"],
+        "budget_diagnostics": budget_plan["diagnostics"],
         "candidate_citations": len(synthesis_candidates),
         "supported_claims_count": len(synthesis_guard["supported_claims"]),
         "unsupported_claims_count": len(synthesis_guard["unsupported_claims"]),
@@ -1579,83 +1583,15 @@ def _apply_synthesis_token_budget(
     memory_items: list[dict] | None = None,
     working_memory: dict | None = None,
 ) -> dict:
-    trimmed_turns = _trim_recent_turns_to_budget(recent_turns or [], token_budget=token_budget)
-    history_tokens_estimate = sum(_estimate_tokens(turn.get("content", "")) for turn in trimmed_turns)
-    history_turns_trimmed = max(0, len(recent_turns or []) - len(trimmed_turns))
-    base_tokens = _estimate_tokens(prompt) + _estimate_tokens(
-        "\n".join(f"{cluster['cluster_name']} {cluster['reason']}" for cluster in clusters_used)
-    ) + history_tokens_estimate + _estimate_tokens(
-        " ".join(item.get("summary", "") for item in (memory_items or [])[:6])
-    ) + _estimate_tokens(str((working_memory or {}).get("summary") or "")) + 120
-    remaining = max(token_budget - base_tokens, 80)
-    trimmed: list[dict] = []
-    citations_trimmed = 0
-    evidence_tokens_estimate = 0
-    if remaining >= 2400:
-        max_citations = min(len(citations), 12)
-    elif remaining >= 1400:
-        max_citations = min(len(citations), 8)
-    elif remaining >= 900:
-        max_citations = min(len(citations), 6)
-    else:
-        max_citations = min(len(citations), 4)
-    per_citation_budget = max(40, remaining // max(max_citations, 1))
-    for citation in citations[:max_citations]:
-        trimmed_citation = dict(citation)
-        original_snippet = str(citation.get("snippet") or "")
-        snippet_budget = max(24, per_citation_budget - 16)
-        trimmed_snippet = _trim_text_to_token_budget(original_snippet, snippet_budget)
-        trimmed_citation["snippet"] = trimmed_snippet
-        trimmed.append(trimmed_citation)
-        original_tokens = _estimate_tokens(original_snippet)
-        kept_tokens = _estimate_tokens(trimmed_snippet)
-        evidence_tokens_estimate += kept_tokens
-        if kept_tokens < original_tokens:
-            citations_trimmed += 1
-    return {
-        "citations": trimmed,
-        "prompt_tokens_estimate": base_tokens + evidence_tokens_estimate,
-        "evidence_tokens_estimate": evidence_tokens_estimate,
-        "history_tokens_estimate": history_tokens_estimate,
-        "history_turns_trimmed": history_turns_trimmed,
-        "recent_turns": trimmed_turns,
-        "citations_trimmed": citations_trimmed + max(0, len(citations) - len(trimmed)),
-        "budget_applied": citations_trimmed > 0 or history_turns_trimmed > 0 or len(citations) > len(trimmed),
-    }
-
-
-def _trim_text_to_token_budget(text: str, token_budget: int) -> str:
-    cleaned = " ".join(str(text or "").split())
-    if _estimate_tokens(cleaned) <= token_budget:
-        return cleaned
-    max_chars = max(32, token_budget * 4)
-    return cleaned[: max_chars - 3].rstrip() + "..."
-
-
-def _trim_recent_turns_to_budget(recent_turns: list[dict[str, str]], *, token_budget: int) -> list[dict[str, str]]:
-    if not recent_turns:
-        return []
-    history_budget = min(max(int(token_budget * 0.25), 96), 384)
-    selected: list[dict[str, str]] = []
-    used = 0
-    for turn in reversed(recent_turns):
-        content = str(turn.get("content") or "").strip()
-        role = str(turn.get("role") or "").strip().lower()
-        if role not in {"user", "assistant"} or not content:
-            continue
-        trimmed_content = _trim_text_to_token_budget(content, min(96, max(history_budget // 2, 32)))
-        turn_tokens = _estimate_tokens(trimmed_content)
-        if selected and used + turn_tokens > history_budget:
-            break
-        if not selected and turn_tokens > history_budget:
-            trimmed_content = _trim_text_to_token_budget(content, history_budget)
-            turn_tokens = _estimate_tokens(trimmed_content)
-        selected.append({"role": role, "content": trimmed_content})
-        used += turn_tokens
-        if used >= history_budget:
-            break
-    selected.reverse()
-    return selected
+    return build_context_reduction_plan(
+        prompt=prompt,
+        citations=citations,
+        recent_turns=recent_turns or [],
+        memory_items=memory_items or [],
+        working_memory=working_memory or {},
+        token_budget=token_budget,
+        cluster_descriptions=[f"{cluster['cluster_name']} {cluster['reason']}" for cluster in clusters_used],
+    )
 
 
 def _maybe_run_cluster_expert_assist(*, payload: ChatContextRequest, intent: str, citations: list[dict]) -> dict:
