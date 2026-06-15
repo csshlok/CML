@@ -610,6 +610,7 @@ class ChatCoverageLedger(BaseModel):
     evidence_tokens_estimate: int = 0
     citations_selected: int = 0
     citations_trimmed: int = 0
+    budget_diagnostics: dict = {}
     budget_applied: bool = False
     partial_failure_mode: str = "none"
     expert_route_mode: str = "not_eligible"
@@ -1004,6 +1005,28 @@ class ExtensionClientRead(BaseModel):
     allowed_vault_ids: list[str] = []
     created_at: str
     updated_at: str
+
+
+class ExtensionDesktopSetupCreate(BaseModel):
+    vault_id: str
+    cluster_id: str | None = None
+    name: str = Field(default="Chrome/Brave capture", min_length=1, max_length=120)
+    backend_url: str = "http://127.0.0.1:7343"
+    browser: str = "chrome"
+
+
+class ExtensionDesktopSetupRead(BaseModel):
+    backend_url: str
+    extension_token: str
+    default_vault_id: str
+    default_cluster_id: str = ""
+    vault_path: str
+    client_name: str
+    browser: str
+    install_targets: list[str] = []
+    primary_actions: list[str] = []
+    optional_actions: list[str] = []
+    save_root: str = ""
 
 
 class ExtensionStatusResponse(BaseModel):

@@ -37,6 +37,11 @@ export function parseSetupJson(rawText) {
     vaultId: String(parsed.default_vault_id || parsed.vault_id || "").trim(),
     clusterId: String(parsed.default_cluster_id || parsed.cluster_id || "").trim(),
     clientName: String(parsed.client_name || "Browser extension").trim() || "Browser extension",
+    vaultPath: String(parsed.vault_path || parsed.save_root || "").trim(),
+    browser: String(parsed.browser || "chrome").trim().toLowerCase() || "chrome",
+    installTargets: Array.isArray(parsed.install_targets) ? parsed.install_targets.map((item) => String(item)) : [],
+    primaryActions: Array.isArray(parsed.primary_actions) ? parsed.primary_actions.map((item) => String(item)) : [],
+    optionalActions: Array.isArray(parsed.optional_actions) ? parsed.optional_actions.map((item) => String(item)) : [],
   };
 }
 

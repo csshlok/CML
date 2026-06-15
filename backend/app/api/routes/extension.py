@@ -22,6 +22,8 @@ from backend.app.schemas import (
     ExtensionClientCreateResponse,
     ExtensionClientRead,
     ExtensionClientUpdate,
+    ExtensionDesktopSetupCreate,
+    ExtensionDesktopSetupRead,
     ExtensionPairingRead,
     ExtensionPairingStartRequest,
     ExtensionPermissionAuditRead,
@@ -79,6 +81,41 @@ def create_extension_client(payload: ExtensionClientCreate) -> dict:
         "enabled": True,
         "allowed_vault_ids": payload.allowed_vault_ids,
         "created_at": now,
+    }
+
+
+@router.post("/desktop-setup", response_model=ExtensionDesktopSetupRead)
+def create_desktop_extension_setup(payload: ExtensionDesktopSetupCreate) -> dict:
+    with connect() as conn:
+        vault = conn.execute("SELECT id, path FROM vaults WHERE id = ?", (payload.vault_id,)).fetchone()
+        if vault is None:
+            raise HTTPException(status_code=404, detail="Vault not found")
+        if payload.cluster_id:
+            cluster = conn.execute(
+                "SELECT id FROM clusters WHERE id = ? AND vault_id = ?",
+                (payload.cluster_id, payload.vault_id),
+            ).fetchone()
+            if cluster is None:
+                raise HTTPException(status_code=404, detail="Cluster not found")
+    client = create_extension_client(
+        ExtensionClientCreate(name=payload.name, allowed_vault_ids=[payload.vault_id]),
+    )
+    browser = str(payload.browser or "chrome").strip().lower() or "chrome"
+    if browser not in {"chrome", "brave"}:
+        browser = "chrome"
+    backend_url = str(payload.backend_url or "http://127.0.0.1:7343").rstrip("/")
+    return {
+        "backend_url": backend_url,
+        "extension_token": client["token"],
+        "default_vault_id": payload.vault_id,
+        "default_cluster_id": str(payload.cluster_id or ""),
+        "vault_path": str(vault["path"]),
+        "client_name": payload.name,
+        "browser": browser,
+        "install_targets": ["chrome", "brave"],
+        "primary_actions": ["save_link_to_vault", "take_and_save_screenshot"],
+        "optional_actions": ["save_selection"],
+        "save_root": str(vault["path"]),
     }
 
 

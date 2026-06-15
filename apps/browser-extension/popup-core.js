@@ -12,32 +12,45 @@ export function createPopupController(deps) {
         token: parsed.token,
         vaultId: parsed.vaultId,
         clusterId: parsed.clusterId,
+        vaultPath: parsed.vaultPath,
+        browser: parsed.browser,
+        clientName: parsed.clientName,
+        installTargets: parsed.installTargets,
+        primaryActions: parsed.primaryActions,
+        optionalActions: parsed.optionalActions,
       };
       await deps.saveConfig(config);
       return config;
     },
-    async persistConfig(input) {
+    async persistConfig(input = null) {
+      const current = input || (await deps.getStoredConfig());
       const config = {
-        backendUrl: normalizeBackendUrl(input.backendUrl),
-        token: String(input.token || "").trim(),
-        vaultId: String(input.vaultId || "").trim(),
-        clusterId: String(input.clusterId || "").trim(),
+        backendUrl: normalizeBackendUrl(current.backendUrl),
+        token: String(current.token || "").trim(),
+        vaultId: String(current.vaultId || "").trim(),
+        clusterId: String(current.clusterId || "").trim(),
+        vaultPath: String(current.vaultPath || "").trim(),
+        browser: String(current.browser || "chrome").trim().toLowerCase() || "chrome",
+        clientName: String(current.clientName || "Browser extension").trim() || "Browser extension",
+        installTargets: Array.isArray(current.installTargets) ? current.installTargets : [],
+        primaryActions: Array.isArray(current.primaryActions) ? current.primaryActions : [],
+        optionalActions: Array.isArray(current.optionalActions) ? current.optionalActions : [],
       };
       if (!config.token) {
-        throw new Error("Paste an extension token before saving.");
+        throw new Error("Import setup from the CML desktop app before capturing.");
       }
       await deps.saveConfig(config);
       return config;
     },
-    async checkStatus(input) {
+    async checkStatus(input = null) {
       const config = await this.persistConfig(input);
       return deps.checkStatus(config);
     },
-    async dispatchCapture(captureMode, input) {
+    async dispatchCapture(captureMode, input = null) {
       await this.persistConfig(input);
       return deps.sendCaptureMessage(captureMode);
     },
-    async uploadLocalFile(file, input) {
+    async uploadLocalFile(file, input = null) {
       const config = await this.persistConfig(input);
       const upload = await deps.readLocalFile(file);
       return deps.uploadCapture(config, upload);
@@ -54,6 +67,12 @@ export function createChromePopupDeps(chromeApi, fetchImpl) {
         token: stored.token || "",
         vaultId: stored.vaultId || "",
         clusterId: stored.clusterId || "",
+        vaultPath: stored.vaultPath || "",
+        browser: stored.browser || "chrome",
+        clientName: stored.clientName || "Browser extension",
+        installTargets: stored.installTargets || [],
+        primaryActions: stored.primaryActions || [],
+        optionalActions: stored.optionalActions || [],
       };
     },
     async saveConfig(config) {
