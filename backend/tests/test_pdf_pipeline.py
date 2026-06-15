@@ -10,6 +10,8 @@ class PdfPipelineTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         os.environ["CML_DATA_DIR"] = self.tmp.name
         os.environ["CML_DATABASE_PATH"] = str(Path(self.tmp.name) / "test.sqlite3")
+        os.environ["CML_ALLOW_HASH_EMBEDDINGS"] = "1"
+        os.environ["CML_EMBEDDING_PROVIDER"] = "hash"
         from backend.app.core.config import get_settings
         from backend.app.core.database import init_db
 
@@ -20,7 +22,13 @@ class PdfPipelineTests(unittest.TestCase):
         from backend.app.core.config import get_settings
 
         get_settings.cache_clear()
-        for key in ("CML_DATA_DIR", "CML_DATABASE_PATH", "CML_PDF_PARSER_BACKEND"):
+        for key in (
+            "CML_DATA_DIR",
+            "CML_DATABASE_PATH",
+            "CML_PDF_PARSER_BACKEND",
+            "CML_ALLOW_HASH_EMBEDDINGS",
+            "CML_EMBEDDING_PROVIDER",
+        ):
             os.environ.pop(key, None)
         self.tmp.cleanup()
 

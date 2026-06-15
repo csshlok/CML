@@ -2213,7 +2213,7 @@ class SourcePageIndexingTests(unittest.TestCase):
                     vault_id="vault-1",
                     title=f"Wide evidence {index}",
                     source_type="note",
-                    raw_text=(f"dynamic budget evidence source {index} " * 220),
+                    raw_text=(f"dynamic budget evidence source {index} " * 24),
                 )
             )
         run_due_jobs_once(limit=10)

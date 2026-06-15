@@ -171,13 +171,14 @@ def _extract_markdown_text(source_path: Path) -> str:
 
 
 def _split_frontmatter(text: str) -> tuple[str, str]:
-    if not text.startswith("---\n"):
+    normalized = text.replace("\r\n", "\n", 1)
+    if not normalized.startswith("---\n"):
         return text, ""
-    end = text.find("\n---", 4)
+    end = normalized.find("\n---", 4)
     if end == -1:
         return text, ""
-    frontmatter = text[4:end].strip()
-    body = text[end + len("\n---"):].strip()
+    frontmatter = normalized[4:end].strip()
+    body = normalized[end + len("\n---"):].strip()
     return body, frontmatter
 
 

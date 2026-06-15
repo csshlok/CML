@@ -1361,7 +1361,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
             if row["retrieval_mode"].endswith(":compacted")
         }
         self.assertEqual(len(compacted_modes), 4)
-        latest_ids = {f"msg-a-snapshot-2", f"msg-b-snapshot-2"}
+        latest_ids = {"msg-a-snapshot-2", "msg-b-snapshot-2"}
         self.assertTrue(all(row["retrieval_mode"] == "semantic" for row in snapshot_rows if row["id"] in latest_ids))
         stale_items = [row for row in item_rows if row["snapshot_id"] not in latest_ids]
         self.assertTrue(all(row["state"] == "compacted" for row in stale_items))

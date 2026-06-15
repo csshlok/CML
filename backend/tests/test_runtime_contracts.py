@@ -46,7 +46,10 @@ class RuntimeContractTests(unittest.TestCase):
         from backend.app.core.version import app_version
         from backend.app.main import app
 
-        expected = "0.1.5"
+        import tomllib
+
+        pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        expected = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))["project"]["version"]
         self.assertEqual(app_version(), expected)
         self.assertEqual(BACKEND_VERSION, expected)
         self.assertEqual(app.version, expected)

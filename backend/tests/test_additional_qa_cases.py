@@ -2323,7 +2323,7 @@ class AdditionalQACases(unittest.TestCase):
 
         with (
             patch("pypdf.PdfReader", _EmptyReader),
-            patch("backend.app.core.extraction.ocr_pdf_pages", side_effect=OCRError("ocr unavailable")),
+            patch("backend.app.core.pdf_pipeline.ocr_pdf_pages", side_effect=OCRError("ocr unavailable")),
         ):
             title, pages = extract_pages_from_validated_path(str(target))
 
