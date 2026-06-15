@@ -1,10 +1,33 @@
 ﻿# Overall Context
 
-Last updated: 2026-06-14
+Last updated: 2026-06-15
 
 ## Fallback Context Rule
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
+
+## 2026-06-15 Parser / Benchmark / Extension Simplification Snapshot
+
+Completed:
+
+- Added a dedicated PDF parser adapter in `backend/app/core/pdf_pipeline.py` with the existing builtin path preserved as fallback and an optional `opendataloader-pdf` worker path behind `backend/app/core/opendataloader_pdf_worker.py`.
+- Parser metadata now survives normal ingestion: quarantine validation keeps parser metadata, the parser worker returns it, and source `parser_security_json` can record which PDF backend/mode ran.
+- Added benchmark/report infrastructure in `backend/app/core/benchmark_matrix.py` plus new scripts for parser bakeoff, ingestion timing, context-strategy comparison, and release-proof validation.
+- Replaced the older simple head-trim citation budgeter with a salient/dedupe reduction plan in `backend/app/core/context_reduction.py`; chat coverage now records budget diagnostics about kept/dropped evidence.
+- Simplified the browser extension contract around a desktop-issued setup bundle. The popup no longer behaves like a config-heavy admin console; it now centers on setup import plus save-page and screenshot actions.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_pdf_pipeline.py backend/tests/test_context_reduction.py backend/tests/test_benchmark_matrix.py backend/tests/test_extension_setup_contract.py` passed with `11` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_source_pages.py -k "chat_context_applies_token_budget_and_reports_trimmed_citations or unreadable_pdf_falls_back_to_metadata_text"` passed with `2` tests.
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "windows_1252_text_is_decoded_readably or large_text_file_is_split_into_multiple_pages_instead_of_failing"` passed with `2` tests.
+- `node --test apps/browser-extension/tests/popup-core.test.cjs apps/browser-extension/tests/background-core.test.cjs apps/desktop/electron/extension-presentation.test.cjs` passed with `12` tests.
+- `python -m compileall -q backend/app` passed.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/benchmark-pdf-parsers.ps1 -SourceRoot . -MaxFiles 1` and `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/benchmark-ingestion-matrix.ps1 -SourceRoot backend/tests -MaxFiles 2` both completed and emitted benchmark reports.
+
+Still not completed:
+
+- The adapter and benchmark surfaces now exist, but real mixed-corpus evidence, packaged/runtime proof for `opendataloader-pdf`, and actual desktop Settings hookup for one-click extension provisioning are still open.
 
 ## 2026-06-14 Backend/Chat/Bridge Scale Safety Snapshot
 

@@ -215,13 +215,53 @@ Versioning is split by surface, but backend runtime metadata is centralized now:
 Update the root npm package version:
 
 ```powershell
-npm version 0.1.5 --no-git-tag-version
+npm version 0.1.6 --no-git-tag-version
 ```
+
+## 6. Benchmark Reports
+
+Render graphical benchmark reports from the current JSON artifacts:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\render-benchmark-graphs.ps1
+```
+
+Render graphs for specific benchmark files only:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\render-benchmark-graphs.ps1 -ReportPaths .tmp\pdf-parser-benchmark.json,.tmp\ingestion-benchmark.json,.tmp\context-strategy-benchmark.json,.tmp\release-proof\release-proof-report.json
+```
+
+The generated HTML index is written to:
+
+```text
+data\benchmark-reports\graphs\index.html
+```
+
+Run the synthetic user-shaped benchmark corpus end to end:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\benchmark-synthetic-user-corpus.ps1 -ReportRoot .tmp\synthetic-user-benchmark
+```
+
+Run the 10,000-file scale version:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\benchmark-synthetic-user-corpus.ps1 -ReportRoot .tmp\synthetic-user-benchmark-10k-clean -TargetFileCount 10000
+```
+
+That run:
+
+- generates a temporary mixed corpus with varied PDFs, notes, DOCX, HTML, CSV, JSON, and TXT
+- benchmarks ingestion and PDF parsing
+- ingests and indexes the corpus into a fresh benchmark vault without re-extracting the same files twice
+- runs the strict context-strategy benchmark and rejects zero-chunk or zero-hit runs
+- deletes the generated corpus before exiting unless `-KeepCorpus` is passed
 
 Update the desktop app version:
 
 ```powershell
-npm version 0.1.5 --workspace @cml/desktop --no-git-tag-version
+npm version 0.1.6 --workspace @cml/desktop --no-git-tag-version
 ```
 
 Then update the backend package version in:
@@ -263,6 +303,12 @@ Run the targeted backend tests that have been useful during packaging work:
 .\.venv\Scripts\python.exe -m pytest -q backend/tests/test_parameters_doc_cases.py
 ```
 
+Run the focused parser / context-reduction / benchmark / extension-backend tests added for the new benchmark and ingestion work:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q backend/tests/test_pdf_pipeline.py backend/tests/test_context_reduction.py backend/tests/test_benchmark_matrix.py backend/tests/test_extension_setup_contract.py
+```
+
 Run desktop behavior tests:
 
 ```powershell
@@ -296,6 +342,24 @@ Run backend benchmark smoke:
 .\scripts\backend\benchmark-backend.ps1 -Sources 250 -WordsPerSource 240 -ReportPath .tmp\backend-benchmark-report.md
 ```
 
+Run the PDF parser bakeoff benchmark:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\benchmark-pdf-parsers.ps1 -SourceRoot . -MaxFiles 25 -ReportPath .tmp\pdf-parser-benchmark.json
+```
+
+Run the mixed-file ingestion timing benchmark:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\benchmark-ingestion-matrix.ps1 -SourceRoot . -MaxFiles 100 -ReportPath .tmp\ingestion-benchmark.json
+```
+
+Run the context-strategy comparison benchmark against a prepared vault:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\benchmark-context-strategies.ps1 -VaultId vault-1 -ReportPath .tmp\context-strategy-benchmark.json
+```
+
 Run the real-PDF retrieval benchmark:
 
 ```powershell
@@ -323,6 +387,12 @@ Run the local adapter smoke:
 $env:CML_LORA_MODEL_DIRS = "D:\models\hf"
 $env:CML_LORA_RUNTIME_PYTHON = "C:\Users\you\Desktop\CML\.venv-lora\Scripts\python.exe"
 .\scripts\backend\smoke-lora-runtime.ps1 -AdapterPath D:\cml\data\experts\cluster-1\adapter-1234 -BaseModel Qwen2.5-3B-Instruct
+```
+
+Run the release-proof wrapper for the new parser/benchmark/extension surfaces:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\validate-release-proof.ps1 -ContextVaultId vault-1 -ReportRoot .tmp\release-proof
 ```
 
 ## 8. Common Output Paths
