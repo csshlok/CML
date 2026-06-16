@@ -62,7 +62,7 @@ const steps = [
 ] as const;
 
 export const Route = createFileRoute("/onboarding")({
-  head: () => ({ meta: [{ title: "Set up Ponytail" }] }),
+  head: () => ({ meta: [{ title: "Set up Vault" }] }),
   component: Onboarding,
 });
 
@@ -124,7 +124,6 @@ function Onboarding() {
     if (step === 6) return Boolean(embeddingRuntime?.available);
     return true;
   }, [displayName, email, embeddingRuntime?.available, models, signupMethod, step, vaultName, vaultPath]);
-
   useEffect(() => {
     if (step !== 5 && step !== 6) return;
     void refreshModels();
@@ -426,16 +425,13 @@ function Onboarding() {
   }
 
   return (
-    <main className="vault-onboarding-shell h-screen overflow-y-auto bg-background text-foreground">
+    <main className="vault-onboarding-shell h-screen overflow-x-hidden overflow-y-auto bg-background text-foreground">
       <AnimatedBackground />
 
-      <div className="relative z-10 grid min-h-full grid-cols-1 lg:grid-cols-[360px_1fr]">
-        <aside className="hidden border-r border-border bg-background px-10 py-10 lg:flex lg:min-h-full lg:flex-col">
+      <div className="relative z-10 grid min-h-full grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)]">
+        <aside className="hidden border-r border-border bg-background px-10 py-10 lg:flex lg:min-h-full lg:flex-col lg:pb-16">
           <div className="flex items-center gap-3">
-            <div>
-              <BrandLogo className="h-8 w-auto select-none" />
-              <div className="text-xs text-muted-foreground">Local memory setup</div>
-            </div>
+            <BrandLogo className="h-12 w-auto select-none" />
           </div>
 
           <div className="mt-16">
@@ -450,13 +446,13 @@ function Onboarding() {
           <StepRail step={step} />
         </aside>
 
-        <section className="flex min-h-full items-start justify-center px-5 py-8 sm:px-10 lg:items-center">
-          <div className="vault-onboarding-card flex w-full max-w-[880px] flex-col overflow-hidden lg:max-h-[calc(100vh-4rem)]">
+        <section className="flex min-h-full min-w-0 items-start justify-center px-4 py-8 sm:px-8 lg:items-center lg:px-10">
+          <div className="vault-onboarding-card flex w-full max-w-[860px] min-w-0 flex-col overflow-hidden lg:max-h-[calc(100vh-4rem)]">
             <div className="shrink-0 px-6 pb-6 pt-6 sm:px-8">
               <MobileHeader step={step} />
 
               <div className="border-b border-border pb-6">
-                <div className="text-sm font-semibold">Ponytail setup</div>
+                <div className="text-sm font-semibold">Vault setup</div>
                 <div className="mt-1 text-sm text-muted-foreground">
                   Step {step + 1} of {steps.length} / {steps[step]}
                 </div>
@@ -468,7 +464,7 @@ function Onboarding() {
                 {step === 0 && (
                   <SetupPanel
                     icon={<Mail className="h-5 w-5" />}
-                    title="Sign up to Ponytail"
+                    title="Sign up to Vault"
                     sub="This creates a local profile for your device. Cloud accounts can be connected later."
                   >
                     <div className="grid gap-3 sm:grid-cols-2">
@@ -502,7 +498,7 @@ function Onboarding() {
                 {step === 1 && (
                   <SetupPanel
                     icon={<UserRound className="h-5 w-5" />}
-                    title="What should Ponytail call you?"
+                    title="What should Vault call you?"
                     sub="This name stays in your local profile and appears in your workspace."
                   >
                     <Field label="Display name">
@@ -537,7 +533,7 @@ function Onboarding() {
                   <SetupPanel
                     icon={<ShieldCheck className="h-5 w-5" />}
                     title={`Welcome${displayName.trim() ? `, ${displayName.trim()}` : ""}`}
-                    sub="Ponytail keeps the setup simple: choose a local folder, connect memory search, then start adding context."
+                    sub="Vault keeps the setup simple: choose a local folder, connect memory search, then start adding context."
                   >
                     <div className="grid gap-3 sm:grid-cols-3">
                       <MiniFact title="Private" body="Stored on this device." />
@@ -550,8 +546,8 @@ function Onboarding() {
                 {step === 4 && (
                   <SetupPanel
                     icon={<FolderOpen className="h-5 w-5" />}
-                    title="Choose where Ponytail lives"
-                    sub="This folder becomes your real storage location. Ponytail data is written inside a hidden .vault folder there."
+                    title="Choose where Vault lives"
+                    sub="This folder becomes your real storage location. Vault data is written inside a hidden .vault folder there."
                   >
                   <Field label="Library location">
                     <div className="flex flex-col gap-2 sm:flex-row">
@@ -562,7 +558,7 @@ function Onboarding() {
                           setDiskPreflight(null);
                         }}
                         onBlur={(event) => void runVaultDiskPreflight(event.target.value)}
-                        placeholder="C:\\Users\\You\\Documents\\Ponytail"
+                        placeholder="C:\\Users\\You\\Documents\\Vault"
                       />
                       <Button
                         type="button"
@@ -623,7 +619,7 @@ function Onboarding() {
                   {modelChoice === "recommended" ? (
                     <div className="grid gap-3">
                       <div className="rounded-md border border-border bg-secondary/55 p-4 text-sm text-muted-foreground">
-                        Downloaded GGUF/runtime models satisfy the chat role only. Expert setup still requires an accepted local Transformers checkpoint. Ponytail citations still come from retrieval, not model memory.
+                        Downloaded GGUF/runtime models satisfy the chat role only. Expert setup still requires an accepted local Transformers checkpoint. Vault citations still come from retrieval, not model memory.
                       </div>
                       <div className="grid gap-3">
                         <div className="text-sm font-medium">Chat model</div>
@@ -674,7 +670,7 @@ function Onboarding() {
                           <div>
                             <div className="font-medium text-foreground">Compatible models already on this device</div>
                             <div className="mt-1 text-muted-foreground">
-                              Ponytail can scan common local model folders and offer one-click import for accepted expert checkpoints.
+                              Vault can scan common local model folders and offer one-click import for accepted expert checkpoints.
                             </div>
                           </div>
                           <Button variant="outline" onClick={() => void refreshDetectedModels()} disabled={discoveringModels}>
@@ -774,14 +770,14 @@ function Onboarding() {
                   <div className="grid gap-3 sm:grid-cols-2">
                     <ChoiceButton
                       selected={embeddingChoice === "recommended"}
-                      title="Ponytail recommended"
+                      title="Vault recommended"
                       description="Use all-MiniLM-L6-v2 after you download it locally."
                       onClick={() => setEmbeddingChoice("recommended")}
                     />
                     <ChoiceButton
                       selected={embeddingChoice === "existing"}
                       title="Existing cache"
-                      description="Point Ponytail at a local model cache folder."
+                      description="Point Vault at a local model cache folder."
                       onClick={() => setEmbeddingChoice("existing")}
                     />
                   </div>
@@ -828,7 +824,7 @@ function Onboarding() {
                         </div>
                         <div className="mt-1 text-sm text-muted-foreground">
                           {embeddingRuntime?.detail ??
-                            "Run a local test before entering Ponytail. Setup cannot finish until this passes."}
+                            "Run a local test before entering Vault. Setup cannot finish until this passes."}
                         </div>
                       </div>
                       {embeddingRuntime?.available && <Check className="h-5 w-5 text-[var(--status-ready)]" />}
@@ -872,7 +868,7 @@ function Onboarding() {
                 {step === 7 && (
                 <SetupPanel
                   icon={<Check className="h-5 w-5" />}
-                  title="Welcome to Ponytail"
+                  title="Welcome to Vault"
                   sub="Your library is ready. Add sources from the Mind workspace, or start with chat when you want to ask across everything."
                 >
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -920,7 +916,7 @@ function Onboarding() {
                     </Button>
                   ) : step === 7 ? (
                     <Button onClick={finish}>
-                      Open Ponytail
+                      Open Vault
                       <ArrowRight className="h-4 w-4" />
                     </Button>
                   ) : (
