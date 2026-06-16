@@ -463,7 +463,7 @@ function MindView() {
             <Input placeholder="https://..." value={linkUrl} onChange={(event) => setLinkUrl(event.target.value)} />
           </label>
           <div className="rounded-md border border-border bg-muted/45 p-3 text-sm">
-            Ponytail stores the readable text and queues it for indexing.
+            Vault stores the readable text and queues it for indexing.
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setAddMode(null)}>Cancel</Button>

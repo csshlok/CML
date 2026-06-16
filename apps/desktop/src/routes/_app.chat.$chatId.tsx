@@ -896,7 +896,7 @@ function messageFromTimelineItem(item: ChatTimelineItem): ChatMessage {
       id: item.id,
       role: "retriable",
       prompt: item.prompt,
-      content: "Ponytail was interrupted while answering this prompt. The partial answer was not saved.",
+      content: "Vault was interrupted while answering this prompt. The partial answer was not saved.",
     };
   }
   return messageFromRecord(item);

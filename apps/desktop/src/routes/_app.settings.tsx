@@ -909,7 +909,7 @@ function SettingsView() {
             </div>
             {recoveryKey ? (
               <div className="mt-4 rounded-md border border-[var(--status-learning)]/35 bg-[var(--status-learning)]/10 px-3 py-3 text-sm">
-                <div className="font-medium">Offline recovery key. Store it now; Ponytail has no vendor recovery path.</div>
+                <div className="font-medium">Offline recovery key. Store it now; Vault has no vendor recovery path.</div>
                 <div className="mt-2 break-all font-mono text-xs">{recoveryKey}</div>
               </div>
             ) : null}
@@ -1180,7 +1180,7 @@ function SettingsView() {
         <div className="my-8 h-px bg-border" />
         <h3 className="text-sm font-semibold">Need help?</h3>
         <button className="mt-4 flex items-center gap-2 text-sm text-primary" type="button">
-          Ponytail docs <ChevronRight className="h-4 w-4" />
+          Vault docs <ChevronRight className="h-4 w-4" />
         </button>
       </aside>
     </div>
@@ -1262,7 +1262,7 @@ function ProfileSettings({ vaultPath }: { vaultPath: string }) {
       <section className="vault-card p-5">
         <h2 className="text-sm font-semibold">Sign-in methods</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Ponytail can remember your account identity without syncing private library data.
+          Vault can remember your account identity without syncing private vault data.
         </p>
         <div className="mt-5 divide-y divide-border border-y border-border">
           <ProfileMethod label="Local library" value={vaultPath || "No library selected"} status={vaultPath ? "Connected" : "Not set"} />
@@ -1276,7 +1276,7 @@ function ProfileSettings({ vaultPath }: { vaultPath: string }) {
           {[
             "Profile metadata stays on this device",
             "No telemetry is attached to your identity",
-            "Ponytail backups are controlled by you",
+            "Vault backups are controlled by you",
             "Cloud connectors require explicit permission",
           ].map((item) => (
             <div key={item} className="flex items-center gap-3 rounded-md bg-background px-3 py-3 text-sm">

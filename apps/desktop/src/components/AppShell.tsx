@@ -215,7 +215,7 @@ export function AppShell() {
       <div className="flex min-h-0 flex-1">
         <aside className="vault-sidebar flex flex-col">
           <div className="px-4 pb-2 pt-4">
-            <div className="panel-section-title mb-2">Ponytail</div>
+            <div className="panel-section-title mb-2">Vault</div>
             <button className="flex w-full items-center gap-2 truncate text-left text-[12px] text-[var(--text-primary)] hover:text-[var(--primary)]">
               <FolderOpen className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
               <span className="truncate">{vaultPath ?? "Choose library"}</span>
@@ -238,7 +238,7 @@ export function AppShell() {
               className="mt-2 flex h-8 w-full items-center gap-2 rounded-md border border-[var(--border-input)] bg-[var(--bg-card)] px-3 text-left text-[13px] text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
             >
               <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-              <span className="min-w-0 flex-1">Quick save to Ponytail</span>
+              <span className="min-w-0 flex-1">Quick save to Vault</span>
               <span className="text-[11px] text-[var(--text-subtle)]">Ctrl/Cmd Shift S</span>
             </button>
           </div>

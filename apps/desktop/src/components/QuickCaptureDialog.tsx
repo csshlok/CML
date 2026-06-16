@@ -131,7 +131,7 @@ export function QuickCaptureDialog() {
         <DialogHeader>
           <DialogTitle>Quick Capture</DialogTitle>
           <DialogDescription>
-            Save an outside artifact or prompt-response pair into Ponytail without going through the Bridge admin screen.
+            Save an outside artifact or prompt-response pair into Vault without going through the Bridge admin screen.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -244,7 +244,7 @@ export function QuickCaptureDialog() {
             Close
           </Button>
           <Button onClick={() => void submit()} disabled={saving || !canSubmitQuickCapture(draft)}>
-            Save to Ponytail
+            Save to Vault
           </Button>
         </DialogFooter>
       </DialogContent>

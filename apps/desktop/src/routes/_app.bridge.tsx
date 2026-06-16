@@ -261,7 +261,7 @@ function BridgeView() {
   async function rejectRequest(requestRow: BridgeApprovalRequest) {
     setSaving(true);
     try {
-      await rejectBridgeApprovalRequest(requestRow.id, { detail: "Rejected in Ponytail Bridge settings." });
+      await rejectBridgeApprovalRequest(requestRow.id, { detail: "Rejected in Vault Bridge settings." });
       await loadBridgeState();
     } finally {
       setSaving(false);
@@ -808,7 +808,7 @@ function BridgeView() {
                 Save external context
               </div>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                Paste an external answer or a full prompt-response pair and store it directly in Ponytail. For faster everyday saves, use Quick save from the sidebar, command palette, or Ctrl/Cmd Shift S.
+                Paste an external answer or a full prompt-response pair and store it directly in Vault. For faster everyday saves, use Quick save from the sidebar, command palette, or Ctrl/Cmd Shift S.
               </p>
             </div>
             <div className="flex gap-2">
@@ -896,7 +896,7 @@ function BridgeView() {
               {captureNotice ?? "Stored captures inherit the same Bridge trust and review rules as external MCP writeback."}
             </div>
             <Button size="sm" disabled={saving || !captureVaultId || !captureResponse.trim()} onClick={() => void submitManualCapture()}>
-              Save to Ponytail
+              Save to Vault
             </Button>
           </div>
         </section>

@@ -188,7 +188,7 @@ function ClustersList() {
               })}
               {clusters.length === 0 && (
                 <div className="px-5 py-10 text-center text-sm text-muted-foreground">
-                  No clusters yet. Create one or add sources so Ponytail can suggest memory spaces.
+                  No clusters yet. Create one or add sources so Vault can suggest memory spaces.
                 </div>
               )}
             </div>

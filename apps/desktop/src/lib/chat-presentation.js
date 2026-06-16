@@ -3,7 +3,7 @@ export function analysisModeLabel(intent, coverageLedger) {
   if (mode === "complete_analysis" || intent === "complete_analysis") return "Complete analysis";
   if (mode === "expanded_analysis" || intent === "expanded_analysis") return "Expanded analysis";
   if (intent === "general_chat") return "Direct chat";
-  return "Ponytail retrieval";
+  return "Vault retrieval";
 }
 
 export function describeCoverage(coverageLedger) {
@@ -36,23 +36,23 @@ export function describePartialFailure(mode) {
     case "no_citations":
       return "No grounded library citations were found.";
     case "no_citations_direct_answer":
-      return "No grounded library citations were found, so Ponytail fell back to an ungrounded direct answer.";
+      return "No grounded vault citations were found, so Vault fell back to an ungrounded direct answer.";
     case "embedding_unavailable":
       return "Semantic retrieval is unavailable because embeddings are not configured.";
     case "embedding_unavailable_direct_answer":
-      return "Semantic retrieval is unavailable, so Ponytail fell back to an ungrounded direct answer.";
+      return "Semantic retrieval is unavailable, so Vault fell back to an ungrounded direct answer.";
     case "low_trust_extract_only":
-      return "Only low-trust evidence was available, so Ponytail stayed extractive instead of synthesizing.";
+      return "Only low-trust evidence was available, so Vault stayed extractive instead of synthesizing.";
     case "refuse_sensitive_low_trust":
-      return "Sensitive request with only low-trust evidence. Ponytail refused to answer from it.";
+      return "Sensitive request with only low-trust evidence. Vault refused to answer from it.";
     case "conflicting_evidence_extract_only":
-      return "Retrieved evidence conflicted, so Ponytail stayed extractive instead of synthesizing.";
+      return "Retrieved evidence conflicted, so Vault stayed extractive instead of synthesizing.";
     case "weak_support_extract_only":
-      return "Evidence support was weak, so Ponytail stayed extractive instead of synthesizing.";
+      return "Evidence support was weak, so Vault stayed extractive instead of synthesizing.";
     case "runtime_unavailable_extract_fallback":
-      return "Grounded synthesis runtime was unavailable, so Ponytail returned a retrieval-only fallback.";
+      return "Grounded synthesis runtime was unavailable, so Vault returned a retrieval-only fallback.";
     case "runtime_unavailable_expert_extract_fallback":
-      return "Grounded synthesis runtime was unavailable, so Ponytail returned an expert-assisted retrieval fallback.";
+      return "Grounded synthesis runtime was unavailable, so Vault returned an expert-assisted retrieval fallback.";
     case "general_chat_runtime_unavailable":
       return "Direct chat runtime was unavailable.";
     default:

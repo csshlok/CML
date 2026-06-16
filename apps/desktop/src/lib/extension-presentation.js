@@ -28,7 +28,7 @@ export function buildExtensionSetupText({
           vault_id: vaultId || "",
           cluster_id: clusterId || "",
           capture_type: "page",
-          title: "Saved link to Ponytail",
+          title: "Saved link to Vault",
           url: "https://example.com/article",
           text: "Page capture handled by the browser extension.",
         },

@@ -532,7 +532,7 @@ function SourceInspector({
       <section className="mt-6">
         <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Description</div>
         <p className="mt-4 text-sm leading-6 text-muted-foreground">
-          {source.summary || source.preview || "Ponytail has not generated a description for this source yet."}
+          {source.summary || source.preview || "Vault has not generated a description for this source yet."}
         </p>
       </section>
 

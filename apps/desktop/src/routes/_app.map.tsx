@@ -112,7 +112,7 @@ function MapView() {
       <div className="vault-page-wash h-full overflow-y-auto px-8 py-9">
         <h1 className="page-title">Map</h1>
         <div className="mt-8 rounded-md border border-border bg-card p-8 text-sm text-muted-foreground">
-          No cluster map is available yet. Create a library, add sources, and index them to populate this view.
+          No cluster map is available yet. Create a vault, add sources, and index them to populate this view.
         </div>
       </div>
     );
