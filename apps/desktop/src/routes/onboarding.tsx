@@ -1,9 +1,10 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   ArrowRight,
   Check,
+  Copy,
   Download,
   FolderOpen,
   HardDrive,
@@ -19,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/BrandLogo";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { copyElementToFigma } from "@/lib/figmaExport";
 import {
   activateLocalModel,
   cancelModelDownload,
@@ -70,6 +72,7 @@ function Onboarding() {
   const navigate = useNavigate();
   const store = useStore();
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
+  const shellRef = useRef<HTMLElement | null>(null);
 
   const [step, setStep] = useState<Step>(0);
   const [signupMethod, setSignupMethod] = useState<SignupMethod>("email");
@@ -95,6 +98,7 @@ function Onboarding() {
   const [embeddingDownload, setEmbeddingDownload] = useState<EmbeddingModelDownloadState | null>(null);
   const [diskPreflight, setDiskPreflight] = useState<DiskPreflightResponse | null>(null);
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
+  const [figmaExporting, setFigmaExporting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -124,6 +128,9 @@ function Onboarding() {
     if (step === 6) return Boolean(embeddingRuntime?.available);
     return true;
   }, [displayName, email, embeddingRuntime?.available, models, signupMethod, step, vaultName, vaultPath]);
+
+  const canExportToFigma = import.meta.env.DEV && !desktop;
+
   useEffect(() => {
     if (step !== 5 && step !== 6) return;
     void refreshModels();
@@ -424,8 +431,30 @@ function Onboarding() {
     navigate({ to: "/home" });
   }
 
+  async function exportCurrentScreenToFigma() {
+    if (!shellRef.current) return;
+
+    setFigmaExporting(true);
+    setError(null);
+    try {
+      await copyElementToFigma({
+        element: shellRef.current,
+        name: `Vault Onboarding - ${steps[step]}`,
+      });
+      setMessage("Copied the current onboarding screen to your clipboard. Paste it into Figma.");
+    } catch (err) {
+      setMessage(null);
+      setError(err instanceof Error ? err.message : "Could not copy the current screen to Figma.");
+    } finally {
+      setFigmaExporting(false);
+    }
+  }
+
   return (
-    <main className="vault-onboarding-shell h-screen overflow-x-hidden overflow-y-auto bg-background text-foreground">
+    <main
+      ref={shellRef}
+      className="vault-onboarding-shell h-screen overflow-x-hidden overflow-y-auto bg-background text-foreground"
+    >
       <AnimatedBackground />
 
       <div className="relative z-10 grid min-h-full grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)]">
@@ -451,11 +480,29 @@ function Onboarding() {
             <div className="shrink-0 px-6 pb-6 pt-6 sm:px-8">
               <MobileHeader step={step} />
 
-              <div className="border-b border-border pb-6">
-                <div className="text-sm font-semibold">Vault setup</div>
-                <div className="mt-1 text-sm text-muted-foreground">
-                  Step {step + 1} of {steps.length} / {steps[step]}
+              <div className="flex items-start justify-between gap-4 border-b border-border pb-6">
+                <div>
+                  <div className="text-sm font-semibold">Vault setup</div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    Step {step + 1} of {steps.length} / {steps[step]}
+                  </div>
                 </div>
+                {canExportToFigma && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void exportCurrentScreenToFigma()}
+                    disabled={figmaExporting}
+                  >
+                    {figmaExporting ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                    Copy to Figma
+                  </Button>
+                )}
               </div>
             </div>
 
