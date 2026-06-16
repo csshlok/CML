@@ -351,25 +351,7 @@ if artifacts:
             mode="ci_scaffold_non_release_benchmark" if allow_test_trainer else "live_adapter_benchmark",
             live_adapter_backed=not allow_test_trainer,
         )
-    elif allow_test_trainer:
-        scaffold_case_scores = [
-            score_expert_response(
-                case,
-                "According to source "
-                + str(case["source_title"])
-                + ", "
-                + " ".join(str(term) for term in case.get("expected_terms") or []),
-            )
-            for case in plan["cases"]
-        ]
-        benchmark_report = build_expert_benchmark_report(
-            plan,
-            retrieval_case_scores=scaffold_case_scores,
-            adapter_case_scores=scaffold_case_scores,
-            mode="ci_scaffold_non_release_benchmark",
-            live_adapter_backed=False,
-        )
-    elif not allow_test_trainer:
+    else:
         benchmark_report = {"status": "runtime_failed", "passes": False, "live_adapter_backed": True}
 else:
     benchmark_report = {"status": "no_adapter_artifact", "passes": False, "live_adapter_backed": False}
@@ -414,9 +396,9 @@ repo_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
 if not artifacts or not status["searchable"]:
     raise SystemExit(1)
+if not runtime_smoke or not runtime_smoke.get("ok"):
+    raise SystemExit(1)
 if not allow_test_trainer:
-    if not runtime_smoke or not runtime_smoke.get("ok"):
-        raise SystemExit(1)
     if not benchmark_report or not benchmark_report.get("passes"):
         if allow_benchmark_failure:
             raise SystemExit(0)

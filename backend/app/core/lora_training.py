@@ -246,11 +246,99 @@ def _adapter_validation_errors(output_dir: Path) -> list[str]:
 
 
 def _write_test_adapter(output_dir: Path, config: dict) -> None:
-    (output_dir / "adapter_config.json").write_text(
-        json.dumps({"peft_type": "LORA", "base_model_name_or_path": config["base_model"]}, indent=2),
-        encoding="utf-8",
+    from peft import LoraConfig, TaskType, get_peft_model
+    from transformers import AutoModelForCausalLM
+
+    base_model_dir = _ensure_test_base_model(Path(str(config["base_model"])).resolve())
+    model = AutoModelForCausalLM.from_pretrained(
+        str(base_model_dir),
+        local_files_only=True,
+        trust_remote_code=False,
     )
-    (output_dir / "adapter_model.safetensors").write_bytes(b"CML test adapter placeholder\n")
+    adapter = get_peft_model(
+        model,
+        LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            inference_mode=True,
+            r=4,
+            lora_alpha=8,
+            lora_dropout=0.0,
+            target_modules=["c_attn"],
+        ),
+    )
+    adapter.save_pretrained(str(output_dir), safe_serialization=True)
+
+
+def _ensure_test_base_model(model_dir: Path) -> Path:
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
+    from transformers import GPT2Config, GPT2LMHeadModel, PreTrainedTokenizerFast
+
+    model_dir.mkdir(parents=True, exist_ok=True)
+    vocab = {
+        "[PAD]": 0,
+        "[UNK]": 1,
+        "[BOS]": 2,
+        "[EOS]": 3,
+        ".": 4,
+        ",": 5,
+        "Reply": 6,
+        "with": 7,
+        "the": 8,
+        "single": 9,
+        "word": 10,
+        "CML": 11,
+        "Using": 12,
+        "local": 13,
+        "project": 14,
+        "context": 15,
+        "name": 16,
+        "public": 17,
+        "V1": 18,
+        "release": 19,
+        "stance": 20,
+        "in": 21,
+        "one": 22,
+        "short": 23,
+        "sentence": 24,
+        "According": 25,
+        "to": 26,
+        "source": 27,
+        "retrieval": 28,
+        "adapter": 29,
+        "training": 30,
+        "evidence": 31,
+        "strict": 32,
+        "evaluation": 33,
+        "baseline": 34,
+    }
+    tokenizer = Tokenizer(WordLevel(vocab=vocab, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = Whitespace()
+    fast_tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=tokenizer,
+        unk_token="[UNK]",
+        pad_token="[PAD]",
+        bos_token="[BOS]",
+        eos_token="[EOS]",
+    )
+    fast_tokenizer.save_pretrained(str(model_dir))
+
+    model = GPT2LMHeadModel(
+        GPT2Config(
+            vocab_size=len(vocab),
+            n_positions=128,
+            n_ctx=128,
+            n_embd=32,
+            n_layer=2,
+            n_head=4,
+            bos_token_id=vocab["[BOS]"],
+            eos_token_id=vocab["[EOS]"],
+            pad_token_id=vocab["[PAD]"],
+        )
+    )
+    model.save_pretrained(str(model_dir), safe_serialization=True)
+    return model_dir
 
 
 def _write_llamafactory_dataset_info(dataset_manifest: dict) -> Path:
@@ -285,6 +373,8 @@ def _write_llamafactory_dataset_info(dataset_manifest: dict) -> Path:
 
 def _llamafactory_training_config(dataset_manifest: dict, output_dir: Path, config: dict) -> dict:
     settings = get_settings()
+    training_device = str(getattr(settings, "lora_training_device", "auto") or "auto").strip().lower()
+    training_dtype = str(getattr(settings, "lora_training_dtype", "auto") or "auto").strip().lower()
     payload = {
         "model_name_or_path": config["base_model"],
         "stage": "sft",
@@ -308,9 +398,9 @@ def _llamafactory_training_config(dataset_manifest: dict, output_dir: Path, conf
         "save_strategy": "epoch",
         "logging_steps": 1,
         "report_to": "none",
-        "use_cpu": True,
-        "fp16": False,
-        "bf16": False,
+        "use_cpu": training_device == "cpu",
+        "fp16": training_dtype == "fp16",
+        "bf16": training_dtype == "bf16",
     }
     if settings.lora_training_max_steps is not None and int(settings.lora_training_max_steps) > 0:
         payload["max_steps"] = int(settings.lora_training_max_steps)

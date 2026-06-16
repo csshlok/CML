@@ -46,6 +46,10 @@ class AdditionalQACases(unittest.TestCase):
         os.environ.pop("CML_LORA_MAX_DUPLICATE_RATIO", None)
         os.environ.pop("CML_LORA_MODEL_DIRS", None)
         os.environ.pop("CML_LORA_RUNTIME_PYTHON", None)
+        os.environ.pop("CML_LORA_RUNTIME_DEVICE", None)
+        os.environ.pop("CML_LORA_RUNTIME_DTYPE", None)
+        os.environ.pop("CML_LORA_TRAINING_DEVICE", None)
+        os.environ.pop("CML_LORA_TRAINING_DTYPE", None)
         os.environ.pop("CML_MODEL_SCAN_ROOTS", None)
         os.environ.pop("CML_MODEL_SCAN_CACHE_SECONDS", None)
         os.environ.pop("CML_MODELS_DIR", None)
@@ -445,6 +449,52 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(report["response_text"], "CML")
         self.assertTrue(report["unloaded"])
         self.assertEqual(report["stdout"], "worker-ok")
+
+    def test_run_adapter_runtime_smoke_executes_real_test_trainer_adapter(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.expert_runtime import run_adapter_runtime_smoke
+        from backend.app.core.lora_training import run_lora_training_process
+
+        dataset_dir = Path(self.tmp.name) / "dataset"
+        dataset_dir.mkdir()
+        train_path = dataset_dir / "train.jsonl"
+        validation_path = dataset_dir / "validation.jsonl"
+        train_path.write_text("{}", encoding="utf-8")
+        validation_path.write_text("{}", encoding="utf-8")
+        model_dir = Path(self.tmp.name) / "models" / "real-smoke-model"
+        output_dir = Path(self.tmp.name) / "real-smoke-adapter"
+        os.environ["CML_ALLOW_LORA_TEST_TRAINER"] = "1"
+        os.environ["CML_LORA_RUNTIME_DEVICE"] = "cpu"
+        os.environ["CML_LORA_RUNTIME_DTYPE"] = "float32"
+        get_settings.cache_clear()
+        try:
+            result = run_lora_training_process(
+                dataset_manifest={
+                    "dataset_dir": dataset_dir,
+                    "train_path": train_path,
+                    "validation_path": validation_path,
+                },
+                output_dir=output_dir,
+                config={"base_model": str(model_dir)},
+            )
+            report = run_adapter_runtime_smoke(
+                adapter_path=result["adapter_path"],
+                base_model=str(model_dir),
+                prompt="Reply with the single word CML.",
+                max_new_tokens=8,
+            )
+        finally:
+            os.environ.pop("CML_ALLOW_LORA_TEST_TRAINER", None)
+            os.environ.pop("CML_LORA_RUNTIME_DEVICE", None)
+            os.environ.pop("CML_LORA_RUNTIME_DTYPE", None)
+            get_settings.cache_clear()
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertTrue((model_dir / "model.safetensors").exists())
+        self.assertTrue((output_dir / "adapter_model.safetensors").exists())
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["response_text"].strip())
+        self.assertTrue(report["unloaded"])
 
     def test_run_adapter_runtime_smoke_reports_worker_launch_failure(self) -> None:
         from backend.app.core.expert_runtime import run_adapter_runtime_smoke
@@ -2422,6 +2472,50 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(dataset_info["cml_cluster_train"]["tags"]["role_tag"], "role")
         self.assertEqual(dataset_info["cml_cluster_train"]["tags"]["content_tag"], "content")
 
+    def test_llamafactory_training_config_defaults_to_auto_hardware(self) -> None:
+        from backend.app.core.lora_training import _llamafactory_training_config
+
+        output_dir = Path(self.tmp.name) / "auto-hardware-adapter"
+        output_dir.mkdir()
+
+        payload = _llamafactory_training_config(
+            dataset_manifest={"dataset_dir": Path(self.tmp.name), "train_path": Path("train.jsonl"), "validation_path": Path("validation.jsonl")},
+            output_dir=output_dir,
+            config={"base_model": "test-model"},
+        )
+
+        self.assertFalse(payload["use_cpu"])
+        self.assertFalse(payload["fp16"])
+        self.assertFalse(payload["bf16"])
+
+    def test_llamafactory_training_config_honors_device_and_dtype_overrides(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.lora_training import _llamafactory_training_config
+
+        output_dir = Path(self.tmp.name) / "cpu-hardware-adapter"
+        output_dir.mkdir()
+        os.environ["CML_LORA_TRAINING_DEVICE"] = "cpu"
+        os.environ["CML_LORA_TRAINING_DTYPE"] = "bf16"
+        get_settings.cache_clear()
+        try:
+            payload = _llamafactory_training_config(
+                dataset_manifest={
+                    "dataset_dir": Path(self.tmp.name),
+                    "train_path": Path("train.jsonl"),
+                    "validation_path": Path("validation.jsonl"),
+                },
+                output_dir=output_dir,
+                config={"base_model": "test-model"},
+            )
+        finally:
+            os.environ.pop("CML_LORA_TRAINING_DEVICE", None)
+            os.environ.pop("CML_LORA_TRAINING_DTYPE", None)
+            get_settings.cache_clear()
+
+        self.assertTrue(payload["use_cpu"])
+        self.assertFalse(payload["fp16"])
+        self.assertTrue(payload["bf16"])
+
     def test_lora_adapter_validation_rejects_incomplete_or_malformed_artifacts(self) -> None:
         from backend.app.core.lora_training import adapter_validation_report, verify_adapter_artifact
 
@@ -2592,7 +2686,9 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("CML_LORA_TRAINER_COMMAND", expert_text)
         self.assertIn("AllowTestTrainer", expert_text)
         self.assertIn("build_expert_benchmark_report", expert_text)
-        self.assertIn("ci_scaffold_non_release_benchmark", expert_text)
+        self.assertIn('benchmark_report = {"status": "runtime_failed", "passes": False, "live_adapter_backed": True}', expert_text)
+        self.assertIn('if not runtime_smoke or not runtime_smoke.get("ok"):', expert_text)
+        self.assertNotIn("scaffold_case_scores", expert_text)
         self.assertIn("runtime_adapter_load_plan", runtime_text)
         self.assertNotIn("<<'PY'", expert_text)
         self.assertNotIn("<<'PY'", runtime_text)

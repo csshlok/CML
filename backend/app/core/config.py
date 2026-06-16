@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     lora_runtime_dtype: str = "auto"
     lora_runtime_max_new_tokens: int = 48
     lora_runtime_prompt: str = "Reply with the single word CML."
+    lora_training_device: str = "auto"
+    lora_training_dtype: str = "auto"
     lora_training_cutoff_len: int = 4096
     lora_training_max_steps: int | None = None
     lora_training_batch_size: int = 1
