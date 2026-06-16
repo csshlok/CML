@@ -43,7 +43,7 @@ Public V1 target: end of July 2026 as a Windows-only public release. There is no
 - UI direction: memory-board landing, visual map, chat workspace, Mindly-like organization, Obsidian-like graph/map; detailed UI rules live in `docs/UI_ARCHITECTURE.md`.
 - UI responsive scope: no dedicated mobile screen for public V1; dark version and minimized/narrow desktop window version are required.
 - UI reference folder: preserve `UI-ref/`; do not delete or refactor it.
-- Desktop brand asset: use `apps/desktop/public/brand/logo.svg` for Ponytail branding; do not reintroduce old PNG vault assets, favicon-derived marks, or ad hoc logo variants in the UI.
+- Desktop brand asset: use `apps/desktop/public/brand/logo.svg` for Vault branding; do not reintroduce old PNG vault assets, favicon-derived marks, or ad hoc logo variants in the UI.
 - Cluster experts: compulsory product pillar.
 - Public V1 expert claim: only say a cluster expert is trained after verified LoRA adapter graduation passes for that cluster.
 - Local-first privacy: user data stays local unless the user explicitly exports or connects a tool.

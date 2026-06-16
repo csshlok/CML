@@ -12,7 +12,7 @@ const brandAssets = {
 export function BrandLogo({
   className = "",
   variant = "wordmark",
-  alt = "Ponytail",
+  alt = "Vault",
 }: BrandLogoProps) {
   return (
     <img

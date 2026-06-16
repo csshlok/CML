@@ -74,14 +74,14 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Ponytail" },
+      { title: "Vault" },
       { name: "description", content: "Local-first AI memory for your device" },
-      { name: "author", content: "Ponytail" },
-      { property: "og:title", content: "Ponytail" },
+      { name: "author", content: "Vault" },
+      { property: "og:title", content: "Vault" },
       { property: "og:description", content: "Local-first AI memory for your device" },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
-      { name: "twitter:site", content: "@ponytail" },
+      { name: "twitter:site", content: "@vault" },
     ],
     links: [
       {
