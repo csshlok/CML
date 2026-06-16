@@ -261,7 +261,7 @@ function BridgeView() {
   async function rejectRequest(requestRow: BridgeApprovalRequest) {
     setSaving(true);
     try {
-      await rejectBridgeApprovalRequest(requestRow.id, { detail: "Rejected in CML Bridge settings." });
+      await rejectBridgeApprovalRequest(requestRow.id, { detail: "Rejected in Ponytail Bridge settings." });
       await loadBridgeState();
     } finally {
       setSaving(false);
@@ -439,7 +439,7 @@ function BridgeView() {
             </div>
             <h1 className="page-title mt-2">Bridge</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Let local AI tools request selected context from this vault. New clients now request
+              Let local AI tools request selected context from this library. New clients now request
               approval first, and approved clients keep their own scope, token, and identity notes.
             </p>
             <div className="mt-2 text-xs text-muted-foreground">
@@ -516,7 +516,7 @@ function BridgeView() {
         <section className="mt-4 rounded-md border border-border bg-card p-4">
           {status?.enabled && status.allowed_vault_ids.length === 0 && (
             <div className="mb-4 rounded-md border border-[var(--status-learning)]/40 bg-[var(--status-learning)]/10 px-3 py-2 text-sm">
-              Bridge is on, but no vault is allowed. MCP clients will receive no_active_vault until you allow one.
+              Bridge is on, but no library is allowed. MCP clients will receive no_active_vault until you allow one.
             </div>
           )}
           <div className="flex items-center gap-2">
@@ -525,7 +525,7 @@ function BridgeView() {
           </div>
           <div className="mt-4 grid gap-6 md:grid-cols-2">
             <div>
-              <div className="text-sm font-medium">Allowed vaults</div>
+              <div className="text-sm font-medium">Allowed libraries</div>
               <div className="mt-2 space-y-1.5">
                 {vaults.length > 0 ? (
                   vaults.map((vault) => (
@@ -540,7 +540,7 @@ function BridgeView() {
                     </label>
                   ))
                 ) : (
-                  <div className="text-sm text-muted-foreground">No vaults found.</div>
+                  <div className="text-sm text-muted-foreground">No libraries found.</div>
                 )}
               </div>
             </div>
@@ -605,9 +605,9 @@ function BridgeView() {
                 value={extensionVaultId}
                 onChange={(event) => setExtensionVaultId(event.target.value)}
                 className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-                aria-label="Extension vault scope"
+                aria-label="Extension library scope"
               >
-                <option value="">All allowed vaults</option>
+                <option value="">All allowed libraries</option>
                 {vaults.map((vault) => (
                   <option key={vault.id} value={vault.id}>
                     {vault.name}
@@ -725,7 +725,7 @@ function BridgeView() {
                       disabled={saving || !extensionVaultId || (client.allowed_vault_ids.length === 1 && client.allowed_vault_ids[0] === extensionVaultId)}
                       onClick={() => void scopeExtensionClient(client, extensionVaultId ? [extensionVaultId] : [])}
                     >
-                      Use selected vault
+                      Use selected library
                     </Button>
                     <Button
                       variant="outline"
@@ -808,7 +808,7 @@ function BridgeView() {
                 Save external context
               </div>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                Paste an external answer or a full prompt-response pair and store it directly in CML. For faster everyday saves, use Quick save from the sidebar, command palette, or Ctrl/Cmd Shift S.
+                Paste an external answer or a full prompt-response pair and store it directly in Ponytail. For faster everyday saves, use Quick save from the sidebar, command palette, or Ctrl/Cmd Shift S.
               </p>
             </div>
             <div className="flex gap-2">
@@ -830,13 +830,13 @@ function BridgeView() {
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             <label className="space-y-1">
-              <span className="text-xs text-muted-foreground">Vault</span>
+              <span className="text-xs text-muted-foreground">Library</span>
               <select
                 value={captureVaultId}
                 onChange={(event) => setCaptureVaultId(event.target.value)}
                 className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
               >
-                <option value="">Select vault</option>
+                <option value="">Select library</option>
                 {vaults.map((vault) => (
                   <option key={vault.id} value={vault.id}>
                     {vault.name}
@@ -896,7 +896,7 @@ function BridgeView() {
               {captureNotice ?? "Stored captures inherit the same Bridge trust and review rules as external MCP writeback."}
             </div>
             <Button size="sm" disabled={saving || !captureVaultId || !captureResponse.trim()} onClick={() => void submitManualCapture()}>
-              Save to CML
+              Save to Ponytail
             </Button>
           </div>
         </section>
@@ -933,7 +933,7 @@ function BridgeView() {
                         </span>
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">
-                        {item.requested_vault_ids.length || 0} vaults / {item.requested_cluster_ids.length || 0} clusters / raw text{" "}
+                        {item.requested_vault_ids.length || 0} libraries / {item.requested_cluster_ids.length || 0} clusters / raw text{" "}
                         {item.allow_raw_snippets ? "requested" : "off"}
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">
@@ -1007,7 +1007,7 @@ function BridgeView() {
                       </span>
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      {client.allowed_vault_ids.length || 0} vaults / {client.allowed_cluster_ids.length || 0} clusters / raw text {client.allow_raw_snippets ? "on" : "off"}
+                      {client.allowed_vault_ids.length || 0} libraries / {client.allowed_cluster_ids.length || 0} clusters / raw text {client.allow_raw_snippets ? "on" : "off"}
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       Identity {client.verified_identity ? client.verified_identity_label : "unverified"} / signature{" "}
@@ -1060,7 +1060,7 @@ function BridgeView() {
                 Capture review queue
               </div>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                External answers that only partially used vault context, contradicted it, or skipped it stay here until you approve them.
+                External answers that only partially used library context, contradicted it, or skipped it stay here until you approve them.
               </p>
             </div>
             <div className="text-xs text-muted-foreground">{reviews.length} pending</div>

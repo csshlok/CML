@@ -56,6 +56,9 @@ tmp/
 **/.playwright-mcp/
 .wrangler/
 .dev.vars
+external/
+mock-data/**/.vault/.vault.lock
+mock-data/**/.vault/embedding-runtime.json
 
 # Test, coverage, and audit reports
 .coverage

@@ -144,7 +144,7 @@ async function createWindow() {
     height: 820,
     minWidth: 1024,
     minHeight: 680,
-    title: "Vault",
+    title: "Ponytail",
     backgroundColor: "#fbfaf6",
     autoHideMenuBar: true,
     show: false,
@@ -159,13 +159,13 @@ async function createWindow() {
   window.setMenuBarVisibility(false);
 
   window.once("ready-to-show", () => {
-    window.setTitle("Vault");
+    window.setTitle("Ponytail");
     window.show();
   });
 
   window.on("page-title-updated", (event) => {
     event.preventDefault();
-    window.setTitle("Vault");
+    window.setTitle("Ponytail");
   });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -237,7 +237,7 @@ function ensureTrailingSlash(value) {
 async function loadStartupFailure(window, error) {
   const status = await readStartupStatus();
   const backendLogs = getBackendLogPaths();
-  const detail = status?.message || error?.message || "Vault could not start its local backend.";
+  const detail = status?.message || error?.message || "Ponytail could not start its local backend.";
   const phase = status?.phase || "startup_failed";
   const action = repairActionForPhase(phase);
   const diagnosticText = [
@@ -253,17 +253,17 @@ async function loadStartupFailure(window, error) {
   const html = `
     <!doctype html>
     <meta charset="utf-8" />
-    <title>Vault startup issue</title>
+    <title>Ponytail startup issue</title>
     <body style="margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#fbfaf6;color:#1f1a17;">
       <main style="max-width:760px;margin:10vh auto;padding:32px;">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px;">
           <div style="width:32px;height:32px;border:1px solid #ded6cc;border-radius:8px;display:grid;place-items:center;background:#fffdf9;overflow:hidden;">${startupRepairLogoMarkup}</div>
           <div>
-            <div style="font-weight:650;font-size:14px;">Vault</div>
+            <div style="font-weight:650;font-size:14px;">Ponytail</div>
             <div style="font-size:12px;color:#7c6f65;">Startup repair</div>
           </div>
         </div>
-        <h1 style="font-size:30px;line-height:1.15;margin:0 0 12px;">Vault needs attention before it can open.</h1>
+        <h1 style="font-size:30px;line-height:1.15;margin:0 0 12px;">Ponytail needs attention before it can open.</h1>
         <p style="line-height:1.65;color:#5f524b;margin:0;max-width:620px;">${escapeHtml(detail)}</p>
         <div style="margin-top:22px;padding:16px;border:1px solid #d7cfc5;border-radius:8px;background:#fffdf9;">
           <div style="font-weight:600;font-size:14px;">${escapeHtml(action.title)}</div>
@@ -281,7 +281,7 @@ async function loadStartupFailure(window, error) {
           <button onclick="window.cmlDesktop?.retryStartup?.()" style="height:36px;padding:0 14px;border:0;border-radius:8px;background:#765f4d;color:#fff;font-weight:600;">Try again</button>
           ${phase === "vault_lock_failed" ? '<button onclick="window.cmlDesktop?.openVaultAnyway?.()" style="height:36px;padding:0 14px;border:1px solid #9b6a4f;border-radius:8px;background:#fff7ed;color:#7c2d12;font-weight:600;">Open anyway</button>' : ""}
           <button id="copy-details-button" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Copy details</button>
-          <button onclick="window.close()" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Close Vault</button>
+          <button onclick="window.close()" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Close Ponytail</button>
         </div>
       </main>
       <script>
@@ -320,17 +320,17 @@ async function loadRendererFailure(window, error) {
   const html = `
     <!doctype html>
     <meta charset="utf-8" />
-    <title>Vault renderer issue</title>
+    <title>Ponytail renderer issue</title>
     <body style="margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#fbfaf6;color:#1f1a17;">
       <main style="max-width:760px;margin:10vh auto;padding:32px;">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px;">
           <div style="width:32px;height:32px;border:1px solid #ded6cc;border-radius:8px;display:grid;place-items:center;background:#fffdf9;overflow:hidden;">${startupRepairLogoMarkup}</div>
           <div>
-            <div style="font-weight:650;font-size:14px;">Vault</div>
+            <div style="font-weight:650;font-size:14px;">Ponytail</div>
             <div style="font-size:12px;color:#7c6f65;">Renderer repair</div>
           </div>
         </div>
-        <h1 style="font-size:30px;line-height:1.15;margin:0 0 12px;">Vault could not load its packaged UI.</h1>
+        <h1 style="font-size:30px;line-height:1.15;margin:0 0 12px;">Ponytail could not load its packaged UI.</h1>
         <p style="line-height:1.65;color:#5f524b;margin:0;max-width:620px;">${escapeHtml(error?.message || "The local renderer did not become ready.")}</p>
         <div style="margin-top:22px;padding:16px;border:1px solid #d7cfc5;border-radius:8px;background:#fffdf9;">
           <div style="font-weight:600;font-size:14px;">The backend may already be healthy.</div>
@@ -339,7 +339,7 @@ async function loadRendererFailure(window, error) {
         <div style="display:flex;gap:10px;margin-top:22px;flex-wrap:wrap;">
           <button onclick="window.cmlDesktop?.retryStartup?.()" style="height:36px;padding:0 14px;border:0;border-radius:8px;background:#765f4d;color:#fff;font-weight:600;">Try again</button>
           <button id="copy-details-button" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Copy details</button>
-          <button onclick="window.close()" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Close Vault</button>
+          <button onclick="window.close()" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Close Ponytail</button>
         </div>
       </main>
       <script>
@@ -368,20 +368,20 @@ async function loadRendererFailure(window, error) {
 function repairActionForPhase(phase) {
   if (phase === "integrity_check_failed") {
     return {
-      title: "The vault database did not pass its health check.",
+      title: "The library database did not pass its health check.",
       body: "Do not keep retrying if this repeats. The next repair pass should export diagnostics and offer backup or restore options before any write recovery.",
     };
   }
   if (phase === "schema_check_failed") {
     return {
-      title: "The vault schema or migration state is incomplete.",
-      body: "Vault stopped before accepting traffic so it does not mutate a half-migrated database.",
+      title: "The library schema or migration state is incomplete.",
+      body: "Ponytail stopped before accepting traffic so it does not mutate a half-migrated database.",
     };
   }
   if (phase === "vault_lock_failed") {
     return {
-      title: "Another Vault process may own this vault.",
-      body: "Close other Vault windows before retrying. Opening the same vault twice can corrupt local data.",
+      title: "Another Ponytail process may own this library.",
+      body: "Close other Ponytail windows before retrying. Opening the same library twice can corrupt local data.",
     };
   }
   return {
@@ -426,9 +426,9 @@ if (!gotSingleInstanceLock) {
       if (requestedVaultArg) {
         dialog.showMessageBox(mainWindow, {
           type: "info",
-          title: "Vault is already open",
-          message: "Vault is already open.",
-          detail: "Close the current vault before opening another.",
+          title: "Ponytail is already open",
+          message: "Ponytail is already open.",
+          detail: "Close the current library before opening another.",
         });
       }
     }
@@ -455,7 +455,7 @@ if (gotSingleInstanceLock) {
         properties: ["openFile", "multiSelections"],
         filters: [
         {
-          name: "Vault sources",
+          name: "Ponytail sources",
           extensions: [
             "txt", "md", "markdown", "docx", "pdf", "csv", "json", "jsonl", "html", "htm",
             "xml", "yaml", "yml", "rtf", "log", "py", "js", "ts", "tsx", "jsx", "go", "rs",
@@ -499,7 +499,7 @@ if (gotSingleInstanceLock) {
 
     ipcMain.handle("cml:select-vault-folder", async () => {
       const result = await dialog.showOpenDialog({
-        title: "Choose vault location",
+        title: "Choose library location",
         properties: ["openDirectory", "createDirectory"],
       });
       if (result.canceled) return null;
@@ -554,9 +554,9 @@ if (gotSingleInstanceLock) {
         buttons: ["Cancel", "Open once"],
         defaultId: 0,
         cancelId: 0,
-        title: "Open locked vault?",
-        message: "Open this vault only if every other Vault window or backend process is closed.",
-        detail: "This bypasses the lock once. Opening the same vault from two processes can corrupt local data.",
+        title: "Open locked library?",
+        message: "Open this library only if every other Ponytail window or backend process is closed.",
+        detail: "This bypasses the lock once. Opening the same library from two processes can corrupt local data.",
       });
       if (confirmation.response !== 1) return null;
       vaultLockOverrideOnce = true;
@@ -873,7 +873,7 @@ async function tryServeStaticAsset(clientDir, pathname) {
     };
   }
   if (!safePathname || safePathname.includes("..")) return null;
-  if (!(safePathname.startsWith("assets/") || safePathname === "favicon.png" || safePathname === "brand/vault-icon.png" || safePathname === "brand/vault-logo.png")) return null;
+  if (!(safePathname.startsWith("assets/") || safePathname === "brand/logo.svg")) return null;
   const target = path.join(clientDir, safePathname);
   if (!target.startsWith(clientDir)) return null;
   try {

@@ -5,14 +5,14 @@ type BrandLogoProps = {
 };
 
 const brandAssets = {
-  wordmark: "/brand/vault-logo.png",
-  icon: "/brand/vault-icon.png",
+  wordmark: "/brand/logo.svg",
+  icon: "/brand/logo.svg",
 } as const;
 
 export function BrandLogo({
   className = "",
   variant = "wordmark",
-  alt = "Vault",
+  alt = "Ponytail",
 }: BrandLogoProps) {
   return (
     <img
@@ -23,4 +23,3 @@ export function BrandLogo({
     />
   );
 }
-

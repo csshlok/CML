@@ -131,7 +131,7 @@ export function QuickCaptureDialog() {
         <DialogHeader>
           <DialogTitle>Quick Capture</DialogTitle>
           <DialogDescription>
-            Save an outside artifact or prompt-response pair into CML without going through the Bridge admin screen.
+            Save an outside artifact or prompt-response pair into Ponytail without going through the Bridge admin screen.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -160,7 +160,7 @@ export function QuickCaptureDialog() {
 
           <div className="grid gap-3 md:grid-cols-2">
             <label className="space-y-1 text-sm">
-              <span className="text-muted-foreground">Vault</span>
+              <span className="text-muted-foreground">Library</span>
               <select
                 value={draft.vaultId}
                 onChange={(event) => {
@@ -244,7 +244,7 @@ export function QuickCaptureDialog() {
             Close
           </Button>
           <Button onClick={() => void submit()} disabled={saving || !canSubmitQuickCapture(draft)}>
-            Save to CML
+            Save to Ponytail
           </Button>
         </DialogFooter>
       </DialogContent>

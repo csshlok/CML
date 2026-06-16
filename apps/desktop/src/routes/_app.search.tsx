@@ -257,7 +257,7 @@ function MindView() {
     >
       {dragActive && (
         <div className="pointer-events-none absolute inset-3 z-30 flex items-center justify-center rounded-md border border-dashed border-primary bg-background/85 text-sm font-medium text-foreground">
-          Drop documents to add them to this vault
+          Drop documents to add them to this library
         </div>
       )}
       <main className="min-w-0 overflow-y-auto">
@@ -333,9 +333,9 @@ function MindView() {
           )}
           {!vault && (
             <div className="mb-4 rounded-md border border-border bg-card px-4 py-3 text-sm">
-              <div className="font-medium">No active vault</div>
+              <div className="font-medium">No active library</div>
               <div className="mt-1 text-muted-foreground">
-                Create or open a vault before adding files and using semantic search.
+                Create or open a library before adding files and using semantic search.
               </div>
               <Link to="/settings" className="mt-3 inline-block text-primary underline-offset-4 hover:underline">
                 Open storage settings
@@ -370,7 +370,7 @@ function MindView() {
             <div className="rounded-md border border-dashed border-border bg-card p-8 text-sm">
               <div className="font-medium">No sources match this view</div>
               <div className="mt-1 text-muted-foreground">
-                Adjust the search or filters, or add a source to this vault.
+                Adjust the search or filters, or add a source to this library.
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
                 <Button variant="outline" size="sm" onClick={() => setQuery("")}>
@@ -386,7 +386,7 @@ function MindView() {
       </main>
 
       <aside className="hidden border-l border-border bg-card/55 p-5 lg:block">
-        <h2 className="text-sm font-semibold">Current vault</h2>
+        <h2 className="text-sm font-semibold">Current library</h2>
         <div className="mt-4 space-y-2">
           <StateRow label="Sources" value={sources.length.toString()} />
           <StateRow label="Clusters" value={clusters.length.toString()} />
@@ -432,7 +432,7 @@ function MindView() {
           <DialogHeader>
             <DialogTitle>Add note</DialogTitle>
             <DialogDescription>
-              Save pasted or written text into the active local vault.
+              Save pasted or written text into the active local library.
             </DialogDescription>
           </DialogHeader>
           <label className="grid gap-1 text-sm">
@@ -455,7 +455,7 @@ function MindView() {
           <DialogHeader>
             <DialogTitle>Add link</DialogTitle>
             <DialogDescription>
-              Fetch a web page, extract readable content, and store it in the active vault.
+              Fetch a web page, extract readable content, and store it in the active library.
             </DialogDescription>
           </DialogHeader>
           <label className="grid gap-1 text-sm">
@@ -463,7 +463,7 @@ function MindView() {
             <Input placeholder="https://..." value={linkUrl} onChange={(event) => setLinkUrl(event.target.value)} />
           </label>
           <div className="rounded-md border border-border bg-muted/45 p-3 text-sm">
-            Vault stores the readable text and queues it for indexing.
+            Ponytail stores the readable text and queues it for indexing.
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setAddMode(null)}>Cancel</Button>

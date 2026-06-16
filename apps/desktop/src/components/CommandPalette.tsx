@@ -112,7 +112,7 @@ export function CommandPalette({
               go(() => openQuickCapture({ mode: "artifact", seedFromClipboard: true }))
             }
           >
-            <ClipboardPaste className="mr-2 h-4 w-4" /> Save clipboard to CML
+            <ClipboardPaste className="mr-2 h-4 w-4" /> Save clipboard to Ponytail
           </CommandItem>
           <CommandItem onSelect={() => go(() => openQuickCapture({ mode: "turn" }))}>
             <Save className="mr-2 h-4 w-4" /> Save prompt + response

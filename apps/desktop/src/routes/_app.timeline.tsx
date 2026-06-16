@@ -101,7 +101,7 @@ export function TimelineRoute() {
         kind: "chat" as const,
         time: chat.updated_at,
         title: chat.title,
-        detail: chat.scope_cluster_id ? "Cluster chat session" : "Vault-wide chat session",
+        detail: chat.scope_cluster_id ? "Cluster chat session" : "Library-wide chat session",
         href: `/chat/${chat.id}`,
       })),
       ...bridge.map((request) => ({
@@ -135,7 +135,7 @@ export function TimelineRoute() {
       <main className="min-w-0 overflow-y-auto px-8 py-8">
         <header className="border-b border-border pb-6">
           <h1 className="page-title">Timeline</h1>
-          <p className="mt-2 text-sm text-muted-foreground">Everything Vault processed, indexed, changed, and answered.</p>
+          <p className="mt-2 text-sm text-muted-foreground">Everything Ponytail processed, indexed, changed, and answered.</p>
           <div className="mt-6 grid gap-3 md:grid-cols-[1fr_auto]">
             <div className="relative max-w-xl">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />

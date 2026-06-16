@@ -216,7 +216,7 @@ function ChatIndex() {
           <div className="flex items-center gap-3">
             <MessageSquare className="h-5 w-5 text-muted-foreground" />
             <div>
-              <h1 className="text-base font-semibold">Ask Vault</h1>
+              <h1 className="text-base font-semibold">Ask Ponytail</h1>
               <p className="text-sm text-muted-foreground">
                 Starts with all indexed context. Narrow to a cluster only when the question needs
                 it.
@@ -317,7 +317,7 @@ function ChatIndex() {
       <aside className="overflow-y-auto border-l border-border bg-card/35 px-7 py-8">
         <div className="flex items-center gap-3">
           <span className="h-2.5 w-2.5 rounded-full bg-primary" />
-          <h2 className="text-lg font-semibold">Vault context</h2>
+          <h2 className="text-lg font-semibold">Ponytail context</h2>
           <MoreHorizontal className="ml-auto h-4 w-4 text-muted-foreground" />
           <span className="h-6 w-px bg-border" />
           <X className="h-4 w-4 text-muted-foreground" />

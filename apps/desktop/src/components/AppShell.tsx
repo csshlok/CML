@@ -215,10 +215,10 @@ export function AppShell() {
       <div className="flex min-h-0 flex-1">
         <aside className="vault-sidebar flex flex-col">
           <div className="px-4 pb-2 pt-4">
-            <div className="panel-section-title mb-2">Vault</div>
+            <div className="panel-section-title mb-2">Ponytail</div>
             <button className="flex w-full items-center gap-2 truncate text-left text-[12px] text-[var(--text-primary)] hover:text-[var(--primary)]">
               <FolderOpen className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
-              <span className="truncate">{vaultPath ?? "Choose vault"}</span>
+              <span className="truncate">{vaultPath ?? "Choose library"}</span>
             </button>
             <div className="mt-4">
               <BrandLogo className="h-7 w-auto select-none" />
@@ -238,7 +238,7 @@ export function AppShell() {
               className="mt-2 flex h-8 w-full items-center gap-2 rounded-md border border-[var(--border-input)] bg-[var(--bg-card)] px-3 text-left text-[13px] text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
             >
               <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-              <span className="min-w-0 flex-1">Quick save to CML</span>
+              <span className="min-w-0 flex-1">Quick save to Ponytail</span>
               <span className="text-[11px] text-[var(--text-subtle)]">Ctrl/Cmd Shift S</span>
             </button>
           </div>
@@ -324,7 +324,7 @@ export function AppShell() {
                   {vaultPath ? vaultName(vaultPath) : "Local profile"}
                 </div>
                 <div className="truncate text-[12px] text-[var(--text-muted)]">
-                  {vaultPath ?? "No vault selected"}
+                  {vaultPath ?? "No library selected"}
                 </div>
               </div>
               <ChevronDown className="h-3.5 w-3.5 text-[var(--text-muted)]" strokeWidth={1.5} />
@@ -340,7 +340,7 @@ export function AppShell() {
       <footer className="vault-footer flex shrink-0 items-center border-t border-[var(--border-default)] px-4">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${backend.status === "online" ? "bg-[var(--status-ready)]" : "bg-[var(--status-muted)]"}`} />
-          <span className="truncate">{vaultPath ?? "No active vault"}</span>
+          <span className="truncate">{vaultPath ?? "No active library"}</span>
           <span>/</span>
           <span>{backend.status === "online" ? "Backend online" : backend.status === "checking" ? "Checking backend" : "Backend offline"}</span>
           <span>/</span>

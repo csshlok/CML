@@ -1,1 +1,0 @@
-{"pid":14760,"created_at":"2026-06-01T15:48:33.965277+00:00","command_line":"\"C:\\Users\\KIIT0001\\AppData\\Local\\Microsoft\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\python.exe\" -m uvicorn backend.app.main:app --host 127.0.0.1 --port 7343"}

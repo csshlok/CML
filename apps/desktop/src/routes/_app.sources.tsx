@@ -155,7 +155,7 @@ function SourcesView() {
     setSubmitting(true);
     try {
       if (!vault) {
-        setIngestMessage("Create or open a vault before adding text sources.");
+        setIngestMessage("Create or open a library before adding text sources.");
       } else {
         await createSourceFromText({ vault_id: vault.id, title, text });
         await refreshBackendSources();
@@ -175,7 +175,7 @@ function SourcesView() {
     setSubmitting(true);
     try {
       if (!vault) {
-        setIngestMessage("Create or open a vault before adding links.");
+        setIngestMessage("Create or open a library before adding links.");
       } else {
         setIngestMessage("Fetching link text...");
         await createSourceFromUrl({ vault_id: vault.id, url });
@@ -191,7 +191,7 @@ function SourcesView() {
 
   async function handleAddFiles() {
     if (!vault || !window.cmlDesktop?.selectSourceFiles) {
-      setIngestMessage("File picking is available in the desktop app after a vault is created.");
+      setIngestMessage("File picking is available in the desktop app after a library is created.");
       return;
     }
     const paths = await window.cmlDesktop.selectSourceFiles();
@@ -200,7 +200,7 @@ function SourcesView() {
 
   async function handleAddFolder() {
     if (!vault || !window.cmlDesktop?.selectSourceFolders || !window.cmlDesktop?.listSupportedFiles) {
-      setIngestMessage("Folder import is available in the desktop app after a vault is created.");
+      setIngestMessage("Folder import is available in the desktop app after a library is created.");
       return;
     }
     const folders = await window.cmlDesktop.selectSourceFolders();
@@ -254,7 +254,7 @@ function SourcesView() {
 
   async function handleReindexSource(source: Source) {
     if (!usingBackend) {
-      setIngestMessage("Create or open a vault before reindexing sources.");
+      setIngestMessage("Create or open a library before reindexing sources.");
       return;
     }
     await updateBackendSource(source.id, { state: "extracting" });
@@ -263,7 +263,7 @@ function SourcesView() {
 
   async function handleRemoveSource(source: Source) {
     if (!usingBackend) {
-      setIngestMessage("Create or open a vault before deleting sources.");
+      setIngestMessage("Create or open a library before deleting sources.");
       return;
     }
     await deleteBackendSource(source.id);
@@ -334,7 +334,7 @@ function SourcesView() {
           <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">
             {vault
               ? "Drop files, links, screenshots, or notes to begin."
-              : "Create a vault in Settings to store real sources."}
+              : "Create a library in Settings to store real sources."}
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -532,7 +532,7 @@ function SourceInspector({
       <section className="mt-6">
         <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Description</div>
         <p className="mt-4 text-sm leading-6 text-muted-foreground">
-          {source.summary || source.preview || "Vault has not generated a description for this source yet."}
+          {source.summary || source.preview || "Ponytail has not generated a description for this source yet."}
         </p>
       </section>
 

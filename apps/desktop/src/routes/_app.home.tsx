@@ -231,7 +231,7 @@ export function HomeView() {
             <div className="h-10 w-10 rounded-full border-4 border-[var(--status-ready)]/80 border-r-muted" />
           </div>
           <div className="mt-6 space-y-4 border-t border-border pt-5">
-            <HealthRow icon={<ShieldCheck className="h-4 w-4" />} label="Vault" value="Healthy" />
+            <HealthRow icon={<ShieldCheck className="h-4 w-4" />} label="Ponytail" value="Healthy" />
             <HealthRow icon={<Database className="h-4 w-4" />} label="Database" value="Healthy" />
             <HealthRow icon={<CheckCircle2 className="h-4 w-4" />} label="Embeddings" value="Healthy" />
             <HealthRow icon={<MessageSquare className="h-4 w-4" />} label="Model" value="Ready" />
@@ -244,7 +244,7 @@ export function HomeView() {
           <div className="mt-4 space-y-4">
             <QuickAction icon={<FileText className="h-4 w-4" />} title="Add source" detail="Import files, links, or notes" href="/sources" />
             <QuickAction icon={<Plus className="h-4 w-4" />} title="New cluster" detail="Organize related memories" href="/clusters" />
-            <QuickAction icon={<Search className="h-4 w-4" />} title="Run analysis" detail="Ask Vault to analyze a topic" href="/chat" />
+            <QuickAction icon={<Search className="h-4 w-4" />} title="Run analysis" detail="Ask Ponytail to analyze a topic" href="/chat" />
             <QuickAction icon={<Mail className="h-4 w-4" />} title="Open inbox" detail="Review unprocessed sources" href="/sources" />
           </div>
         </section>

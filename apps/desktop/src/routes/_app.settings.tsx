@@ -83,7 +83,7 @@ export const Route = createFileRoute("/_app/settings")({
 
 const settingsSections = [
   { id: "profile", label: "Profile", icon: UserRound },
-  { id: "storage", label: "Vault storage", icon: Database },
+  { id: "storage", label: "Library storage", icon: Database },
   { id: "models", label: "Local models", icon: TerminalSquare },
   { id: "embeddings", label: "Embeddings", icon: Layers },
   { id: "ocr", label: "OCR", icon: Settings2 },
@@ -144,7 +144,7 @@ function SettingsView() {
           const firstVault = vaultRows[0] ?? null;
           setBackendVault(firstVault);
           if (firstVault) setPathDraft(firstVault.path);
-          setStatusMessage(currentUnlock.message || "Vault is locked. Unlock it from Privacy settings.");
+          setStatusMessage(currentUnlock.message || "Library is locked. Unlock it from Privacy settings.");
           return;
         }
         const [
@@ -207,7 +207,7 @@ function SettingsView() {
   async function unlockVault() {
     const vaultId = backendVault?.id ?? unlockStatus?.secured_vault_ids[0];
     if (!vaultId || !vaultPassphrase.trim()) {
-      setStatusMessage("Choose a vault and enter the full passphrase.");
+      setStatusMessage("Choose a library and enter the full passphrase.");
       return;
     }
     setSaving(true);
@@ -218,9 +218,9 @@ function SettingsView() {
       setUnlockStatus(next);
       if ("recovery_key" in next) setRecoveryKey(next.recovery_key);
       setVaultPassphrase("");
-      setStatusMessage(next.state === "ready" ? "Vault ready." : next.message);
+      setStatusMessage(next.state === "ready" ? "Library ready." : next.message);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Could not unlock vault.");
+      setStatusMessage(error instanceof Error ? error.message : "Could not unlock library.");
     } finally {
       setSaving(false);
     }
@@ -231,9 +231,9 @@ function SettingsView() {
     try {
       const next = await lockVault(unlockStatus?.vault_id ?? backendVault?.id ?? null);
       setUnlockStatus(next);
-      setStatusMessage("Vault locked.");
+      setStatusMessage("Library locked.");
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Could not lock vault.");
+      setStatusMessage(error instanceof Error ? error.message : "Could not lock library.");
     } finally {
       setSaving(false);
     }
@@ -278,9 +278,9 @@ function SettingsView() {
         ? await updateVault(backendVault.id, { path })
         : await createVault({ name: "Local memory", path });
       setBackendVault(nextVault);
-      setStatusMessage("Vault location saved.");
+      setStatusMessage("Library location saved.");
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Could not save vault location.");
+      setStatusMessage(error instanceof Error ? error.message : "Could not save library location.");
     } finally {
       setSaving(false);
     }
@@ -871,15 +871,15 @@ function SettingsView() {
             description="Manage local data and model storage."
           >
             <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
-              Disk usage is not exposed by the backend yet. Vault storage is configured at{" "}
-              <span className="text-foreground">{pathDraft || "No vault selected"}</span>.
+              Disk usage is not exposed by the backend yet. Library storage is configured at{" "}
+              <span className="text-foreground">{pathDraft || "No library selected"}</span>.
             </div>
           </SettingsCard>
 
           <SettingsCard
             icon={<Lock className="h-4 w-4" />}
-            title="Vault unlock"
-            description="Control the local vault unlock boundary. Convenience mode is default; strict locked mode is opt-in."
+            title="Library unlock"
+            description="Control the local library unlock boundary. Convenience mode is default; strict locked mode is opt-in."
             status={unlockStatus?.state ?? "Unknown"}
             statusTone={unlockStatus?.state === "ready" ? "ready" : "issue"}
           >
@@ -898,7 +898,7 @@ function SettingsView() {
                 type="password"
                 value={vaultPassphrase}
                 onChange={(event) => setVaultPassphrase(event.target.value)}
-                placeholder={unlockStatus?.secured_vault_count ? "Vault passphrase" : "Create vault passphrase"}
+                placeholder={unlockStatus?.secured_vault_count ? "Library passphrase" : "Create library passphrase"}
               />
               <Button onClick={() => void unlockVault()} disabled={saving || !backendVault}>
                 {unlockStatus?.secured_vault_count ? "Unlock" : "Initialize security"}
@@ -909,7 +909,7 @@ function SettingsView() {
             </div>
             {recoveryKey ? (
               <div className="mt-4 rounded-md border border-[var(--status-learning)]/35 bg-[var(--status-learning)]/10 px-3 py-3 text-sm">
-                <div className="font-medium">Offline recovery key. Store it now; CML has no vendor recovery path.</div>
+                <div className="font-medium">Offline recovery key. Store it now; Ponytail has no vendor recovery path.</div>
                 <div className="mt-2 break-all font-mono text-xs">{recoveryKey}</div>
               </div>
             ) : null}
@@ -964,7 +964,7 @@ function SettingsView() {
             <div className="mt-5 space-y-2">
               {integrationImports.length === 0 ? (
                 <div className="rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
-                  No local folder imports are tracked for this vault yet.
+                  No local folder imports are tracked for this library yet.
                 </div>
               ) : (
                 integrationImports.map((record) => (
@@ -1180,7 +1180,7 @@ function SettingsView() {
         <div className="my-8 h-px bg-border" />
         <h3 className="text-sm font-semibold">Need help?</h3>
         <button className="mt-4 flex items-center gap-2 text-sm text-primary" type="button">
-          Vault docs <ChevronRight className="h-4 w-4" />
+          Ponytail docs <ChevronRight className="h-4 w-4" />
         </button>
       </aside>
     </div>
@@ -1238,7 +1238,7 @@ function ProfileSettings({ vaultPath }: { vaultPath: string }) {
           </span>
           <div className="min-w-0 flex-1">
             <h2 className="text-xl font-semibold">{displayName}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">{vaultPath || "No vault selected"}</p>
+            <p className="mt-1 text-sm text-muted-foreground">{vaultPath || "No library selected"}</p>
             <div className="mt-3 inline-flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1 text-xs text-primary">
               <ShieldCheck className="h-3.5 w-3.5" />
               Local profile
@@ -1262,10 +1262,10 @@ function ProfileSettings({ vaultPath }: { vaultPath: string }) {
       <section className="vault-card p-5">
         <h2 className="text-sm font-semibold">Sign-in methods</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Vault can remember your account identity without syncing private vault data.
+          Ponytail can remember your account identity without syncing private library data.
         </p>
         <div className="mt-5 divide-y divide-border border-y border-border">
-          <ProfileMethod label="Local vault" value={vaultPath || "No vault selected"} status={vaultPath ? "Connected" : "Not set"} />
+          <ProfileMethod label="Local library" value={vaultPath || "No library selected"} status={vaultPath ? "Connected" : "Not set"} />
           <ProfileMethod label="Google OAuth" value="Optional account connection" status="Not connected" />
         </div>
       </section>
@@ -1276,7 +1276,7 @@ function ProfileSettings({ vaultPath }: { vaultPath: string }) {
           {[
             "Profile metadata stays on this device",
             "No telemetry is attached to your identity",
-            "Vault backups are controlled by you",
+            "Ponytail backups are controlled by you",
             "Cloud connectors require explicit permission",
           ].map((item) => (
             <div key={item} className="flex items-center gap-3 rounded-md bg-background px-3 py-3 text-sm">

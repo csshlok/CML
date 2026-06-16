@@ -580,7 +580,7 @@ function ClusterMemoryProfile({
         <section className="rounded-md border border-border bg-card p-5">
           <h3 className="text-sm font-semibold">Profile state</h3>
           <p className="mt-3 text-sm leading-6 text-muted-foreground">
-            {cluster.summary || cluster.description || "Vault has not generated a profile summary for this cluster yet."}
+            {cluster.summary || cluster.description || "Ponytail has not generated a profile summary for this cluster yet."}
           </p>
           <div className="mt-5 grid grid-cols-3 gap-4">
             <Metric value={sources.length.toLocaleString()} label="Sources" />

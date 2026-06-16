@@ -373,7 +373,7 @@ function SourcePreview({ source }: { source: Source }) {
           type="button"
         >
           <FolderOpen className="h-3 w-3" />
-          Vault
+          Library
         </button>
         <button
           className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground disabled:opacity-45"
