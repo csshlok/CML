@@ -2,6 +2,8 @@ import {
   buildExtensionCaptureRequest,
   buildExtensionUploadRequest,
   derivePageCaptureTitle,
+  apiPath,
+  normalizeApiPrefix,
   normalizeBackendUrl,
   parseDataUrl,
   sanitizeUploadFileName,
@@ -82,9 +84,10 @@ export function createBackgroundController(deps) {
 export function createChromeBackgroundDeps(chromeApi, fetchImpl) {
   return {
     async loadConfig() {
-      const stored = await chromeApi.storage.local.get(["backendUrl", "token", "vaultId", "clusterId"]);
+      const stored = await chromeApi.storage.local.get(["backendUrl", "apiPrefix", "token", "vaultId", "clusterId"]);
       return {
         backendUrl: normalizeBackendUrl(stored.backendUrl),
+        apiPrefix: normalizeApiPrefix(stored.apiPrefix),
         token: String(stored.token || "").trim(),
         vaultId: String(stored.vaultId || "").trim(),
         clusterId: String(stored.clusterId || "").trim(),
@@ -189,7 +192,7 @@ function postJsonCapture(config, payload, fetchImpl, endpoint) {
       if (!config.token) {
         throw new Error("Extension token is missing. Import setup JSON first.");
       }
-      return fetchImpl(`${config.backendUrl}/api/v1/extension/${endpoint}`, {
+      return fetchImpl(`${config.backendUrl}${apiPath(config, `/extension/${endpoint}`)}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

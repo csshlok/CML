@@ -293,8 +293,9 @@ function Onboarding() {
         setMessage(null);
         return;
       }
-      await desktop?.setActiveVaultFolder?.(vaultPath.trim());
+      await desktop?.prepareActiveVaultFolder?.(vaultPath.trim());
       const created = await createVaultWithRetry(vaultName.trim(), vaultPath.trim());
+      await desktop?.setActiveVaultFolder?.(vaultPath.trim());
       setVault(created);
       store.setVault(created.path);
       setMessage("Library folder is ready.");

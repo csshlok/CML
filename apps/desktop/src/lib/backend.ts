@@ -3,7 +3,9 @@ import { useEffect, useState } from "react";
 const CONFIGURED_BACKEND_URL =
   (import.meta.env.VITE_CML_BACKEND_URL as string | undefined) || "http://127.0.0.1:7343";
 const CONFIGURED_BACKEND_TOKEN = import.meta.env.VITE_CML_API_TOKEN as string | undefined;
-const API_PREFIX = (import.meta.env.VITE_CML_API_PREFIX as string | undefined) || "/api/v1";
+const DEFAULT_API_PREFIX = "/api/v1";
+const API_PREFIX = normalizeApiPrefix(import.meta.env.VITE_CML_API_PREFIX as string | undefined);
+export const BACKEND_API_PREFIX = API_PREFIX;
 const DEFAULT_BACKEND_CANDIDATES = [
   "http://127.0.0.1:7342",
   ...Array.from({ length: 13 }, (_value, index) => `http://127.0.0.1:${7343 + index}`),
@@ -18,17 +20,16 @@ if (typeof window !== "undefined") {
   const queryBackendUrl = new URLSearchParams(window.location.search).get("backendUrl");
   if (queryBackendUrl) {
     resolvedBackendUrl = queryBackendUrl;
-  } else {
-    void window.cmlDesktop?.getBackendUrl?.().then((url) => {
-      if (url) resolvedBackendUrl = url;
-    });
-    void window.cmlDesktop?.getBackendToken?.().then((token) => {
-      if (token) resolvedBackendToken = token;
-    });
-    window.cmlDesktop?.onBackendUrlChanged?.((nextUrl) => {
-      if (nextUrl) resolvedBackendUrl = nextUrl;
-    });
   }
+  void window.cmlDesktop?.getBackendUrl?.().then((url) => {
+    if (url) resolvedBackendUrl = url;
+  });
+  void window.cmlDesktop?.getBackendToken?.().then((token) => {
+    if (token) resolvedBackendToken = token;
+  });
+  window.cmlDesktop?.onBackendUrlChanged?.((nextUrl) => {
+    if (nextUrl) resolvedBackendUrl = nextUrl;
+  });
 }
 
 export type BackendHealthStatus = "checking" | "online" | "degraded" | "offline";
@@ -1424,7 +1425,7 @@ export async function streamChatContext(
   const token = await getBackendToken();
   const headers = new Headers({ "Content-Type": "application/json" });
   if (token) headers.set("x-cml-api-token", token);
-  const response = await fetch(`${backendUrl}/api/v1/chat/context/stream`, {
+  const response = await fetch(`${backendUrl}${apiPath("/api/v1/chat/context/stream")}`, {
     method: "POST",
     headers,
     body: JSON.stringify(payload),
@@ -1859,7 +1860,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (token) headers.set("x-cml-api-token", token);
-  const response = await fetch(`${backendUrl}${path}`, {
+  const response = await fetch(`${backendUrl}${apiPath(path)}`, {
     ...init,
     headers,
   });
@@ -1875,4 +1876,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+function apiPath(path: string) {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  if (normalized === API_PREFIX || normalized.startsWith(`${API_PREFIX}/`)) {
+    return normalized;
+  }
+  if (normalized === DEFAULT_API_PREFIX || normalized.startsWith(`${DEFAULT_API_PREFIX}/`)) {
+    return `${API_PREFIX}${normalized.slice(DEFAULT_API_PREFIX.length)}`;
+  }
+  return `${API_PREFIX}${normalized}`;
+}
+
+function normalizeApiPrefix(value?: string) {
+  const raw = String(value || DEFAULT_API_PREFIX).trim();
+  const prefixed = raw.startsWith("/") ? raw : `/${raw}`;
+  return prefixed.replace(/\/+$/, "") || DEFAULT_API_PREFIX;
 }

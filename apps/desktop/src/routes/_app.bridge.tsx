@@ -38,6 +38,7 @@ import {
   updateBridgeSettings,
   updateExtensionClient,
   useBackendHealth,
+  BACKEND_API_PREFIX,
   type BridgeApprovalRequest,
   type BridgeAuditEvent,
   type BridgeCaptureRecord,
@@ -422,6 +423,7 @@ function BridgeView() {
   const extensionSetupText = extensionToken
     ? buildExtensionSetupText({
         backendUrl: backend.url,
+        apiPrefix: BACKEND_API_PREFIX,
         token: extensionToken,
         vaultId: extensionVaultId,
         clientName: extensionName.trim() || "Browser extension",
@@ -1177,7 +1179,7 @@ function BridgeView() {
               onClick={() => {
                 void copyBridgeText(
                   [
-                    `POST ${backend.url}/api/v1/bridge/context`,
+                    `POST ${backend.url}${BACKEND_API_PREFIX}/bridge/context`,
                     `x-cml-bridge-token: ${exampleClientToken}`,
                     JSON.stringify({
                       query: "...",

@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld("cmlDesktop", {
   selectEmbeddingFolder: () => ipcRenderer.invoke("cml:select-embedding-folder"),
   selectModelFolder: () => ipcRenderer.invoke("cml:select-model-folder"),
   selectVaultFolder: () => ipcRenderer.invoke("cml:select-vault-folder"),
+  prepareActiveVaultFolder: (targetPath) => ipcRenderer.invoke("cml:prepare-active-vault-folder", targetPath),
   setActiveVaultFolder: (targetPath) => ipcRenderer.invoke("cml:set-active-vault-folder", targetPath),
   selectCoverImage: () => ipcRenderer.invoke("cml:select-cover-image"),
   getBackendUrl: () => ipcRenderer.invoke("cml:get-backend-url"),

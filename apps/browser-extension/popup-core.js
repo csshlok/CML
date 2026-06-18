@@ -1,4 +1,4 @@
-import { normalizeBackendUrl, parseSetupJson } from "./extension-core.js";
+import { apiPath, normalizeApiPrefix, normalizeBackendUrl, parseSetupJson } from "./extension-core.js";
 
 export function createPopupController(deps) {
   return {
@@ -9,6 +9,7 @@ export function createPopupController(deps) {
       const parsed = parseSetupJson(rawSetupJson);
       const config = {
         backendUrl: parsed.backendUrl,
+        apiPrefix: parsed.apiPrefix,
         token: parsed.token,
         vaultId: parsed.vaultId,
         clusterId: parsed.clusterId,
@@ -26,6 +27,7 @@ export function createPopupController(deps) {
       const current = input || (await deps.getStoredConfig());
       const config = {
         backendUrl: normalizeBackendUrl(current.backendUrl),
+        apiPrefix: normalizeApiPrefix(current.apiPrefix),
         token: String(current.token || "").trim(),
         vaultId: String(current.vaultId || "").trim(),
         clusterId: String(current.clusterId || "").trim(),
@@ -61,9 +63,22 @@ export function createPopupController(deps) {
 export function createChromePopupDeps(chromeApi, fetchImpl) {
   return {
     async getStoredConfig() {
-      const stored = await chromeApi.storage.local.get(["backendUrl", "token", "vaultId", "clusterId"]);
+      const stored = await chromeApi.storage.local.get([
+        "backendUrl",
+        "apiPrefix",
+        "token",
+        "vaultId",
+        "clusterId",
+        "vaultPath",
+        "browser",
+        "clientName",
+        "installTargets",
+        "primaryActions",
+        "optionalActions",
+      ]);
       return {
         backendUrl: stored.backendUrl || "",
+        apiPrefix: stored.apiPrefix || "",
         token: stored.token || "",
         vaultId: stored.vaultId || "",
         clusterId: stored.clusterId || "",
@@ -79,7 +94,7 @@ export function createChromePopupDeps(chromeApi, fetchImpl) {
       await chromeApi.storage.local.set(config);
     },
     async checkStatus(config) {
-      const response = await fetchImpl(`${config.backendUrl}/api/v1/extension/status`, {
+      const response = await fetchImpl(`${config.backendUrl}${apiPath(config, "/extension/status")}`, {
         headers: {
           "x-cml-extension-token": config.token,
         },
@@ -108,7 +123,7 @@ export function createChromePopupDeps(chromeApi, fetchImpl) {
       };
     },
     async uploadCapture(config, upload) {
-      const response = await fetchImpl(`${config.backendUrl}/api/v1/extension/capture-upload`, {
+      const response = await fetchImpl(`${config.backendUrl}${apiPath(config, "/extension/capture-upload")}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

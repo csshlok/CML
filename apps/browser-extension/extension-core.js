@@ -1,4 +1,5 @@
 export const DEFAULT_BACKEND_URL = "http://127.0.0.1:7343";
+export const DEFAULT_API_PREFIX = "/api/v1";
 
 export function normalizeBackendUrl(value) {
   const raw = String(value || "").trim();
@@ -33,6 +34,7 @@ export function parseSetupJson(rawText) {
   }
   return {
     backendUrl,
+    apiPrefix: normalizeApiPrefix(parsed.api_prefix || parsed.apiPrefix || DEFAULT_API_PREFIX),
     token,
     vaultId: String(parsed.default_vault_id || parsed.vault_id || "").trim(),
     clusterId: String(parsed.default_cluster_id || parsed.cluster_id || "").trim(),
@@ -43,6 +45,17 @@ export function parseSetupJson(rawText) {
     primaryActions: Array.isArray(parsed.primary_actions) ? parsed.primary_actions.map((item) => String(item)) : [],
     optionalActions: Array.isArray(parsed.optional_actions) ? parsed.optional_actions.map((item) => String(item)) : [],
   };
+}
+
+export function normalizeApiPrefix(value) {
+  const raw = String(value || DEFAULT_API_PREFIX).trim();
+  const prefixed = raw.startsWith("/") ? raw : `/${raw}`;
+  return prefixed.replace(/\/+$/, "") || DEFAULT_API_PREFIX;
+}
+
+export function apiPath(config, suffix) {
+  const apiPrefix = normalizeApiPrefix(config?.apiPrefix || DEFAULT_API_PREFIX);
+  return `${apiPrefix}/${String(suffix || "").replace(/^\/+/, "")}`;
 }
 
 export function buildExtensionCaptureRequest({

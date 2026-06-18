@@ -16,6 +16,7 @@ test("popup controller imports setup json and persists extension config", async 
   const config = await controller.importSetup(
     JSON.stringify({
       backend_url: "http://127.0.0.1:7343",
+      api_prefix: "/custom/v2",
       extension_token: "token-123",
       default_vault_id: "vault-1",
       default_cluster_id: "cluster-1",
@@ -29,6 +30,7 @@ test("popup controller imports setup json and persists extension config", async 
   assert.equal(config.browser, "brave");
   assert.deepEqual(saved, {
     backendUrl: "http://127.0.0.1:7343",
+    apiPrefix: "/custom/v2",
     token: "token-123",
     vaultId: "vault-1",
     clusterId: "cluster-1",
@@ -39,6 +41,97 @@ test("popup controller imports setup json and persists extension config", async 
     primaryActions: [],
     optionalActions: [],
   });
+});
+
+test("chrome popup deps use imported api prefix for status and uploads", async () => {
+  const mod = await import("../popup-core.js");
+  const requests = [];
+  const deps = mod.createChromePopupDeps(
+    {
+      storage: {
+        local: {
+          get: async () => ({
+            backendUrl: "http://127.0.0.1:7343",
+            apiPrefix: "/custom/v2",
+            token: "token-123",
+            vaultId: "vault-1",
+            clusterId: "",
+          }),
+          set: async () => {},
+        },
+      },
+      runtime: { sendMessage: async () => ({ ok: true, result: {} }) },
+    },
+    async (url) => {
+      requests.push(url);
+      return { ok: true, json: async () => ({ ok: true }) };
+    },
+  );
+
+  const config = await deps.getStoredConfig();
+  await deps.checkStatus(config);
+  await deps.uploadCapture(config, {
+    title: "notes.txt",
+    fileName: "notes.txt",
+    mimeType: "text/plain",
+    contentBase64: "bm90ZXM=",
+  });
+
+  assert.deepEqual(requests, [
+    "http://127.0.0.1:7343/custom/v2/extension/status",
+    "http://127.0.0.1:7343/custom/v2/extension/capture-upload",
+  ]);
+});
+
+test("chrome popup deps reload the full desktop setup contract from storage", async () => {
+  const mod = await import("../popup-core.js");
+  let requestedKeys = null;
+  const deps = mod.createChromePopupDeps(
+    {
+      storage: {
+        local: {
+          get: async (keys) => {
+            requestedKeys = keys;
+            return {
+              backendUrl: "http://127.0.0.1:7343",
+              apiPrefix: "/custom/v2",
+              token: "token-123",
+              vaultId: "vault-1",
+              clusterId: "cluster-1",
+              vaultPath: "C:\\Vault",
+              browser: "brave",
+              clientName: "Brave capture",
+              installTargets: ["chrome", "brave"],
+              primaryActions: ["save_link_to_vault"],
+              optionalActions: ["save_selection"],
+            };
+          },
+          set: async () => {},
+        },
+      },
+      runtime: { sendMessage: async () => ({ ok: true, result: {} }) },
+    },
+    async () => ({ ok: true, json: async () => ({ ok: true }) }),
+  );
+
+  const config = await deps.getStoredConfig();
+
+  assert.deepEqual(requestedKeys, [
+    "backendUrl",
+    "apiPrefix",
+    "token",
+    "vaultId",
+    "clusterId",
+    "vaultPath",
+    "browser",
+    "clientName",
+    "installTargets",
+    "primaryActions",
+    "optionalActions",
+  ]);
+  assert.equal(config.vaultPath, "C:\\Vault");
+  assert.equal(config.browser, "brave");
+  assert.deepEqual(config.primaryActions, ["save_link_to_vault"]);
 });
 
 test("popup controller status and capture flows surface backend and runtime failures", async () => {

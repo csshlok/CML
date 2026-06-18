@@ -1,5 +1,6 @@
 export function buildExtensionSetupText({
   backendUrl,
+  apiPrefix = "/api/v1",
   token,
   vaultId = "",
   clusterId = "",
@@ -10,6 +11,7 @@ export function buildExtensionSetupText({
   return JSON.stringify(
     {
       backend_url: backendUrl,
+      api_prefix: apiPrefix,
       extension_token: token,
       default_vault_id: vaultId || "",
       default_cluster_id: clusterId || "",
@@ -23,7 +25,7 @@ export function buildExtensionSetupText({
         "x-cml-extension-token": token,
       },
       capture_example: {
-        endpoint: `${String(backendUrl || "").replace(/\/+$/, "")}/api/v1/extension/capture`,
+        endpoint: `${String(backendUrl || "").replace(/\/+$/, "")}${normalizeApiPrefix(apiPrefix)}/extension/capture`,
         payload: {
           vault_id: vaultId || "",
           cluster_id: clusterId || "",
@@ -37,6 +39,12 @@ export function buildExtensionSetupText({
     null,
     2,
   );
+}
+
+function normalizeApiPrefix(value) {
+  const raw = String(value || "/api/v1").trim();
+  const prefixed = raw.startsWith("/") ? raw : `/${raw}`;
+  return prefixed.replace(/\/+$/, "") || "/api/v1";
 }
 
 export function describeExtensionScope(allowedVaultIds, vaultNamesById) {

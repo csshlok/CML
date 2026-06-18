@@ -133,6 +133,45 @@ test("chrome background deps prefer the most recently used non-extension tab for
   assert.equal(selection.text, "tab message selection");
 });
 
+test("chrome background deps post captures through imported api prefix", async () => {
+  const mod = await import("../background-core.js");
+  let requestedUrl = "";
+  const deps = mod.createChromeBackgroundDeps(
+    {
+      storage: {
+        local: {
+          get: async () => ({
+            backendUrl: "http://127.0.0.1:7343",
+            apiPrefix: "/custom/v2",
+            token: "token-123",
+            vaultId: "vault-1",
+            clusterId: "",
+          }),
+        },
+        session: { get: async () => ({}), set: async () => {} },
+      },
+      tabs: { query: async () => [], sendMessage: async () => ({}), update: async () => {} },
+      scripting: { executeScript: async () => [{ result: { title: "", text: "" } }] },
+    },
+    async (url) => {
+      requestedUrl = url;
+      return { ok: true, json: async () => ({ capture_id: "cap-prefix" }) };
+    },
+  );
+
+  const config = await deps.loadConfig();
+  await deps.postCapture(config, {
+    vault_id: "vault-1",
+    cluster_id: null,
+    capture_type: "page",
+    title: "Docs",
+    url: "https://example.com",
+    text: "page text",
+  });
+
+  assert.equal(requestedUrl, "http://127.0.0.1:7343/custom/v2/extension/capture");
+});
+
 test("selection capture falls back to cached selection when live selection is empty", async () => {
   const mod = await import("../background-core.js");
   let posted = null;

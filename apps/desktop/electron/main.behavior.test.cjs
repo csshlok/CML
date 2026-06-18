@@ -12,7 +12,7 @@ function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, rendererSecurityHeaders, sanitizeRendererBody, setActiveVaultPath, getActiveVaultPath, getInitialRendererPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, __setMainWindow: (value) => { mainWindow = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, rendererSecurityHeaders, sanitizeRendererBody, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, __setMainWindow: (value) => { mainWindow = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -194,6 +194,32 @@ test("setActiveVaultPath persists unicode vault path and creates .vault director
 
   assert.equal(stored, vaultPath);
   assert.equal(fs.existsSync(path.join(vaultPath, ".vault")), true);
+});
+
+test("prepared vault folder does not become active until committed", async () => {
+  const { exported } = loadMainModule();
+  const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-prepared-vault-"));
+  const vaultPath = path.join(targetRoot, "prepared-vault");
+  let restarts = 0;
+  exported.__setRestartBackend(async () => {
+    restarts += 1;
+    exported.__setBackendUrl(`http://127.0.0.1:${7400 + restarts}`);
+  });
+
+  await exported.prepareActiveVaultPath(vaultPath);
+
+  assert.equal(fs.existsSync(path.join(vaultPath, ".vault")), true);
+  assert.equal(exported.__getPendingActiveVaultPath(), vaultPath);
+  assert.equal(await exported.getActiveVaultPath(), null);
+  assert.equal(await exported.getInitialRendererPath(), "/onboarding");
+  assert.equal(restarts, 1);
+
+  await exported.commitActiveVaultPath(vaultPath);
+
+  assert.equal(exported.__getPendingActiveVaultPath(), null);
+  assert.equal(await exported.getActiveVaultPath(), vaultPath);
+  assert.equal(await exported.getInitialRendererPath(), "/home");
+  assert.equal(restarts, 1);
 });
 
 test("stale active vault config falls back to onboarding instead of forcing home", async () => {

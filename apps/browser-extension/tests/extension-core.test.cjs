@@ -7,6 +7,7 @@ test("parseSetupJson accepts desktop-exported setup JSON", async () => {
   const parsed = mod.parseSetupJson(
     JSON.stringify({
       backend_url: "http://127.0.0.1:7343",
+      api_prefix: "/custom/v2",
       extension_token: "token-123",
       default_vault_id: "vault-1",
       default_cluster_id: "cluster-1",
@@ -15,9 +16,17 @@ test("parseSetupJson accepts desktop-exported setup JSON", async () => {
   );
 
   assert.equal(parsed.backendUrl, "http://127.0.0.1:7343");
+  assert.equal(parsed.apiPrefix, "/custom/v2");
   assert.equal(parsed.token, "token-123");
   assert.equal(parsed.vaultId, "vault-1");
   assert.equal(parsed.clusterId, "cluster-1");
+});
+
+test("apiPath builds extension endpoints from imported setup prefix", async () => {
+  const mod = await import("../extension-core.js");
+
+  assert.equal(mod.apiPath({ apiPrefix: "/custom/v2" }, "/extension/status"), "/custom/v2/extension/status");
+  assert.equal(mod.apiPath({ apiPrefix: "custom/v2/" }, "extension/capture"), "/custom/v2/extension/capture");
 });
 
 test("buildExtensionCaptureRequest rejects empty vault or content and preserves selected scope", async () => {

@@ -10,6 +10,7 @@ declare global {
       selectEmbeddingFolder: () => Promise<string | null>;
       selectModelFolder: () => Promise<string | null>;
       selectVaultFolder: () => Promise<string | null>;
+      prepareActiveVaultFolder: (targetPath: string) => Promise<string | null>;
       setActiveVaultFolder: (targetPath: string) => Promise<string | null>;
       selectCoverImage: () => Promise<string | null>;
       getBackendUrl: () => Promise<string | null>;
