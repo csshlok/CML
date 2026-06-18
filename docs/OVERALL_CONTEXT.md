@@ -1,10 +1,34 @@
 ﻿# Overall Context
 
-Last updated: 2026-06-15
+Last updated: 2026-06-18
 
 ## Fallback Context Rule
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
+
+## 2026-06-18 Real LoRA Trainer / Runtime / Proof Snapshot
+
+Completed:
+
+- Reran the real compulsory cluster expert smoke on this CPU machine with actual project docs, not synthetic records, using `.tmp/lora-models/qwen2.5-0.5b-instruct` as the local Transformers expert checkpoint and `CML_LORA_TRAINER_COMMAND='llamafactory-cli train {config_path}'`.
+- The run wrote `.tmp/lora-real-project-qwen05b-rerun.json` and proof export `.tmp/lora-real-project-qwen05b-proof.json`.
+- Real dataset facts: `12` source records from `docs/PROJECT_CONTEXT.md`, `12` unique content hashes, `14,391` estimated tokens, dataset hash `db12a0a77a7731f6bf5d5a34774932f20ec3dd76e33975511990ed65749c2c31`.
+- Active adapter artifact: `.tmp/lora-real-smoke-work/experts/cluster-smoke/adapter-e4713cdd-4278-401e-951a-dc7e45f81e7d`, status `ready`, active `1`, base model `.tmp/lora-models/qwen2.5-0.5b-instruct`, hardware tier `cpu_minimum_spec`, and live runtime smoke `ok=true`.
+- Pairing proof: adapter metadata declares `peft_type=LORA`, `task_type=CAUSAL_LM`, `peft_version=0.18.1`, target modules `v_proj`, `q_proj`, `gate_proj`, `k_proj`, `o_proj`, `up_proj`, `down_proj`; runtime load plan resolved the same local base-model path; model compatibility accepted the base checkpoint for the expert role as Qwen/Qwen2.
+- Dependency proof from the report: LLaMA Factory `0.9.5`, PEFT `0.18.1`, TRL `0.24.0`, Gradio `5.50.0`, Transformers `5.6.0`, Torch `2.12.0`; runtime dependencies were importable in `.venv\Scripts\python.exe`.
+- Added repeatable proof tooling in `backend/app/core/lora_proof.py` and `scripts/backend/export-lora-proof.ps1`; the proof explicitly blocks public release when quality benchmark or hardware proof is missing.
+
+Verification:
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/smoke-lora-runtime.ps1 -AdapterPath .tmp\lora-real-smoke-work\experts\cluster-smoke\adapter-5baaf88e-a9b5-4926-810e-9e3c53d0c778 -BaseModel .tmp\lora-models\qwen2.5-0.5b-instruct -Prompt "Using the local CML project context, name the public V1 release stance in one short sentence." -ReportPath .tmp\lora-runtime-smoke-rerun.json` passed.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/smoke-lora-expert.ps1 -BaseModelPath .tmp\lora-models\qwen2.5-0.5b-instruct -ReportPath .tmp\lora-real-project-qwen05b-rerun.json -AllowBenchmarkFailure -MaxRealSources 12 -BenchmarkCaseLimit 6 -RuntimeMaxNewTokens 16 -BenchmarkMaxNewTokens 16` passed as trainer/runtime evidence while preserving the failed benchmark status.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/export-lora-proof.ps1 -ReportPath .tmp\lora-real-project-qwen05b-rerun.json -OutputPath .tmp\lora-real-project-qwen05b-proof.json` passed and reported public gate `passes=false`.
+
+Still not completed:
+
+- The strict live adapter quality benchmark failed: retrieval baseline `98.33`, adapter `41.67`, quality delta `-56.66`, required delta `>= 1.0`.
+- Hardware proof is still incomplete because the detector reports `avx2=null`; the smoke used a guarded training override because AVX2 could not be verified in this environment.
+- Public "trained expert" claims remain blocked until a real live adapter-backed benchmark win and complete hardware proof both exist.
 
 ## 2026-06-15 Real LoRA Trainer / Runtime Snapshot
 
