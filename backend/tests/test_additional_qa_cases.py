@@ -2062,6 +2062,143 @@ class AdditionalQACases(unittest.TestCase):
         finally:
             client.close()
 
+    def test_create_vault_is_idempotent_for_same_onboarding_folder_retry(self) -> None:
+        vault_path = str(Path(self.tmp.name) / "Library")
+        client = self._client()
+        try:
+            first = client.post("/api/v1/vaults", json={"name": "My Library", "path": vault_path})
+            second = client.post(
+                "/api/v1/vaults",
+                json={"name": "My Library Retry", "path": str(Path(vault_path) / ".." / "Library")},
+            )
+            listed = client.get("/api/v1/vaults")
+        finally:
+            client.close()
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["id"], first.json()["id"])
+        self.assertEqual(second.json()["name"], "My Library")
+        self.assertEqual(len(listed.json()), 1)
+
+    def test_update_vault_rejects_path_collision_with_existing_library(self) -> None:
+        first_path = str(Path(self.tmp.name) / "LibraryA")
+        second_path = str(Path(self.tmp.name) / "LibraryB")
+        client = self._client()
+        try:
+            first = client.post("/api/v1/vaults", json={"name": "First", "path": first_path})
+            second = client.post("/api/v1/vaults", json={"name": "Second", "path": second_path})
+            collision = client.patch(
+                f"/api/v1/vaults/{second.json()['id']}",
+                json={"path": str(Path(first_path) / ".." / "LibraryA")},
+            )
+            listed = client.get("/api/v1/vaults")
+        finally:
+            client.close()
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(collision.status_code, 409)
+        self.assertIn("already uses this path", collision.json()["detail"])
+        rows = {row["id"]: row for row in listed.json()}
+        self.assertEqual(rows[second.json()["id"]]["path"], second_path)
+
+    def test_source_url_ingestion_validates_destination_before_network_extraction(self) -> None:
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.db_path.parent), now, now),
+            )
+
+        client = self._client()
+        try:
+            with patch(
+                "backend.app.api.routes.sources.extract_text_from_url_with_security",
+                side_effect=AssertionError("network extraction should not run"),
+            ):
+                missing_vault = client.post(
+                    "/api/v1/sources/from-url",
+                    json={"vault_id": "vault-missing", "url": "https://example.com"},
+                )
+                missing_cluster = client.post(
+                    "/api/v1/sources/from-url",
+                    json={"vault_id": "vault-1", "cluster_id": "cluster-missing", "url": "https://example.com"},
+                )
+        finally:
+            client.close()
+
+        self.assertEqual(missing_vault.status_code, 404)
+        self.assertEqual(missing_vault.json()["detail"], "Vault not found")
+        self.assertEqual(missing_cluster.status_code, 404)
+        self.assertEqual(missing_cluster.json()["detail"], "Cluster not found")
+
+    def test_source_file_ingestion_validates_destination_before_quarantine_work(self) -> None:
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.db_path.parent), now, now),
+            )
+
+        client = self._client()
+        try:
+            with patch(
+                "backend.app.api.routes.sources.ingest_file_through_quarantine",
+                side_effect=AssertionError("quarantine should not run"),
+            ):
+                missing_vault = client.post(
+                    "/api/v1/sources/from-path",
+                    json={"vault_id": "vault-missing", "path": str(Path(self.tmp.name) / "note.txt")},
+                )
+                missing_cluster = client.post(
+                    "/api/v1/sources/from-path",
+                    json={
+                        "vault_id": "vault-1",
+                        "cluster_id": "cluster-missing",
+                        "path": str(Path(self.tmp.name) / "note.txt"),
+                    },
+                )
+        finally:
+            client.close()
+
+        self.assertEqual(missing_vault.status_code, 404)
+        self.assertEqual(missing_vault.json()["detail"], "Vault not found")
+        self.assertEqual(missing_cluster.status_code, 404)
+        self.assertEqual(missing_cluster.json()["detail"], "Cluster not found")
+
+    def test_query_cache_create_rejects_missing_vault_without_side_effect(self) -> None:
+        from backend.app.core.database import connect
+
+        client = self._client()
+        try:
+            response = client.post(
+                "/api/v1/search/query-cache",
+                params={"vault_id": "vault-missing", "query_fingerprint": "abc123"},
+            )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Vault not found")
+        with connect() as conn:
+            count = conn.execute("SELECT COUNT(*) AS count FROM query_evidence_cache").fetchone()["count"]
+        self.assertEqual(count, 0)
+
+    def test_vector_repair_plan_rejects_missing_vault_instead_of_empty_success(self) -> None:
+        client = self._client()
+        try:
+            response = client.get("/api/v1/search/vectors/repair-plan", params={"vault_id": "vault-missing"})
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Vault not found")
+
     def test_persisted_chat_context_rejects_unknown_cluster_before_creating_session(self) -> None:
         from fastapi import HTTPException
 
@@ -2103,6 +2240,47 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn('min-h-0 flex-1 overflow-y-auto px-6 sm:px-8', onboarding)
         self.assertIn('lg:max-h-[calc(100vh-4rem)]', onboarding)
         self.assertNotIn('vault-onboarding-shell min-h-screen overflow-hidden', onboarding)
+
+    def test_onboarding_model_download_flow_exposes_location_progress_and_continue(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        onboarding = (repo_root / "apps" / "desktop" / "src" / "routes" / "onboarding.tsx").read_text(encoding="utf-8")
+        settings = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.settings.tsx").read_text(encoding="utf-8")
+        backend = (repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
+
+        self.assertIn('Field label="LLM download location"', onboarding)
+        self.assertIn("chooseModelDownloadFolder", onboarding)
+        self.assertIn("target_dir: modelDownloadRoot.trim() || null", onboarding)
+        self.assertIn("ModelDownloadToast", onboarding)
+        self.assertIn("fixed bottom-4 right-4", onboarding)
+        self.assertIn("setInterval", onboarding)
+        self.assertIn("function isChatSetupProgress", onboarding)
+        self.assertIn('model.source_kind === "default_choice"', onboarding)
+        self.assertIn('downloadStatus === "resolving" || downloadStatus === "downloading"', onboarding)
+        self.assertIn("function selectVisibleModelDownload", onboarding)
+        self.assertIn("visible.find((download) => isActiveModelDownloadStatus(download.status))", onboarding)
+        self.assertIn("model.compatibility?.chat_role_accepted", onboarding)
+        self.assertIn("refreshDetectedModels(true)", onboarding)
+        self.assertIn("You can continue after a chat model is installed, active, or downloading.", onboarding)
+        self.assertNotIn("Continue is enabled only after one accepted chat model and one accepted expert checkpoint are active.", onboarding)
+        self.assertIn("LLM download location", settings)
+        self.assertIn("target_dir: modelDownloadRoot.trim() || null", settings)
+        self.assertIn("ModelDownloadToast", settings)
+        self.assertIn("progress_percent", settings)
+        self.assertIn("discoverInstalledModels({ max_results: 24, refresh: true })", settings)
+        self.assertIn('showSection("models")', settings)
+        self.assertIn('showSection("embeddings")', settings)
+        self.assertIn('showSection("ocr")', settings)
+        self.assertIn('showSection("storage")', settings)
+        self.assertIn('showSection("privacy")', settings)
+        self.assertIn('showSection("diagnostics", "advanced")', settings)
+        self.assertNotIn(" Â· ", settings)
+        self.assertNotIn(" · ", settings)
+        self.assertNotIn(" Â· ", onboarding)
+        self.assertNotIn(" · ", onboarding)
+        self.assertIn("payload?: { target_dir?: string | null }", backend)
+        self.assertIn("refresh?: boolean", backend)
+        self.assertIn('query.set("refresh", "true")', backend)
+        self.assertIn("body: JSON.stringify(payload ?? {})", backend)
 
     def test_extension_capture_rejects_core_api_token(self) -> None:
         os.environ["CML_API_TOKEN"] = "core-token"

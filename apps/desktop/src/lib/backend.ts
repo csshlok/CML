@@ -625,6 +625,7 @@ export type ModelDownloadState = {
   model_id: string;
   status: string;
   bytes_downloaded: number | null;
+  bytes_total?: number | null;
   total_bytes: number | null;
   progress_percent?: number | null;
   download_speed_bps?: number | null;
@@ -1564,10 +1565,12 @@ export async function getModelRecommendations() {
 export async function discoverInstalledModels(payload?: {
   max_results?: number;
   include_rejected?: boolean;
+  refresh?: boolean;
 }) {
   const query = new URLSearchParams();
   if (payload?.max_results) query.set("max_results", String(payload.max_results));
   if (payload?.include_rejected) query.set("include_rejected", "true");
+  if (payload?.refresh) query.set("refresh", "true");
   const suffix = query.toString() ? `?${query.toString()}` : "";
   return request<InstalledModelDiscoveryRecord>(`/api/v1/models/discover${suffix}`);
 }
@@ -1841,9 +1844,10 @@ export async function listExtensionPermissionAudit(limit = 20) {
   );
 }
 
-export async function startModelDownload(modelId: string) {
+export async function startModelDownload(modelId: string, payload?: { target_dir?: string | null }) {
   return request<ModelDownloadState>(`/api/v1/models/${encodeURIComponent(modelId)}/download`, {
     method: "POST",
+    body: JSON.stringify(payload ?? {}),
   });
 }
 

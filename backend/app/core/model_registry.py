@@ -250,16 +250,17 @@ def model_status(model_id: str) -> dict[str, Any]:
         state = _normalized_download_state(state)
     state_installed_path = state.get("local_path") if state and state.get("status") == "installed" else None
     registry = registry_state()
+    resolved_local_path = local_path or _downloaded_model_path_from_registry(model_id)
     info.update(
         {
-            "installed": local_path is not None or state_installed_path is not None,
-            "local_path": str(local_path) if local_path else state_installed_path,
+            "installed": resolved_local_path is not None or state_installed_path is not None,
+            "local_path": str(resolved_local_path) if resolved_local_path else state_installed_path,
             "download": state,
-            "integrity": _model_integrity_status(model, local_path),
+            "integrity": _model_integrity_status(model, resolved_local_path),
             "active": registry.get("active_chat_model_id") == model_id or registry.get("active_expert_model_id") == model_id,
             "active_chat": registry.get("active_chat_model_id") == model_id,
             "active_expert": registry.get("active_expert_model_id") == model_id,
-            "compatibility": _default_model_compatibility(model, local_path),
+            "compatibility": _default_model_compatibility(model, resolved_local_path),
             "source_kind": "default_choice",
         }
     )
@@ -319,6 +320,17 @@ def set_active_model(model_id: str, role: str = "chat") -> dict[str, Any]:
         if row["id"] == model_id:
             return row
     raise KeyError(model_id)
+
+
+def _record_downloaded_model_path(model_id: str, local_path: Path) -> None:
+    state = registry_state()
+    downloaded_paths = state.get("downloaded_model_paths")
+    if not isinstance(downloaded_paths, dict):
+        downloaded_paths = {}
+    downloaded_paths[model_id] = str(local_path)
+    state["downloaded_model_paths"] = downloaded_paths
+    state["updated_at"] = utc_now()
+    registry_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
 def active_chat_model_status() -> dict[str, Any] | None:
@@ -396,7 +408,7 @@ def active_model_pair_status() -> dict[str, Any]:
     }
 
 
-def start_model_download(model_id: str) -> dict[str, Any]:
+def start_model_download(model_id: str, *, target_dir: str | None = None) -> dict[str, Any]:
     model = get_model(model_id)
     if model is None:
         raise KeyError(model_id)
@@ -405,21 +417,17 @@ def start_model_download(model_id: str) -> dict[str, Any]:
     if existing["installed"]:
         return {"model_id": model_id, "status": "installed", "local_path": existing["local_path"]}
 
-    disk_check = _model_disk_preflight(model)
+    try:
+        target_root = _download_root_for_target(target_dir)
+    except OSError as exc:
+        state = _failed_model_download_state(model_id, f"Could not use selected model download location: {exc}")
+        with _download_lock:
+            _download_state[model_id] = state
+        return state
+
+    disk_check = _model_disk_preflight(model, target_root=target_root)
     if not disk_check["ok"]:
-        state = {
-            "model_id": model_id,
-            "status": "failed",
-            "bytes_downloaded": 0,
-            "bytes_total": None,
-            "total_bytes": None,
-            "progress_percent": None,
-            "download_speed_bps": None,
-            "eta_seconds": None,
-            "error": disk_check["message"],
-            "started_at": utc_now(),
-            "updated_at": utc_now(),
-        }
+        state = _failed_model_download_state(model_id, disk_check["message"])
         with _download_lock:
             _download_state[model_id] = state
         return state
@@ -467,7 +475,7 @@ def start_model_download(model_id: str) -> dict[str, Any]:
             "updated_at": utc_now(),
         }
 
-    thread = threading.Thread(target=_download_model, args=(model,), daemon=True)
+    thread = threading.Thread(target=_download_model, args=(model, target_root), daemon=True)
     thread.start()
     return _normalized_download_state(_download_state[model_id])
 
@@ -812,8 +820,15 @@ def installed_model_scan_roots() -> list[Path]:
     return unique
 
 
-def _model_disk_preflight(model: LocalModel) -> dict[str, Any]:
-    target_dir = models_dir() / model.id
+def _download_root_for_target(target_dir: str | None) -> Path:
+    raw = str(target_dir or "").strip()
+    root = Path(raw).expanduser() if raw else models_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _model_disk_preflight(model: LocalModel, *, target_root: Path | None = None) -> dict[str, Any]:
+    target_dir = (target_root or models_dir()) / model.id
     probe = target_dir if target_dir.exists() else _nearest_existing_parent(target_dir)
     required_bytes = int(model.approximate_download_gb * 1024 * 1024 * 1024 * 1.075)
     usage = shutil.disk_usage(probe)
@@ -886,10 +901,11 @@ def _nearest_existing_parent(path: Path) -> Path:
 def _find_local_model_file(model: LocalModel) -> Path | None:
     pattern = f"*{model.quantization.lower()}*.gguf"
     repo_dir = models_dir() / model.id
-    if not repo_dir.exists():
-        return None
-    matches = sorted(repo_dir.glob(pattern))
-    return matches[0] if matches else None
+    if repo_dir.exists():
+        matches = sorted(repo_dir.glob(pattern))
+        if matches:
+            return matches[0]
+    return _downloaded_model_path_from_registry(model.id)
 
 
 def _iter_transformers_checkpoint_dirs(root: Path, *, max_depth: int) -> list[Path]:
@@ -968,7 +984,7 @@ def _paths_overlap(first: Path, second: Path) -> bool:
     return common in {first_path, second_path}
 
 
-def _download_model(model: LocalModel) -> None:
+def _download_model(model: LocalModel, target_root: Path | None = None) -> None:
     try:
         _raise_if_cancelled(model.id)
         expected_sha256 = _download_expected_model_sha256(model)
@@ -981,7 +997,7 @@ def _download_model(model: LocalModel) -> None:
         safe_file_name = _safe_model_file_name(file_name)
         url = f"https://huggingface.co/{model.hf_repo}/resolve/main/{quote(file_name, safe='')}"
         validate_huggingface_url(url)
-        target_dir = models_dir() / model.id
+        target_dir = (target_root or models_dir()) / model.id
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / safe_file_name
         partial = target.with_suffix(target.suffix + ".part")
@@ -1019,6 +1035,7 @@ def _download_model(model: LocalModel) -> None:
             )
         partial.replace(target)
         _write_integrity_manifest(model, target, actual_sha256)
+        _record_downloaded_model_path(model.id, target)
         with _download_lock:
             _download_state[model.id].update(
                 {
@@ -1103,6 +1120,37 @@ def _installed_download_state(model_id: str, local_path: Path) -> dict[str, Any]
         "started_at": None,
         "updated_at": utc_now(),
     }
+
+
+def _failed_model_download_state(model_id: str, error: str) -> dict[str, Any]:
+    return {
+        "model_id": model_id,
+        "status": "failed",
+        "bytes_downloaded": 0,
+        "bytes_total": None,
+        "total_bytes": None,
+        "progress_percent": None,
+        "download_speed_bps": None,
+        "eta_seconds": None,
+        "error": error,
+        "started_at": utc_now(),
+        "updated_at": utc_now(),
+    }
+
+
+def _downloaded_model_path_from_registry(model_id: str) -> Path | None:
+    state = registry_state()
+    downloaded_paths = state.get("downloaded_model_paths")
+    if not isinstance(downloaded_paths, dict):
+        return None
+    return _existing_file_path(downloaded_paths.get(model_id))
+
+
+def _existing_file_path(value: object) -> Path | None:
+    if not value:
+        return None
+    path = Path(str(value))
+    return path if path.is_file() else None
 
 
 def _installed_state_from_local_path(model_id: str, state: dict[str, Any] | None) -> dict[str, Any] | None:

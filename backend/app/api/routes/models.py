@@ -29,6 +29,7 @@ from backend.app.schemas import (
     ModelCompatibilityRead,
     ModelCompatibilityRequest,
     ModelActivateRequest,
+    ModelDownloadRequest,
     ModelDownloadStart,
     ModelRecommendationRead,
     ModelRead,
@@ -128,9 +129,9 @@ def activate_local_model(model_id: str, payload: ModelActivateRequest | None = N
 
 
 @router.post("/{model_id}/download", response_model=ModelDownloadStart)
-def download_local_model(model_id: str) -> dict:
+def download_local_model(model_id: str, payload: ModelDownloadRequest | None = None) -> dict:
     try:
-        return start_model_download(model_id)
+        return start_model_download(model_id, target_dir=payload.target_dir if payload else None)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Model not found") from exc
 

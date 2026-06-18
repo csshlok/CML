@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
   CheckCircle2,
@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import {
   activateLocalModel,
   cancelModelDownload,
@@ -123,12 +124,17 @@ function SettingsView() {
   const [saving, setSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [modelDownload, setModelDownload] = useState<LocalModelRecord["download"] | null>(null);
+  const [modelDownloadRoot, setModelDownloadRoot] = useState("");
   const [activatingId, setActivatingId] = useState<string | null>(null);
   const [customModelPath, setCustomModelPath] = useState("");
   const [customModelName, setCustomModelName] = useState("");
   const [customModelReport, setCustomModelReport] = useState<ModelCompatibilityRecord | null>(null);
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredInstalledModelRecord[]>([]);
   const [discoveringModels, setDiscoveringModels] = useState(false);
+
+  const activeModelDownload = useMemo(() => selectVisibleModelDownload(models, modelDownload), [modelDownload, models]);
+  const modelDownloadActive = isActiveModelDownloadStatus(activeModelDownload?.status);
 
   useEffect(() => {
     let cancelled = false;
@@ -203,6 +209,14 @@ function SettingsView() {
       window.clearInterval(id);
     };
   }, []);
+
+  useEffect(() => {
+    if (!modelDownloadActive) return;
+    const id = window.setInterval(() => {
+      void refreshModelRows();
+    }, 1500);
+    return () => window.clearInterval(id);
+  }, [modelDownloadActive]);
 
   async function unlockVault() {
     const vaultId = backendVault?.id ?? unlockStatus?.secured_vault_ids[0];
@@ -341,8 +355,12 @@ function SettingsView() {
   async function downloadModel(modelId: string) {
     setDownloadingId(modelId);
     try {
-      await startModelDownload(modelId);
-      setModels(await listLocalModels());
+      const state = await startModelDownload(modelId, {
+        target_dir: modelDownloadRoot.trim() || null,
+      });
+      setModelDownload(state);
+      await refreshModelRows();
+      setStatusMessage(state.status === "failed" ? state.error : "Model download started.");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not start model download.");
     } finally {
@@ -368,6 +386,14 @@ function SettingsView() {
     if (selected) {
       setCustomModelPath(selected);
       setCustomModelReport(null);
+    }
+  }
+
+  async function chooseModelDownloadFolder() {
+    const selected = await desktop?.selectModelFolder?.();
+    if (selected) {
+      setModelDownloadRoot(selected);
+      setStatusMessage("Model download location selected.");
     }
   }
 
@@ -401,7 +427,7 @@ function SettingsView() {
   async function scanInstalledModels() {
     setDiscoveringModels(true);
     try {
-      const discovered = await discoverInstalledModels({ max_results: 24 });
+      const discovered = await discoverInstalledModels({ max_results: 24, refresh: true });
       setDiscoveredModels(discovered.models);
       setStatusMessage(
         discovered.models.length
@@ -432,11 +458,15 @@ function SettingsView() {
 
   async function cancelDownload(modelId: string) {
     try {
-      await cancelModelDownload(modelId);
-      setModels(await listLocalModels());
+      setModelDownload(await cancelModelDownload(modelId));
+      await refreshModelRows();
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not cancel model download.");
     }
+  }
+
+  async function refreshModelRows() {
+    setModels(await listLocalModels());
   }
 
   async function exportDiagnostics() {
@@ -606,6 +636,7 @@ function SettingsView() {
   const suggestedModel = models[0];
   const activeChatModel = models.find((model) => model.active_chat) ?? null;
   const activeExpertModel = models.find((model) => model.active_expert) ?? null;
+  const showSection = (...sections: string[]) => sections.includes(activeSection);
 
   return (
     <div className="vault-page-wash grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[205px_1fr_326px]">
@@ -654,6 +685,7 @@ function SettingsView() {
             </div>
           )}
 
+          {showSection("models") && (
           <SettingsCard
             icon={<TerminalSquare className="h-4 w-4" />}
             title="Synthesis runtime"
@@ -667,7 +699,10 @@ function SettingsView() {
               <Button variant="outline" className="gap-2">Test <Play className="h-4 w-4" /></Button>
             </div>
           </SettingsCard>
+          )}
 
+          {showSection("models") && (
+          <>
           <SettingsCard
             icon={<MessageSquare className="h-4 w-4" />}
             title="Chat and expert models"
@@ -680,9 +715,30 @@ function SettingsView() {
                 ? `Chat: ${activeChatModel.name}. Expert: ${activeExpertModel.name}. Retrieval remains the citation source.`
                 : "Pick one accepted chat model and one accepted expert checkpoint. GGUF/runtime downloads satisfy the chat role only."}
             </div>
+            <label className="mt-5 block text-sm font-medium">LLM download location</label>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Input
+                value={modelDownloadRoot}
+                onChange={(event) => setModelDownloadRoot(event.target.value)}
+                placeholder="Choose where downloaded GGUF chat models should be stored"
+              />
+              <Button variant="outline" onClick={() => void chooseModelDownloadFolder()} disabled={!desktop?.selectModelFolder}>
+                <Folder className="h-4 w-4" />
+                Browse
+              </Button>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Leave blank to use Vault's default model folder.
+            </p>
             <div className="mt-5 space-y-3">
               {models.map((model) => {
                 const downloading = model.download?.status === "resolving" || model.download?.status === "downloading";
+                const totalBytes = model.download?.total_bytes ?? model.download?.bytes_total ?? null;
+                const progress = model.download?.progress_percent ?? (
+                  model.download?.bytes_downloaded && totalBytes
+                    ? Math.round((model.download.bytes_downloaded / totalBytes) * 100)
+                    : null
+                );
                 return (
                   <div key={model.id} className="rounded-md border border-border bg-background px-3 py-3 text-sm">
                     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -705,6 +761,15 @@ function SettingsView() {
                         </span>
                       ) : null}
                     </div>
+                    {downloading && (
+                      <div className="mt-3">
+                        <Progress value={progress ?? 10} className="h-1.5" />
+                        <div className="mt-1 flex justify-between gap-3 text-xs text-muted-foreground">
+                          <span>{model.download?.status}</span>
+                          <span>{progress !== null && progress !== undefined ? `${Math.round(progress)}%` : "Preparing download"}</span>
+                        </div>
+                      </div>
+                    )}
                     <div className="mt-3 flex flex-wrap gap-2">
                       {!model.installed ? (
                         <Button variant="outline" onClick={() => void downloadModel(model.id)} disabled={downloadingId === model.id}>
@@ -772,7 +837,7 @@ function SettingsView() {
                       <div>
                         <div className="font-medium">{model.name}</div>
                         <div className="mt-1 text-xs text-muted-foreground">
-                          {model.family_name || model.family || "Approved family"} · {model.local_path}
+                          {model.family_name || model.family || "Approved family"} / {model.local_path}
                         </div>
                         <div className="mt-1 text-xs text-muted-foreground">{model.detail}</div>
                       </div>
@@ -793,7 +858,16 @@ function SettingsView() {
               )}
             </div>
           </SettingsCard>
+          {activeModelDownload && activeModelDownload.status !== "idle" && (
+            <ModelDownloadToast
+              download={activeModelDownload}
+              onCancel={() => void cancelDownload(activeModelDownload.model_id)}
+            />
+          )}
+          </>
+          )}
 
+          {showSection("embeddings") && (
           <SettingsCard
             icon={<Layers className="h-4 w-4" />}
             title="Embedding model"
@@ -847,7 +921,9 @@ function SettingsView() {
               </div>
             )}
           </SettingsCard>
+          )}
 
+          {showSection("ocr") && (
           <SettingsCard
             icon={<Settings2 className="h-4 w-4" />}
             title="OCR"
@@ -864,7 +940,9 @@ function SettingsView() {
               <p className="mt-4 text-xs text-muted-foreground">Missing: {ocrRuntime.missing.join(", ")}</p>
             ) : null}
           </SettingsCard>
+          )}
 
+          {showSection("storage") && (
           <SettingsCard
             icon={<Database className="h-4 w-4" />}
             title="Disk usage"
@@ -875,7 +953,9 @@ function SettingsView() {
               <span className="text-foreground">{pathDraft || "No library selected"}</span>.
             </div>
           </SettingsCard>
+          )}
 
+          {showSection("privacy") && (
           <SettingsCard
             icon={<Lock className="h-4 w-4" />}
             title="Library unlock"
@@ -928,7 +1008,9 @@ function SettingsView() {
               The 6-digit PIN is convenience-only. Sensitive actions still require the full passphrase.
             </p>
           </SettingsCard>
+          )}
 
+          {showSection("privacy", "advanced") && (
           <SettingsCard
             icon={<ShieldCheck className="h-4 w-4" />}
             title="Evidence retention"
@@ -954,7 +1036,9 @@ function SettingsView() {
               </p>
             )}
           </SettingsCard>
+          )}
 
+          {showSection("storage", "advanced") && (
           <SettingsCard
             icon={<Folder className="h-4 w-4" />}
             title="Local imports"
@@ -975,14 +1059,14 @@ function SettingsView() {
                     <div className="min-w-0">
                       <div className="truncate font-medium">{record.root_path}</div>
                       <div className="mt-1 text-xs text-muted-foreground">
-                        {record.integration_type} · {record.supported_count} supported · {record.skipped_count} skipped ·{" "}
-                        {record.imported_count} new · {record.updated_count} updated · {record.moved_count} moved ·{" "}
-                        {record.tombstoned_count} removed · {record.failed_count} failed
+                        {record.integration_type} / {record.supported_count} supported / {record.skipped_count} skipped /{" "}
+                        {record.imported_count} new / {record.updated_count} updated / {record.moved_count} moved /{" "}
+                        {record.tombstoned_count} removed / {record.failed_count} failed
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">
                         Watch: {record.watch_enabled ? "on" : "off"}
-                        {record.next_watch_at ? ` · next ${new Date(record.next_watch_at).toLocaleString()}` : ""}
-                        {record.last_failures.length ? ` · ${record.last_failures.length} recent failure(s)` : ""}
+                        {record.next_watch_at ? ` / next ${new Date(record.next_watch_at).toLocaleString()}` : ""}
+                        {record.last_failures.length ? ` / ${record.last_failures.length} recent failure(s)` : ""}
                       </div>
                       {record.last_reconciliation_run_id ? (
                         <div className="mt-1 text-xs text-muted-foreground">
@@ -994,7 +1078,7 @@ function SettingsView() {
                             ? ` at ${new Date(record.last_reconciliation_finished_at).toLocaleString()}`
                             : ""}
                           {record.last_reconciliation_retryable_failed_count
-                            ? ` · ${record.last_reconciliation_retryable_failed_count} retryable failure(s)`
+                            ? ` / ${record.last_reconciliation_retryable_failed_count} retryable failure(s)`
                             : ""}
                         </div>
                       ) : null}
@@ -1036,15 +1120,15 @@ function SettingsView() {
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                   <div>
                                     <div className="font-medium text-foreground">
-                                      {run.status.replaceAll("_", " ")} · {run.trigger_source.replaceAll("_", " ")}
+                                      {run.status.replaceAll("_", " ")} / {run.trigger_source.replaceAll("_", " ")}
                                     </div>
                                     <div className="mt-1 text-xs text-muted-foreground">
-                                      {run.imported_count} new · {run.updated_count} updated · {run.moved_count} moved ·{" "}
-                                      {run.tombstoned_count} removed · {run.failed_count} failed · {run.unchanged_count} unchanged
+                                      {run.imported_count} new / {run.updated_count} updated / {run.moved_count} moved /{" "}
+                                      {run.tombstoned_count} removed / {run.failed_count} failed / {run.unchanged_count} unchanged
                                     </div>
                                     <div className="mt-1 text-xs text-muted-foreground">
                                       {new Date(run.created_at).toLocaleString()}
-                                      {run.detail_count ? ` · ${run.detail_count} detail item(s)` : ""}
+                                      {run.detail_count ? ` / ${run.detail_count} detail item(s)` : ""}
                                     </div>
                                   </div>
                                   <div className="flex flex-wrap gap-2">
@@ -1071,7 +1155,7 @@ function SettingsView() {
                                         >
                                           <div className="flex flex-wrap items-center justify-between gap-2">
                                             <div className="font-medium text-foreground">
-                                              {item.action.replaceAll("_", " ")} · {item.result}
+                                              {item.action.replaceAll("_", " ")} / {item.result}
                                             </div>
                                             {item.retryable ? (
                                               <Button
@@ -1122,7 +1206,9 @@ function SettingsView() {
               )}
             </div>
           </SettingsCard>
+          )}
 
+          {showSection("diagnostics", "advanced") && (
           <SettingsCard
             icon={<Activity className="h-4 w-4" />}
             title="Diagnostics"
@@ -1132,6 +1218,7 @@ function SettingsView() {
               <Download className="h-4 w-4" /> Export diagnostics
             </Button>
           </SettingsCard>
+          )}
             </>
           )}
         </div>
@@ -1225,6 +1312,83 @@ function SettingsCard({
       {children}
     </section>
   );
+}
+
+function selectVisibleModelDownload(
+  models: LocalModelRecord[],
+  fallback: LocalModelRecord["download"] | null,
+) {
+  const visible = models
+    .map((model) => model.download)
+    .filter((download): download is NonNullable<LocalModelRecord["download"]> => Boolean(download?.status && download.status !== "idle"));
+  return (
+    visible.find((download) => isActiveModelDownloadStatus(download.status)) ??
+    (fallback && isActiveModelDownloadStatus(fallback.status) ? fallback : null) ??
+    visible[0] ??
+    (fallback?.status && fallback.status !== "idle" ? fallback : null)
+  );
+}
+
+function isActiveModelDownloadStatus(status: string | null | undefined) {
+  return status === "resolving" || status === "downloading" || status === "cancelling";
+}
+
+function ModelDownloadToast({
+  download,
+  onCancel,
+}: {
+  download: NonNullable<LocalModelRecord["download"]>;
+  onCancel: () => void;
+}) {
+  const totalBytes = download.total_bytes ?? download.bytes_total ?? null;
+  const progress = download.progress_percent ?? (
+    download.bytes_downloaded && totalBytes
+      ? Math.round((download.bytes_downloaded / totalBytes) * 100)
+      : null
+  );
+  const active = isActiveModelDownloadStatus(download.status);
+  const fallbackProgress = active ? 10 : download.status === "installed" ? 100 : 0;
+
+  return (
+    <div className="fixed bottom-4 right-4 z-50 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-border bg-card/95 p-4 shadow-2xl backdrop-blur">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold">Model download</div>
+          <div className="mt-1 truncate text-xs text-muted-foreground">{download.model_id}</div>
+        </div>
+        <span className="rounded-full border border-border bg-background px-2 py-0.5 text-xs capitalize text-muted-foreground">
+          {download.status}
+        </span>
+      </div>
+      <div className="mt-3">
+        <Progress value={progress ?? fallbackProgress} className="h-1.5" />
+        <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span>{progress !== null && progress !== undefined ? `${Math.round(progress)}%` : "Preparing download"}</span>
+          <span>
+            {formatBytes(download.bytes_downloaded ?? 0)}
+            {totalBytes ? ` / ${formatBytes(totalBytes)}` : ""}
+          </span>
+        </div>
+      </div>
+      {download.local_path && (
+        <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground">{download.local_path}</div>
+      )}
+      {download.error && <div className="mt-2 text-xs text-destructive">{download.error}</div>}
+      {active && (
+        <Button variant="outline" size="sm" className="mt-3 w-full" onClick={onCancel}>
+          Cancel download
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 GB";
+  const gib = value / 1024 / 1024 / 1024;
+  if (gib >= 1) return `${gib.toFixed(1)} GB`;
+  const mib = value / 1024 / 1024;
+  return `${Math.round(mib)} MB`;
 }
 
 function ProfileSettings({ vaultPath }: { vaultPath: string }) {

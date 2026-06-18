@@ -658,6 +658,121 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(cancelled["status"], "installed")
         self.assertTrue(final["installed"])
 
+    def test_model_download_uses_selected_folder_and_persists_installed_path(self) -> None:
+        from backend.app.core import model_registry
+        from backend.app.core.config import get_settings
+
+        default_dir = self.data_dir / "default-models"
+        selected_dir = self.data_dir / "selected-llms"
+        os.environ["CML_MODELS_DIR"] = str(default_dir)
+        empty_manifest = self.data_dir / "empty-selected-download-integrity.json"
+        empty_manifest.write_text(json.dumps({"version": 1, "models": {}}), encoding="utf-8")
+        os.environ["CML_MODEL_INTEGRITY_MANIFEST_PATH"] = str(empty_manifest)
+        get_settings.cache_clear()
+        model_registry._download_state.clear()
+        model_registry._cancelled_downloads.clear()
+
+        class ImmediateThread:
+            def __init__(self, target, args=(), daemon=None):
+                self._target = target
+                self._args = args
+
+            def start(self) -> None:
+                self._target(*self._args)
+
+        class FastResponse:
+            headers = {"Content-Length": str(2 * 1024 * 1024)}
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _size: int = -1) -> bytes:
+                self.calls += 1
+                if self.calls <= 2:
+                    return b"z" * (1024 * 1024)
+                return b""
+
+        expected_digest = hashlib.sha256(b"z" * (2 * 1024 * 1024)).hexdigest()
+        with (
+            patch("backend.app.core.model_registry.threading.Thread", ImmediateThread),
+            patch("backend.app.core.model_registry._find_local_model_file", return_value=None),
+            patch("backend.app.core.model_registry._download_expected_model_sha256", return_value=expected_digest),
+            patch("backend.app.core.model_registry._expected_model_sha256", return_value=expected_digest),
+            patch("backend.app.core.model_registry._resolve_gguf_filename", return_value="model.Q4_K_M.gguf"),
+            patch("backend.app.core.model_registry.validate_huggingface_url", return_value=None),
+            patch("backend.app.core.model_registry.urlopen", return_value=FastResponse()),
+        ):
+            result = model_registry.start_model_download("qwen3-4b-q4_k_m", target_dir=str(selected_dir))
+
+        expected_path = selected_dir / "qwen3-4b-q4_k_m" / "model.Q4_K_M.gguf"
+        self.assertEqual(result["status"], "installed")
+        self.assertEqual(result["local_path"], str(expected_path))
+        self.assertTrue(expected_path.exists())
+        self.assertFalse((default_dir / "qwen3-4b-q4_k_m" / "model.Q4_K_M.gguf").exists())
+
+        model_registry._download_state.clear()
+        status_after_restart = model_registry.model_status("qwen3-4b-q4_k_m")
+        self.assertTrue(status_after_restart["installed"])
+        self.assertEqual(status_after_restart["local_path"], str(expected_path))
+
+    def test_model_download_rejects_unusable_selected_folder_as_user_visible_state(self) -> None:
+        from backend.app.core import model_registry
+
+        unusable_target = self.data_dir / "not-a-folder"
+        unusable_target.write_text("file blocks folder creation", encoding="utf-8")
+        model_registry._download_state.clear()
+        model_registry._cancelled_downloads.clear()
+
+        with patch("backend.app.core.model_registry._find_local_model_file", return_value=None):
+            result = model_registry.start_model_download("qwen3-4b-q4_k_m", target_dir=str(unusable_target))
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["bytes_downloaded"], 0)
+        self.assertIn("selected model download location", result["error"])
+        self.assertIn("qwen3-4b-q4_k_m", model_registry._download_state)
+
+    def test_models_list_preserves_download_progress_for_polling_ui(self) -> None:
+        from backend.app.core import model_registry
+        from backend.app.core.database import utc_now
+
+        now = utc_now()
+        model_registry._download_state.clear()
+        model_registry._download_state["qwen3-4b-q4_k_m"] = {
+            "model_id": "qwen3-4b-q4_k_m",
+            "status": "downloading",
+            "bytes_downloaded": 512,
+            "bytes_total": 2048,
+            "total_bytes": 2048,
+            "progress_percent": 25.0,
+            "download_speed_bps": 128,
+            "eta_seconds": 12,
+            "file_name": "model.Q4_K_M.gguf",
+            "local_path": str(self.data_dir / "models" / "qwen3-4b-q4_k_m" / "model.Q4_K_M.gguf"),
+            "error": None,
+            "started_at": now,
+            "updated_at": now,
+        }
+
+        client = self._client()
+        try:
+            response = client.get("/api/v1/models")
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200)
+        qwen = next(item for item in response.json() if item["id"] == "qwen3-4b-q4_k_m")
+        self.assertEqual(qwen["download"]["status"], "downloading")
+        self.assertEqual(qwen["download"]["bytes_total"], 2048)
+        self.assertEqual(qwen["download"]["progress_percent"], 25.0)
+        self.assertEqual(qwen["download"]["download_speed_bps"], 128)
+        self.assertEqual(qwen["download"]["eta_seconds"], 12)
+
     def test_second_model_download_is_blocked_while_another_is_active(self) -> None:
         from backend.app.core import model_registry
 

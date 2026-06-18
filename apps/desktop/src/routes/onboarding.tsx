@@ -86,6 +86,8 @@ function Onboarding() {
   const [modelChoice, setModelChoice] = useState<ModelChoice>("recommended");
   const [selectedModelId, setSelectedModelId] = useState("qwen3-4b-q4_k_m");
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [modelDownload, setModelDownload] = useState<LocalModelRecord["download"] | null>(null);
+  const [modelDownloadRoot, setModelDownloadRoot] = useState("");
   const [activatingId, setActivatingId] = useState<string | null>(null);
   const [customModelPath, setCustomModelPath] = useState("");
   const [customModelName, setCustomModelName] = useState("");
@@ -107,6 +109,12 @@ function Onboarding() {
     [models, selectedModelId],
   );
 
+  const activeModelDownload = useMemo(() => {
+    return selectVisibleModelDownload(models, modelDownload);
+  }, [modelDownload, models]);
+
+  const modelDownloadActive = isActiveModelDownloadStatus(activeModelDownload?.status);
+
   const resolvedVaultPath = useMemo(() => {
     const path = vaultPath.trim();
     return path ? `${path.replace(/[\\/]+$/, "")}\\.vault` : "";
@@ -120,11 +128,7 @@ function Onboarding() {
     if (step === 1) return displayName.trim().length >= 2;
     if (step === 2) return vaultName.trim().length >= 2;
     if (step === 4) return vaultPath.trim().length > 0;
-    if (step === 5) {
-      const chatReady = models.some((model) => model.active_chat && model.compatibility?.chat_role_accepted);
-      const expertReady = models.some((model) => model.active_expert && model.compatibility?.expert_role_accepted);
-      return chatReady && expertReady;
-    }
+    if (step === 5) return models.some(isChatSetupProgress);
     if (step === 6) return Boolean(embeddingRuntime?.available);
     return true;
   }, [displayName, email, embeddingRuntime?.available, models, signupMethod, step, vaultName, vaultPath]);
@@ -139,6 +143,14 @@ function Onboarding() {
       void refreshDetectedModels();
     }
   }, [step]);
+
+  useEffect(() => {
+    if (step !== 5 || !modelDownloadActive) return;
+    const id = window.setInterval(() => {
+      void refreshModels();
+    }, 1500);
+    return () => window.clearInterval(id);
+  }, [modelDownloadActive, step]);
 
   async function refreshModels() {
     setModelsLoading(true);
@@ -163,10 +175,18 @@ function Onboarding() {
     }
   }
 
-  async function refreshDetectedModels() {
+  async function chooseModelDownloadFolder() {
+    const selected = await desktop?.selectModelFolder?.();
+    if (selected) {
+      setModelDownloadRoot(selected);
+      setMessage("Model download location selected.");
+    }
+  }
+
+  async function refreshDetectedModels(refresh = false) {
     setDiscoveringModels(true);
     try {
-      const discovered = await discoverInstalledModels({ max_results: 24 });
+      const discovered = await discoverInstalledModels({ max_results: 24, refresh });
       setDiscoveredModels(discovered.models);
     } catch (err) {
       setDiscoveredModels([]);
@@ -323,7 +343,10 @@ function Onboarding() {
     setError(null);
     setDownloadingId(modelId);
     try {
-      await startModelDownload(modelId);
+      const state = await startModelDownload(modelId, {
+        target_dir: modelDownloadRoot.trim() || null,
+      });
+      setModelDownload(state);
       setMessage("Download started. You can continue setup while it resolves.");
       await refreshModels();
     } catch (err) {
@@ -336,7 +359,8 @@ function Onboarding() {
   async function cancelDownload(modelId: string) {
     setError(null);
     try {
-      await cancelModelDownload(modelId);
+      const state = await cancelModelDownload(modelId);
+      setModelDownload(state);
       await refreshModels();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not cancel model download.");
@@ -669,6 +693,27 @@ function Onboarding() {
                       <div className="rounded-md border border-border bg-secondary/55 p-4 text-sm text-muted-foreground">
                         Downloaded GGUF/runtime models satisfy the chat role only. Expert setup still requires an accepted local Transformers checkpoint. Vault citations still come from retrieval, not model memory.
                       </div>
+                      <Field label="LLM download location">
+                        <div className="flex flex-col gap-2 sm:flex-row">
+                          <Input
+                            value={modelDownloadRoot}
+                            onChange={(event) => setModelDownloadRoot(event.target.value)}
+                            placeholder="Choose where Vault should store downloaded GGUF models"
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void chooseModelDownloadFolder()}
+                            disabled={!desktop?.selectModelFolder}
+                          >
+                            <FolderOpen className="h-4 w-4" />
+                            Browse
+                          </Button>
+                        </div>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          Leave blank to use Vault's default model folder. Downloads continue in the background while you finish setup.
+                        </p>
+                      </Field>
                       <div className="grid gap-3">
                         <div className="text-sm font-medium">Chat model</div>
                         {modelsLoading && <p className="text-sm text-muted-foreground">Loading model options...</p>}
@@ -721,7 +766,7 @@ function Onboarding() {
                               Vault can scan common local model folders and offer one-click import for accepted expert checkpoints.
                             </div>
                           </div>
-                          <Button variant="outline" onClick={() => void refreshDetectedModels()} disabled={discoveringModels}>
+                          <Button variant="outline" onClick={() => void refreshDetectedModels(true)} disabled={discoveringModels}>
                             {discoveringModels ? "Scanning..." : "Scan device"}
                           </Button>
                         </div>
@@ -735,7 +780,7 @@ function Onboarding() {
                                   <div>
                                     <div className="font-medium">{model.name}</div>
                                     <div className="mt-1 text-xs text-muted-foreground">
-                                      {model.family_name || model.family || "Approved family"} · {model.local_path}
+                                      {model.family_name || model.family || "Approved family"} / {model.local_path}
                                     </div>
                                     <div className="mt-1 text-xs text-muted-foreground">{model.detail}</div>
                                   </div>
@@ -804,7 +849,7 @@ function Onboarding() {
                   )}
 
                   <p className="text-xs text-muted-foreground">
-                    Continue is enabled only after one accepted chat model and one accepted expert checkpoint are active.
+                    You can continue after a chat model is installed, active, or downloading. Expert checkpoints can be imported now or later from Settings.
                   </p>
                 </SetupPanel>
               )}
@@ -979,6 +1024,12 @@ function Onboarding() {
           </div>
         </section>
       </div>
+      {activeModelDownload && activeModelDownload.status !== "idle" && (
+        <ModelDownloadToast
+          download={activeModelDownload}
+          onCancel={() => void cancelDownload(activeModelDownload.model_id)}
+        />
+      )}
     </main>
   );
 }
@@ -1197,6 +1248,90 @@ function ModelRow({
           </Button>
         )}
       </div>
+    </div>
+  );
+}
+
+function isChatSetupProgress(model: LocalModelRecord) {
+  const downloadStatus = model.download?.status;
+  const managedChatDownloadInProgress =
+    model.source_kind === "default_choice" &&
+    (downloadStatus === "resolving" || downloadStatus === "downloading");
+  return Boolean(
+    managedChatDownloadInProgress ||
+      (model.compatibility?.chat_role_accepted &&
+        (model.active_chat ||
+          model.installed ||
+          downloadStatus === "installed")),
+  );
+}
+
+function selectVisibleModelDownload(
+  models: LocalModelRecord[],
+  fallback: LocalModelRecord["download"] | null,
+) {
+  const visible = models
+    .map((model) => model.download)
+    .filter((download): download is NonNullable<LocalModelRecord["download"]> => Boolean(download?.status && download.status !== "idle"));
+  return (
+    visible.find((download) => isActiveModelDownloadStatus(download.status)) ??
+    (fallback && isActiveModelDownloadStatus(fallback.status) ? fallback : null) ??
+    visible[0] ??
+    (fallback?.status && fallback.status !== "idle" ? fallback : null)
+  );
+}
+
+function isActiveModelDownloadStatus(status: string | null | undefined) {
+  return status === "resolving" || status === "downloading" || status === "cancelling";
+}
+
+function ModelDownloadToast({
+  download,
+  onCancel,
+}: {
+  download: NonNullable<LocalModelRecord["download"]>;
+  onCancel: () => void;
+}) {
+  const totalBytes = download.total_bytes ?? download.bytes_total ?? null;
+  const progress = download.progress_percent ?? (
+    download.bytes_downloaded && totalBytes
+      ? Math.round((download.bytes_downloaded / totalBytes) * 100)
+      : null
+  );
+  const active = isActiveModelDownloadStatus(download.status);
+  const fallbackProgress = active ? 10 : download.status === "installed" ? 100 : 0;
+
+  return (
+    <div className="fixed bottom-4 right-4 z-50 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-border bg-card/95 p-4 shadow-2xl backdrop-blur">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold">Model download</div>
+          <div className="mt-1 truncate text-xs text-muted-foreground">{download.model_id}</div>
+        </div>
+        <span className="rounded-full border border-border bg-background px-2 py-0.5 text-xs capitalize text-muted-foreground">
+          {download.status}
+        </span>
+      </div>
+      <div className="mt-3">
+        <Progress value={progress ?? fallbackProgress} className="h-1.5" />
+        <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span>{progress !== null && progress !== undefined ? `${Math.round(progress)}%` : "Preparing download"}</span>
+          <span>
+            {formatBytes(download.bytes_downloaded ?? 0)}
+            {totalBytes ? ` / ${formatBytes(totalBytes)}` : ""}
+          </span>
+        </div>
+      </div>
+      {download.local_path && (
+        <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground">{download.local_path}</div>
+      )}
+      {download.error && <div className="mt-2 text-xs text-destructive">{download.error}</div>}
+      {active && (
+        <Button variant="outline" size="sm" className="mt-3 w-full" onClick={onCancel}>
+          <X className="h-4 w-4" />
+          Cancel download
+        </Button>
+      )}
     </div>
   );
 }

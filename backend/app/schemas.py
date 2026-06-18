@@ -733,12 +733,18 @@ class ModelDownloadState(BaseModel):
     model_id: str
     status: str
     bytes_downloaded: int | None = None
+    bytes_total: int | None = None
     total_bytes: int | None = None
+    progress_percent: float | None = None
+    download_speed_bps: int | None = None
+    eta_seconds: int | None = None
     file_name: str | None = None
     local_path: str | None = None
     error: str | None = None
     sha256: str | None = None
     integrity_status: str | None = None
+    started_at: str | None = None
+    updated_at: str | None = None
 
 
 class ModelIntegrityRead(BaseModel):
@@ -796,6 +802,10 @@ class ModelCompatibilityRequest(BaseModel):
 
 class ModelActivateRequest(BaseModel):
     role: str = "chat"
+
+
+class ModelDownloadRequest(BaseModel):
+    target_dir: str | None = None
 
 
 class ModelRecommendationRead(BaseModel):

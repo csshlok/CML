@@ -119,6 +119,7 @@ def create_context_layer_report(vault_id: str, cluster_id: str | None = None, li
 
 @router.get("/query-cache")
 def get_query_cache(vault_id: str | None = None) -> dict:
+    _ensure_vault_exists(vault_id)
     return {"items": list_query_cache(vault_id)}
 
 
@@ -127,6 +128,7 @@ def create_query_cache(vault_id: str, query_fingerprint: str, source_ids: str = 
     contributing = [item.strip() for item in source_ids.split(",") if item.strip()]
     if not query_fingerprint.strip():
         raise HTTPException(status_code=400, detail="query_fingerprint is required")
+    _ensure_vault_exists(vault_id)
     return put_query_cache(
         vault_id=vault_id,
         query_fingerprint=query_fingerprint.strip(),
@@ -141,6 +143,7 @@ def prune_query_cache_route(
     max_items: int = 500,
     max_payload_bytes: int = 5_000_000,
 ) -> dict:
+    _ensure_vault_exists(vault_id)
     return prune_query_cache(
         vault_id=vault_id,
         max_age_days=max_age_days,
@@ -204,6 +207,7 @@ def activate_vector_policy(model_id: str, index_version: str = "v1") -> dict:
 
 @router.get("/vectors/repair-plan")
 def get_vector_repair_plan(vault_id: str | None = None) -> dict:
+    _ensure_vault_exists(vault_id)
     return vector_repair_plan(vault_id)
 
 
@@ -213,11 +217,13 @@ def repair_vector_index(vault_id: str | None = None, limit: int = 100) -> dict:
         require_embeddings_available("Vector repair")
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _ensure_vault_exists(vault_id)
     return repair_vectors(vault_id, limit=max(1, min(limit, 1000)))
 
 
 @router.post("/vectors/compact")
 def compact_vector_index(vault_id: str | None = None) -> dict:
+    _ensure_vault_exists(vault_id)
     return compact_vectors(vault_id)
 
 
@@ -239,11 +245,13 @@ def build_vector_sidecar(vault_id: str, rebuild_reason: str = "manual") -> dict:
 
 @router.get("/vectors/sidecar/repair-plan")
 def get_vector_sidecar_repair_plan(vault_id: str | None = None) -> dict:
+    _ensure_vault_exists(vault_id)
     return turbovec_sidecar_repair_plan(vault_id)
 
 
 @router.post("/vectors/sidecar/repair")
 def repair_vector_sidecars(vault_id: str | None = None) -> dict:
+    _ensure_vault_exists(vault_id)
     return repair_turbovec_sidecars(vault_id)
 
 
@@ -271,3 +279,12 @@ def run_turbovec_phase_c_benchmark(vault_id: str, query_limit: int = 20, top_k: 
         raise HTTPException(status_code=404, detail="Vault not found") from exc
     except TurbovecSidecarUnavailable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _ensure_vault_exists(vault_id: str | None) -> None:
+    if not vault_id:
+        return
+    with connect() as conn:
+        row = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Vault not found")

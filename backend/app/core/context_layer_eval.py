@@ -8,6 +8,7 @@ from backend.app.core.context_memory import get_context_memory
 from backend.app.core.context_packets import build_bridge_context_packet, render_context_packet
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.embeddings import embed_text
+from backend.app.core.encrypted_storage import source_from_encrypted_row
 from backend.app.core.turbovec_runtime import semantic_search_results
 
 
@@ -104,9 +105,9 @@ def _context_layer_row(vault_id: str, *, query_spec: dict, cluster_id: str | Non
             cluster_id=cluster_id,
             query=query,
         )
+        sources_by_id = {row["id"]: _source_snippet_from_row(conn, row) for row in source_rows}
 
     ordered_sources = []
-    sources_by_id = {row["id"]: _source_snippet_from_row(row) for row in source_rows}
     for source_id in source_ids:
         snippet = sources_by_id.get(source_id)
         if snippet:
@@ -161,7 +162,7 @@ def _default_queries(vault_id: str) -> list[dict]:
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT title, summary
+            SELECT *
             FROM sources
             WHERE vault_id = ? AND state = 'indexed' AND deleted_at IS NULL
             ORDER BY updated_at DESC
@@ -169,13 +170,14 @@ def _default_queries(vault_id: str) -> list[dict]:
             """,
             (vault_id,),
         ).fetchall()
-    prompts = []
-    for row in rows:
-        title = str(row["title"] or "").strip()
-        summary = " ".join(str(row["summary"] or "").split())
-        query = title or summary[:80]
-        if query:
-            prompts.append(query)
+        prompts = []
+        for row in rows:
+            source = source_from_encrypted_row(conn, row)
+            title = str(source["title"] or "").strip()
+            summary = " ".join(str(source["summary"] or "").split())
+            query = title or summary[:80]
+            if query:
+                prompts.append(query)
     prompts = prompts or ["project context", "bridge context", "chat memory"]
     specs = [{"prompt": prompt} for prompt in prompts[:3]]
     primary = prompts[0]
@@ -251,8 +253,8 @@ def _counts(values) -> dict[str, int]:
     return counts
 
 
-def _source_snippet_from_row(row) -> dict:
-    source = dict_from_row(row)
+def _source_snippet_from_row(conn, row) -> dict:
+    source = source_from_encrypted_row(conn, row)
     snippet = str(source.get("summary") or source.get("extracted_text") or source.get("raw_text") or "").strip()
     return {
         "id": source["id"],

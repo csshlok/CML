@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from backend.app.core.database import dict_from_row, utc_now
 from backend.app.core.embeddings import content_hash
+from backend.app.core.encrypted_storage import source_from_encrypted_row
 from backend.app.core.memory_card import summarize_text
 
 
@@ -46,7 +47,7 @@ def rebuild_source_memory(conn, *, source_id: str) -> None:
     row = conn.execute("SELECT * FROM sources WHERE id = ? AND deleted_at IS NULL", (source_id,)).fetchone()
     if row is None:
         return
-    source = dict_from_row(row)
+    source = source_from_encrypted_row(conn, row)
     if _source_is_memory_excluded(source):
         _invalidate_memory_items(conn, source_id=source_id)
         return
@@ -113,9 +114,9 @@ def refresh_bootstrap_memory_map(conn, *, vault_id: str, cluster_id: str | None)
         return
     if cluster_id:
         cluster = conn.execute("SELECT name FROM clusters WHERE id = ? AND vault_id = ?", (cluster_id, vault_id)).fetchone()
-        sources = conn.execute(
+        source_rows = conn.execute(
             """
-            SELECT title, summary
+            SELECT *
             FROM sources
             WHERE vault_id = ? AND cluster_id = ? AND state = 'indexed' AND deleted_at IS NULL
             ORDER BY updated_at DESC
@@ -123,12 +124,13 @@ def refresh_bootstrap_memory_map(conn, *, vault_id: str, cluster_id: str | None)
             """,
             (vault_id, cluster_id),
         ).fetchall()
+        sources = [source_from_encrypted_row(conn, row) for row in source_rows]
         cluster_name = str(cluster["name"]) if cluster else "cluster"
         summary = f"Bootstrap map for {cluster_name}: "
         if sources:
             summary += "; ".join(
-                summarize_text(f"{row['title']}. {row['summary']}", max_chars=80)
-                for row in sources
+                summarize_text(f"{source['title']}. {source['summary']}", max_chars=80)
+                for source in sources
             )
         else:
             summary += "No indexed sources are available yet."

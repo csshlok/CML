@@ -11,6 +11,7 @@ from backend.app.core.context_packets import build_bridge_context_packet, render
 from backend.app.core.context_reduction import build_context_reduction_plan, estimate_tokens, salient_excerpt
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.embeddings import embed_text
+from backend.app.core.encrypted_storage import source_from_encrypted_row
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path
 from backend.app.core.pdf_pipeline import PdfPipelineError, extract_pdf_document_with_backend, pdf_parser_runtime_status
 from backend.app.core.turbovec_runtime import semantic_search_results
@@ -295,8 +296,8 @@ def _context_strategy_row(vault_id: str, *, query_spec: dict, cluster_id: str | 
                 [vault_id, *cluster_ids],
             ).fetchall()
         memory_items, working_memory = get_context_memory(conn, vault_id=vault_id, cluster_id=cluster_id, query=query)
+        sources_by_id = {row["id"]: _source_snippet_from_row(conn, row) for row in source_rows}
     ordered_sources = []
-    sources_by_id = {row["id"]: _source_snippet_from_row(row) for row in source_rows}
     for source_id in source_ids:
         snippet = sources_by_id.get(source_id)
         if snippet:
@@ -414,8 +415,8 @@ def _reduction_percent(raw_tokens: int, final_tokens: int) -> float:
     return round(max(0.0, (1.0 - (final_tokens / max(raw_tokens, 1))) * 100.0), 2)
 
 
-def _source_snippet_from_row(row) -> dict:
-    source = dict_from_row(row)
+def _source_snippet_from_row(conn, row) -> dict:
+    source = source_from_encrypted_row(conn, row)
     snippet = str(source.get("summary") or source.get("extracted_text") or source.get("raw_text") or "").strip()
     return {
         "id": source["id"],
@@ -432,7 +433,7 @@ def _default_queries(vault_id: str) -> list[dict]:
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT title, summary
+            SELECT *
             FROM sources
             WHERE vault_id = ? AND state = 'indexed' AND deleted_at IS NULL
             ORDER BY updated_at DESC
@@ -440,13 +441,14 @@ def _default_queries(vault_id: str) -> list[dict]:
             """,
             (vault_id,),
         ).fetchall()
-    prompts = []
-    for row in rows:
-        title = str(row["title"] or "").strip()
-        summary = " ".join(str(row["summary"] or "").split())
-        query = title or summary[:80]
-        if query:
-            prompts.append(query)
+        prompts = []
+        for row in rows:
+            source = source_from_encrypted_row(conn, row)
+            title = str(source["title"] or "").strip()
+            summary = " ".join(str(source["summary"] or "").split())
+            query = title or summary[:80]
+            if query:
+                prompts.append(query)
     prompts = prompts or ["project context", "browser extension", "pdf ingestion"]
     return [{"prompt": prompt} for prompt in prompts[:5]]
 

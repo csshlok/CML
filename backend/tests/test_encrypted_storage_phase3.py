@@ -142,6 +142,188 @@ class EncryptedStoragePhase3Tests(unittest.TestCase):
         self.assertNotIn(marker, blob_path.read_bytes())
         self.assertEqual(read_encrypted_file_to_bytes(vault_id="vault-secure", blob_id="large-blob-test"), source_path.read_bytes())
 
+    def test_secured_source_memory_rebuild_uses_decrypted_content(self) -> None:
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.context_memory import get_context_memory, rebuild_source_memory
+        from backend.app.core.database import connect
+        from backend.app.schemas import SourceCreate
+
+        source = create_source(
+            SourceCreate(
+                vault_id="vault-secure",
+                cluster_id="cluster-secure",
+                title="Encrypted Memory Source",
+                source_type="note",
+                raw_text=(
+                    "We decided to retain the encrypted memory marker for future retrieval. "
+                    "The system must preserve secured source memory without plaintext columns."
+                ),
+            )
+        )
+
+        with connect() as conn:
+            rebuild_source_memory(conn, source_id=source["id"])
+            stored_source = conn.execute(
+                "SELECT raw_text, extracted_text, summary FROM sources WHERE id = ?",
+                (source["id"],),
+            ).fetchone()
+            active_count = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM memory_items
+                WHERE source_id = ? AND status = 'active'
+                """,
+                (source["id"],),
+            ).fetchone()
+            memory_items, working_memory = get_context_memory(
+                conn,
+                vault_id="vault-secure",
+                cluster_id="cluster-secure",
+                query="encrypted memory marker",
+            )
+
+        self.assertEqual(stored_source["raw_text"], "")
+        self.assertEqual(stored_source["extracted_text"], "")
+        self.assertEqual(stored_source["summary"], "")
+        self.assertGreater(active_count["count"], 0)
+        self.assertTrue(any("encrypted memory marker" in item["detail_text"] for item in memory_items))
+        self.assertGreater(working_memory["memory_count"], 0)
+
+    def test_secured_bootstrap_memory_map_uses_decrypted_summary(self) -> None:
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.context_memory import get_context_memory, refresh_bootstrap_memory_map
+        from backend.app.core.database import connect
+        from backend.app.schemas import SourceCreate
+
+        create_source(
+            SourceCreate(
+                vault_id="vault-secure",
+                cluster_id="cluster-secure",
+                title="Encrypted Bootstrap Source",
+                source_type="note",
+                raw_text="Bootstrap secret marker should appear only after decrypting the secured summary.",
+            )
+        )
+
+        with connect() as conn:
+            refresh_bootstrap_memory_map(conn, vault_id="vault-secure", cluster_id="cluster-secure")
+            _memory_items, working_memory = get_context_memory(
+                conn,
+                vault_id="vault-secure",
+                cluster_id="cluster-secure",
+                query="bootstrap secret marker",
+            )
+            stored_summary = conn.execute(
+                """
+                SELECT summary
+                FROM working_memory_snapshots
+                WHERE vault_id = ? AND cluster_id = ? AND status = 'active'
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                ("vault-secure", "cluster-secure"),
+            ).fetchone()
+
+        self.assertIn("Encrypted Bootstrap Source", working_memory["summary"])
+        self.assertIn("Bootstrap secret marker", stored_summary["summary"])
+
+    def test_secured_context_layer_report_includes_decrypted_evidence(self) -> None:
+        import json
+        from unittest.mock import patch
+
+        from backend.app.api.routes.search import create_context_layer_report
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.context_packets import build_bridge_context_packet as real_build_packet
+        from backend.app.core.database import connect, dict_from_row
+        from backend.app.core.embeddings import reindex_source_chunks
+        from backend.app.schemas import SourceCreate
+
+        source = create_source(
+            SourceCreate(
+                vault_id="vault-secure",
+                cluster_id="cluster-secure",
+                title="Encrypted Context Report Source",
+                source_type="note",
+                raw_text=(
+                    "Context report encrypted evidence marker should be measured in packets. "
+                    "We decided the context layer must keep secured snippets available for reports. "
+                )
+                * 18,
+            )
+        )
+        with connect() as conn:
+            row = conn.execute("SELECT * FROM sources WHERE id = ?", (source["id"],)).fetchone()
+            reindex_source_chunks(conn, dict_from_row(row))
+        captured_snippets: list[list[dict]] = []
+
+        def capture_packet(**kwargs):
+            captured_snippets.append(list(kwargs.get("source_snippets") or []))
+            return real_build_packet(**kwargs)
+
+        with patch("backend.app.core.context_layer_eval.build_bridge_context_packet", side_effect=capture_packet):
+            report = create_context_layer_report("vault-secure", cluster_id="cluster-secure", limit=3)
+
+        payload = json.loads(Path(report["json_path"]).read_text(encoding="utf-8"))
+        all_snippets = [snippet for batch in captured_snippets for snippet in batch]
+
+        with connect() as conn:
+            stored_source = conn.execute(
+                "SELECT raw_text, extracted_text, summary FROM sources WHERE id = ?",
+                (source["id"],),
+            ).fetchone()
+
+        self.assertEqual(stored_source["raw_text"], "")
+        self.assertEqual(stored_source["extracted_text"], "")
+        self.assertEqual(stored_source["summary"], "")
+        self.assertTrue(any("encrypted evidence marker" in item.get("snippet", "").lower() for item in all_snippets))
+        self.assertTrue(any(row["expansion_handle_count"] >= 1 for row in payload["rows"]))
+        self.assertTrue(any(row["raw_payload_bytes"] > 600 for row in payload["rows"]))
+
+    def test_secured_context_strategy_report_measures_decrypted_evidence(self) -> None:
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.benchmark_matrix import export_context_strategy_report
+        from backend.app.core.database import connect, dict_from_row
+        from backend.app.core.embeddings import reindex_source_chunks
+        from backend.app.schemas import SourceCreate
+
+        source = create_source(
+            SourceCreate(
+                vault_id="vault-secure",
+                cluster_id="cluster-secure",
+                title="Encrypted Strategy Report Source",
+                source_type="note",
+                raw_text=(
+                    "Context strategy encrypted benchmark marker proves secured snippets affect token accounting. "
+                    "The benchmark should measure decrypted source evidence, not blank database columns. "
+                )
+                * 18,
+            )
+        )
+        with connect() as conn:
+            row = conn.execute("SELECT * FROM sources WHERE id = ?", (source["id"],)).fetchone()
+            reindex_source_chunks(conn, dict_from_row(row))
+
+        report = export_context_strategy_report(
+            "vault-secure",
+            cluster_id="cluster-secure",
+            queries=["encrypted benchmark marker"],
+            strict=True,
+        )
+        row = report["rows"][0]
+
+        with connect() as conn:
+            stored_source = conn.execute(
+                "SELECT raw_text, extracted_text, summary FROM sources WHERE id = ?",
+                (source["id"],),
+            ).fetchone()
+
+        self.assertEqual(stored_source["raw_text"], "")
+        self.assertEqual(stored_source["extracted_text"], "")
+        self.assertEqual(stored_source["summary"], "")
+        self.assertGreaterEqual(row["result_count"], 1)
+        self.assertGreater(row["raw_tokens"], 120)
+        self.assertGreater(row["current_cml_tokens"], 80)
+
     def test_diagnostics_redacts_recovery_key_and_reports_encrypted_storage(self) -> None:
         from backend.app.api.routes.diagnostics import create_diagnostic_bundle
 

@@ -76,27 +76,18 @@ def _create_source_record(
     *,
     dedupe_checksum: bool = False,
 ) -> dict:
-    if payload.raw_text:
-        try:
-            require_embeddings_available("Source ingestion")
-        except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
     now = utc_now()
     raw_text = _sanitize_source_text(payload.raw_text)
     if page_texts:
         raw_text = _sanitize_source_text("\n\n".join(page for page in page_texts if page.strip()).strip())
     with connect() as conn:
-        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (payload.vault_id,)).fetchone()
-        if vault is None:
-            raise HTTPException(status_code=404, detail="Vault not found")
+        _validate_source_target(conn, payload.vault_id, payload.cluster_id)
+        if payload.raw_text:
+            try:
+                require_embeddings_available("Source ingestion")
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         cluster_id = payload.cluster_id
-        if cluster_id:
-            cluster = conn.execute(
-                "SELECT id FROM clusters WHERE id = ? AND vault_id = ?",
-                (cluster_id, payload.vault_id),
-            ).fetchone()
-            if cluster is None:
-                raise HTTPException(status_code=404, detail="Cluster not found")
 
         checksum = payload.checksum or (content_hash(raw_text) if raw_text else None)
         if checksum and dedupe_checksum:
@@ -196,6 +187,8 @@ def _create_source_record(
 
 @router.post("/from-path", response_model=SourceRead)
 def create_source_from_path(payload: SourcePathCreate) -> dict:
+    with connect() as conn:
+        _validate_source_target(conn, payload.vault_id, payload.cluster_id)
     try:
         ingested = ingest_file_through_quarantine(payload.vault_id, payload.path)
     except ExtractionError as exc:
@@ -210,9 +203,7 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
     checksum = security["validation"]["content_hash"]
     now = utc_now()
     with connect() as conn:
-        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (payload.vault_id,)).fetchone()
-        if vault is None:
-            raise HTTPException(status_code=404, detail="Vault not found")
+        _validate_source_target(conn, payload.vault_id, payload.cluster_id)
         existing = conn.execute(
             """
             SELECT id, vault_id, cluster_id
@@ -363,6 +354,8 @@ def create_source_from_text(payload: SourceTextCreate) -> dict:
 @router.post("/from-url", response_model=SourceRead)
 def create_source_from_url(payload: SourceUrlCreate) -> dict:
     sanitized_url = strip_url_credentials(payload.url)
+    with connect() as conn:
+        _validate_source_target(conn, payload.vault_id, payload.cluster_id)
     try:
         title, text, cover_image_url, security = extract_text_from_url_with_security(sanitized_url)
     except ExtractionError as exc:
@@ -370,9 +363,7 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
 
     now = utc_now()
     with connect() as conn:
-        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (payload.vault_id,)).fetchone()
-        if vault is None:
-            raise HTTPException(status_code=404, detail="Vault not found")
+        _validate_source_target(conn, payload.vault_id, payload.cluster_id)
         existing = conn.execute(
             """
             SELECT id, vault_id, cluster_id
@@ -712,6 +703,19 @@ def source_from_row(row, conn=None) -> dict:
         tags = []
     source["tags"] = tags if isinstance(tags, list) else []
     return source
+
+
+def _validate_source_target(conn, vault_id: str, cluster_id: str | None = None) -> None:
+    vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+    if vault is None:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    if cluster_id:
+        cluster = conn.execute(
+            "SELECT id FROM clusters WHERE id = ? AND vault_id = ?",
+            (cluster_id, vault_id),
+        ).fetchone()
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
 
 
 def _sanitize_source_text(text: str) -> str:
