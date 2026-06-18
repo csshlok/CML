@@ -2,6 +2,21 @@ import unittest
 
 
 class BridgeCLITests(unittest.TestCase):
+    def test_bridge_cli_uses_configured_api_prefix_for_bridge_context(self) -> None:
+        import os
+
+        from backend.app.bridge_cli import api_path
+
+        previous = os.environ.get("CML_API_PREFIX")
+        os.environ["CML_API_PREFIX"] = "custom/v2/"
+        try:
+            self.assertEqual(api_path("/bridge/context"), "/custom/v2/bridge/context")
+        finally:
+            if previous is None:
+                os.environ.pop("CML_API_PREFIX", None)
+            else:
+                os.environ["CML_API_PREFIX"] = previous
+
     def test_format_context_prefers_packet_text_when_available(self) -> None:
         from backend.app.bridge_cli import format_context
 

@@ -82,9 +82,9 @@ def _create_source_record(
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     now = utc_now()
-    raw_text = payload.raw_text
+    raw_text = _sanitize_source_text(payload.raw_text)
     if page_texts:
-        raw_text = "\n\n".join(page for page in page_texts if page.strip()).strip()
+        raw_text = _sanitize_source_text("\n\n".join(page for page in page_texts if page.strip()).strip())
     with connect() as conn:
         vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (payload.vault_id,)).fetchone()
         if vault is None:
@@ -540,6 +540,9 @@ def list_source_pages(source_id: str) -> list[dict]:
 @router.patch("/{source_id}", response_model=SourceRead)
 def update_source(source_id: str, payload: SourceUpdate) -> dict:
     updates = payload.model_dump(exclude_unset=True)
+    for text_key in ("raw_text", "extracted_text"):
+        if text_key in updates and updates[text_key] is not None:
+            updates[text_key] = _sanitize_source_text(updates[text_key])
     if "raw_text" in updates and "extracted_text" not in updates:
         updates["extracted_text"] = updates["raw_text"]
     if "raw_text" in updates and "summary" not in updates:

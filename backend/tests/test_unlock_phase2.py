@@ -42,6 +42,7 @@ class UnlockPhase2Tests(unittest.TestCase):
 
         get_settings.cache_clear()
         for key in (
+            "CML_API_PREFIX",
             "CML_DATABASE_PATH",
             "CML_DATA_DIR",
             "CML_EMBEDDING_PROVIDER",
@@ -147,6 +148,26 @@ class UnlockPhase2Tests(unittest.TestCase):
         self.assertTrue(full.json()["ok"])
         self.assertEqual(status_after_sensitive_action.json()["state"], "locked")
         self.assertEqual(protected_after_sensitive_action.status_code, 423)
+
+    def test_locked_secured_vault_respects_custom_api_prefix_for_setup_routes(self) -> None:
+        os.environ["CML_API_PREFIX"] = "custom/v2/"
+        self._initialize_security_directly()
+        client = self._client()
+        try:
+            identity = client.get("/custom/v2/system/backend-identity")
+            unlock_status = client.get("/custom/v2/system/unlock/status")
+            vaults = client.get("/custom/v2/vaults")
+            protected = client.get("/custom/v2/sources")
+        finally:
+            client.close()
+
+        self.assertEqual(identity.status_code, 200)
+        self.assertEqual(identity.json()["api_prefix"], "/custom/v2")
+        self.assertEqual(unlock_status.status_code, 200)
+        self.assertEqual(unlock_status.json()["state"], "locked")
+        self.assertEqual(vaults.status_code, 200)
+        self.assertEqual(protected.status_code, 423)
+        self.assertEqual(protected.json()["detail"], "vault_unlock_required")
 
     def test_initialize_endpoint_returns_recovery_key_once_and_ready_state(self) -> None:
         client = self._client()
@@ -279,7 +300,7 @@ class UnlockPhase2Tests(unittest.TestCase):
         backend_ts = (repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
 
         for required in (
-            "Vault unlock",
+            "Library unlock",
             "Convenience mode",
             "Strict locked mode",
             "Enable PIN setting",

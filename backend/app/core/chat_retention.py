@@ -1,3 +1,4 @@
+from backend.app.core.config import get_settings
 from backend.app.core.database import connect, dict_from_row, utc_now
 
 
@@ -123,13 +124,14 @@ def compact_retrieval_snapshots(*, message_id: str | None = None, keep_latest_pe
 
 
 def chat_evidence_retention_policy() -> dict:
+    api_prefix = get_settings().api_prefix.rstrip("/") or "/api/v1"
     return {
         "default_keep_latest_snapshots_per_message": 1,
         "max_keep_latest_snapshots_per_message": 5,
         "default_excerpt_chars": 240,
         "deleted_source_state": "source_deleted",
         "compacted_state": "compacted",
-        "query_cache_prune_endpoint": "/api/v1/search/query-cache/prune",
+        "query_cache_prune_endpoint": f"{api_prefix}/search/query-cache/prune",
     }
 
 

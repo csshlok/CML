@@ -2097,7 +2097,9 @@ class AdditionalQACases(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[2]
         onboarding = (repo_root / "apps" / "desktop" / "src" / "routes" / "onboarding.tsx").read_text(encoding="utf-8")
 
-        self.assertIn('vault-onboarding-shell h-screen overflow-y-auto', onboarding)
+        self.assertIn('vault-onboarding-shell h-screen overflow-x-hidden overflow-y-auto', onboarding)
+        self.assertIn("prepareActiveVaultFolder", onboarding)
+        self.assertIn("setActiveVaultFolder", onboarding)
         self.assertIn('min-h-0 flex-1 overflow-y-auto px-6 sm:px-8', onboarding)
         self.assertIn('lg:max-h-[calc(100vh-4rem)]', onboarding)
         self.assertNotIn('vault-onboarding-shell min-h-screen overflow-hidden', onboarding)

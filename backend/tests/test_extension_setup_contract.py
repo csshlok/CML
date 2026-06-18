@@ -20,15 +20,18 @@ class ExtensionSetupContractTests(unittest.TestCase):
         from backend.app.core.config import get_settings
 
         get_settings.cache_clear()
-        for key in ("CML_DATABASE_PATH", "CML_DATA_DIR"):
+        for key in ("CML_API_PREFIX", "CML_DATABASE_PATH", "CML_DATA_DIR"):
             os.environ.pop(key, None)
         self.tmp.cleanup()
 
     def test_desktop_setup_contract_returns_thin_capture_bundle(self) -> None:
+        os.environ["CML_API_PREFIX"] = "custom/v2/"
+        from backend.app.core.config import get_settings
         from backend.app.api.routes.extension import create_desktop_extension_setup
         from backend.app.core.database import connect, utc_now
         from backend.app.schemas import ExtensionDesktopSetupCreate
 
+        get_settings.cache_clear()
         now = utc_now()
         with connect() as conn:
             conn.execute(
@@ -53,6 +56,7 @@ class ExtensionSetupContractTests(unittest.TestCase):
         )
 
         self.assertEqual(bundle["default_vault_id"], "vault-1")
+        self.assertEqual(bundle["api_prefix"], "/custom/v2")
         self.assertEqual(bundle["default_cluster_id"], "cluster-1")
         self.assertEqual(bundle["browser"], "brave")
         self.assertEqual(bundle["primary_actions"], ["save_link_to_vault", "take_and_save_screenshot"])

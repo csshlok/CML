@@ -1194,6 +1194,44 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertNotEqual(first["id"], second["id"])
         self.assertEqual(source_count, 2)
 
+    def test_direct_source_create_and_update_strip_nul_bytes_from_stored_text(self) -> None:
+        from backend.app.api.routes.sources import create_source, update_source
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourceCreate, SourceUpdate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+
+        source = create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Sanitized",
+                source_type="note",
+                raw_text="first\x00 version",
+            )
+        )
+        updated = update_source(source["id"], SourceUpdate(raw_text="second\x00 version"))
+
+        with connect() as conn:
+            stored = conn.execute(
+                "SELECT raw_text, extracted_text FROM sources WHERE id = ?",
+                (source["id"],),
+            ).fetchone()
+            page = conn.execute(
+                "SELECT raw_text FROM source_pages WHERE source_id = ? ORDER BY page_number ASC LIMIT 1",
+                (source["id"],),
+            ).fetchone()
+
+        self.assertNotIn("\x00", source["raw_text"])
+        self.assertNotIn("\x00", updated["raw_text"])
+        self.assertEqual(stored["raw_text"], "second version")
+        self.assertEqual(stored["extracted_text"], "second version")
+        self.assertEqual(page["raw_text"], "second version")
+
     def test_manual_path_ingestion_keeps_distinct_files_with_same_content_separate(self) -> None:
         from backend.app.api.routes.sources import create_source_from_path
         from backend.app.core.database import connect, utc_now
@@ -2836,7 +2874,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         log_dir = Path(self.tmp.name) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / "backend.log").write_text(
-            f"authorization: Bearer abc.def\npassword={secret}\nC:\\Users\\alice\\vault\\file.txt",
+            f"authorization: Bearer abc.def\npassword={secret}\nhttps://user:{secret}@example.com/private\nC:\\Users\\alice\\vault\\file.txt",
             encoding="utf-8",
         )
 
@@ -2845,8 +2883,10 @@ class SourcePageIndexingTests(unittest.TestCase):
         with ZipFile(response["bundle_path"]) as bundle:
             payload = "\n".join(bundle.read(name).decode("utf-8") for name in bundle.namelist())
         self.assertNotIn(secret, payload)
+        self.assertNotIn(f"user:{secret}@example.com", payload)
         self.assertNotIn("abc.def", payload)
         self.assertNotIn("alice", payload)
+        self.assertIn("https://[redacted]@example.com/private", payload)
         self.assertIn("[redacted]", payload)
 
     def test_startup_recovery_marks_in_flight_generations_retriable(self) -> None:
@@ -3315,6 +3355,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         from backend.app.api.routes.integrations import refresh_integration_import, scan_local_folder_integration
         from backend.app.core.background_jobs import run_due_jobs_once
         from backend.app.core.database import connect, utc_now
+        from backend.app.core.retrieval_cache import put_query_cache
         from backend.app.schemas import LocalFolderScanRequest
 
         now = utc_now()
@@ -3343,14 +3384,29 @@ class SourcePageIndexingTests(unittest.TestCase):
             original_source_id = source["id"]
             self.assertIn("first synced note", source["raw_text"])
 
+        update_cache = put_query_cache(
+            vault_id="vault-1",
+            query_fingerprint="synced-note-before-update",
+            contributing_source_ids=[original_source_id],
+        )
         note.write_text("updated synced note content " * 10, encoding="utf-8")
         updated = refresh_integration_import(result["import_id"], import_files=True)
         run_due_jobs_once()
         self.assertEqual(updated["updated_count"], 1)
         with connect() as conn:
             source = conn.execute("SELECT * FROM sources WHERE id = ?", (original_source_id,)).fetchone()
+            update_cache_row = conn.execute(
+                "SELECT invalidated_at FROM query_evidence_cache WHERE id = ?",
+                (update_cache["id"],),
+            ).fetchone()
             self.assertIn("updated synced note", source["raw_text"])
+            self.assertIsNotNone(update_cache_row["invalidated_at"])
 
+        move_cache = put_query_cache(
+            vault_id="vault-1",
+            query_fingerprint="synced-note-before-move",
+            contributing_source_ids=[original_source_id],
+        )
         moved_note = folder / "renamed.md"
         note.rename(moved_note)
         moved = refresh_integration_import(result["import_id"], import_files=True, tombstone_missing=True)
@@ -3358,8 +3414,13 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(moved["tombstoned_count"], 0)
         with connect() as conn:
             source = conn.execute("SELECT * FROM sources WHERE id = ?", (original_source_id,)).fetchone()
+            move_cache_row = conn.execute(
+                "SELECT invalidated_at FROM query_evidence_cache WHERE id = ?",
+                (move_cache["id"],),
+            ).fetchone()
             self.assertEqual(source["original_path"], str(moved_note))
             self.assertIsNone(source["deleted_at"])
+            self.assertIsNotNone(move_cache_row["invalidated_at"])
 
         moved_note.unlink()
         deleted = refresh_integration_import(result["import_id"], import_files=True, tombstone_missing=True)

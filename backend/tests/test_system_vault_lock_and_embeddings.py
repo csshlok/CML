@@ -534,6 +534,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
 
         with (
             patch("backend.app.core.model_registry.threading.Thread", ImmediateThread),
+            patch("backend.app.core.model_registry._model_disk_preflight", return_value={"ok": True, "message": ""}),
             patch("backend.app.core.model_registry._download_expected_model_sha256", return_value="0" * 64),
             patch("backend.app.core.model_registry._resolve_gguf_filename", return_value="model.Q4_K_M.gguf"),
             patch("backend.app.core.model_registry.urlopen", return_value=FakeStream()),
@@ -638,6 +639,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         expected_digest = hashlib.sha256(b"x" * (2 * 1024 * 1024)).hexdigest()
         with (
             patch("backend.app.core.model_registry._find_local_model_file", return_value=None),
+            patch("backend.app.core.model_registry._model_disk_preflight", return_value={"ok": True, "message": ""}),
             patch("backend.app.core.model_registry._download_expected_model_sha256", return_value=expected_digest),
             patch("backend.app.core.model_registry._expected_model_sha256", return_value=expected_digest),
             patch("backend.app.core.model_registry._resolve_gguf_filename", return_value="model.Q4_K_M.gguf"),
@@ -1616,6 +1618,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
     def test_cluster_merge_writes_artifact_before_source_cluster_delete(self) -> None:
         from backend.app.api.routes.clusters import list_cluster_merge_artifacts, merge_cluster, rollback_cluster_merge_artifact
         from backend.app.core.database import connect, utc_now
+        from backend.app.core.retrieval_cache import put_query_cache
         from backend.app.schemas import ClusterMergeRequest
 
         now = utc_now()
@@ -1649,6 +1652,11 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
                 "INSERT INTO chat_sessions (id, vault_id, title, scope_cluster_id, saved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 ("chat-1", "vault-1", "Scoped", "cluster-source", 1, now, now),
             )
+        merge_cache = put_query_cache(
+            vault_id="vault-1",
+            query_fingerprint="cluster-source-search",
+            contributing_source_ids=["source-1"],
+        )
 
         merged = merge_cluster("cluster-source", ClusterMergeRequest(target_cluster_id="cluster-target"))
         artifacts = list_cluster_merge_artifacts("cluster-target")["items"]
@@ -1658,16 +1666,31 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(artifacts[0]["moved_source_ids"], ["source-1"])
         self.assertEqual(artifacts[0]["moved_chat_session_ids"], ["chat-1"])
 
+        rollback_cache = put_query_cache(
+            vault_id="vault-1",
+            query_fingerprint="cluster-target-search",
+            contributing_source_ids=["source-1"],
+        )
         restored = rollback_cluster_merge_artifact(artifacts[0]["id"])
         with connect() as conn:
             source_row = conn.execute("SELECT cluster_id FROM sources WHERE id = 'source-1'").fetchone()
             chat_row = conn.execute("SELECT scope_cluster_id FROM chat_sessions WHERE id = 'chat-1'").fetchone()
             artifact_row = conn.execute("SELECT rolled_back_at FROM cluster_merge_artifacts WHERE id = ?", (artifacts[0]["id"],)).fetchone()
+            merge_cache_row = conn.execute(
+                "SELECT invalidated_at FROM query_evidence_cache WHERE id = ?",
+                (merge_cache["id"],),
+            ).fetchone()
+            rollback_cache_row = conn.execute(
+                "SELECT invalidated_at FROM query_evidence_cache WHERE id = ?",
+                (rollback_cache["id"],),
+            ).fetchone()
 
         self.assertEqual(restored["id"], "cluster-source")
         self.assertEqual(source_row["cluster_id"], "cluster-source")
         self.assertEqual(chat_row["scope_cluster_id"], "cluster-source")
         self.assertIsNotNone(artifact_row["rolled_back_at"])
+        self.assertIsNotNone(merge_cache_row["invalidated_at"])
+        self.assertIsNotNone(rollback_cache_row["invalidated_at"])
 
     def test_watched_folder_scan_reports_backpressure_and_policy(self) -> None:
         from backend.app.core.local_integrations import WATCHED_FOLDER_SCAN_LIMIT, scan_local_folder, watched_folder_limits

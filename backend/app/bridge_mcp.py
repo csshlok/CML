@@ -9,8 +9,15 @@ from backend.app.core.version import app_version
 from backend.app.core.context_packets import build_bridge_context_packet, packet_telemetry
 
 
+def _normalize_api_prefix(value: str) -> str:
+    raw = str(value or "/api/v1").strip()
+    prefixed = raw if raw.startswith("/") else f"/{raw}"
+    return prefixed.rstrip("/") or "/api/v1"
+
+
 BACKEND_URL = os.getenv("CML_BACKEND_URL", "http://127.0.0.1:7343").rstrip("/")
 BRIDGE_TOKEN = os.getenv("CML_BRIDGE_TOKEN", "")
+API_PREFIX = _normalize_api_prefix(os.getenv("CML_API_PREFIX", "/api/v1"))
 MAX_TOOL_STRING_LENGTH = 50_000
 
 
@@ -209,7 +216,7 @@ def call_get_cluster_context(arguments: dict, request_id) -> dict:
         "client_name": "cml-mcp",
     }
     data = http_json(
-        "/api/v1/bridge/context",
+        api_path("/bridge/context"),
         method="POST",
         payload=payload,
         headers={"x-cml-bridge-token": BRIDGE_TOKEN},
@@ -228,7 +235,7 @@ def call_get_cluster_context(arguments: dict, request_id) -> dict:
 
 def call_list_clusters(request_id) -> dict:
     data = http_json(
-        "/api/v1/bridge/clusters",
+        api_path("/bridge/clusters"),
         headers={"x-cml-bridge-token": BRIDGE_TOKEN},
         request_id=request_id,
     )
@@ -250,7 +257,7 @@ def call_list_writeback_reviews(arguments: dict, request_id) -> dict:
         pending_only="true" if bool(arguments.get("pending_only", True)) else None,
     )
     data = http_json(
-        f"/api/v1/bridge/reviews{query}",
+        f"{api_path('/bridge/reviews')}{query}",
         headers={"x-cml-bridge-token": BRIDGE_TOKEN},
         request_id=request_id,
     )
@@ -270,7 +277,7 @@ def call_decide_writeback_review(arguments: dict, request_id) -> dict:
     debug = bool(arguments.get("debug"))
     source_id = str(arguments.get("source_id") or "").strip()
     data = http_json(
-        f"/api/v1/bridge/reviews/{source_id}",
+        api_path(f"/bridge/reviews/{source_id}"),
         method="POST",
         payload={"approved": bool(arguments.get("approved"))},
         headers={"x-cml-bridge-token": BRIDGE_TOKEN},
@@ -295,7 +302,7 @@ def call_list_captures(arguments: dict, request_id) -> dict:
         limit=int(arguments.get("limit") or 50),
     )
     data = http_json(
-        f"/api/v1/bridge/captures{query}",
+        f"{api_path('/bridge/captures')}{query}",
         headers={"x-cml-bridge-token": BRIDGE_TOKEN},
         request_id=request_id,
     )
@@ -319,7 +326,7 @@ def call_expand_context_item(arguments: dict, request_id) -> dict:
         "client_name": "cml-mcp",
     }
     data = http_json(
-        "/api/v1/bridge/context/expand",
+        api_path("/bridge/context/expand"),
         method="POST",
         payload=payload,
         headers={"x-cml-bridge-token": BRIDGE_TOKEN},
@@ -342,7 +349,7 @@ def call_log_external_turn(arguments: dict, request_id) -> dict:
         "metadata": arguments.get("metadata") or {},
     }
     data = http_json(
-        "/api/v1/bridge/external-turn",
+        api_path("/bridge/external-turn"),
         method="POST",
         payload=payload,
         headers={"x-cml-bridge-token": BRIDGE_TOKEN},
@@ -372,7 +379,7 @@ def call_capture_external_artifact(arguments: dict, request_id) -> dict:
         "metadata": arguments.get("metadata") or {},
     }
     data = http_json(
-        "/api/v1/bridge/artifacts",
+        api_path("/bridge/artifacts"),
         method="POST",
         payload=payload,
         headers={"x-cml-bridge-token": BRIDGE_TOKEN},
@@ -468,6 +475,10 @@ def http_json(
         raise CMLBridgeApplicationError(request_id, app_error_code(detail), detail or "bridge_request_failed") from exc
     except URLError as exc:
         raise CMLBridgeApplicationError(request_id, 1005, f"CML backend is not reachable: {exc.reason}") from exc
+
+
+def api_path(suffix: str) -> str:
+    return f"{API_PREFIX.rstrip('/')}/{suffix.lstrip('/')}"
 
 
 def result(request_id, value: dict) -> dict:

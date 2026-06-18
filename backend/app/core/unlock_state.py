@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import uuid4
 
+from backend.app.core.config import get_settings
 from backend.app.core.database import connect, utc_now
 from backend.app.core.vault_crypto import (
     InvalidVaultSecretError,
@@ -22,27 +23,28 @@ from backend.app.core.vault_crypto import (
 
 UnlockState = Literal["locked", "unlocking", "verifying", "repair_required", "ready"]
 
-LOCKED_SAFE_PREFIXES = (
+LOCKED_SAFE_PATHS = (
     "/health",
     "/docs",
     "/redoc",
     "/openapi.json",
-    "/api/v1/system/backend-identity",
-    "/api/v1/system/startup-status",
-    "/api/v1/system/startup-phases",
-    "/api/v1/system/startup-repair",
-    "/api/v1/system/first-run/readiness",
-    "/api/v1/system/preflight",
-    "/api/v1/system/hardware",
-    "/api/v1/system/ocr",
-    "/api/v1/system/lora-trainer",
-    "/api/v1/system/unlock",
-    "/api/v1/models",
-    "/api/v1/jobs/status",
-    "/api/v1/extension/status",
 )
 
-UNLOCK_ENDPOINT_PREFIX = "/api/v1/system/unlock"
+API_LOCKED_SAFE_SUFFIXES = (
+    "/system/backend-identity",
+    "/system/startup-status",
+    "/system/startup-phases",
+    "/system/startup-repair",
+    "/system/first-run/readiness",
+    "/system/preflight",
+    "/system/hardware",
+    "/system/ocr",
+    "/system/lora-trainer",
+    "/system/unlock",
+    "/models",
+    "/jobs/status",
+    "/extension/status",
+)
 VAULT_BOUND_JOB_SCOPES = {"vault", "source", "chat", "vector_index", "expert"}
 
 
@@ -115,13 +117,26 @@ def security_gate_active() -> bool:
     return bool(secured_vault_ids())
 
 
-def is_locked_safe_path(path: str, method: str = "GET") -> bool:
+def _api_path(api_prefix: str, suffix: str) -> str:
+    return f"{api_prefix.rstrip('/')}/{suffix.lstrip('/')}"
+
+
+def locked_safe_prefixes(api_prefix: str) -> tuple[str, ...]:
+    return (
+        *LOCKED_SAFE_PATHS,
+        *(_api_path(api_prefix, suffix) for suffix in API_LOCKED_SAFE_SUFFIXES),
+    )
+
+
+def is_locked_safe_path(path: str, method: str = "GET", api_prefix: str | None = None) -> bool:
     normalized_method = method.upper()
-    if path == UNLOCK_ENDPOINT_PREFIX or path.startswith(f"{UNLOCK_ENDPOINT_PREFIX}/"):
+    resolved_api_prefix = api_prefix or get_settings().api_prefix
+    unlock_endpoint_prefix = _api_path(resolved_api_prefix, "/system/unlock")
+    if path == unlock_endpoint_prefix or path.startswith(f"{unlock_endpoint_prefix}/"):
         return True
-    if path == "/api/v1/vaults" and normalized_method in {"GET", "POST"}:
+    if path == _api_path(resolved_api_prefix, "/vaults") and normalized_method in {"GET", "POST"}:
         return True
-    for allowed in LOCKED_SAFE_PREFIXES:
+    for allowed in locked_safe_prefixes(resolved_api_prefix):
         if path == allowed or path.startswith(f"{allowed}/"):
             return True
     return False

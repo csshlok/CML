@@ -1,4 +1,11 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _blank_to_none(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 class HealthResponse(BaseModel):
@@ -141,11 +148,21 @@ class SourceCreate(BaseModel):
     tags: list[str] | None = None
     cover_image_url: str | None = None
 
+    @field_validator("cluster_id", mode="before")
+    @classmethod
+    def normalize_cluster_id(cls, value: str | None) -> str | None:
+        return _blank_to_none(value)
+
 
 class SourcePathCreate(BaseModel):
     vault_id: str
     cluster_id: str | None = None
     path: str = Field(min_length=1)
+
+    @field_validator("cluster_id", mode="before")
+    @classmethod
+    def normalize_cluster_id(cls, value: str | None) -> str | None:
+        return _blank_to_none(value)
 
 
 class SourceTextCreate(BaseModel):
@@ -154,11 +171,21 @@ class SourceTextCreate(BaseModel):
     title: str = Field(min_length=1, max_length=240)
     text: str = Field(min_length=1)
 
+    @field_validator("cluster_id", mode="before")
+    @classmethod
+    def normalize_cluster_id(cls, value: str | None) -> str | None:
+        return _blank_to_none(value)
+
 
 class SourceUrlCreate(BaseModel):
     vault_id: str
     cluster_id: str | None = None
     url: str = Field(min_length=1, max_length=2048)
+
+    @field_validator("cluster_id", mode="before")
+    @classmethod
+    def normalize_cluster_id(cls, value: str | None) -> str | None:
+        return _blank_to_none(value)
 
 
 class SourceUpdate(BaseModel):
@@ -170,6 +197,11 @@ class SourceUpdate(BaseModel):
     summary: str | None = None
     tags: list[str] | None = None
     cover_image_url: str | None = None
+
+    @field_validator("cluster_id", mode="before")
+    @classmethod
+    def normalize_cluster_id(cls, value: str | None) -> str | None:
+        return _blank_to_none(value)
 
 
 class SourceRead(BaseModel):
@@ -555,6 +587,11 @@ class ChatAttachmentInput(BaseModel):
     path: str = Field(min_length=1)
     cluster_id: str | None = None
 
+    @field_validator("cluster_id", mode="before")
+    @classmethod
+    def normalize_cluster_id(cls, value: str | None) -> str | None:
+        return _blank_to_none(value)
+
 
 class ChatAttachmentStored(BaseModel):
     source_id: str
@@ -572,6 +609,11 @@ class ChatContextRequest(BaseModel):
     expanded_analysis: bool = False
     complete_analysis: bool = False
     attachments: list[ChatAttachmentInput] = Field(default_factory=list)
+
+    @field_validator("cluster_id", "session_id", mode="before")
+    @classmethod
+    def normalize_optional_ids(cls, value: str | None) -> str | None:
+        return _blank_to_none(value)
 
 
 class ChatCitation(BaseModel):
@@ -639,11 +681,21 @@ class ChatSessionCreate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=160)
     scope_cluster_id: str | None = None
 
+    @field_validator("scope_cluster_id", mode="before")
+    @classmethod
+    def normalize_scope_cluster_id(cls, value: str | None) -> str | None:
+        return _blank_to_none(value)
+
 
 class ChatSessionUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=160)
     scope_cluster_id: str | None = None
     saved: bool | None = None
+
+    @field_validator("scope_cluster_id", mode="before")
+    @classmethod
+    def normalize_scope_cluster_id(cls, value: str | None) -> str | None:
+        return _blank_to_none(value)
 
 
 class ChatMessageRead(BaseModel):
@@ -1017,6 +1069,7 @@ class ExtensionDesktopSetupCreate(BaseModel):
 
 class ExtensionDesktopSetupRead(BaseModel):
     backend_url: str
+    api_prefix: str = "/api/v1"
     extension_token: str
     default_vault_id: str
     default_cluster_id: str = ""

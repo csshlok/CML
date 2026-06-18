@@ -35,6 +35,7 @@ class TestingParametersDocCases(unittest.TestCase):
         os.environ.pop("CML_EMBEDDING_PROVIDER", None)
         os.environ.pop("CML_ALLOW_HASH_EMBEDDINGS", None)
         os.environ.pop("CML_ALLOW_UNAUTHENTICATED_API", None)
+        os.environ.pop("CML_API_PREFIX", None)
         self.tmp.cleanup()
 
     def test_pre_vault_mode_blocks_private_routes_and_keeps_preflight_alive(self) -> None:
@@ -86,6 +87,77 @@ class TestingParametersDocCases(unittest.TestCase):
             _is_public_path("/custom/v2/bridge/approval-requests/request-1/status", "GET", "/custom/v2")
         )
         self.assertFalse(_is_public_path("/api/v1/bridge/context", "POST", "/custom/v2"))
+
+    def test_reserved_chat_field_paths_follow_custom_api_prefix(self) -> None:
+        from backend.app.core.reserved_fields import chat_context_paths
+
+        paths = chat_context_paths("/custom/v2")
+
+        self.assertIn("/custom/v2/chat/context", paths)
+        self.assertIn("/custom/v2/chat/context/stream", paths)
+        self.assertNotIn("/api/v1/chat/context", paths)
+
+    def test_chat_evidence_policy_prune_endpoint_follows_custom_api_prefix(self) -> None:
+        os.environ["CML_API_PREFIX"] = "custom/v2/"
+        from backend.app.core.config import get_settings
+        from backend.app.core.chat_retention import chat_evidence_retention_policy
+
+        get_settings.cache_clear()
+
+        policy = chat_evidence_retention_policy()
+
+        self.assertEqual(policy["query_cache_prune_endpoint"], "/custom/v2/search/query-cache/prune")
+
+    def test_settings_normalizes_api_prefix_for_mounted_routes(self) -> None:
+        os.environ["CML_API_PREFIX"] = "custom/v2/"
+        from backend.app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+        self.assertEqual(get_settings().api_prefix, "/custom/v2")
+
+    def test_blank_optional_cluster_ids_are_normalized_before_storage(self) -> None:
+        from backend.app.api.routes.chat import create_chat_session, update_chat_session
+        from backend.app.api.routes.sources import create_source, update_source
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest, ChatSessionCreate, ChatSessionUpdate, SourceCreate, SourceUpdate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                "INSERT INTO clusters (id, vault_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("cluster-1", "vault-1", "Cluster", now, now),
+            )
+
+        source = create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                cluster_id="cluster-1",
+                title="Blank cluster",
+                source_type="note",
+                raw_text="blank optional cluster id source text",
+            )
+        )
+        session = create_chat_session(ChatSessionCreate(vault_id="vault-1", scope_cluster_id="cluster-1"))
+
+        updated_source = update_source(source["id"], SourceUpdate(cluster_id=""))
+        updated_session = update_chat_session(session["id"], ChatSessionUpdate(scope_cluster_id=""))
+        context_payload = ChatContextRequest(vault_id="vault-1", prompt="status", cluster_id="", session_id="")
+
+        with connect() as conn:
+            source_row = conn.execute("SELECT cluster_id FROM sources WHERE id = ?", (source["id"],)).fetchone()
+            session_row = conn.execute("SELECT scope_cluster_id FROM chat_sessions WHERE id = ?", (session["id"],)).fetchone()
+
+        self.assertIsNone(updated_source["cluster_id"])
+        self.assertIsNone(updated_session["scope_cluster_id"])
+        self.assertIsNone(source_row["cluster_id"])
+        self.assertIsNone(session_row["scope_cluster_id"])
+        self.assertIsNone(context_payload.cluster_id)
+        self.assertIsNone(context_payload.session_id)
 
     def test_complete_analysis_field_routes_normally_without_masking_parse_errors(self) -> None:
         from backend.app.core.database import connect, utc_now

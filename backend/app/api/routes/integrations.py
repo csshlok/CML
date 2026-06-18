@@ -30,6 +30,7 @@ from backend.app.core.encrypted_storage import update_source_content_fields
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path
 from backend.app.core.memory_card import generate_tags, summarize_text
+from backend.app.core.retrieval_cache import invalidate_caches_for_source
 from backend.app.core.source_records import file_checksum, replace_source_pages, source_type_for_suffix
 from backend.app.schemas import (
     IntegrationImportRead,
@@ -659,6 +660,7 @@ def _update_source_path(source_id: str, file_path: str) -> None:
             """,
             (file_path, Path(file_path).name, now, source_id),
         )
+        invalidate_caches_for_source(source_id, conn=conn)
 
 
 def _update_source_from_local_file(existing, *, file_path: str, checksum: str) -> None:
@@ -715,6 +717,7 @@ def _update_source_from_local_file(existing, *, file_path: str, checksum: str) -
             dedupe_key=f"reindex-source:{existing['id']}",
         )
         mark_cluster_needs_update(conn, existing["cluster_id"], "Imported local file changed.")
+        invalidate_caches_for_source(existing["id"], conn=conn)
 
 
 def _reconcile_single_supported_file(

@@ -1,435 +1,499 @@
-# Context Management Layer PRD
+# CML Product Requirements Document
 
-## 1. Product Summary
+Last updated: 2026-06-17
 
-The Context Management Layer is a local desktop AI workspace for general second-brain users. Users collect files, links, notes, screenshots, documents, and chat transcripts into a local vault. The app converts this material into context clusters, trains a small local expert for each cluster, and uses those experts to feed focused context and intermediate reasoning into a larger synthesis model.
+## 1. Executive Summary
 
-The deeper V1 product is a layer between the user and a model: it should reduce context loss across long or old chats and reduce token cost by letting models call CML for compact, grounded context instead of repeatedly ingesting raw transcripts and files.
+CML is a Windows-first local desktop product for turning personal files, links, notes, screenshots, transcripts, and synced folders into reusable AI context.
 
-For V1, "compact" must mean more than top-k retrieval. CML should deliver reversible, content-type-aware context packets that can be expanded on demand instead of sending raw transcripts, files, logs, or chunks by default.
+The core job is not generic file search. The product is a context-management layer between the user and an LLM:
 
-The product should feel approachable and visual like Mindly, navigable like Obsidian, and centered around chat. The main user value is not generic file search. It is turning scattered personal material into living context clusters that can answer, write, and reason in the style and knowledge boundaries of the user's own data.
+- preserve long-lived context outside the model
+- reduce repeated transcript and corpus replay
+- return grounded context packets instead of raw dumps
+- let external AI tools use the same local memory through Bridge, MCP, CLI, and API
 
-## 2. Product Goals
+Public V1 is a downloadable Windows desktop app with three connected surfaces:
 
-- Let users drop mixed personal material into a local vault and have it organized into meaningful clusters.
-- Preserve long-lived context outside the model so users do not lose important history when chats get long or old.
-- Reduce prompt/token cost by returning compact relevant context instead of replaying whole transcripts or source corpora.
-- Create one compulsory local expert per cluster.
-- Route user prompts to relevant cluster experts.
-- Use cluster expert outputs as structured context for a larger final model.
-- Keep all user files, prompts, vectors, and trained expert artifacts local by default.
-- Make the experience usable by non-technical second-brain users.
+- Electron desktop app for onboarding, capture, search, chat, map, settings, and Bridge management
+- FastAPI local backend for ingestion, retrieval, clustering, memory, model setup, and local APIs
+- Chromium browser extension for thin capture flows into the active vault
 
-## 3. Non-Goals For V1
+The product promise is local-first, source-grounded, inspectable context reuse.
 
-- Full-device silent scanning.
-- Cloud sync.
-- Team collaboration.
-- Mobile apps.
-- Browser-only web app.
-- Multi-user accounts.
-- Marketplace/plugins.
-- Perfect autonomous clustering with no user correction.
+## 1.1 Intended Impact
+
+If CML succeeds, it should change the user workflow in three concrete ways:
+
+- users stop replaying the same corpus and old chat history into every session
+- external AI tools can ask for compact local context instead of raw source dumps
+- grounded answers become faster to resume across long-running or interrupted work
+
+The intended user impact is lower token spend, lower context-loss risk, and higher answer trust because evidence stays attached to the response path.
+
+## 1.2 Measured Impact So Far
+
+Current repo-backed benchmark evidence already shows meaningful context compression and scale improvements:
+
+- synthetic mixed-corpus benchmark: `41.84%` average first-turn reduction and `94.05%` warm-cache reduction across 15 generated files
+- large synthetic 10k-file benchmark: `33.59%` average first-turn reduction and `93.36%` warm-cache reduction across 10,000 sources
+- broader context-layer benchmark: `24.06%` average packet savings across 120 sources / 12 clusters
+- broader adversarial context-layer benchmark: `27.17%` average packet savings across 240 sources / 24 clusters while still downgrading hostile evidence
+- capped real-vault benchmark: query p95 improved from `10172.38 ms` to `228.85 ms` after the exact-search scale fix, and the later stabilized run finished at `313.74 ms` query p95 with `400/400` imports successful
+
+These numbers support the claim that CML is already more than a simple vault UI: it is producing measurable context reduction and retrieval-performance gains.
+
+## 1.3 Predictive V1 Impact
+
+The following are forecasted product outcomes, not yet fully release-proven:
+
+- normal first-turn context reduction should land in roughly the `25%` to `45%` range on mixed real workloads when packet shaping, memory, and retrieval all work together
+- warm or repeated workflows should often exceed `90%` context reduction when prior retrieval work, compact packets, and memory reuse can replace raw replay
+- external-tool workflows should see the biggest benefit because Bridge/MCP callers can reuse compact packets instead of re-sending transcripts and file excerpts each turn
+- large-vault retrieval should remain in the sub-second operator-feels-fast range on healthy local indexes for common top-k style queries
+
+These predictive numbers are inferred from the current synthetic, adversarial, and capped real-vault benchmark ranges already recorded in the repo. They should be treated as V1 targets until broader real-user-vault validation is complete.
+
+## 2. Product Thesis
+
+Users increasingly have valuable context spread across files, PDFs, notes, chat logs, screenshots, synced folders, and browser content, but their AI tools repeatedly lose that context or require expensive replay.
+
+CML solves that by giving the user a local vault that can:
+
+- ingest mixed artifacts
+- index and cluster them
+- extract durable memory and working memory
+- serve compact evidence packets to internal chat and external tools
+- keep a per-cluster expert lifecycle for deeper specialization
+
+If CML works, the user stops treating every AI interaction as stateless and starts treating their personal context as reusable infrastructure.
+
+## 3. Problem Statement
+
+Current AI workflows break down in four ways:
+
+1. Long-running chats lose important old context.
+2. Users repeatedly pay token and attention cost to restate the same background.
+3. External tools cannot safely reuse a private local corpus.
+4. Retrieval-only systems often return loose snippets without a durable memory layer or inspectable packet structure.
+
+CML must fix those failures without requiring the user to understand embeddings, vector databases, MCP internals, or LoRA training.
 
 ## 4. Target User
 
-Primary user: a general second-brain user who stores assignments, research, links, personal notes, chat exports, screenshots, PDFs, documents, and references across many places.
+Primary user:
 
-The user is not expected to understand embeddings, LoRA, vector databases, or model routing. They should understand clusters as "spaces of related context" and experts as "local AI helpers trained on that space."
+- an individual knowledge worker or student
+- collects assignments, research, notes, exported chats, PDFs, screenshots, and links
+- wants AI help grounded in their own corpus
+- prefers local control and privacy over cloud-first collaboration
 
-## 5. Core Concept
+Secondary user:
 
-The app has three core objects:
+- an AI power user who wants Claude, Codex, IDE agents, or local MCP clients to consume the same local context layer
 
-- **Vault**: A local workspace containing imported or referenced user material.
-- **Cluster**: A group of related items, such as "X Assignment", "Y Assignment", "Startup Ideas", or "Psychology Notes".
-- **Cluster Expert**: A small local model/adaptor trained on one cluster and used to produce context, style guidance, source-grounded notes, and draft reasoning.
+V1 is not optimized for:
 
-The final user-facing response is produced by a larger synthesis model that receives outputs from one or more cluster experts.
+- teams
+- enterprises with centralized admin
+- browser-only users
+- mobile-first workflows
 
-## 6. Example User Flow
+## 5. Product Principles
 
-1. User opens the desktop app.
+1. Local-first by default.
+2. Retrieval is the citation authority, not model memory.
+3. Context must be inspectable, reversible, and source-grounded.
+4. The desktop app is the control plane; the extension is only a capture surface.
+5. User trust is more important than aggressive automation.
+6. If public-quality gates fail, release slips.
+
+## 6. V1 Product Definition
+
+### 6.1 Platform
+
+- Windows only
+- downloadable desktop app
+- no web-only fallback
+
+### 6.2 Core Objects
+
+- Vault: the local workspace and security boundary
+- Source: a file, URL capture, pasted note, screenshot, transcript, or imported artifact
+- Cluster: a user-visible grouping of related context
+- Memory: distilled reusable facts, decisions, constraints, and working summaries
+- Context packet: a compact, expandable delivery format for chat and Bridge
+- Cluster expert: a per-cluster expert lifecycle with retrieval-backed use now and verified LoRA graduation as the public-quality target
+
+### 6.3 Surfaces
+
+Desktop navigation currently maps to:
+
+- Mind/Home
+- Sources
+- Map
+- Clusters
+- Chat
+- Bridge
+- Settings
+- Activity
+- Timeline
+- Tasks
+
+External surfaces:
+
+- local HTTP API
+- MCP server
+- CLI helper
+- browser extension
+
+## 7. User Jobs To Be Done
+
+### 7.1 Build My Memory Layer
+
+"Take my local material and make it searchable, clustered, and reusable without shipping it to the cloud."
+
+### 7.2 Answer With My Context
+
+"When I ask a question, use my vault and cite the evidence instead of relying on generic model memory."
+
+### 7.3 Reuse Context Across Tools
+
+"Let Claude, Codex, or another local AI tool request the right context packet from my vault instead of me manually pasting everything again."
+
+### 7.4 Capture Context Quickly
+
+"Save the page, screenshot, PDF link, selection, or file I am looking at into the right vault with minimal setup friction."
+
+## 8. Scope For Public V1
+
+### 8.1 In Scope
+
+- explicit vault creation and selection
+- local storage under a vault-owned data directory
+- file, folder, text, URL, screenshot, image/OCR, PDF, DOCX, Markdown, TXT, JSON, CSV, and HTML ingestion paths where supported by the current pipeline
+- watched local folders and local synced-folder imports
+- semantic search plus exact fallback behavior
+- clustering, cluster suggestions, merge flows, and cluster detail views
+- retrieval-grounded chat with citations
+- distilled memory, working memory, and bootstrap summaries
+- compact context packets with expansion handles and packet telemetry
+- Bridge/MCP/API/CLI access to local context
+- browser extension setup and capture into the active vault
+- hardware-aware model setup and local runtime management
+- vault unlock, recovery, backup, and safety controls
+
+### 8.2 Release-Gated In Scope
+
+These are part of the V1 promise and cannot be silently deferred:
+
+- compact reversible context delivery that is materially smaller than raw replay
+- grounded chat quality under hostile or weak evidence
+- dynamic evidence budgeting by hardware and model tier
+- clean Windows packaging and clean-machine validation
+- verified LoRA cluster expert quality, not only scaffolding
+
+### 8.3 Explicitly Out Of Scope
+
+- mobile apps
+- team collaboration
+- cloud sync as a core V1 requirement
+- full-device silent scanning
+- SaaS multi-tenant hosting
+- browser extension as an admin console
+
+## 9. End-To-End User Flow
+
+### 9.1 First Run
+
+1. User launches the desktop app.
 2. User creates or selects a vault.
-3. User drops 5 documents for X Assignment and 3 links for Y Assignment.
-4. The app extracts text, screenshots, metadata, and link content.
-5. The app suggests two clusters: "X Assignment" and "Y Assignment".
-6. User confirms or renames the clusters.
-7. The app creates a local expert for each cluster.
-8. The app indexes all material for retrieval and begins local expert training.
-9. User asks: "I want the style of X assignment for this question."
-10. The router selects X Assignment.
-11. X cluster expert produces style guidance, relevant facts, and source-grounded context.
-12. The larger synthesis model writes the final answer using X's style.
-
-## 7. V1 Scope
+3. User sets passphrase and recovery flow.
+4. User imports files, folders, notes, or links.
+5. User configures or downloads approved local models.
+6. User waits for extraction, indexing, and clustering.
+7. User lands in Mind with searchable context and visible cluster state.
 
-### 7.1 Vault Mode
-
-V1 uses explicit vault mode. The user chooses folders or drops files into the app. The app must not scan the entire machine without explicit selection.
-
-Supported input types for V1:
-
-- PDF
-- DOCX
-- TXT
-- Markdown
-- Plain pasted text
-- URLs
-- HTML pages from URLs
-- Screenshots/images with OCR
-- Chat transcripts as TXT, MD, JSON, or exported HTML where practical
+### 9.2 Daily Use
 
-### 7.2 Ingestion
+1. User captures new material from desktop or extension.
+2. Background jobs reconcile and index it.
+3. CML updates source records, clusters, and memory layers.
+4. User searches, opens a cluster, or starts a chat.
+5. Chat retrieves evidence and optionally routes to expert assistance.
+6. User inspects citations, saves useful answers, or exports context.
 
-The app must:
+### 9.3 External Tool Use
 
-- Preserve the original item.
-- Extract text.
-- Generate metadata.
-- Chunk long text.
-- Create embeddings.
-- Store chunks in a local vector index.
-- Generate item summary.
-- Suggest tags.
-- Detect probable cluster membership.
+1. User enables Bridge or configures a local client.
+2. External tool requests a context packet for a question or cluster.
+3. CML returns compact evidence, memory, citations, warnings, and expansion handles.
+4. External tool may log its turn or save artifacts back into the vault.
 
-### 7.3 Clustering
+## 10. Functional Requirements
 
-The app must support:
+### 10.1 Vault Management
 
-- Automatic suggested clusters based on semantic similarity.
-- Manual cluster creation.
-- Manual item-to-cluster assignment.
-- Cluster rename.
-- Cluster merge.
-- Cluster split, at least by moving selected items to a new cluster.
-- Cluster description.
-- Cluster color/icon.
+The product must allow the user to:
 
-V1 clustering should prioritize user trust over automation. The app should show cluster suggestions and let the user confirm.
-
-### 7.4 Compulsory Cluster Experts
+- create, open, rename, and delete vaults
+- choose a local vault path
+- view vault readiness and storage status
+- lock and unlock the vault
+- use recovery and backup flows
+- keep convenience mode and strict locked mode available as distinct behaviors
 
-Every cluster must have a local expert lifecycle.
+### 10.2 Source Ingestion
 
-Expert states:
+The product must:
 
-- `initializing`: cluster exists, expert setup has started.
-- `bootstrapping`: enough indexed context exists for retrieval-backed expert behavior, but fine-tuning is not complete.
-- `training`: local fine-tuning is running.
-- `ready`: trained expert is available.
-- `stale`: new cluster data exists since the last training run.
-- `failed`: training failed; previous expert remains usable if available.
+- ingest sources from file path, pasted text, URL, extension capture, and local folder scan
+- preserve source identity and metadata
+- extract readable text or fall back safely when extraction fails
+- support OCR for image-heavy documents where local OCR is available
+- maintain page and chunk records for downstream retrieval
+- expose processing state and failure state in the UI
 
-Important V1 behavior:
+### 10.3 Search And Retrieval
 
-- A cluster is allowed to answer during `bootstrapping` using retrieval-backed context assembly.
-- The product must still create and train the local expert as part of the cluster lifecycle.
-- Fine-tuning must happen locally.
-- Failed training must not destroy the previous working expert.
-
-### 7.5 Cluster Expert Responsibilities
+The product must:
 
-A cluster expert should produce structured intermediate output, not necessarily the final user answer.
+- support semantic search across the vault
+- support cluster-scoped retrieval
+- support exact-search fallback and vector repair flows
+- preserve citationability back to source records and pages
+- expose scoring or diagnostics surfaces for deeper validation
 
-Required expert output:
+### 10.4 Clusters
 
-```json
-{
-  "cluster_id": "string",
-  "cluster_name": "string",
-  "confidence": 0.0,
-  "relevant_facts": [],
-  "style_guidance": [],
-  "source_grounding": [],
-  "draft_reasoning": "",
-  "warnings": []
-}
-```
+The product must:
 
-The synthesis model uses this output to generate the final response.
+- list clusters and show their source membership
+- create and rename clusters
+- suggest clusters automatically
+- merge clusters
+- show merge artifacts and rollback where supported
+- surface cluster-level expert state
 
-### 7.6 Prompt Routing
+### 10.5 Chat
 
-The router must:
+The product must:
 
-- Embed the user prompt.
-- Compare it against cluster centroids and cluster summaries.
-- Select one primary cluster.
-- Optionally select supporting clusters.
-- Let the user override routing.
-- Learn from user overrides.
+- let the user start and revisit chat sessions
+- support global and cluster-aware questioning
+- store chat messages locally
+- attach retrieval evidence and snapshots to answers
+- expose compact/retention flows for long-running sessions
+- stream or incrementally deliver context responses where supported
 
-Prompt examples:
+### 10.6 Memory Layer
 
-- "Use the style of X assignment."
-- "Answer this from my Y research."
-- "Compare this with my startup notes."
-- "Which of my clusters does this belong to?"
+The product must:
 
-### 7.7 Final Synthesis Model
+- extract distilled memory from grounded interactions and sources
+- maintain working memory per vault and cluster
+- generate bootstrap summaries for new vaults or clusters
+- preserve provenance so memory items can be inspected and justified
 
-The synthesis model receives:
+### 10.7 Context Packets
 
-- User prompt.
-- Selected cluster expert outputs.
-- Retrieved source snippets.
-- User-selected style or output constraints.
-- Citations/source references where available.
+The product must:
 
-The final answer must make it clear when it is using local context.
+- build model-ready context packets rather than raw diagnostic JSON by default
+- combine retrieved evidence with memory and operating instructions
+- provide expansion handles for deeper evidence access
+- track packet savings telemetry against raw replay baselines
+- serve the same packet model to both internal chat and external Bridge clients
 
-### 7.8 Context Bridge For External LLMs
+### 10.8 Bridge And External Access
 
-The app should expose the local context layer to other LLM tools. This lets a user keep their vault, clusters, source retrieval, and local experts in this app while using an external LLM interface such as Claude terminal, Claude Desktop, local agents, IDE assistants, or other MCP-compatible tools.
+The product must:
 
-The product should not depend on fragile app-specific workarounds. It should expose clean local interfaces that other tools can call.
+- expose local API endpoints for Bridge status, clients, requests, captures, reviews, and context
+- expose an MCP-compatible server path
+- provide CLI access for terminal workflows
+- support scoped client permissions
+- log recent external access activity
+- keep writeback review and trust gating visible
 
-Required bridge interfaces:
+### 10.9 Browser Extension
 
-- **MCP server** for agent-compatible clients.
-- **Local HTTP API** for developer tools and custom scripts.
-- **CLI command** for terminal workflows.
-- **Clipboard/export helper** for simple manual use.
+The extension must remain intentionally thin:
 
-Required bridge capabilities:
+- import desktop-issued setup JSON
+- validate connection to the local backend
+- save link/page-style captures into the vault
+- save screenshots and uploads through the local extension endpoints
 
-- List available clusters.
-- Search the vault.
-- Search within a cluster.
-- Retrieve context for a query.
-- Retrieve a cluster style profile.
-- Ask a cluster expert for structured intermediate output.
-- Build a ready-to-paste context prompt for another LLM.
-- Return citations/source references with retrieved context.
-- Save external conversations and generated artifacts back into the vault.
-- Return compact token-budgeted context packets that combine durable memory, current working context, and supporting evidence.
-- Return compact packets using content-type-aware shaping for prose, code, logs, tables/JSON, and transcript history.
-- Return expansion handles so external clients can request fuller evidence only for the packet items they actually need.
-- Return packet telemetry showing raw size estimate, compacted size estimate, and savings percentage.
+Manual setup friction should be minimized in favor of desktop-provisioned setup.
 
-Example tools:
+### 10.10 Model And Runtime Setup
 
-- `list_clusters`
-- `search_vault`
-- `search_cluster`
-- `get_cluster_context`
-- `get_style_profile`
-- `ask_cluster_expert`
-- `build_prompt_context`
+The product must:
 
-Example use case:
+- detect hardware capability
+- recommend approved chat and embedding configurations
+- distinguish chat runtime requirements from expert runtime requirements
+- reject incompatible imported models with explicit reasons
+- avoid pretending full local chat works when no synthesis runtime is configured
 
-1. User has a Claude terminal session open.
-2. User asks Claude to use the local context layer for "X Assignment".
-3. Claude calls the app's local MCP tool.
-4. The app retrieves X Assignment sources, style profile, and cluster expert output.
-5. Claude uses that returned context to answer the user's prompt.
+### 10.11 Cluster Experts
 
-The bridge must respect local-first privacy. External clients should receive only the specific context requested by the user or allowed by bridge permissions.
+The product must maintain a per-cluster expert lifecycle with:
 
-### 7.9 Distilled Memory And Working Memory
+- dataset/export readiness
+- job state
+- runtime validation
+- artifact activation
+- rollback
+- status reporting in UI and API
 
-V1 must not behave only as source retrieval plus transcript storage.
+Important product rule:
 
-Required memory layers:
+- public-facing "trained expert" claims require verified graduation and quality proof
+- retrieval-backed operation before that is allowed, but it is not the final marketing claim
 
-- **Distilled memory**: reusable facts, preferences, decisions, constraints, goals, and open loops extracted from sources and conversations.
-- **Working memory**: compact per-vault and per-cluster summaries of what changed recently, what matters now, and what should happen next.
-- **Bootstrap memory map**: generated starting summary for new vaults/clusters so context can be used before a long manual history exists.
+## 11. UX Requirements
 
-Memory items must preserve provenance back to source records or conversation captures so users and models can inspect why a memory exists.
+### 11.1 Information Architecture
 
-### 7.10 Reversible Context Delivery
+The desktop app should behave like a calm local workspace, not an ML dashboard.
 
-V1 context packets must be reversible and inspectable.
+Required UX behaviors:
 
-Required behavior:
+- land on Mind/Home after onboarding
+- make chat easy to reach, but not the only first surface
+- keep sources, clusters, map, and Bridge legible to non-technical users
+- expose advanced details progressively
 
-- Retrieval and memory assembly should produce a compact packet first.
-- Each compacted evidence item should keep a local expansion handle or equivalent retrievable reference.
-- Internal chat and external MCP/Bridge clients should share the same packet-building path.
-- The system should compact different content classes differently rather than flattening everything into one prose summary.
-- The system should record packet-size reduction and expansion frequency so product claims can be measured.
-
-## 8. Functional Requirements
-
-### 8.1 Vault Management
-
-- Create vault.
-- Open vault.
-- Add files.
-- Add folders.
-- Add pasted text.
-- Add URL.
-- Remove item from vault.
-- Re-index item.
-- View item source and extracted text.
-
-### 8.2 Cluster Management
-
-- List clusters.
-- View cluster contents.
-- Create cluster.
-- Rename cluster.
-- Merge clusters.
-- Move item between clusters.
-- Show cluster expert status.
-- Trigger expert retraining.
-- Reset expert.
-
-### 8.3 Chat
-
-- Chat is the primary interaction surface.
-- User can ask globally or within a selected cluster.
-- App shows selected cluster routing before or during answer generation.
-- User can switch cluster manually.
-- Responses should cite local sources when using retrieved documents.
-- Chat history is stored locally.
-- Chat turns can become training examples after user acceptance or by policy.
-
-### 8.4 Expert Training
-
-- Each cluster has its own local expert artifact.
-- Training uses cluster documents, extracted summaries, user prompts, accepted answers, and optionally generated QA pairs.
-- Training should run in the background.
-- The app must avoid training while generation is active if hardware resources are constrained.
-- Expert versions must be retained.
-- The app must roll back on failed or low-quality training runs.
-
-### 8.5 Search
-
-- Global semantic search across vault.
-- Cluster-scoped semantic search.
-- Keyword search.
-- Source filters by type, date, cluster, tag.
-
-### 8.6 Privacy
-
-- All user data is local by default.
-- The app must disclose when any optional remote model or remote content fetch is used.
-- Local files must not be uploaded without explicit user consent.
-- Vault storage location must be visible in settings.
-
-### 8.7 External LLM Integration
-
-- Run an optional local context bridge service.
-- Support MCP as the preferred integration path.
-- Provide a documented local HTTP API.
-- Provide a CLI for context retrieval.
-- Let users enable or disable external access.
-- Let users restrict bridge access by vault, cluster, or source type.
-- Log recent external context requests locally.
-- Show which external client requested context when detectable.
-- Never expose raw files unless the user explicitly allows it.
-
-## 9. Technical Direction
-
-Recommended desktop stack:
-
-- Desktop shell: Tauri preferred, Electron acceptable if Python bundling or system integration becomes easier.
-- UI: React + TypeScript.
-- Local service: Python + FastAPI or local IPC server.
-- Metadata: SQLite.
-- Vector storage: LanceDB or another embedded local vector database.
-- Embeddings: local sentence-transformer model.
-- OCR: local OCR engine.
-- PDF extraction: PyMuPDF.
-- DOCX extraction: python-docx or equivalent.
-- Local inference: llama.cpp/Ollama abstraction.
-- Fine-tuning: local LoRA/QLoRA pipeline where hardware permits.
-
-## 10. Data Model
-
-Core tables/entities:
-
-- `Vault`
-- `SourceItem`
-- `ExtractedChunk`
-- `Cluster`
-- `ClusterMembership`
-- `ClusterExpert`
-- `ExpertVersion`
-- `ChatSession`
-- `ChatMessage`
-- `TrainingExample`
-- `TrainingRun`
-
-Each source item should track:
-
-- original path or imported file path
-- source type
-- extraction status
-- checksum
-- extracted text
-- summary
-- tags
-- cluster memberships
-- embedding/index status
-
-Each cluster expert should track:
-
-- cluster id
-- model/adaptor path
-- status
-- version
-- last trained at
-- training data count
-- quality checks
-- rollback version
-
-## 11. MVP Acceptance Criteria
-
-V1 is successful when:
-
-- User can create a vault.
-- User can drop at least 100 mixed items.
-- App extracts and indexes them locally.
-- App suggests clusters.
-- User can confirm, rename, merge, and move items between clusters.
-- Each cluster creates a local expert lifecycle record.
-- Each cluster can begin local expert training.
-- User can ask a chat question against one cluster.
-- User can ask a global question and have the router select a cluster.
-- Final answer uses cluster expert context and cites source material.
-- User can see whether an expert is bootstrapping, training, ready, stale, or failed.
-- User can enable the local Context Bridge.
-- An external MCP-compatible client can list clusters and request context for a query.
-- A terminal user can retrieve context through the CLI and paste or pipe it into another LLM.
-- Internal chat and external clients receive compact reversible packets rather than raw source-shaped payloads by default.
-- Users or clients can expand compact packet items on demand when more detail is needed.
-- The app can show measured token or size reduction for compact packets against raw replay baselines.
-
-## 12. Risks
-
-- Local fine-tuning may be slow or unreliable on low-end machines.
-- Users may expect immediate expert readiness after dropping files.
-- OCR and document parsing quality may vary.
-- Automatic clustering may create confusing groups.
-- Continuous training on unreviewed data may degrade expert quality.
-- Bundling Python, models, and desktop UI may increase installer complexity.
-
-## 13. Mitigations
-
-- Use retrieval-backed bootstrapping while fine-tuning runs.
-- Show clear expert status.
-- Keep previous expert versions.
-- Require enough data before deeper fine-tuning.
-- Use user-approved chat turns as higher-quality training examples.
-- Make manual cluster correction easy.
-- Start with vault mode, not full-device scan.
-
-## 14. Open Decisions
-
-- Tauri vs Electron.
-- Default local model runtime.
-- Minimum supported hardware.
-- Whether the synthesis model must be local in V1.
-- Whether fine-tuning is true per-cluster LoRA in V1 or an initial distilled local expert artifact with LoRA following shortly after.
-- Exact supported chat transcript formats.
-- Whether links are stored as snapshots, live references, or both.
-- Which MCP clients are officially supported first.
-- Default bridge permission model.
-- Whether the bridge is enabled during onboarding or only from settings.
+### 11.2 Trust And Transparency
+
+The UI must make clear:
+
+- what cluster or retrieval scope was used
+- what evidence supports the answer
+- whether the system is degraded, locked, or still learning
+- whether Bridge is enabled and which client accessed context
+- whether a remote or local runtime is being used
+
+### 11.3 Status Language
+
+User-facing labels should prefer understandable terms such as:
+
+- Searchable now
+- Learning
+- Ready
+- Needs update
+- Issue
+
+Internal implementation states can stay richer in the backend.
+
+## 12. Technical Architecture
+
+Current architecture is:
+
+- desktop shell: Electron
+- frontend: React + TypeScript + TanStack Router
+- backend: FastAPI
+- metadata and authoritative store: SQLite
+- retrieval: local embeddings with exact and vector-based paths
+- OCR and document parsing: local Python pipeline
+- extension: Chromium Manifest V3 package
+
+Product documentation must treat this as the actual V1 stack, not an open Tauri-versus-Electron decision.
+
+## 13. Security And Privacy Requirements
+
+The product must:
+
+- keep user data local by default
+- fail closed on vault lock and setup boundaries
+- keep raw file access and external access explicitly scoped
+- avoid treating Bridge as a magical anti-exfiltration barrier
+- require explicit trust and review for unsafe writeback or weakly grounded external responses
+- keep encryption, unlock enforcement, parser/browser isolation, and renderer hardening as release concerns, not polish
+
+## 14. Success Metrics
+
+### 14.1 Product Metrics
+
+- time to first indexed answer
+- successful import rate across supported source types
+- percentage of chats with usable citations
+- context packet savings versus raw replay
+- Bridge request success rate
+- extension capture success rate
+- cluster suggestion acceptance or correction rate
+
+### 14.1.1 Impact Targets
+
+- average first-turn context reduction target: `>=25%` on representative mixed-vault tasks
+- strong-workflow first-turn target: `~35% to 45%` when retrieval and packet shaping have high-quality evidence
+- warm-cache / repeated-workflow reduction target: `>=90%`
+- Bridge packet savings target: measurable positive savings on default packet mode, with broader goals in the `20%+` average range on mixed external-context tasks
+- real-vault query responsiveness target: commonly sub-second p95 for capped user-scale retrieval benchmarks after indexing is healthy
+
+### 14.2 Release Metrics
+
+- clean-machine install success
+- first-run readiness success
+- large-vault ingestion and query latency targets
+- hostile-evidence downgrade accuracy
+- verified expert quality delta over retrieval-only baseline
+
+## 15. Risks
+
+1. Verified LoRA quality may lag far behind the broader product.
+2. Packaging a Python-heavy desktop product with OCR and local runtimes is operationally expensive.
+3. Search, chat, and memory quality can drift if product claims outrun current evidence.
+4. UI trust can be damaged by hardcoded or misleading health states.
+5. External access increases privacy expectations and review burden.
+
+## 16. Mitigations
+
+- keep `PROJECT_CONTEXT` as the release-truth document
+- separate "implemented surface" from "release-cleared claim"
+- keep retrieval as the citation authority
+- use bounded pagination, caching, and repair flows for scale
+- make Bridge permissions, review, and logging explicit
+- validate on real and synthetic vaults, not only unit tests
+
+## 17. Release Gates
+
+Public V1 cannot ship unless these are green:
+
+- clean Windows VM installation and first-run validation
+- stable vault creation, unlock, ingestion, search, and chat
+- compact context packet delivery with measurable savings
+- grounded-response behavior under low-trust or hostile evidence
+- extension capture setup from the desktop flow
+- hardware-aware model setup that avoids unusable recommendations
+- verified expert proof that is honest about its quality level
+
+## 18. Non-Goals For Resume Framing
+
+When this document is used to derive resume bullets, do not flatten the project into "built a note-taking app" or "made a vector search tool." The differentiated scope is:
+
+- local-first AI context operating layer
+- desktop plus backend plus extension architecture
+- retrieval, memory, clustering, and context-packet delivery
+- external AI tool integration through Bridge, API, CLI, and MCP
+- security, packaging, and release-hardening work
+
+## 19. Resume Extraction Notes
+
+The strongest resume themes supported by the codebase are:
+
+- architected a Windows desktop AI product spanning Electron, React, FastAPI, SQLite, and browser-extension capture
+- built local document ingestion pipelines for PDFs, OCR, URLs, notes, and synced folders with chunking, indexing, and retrieval
+- implemented grounded chat, memory extraction, context compression, and external-tool context delivery via HTTP API and MCP
+- designed secure local-vault workflows including lock state, recovery, scoped Bridge permissions, auditability, and startup validation
+- shipped benchmark, packaging, smoke-test, and release-readiness infrastructure for a Python-backed desktop application
+
+## 20. Open Questions
+
+- what minimum hardware tier can honestly support verified expert mode
+- what approved chat/expert pairing matrix will be published for V1
+- whether extension UX needs a cursor-local capture palette before release
+- what exact external clients will be officially documented first
+- what public language will be used if retrieval quality is release-ready before verified expert quality is

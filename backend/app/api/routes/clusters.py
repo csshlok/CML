@@ -7,6 +7,7 @@ from backend.app.core.cluster_suggestions import suggest_source_cluster_moves
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.expert_lifecycle import create_expert_job, expert_status_report, latest_expert_jobs
 from backend.app.core.lora_training import graduation_contract, verify_adapter_artifact
+from backend.app.core.retrieval_cache import invalidate_caches_for_source
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
     ClusterCreate,
@@ -325,6 +326,8 @@ def merge_cluster(cluster_id: str, payload: ClusterMergeRequest) -> dict:
             "UPDATE chat_sessions SET scope_cluster_id = ?, updated_at = ? WHERE scope_cluster_id = ?",
             (payload.target_cluster_id, now, cluster_id),
         )
+        for source_id in moved_sources:
+            invalidate_caches_for_source(source_id, conn=conn)
         conn.execute(
             "UPDATE clusters SET expert_status = 'needs-update', updated_at = ? WHERE id = ?",
             (now, payload.target_cluster_id),
@@ -416,6 +419,7 @@ def rollback_cluster_merge_artifact(artifact_id: str) -> dict:
                 """,
                 (source_cluster_id, now, source_id, artifact["vault_id"]),
             )
+            invalidate_caches_for_source(source_id, conn=conn)
         for chat_id in moved_chat_ids:
             conn.execute(
                 """

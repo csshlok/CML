@@ -12,6 +12,7 @@ from fastapi import APIRouter, Header, HTTPException
 
 from backend.app.api.routes.sources import _create_source_record, create_source
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.config import get_settings
 from backend.app.core.extraction import ExtractionError
 from backend.app.core.quarantine import attach_quarantine_record, ingest_file_through_quarantine
 from backend.app.schemas import (
@@ -104,8 +105,10 @@ def create_desktop_extension_setup(payload: ExtensionDesktopSetupCreate) -> dict
     if browser not in {"chrome", "brave"}:
         browser = "chrome"
     backend_url = str(payload.backend_url or "http://127.0.0.1:7343").rstrip("/")
+    settings = get_settings()
     return {
         "backend_url": backend_url,
+        "api_prefix": settings.api_prefix,
         "extension_token": client["token"],
         "default_vault_id": payload.vault_id,
         "default_cluster_id": str(payload.cluster_id or ""),

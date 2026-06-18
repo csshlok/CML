@@ -1,8 +1,31 @@
 import unittest
+import importlib
+import os
 from unittest.mock import patch
 
 
 class BridgeMCPTests(unittest.TestCase):
+    def test_mcp_bridge_uses_configured_api_prefix_for_tool_calls(self) -> None:
+        previous = os.environ.get("CML_API_PREFIX")
+        os.environ["CML_API_PREFIX"] = "custom/v2/"
+        try:
+            import backend.app.bridge_mcp as bridge_mcp
+
+            bridge_mcp = importlib.reload(bridge_mcp)
+            self.assertEqual(bridge_mcp.api_path("/bridge/context"), "/custom/v2/bridge/context")
+            with patch("backend.app.bridge_mcp.http_json", return_value={"query": "status"}) as http_json:
+                bridge_mcp.call_get_cluster_context({"query": "status"}, request_id=42)
+                http_json.assert_called_once()
+                self.assertEqual(http_json.call_args.args[0], "/custom/v2/bridge/context")
+        finally:
+            if previous is None:
+                os.environ.pop("CML_API_PREFIX", None)
+            else:
+                os.environ["CML_API_PREFIX"] = previous
+            import backend.app.bridge_mcp as bridge_mcp
+
+            importlib.reload(bridge_mcp)
+
     def test_initialized_notification_returns_no_response(self) -> None:
         from backend.app.bridge_mcp import handle_message
 

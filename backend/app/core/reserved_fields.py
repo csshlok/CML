@@ -2,15 +2,24 @@ import json
 
 from starlette.middleware.base import BaseHTTPMiddleware
 
-CHAT_CONTEXT_PATHS = {
-    "/api/v1/chat/context",
-    "/api/v1/chat/context/stream",
-}
+from backend.app.core.config import get_settings
+
+
+def _api_path(api_prefix: str, suffix: str) -> str:
+    return f"{api_prefix.rstrip('/')}/{suffix.lstrip('/')}"
+
+
+def chat_context_paths(api_prefix: str) -> set[str]:
+    return {
+        _api_path(api_prefix, "/chat/context"),
+        _api_path(api_prefix, "/chat/context/stream"),
+    }
 
 
 class ReservedChatFieldMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        if request.method.upper() == "POST" and request.url.path in CHAT_CONTEXT_PATHS:
+        settings = get_settings()
+        if request.method.upper() == "POST" and request.url.path in chat_context_paths(settings.api_prefix):
             body = await request.body()
             try:
                 json.loads(body.decode("utf-8") or "{}")

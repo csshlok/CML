@@ -186,6 +186,26 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
 
         self.assertEqual(calls, ["job-a"])
 
+    def test_cancelled_running_job_is_not_requeued_when_worker_later_fails(self) -> None:
+        from backend.app.core.background_jobs import _claim_next_job, _mark_job_failed_or_retry, cancel_job
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            self._insert_job(conn, "job-a", cancellable=1)
+
+        job = _claim_next_job()
+        self.assertIsNotNone(job)
+
+        cancelled = cancel_job("job-a")
+        _mark_job_failed_or_retry(job, "worker noticed cancellation after an I/O failure")
+
+        with connect() as conn:
+            row = conn.execute("SELECT status, status_detail FROM app_jobs WHERE id = 'job-a'").fetchone()
+
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual(row["status"], "cancelled")
+        self.assertEqual(row["status_detail"], "Cancelled by user.")
+
     def test_claimed_job_returns_current_attempt_count(self) -> None:
         from backend.app.core.background_jobs import _claim_next_job
         from backend.app.core.database import connect

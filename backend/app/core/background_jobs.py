@@ -1249,7 +1249,7 @@ def _mark_job_failed_or_retry(job: dict, error: str) -> None:
             UPDATE app_jobs
             SET status = ?, last_error = ?, status_detail = ?,
                 completed_at = ?, updated_at = ?
-            WHERE id = ?
+            WHERE id = ? AND status = 'running'
             """,
             (status, error[:500], error[:500], completed_at, utc_now(), job["id"]),
         )

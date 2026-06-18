@@ -35,7 +35,7 @@ def main() -> int:
 
 def bridge_request(backend_url: str, token: str, payload: dict) -> dict:
     request = Request(
-        backend_url.rstrip("/") + "/api/v1/bridge/context",
+        backend_url.rstrip("/") + api_path("/bridge/context"),
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
@@ -50,6 +50,17 @@ def bridge_request(backend_url: str, token: str, payload: dict) -> dict:
         raise SystemExit(f"Bridge request failed: HTTP {exc.code}") from exc
     except URLError as exc:
         raise SystemExit(f"Bridge is not reachable: {exc.reason}") from exc
+
+
+def api_path(suffix: str) -> str:
+    api_prefix = _normalize_api_prefix(os.getenv("CML_API_PREFIX", "/api/v1"))
+    return f"{api_prefix.rstrip('/')}/{suffix.lstrip('/')}"
+
+
+def _normalize_api_prefix(value: str) -> str:
+    raw = str(value or "/api/v1").strip()
+    prefixed = raw if raw.startswith("/") else f"/{raw}"
+    return prefixed.rstrip("/") or "/api/v1"
 
 
 def format_context(response: dict) -> str:

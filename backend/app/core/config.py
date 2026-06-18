@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -63,6 +64,13 @@ class Settings(BaseSettings):
     enable_dynamic_web_ingestion: bool = False
 
     model_config = SettingsConfigDict(env_prefix="CML_", env_file=ROOT_DIR / ".env", extra="ignore")
+
+    @field_validator("api_prefix")
+    @classmethod
+    def normalize_api_prefix(cls, value: str) -> str:
+        raw = str(value or "/api/v1").strip()
+        prefixed = raw if raw.startswith("/") else f"/{raw}"
+        return prefixed.rstrip("/") or "/api/v1"
 
 
 @lru_cache

@@ -480,23 +480,16 @@ def cancel_model_download(model_id: str) -> dict[str, Any]:
         state = _download_state.get(model_id)
         if state and state.get("status") == "installed":
             return state
+        state_local_path = _installed_state_from_local_path(model_id, state)
+        if state_local_path is not None:
+            _download_state[model_id] = state_local_path
+            _cancelled_downloads.discard(model_id)
+            return state_local_path
         local_path = _find_local_model_file(model)
         if local_path is not None:
-            installed = {
-                "model_id": model_id,
-                "status": "installed",
-                "local_path": str(local_path),
-                "bytes_downloaded": local_path.stat().st_size,
-                "bytes_total": local_path.stat().st_size,
-                "total_bytes": local_path.stat().st_size,
-                "progress_percent": 100.0,
-                "download_speed_bps": None,
-                "eta_seconds": 0,
-                "error": None,
-                "started_at": None,
-                "updated_at": utc_now(),
-            }
+            installed = _installed_download_state(model_id, local_path)
             _download_state[model_id] = installed
+            _cancelled_downloads.discard(model_id)
             return installed
         if not state or state.get("status") not in {"resolving", "downloading"}:
             _download_state[model_id] = {
@@ -1013,6 +1006,7 @@ def _download_model(model: LocalModel) -> None:
                 while True:
                     _raise_if_cancelled(model.id)
                     chunk = response.read(1024 * 1024)
+                    _raise_if_cancelled(model.id)
                     if not chunk:
                         break
                     file.write(chunk)
@@ -1091,6 +1085,33 @@ def _normalized_download_state(state: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("sha256", None)
     payload.setdefault("integrity_status", None)
     return payload
+
+
+def _installed_download_state(model_id: str, local_path: Path) -> dict[str, Any]:
+    size = local_path.stat().st_size
+    return {
+        "model_id": model_id,
+        "status": "installed",
+        "local_path": str(local_path),
+        "bytes_downloaded": size,
+        "bytes_total": size,
+        "total_bytes": size,
+        "progress_percent": 100.0,
+        "download_speed_bps": None,
+        "eta_seconds": 0,
+        "error": None,
+        "started_at": None,
+        "updated_at": utc_now(),
+    }
+
+
+def _installed_state_from_local_path(model_id: str, state: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not state or not state.get("local_path"):
+        return None
+    local_path = Path(str(state["local_path"]))
+    if not local_path.is_file():
+        return None
+    return _installed_download_state(model_id, local_path)
 
 
 class DownloadCancelled(RuntimeError):
