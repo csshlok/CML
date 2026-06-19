@@ -35,6 +35,7 @@ from backend.app.core.lora_training import (
 
 
 JOB_POLL_SECONDS = 1.0
+JOB_STATUS_RUNNING_LIMIT = 50
 ACTIVE_STATUSES = ("queued", "running", "blocked_by_dependency")
 TERMINAL_DEPENDENCY_STATUSES = ("failed", "cancelled", "manual_review")
 PRIORITY_ORDER = {
@@ -405,7 +406,9 @@ def job_queue_status() -> dict:
             SELECT * FROM app_jobs
             WHERE status = 'running'
             ORDER BY started_at ASC
-            """
+            LIMIT ?
+            """,
+            (JOB_STATUS_RUNNING_LIMIT,),
         ).fetchall()
     counts = {row["status"]: row["count"] for row in rows}
     return {

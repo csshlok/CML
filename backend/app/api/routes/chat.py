@@ -82,6 +82,8 @@ def list_chat_sessions(vault_id: str | None = None, limit: int = 100, offset: in
     bounded_offset = max(offset, 0)
 
     with connect() as conn:
+        if vault_id:
+            _ensure_vault(conn, vault_id)
         rows = conn.execute(
             f"SELECT * FROM chat_sessions {where} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
             [*params, bounded_limit, bounded_offset],

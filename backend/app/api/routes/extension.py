@@ -38,15 +38,18 @@ MAX_EXTENSION_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
 @router.get("/clients", response_model=list[ExtensionClientRead])
-def list_extension_clients() -> list[dict]:
+def list_extension_clients(limit: int = 50, offset: int = 0) -> list[dict]:
+    safe_limit = max(1, min(int(limit), 100))
+    safe_offset = max(0, int(offset))
     with connect() as conn:
         rows = conn.execute(
             """
             SELECT id, name, enabled, allowed_vault_ids, created_at, updated_at
             FROM extension_clients
             ORDER BY updated_at DESC
-            LIMIT 50
-            """
+            LIMIT ? OFFSET ?
+            """,
+            (safe_limit, safe_offset),
         ).fetchall()
     return [_client_from_row(row) for row in rows]
 
@@ -237,44 +240,55 @@ def approve_extension_pairing(pairing_id: str) -> dict:
 
 
 @router.get("/pairing", response_model=list[ExtensionPairingRead])
-def list_extension_pairings() -> list[dict]:
+def list_extension_pairings(limit: int = 50, offset: int = 0) -> list[dict]:
+    safe_limit = max(1, min(int(limit), 100))
+    safe_offset = max(0, int(offset))
     with connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM extension_pairing_sessions ORDER BY created_at DESC LIMIT 50"
+            "SELECT * FROM extension_pairing_sessions ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (safe_limit, safe_offset),
         ).fetchall()
     return [_pairing_from_row(row) for row in rows]
 
 
 @router.get("/permission-audit", response_model=list[ExtensionPermissionAuditRead])
-def list_extension_permission_audit(limit: int = 50) -> list[dict]:
+def list_extension_permission_audit(limit: int = 50, offset: int = 0) -> list[dict]:
+    safe_limit = max(1, min(int(limit), 100))
+    safe_offset = max(0, int(offset))
     with connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM extension_permission_audit ORDER BY created_at DESC LIMIT ?",
-            (max(1, min(limit, 100)),),
+            "SELECT * FROM extension_permission_audit ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (safe_limit, safe_offset),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
 @router.get("/captures", response_model=list[ExtensionCaptureRead])
-def list_extension_captures(vault_id: str | None = None) -> list[dict]:
+def list_extension_captures(vault_id: str | None = None, limit: int = 50, offset: int = 0) -> list[dict]:
+    safe_limit = max(1, min(int(limit), 100))
+    safe_offset = max(0, int(offset))
     with connect() as conn:
         if vault_id:
+            vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+            if vault is None:
+                raise HTTPException(status_code=404, detail="Vault not found")
             rows = conn.execute(
                 """
                 SELECT * FROM extension_captures
                 WHERE vault_id = ?
                 ORDER BY created_at DESC
-                LIMIT 50
+                LIMIT ? OFFSET ?
                 """,
-                (vault_id,),
+                (vault_id, safe_limit, safe_offset),
             ).fetchall()
         else:
             rows = conn.execute(
                 """
                 SELECT * FROM extension_captures
                 ORDER BY created_at DESC
-                LIMIT 50
-                """
+                LIMIT ? OFFSET ?
+                """,
+                (safe_limit, safe_offset),
             ).fetchall()
     return [dict(row) for row in rows]
 

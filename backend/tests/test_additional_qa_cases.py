@@ -203,6 +203,43 @@ class AdditionalQACases(unittest.TestCase):
         self.assertGreaterEqual(discovery["compatible_model_count"], 1)
         self.assertTrue(any(item["local_path"] == str(model_dir.resolve()) for item in discovery["models"]))
 
+    def test_discover_installed_models_prioritizes_late_compatible_results_when_rejected_fill_limit(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.model_registry import discover_installed_models, invalidate_model_discovery_cache
+
+        scan_root = Path(self.tmp.name) / "model-scan"
+        scan_root.mkdir()
+        rejected_dirs = [
+            self._write_fake_local_transformers_model(
+                f"rejected-{index:02d}",
+                model_type="unknown-family",
+                repo_hint=f"Unknown/Rejected-{index:02d}",
+            )
+            for index in range(12)
+        ]
+        compatible = self._write_fake_local_transformers_model(
+            "zz-compatible-qwen",
+            model_type="qwen2",
+            repo_hint="Qwen/Qwen3-4B",
+        )
+        for model_dir in [*rejected_dirs, compatible]:
+            model_dir.rename(scan_root / model_dir.name)
+        ordered_candidates = [scan_root / path.name for path in rejected_dirs] + [scan_root / compatible.name]
+
+        os.environ["CML_MODEL_SCAN_ROOTS"] = str(scan_root)
+        os.environ["CML_MODEL_SCAN_CACHE_SECONDS"] = "0"
+        get_settings.cache_clear()
+        invalidate_model_discovery_cache()
+
+        with patch("backend.app.core.model_registry._iter_transformers_checkpoint_dirs", return_value=ordered_candidates):
+            discovery = discover_installed_models(max_results=5, include_rejected=True, refresh=True)
+
+        self.assertTrue(discovery["truncated"])
+        self.assertEqual(len(discovery["models"]), 5)
+        self.assertEqual(discovery["compatible_model_count"], 1)
+        self.assertIn(str((scan_root / compatible.name).resolve()), {item["local_path"] for item in discovery["models"]})
+        self.assertTrue(discovery["models"][0]["compatibility"]["accepted"])
+
     def test_models_discover_route_returns_detected_models(self) -> None:
         model_dir = self._write_fake_local_transformers_model(
             "route-detected-qwen",
@@ -811,6 +848,72 @@ class AdditionalQACases(unittest.TestCase):
 
         self.assertIsNone(result["import_id"])
         self.assertEqual(list_integration_imports(), [])
+
+    def test_integration_imports_are_paginated_and_validate_vault_filter(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.integrations import list_integration_imports
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            for vault_id in ("vault-1", "vault-2"):
+                conn.execute(
+                    "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        vault_id,
+                        vault_id,
+                        str(Path(self.tmp.name) / vault_id),
+                        "2026-01-01T00:00:00+00:00",
+                        "2026-01-01T00:00:00+00:00",
+                    ),
+                )
+            for index in range(5):
+                conn.execute(
+                    """
+                    INSERT INTO integration_imports (
+                        id, vault_id, integration_type, root_path, status, supported_count,
+                        skipped_count, truncated, last_scan_at, created_at, updated_at
+                    )
+                    VALUES (?, 'vault-1', 'local_folder', ?, 'scanned', 0, 0, 0, ?, ?, ?)
+                    """,
+                    (
+                        f"import-{index}",
+                        str(Path(self.tmp.name) / f"import-{index}"),
+                        f"2026-01-01T00:00:0{index}+00:00",
+                        f"2026-01-01T00:00:0{index}+00:00",
+                        f"2026-01-01T00:00:0{index}+00:00",
+                    ),
+                )
+            conn.execute(
+                """
+                INSERT INTO integration_imports (
+                    id, vault_id, integration_type, root_path, status, supported_count,
+                    skipped_count, truncated, last_scan_at, created_at, updated_at
+                )
+                VALUES ('import-other', 'vault-2', 'local_folder', ?, 'scanned', 0, 0, 0, ?, ?, ?)
+                """,
+                (
+                    str(Path(self.tmp.name) / "other"),
+                    "2026-01-01T00:00:09+00:00",
+                    "2026-01-01T00:00:09+00:00",
+                    "2026-01-01T00:00:09+00:00",
+                ),
+            )
+
+        page = list_integration_imports(vault_id="vault-1", limit=2, offset=1)
+        self.assertEqual([item["id"] for item in page], ["import-3", "import-2"])
+        self.assertTrue(all(item["vault_id"] == "vault-1" for item in page))
+        self.assertEqual(len(list_integration_imports(limit=200)), 6)
+
+        with self.assertRaises(HTTPException) as raised:
+            list_integration_imports(vault_id="vault-missing")
+        self.assertEqual(raised.exception.status_code, 404)
+
+        repo_root = Path(__file__).resolve().parents[2]
+        backend_client = (repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
+        self.assertIn("options: { limit?: number; offset?: number } = {}", backend_client)
+        self.assertIn('params.set("limit", String(options.limit))', backend_client)
+        self.assertIn('params.set("offset", String(options.offset))', backend_client)
 
     def test_integration_refresh_missing_folder_marks_import_error(self) -> None:
         from fastapi import HTTPException
@@ -1485,7 +1588,9 @@ class AdditionalQACases(unittest.TestCase):
             ).fetchone()["count"]
         self.assertEqual(remaining_sources, 0)
 
-    def test_list_chat_sessions_is_bounded_and_paginates(self) -> None:
+    def test_list_chat_sessions_validates_vault_and_paginates_large_history(self) -> None:
+        from fastapi import HTTPException
+
         from backend.app.api.routes.chat import list_chat_sessions
         from backend.app.core.database import connect, utc_now
 
@@ -1506,15 +1611,128 @@ class AdditionalQACases(unittest.TestCase):
                     """,
                     (f"session-{index}", f"Session {index}", session_now, session_now),
                 )
+            large_rows = [
+                (
+                    f"session-extra-{index:04d}",
+                    f"Extra Session {index:04d}",
+                    f"2026-06-15T00:00:00Z.{index:04d}",
+                    f"2026-06-15T00:00:00Z.{index:04d}",
+                )
+                for index in range(205)
+            ]
+            conn.executemany(
+                """
+                INSERT INTO chat_sessions (
+                    id, vault_id, title, scope_cluster_id, saved, memory_status, memory_updated_at, created_at, updated_at
+                )
+                VALUES (?, 'vault-1', ?, NULL, 0, 'idle', NULL, ?, ?)
+                """,
+                large_rows,
+            )
 
         first_page = list_chat_sessions("vault-1", limit=2, offset=0)
         second_page = list_chat_sessions("vault-1", limit=2, offset=2)
+        clamped_large = list_chat_sessions("vault-1", limit=500, offset=0)
+        tail_page = list_chat_sessions("vault-1", limit=4, offset=204)
         clamped = list_chat_sessions("vault-1", limit=0, offset=-5)
 
-        self.assertEqual([item["id"] for item in first_page], ["session-5", "session-4"])
-        self.assertEqual([item["id"] for item in second_page], ["session-3", "session-2"])
+        self.assertEqual([item["id"] for item in first_page], ["session-extra-0204", "session-extra-0203"])
+        self.assertEqual([item["id"] for item in second_page], ["session-extra-0202", "session-extra-0201"])
+        self.assertEqual(len(clamped_large), 200)
+        self.assertEqual([item["id"] for item in tail_page], ["session-extra-0000", "session-5", "session-4", "session-3"])
         self.assertEqual(len(clamped), 1)
-        self.assertEqual(clamped[0]["id"], "session-5")
+        self.assertEqual(clamped[0]["id"], "session-extra-0204")
+        with self.assertRaises(HTTPException) as missing_vault:
+            list_chat_sessions("vault-missing")
+        self.assertEqual(missing_vault.exception.status_code, 404)
+        self.assertEqual(missing_vault.exception.detail, "Vault not found")
+
+        repo_root = Path(__file__).resolve().parents[2]
+        backend_client = (repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
+        self.assertIn("listChatSessions(vaultId?: string, options: { limit?: number; offset?: number } = {})", backend_client)
+        self.assertIn('params.set("limit", String(options.limit))', backend_client)
+        self.assertIn('params.set("offset", String(options.offset))', backend_client)
+
+    def test_job_status_caps_running_rows_without_losing_counts(self) -> None:
+        from backend.app.core.background_jobs import JOB_STATUS_RUNNING_LIMIT, job_queue_status
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            rows = [
+                (
+                    f"job-running-{index:03d}",
+                    "reindex_source",
+                    "running",
+                    "{}",
+                    "normal",
+                    "idempotent",
+                    "requeue",
+                    "cancel",
+                    "source",
+                    f"source-{index:03d}",
+                    "vector_writer",
+                    "medium",
+                    0,
+                    1,
+                    1,
+                    1,
+                    0,
+                    900,
+                    None,
+                    "fail",
+                    None,
+                    1,
+                    3,
+                    "",
+                    "",
+                    f"2026-06-19T00:00:{index % 60:02d}+00:00",
+                    None,
+                    f"2026-06-19T00:00:{index % 60:02d}+00:00",
+                    f"2026-06-19T00:00:{index % 60:02d}+00:00",
+                )
+                for index in range(60)
+            ]
+            conn.executemany(
+                """
+                INSERT INTO app_jobs (
+                    id, job_type, status, payload, priority, idempotency_class, restart_policy,
+                    dependency_failure_policy, write_scope, scope_id, concurrency_group, resource_cost,
+                    can_run_during_synthesis, user_visible, user_initiated, cancellable, preemptable,
+                    timeout_seconds, soft_timeout_seconds, timeout_action, depends_on_job_id, attempts,
+                    max_attempts, last_error, status_detail, started_at, completed_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            for index in range(12):
+                conn.execute(
+                    """
+                    INSERT INTO app_jobs (
+                        id, job_type, status, payload, priority, idempotency_class, restart_policy,
+                        dependency_failure_policy, write_scope, resource_cost, can_run_during_synthesis,
+                        user_visible, user_initiated, cancellable, preemptable, timeout_action, attempts,
+                        max_attempts, last_error, status_detail, created_at, updated_at
+                    )
+                    VALUES (?, 'diagnostic_bundle', 'succeeded', '{}', 'normal', 'idempotent', 'requeue',
+                        'cancel', 'none', 'light', 1, 1, 0, 0, 0, 'fail', 1, 3, '', '', ?, ?)
+                    """,
+                    (
+                        f"job-succeeded-{index:03d}",
+                        now,
+                        f"2026-06-19T00:01:{index:02d}+00:00",
+                    ),
+                )
+
+        status = job_queue_status()
+
+        self.assertEqual(status["running"], 60)
+        self.assertEqual(len(status["running_jobs"]), JOB_STATUS_RUNNING_LIMIT)
+        self.assertEqual(status["running_jobs"][0]["id"], "job-running-000")
+        self.assertEqual(status["running_jobs"][-1]["id"], "job-running-049")
+        self.assertEqual(len(status["latest"]), 10)
+        self.assertEqual(status["latest"][0]["id"], "job-succeeded-011")
 
     def test_chat_timeline_includes_retriable_generation_item(self) -> None:
         from backend.app.api.routes.chat import get_chat_timeline
@@ -2189,6 +2407,125 @@ class AdditionalQACases(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) AS count FROM query_evidence_cache").fetchone()["count"]
         self.assertEqual(count, 0)
 
+    def test_source_list_validates_filters_and_paginates_large_library(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.sources import list_sources
+        from backend.app.core.database import connect
+
+        now = "2026-06-19T00:00:00+00:00"
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault 1", str(Path(self.tmp.name) / "vault-1"), now, now),
+            )
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-2", "Vault 2", str(Path(self.tmp.name) / "vault-2"), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
+                VALUES ('cluster-1', 'vault-1', 'Cluster 1', '', 'sage', 'setting-up', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
+                VALUES ('cluster-2', 'vault-2', 'Cluster 2', '', 'sage', 'setting-up', ?, ?)
+                """,
+                (now, now),
+            )
+            rows = [
+                (
+                    f"source-{index:04d}",
+                    "vault-1",
+                    "cluster-1",
+                    f"Source {index:04d}",
+                    "note",
+                    "indexed",
+                    "",
+                    "",
+                    "",
+                    "local_import",
+                    "trusted_local",
+                    "[]",
+                    "{}",
+                    f"body {index}",
+                    f"body {index}",
+                    f"summary {index}",
+                    "[]",
+                    None,
+                    None,
+                    f"2026-06-19T00:00:00+00:00.{index:04d}",
+                    f"2026-06-19T00:00:00+00:00.{index:04d}",
+                )
+                for index in range(1005)
+            ]
+            conn.executemany(
+                """
+                INSERT INTO sources (
+                    id, vault_id, cluster_id, title, source_type, state, original_path, url,
+                    checksum, provenance, trust_tier, security_labels, parser_security_json,
+                    raw_text, extracted_text, summary, tags, cover_image_url, deleted_at,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+        first_page = list_sources(vault_id="vault-1", limit=2000)
+        tail_page = list_sources(vault_id="vault-1", limit=10, offset=1000)
+        self.assertEqual(len(first_page), 1000)
+        self.assertEqual(first_page[0]["id"], "source-1004")
+        self.assertEqual([source["id"] for source in tail_page], [f"source-{index:04d}" for index in range(4, -1, -1)])
+
+        with self.assertRaises(HTTPException) as missing_vault:
+            list_sources(vault_id="vault-missing")
+        self.assertEqual(missing_vault.exception.status_code, 404)
+        self.assertEqual(missing_vault.exception.detail, "Vault not found")
+
+        with self.assertRaises(HTTPException) as missing_cluster:
+            list_sources(cluster_id="cluster-missing")
+        self.assertEqual(missing_cluster.exception.status_code, 404)
+        self.assertEqual(missing_cluster.exception.detail, "Cluster not found")
+
+        with self.assertRaises(HTTPException) as cross_vault_cluster:
+            list_sources(vault_id="vault-1", cluster_id="cluster-2")
+        self.assertEqual(cross_vault_cluster.exception.status_code, 404)
+        self.assertEqual(cross_vault_cluster.exception.detail, "Cluster not found")
+
+        repo_root = Path(__file__).resolve().parents[2]
+        backend_client = (repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
+        self.assertIn("listSources(vaultId?: string, options: { limit?: number; offset?: number } = {})", backend_client)
+        self.assertIn('params.set("limit", String(options.limit))', backend_client)
+        self.assertIn('params.set("offset", String(options.offset))', backend_client)
+
+    def test_semantic_search_rejects_missing_vault_before_embedding_probe(self) -> None:
+        client = self._client()
+        try:
+            response = client.post(
+                "/api/v1/search/semantic",
+                json={"vault_id": "vault-missing", "query": "find my notes", "limit": 5},
+            )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Vault not found")
+
+    def test_reindex_rejects_missing_vault_before_embedding_probe(self) -> None:
+        client = self._client()
+        try:
+            response = client.post("/api/v1/search/reindex/vault-missing")
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Vault not found")
+
     def test_vector_repair_plan_rejects_missing_vault_instead_of_empty_success(self) -> None:
         client = self._client()
         try:
@@ -2198,6 +2535,99 @@ class AdditionalQACases(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "Vault not found")
+
+    def test_vector_repair_rejects_missing_vault_before_embedding_probe(self) -> None:
+        client = self._client()
+        try:
+            response = client.post("/api/v1/search/vectors/repair", params={"vault_id": "vault-missing"})
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Vault not found")
+
+    def test_vector_sidecar_actions_reject_missing_vault_before_work(self) -> None:
+        client = self._client()
+        try:
+            responses = [
+                client.get("/api/v1/search/vectors/sidecar/status", params={"vault_id": "vault-missing"}),
+                client.post("/api/v1/search/vectors/sidecar/build", params={"vault_id": "vault-missing"}),
+                client.get("/api/v1/search/vectors/phase-c/status", params={"vault_id": "vault-missing"}),
+                client.post("/api/v1/search/vectors/phase-c/benchmark", params={"vault_id": "vault-missing"}),
+            ]
+        finally:
+            client.close()
+
+        for response in responses:
+            self.assertEqual(response.status_code, 404)
+            self.assertEqual(response.json()["detail"], "Vault not found")
+
+    def test_extension_operator_lists_are_paginated_and_validate_capture_vault(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.extension import (
+            create_extension_client,
+            list_extension_captures,
+            list_extension_clients,
+            list_extension_pairings,
+            list_extension_permission_audit,
+            start_extension_pairing,
+        )
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ExtensionClientCreate, ExtensionPairingStartRequest
+
+        repo_root = Path(__file__).resolve().parents[2]
+        backend_client = (repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
+        self.assertIn("listExtensionClients(options: { limit?: number; offset?: number } = {})", backend_client)
+        self.assertIn("listExtensionPairings(options: { limit?: number; offset?: number } = {})", backend_client)
+        self.assertIn("listExtensionCaptures(", backend_client)
+        self.assertIn("options: { limit?: number; offset?: number } = {},", backend_client)
+        self.assertIn("listExtensionPermissionAudit(limit = 20, offset = 0)", backend_client)
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.db_path.parent), now, now),
+            )
+
+        created_client_ids: list[str] = []
+        for index in range(5):
+            client = create_extension_client(ExtensionClientCreate(name=f"Browser {index}"))
+            created_client_ids.append(client["id"])
+            stamp = f"2026-06-19T00:00:0{index}+00:00"
+            with connect() as conn:
+                conn.execute("UPDATE extension_clients SET updated_at = ? WHERE id = ?", (stamp, client["id"]))
+                conn.execute(
+                    """
+                    INSERT INTO extension_captures (
+                        id, client_id, vault_id, source_id, capture_type, title, url, status, created_at
+                    )
+                    VALUES (?, ?, 'vault-1', NULL, 'selection', ?, '', 'stored', ?)
+                    """,
+                    (f"capture-{index}", client["id"], f"Capture {index}", stamp),
+                )
+            start_extension_pairing(
+                ExtensionPairingStartRequest(
+                    name=f"Pairing {index}",
+                    allowed_vault_ids=["vault-1"],
+                    ttl_seconds=600,
+                )
+            )
+
+        client_page = list_extension_clients(limit=2, offset=1)
+        capture_page = list_extension_captures("vault-1", limit=2, offset=2)
+        pairing_page = list_extension_pairings(limit=2, offset=1)
+        audit_page = list_extension_permission_audit(limit=3, offset=2)
+
+        self.assertEqual([item["id"] for item in client_page], [created_client_ids[3], created_client_ids[2]])
+        self.assertEqual([item["id"] for item in capture_page], ["capture-2", "capture-1"])
+        self.assertEqual(len(pairing_page), 2)
+        self.assertEqual(len(audit_page), 3)
+        with self.assertRaises(HTTPException) as raised:
+            list_extension_captures("vault-missing")
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertEqual(raised.exception.detail, "Vault not found")
 
     def test_persisted_chat_context_rejects_unknown_cluster_before_creating_session(self) -> None:
         from fastapi import HTTPException
@@ -2233,6 +2663,7 @@ class AdditionalQACases(unittest.TestCase):
     def test_onboarding_route_uses_internal_scroll_shell_instead_of_hidden_root(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         onboarding = (repo_root / "apps" / "desktop" / "src" / "routes" / "onboarding.tsx").read_text(encoding="utf-8")
+        styles = (repo_root / "apps" / "desktop" / "src" / "styles.css").read_text(encoding="utf-8")
 
         self.assertIn('vault-onboarding-shell h-screen overflow-x-hidden overflow-y-auto', onboarding)
         self.assertIn("prepareActiveVaultFolder", onboarding)
@@ -2240,6 +2671,10 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn('min-h-0 flex-1 overflow-y-auto px-6 sm:px-8', onboarding)
         self.assertIn('lg:max-h-[calc(100vh-4rem)]', onboarding)
         self.assertNotIn('vault-onboarding-shell min-h-screen overflow-hidden', onboarding)
+        self.assertIn(".vault-bg-wash", styles)
+        self.assertIn("background-position: 28px 28px, 28px 28px;", styles)
+        self.assertNotIn("inset: -20%", styles)
+        self.assertNotIn("inset: -8%", styles)
 
     def test_onboarding_model_download_flow_exposes_location_progress_and_continue(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -2258,6 +2693,9 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn('downloadStatus === "resolving" || downloadStatus === "downloading"', onboarding)
         self.assertIn("function selectVisibleModelDownload", onboarding)
         self.assertIn("visible.find((download) => isActiveModelDownloadStatus(download.status))", onboarding)
+        self.assertIn('state.status === "failed" || state.status === "blocked"', onboarding)
+        self.assertIn("model.download?.progress_percent", onboarding)
+        self.assertIn("model.download?.total_bytes ?? model.download?.bytes_total", onboarding)
         self.assertIn("model.compatibility?.chat_role_accepted", onboarding)
         self.assertIn("refreshDetectedModels(true)", onboarding)
         self.assertIn("You can continue after a chat model is installed, active, or downloading.", onboarding)
@@ -2273,6 +2711,11 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn('showSection("storage")', settings)
         self.assertIn('showSection("privacy")', settings)
         self.assertIn('showSection("diagnostics", "advanced")', settings)
+        self.assertIn("Settings section", settings)
+        self.assertIn('htmlFor="settings-section-select"', settings)
+        self.assertIn('id="settings-section-select"', settings)
+        self.assertIn("xl:hidden", settings)
+        self.assertIn("settingsSections.map((section)", settings)
         self.assertNotIn(" Â· ", settings)
         self.assertNotIn(" · ", settings)
         self.assertNotIn(" Â· ", onboarding)
@@ -2407,7 +2850,9 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(row["status"], "succeeded")
         self.assertEqual(row["error"], "")
 
-    def test_source_and_cluster_list_routes_are_bounded(self) -> None:
+    def test_source_and_cluster_list_routes_validate_filters_and_paginate_large_libraries(self) -> None:
+        from fastapi import HTTPException
+
         from backend.app.api.routes.clusters import list_clusters
         from backend.app.api.routes.sources import list_sources
         from backend.app.core.database import connect
@@ -2444,14 +2889,47 @@ class AdditionalQACases(unittest.TestCase):
                         created_at,
                     ),
                 )
+            extra_clusters = [
+                (
+                    f"cluster-extra-{index:04d}",
+                    f"Extra Cluster {index:04d}",
+                    f"2026-01-02T00:00:00+00:00.{index:04d}",
+                    f"2026-01-02T00:00:00+00:00.{index:04d}",
+                )
+                for index in range(1005)
+            ]
+            conn.executemany(
+                """
+                INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
+                VALUES (?, 'vault-1', ?, '', 'sage', 'setting-up', ?, ?)
+                """,
+                extra_clusters,
+            )
 
         sources = list_sources(vault_id="vault-1", limit=2)
         clusters = list_clusters(vault_id="vault-1", limit=2)
+        all_clusters = list_clusters(vault_id="vault-1", limit=2000)
         next_sources = list_sources(vault_id="vault-1", limit=2, offset=2)
+        next_clusters = list_clusters(vault_id="vault-1", limit=3, offset=1004)
 
         self.assertEqual([source["id"] for source in sources], ["source-2", "source-1"])
-        self.assertEqual([cluster["id"] for cluster in clusters], ["cluster-2", "cluster-1"])
+        self.assertEqual([cluster["id"] for cluster in clusters], ["cluster-extra-1004", "cluster-extra-1003"])
+        self.assertEqual(len(all_clusters), 1000)
         self.assertEqual([source["id"] for source in next_sources], ["source-0"])
+        self.assertEqual(
+            [cluster["id"] for cluster in next_clusters],
+            ["cluster-extra-0000", "cluster-2", "cluster-1"],
+        )
+        with self.assertRaises(HTTPException) as missing_vault:
+            list_clusters(vault_id="vault-missing")
+        self.assertEqual(missing_vault.exception.status_code, 404)
+        self.assertEqual(missing_vault.exception.detail, "Vault not found")
+
+        repo_root = Path(__file__).resolve().parents[2]
+        backend_client = (repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
+        self.assertIn("listClusters(vaultId?: string, options: { limit?: number; offset?: number } = {})", backend_client)
+        self.assertIn('params.set("limit", String(options.limit))', backend_client)
+        self.assertIn('params.set("offset", String(options.offset))', backend_client)
 
     def test_source_cluster_must_belong_to_same_vault(self) -> None:
         from backend.app.api.routes.sources import create_source

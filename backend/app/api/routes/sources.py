@@ -58,6 +58,7 @@ def list_sources(
     safe_limit = max(1, min(int(limit), 1000))
     safe_offset = max(0, int(offset))
     with connect() as conn:
+        _validate_source_list_filters(conn, vault_id=vault_id, cluster_id=cluster_id)
         rows = conn.execute(
             f"SELECT * FROM sources {where} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
             [*params, safe_limit, safe_offset],
@@ -714,6 +715,23 @@ def _validate_source_target(conn, vault_id: str, cluster_id: str | None = None) 
             "SELECT id FROM clusters WHERE id = ? AND vault_id = ?",
             (cluster_id, vault_id),
         ).fetchone()
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+
+
+def _validate_source_list_filters(conn, *, vault_id: str | None, cluster_id: str | None) -> None:
+    if vault_id:
+        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+        if vault is None:
+            raise HTTPException(status_code=404, detail="Vault not found")
+    if cluster_id:
+        if vault_id:
+            cluster = conn.execute(
+                "SELECT id FROM clusters WHERE id = ? AND vault_id = ?",
+                (cluster_id, vault_id),
+            ).fetchone()
+        else:
+            cluster = conn.execute("SELECT id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
         if cluster is None:
             raise HTTPException(status_code=404, detail="Cluster not found")
 

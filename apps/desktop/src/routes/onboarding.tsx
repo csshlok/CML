@@ -347,7 +347,12 @@ function Onboarding() {
         target_dir: modelDownloadRoot.trim() || null,
       });
       setModelDownload(state);
-      setMessage("Download started. You can continue setup while it resolves.");
+      if (state.status === "failed" || state.status === "blocked") {
+        setError(state.error || "Could not start model download.");
+        setMessage(null);
+      } else {
+        setMessage("Download started. You can continue setup while it resolves.");
+      }
       await refreshModels();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start model download.");
@@ -1183,10 +1188,12 @@ function ModelRow({
   onActivate: () => void;
 }) {
   const downloading = model.download?.status === "resolving" || model.download?.status === "downloading";
-  const progress =
-    model.download?.bytes_downloaded && model.download.total_bytes
-      ? Math.round((model.download.bytes_downloaded / model.download.total_bytes) * 100)
-      : 0;
+  const totalBytes = model.download?.total_bytes ?? model.download?.bytes_total ?? null;
+  const progress = model.download?.progress_percent ?? (
+    model.download?.bytes_downloaded && totalBytes
+      ? Math.round((model.download.bytes_downloaded / totalBytes) * 100)
+      : 0
+  );
 
   return (
     <div

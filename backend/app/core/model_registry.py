@@ -744,17 +744,30 @@ def discover_installed_models(
             compatibility = model_compatibility_report(candidate)
             if compatibility.get("accepted"):
                 compatible_count += 1
-            if not include_rejected and not compatibility.get("accepted"):
+            accepted = bool(compatibility.get("accepted"))
+            if not include_rejected and not accepted:
                 continue
             metadata = _discovered_model_metadata(candidate, compatibility=compatibility, root=root)
             if metadata["local_path"] in imported_paths:
                 metadata["already_imported"] = True
-            models.append(metadata)
-            if len(models) >= max_results:
+            if len(models) < max_results:
+                models.append(metadata)
+            elif include_rejected and accepted:
+                rejected_index = next(
+                    (
+                        index
+                        for index, item in enumerate(models)
+                        if not item["compatibility"].get("accepted")
+                    ),
+                    None,
+                )
+                if rejected_index is not None:
+                    models[rejected_index] = metadata
+                    truncated = True
+                else:
+                    truncated = True
+            else:
                 truncated = True
-                break
-        if truncated:
-            break
 
     models.sort(
         key=lambda item: (

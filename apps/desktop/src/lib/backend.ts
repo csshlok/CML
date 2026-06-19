@@ -1150,8 +1150,12 @@ export async function updateVault(
   });
 }
 
-export async function listClusters(vaultId?: string) {
-  const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
+export async function listClusters(vaultId?: string, options: { limit?: number; offset?: number } = {}) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.offset) params.set("offset", String(options.offset));
+  const query = params.size ? `?${params.toString()}` : "";
   return request<ClusterRecord[]>(`/api/v1/clusters${query}`);
 }
 
@@ -1252,8 +1256,12 @@ export async function listClusterSuggestions(vaultId: string, limit = 12) {
   );
 }
 
-export async function listSources(vaultId?: string) {
-  const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
+export async function listSources(vaultId?: string, options: { limit?: number; offset?: number } = {}) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.offset) params.set("offset", String(options.offset));
+  const query = params.size ? `?${params.toString()}` : "";
   return request<SourceRecord[]>(`/api/v1/sources${query}`);
 }
 
@@ -1469,8 +1477,12 @@ function parseSseEvent(block: string): { event: string; data: Record<string, unk
   }
 }
 
-export async function listChatSessions(vaultId?: string) {
-  const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
+export async function listChatSessions(vaultId?: string, options: { limit?: number; offset?: number } = {}) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.offset) params.set("offset", String(options.offset));
+  const query = params.size ? `?${params.toString()}` : "";
   return request<ChatSessionRecord[]>(`/api/v1/chat/sessions${query}`);
 }
 
@@ -1712,8 +1724,15 @@ export async function listVaultLockAudit(limit = 20) {
   return request<VaultLockAuditRecord[]>(`/api/v1/system/vault-lock/audit?limit=${limit}`);
 }
 
-export async function listIntegrationImports(vaultId?: string) {
-  const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
+export async function listIntegrationImports(
+  vaultId?: string,
+  options: { limit?: number; offset?: number } = {},
+) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.offset) params.set("offset", String(options.offset));
+  const query = params.size ? `?${params.toString()}` : "";
   return request<IntegrationImportRecord[]>(`/api/v1/integrations/imports${query}`);
 }
 
@@ -1779,8 +1798,12 @@ export async function retryIntegrationReconciliationItem(itemId: string) {
   );
 }
 
-export async function listExtensionClients() {
-  return request<ExtensionClientRecord[]>("/api/v1/extension/clients");
+export async function listExtensionClients(options: { limit?: number; offset?: number } = {}) {
+  const params = new URLSearchParams();
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.offset) params.set("offset", String(options.offset));
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<ExtensionClientRecord[]>(`/api/v1/extension/clients${suffix}`);
 }
 
 export async function createExtensionClient(payload: { name: string }) {
@@ -1807,8 +1830,12 @@ export async function approveExtensionPairing(pairingId: string) {
   });
 }
 
-export async function listExtensionPairings() {
-  return request<ExtensionPairingRecord[]>("/api/v1/extension/pairing");
+export async function listExtensionPairings(options: { limit?: number; offset?: number } = {}) {
+  const params = new URLSearchParams();
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.offset) params.set("offset", String(options.offset));
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<ExtensionPairingRecord[]>(`/api/v1/extension/pairing${suffix}`);
 }
 
 export async function getExtensionStatus(token?: string) {
@@ -1833,15 +1860,23 @@ export async function revokeExtensionClient(clientId: string) {
   });
 }
 
-export async function listExtensionCaptures(vaultId?: string) {
-  const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
-  return request<ExtensionCaptureRecord[]>(`/api/v1/extension/captures${query}`);
+export async function listExtensionCaptures(
+  vaultId?: string,
+  options: { limit?: number; offset?: number } = {},
+) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.offset) params.set("offset", String(options.offset));
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<ExtensionCaptureRecord[]>(`/api/v1/extension/captures${suffix}`);
 }
 
-export async function listExtensionPermissionAudit(limit = 20) {
-  return request<ExtensionPermissionAuditRecord[]>(
-    `/api/v1/extension/permission-audit?limit=${encodeURIComponent(String(limit))}`,
-  );
+export async function listExtensionPermissionAudit(limit = 20, offset = 0) {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  if (offset) params.set("offset", String(offset));
+  return request<ExtensionPermissionAuditRecord[]>(`/api/v1/extension/permission-audit?${params.toString()}`);
 }
 
 export async function startModelDownload(modelId: string, payload?: { target_dir?: string | null }) {

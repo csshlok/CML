@@ -37,6 +37,7 @@ router = APIRouter(prefix="/search", tags=["search"])
 
 @router.post("/semantic", response_model=SemanticSearchResponse)
 def semantic_search(payload: SemanticSearchRequest) -> dict:
+    _ensure_vault_exists(payload.vault_id)
     try:
         require_embeddings_available("Semantic search")
     except RuntimeError as exc:
@@ -63,6 +64,7 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
 def get_scoring_ledger(vault_id: str, query: str, cluster_id: str | None = None, limit: int = 20) -> dict:
     if not query.strip():
         raise HTTPException(status_code=400, detail="query is required")
+    _ensure_vault_exists(vault_id)
     try:
         require_embeddings_available("Scoring ledger")
     except RuntimeError as exc:
@@ -77,6 +79,7 @@ def get_retrieval_eval_fixtures() -> dict:
 
 @router.get("/threshold-benchmark")
 def get_threshold_benchmark(vault_id: str) -> dict:
+    _ensure_vault_exists(vault_id)
     try:
         require_embeddings_available("Threshold benchmark")
     except RuntimeError as exc:
@@ -88,6 +91,7 @@ def get_threshold_benchmark(vault_id: str) -> dict:
 def get_compare_source_classes(vault_id: str, query: str, cluster_id: str | None = None) -> dict:
     if not query.strip():
         raise HTTPException(status_code=400, detail="query is required")
+    _ensure_vault_exists(vault_id)
     try:
         require_embeddings_available("Source-class comparison")
     except RuntimeError as exc:
@@ -97,6 +101,7 @@ def get_compare_source_classes(vault_id: str, query: str, cluster_id: str | None
 
 @router.post("/benchmark-report")
 def create_benchmark_report(vault_id: str) -> dict:
+    _ensure_vault_exists(vault_id)
     try:
         require_embeddings_available("Benchmark report")
     except RuntimeError as exc:
@@ -106,6 +111,7 @@ def create_benchmark_report(vault_id: str) -> dict:
 
 @router.post("/context-layer-report")
 def create_context_layer_report(vault_id: str, cluster_id: str | None = None, limit: int = 5) -> dict:
+    _ensure_vault_exists(vault_id)
     try:
         require_embeddings_available("Context-layer report")
     except RuntimeError as exc:
@@ -154,15 +160,12 @@ def prune_query_cache_route(
 
 @router.post("/reindex/{vault_id}")
 def reindex_vault(vault_id: str) -> dict:
+    _ensure_vault_exists(vault_id)
     try:
         require_embeddings_available("Reindexing")
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     with connect() as conn:
-        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
-        if vault is None:
-            raise HTTPException(status_code=404, detail="Vault not found")
-
         rows = conn.execute(
             """
             SELECT * FROM sources
@@ -213,11 +216,11 @@ def get_vector_repair_plan(vault_id: str | None = None) -> dict:
 
 @router.post("/vectors/repair")
 def repair_vector_index(vault_id: str | None = None, limit: int = 100) -> dict:
+    _ensure_vault_exists(vault_id)
     try:
         require_embeddings_available("Vector repair")
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    _ensure_vault_exists(vault_id)
     return repair_vectors(vault_id, limit=max(1, min(limit, 1000)))
 
 
@@ -229,6 +232,7 @@ def compact_vector_index(vault_id: str | None = None) -> dict:
 
 @router.get("/vectors/sidecar/status")
 def get_turbovec_sidecar_status(vault_id: str) -> dict:
+    _ensure_vault_exists(vault_id)
     try:
         return turbovec_sidecar_status(vault_id)
     except TurbovecSidecarUnavailable as exc:
@@ -237,6 +241,7 @@ def get_turbovec_sidecar_status(vault_id: str) -> dict:
 
 @router.post("/vectors/sidecar/build")
 def build_vector_sidecar(vault_id: str, rebuild_reason: str = "manual") -> dict:
+    _ensure_vault_exists(vault_id)
     try:
         return build_turbovec_sidecar(vault_id, rebuild_reason=rebuild_reason.strip() or "manual")
     except TurbovecSidecarUnavailable as exc:
@@ -257,6 +262,7 @@ def repair_vector_sidecars(vault_id: str | None = None) -> dict:
 
 @router.get("/vectors/phase-c/status")
 def get_turbovec_phase_c_gate_status(vault_id: str) -> dict:
+    _ensure_vault_exists(vault_id)
     try:
         return turbovec_phase_c_status(vault_id)
     except KeyError as exc:
@@ -265,6 +271,7 @@ def get_turbovec_phase_c_gate_status(vault_id: str) -> dict:
 
 @router.post("/vectors/phase-c/benchmark")
 def run_turbovec_phase_c_benchmark(vault_id: str, query_limit: int = 20, top_k: int = 10) -> dict:
+    _ensure_vault_exists(vault_id)
     try:
         require_embeddings_available("Turbovec Phase C benchmark")
     except RuntimeError as exc:

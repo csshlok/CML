@@ -30,6 +30,10 @@ def list_clusters(vault_id: str | None = None, limit: int = 500, offset: int = 0
     safe_offset = max(0, int(offset))
     with connect() as conn:
         if vault_id:
+            vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+            if vault is None:
+                raise HTTPException(status_code=404, detail="Vault not found")
+        if vault_id:
             rows = conn.execute(
                 "SELECT * FROM clusters WHERE vault_id = ? ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 (vault_id, safe_limit, safe_offset),

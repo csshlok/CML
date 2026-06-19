@@ -1,34 +1,36 @@
 ﻿# Overall Context
 
-Last updated: 2026-06-18
+Last updated: 2026-06-19
 
 ## Fallback Context Rule
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
-## 2026-06-18 Real LoRA Trainer / Runtime / Proof Snapshot
+## 2026-06-19 Backend / Frontend Bug Pass Snapshot
 
 Completed:
 
-- Reran the real compulsory cluster expert smoke on this CPU machine with actual project docs, not synthetic records, using `.tmp/lora-models/qwen2.5-0.5b-instruct` as the local Transformers expert checkpoint and `CML_LORA_TRAINER_COMMAND='llamafactory-cli train {config_path}'`.
-- The run wrote `.tmp/lora-real-project-qwen05b-rerun.json` and proof export `.tmp/lora-real-project-qwen05b-proof.json`.
-- Real dataset facts: `12` source records from `docs/PROJECT_CONTEXT.md`, `12` unique content hashes, `14,391` estimated tokens, dataset hash `db12a0a77a7731f6bf5d5a34774932f20ec3dd76e33975511990ed65749c2c31`.
-- Active adapter artifact: `.tmp/lora-real-smoke-work/experts/cluster-smoke/adapter-e4713cdd-4278-401e-951a-dc7e45f81e7d`, status `ready`, active `1`, base model `.tmp/lora-models/qwen2.5-0.5b-instruct`, hardware tier `cpu_minimum_spec`, and live runtime smoke `ok=true`.
-- Pairing proof: adapter metadata declares `peft_type=LORA`, `task_type=CAUSAL_LM`, `peft_version=0.18.1`, target modules `v_proj`, `q_proj`, `gate_proj`, `k_proj`, `o_proj`, `up_proj`, `down_proj`; runtime load plan resolved the same local base-model path; model compatibility accepted the base checkpoint for the expert role as Qwen/Qwen2.
-- Dependency proof from the report: LLaMA Factory `0.9.5`, PEFT `0.18.1`, TRL `0.24.0`, Gradio `5.50.0`, Transformers `5.6.0`, Torch `2.12.0`; runtime dependencies were importable in `.venv\Scripts\python.exe`.
-- Added repeatable proof tooling in `backend/app/core/lora_proof.py` and `scripts/backend/export-lora-proof.ps1`; the proof explicitly blocks public release when quality benchmark or hardware proof is missing.
+- Fixed managed chat-model downloads so the desktop-selected destination folder is sent from onboarding/settings through the backend API and into the model registry worker instead of silently using only the default model directory.
+- Expanded model-download telemetry with total bytes, percent, speed, ETA, and timestamps so desktop polling can show a compact bottom-right progress/cancel state during active downloads.
+- Persisted custom downloaded model paths and made installed-state lookup honor those paths after refresh; invalid selected folders now produce a user-visible failed download state instead of surfacing as a generic route failure.
+- Fixed onboarding gating so the user can continue while a default managed chat model is actively resolving/downloading, while still requiring accepted compatibility once the model is installed and still keeping expert requirements separate.
+- Added LLM download location controls and compact download status UI to onboarding and Settings; manual installed-model scans now request an explicit refresh instead of using stale cached discovery.
+- Hardened backend user-behavior edge cases found during the wider pass: same-folder vault creation is idempotent for onboarding retry, vault path updates reject collisions, source creation/import validates target vault/cluster before network extraction or quarantine work, and query-cache/vector maintenance routes reject missing vaults instead of returning empty success.
+- Fixed Settings section visibility and validated the rendered sidebar navigation in Chrome via Playwright fallback: Local models, Embeddings, OCR, and Library storage show only their intended card groups. The rendered narrow-width pass also found that the sidebar disappeared below `xl` with no replacement navigation, so Settings now exposes a compact section selector for narrow windows.
+- Follow-up review found and fixed search/vector route ordering bugs where embedding availability or sidecar work could be checked before the requested vault existed, added stable pagination and missing-vault validation to extension and integration operator lists/capture history, made source, cluster, and chat session list filters reject stale vault/cluster ids with 404s instead of empty success pages, bounded the job-status running-job payload while preserving full counts, kept installed-model discovery from hiding compatible models when rejected checkpoints filled the result limit first, tightened the new narrow Settings selector with an explicit `label`/`select` binding, fixed onboarding's inline model row to use the full download progress contract plus failed/blocked start feedback, and removed decorative onboarding background negative insets that created mobile horizontal overflow.
+- Updated `docs/PROJECT_CONTEXT.md` and this file so the current bug pass, remaining gates, and skill limitation are captured.
 
 Verification:
 
-- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/smoke-lora-runtime.ps1 -AdapterPath .tmp\lora-real-smoke-work\experts\cluster-smoke\adapter-5baaf88e-a9b5-4926-810e-9e3c53d0c778 -BaseModel .tmp\lora-models\qwen2.5-0.5b-instruct -Prompt "Using the local CML project context, name the public V1 release stance in one short sentence." -ReportPath .tmp\lora-runtime-smoke-rerun.json` passed.
-- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/smoke-lora-expert.ps1 -BaseModelPath .tmp\lora-models\qwen2.5-0.5b-instruct -ReportPath .tmp\lora-real-project-qwen05b-rerun.json -AllowBenchmarkFailure -MaxRealSources 12 -BenchmarkCaseLimit 6 -RuntimeMaxNewTokens 16 -BenchmarkMaxNewTokens 16` passed as trainer/runtime evidence while preserving the failed benchmark status.
-- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/export-lora-proof.ps1 -ReportPath .tmp\lora-real-project-qwen05b-rerun.json -OutputPath .tmp\lora-real-project-qwen05b-proof.json` passed and reported public gate `passes=false`.
+- Focused backend/static regression coverage passed for the model download, scan-refresh, destination-validation, vault-idempotency, maintenance-route, 1,005-row source-list pagination/stale-filter validation, 1,008-row cluster-list pagination/stale-vault validation, 211-row chat-session pagination/stale-vault validation, 60-running-job status payload cap, installed-model discovery prioritization, and frontend source-contract cases.
+- `npm run lint` and `npm run build` passed after the Settings JSX grouping changes.
+- Rendered Settings navigation was validated through Playwright using a local Chrome channel because the Browser plugin was unavailable in this environment.
 
 Still not completed:
 
-- The strict live adapter quality benchmark failed: retrieval baseline `98.33`, adapter `41.67`, quality delta `-56.66`, required delta `>= 1.0`.
-- Hardware proof is still incomplete because the detector reports `avx2=null`; the smoke used a guarded training override because AVX2 could not be verified in this environment.
-- Public "trained expert" claims remain blocked until a real live adapter-backed benchmark win and complete hardware proof both exist.
+- The requested `ponytail` skill is not installed in this session, so review continues through normal manual diff review until that skill is available.
+- A wider line-by-line frontend pass remains open, including overflow/alignment checks across more routes and narrow-window/dark/package visual QA.
+- Clean VM validation, larger user-owned vault benchmarks, hardware-aware model recommendation QA, and public expert-quality proof remain separate release gates.
 
 ## 2026-06-15 Real LoRA Trainer / Runtime Snapshot
 

@@ -230,10 +230,10 @@
 
   @keyframes vault-line-drift {
     0% {
-      transform: translate3d(-1.5%, -1.5%, 0);
+      background-position: 0 0, 0 0;
     }
     100% {
-      transform: translate3d(1.5%, 1.5%, 0);
+      background-position: 28px 28px, 28px 28px;
     }
   }
 
@@ -270,13 +270,13 @@
 
   .vault-bg-wash {
     position: absolute;
-    inset: -20%;
+    inset: 0;
     background: var(--background);
   }
 
   .vault-bg-lines {
     position: absolute;
-    inset: -8%;
+    inset: 0;
     opacity: 0.12;
     background-image:
       linear-gradient(90deg, var(--border-default) 1px, transparent 1px),

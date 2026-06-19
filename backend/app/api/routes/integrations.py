@@ -48,112 +48,75 @@ router = APIRouter(prefix="/integrations", tags=["integrations"])
 
 
 @router.get("/imports", response_model=list[IntegrationImportRead])
-def list_integration_imports(vault_id: str | None = None) -> list[dict]:
+def list_integration_imports(
+    vault_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    safe_limit = max(1, min(limit, 100))
+    safe_offset = max(offset, 0)
     with connect() as conn:
+        params: list[object] = []
+        where = ""
         if vault_id:
-            rows = conn.execute(
-                """
-                SELECT integration_imports.*,
-                       (
-                           SELECT rr.id
-                           FROM reconciliation_runs rr
-                           WHERE rr.import_id = integration_imports.id
-                           ORDER BY rr.created_at DESC
-                           LIMIT 1
-                       ) AS last_reconciliation_run_id,
-                       (
-                           SELECT rr.status
-                           FROM reconciliation_runs rr
-                           WHERE rr.import_id = integration_imports.id
-                           ORDER BY rr.created_at DESC
-                           LIMIT 1
-                       ) AS last_reconciliation_status,
-                       (
-                           SELECT rr.trigger_source
-                           FROM reconciliation_runs rr
-                           WHERE rr.import_id = integration_imports.id
-                           ORDER BY rr.created_at DESC
-                           LIMIT 1
-                       ) AS last_reconciliation_trigger_source,
-                       (
-                           SELECT rr.finished_at
-                           FROM reconciliation_runs rr
-                           WHERE rr.import_id = integration_imports.id
-                           ORDER BY rr.created_at DESC
-                           LIMIT 1
-                       ) AS last_reconciliation_finished_at,
-                       COALESCE((
-                           SELECT rr.detail_count
-                           FROM reconciliation_runs rr
-                           WHERE rr.import_id = integration_imports.id
-                           ORDER BY rr.created_at DESC
-                           LIMIT 1
-                       ), 0) AS last_reconciliation_detail_count,
-                       COALESCE((
-                           SELECT rr.retryable_failed_count
-                           FROM reconciliation_runs rr
-                           WHERE rr.import_id = integration_imports.id
-                           ORDER BY rr.created_at DESC
-                           LIMIT 1
-                       ), 0) AS last_reconciliation_retryable_failed_count
-                FROM integration_imports
-                WHERE vault_id = ?
-                ORDER BY updated_at DESC
-                LIMIT 50
-                """,
-                (vault_id,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT integration_imports.*,
-                       (
-                           SELECT rr.id
-                           FROM reconciliation_runs rr
-                           WHERE rr.import_id = integration_imports.id
-                           ORDER BY rr.created_at DESC
-                           LIMIT 1
-                       ) AS last_reconciliation_run_id,
-                       (
-                           SELECT rr.status
-                           FROM reconciliation_runs rr
-                           WHERE rr.import_id = integration_imports.id
-                           ORDER BY rr.created_at DESC
-                           LIMIT 1
-                       ) AS last_reconciliation_status,
-                       (
-                           SELECT rr.trigger_source
-                           FROM reconciliation_runs rr
-                           WHERE rr.import_id = integration_imports.id
-                           ORDER BY rr.created_at DESC
-                           LIMIT 1
-                       ) AS last_reconciliation_trigger_source,
-                       (
-                           SELECT rr.finished_at
-                           FROM reconciliation_runs rr
-                           WHERE rr.import_id = integration_imports.id
-                           ORDER BY rr.created_at DESC
-                           LIMIT 1
-                       ) AS last_reconciliation_finished_at,
-                       COALESCE((
-                           SELECT rr.detail_count
-                           FROM reconciliation_runs rr
-                           WHERE rr.import_id = integration_imports.id
-                           ORDER BY rr.created_at DESC
-                           LIMIT 1
-                       ), 0) AS last_reconciliation_detail_count,
-                       COALESCE((
-                           SELECT rr.retryable_failed_count
-                           FROM reconciliation_runs rr
-                           WHERE rr.import_id = integration_imports.id
-                           ORDER BY rr.created_at DESC
-                           LIMIT 1
-                       ), 0) AS last_reconciliation_retryable_failed_count
-                FROM integration_imports
-                ORDER BY updated_at DESC
-                LIMIT 50
-                """
-            ).fetchall()
+            vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+            if vault is None:
+                raise HTTPException(status_code=404, detail="Vault not found")
+            where = "WHERE vault_id = ?"
+            params.append(vault_id)
+        params.extend([safe_limit, safe_offset])
+        rows = conn.execute(
+            f"""
+            SELECT integration_imports.*,
+                   (
+                       SELECT rr.id
+                       FROM reconciliation_runs rr
+                       WHERE rr.import_id = integration_imports.id
+                       ORDER BY rr.created_at DESC
+                       LIMIT 1
+                   ) AS last_reconciliation_run_id,
+                   (
+                       SELECT rr.status
+                       FROM reconciliation_runs rr
+                       WHERE rr.import_id = integration_imports.id
+                       ORDER BY rr.created_at DESC
+                       LIMIT 1
+                   ) AS last_reconciliation_status,
+                   (
+                       SELECT rr.trigger_source
+                       FROM reconciliation_runs rr
+                       WHERE rr.import_id = integration_imports.id
+                       ORDER BY rr.created_at DESC
+                       LIMIT 1
+                   ) AS last_reconciliation_trigger_source,
+                   (
+                       SELECT rr.finished_at
+                       FROM reconciliation_runs rr
+                       WHERE rr.import_id = integration_imports.id
+                       ORDER BY rr.created_at DESC
+                       LIMIT 1
+                   ) AS last_reconciliation_finished_at,
+                   COALESCE((
+                       SELECT rr.detail_count
+                       FROM reconciliation_runs rr
+                       WHERE rr.import_id = integration_imports.id
+                       ORDER BY rr.created_at DESC
+                       LIMIT 1
+                   ), 0) AS last_reconciliation_detail_count,
+                   COALESCE((
+                       SELECT rr.retryable_failed_count
+                       FROM reconciliation_runs rr
+                       WHERE rr.import_id = integration_imports.id
+                       ORDER BY rr.created_at DESC
+                       LIMIT 1
+                   ), 0) AS last_reconciliation_retryable_failed_count
+            FROM integration_imports
+            {where}
+            ORDER BY updated_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params),
+        ).fetchall()
     return [_import_from_row(row) for row in rows]
 
 

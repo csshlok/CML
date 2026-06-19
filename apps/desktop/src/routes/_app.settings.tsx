@@ -674,6 +674,25 @@ function SettingsView() {
           </p>
         </header>
 
+        <label
+          htmlFor="settings-section-select"
+          className="mt-6 block text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground xl:hidden"
+        >
+          Settings section
+        </label>
+        <select
+          id="settings-section-select"
+          value={activeSection}
+          onChange={(event) => setActiveSection(event.target.value)}
+          className="mt-2 w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none xl:hidden"
+        >
+          {settingsSections.map((section) => (
+            <option key={section.id} value={section.id}>
+              {section.label}
+            </option>
+          ))}
+        </select>
+
         <div className="mt-7 space-y-4">
           {activeSection === "profile" ? (
             <ProfileSettings vaultPath={backendVault?.path ?? ""} />
