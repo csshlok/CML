@@ -1,6 +1,6 @@
 # Expert Validation Report
 
-Date: 2026-06-15
+Date: 2026-06-20
 
 Audit source: `docs/RELEASE_AUDIT.md`
 
@@ -15,7 +15,10 @@ The audit treats verified real LoRA expert training and runtime loading as block
 | CI scaffold smoke | Passed | `scripts\backend\smoke-lora-expert.ps1 -AllowTestTrainer -ReportPath .tmp\phase5-lora-expert-scaffold-report.json` produced one ready scaffold adapter artifact and `training_ready` expert status. This is not public release evidence. |
 | Real trainer smoke | Passed for current dev CPU smoke | 2026-06-15 real run used `CML_LORA_TRAINER_COMMAND='llamafactory-cli train {config_path}'`, `Qwen/Qwen2.5-0.5B-Instruct`, actual project docs, `12` real source sections, dataset hash `d0f85a6bf90dd9f0ef0489aef3ebf2e705fd896a91ad5a7f357196ba40c1c4b0`, and produced a real adapter at `.tmp\lora-real-smoke-work\experts\cluster-smoke\adapter-5baaf88e-a9b5-4926-810e-9e3c53d0c778`. |
 | Real adapter runtime smoke | Passed for current dev CPU smoke | Direct Transformers/PEFT runtime evidence at `.tmp\lora-real-qwen05b-runtime-evidence.json` returned `ok=true` and response `The V1 release is a major update`. |
-| Live adapter quality benchmark | Failed | The short one-case live benchmark ran against the real adapter and scored adapter `24.0` vs retrieval `100.0`, delta `-76.0`; release-grade quality proof remains missing. |
+| Real adapter runtime smoke | Passed on 2026-06-20 | `scripts\backend\smoke-lora-runtime.ps1` wrote `.tmp\lora-runtime-smoke-2026-06-20.json` with runtime `ok=true` for adapter `.tmp\lora-real-smoke-work\experts\cluster-smoke\adapter-e4713cdd-4278-401e-951a-dc7e45f81e7d` and base `.tmp\lora-models\qwen2.5-0.5b-instruct`. |
+| CPU/AVX2 hardware proof | Passed on 2026-06-20 | `scripts\backend\export-hardware-proof.ps1` wrote `.tmp\hardware-proof-2026-06-20.json` with `avx2=true`, detection method `windows-kernel32`, 12 CPU threads, and `cpu_minimum_spec`. |
+| Live adapter quality benchmark | Failed on 2026-06-20 | `scripts\backend\benchmark-lora-adapter.ps1` wrote `.tmp\lora-adapter-quality-benchmark-2026-06-20.json`; strict six-category benchmark scored retrieval `98.33`, adapter `30.0`, delta `-68.33`, so release-grade quality proof remains missing. |
+| Public LoRA proof export | Blocked only by quality benchmark | `.tmp\lora-proof-2026-06-20.json` verifies runtime, adapter/base pairing, expert-role compatibility, and AVX2 proof; public gate still fails with `adapter_quality_benchmark_failed`. |
 | Backend expert regression coverage | Passed | Focused LoRA/runtime regressions passed on 2026-06-15; see `docs/PROJECT_CONTEXT.md` for the current command list. |
 
 ## Command Evidence
@@ -56,7 +59,8 @@ Current real-smoke highlights:
 - training runtime: `753.997s` for one CPU step
 - training loss: `5.6621`
 - live runtime: `ok=true`
-- short live benchmark: failed, adapter `24.0` vs retrieval `100.0`
+- 2026-06-20 strict live benchmark: failed, adapter `30.0` vs retrieval `98.33`, delta `-68.33`
+- 2026-06-20 AVX2 proof: passed, `avx2=true` through `windows-kernel32`
 
 ## Public Claim Rule
 
@@ -73,4 +77,4 @@ CML must not claim that a cluster has a trained expert until all of these are tr
 
 Status: not release-cleared.
 
-The repeatable scaffold path and one real CPU trainer/runtime path are now validated, but the public expert blocker remains open because the live adapter quality benchmark failed. The implementation must continue refusing public "trained expert" claims until a real adapter-backed benchmark beats retrieval.
+The repeatable scaffold path, one real CPU trainer/runtime path, adapter/base pairing proof, and CPU AVX2 proof are now validated, but the public expert blocker remains open because the live adapter quality benchmark failed. The implementation must continue refusing public "trained expert" claims until a real adapter-backed benchmark beats retrieval.

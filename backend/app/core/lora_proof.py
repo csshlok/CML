@@ -123,14 +123,17 @@ def _gate_report(*, report: dict[str, Any], runtime_smoke: dict[str, Any], bench
     benchmark_ok = bool(benchmark.get("passes"))
     pairing_ok = bool(pairing.get("compatible"))
     hardware = report.get("actual_hardware_status") or {}
-    hardware_proof_ok = bool(hardware) and hardware.get("avx2") is not None
+    hardware_avx2 = hardware.get("avx2")
+    hardware_proof_present = bool(hardware) and hardware_avx2 is not None
+    hardware_supported = hardware_avx2 is not False
     blocked = []
     for ok, reason in (
         (real_data_ok, "real_dataset_missing"),
         (runtime_ok, "live_runtime_smoke_failed"),
         (benchmark_ok, "adapter_quality_benchmark_failed"),
         (pairing_ok, "adapter_base_pairing_unproven"),
-        (hardware_proof_ok, "hardware_avx2_proof_missing"),
+        (hardware_proof_present, "hardware_avx2_proof_missing"),
+        (hardware_supported, "hardware_avx2_unsupported"),
     ):
         if not ok:
             blocked.append(reason)
@@ -139,7 +142,8 @@ def _gate_report(*, report: dict[str, Any], runtime_smoke: dict[str, Any], bench
         "live_runtime_smoke": {"ok": runtime_ok},
         "adapter_quality_benchmark": {"ok": benchmark_ok},
         "adapter_base_pairing": {"ok": pairing_ok},
-        "hardware_proof": {"ok": hardware_proof_ok},
+        "hardware_proof": {"ok": hardware_proof_present},
+        "hardware_support": {"ok": hardware_supported and hardware_proof_present},
         "public_gate": {"ok": not blocked, "blocked_reasons": blocked},
     }
 

@@ -3760,19 +3760,27 @@ class AdditionalQACases(unittest.TestCase):
         policy = repo_root / "docs" / "LORA_CLUSTER_EXPERT_MVP_POLICY.md"
         expert_smoke = repo_root / "scripts" / "backend" / "smoke-lora-expert.ps1"
         runtime_smoke = repo_root / "scripts" / "backend" / "smoke-lora-runtime.ps1"
+        adapter_benchmark = repo_root / "scripts" / "backend" / "benchmark-lora-adapter.ps1"
         proof_export = repo_root / "scripts" / "backend" / "export-lora-proof.ps1"
+        hardware_proof = repo_root / "scripts" / "backend" / "export-hardware-proof.ps1"
 
         policy_text = policy.read_text(encoding="utf-8")
         expert_text = expert_smoke.read_text(encoding="utf-8")
         runtime_text = runtime_smoke.read_text(encoding="utf-8")
+        adapter_benchmark_text = adapter_benchmark.read_text(encoding="utf-8")
         proof_text = proof_export.read_text(encoding="utf-8")
+        hardware_text = hardware_proof.read_text(encoding="utf-8")
 
         self.assertIn("Graduation Gates", policy_text)
         self.assertIn("retrieval-vs-adapter", policy_text.lower())
         self.assertIn("CML_LORA_TRAINER_COMMAND", expert_text)
         self.assertIn("AllowTestTrainer", expert_text)
         self.assertIn("build_expert_benchmark_report", expert_text)
+        self.assertIn("run_adapter_runtime_batch", adapter_benchmark_text)
+        self.assertIn("live_adapter_benchmark", adapter_benchmark_text)
         self.assertIn("write_lora_smoke_proof", proof_text)
+        self.assertIn("hardware_status", hardware_text)
+        self.assertIn("avx2_proof_present", hardware_text)
         self.assertIn('benchmark_report = {"status": "runtime_failed", "passes": False, "live_adapter_backed": True}', expert_text)
         self.assertIn('if not runtime_smoke or not runtime_smoke.get("ok"):', expert_text)
         self.assertNotIn("scaffold_case_scores", expert_text)
@@ -3830,6 +3838,17 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(proof["pairing"]["target_modules"], ["q_proj", "v_proj"])
         self.assertEqual(proof["benchmark"]["baseline_score"], 98.33)
         self.assertEqual(proof["benchmark"]["adapter_score"], 41.67)
+
+        unsupported_report = {
+            **report,
+            "actual_hardware_status": {"avx2": False, "hardware_tier": "unsupported"},
+        }
+        unsupported_proof = build_lora_smoke_proof(unsupported_report)
+        self.assertIn("hardware_avx2_unsupported", unsupported_proof["public_gate"]["blocked_reasons"])
+        self.assertNotIn(
+            "hardware_avx2_proof_missing",
+            unsupported_proof["public_gate"]["blocked_reasons"],
+        )
 
     def test_bridge_error_code_registry_matches_spec_for_vault_not_found(self) -> None:
         from backend.app.bridge_mcp import app_error_code

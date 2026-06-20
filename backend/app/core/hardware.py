@@ -1,9 +1,10 @@
+import ctypes
 import os
 import platform
 
 
 def hardware_status() -> dict:
-    avx2 = _detect_avx2()
+    avx2, avx2_detection_method = _detect_avx2()
     total_memory = _total_memory_bytes()
     cpu_count = os.cpu_count() or 1
     tier = _hardware_tier(cpu_count, total_memory, avx2)
@@ -16,18 +17,35 @@ def hardware_status() -> dict:
         "cpu_count": cpu_count,
         "total_memory_bytes": total_memory,
         "avx2": avx2,
+        "avx2_detection_method": avx2_detection_method,
         "hardware_tier": tier,
         "training_supported": supported,
         "detail": detail,
     }
 
 
-def _detect_avx2() -> bool | None:
+def _detect_avx2() -> tuple[bool | None, str]:
     try:
         import cpuinfo
 
         flags = cpuinfo.get_cpu_info().get("flags") or []
-        return "avx2" in {str(flag).lower() for flag in flags}
+        normalized_flags = {str(flag).lower() for flag in flags}
+        if normalized_flags:
+            return "avx2" in normalized_flags, "py-cpuinfo"
+    except Exception:
+        pass
+    windows_result = _detect_windows_avx2()
+    if windows_result is not None:
+        return windows_result, "windows-kernel32"
+    return None, "unavailable"
+
+
+def _detect_windows_avx2() -> bool | None:
+    if platform.system().lower() != "windows":
+        return None
+    try:
+        # PF_AVX2_INSTRUCTIONS_AVAILABLE is exposed by IsProcessorFeaturePresent.
+        return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(40))
     except Exception:
         return None
 

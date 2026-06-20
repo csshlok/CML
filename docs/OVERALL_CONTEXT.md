@@ -6,6 +6,25 @@ Last updated: 2026-06-20
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
+## 2026-06-20 Desktop Startup / LoRA Proof Snapshot
+
+Desktop startup/package validation:
+
+- Source-level desktop validation passed after restoring the locked dependency tree locally: `npm run lint --workspace @cml/desktop` ran 40 Electron tests OK, and `npm run build --workspace @cml/desktop` completed client and SSR production builds.
+- The checked-out package artifact is not valid for clean VM launch validation. `scripts/packaging/validate-clean-machine-package.ps1 -PackageRoot apps/desktop/release/win-unpacked -InstallerPath apps/desktop/release/CML-0.1.0-Setup.exe -ReportPath .tmp/clean-machine-package-validation-2026-06-20.json` reported missing packaged backend, packaged Python runtime, expert Python runtime, Playwright runtime, OCR manifest, and helper manifest.
+- `scripts/packaging/smoke-packaged-runtime.ps1 -PackageRoot apps/desktop/release/win-unpacked -Port 7464` failed on missing packaged Python runtime.
+- `scripts/packaging/smoke-packaged-app-launch.ps1 -PackageRoot apps/desktop/release/win-unpacked -TimeoutSeconds 45` failed because the packaged app did not write a fresh startup status.
+- Desktop app foundation stays in progress. Next action is to rebuild a complete package, then rerun package/runtime/app-launch/installed-app smokes before attempting clean VM validation.
+
+LoRA expert validation:
+
+- Added repeatable `scripts/backend/export-hardware-proof.ps1` and `scripts/backend/benchmark-lora-adapter.ps1`.
+- `.tmp/hardware-proof-2026-06-20.json` proves `avx2=true` on this CPU via Windows `kernel32` processor feature detection.
+- `.tmp/lora-runtime-smoke-2026-06-20.json` passed live Transformers/PEFT runtime smoke against the real adapter and local Qwen2.5 0.5B base model.
+- `.tmp/lora-adapter-quality-benchmark-2026-06-20.json` failed the strict six-category live adapter benchmark: retrieval `98.33`, adapter `30.0`, delta `-68.33`.
+- `.tmp/lora-proof-2026-06-20.json` now verifies hardware proof and blocks only on `adapter_quality_benchmark_failed`.
+- Compulsory cluster experts stay in progress. Hardware proof is no longer missing on this CPU, but public expert claims remain blocked until a live adapter quality benchmark beats retrieval.
+
 ## 2026-06-19 Backend / Frontend Bug Pass Snapshot
 
 Completed:

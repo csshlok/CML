@@ -1,0 +1,240 @@
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$AdapterPath,
+  [Parameter(Mandatory = $true)]
+  [string]$BaseModel,
+  [string[]]$SourcePaths = @("docs/PROJECT_CONTEXT.md", "docs/OVERALL_CONTEXT.md"),
+  [string]$ReportPath = ".tmp/lora-adapter-quality-benchmark.json",
+  [int]$MaxRealSources = 12,
+  [int]$BenchmarkCaseLimit = 6,
+  [int]$BenchmarkMaxNewTokens = 16
+)
+
+$ErrorActionPreference = "Stop"
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+$python = Join-Path $repoRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path $python)) {
+  $python = "python"
+}
+
+$adapterFullPath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $AdapterPath))
+$baseModelFullPath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $BaseModel))
+$reportFullPath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $ReportPath))
+$reportDir = Split-Path -Parent $reportFullPath
+if ($reportDir) {
+  New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
+}
+
+$resolvedSources = @()
+foreach ($sourcePath in $SourcePaths) {
+  $candidate = Join-Path $repoRoot $sourcePath
+  if (Test-Path $candidate) {
+    $resolvedSources += [System.IO.Path]::GetFullPath($candidate)
+  } elseif (Test-Path $sourcePath) {
+    $resolvedSources += [System.IO.Path]::GetFullPath($sourcePath)
+  } else {
+    throw "LoRA benchmark source path not found: $sourcePath"
+  }
+}
+
+$env:CML_LORA_BENCH_ADAPTER_PATH = $adapterFullPath
+$env:CML_LORA_BENCH_BASE_MODEL = $baseModelFullPath
+$env:CML_LORA_BENCH_SOURCE_PATHS_JSON = ConvertTo-Json @($resolvedSources) -Compress
+$env:CML_LORA_BENCH_REPORT_PATH = $reportFullPath
+$env:CML_LORA_BENCH_MAX_REAL_SOURCES = [string]$MaxRealSources
+$env:CML_LORA_BENCH_CASE_LIMIT = [string]$BenchmarkCaseLimit
+$env:CML_LORA_BENCH_MAX_NEW_TOKENS = [string]$BenchmarkMaxNewTokens
+
+$pythonScript = @'
+import json
+import os
+import re
+from pathlib import Path
+
+from backend.app.core.embeddings import content_hash
+from backend.app.core.expert_evaluation import (
+    build_expert_benchmark_report,
+    build_expert_evaluation_plan,
+    score_expert_response,
+)
+from backend.app.core.expert_runtime import run_adapter_runtime_batch, runtime_adapter_load_plan
+from backend.app.core.hardware import hardware_status
+
+
+def real_source_records(paths: list[Path], *, limit: int) -> list[dict]:
+    candidates: list[Path] = []
+    for path in paths:
+        if path.is_dir():
+            for child in path.rglob("*"):
+                if should_use_source_file(child):
+                    candidates.append(child)
+        elif should_use_source_file(path):
+            candidates.append(path)
+    records: list[dict] = []
+    for path in candidates:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for section in split_real_text(path, text):
+            records.append(section)
+            if len(records) >= limit:
+                return records
+    return records
+
+
+def should_use_source_file(path: Path) -> bool:
+    if not path.exists() or not path.is_file():
+        return False
+    ignored = {".git", ".venv", "node_modules", "data", ".tmp", "apps/desktop/release"}
+    normalized_parts = {part.lower() for part in path.parts}
+    if any(part in normalized_parts for part in ignored):
+        return False
+    return path.suffix.lower() in {".md", ".txt", ".py", ".ps1", ".js", ".ts", ".tsx", ".json"}
+
+
+def split_real_text(path: Path, text: str) -> list[dict]:
+    sections: list[tuple[str, str]] = []
+    title = path.name
+    buffer: list[str] = []
+    for line in text.splitlines():
+        if re.match(r"^#{1,3}\s+\S", line) and buffer:
+            sections.append((title, "\n".join(buffer).strip()))
+            title = line.lstrip("#").strip() or path.name
+            buffer = []
+        else:
+            if re.match(r"^#{1,3}\s+\S", line):
+                title = line.lstrip("#").strip() or path.name
+            buffer.append(line)
+    if buffer:
+        sections.append((title, "\n".join(buffer).strip()))
+    rows: list[dict] = []
+    for section_title, section_text in sections:
+        if len(section_text.strip()) < 400:
+            continue
+        clean = " ".join(section_text.split())
+        rows.append(
+            {
+                "title": f"{path.name} - {section_title}",
+                "path": str(path),
+                "text": section_text,
+                "summary": clean[:700],
+            }
+        )
+    return rows
+
+
+adapter_path = Path(os.environ["CML_LORA_BENCH_ADAPTER_PATH"])
+base_model = os.environ["CML_LORA_BENCH_BASE_MODEL"]
+source_paths = [Path(item) for item in json.loads(os.environ["CML_LORA_BENCH_SOURCE_PATHS_JSON"])]
+report_path = Path(os.environ["CML_LORA_BENCH_REPORT_PATH"])
+max_real_sources = int(os.environ.get("CML_LORA_BENCH_MAX_REAL_SOURCES") or "12")
+case_limit = int(os.environ.get("CML_LORA_BENCH_CASE_LIMIT") or "6")
+max_new_tokens = int(os.environ.get("CML_LORA_BENCH_MAX_NEW_TOKENS") or "16")
+
+source_records = real_source_records(source_paths, limit=max_real_sources)
+if not source_records:
+    raise SystemExit("No real source records were found for LoRA adapter benchmark.")
+
+documents = [
+    {
+        "source_id": f"source-{index + 1}",
+        "title": item["title"],
+        "summary": item["summary"],
+        "text": item["text"],
+        "content_hash": content_hash(item["text"]),
+    }
+    for index, item in enumerate(source_records)
+]
+dataset = {
+    "cluster_id": "cluster-smoke",
+    "dataset_hash": content_hash("\n".join(f"{doc['source_id']}:{doc['content_hash']}" for doc in documents)),
+    "documents": documents,
+}
+plan = build_expert_evaluation_plan(dataset, max_cases=max(1, case_limit))
+load_plan = runtime_adapter_load_plan(adapter_path=adapter_path, base_model=base_model)
+if not load_plan.get("available"):
+    report_path.write_text(
+        json.dumps(
+            {
+                "status": "runtime_unavailable",
+                "passes": False,
+                "adapter_load_plan": load_plan,
+                "hardware_status": hardware_status(),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    raise SystemExit("Adapter runtime load plan is not available.")
+
+runtime = run_adapter_runtime_batch(
+    adapter_path=adapter_path,
+    base_model=base_model,
+    prompts=[case["prompt"] for case in plan["cases"]],
+    max_new_tokens=max_new_tokens,
+)
+if not runtime.get("ok"):
+    report_path.write_text(
+        json.dumps(
+            {
+                "status": "runtime_failed",
+                "passes": False,
+                "adapter_load_plan": load_plan,
+                "runtime": runtime,
+                "hardware_status": hardware_status(),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    raise SystemExit(runtime.get("error") or "Adapter runtime benchmark failed.")
+
+responses = runtime.get("responses") or []
+adapter_case_scores = [
+    score_expert_response(case, (responses[index] or {}).get("response_text") or "")
+    for index, case in enumerate(plan["cases"])
+]
+retrieval_case_scores = [
+    score_expert_response(
+        case,
+        "According to source " + str(case["source_title"]) + ", "
+        + " ".join(str(term) for term in case.get("expected_terms") or []),
+    )
+    for case in plan["cases"]
+]
+benchmark = build_expert_benchmark_report(
+    plan,
+    retrieval_case_scores=retrieval_case_scores,
+    adapter_case_scores=adapter_case_scores,
+    mode="live_adapter_benchmark",
+    live_adapter_backed=True,
+)
+report = {
+    "status": benchmark["status"],
+    "passes": benchmark["passes"],
+    "adapter_path": str(adapter_path),
+    "base_model": base_model,
+    "source_records": [
+        {"title": item["title"], "path": item["path"], "chars": len(item["text"])}
+        for item in source_records
+    ],
+    "dataset": {
+        "source_count": len(documents),
+        "dataset_hash": dataset["dataset_hash"],
+    },
+    "evaluation_plan": {"case_count": plan["case_count"], "categories": plan["categories"]},
+    "adapter_load_plan": load_plan,
+    "runtime": runtime,
+    "adapter_case_scores": adapter_case_scores,
+    "retrieval_case_scores": retrieval_case_scores,
+    "benchmark_report": benchmark,
+    "hardware_status": hardware_status(),
+}
+report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+print(json.dumps({"report_path": str(report_path), "status": report["status"], "passes": report["passes"], "overall": benchmark["overall"]}, indent=2))
+if not benchmark["passes"]:
+    raise SystemExit(2)
+'@
+
+$pythonScript | & $python -
+if ($LASTEXITCODE -ne 0) {
+  exit $LASTEXITCODE
+}

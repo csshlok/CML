@@ -1,6 +1,6 @@
 # Windows VM Validation
 
-Last updated: 2026-06-14
+Last updated: 2026-06-20
 
 ## Release Gate
 
@@ -16,12 +16,27 @@ Required environment:
 
 ## Current State
 
-The package has already moved past the old missing-resources failure mode.
+The current checked-out package artifact is not valid for clean VM launch validation.
 
-That older state is useful only as historical context now.
+On 2026-06-20, local validation against `apps/desktop/release/win-unpacked` reported missing packaged resources:
+
+- `resources/backend`
+- `resources/python-runtime/python.exe`
+- `resources/expert-python-runtime/python.exe`
+- `resources/ms-playwright`
+- `resources/backend/bin/ocr/manifest.json`
+- `resources/helper-manifest.json`
+
+Evidence:
+
+- `.tmp/clean-machine-package-validation-2026-06-20.json`
+- `scripts/packaging/smoke-packaged-runtime.ps1 -PackageRoot apps/desktop/release/win-unpacked -Port 7464` failed on missing packaged Python runtime.
+- `scripts/packaging/smoke-packaged-app-launch.ps1 -PackageRoot apps/desktop/release/win-unpacked -TimeoutSeconds 45` failed because the packaged app did not write fresh startup status.
 
 The active blocker is:
 
+- rebuild a complete package artifact
+- rerun packaged runtime, packaged app launch, installed-app launch, and installer lifecycle smokes locally
 - rerun the current installer and installed-app smoke sequence on a healthier clean VM image
 - verify first-run parity for the current package
 - capture installer/startup evidence from the actual VM run
@@ -42,9 +57,9 @@ That means the VM image itself was not reliable enough to certify or reject the 
 
 Earlier package validation failures were dominated by missing packaged resources and non-portable runtime layout.
 
-Those are no longer the primary live issue.
+Those failures are present again in the current checked-out artifact, so do not send this artifact to a clean VM until it has been rebuilt and local package validation is green.
 
-Keep the old failures in mind only to avoid regression:
+Current missing-resource failures to eliminate:
 
 - missing `resources/backend`
 - missing packaged Python runtime
@@ -55,20 +70,21 @@ Keep the old failures in mind only to avoid regression:
 
 ## What Must Happen Next
 
-1. Use a healthier clean Windows VM image.
-2. Run the current packaged installer.
-3. Validate installed-app first run, not only `win-unpacked`.
-4. Capture:
+1. Rebuild a complete Windows package artifact.
+2. Rerun local package structure/runtime/app-launch/installed-app smokes.
+3. Use a healthier clean Windows VM image.
+4. Run the rebuilt packaged installer.
+5. Validate installed-app first run, not only `win-unpacked`.
+6. Capture:
    - installer outcome
    - `startup-status.json`
    - `desktop-runtime.log`
    - `backend-stdout.log`
    - `backend-stderr.log`
-5. Treat the gate as passed only after the current package succeeds in that environment.
+7. Treat the gate as passed only after the current package succeeds in that environment.
 
 ## Current Assessment
 
 Status: not release-cleared.
 
-The blocker is no longer “the package is obviously incomplete.”
-The blocker is “the current package still needs a trustworthy clean-VM pass.”
+The current local package artifact is incomplete, so clean VM validation is blocked until a complete artifact is rebuilt and local package smokes pass.
