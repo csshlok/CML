@@ -131,13 +131,13 @@ export function TimelineRoute() {
   const activeItem = selected ?? activities[0] ?? null;
 
   return (
-    <div className="vault-page-wash grid h-full grid-cols-[minmax(0,1fr)_320px] overflow-hidden bg-background">
-      <main className="min-w-0 overflow-y-auto px-8 py-8">
+    <div className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto bg-background xl:grid-cols-[minmax(0,1fr)_320px] xl:overflow-hidden">
+      <main className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:overflow-y-auto">
         <header className="border-b border-border pb-6">
           <h1 className="page-title">Timeline</h1>
           <p className="mt-2 text-sm text-muted-foreground">Everything Vault processed, indexed, changed, and answered.</p>
-          <div className="mt-6 grid gap-3 md:grid-cols-[1fr_auto]">
-            <div className="relative max-w-xl">
+          <div className="mt-6 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+            <div className="relative min-w-0 max-w-xl">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input className="pl-9" placeholder="Search activity..." value={query} onChange={(event) => setQuery(event.target.value)} />
             </div>
@@ -167,7 +167,7 @@ export function TimelineRoute() {
                   key={item.id}
                   type="button"
                   onClick={() => setSelected(item)}
-                  className="grid w-full gap-4 px-4 py-4 text-left transition-colors hover:bg-accent/35 md:grid-cols-[116px_32px_1fr]"
+                  className="grid w-full gap-3 px-4 py-4 text-left transition-colors hover:bg-accent/35 sm:grid-cols-[96px_32px_minmax(0,1fr)] md:grid-cols-[116px_32px_minmax(0,1fr)]"
                 >
                   <time className="text-xs text-muted-foreground">{formatActivityTime(item.time)}</time>
                   <span className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background">
@@ -192,7 +192,7 @@ export function TimelineRoute() {
         </section>
       </main>
 
-      <aside className="right-panel px-6 py-8">
+      <aside className="min-w-0 border-t border-border bg-card px-4 py-6 sm:px-6 xl:w-[var(--panel-width)] xl:min-w-[var(--panel-width)] xl:overflow-y-auto xl:border-l xl:border-t-0 xl:py-8">
         <h2 className="text-sm font-semibold">Activity detail</h2>
         {activeItem ? (
           <div className="mt-5">
@@ -200,8 +200,8 @@ export function TimelineRoute() {
               <span className="h-2.5 w-2.5 rounded-full bg-[var(--cluster-sage)]" />
               <span className="text-sm font-medium">{labelForKind(activeItem.kind)}</span>
             </div>
-            <h3 className="mt-6 text-xl font-semibold leading-snug">{activeItem.title}</h3>
-            <p className="mt-3 text-sm leading-6 text-muted-foreground">{activeItem.detail}</p>
+            <h3 className="mt-6 break-words text-xl font-semibold leading-snug">{activeItem.title}</h3>
+            <p className="mt-3 break-words text-sm leading-6 text-muted-foreground">{activeItem.detail}</p>
             <dl className="mt-7 divide-y divide-border border-y border-border text-sm">
               <Meta label="Time" value={formatActivityTime(activeItem.time)} />
               <Meta label="Type" value={labelForKind(activeItem.kind)} />
@@ -232,9 +232,9 @@ function jobTitle(job: AppJobRecord) {
 
 function Meta({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex justify-between gap-4 py-3">
+    <div className="flex flex-col gap-1 py-3 sm:flex-row sm:justify-between sm:gap-4">
       <dt className="text-muted-foreground">{label}</dt>
-      <dd className="truncate text-right">{value}</dd>
+      <dd className="break-all sm:text-right">{value}</dd>
     </div>
   );
 }

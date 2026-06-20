@@ -119,15 +119,15 @@ function MapView() {
   }
 
   return (
-    <div className="vault-page-wash grid h-full grid-cols-[minmax(0,1fr)_326px] overflow-hidden">
-      <main className="min-w-0 overflow-y-auto px-8 py-9">
+    <div className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_326px] xl:overflow-hidden">
+      <main className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 xl:overflow-y-auto">
         <header>
           <h1 className="page-title">Map</h1>
           <p className="mt-3 text-sm text-muted-foreground">A navigable view of your memory spaces.</p>
         </header>
 
         <div className="mt-8 flex flex-wrap items-center gap-2">
-          <div className="flex h-10 w-[220px] items-center gap-2 rounded-md border border-border bg-card px-3 text-sm text-muted-foreground">
+          <div className="flex h-10 w-full items-center gap-2 rounded-md border border-border bg-card px-3 text-sm text-muted-foreground sm:w-[220px]">
             <Search className="h-4 w-4" />
             Search map
           </div>
@@ -139,10 +139,10 @@ function MapView() {
               Back to map
             </Button>
           )}
-          <Button variant="outline" className="ml-auto gap-2"><span className="h-2.5 w-2.5 rounded-full bg-muted-foreground" /> Legend</Button>
+          <Button variant="outline" className="gap-2 sm:ml-auto"><span className="h-2.5 w-2.5 rounded-full bg-muted-foreground" /> Legend</Button>
         </div>
 
-        <section className="relative mt-6 h-[660px] overflow-hidden rounded-md">
+        <section className="relative mt-6 h-[520px] overflow-hidden rounded-md sm:h-[660px]">
           {drilledCluster ? (
             <ClusterDataPointMap
               cluster={drilledCluster}
@@ -180,8 +180,8 @@ function MapView() {
         </section>
 
         <section className="rounded-md border border-border bg-card px-4 py-3">
-          <div className="mb-3 flex items-center justify-between text-xs">
-            <div className="flex items-center gap-4">
+          <div className="mb-3 flex flex-col gap-2 text-xs sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-4">
               <span className="font-medium uppercase tracking-[0.14em] text-muted-foreground">List fallback</span>
               <span className="text-muted-foreground">Top by connections</span>
             </div>
@@ -189,7 +189,7 @@ function MapView() {
               View all in list <ArrowRight className="h-4 w-4" />
             </Link>
           </div>
-          <div className="grid gap-2 md:grid-cols-5">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
             {clusters.slice(0, 5).map((cluster) => (
               <button
                 key={cluster.id}
@@ -198,11 +198,11 @@ function MapView() {
                   setSelectedId(cluster.id);
                   setDrillClusterId(cluster.id);
                 }}
-                className="flex items-center gap-3 border-r border-border px-2 py-1.5 text-left last:border-r-0"
+                className="flex min-w-0 items-center gap-3 border-border px-2 py-1.5 text-left 2xl:border-r 2xl:last:border-r-0"
               >
                 <IconTile tint={cluster.tint} />
                 <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium">{cluster.name}</span>
+                  <span className="block break-words text-sm font-medium">{cluster.name}</span>
                   <span className="block text-xs text-muted-foreground">{sourceCounts.get(cluster.id) ?? 0} sources</span>
                 </span>
               </button>
@@ -211,28 +211,28 @@ function MapView() {
         </section>
       </main>
 
-      <aside className="right-panel px-7 py-8">
-        <div className="flex items-center gap-3">
+      <aside className="border-t border-border bg-card/35 px-4 py-6 sm:px-7 xl:border-l xl:border-t-0 xl:overflow-y-auto">
+        <div className="flex min-w-0 items-center gap-3">
           <span className={`h-2.5 w-2.5 rounded-full bg-[var(--cluster-${selected.tint})]`} />
-          <h2 className="text-lg font-semibold">{selected.name}</h2>
+          <h2 className="min-w-0 flex-1 break-words text-lg font-semibold">{selected.name}</h2>
           <MoreHorizontal className="ml-auto h-4 w-4 text-muted-foreground" />
           <span className="h-6 w-px bg-border" />
           <X className="h-4 w-4 text-muted-foreground" />
         </div>
-        <p className="mt-8 text-sm leading-6 text-muted-foreground">{selected.description}</p>
-        <p className="mt-4 text-xs text-muted-foreground">Updated {formatDate(selected.lastActive)} <span className="px-2">/</span> Local library</p>
+        <p className="mt-8 break-words text-sm leading-6 text-muted-foreground">{selected.description}</p>
+        <p className="mt-4 break-words text-xs text-muted-foreground">Updated {formatDate(selected.lastActive)} <span className="px-2">/</span> Local library</p>
 
         <MetricGrid className="mt-10" sources={selectedSources.length} />
         <Divider />
         <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Nearest clusters</h3>
         <div className="mt-5 space-y-5">
           {nearestClusters(clusters, selected, sourceCounts).map((cluster) => (
-            <div key={cluster.id} className="flex items-center gap-3 text-sm">
+            <div key={cluster.id} className="flex min-w-0 items-center gap-3 text-sm">
               <span
-                className="h-2.5 w-2.5 rounded-full"
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
                 style={{ background: `var(--cluster-${cluster.tint})` }}
               />
-              <span className="flex-1">{cluster.name}</span>
+              <span className="min-w-0 flex-1 break-words">{cluster.name}</span>
               <span className="text-muted-foreground">{sourceCounts.get(cluster.id) ?? 0}</span>
             </div>
           ))}
@@ -248,7 +248,7 @@ function MapView() {
             <div className="text-sm text-muted-foreground">No sources are linked to this cluster yet.</div>
           )}
         </div>
-        <Link to="/sources" className="mt-6 flex items-center gap-2 text-sm text-primary">
+        <Link to="/sources" className="mt-6 flex flex-wrap items-center gap-2 text-sm text-primary">
           View all {selectedSources.length} sources <ArrowRight className="h-4 w-4" />
         </Link>
 
@@ -296,11 +296,11 @@ function MapCard({
     <button
       type="button"
       onClick={onSelect}
-      className="absolute -translate-x-1/2 -translate-y-1/2 rounded-md border bg-card/95 px-4 py-3 text-left transition-transform hover:-translate-y-[calc(50%+2px)]"
+      className="absolute max-w-[44vw] -translate-x-1/2 -translate-y-1/2 rounded-md border bg-card/95 px-4 py-3 text-left transition-transform hover:-translate-y-[calc(50%+2px)] sm:max-w-none"
       style={{
         left: `${node.x}%`,
         top: `${node.y}%`,
-        width: node.w ?? 170,
+        width: `min(${node.w ?? 170}px, 44vw)`,
         borderColor: selected ? `var(--cluster-${node.cluster.tint})` : "var(--border)",
         background: "var(--bg-card)",
       }}
@@ -308,8 +308,8 @@ function MapCard({
       <div className="flex gap-3">
         <IconTile tint={node.cluster.tint} />
         <div className="min-w-0">
-          <div className="truncate text-sm font-semibold">{node.cluster.name}</div>
-          <div className="mt-1 text-xs leading-5 text-muted-foreground">
+          <div className="line-clamp-2 break-words text-sm font-semibold">{node.cluster.name}</div>
+          <div className="mt-1 break-words text-xs leading-5 text-muted-foreground">
             {sourceCount} sources <span className="px-1">/</span> {memories} memories
           </div>
         </div>
@@ -367,13 +367,13 @@ function ClusterDataPointMap({
         style={{
           left: "50%",
           top: "48%",
-          width: 190,
+          width: "min(190px, 78vw)",
           borderColor: `var(--cluster-${cluster.tint})`,
           background: "var(--bg-card)",
         }}
       >
         <IconTile tint={cluster.tint} />
-        <div className="mt-3 text-sm font-semibold">{cluster.name}</div>
+        <div className="mt-3 break-words text-sm font-semibold">{cluster.name}</div>
         <div className="mt-1 text-xs text-muted-foreground">{sources.length} data points</div>
       </div>
       {points.map((point) => (
@@ -384,23 +384,23 @@ function ClusterDataPointMap({
           style={{
             left: `${point.x}%`,
             top: `${point.y}%`,
-            width: 150,
+            width: "min(150px, 42vw)",
           }}
           title={point.source.title}
         >
-          <div className="truncate text-xs font-medium">{point.source.title}</div>
-          <div className="mt-1 truncate text-[11px] text-muted-foreground">
+          <div className="line-clamp-2 break-words text-xs font-medium">{point.source.title}</div>
+          <div className="mt-1 break-words text-[11px] text-muted-foreground">
             {point.source.type} / {point.source.state}
           </div>
         </Link>
       ))}
       {hiddenCount > 0 && (
-        <div className="absolute bottom-0 left-0 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+        <div className="absolute bottom-0 left-0 max-w-[90%] rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
           Showing {visibleSources.length} of {sources.length} data points. Use the list fallback for the full set.
         </div>
       )}
       {sources.length === 0 && (
-        <div className="absolute left-1/2 top-[62%] -translate-x-1/2 text-sm text-muted-foreground">
+        <div className="absolute left-1/2 top-[62%] max-w-[80%] -translate-x-1/2 text-center text-sm text-muted-foreground">
           This cluster has no linked data points yet.
         </div>
       )}
@@ -425,7 +425,7 @@ function IconTile({ tint }: { tint: Cluster["tint"] }) {
 
 function MetricGrid({ className = "", sources }: { className?: string; sources: number }) {
   return (
-    <div className={`grid grid-cols-4 gap-4 ${className}`}>
+    <div className={`grid grid-cols-2 gap-4 sm:grid-cols-4 ${className}`}>
       <Metric value={sources.toLocaleString()} label="Sources" />
       <Metric value={(sources * 64).toLocaleString()} label="Memories" />
       <Metric value={compactNumber(sources * 512)} label="Embeddings" />
@@ -436,8 +436,8 @@ function MetricGrid({ className = "", sources }: { className?: string; sources: 
 
 function Metric({ value, label }: { value: string; label: string }) {
   return (
-    <div>
-      <div className="font-semibold">{value}</div>
+    <div className="min-w-0">
+      <div className="break-words font-semibold">{value}</div>
       <div className="mt-1 text-xs text-muted-foreground">{label}</div>
     </div>
   );
@@ -445,11 +445,11 @@ function Metric({ value, label }: { value: string; label: string }) {
 
 function SourceLine({ source, memories }: { source: Source; memories: number }) {
   return (
-    <div className="flex gap-3 text-sm">
+    <div className="flex min-w-0 gap-3 text-sm">
       <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-issue)]" />
-      <div>
-        <div className="leading-5">{source.title}</div>
-        <div className="mt-1 text-xs text-muted-foreground">{source.type.toUpperCase()} <span className="px-2">/</span> {memories} memories</div>
+      <div className="min-w-0">
+        <div className="break-words leading-5">{source.title}</div>
+        <div className="mt-1 break-words text-xs text-muted-foreground">{source.type.toUpperCase()} <span className="px-2">/</span> {memories} memories</div>
       </div>
     </div>
   );
@@ -460,12 +460,12 @@ function ActionButton({ icon, label, danger, onClick }: { icon: ReactNode; label
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-3 rounded-md border bg-background px-3 py-2 text-left text-sm ${
+      className={`flex w-full min-w-0 items-center gap-3 rounded-md border bg-background px-3 py-2 text-left text-sm ${
         danger ? "border-destructive/30 text-destructive" : "border-border text-foreground"
       }`}
     >
       {icon}
-      {label}
+      <span className="min-w-0 break-words">{label}</span>
     </button>
   );
 }

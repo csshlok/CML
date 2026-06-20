@@ -67,7 +67,7 @@ function ClusterDetail() {
       try {
         const clusterRow = await getCluster(clusterId);
         const nextCluster = clusterFromRecord(clusterRow);
-        const [sourceRows, chatRows, jobRows, artifactRows] = await Promise.all([
+        const [sourceRows, chatRows, jobRows, artifactRows, statusRow] = await Promise.all([
           listSources(clusterRow.vault_id),
           listChatSessions(clusterRow.vault_id),
           listClusterExpertJobs(clusterRow.id).catch(() => []),
@@ -131,22 +131,22 @@ function ClusterDetail() {
   }
 
   return (
-    <div className="vault-page-wash grid h-full grid-cols-[minmax(0,1fr)_326px] overflow-hidden">
-      <main className="min-w-0 overflow-y-auto px-9 py-8">
+    <div className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_326px] xl:overflow-hidden">
+      <main className="min-w-0 px-4 py-6 sm:px-6 lg:px-9 xl:overflow-y-auto">
         <Link to="/clusters" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" />
           Back to clusters
         </Link>
 
         <header className="mt-7 flex flex-wrap items-start justify-between gap-5">
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="page-title">{cluster.name}</h1>
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-3">
+              <h1 className="page-title break-words">{cluster.name}</h1>
               <span className={`h-2.5 w-2.5 rounded-full bg-[var(--cluster-${cluster.tint})]`} />
             </div>
-            <p className="mt-2 text-sm text-muted-foreground">{cluster.description}</p>
+            <p className="mt-2 max-w-3xl break-words text-sm text-muted-foreground">{cluster.description}</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button className="gap-2 bg-primary text-primary-foreground" onClick={() => void openClusterChat()}>
               <MessageSquare className="h-4 w-4" />
               Chat with cluster
@@ -161,7 +161,7 @@ function ClusterDetail() {
           </div>
         </header>
 
-        <nav className="mt-8 flex gap-8 border-b border-border text-sm">
+        <nav className="mt-8 flex gap-6 overflow-x-auto border-b border-border text-sm sm:gap-8">
           {tabs.map((tab) => (
             <button
               key={tab}
@@ -180,7 +180,7 @@ function ClusterDetail() {
         {activeTab === "Overview" && (
           <section className="mt-7">
             <h2 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Summary</h2>
-            <p className="mt-4 max-w-3xl text-sm leading-7">
+            <p className="mt-4 max-w-3xl break-words text-sm leading-7">
               {cluster.summary || cluster.description || "This memory space is ready for sources, chats, and local context."}
             </p>
 
@@ -251,20 +251,22 @@ function ReferenceTable({
   return (
     <section className="rounded-md border border-border bg-card">
       <h3 className="px-4 pt-4 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{title}</h3>
-      <div className="mt-4 grid grid-cols-[1.4fr_1fr_72px] border-b border-border px-4 pb-3 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-        {columns.map((column) => <span key={column}>{column}</span>)}
-      </div>
-      <div className="divide-y divide-border">
-        {rows.map((row) => (
-          <div key={row.join(":")} className="grid grid-cols-[1.4fr_1fr_72px] items-center gap-4 px-4 py-3 text-sm">
-            <span className="flex min-w-0 items-center gap-2">
-              {fileIcons && <FileText className="h-4 w-4 shrink-0 text-[var(--status-issue)]" />}
-              <span className="truncate">{row[0]}</span>
-            </span>
-            <span className="truncate text-muted-foreground">{row[1]}</span>
-            <span className="text-right text-muted-foreground">{row[2]}</span>
-          </div>
-        ))}
+      <div className="overflow-x-auto">
+        <div className="mt-4 grid min-w-[520px] grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_72px] border-b border-border px-4 pb-3 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+          {columns.map((column) => <span key={column}>{column}</span>)}
+        </div>
+        <div className="min-w-[520px] divide-y divide-border">
+          {rows.map((row) => (
+            <div key={row.join(":")} className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_72px] items-center gap-4 px-4 py-3 text-sm">
+              <span className="flex min-w-0 items-center gap-2">
+                {fileIcons && <FileText className="h-4 w-4 shrink-0 text-[var(--status-issue)]" />}
+                <span className="break-words">{row[0]}</span>
+              </span>
+              <span className="break-words text-muted-foreground">{row[1]}</span>
+              <span className="text-right text-muted-foreground">{row[2]}</span>
+            </div>
+          ))}
+        </div>
       </div>
       <Link to="/sources" className="flex items-center gap-2 px-4 py-4 text-sm text-primary">
         {action} <ArrowRight className="h-4 w-4" />
@@ -292,12 +294,12 @@ function LearningStatus({ cluster, sourceCount }: { cluster: Cluster; sourceCoun
 
 function StatusItem({ icon, label, value, meta }: { icon: ReactNode; label: string; value: string; meta: string }) {
   return (
-    <div className="flex gap-4 border-r border-border pr-5 last:border-r-0">
+    <div className="flex min-w-0 gap-4 md:border-r md:border-border md:pr-5 md:last:border-r-0">
       <span className="text-muted-foreground">{icon}</span>
-      <span>
+      <span className="min-w-0">
         <span className="block text-sm text-muted-foreground">{label}</span>
-        <span className="mt-1 block text-base font-medium text-primary">{value}</span>
-        <span className="mt-1 block text-xs text-muted-foreground">{meta}</span>
+        <span className="mt-1 block break-words text-base font-medium text-primary">{value}</span>
+        <span className="mt-1 block break-words text-xs text-muted-foreground">{meta}</span>
       </span>
     </div>
   );
@@ -307,21 +309,23 @@ function RecentSources({ sources }: { sources: Source[] }) {
   return (
     <section className="rounded-md border border-border bg-card">
       <h3 className="px-4 pt-4 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Recent sources</h3>
-      <div className="mt-4 divide-y divide-border">
-        {sources.map((source) => (
-          <div key={source.id} className="grid grid-cols-[1fr_44px_92px_72px] items-center gap-4 px-4 py-3 text-sm">
-            <span className="flex min-w-0 items-center gap-3">
-              <FileText className="h-4 w-4 shrink-0 text-[var(--status-issue)]" />
-              <span className="truncate">{source.title}</span>
-            </span>
-            <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-center text-xs text-muted-foreground">{source.type.toUpperCase()}</span>
-            <span className="text-muted-foreground">{formatDate(source.updatedAt)}</span>
-            <span className="text-right text-xs text-muted-foreground">{memoryEstimate(source)} memories</span>
-          </div>
-        ))}
-        {sources.length === 0 && (
-          <div className="px-4 py-10 text-sm text-muted-foreground">No recent sources yet.</div>
-        )}
+      <div className="mt-4 overflow-x-auto">
+        <div className="min-w-[560px] divide-y divide-border">
+          {sources.map((source) => (
+            <div key={source.id} className="grid grid-cols-[minmax(0,1fr)_44px_92px_72px] items-center gap-4 px-4 py-3 text-sm">
+              <span className="flex min-w-0 items-center gap-3">
+                <FileText className="h-4 w-4 shrink-0 text-[var(--status-issue)]" />
+                <span className="break-words">{source.title}</span>
+              </span>
+              <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-center text-xs text-muted-foreground">{source.type.toUpperCase()}</span>
+              <span className="text-muted-foreground">{formatDate(source.updatedAt)}</span>
+              <span className="text-right text-xs text-muted-foreground">{memoryEstimate(source)} memories</span>
+            </div>
+          ))}
+          {sources.length === 0 && (
+            <div className="px-4 py-10 text-sm text-muted-foreground">No recent sources yet.</div>
+          )}
+        </div>
       </div>
       <Link to="/sources" className="flex items-center gap-2 px-4 py-4 text-sm text-primary">
         View all sources <ArrowRight className="h-4 w-4" />
@@ -335,21 +339,23 @@ function RecentChats({ chats }: { chats: Array<ChatSessionRecord | { id: string;
   return (
     <section className="rounded-md border border-border bg-card">
       <h3 className="px-4 pt-4 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Recent chats</h3>
-      <div className="mt-4 divide-y divide-border">
-        {rows.slice(0, 3).map((chat) => (
-          <div key={chat.id} className="grid grid-cols-[1fr_48px_120px_20px] items-center gap-4 px-4 py-3 text-sm">
-            <span className="flex min-w-0 items-center gap-3">
-              <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="truncate">{chat.title}</span>
-            </span>
-            <span className="text-muted-foreground">You</span>
-            <span className="text-muted-foreground">{"updated_at" in chat ? formatDate(chat.updated_at) : ""}</span>
-            <ArrowRight className="h-4 w-4 text-muted-foreground" />
-          </div>
-        ))}
-        {rows.length === 0 && (
-          <div className="px-4 py-10 text-sm text-muted-foreground">No scoped chats yet.</div>
-        )}
+      <div className="mt-4 overflow-x-auto">
+        <div className="min-w-[560px] divide-y divide-border">
+          {rows.slice(0, 3).map((chat) => (
+            <div key={chat.id} className="grid grid-cols-[minmax(0,1fr)_48px_120px_20px] items-center gap-4 px-4 py-3 text-sm">
+              <span className="flex min-w-0 items-center gap-3">
+                <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="break-words">{chat.title}</span>
+              </span>
+              <span className="text-muted-foreground">You</span>
+              <span className="text-muted-foreground">{"updated_at" in chat ? formatDate(chat.updated_at) : ""}</span>
+              <ArrowRight className="h-4 w-4 text-muted-foreground" />
+            </div>
+          ))}
+          {rows.length === 0 && (
+            <div className="px-4 py-10 text-sm text-muted-foreground">No scoped chats yet.</div>
+          )}
+        </div>
       </div>
       <Link to="/chat" className="flex items-center gap-2 px-4 py-4 text-sm text-primary">
         View all chats <ArrowRight className="h-4 w-4" />
@@ -361,9 +367,9 @@ function RecentChats({ chats }: { chats: Array<ChatSessionRecord | { id: string;
 function ClusterSourcesPanel({ sources }: { sources: Source[] }) {
   return (
     <section className="mt-7">
-      <div className="flex items-center justify-between gap-4 border-b border-border pb-4">
+      <div className="flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Sources</h2>
-        <div className="flex h-9 w-60 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm text-muted-foreground">
+        <div className="flex h-9 w-full items-center gap-2 rounded-md border border-border bg-card px-3 text-sm text-muted-foreground sm:w-60">
           <Search className="h-4 w-4" />
           Search sources
         </div>
@@ -373,19 +379,19 @@ function ClusterSourcesPanel({ sources }: { sources: Source[] }) {
           <Link
             key={source.id}
             to="/sources"
-            className="grid min-h-[74px] grid-cols-[minmax(0,1fr)_104px_112px] items-center gap-5 rounded-md border border-border bg-card px-4 py-3 text-sm hover:border-primary/40"
+            className="grid min-h-[74px] grid-cols-1 gap-3 rounded-md border border-border bg-card px-4 py-3 text-sm hover:border-primary/40 sm:grid-cols-[minmax(0,1fr)_104px_112px] sm:items-center sm:gap-5"
           >
             <span className="flex min-w-0 items-start gap-3">
               <FileText className="mt-1 h-4 w-4 shrink-0 text-[var(--cluster-sky)]" />
               <span className="min-w-0">
-                <span className="block truncate font-medium">{source.title}</span>
-                <span className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                <span className="block break-words font-medium">{source.title}</span>
+                <span className="mt-1 line-clamp-2 break-words text-xs leading-5 text-muted-foreground">
                   {source.summary || source.preview || "No extracted preview yet."}
                 </span>
               </span>
             </span>
             <span className="text-muted-foreground">{source.type.toUpperCase()}</span>
-            <span className="text-right text-muted-foreground">{source.state}</span>
+            <span className="text-muted-foreground sm:text-right">{source.state}</span>
           </Link>
         ))}
         {sources.length === 0 && (
@@ -408,11 +414,11 @@ function ClusterChatsPanel({ chats }: { chats: Array<ChatSessionRecord | { id: s
             key={chat.id}
             to="/chat/$chatId"
             params={{ chatId: chat.id }}
-            className="grid min-h-[62px] grid-cols-[minmax(0,1fr)_132px_20px] items-center gap-5 rounded-md border border-border bg-card px-4 py-3 text-sm hover:border-primary/40"
+            className="grid min-h-[62px] grid-cols-1 gap-3 rounded-md border border-border bg-card px-4 py-3 text-sm hover:border-primary/40 sm:grid-cols-[minmax(0,1fr)_132px_20px] sm:items-center sm:gap-5"
           >
             <span className="flex min-w-0 items-center gap-3">
               <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="truncate font-medium">{chat.title}</span>
+              <span className="break-words font-medium">{chat.title}</span>
             </span>
             <span className="text-muted-foreground">{"updated_at" in chat ? formatDate(chat.updated_at) : ""}</span>
             <ArrowRight className="h-4 w-4 text-muted-foreground" />
@@ -442,24 +448,24 @@ function ClusterExpertPanel({
   const runtimeReady = Boolean(status?.runtime_load?.available);
   return (
     <section className="mt-7">
-      <div className="flex items-center justify-between gap-4 border-b border-border pb-4">
-        <div>
+      <div className="flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           <h2 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Cluster expert</h2>
-          <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+          <p className="mt-2 max-w-2xl break-words text-sm text-muted-foreground">
             Retrieval is available before training. The UI only shows a trained expert after adapter graduation passes.
           </p>
         </div>
-        <span className="rounded-full border border-border bg-card px-3 py-1 text-sm">
+        <span className="max-w-full break-words rounded-full border border-border bg-card px-3 py-1 text-sm">
           {status?.user_status || "Searchable now"}
         </span>
       </div>
 
       <div className="mt-5 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
         <section className="rounded-md border border-border bg-card p-5">
-          <div className="flex items-start justify-between gap-4">
-            <div>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
               <h3 className="text-sm font-semibold">Graduation state</h3>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              <p className="mt-2 break-words text-sm leading-6 text-muted-foreground">
                 {status?.detail || "This cluster can answer through retrieval while local LoRA training is pending."}
               </p>
             </div>
@@ -484,11 +490,11 @@ function ClusterExpertPanel({
             <span className={`h-2 w-2 rounded-full ${runtimeReady ? "bg-primary" : "bg-muted-foreground"}`} />
             <span>{runtimeReady ? "Adapter load contract ready" : "Runtime smoke still required"}</span>
           </div>
-          <p className="mt-3 text-sm leading-6 text-muted-foreground">
+          <p className="mt-3 break-words text-sm leading-6 text-muted-foreground">
             {status?.runtime_load?.detail || "Connect a real local inference runtime and run the adapter smoke before public trained-expert claims."}
           </p>
           {status?.failure_code && (
-            <p className="mt-4 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+            <p className="mt-4 break-words rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
               Failure: {status.failure_code}
             </p>
           )}
@@ -519,7 +525,7 @@ function ClusterExpertPanel({
       </div>
 
       {latestJob?.failure_code && (
-        <p className="mt-4 text-xs text-muted-foreground">
+        <p className="mt-4 break-words text-xs text-muted-foreground">
           Latest blocked gate: {latestJob.failure_code}. Keep the cluster retrieval-backed until this is cleared.
         </p>
       )}
@@ -529,9 +535,9 @@ function ClusterExpertPanel({
 
 function HashRow({ label, value }: { label: string; value?: string | null }) {
   return (
-    <div className="grid grid-cols-[112px_minmax(0,1fr)] gap-3">
+    <div className="grid grid-cols-1 gap-1 sm:grid-cols-[112px_minmax(0,1fr)] sm:gap-3">
       <span>{label}</span>
-      <span className="truncate font-mono text-[11px] text-foreground">{value || "Not available"}</span>
+      <span className="break-all font-mono text-[11px] text-foreground">{value || "Not available"}</span>
     </div>
   );
 }
@@ -550,12 +556,12 @@ function ExpertList({ title, empty, children }: { title: string; empty: string; 
 
 function ExpertListRow({ title, detail, meta }: { title: string; detail: string; meta: string }) {
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_120px] gap-4 px-4 py-3 text-sm">
+    <div className="grid grid-cols-1 gap-2 px-4 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_120px] sm:gap-4">
       <span className="min-w-0">
-        <span className="block truncate font-medium">{title}</span>
-        <span className="mt-1 block truncate text-xs text-muted-foreground">{detail}</span>
+        <span className="block break-words font-medium">{title}</span>
+        <span className="mt-1 block break-words text-xs text-muted-foreground">{detail}</span>
       </span>
-      <span className="text-right text-xs text-muted-foreground">{meta}</span>
+      <span className="text-xs text-muted-foreground sm:text-right">{meta}</span>
     </div>
   );
 }
@@ -579,10 +585,10 @@ function ClusterMemoryProfile({
       <div className="mt-5 grid gap-4 xl:grid-cols-2">
         <section className="rounded-md border border-border bg-card p-5">
           <h3 className="text-sm font-semibold">Profile state</h3>
-          <p className="mt-3 text-sm leading-6 text-muted-foreground">
+          <p className="mt-3 break-words text-sm leading-6 text-muted-foreground">
             {cluster.summary || cluster.description || "Vault has not generated a profile summary for this cluster yet."}
           </p>
-          <div className="mt-5 grid grid-cols-3 gap-4">
+          <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-3">
             <Metric value={sources.length.toLocaleString()} label="Sources" />
             <Metric value={artifacts.length.toLocaleString()} label="Artifacts" />
             <Metric value={jobs.length.toLocaleString()} label="Jobs" />
@@ -595,7 +601,7 @@ function ClusterMemoryProfile({
               <div key={source.id} className="flex items-start gap-3 text-sm">
                 <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--cluster-sage)]" />
                 <span className="min-w-0">
-                  <span className="block truncate font-medium">{source.title}</span>
+                  <span className="block break-words font-medium">{source.title}</span>
                   <span className="mt-1 block text-xs text-muted-foreground">{formatDate(source.updatedAt)}</span>
                 </span>
               </div>
@@ -624,18 +630,18 @@ function ClusterPointMap({ cluster, sources }: { cluster: Cluster; sources: Sour
 
   return (
     <section className="mt-7">
-      <div className="flex items-center justify-between gap-4 border-b border-border pb-4">
+      <div className="flex flex-col gap-2 border-b border-border pb-4 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Map</h2>
         <span className="text-sm text-muted-foreground">{sources.length.toLocaleString()} data points</span>
       </div>
       <div className="mt-5 grid gap-5 2xl:grid-cols-[minmax(0,1fr)_300px]">
-        <div className="relative min-h-[620px] overflow-hidden rounded-md border border-border bg-card">
+        <div className="relative min-h-[420px] overflow-hidden rounded-md border border-border bg-card sm:min-h-[620px]">
           <div
-            className="absolute left-1/2 top-[49%] z-20 flex w-[190px] -translate-x-1/2 -translate-y-1/2 flex-col items-center rounded-md border bg-card px-5 py-4 text-center"
+            className="absolute left-1/2 top-[49%] z-20 flex w-[min(190px,78vw)] -translate-x-1/2 -translate-y-1/2 flex-col items-center rounded-md border bg-card px-5 py-4 text-center"
             style={{ borderColor: `var(--cluster-${cluster.tint})` }}
           >
             <span className={`h-2.5 w-2.5 rounded-full bg-[var(--cluster-${cluster.tint})]`} />
-            <div className="mt-3 max-w-full truncate text-sm font-semibold">{cluster.name}</div>
+            <div className="mt-3 max-w-full break-words text-sm font-semibold">{cluster.name}</div>
             <div className="mt-1 text-xs text-muted-foreground">{sources.length} sources</div>
           </div>
           <svg className="absolute inset-0 h-full w-full" role="presentation">
@@ -655,18 +661,18 @@ function ClusterPointMap({ cluster, sources }: { cluster: Cluster; sources: Sour
             <Link
               key={point.source.id}
               to="/sources"
-              className="absolute z-30 block w-[164px] -translate-x-1/2 -translate-y-1/2 rounded-md border border-border bg-card px-3 py-2 text-left text-xs shadow-sm hover:border-primary/40"
+              className="absolute z-30 block w-[min(164px,44vw)] -translate-x-1/2 -translate-y-1/2 rounded-md border border-border bg-card px-3 py-2 text-left text-xs shadow-sm hover:border-primary/40"
               style={{ left: `${point.x}%`, top: `${point.y}%` }}
               title={point.source.title}
             >
-              <span className="block truncate font-medium">{point.source.title}</span>
-              <span className="mt-1 block truncate text-[11px] text-muted-foreground">
+              <span className="line-clamp-2 break-words font-medium">{point.source.title}</span>
+              <span className="mt-1 block break-words text-[11px] text-muted-foreground">
                 {point.source.type} / {point.source.state}
               </span>
             </Link>
           ))}
           {sources.length === 0 && (
-            <div className="absolute left-1/2 top-[62%] -translate-x-1/2 text-sm text-muted-foreground">
+            <div className="absolute left-1/2 top-[62%] max-w-[80%] -translate-x-1/2 text-center text-sm text-muted-foreground">
               This cluster has no linked data points yet.
             </div>
           )}
@@ -678,8 +684,8 @@ function ClusterPointMap({ cluster, sources }: { cluster: Cluster; sources: Sour
           <div className="divide-y divide-border">
             {sources.map((source) => (
               <Link key={source.id} to="/sources" className="block px-4 py-3 text-sm hover:bg-accent">
-                <span className="block truncate font-medium">{source.title}</span>
-                <span className="mt-1 block text-xs text-muted-foreground">{source.type} / {formatDate(source.updatedAt)}</span>
+                <span className="block break-words font-medium">{source.title}</span>
+                <span className="mt-1 block break-words text-xs text-muted-foreground">{source.type} / {formatDate(source.updatedAt)}</span>
               </Link>
             ))}
           </div>
@@ -706,8 +712,8 @@ function ClusterDetailRail({
   artifacts: ExpertArtifactRecord[];
 }) {
   return (
-    <aside className="right-panel px-6 py-8">
-      <div className="flex items-center justify-between">
+    <aside className="border-t border-border bg-card/35 px-4 py-6 sm:px-6 xl:border-l xl:border-t-0 xl:overflow-y-auto">
+      <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold">Cluster details</h2>
         <X className="h-4 w-4 text-muted-foreground" />
       </div>
@@ -719,27 +725,27 @@ function ClusterDetailRail({
           <div key={source.id} className="relative text-sm">
             <span className={`absolute -left-[19px] top-1.5 h-2 w-2 rounded-full ${index < 4 ? "bg-primary" : "bg-muted-foreground"}`} />
             <div className="text-muted-foreground">{formatDate(source.updatedAt)}</div>
-            <div className="mt-1">{source.state === "indexed" ? "Indexed" : source.state} {source.title}</div>
+            <div className="mt-1 break-words">{source.state === "indexed" ? "Indexed" : source.state} {source.title}</div>
           </div>
         ))}
         {sources.length === 0 && <div className="text-sm text-muted-foreground">No source activity yet.</div>}
       </div>
-      <Link to="/timeline" className="mt-6 flex items-center gap-2 text-sm text-primary">View all activity <ArrowRight className="h-4 w-4" /></Link>
+      <Link to="/timeline" className="mt-6 flex flex-wrap items-center gap-2 text-sm text-primary">View all activity <ArrowRight className="h-4 w-4" /></Link>
 
       <Divider />
       <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Top sources</h3>
       <div className="mt-5 space-y-5">
         {sources.slice(0, 3).map((source) => (
-          <div key={source.id} className="flex gap-3 text-sm">
+          <div key={source.id} className="flex min-w-0 gap-3 text-sm">
             <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-issue)]" />
-            <div>
-              <div className="leading-5">{source.title}</div>
+            <div className="min-w-0">
+              <div className="break-words leading-5">{source.title}</div>
               <div className="mt-1 text-xs text-muted-foreground">{memoryEstimate(source)} memories</div>
             </div>
           </div>
         ))}
       </div>
-      <Link to="/sources" className="mt-6 flex items-center gap-2 text-sm text-primary">View all {sources.length} sources <ArrowRight className="h-4 w-4" /></Link>
+      <Link to="/sources" className="mt-6 flex flex-wrap items-center gap-2 text-sm text-primary">View all {sources.length} sources <ArrowRight className="h-4 w-4" /></Link>
 
       <Divider />
       <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Memory profile</h3>
@@ -748,11 +754,11 @@ function ClusterDetailRail({
           <CheckCircle2 className="h-4 w-4" />
           <span className="font-medium">Ready</span>
         </div>
-        <p className="mt-2 text-xs text-muted-foreground">Last updated {formatDate(cluster.lastActive)}</p>
+        <p className="mt-2 break-words text-xs text-muted-foreground">Last updated {formatDate(cluster.lastActive)}</p>
         <Button variant="outline" className="mt-4 w-full">View profile</Button>
       </section>
       {(jobs.length > 0 || artifacts.length > 0) && (
-        <p className="mt-4 text-xs text-muted-foreground">
+        <p className="mt-4 break-words text-xs text-muted-foreground">
           {jobs.length} jobs / {artifacts.length} artifacts tracked for this cluster.
         </p>
       )}
@@ -762,7 +768,7 @@ function ClusterDetailRail({
 
 function MetricGrid({ className = "", sources }: { className?: string; sources: number }) {
   return (
-    <div className={`grid grid-cols-4 gap-4 ${className}`}>
+    <div className={`grid grid-cols-2 gap-4 sm:grid-cols-4 ${className}`}>
       <Metric value={sources.toLocaleString()} label="Sources" />
       <Metric value={(sources * 64).toLocaleString()} label="Memories" />
       <Metric value={compactNumber(sources * 512)} label="Embeddings" />
@@ -773,8 +779,8 @@ function MetricGrid({ className = "", sources }: { className?: string; sources: 
 
 function Metric({ value, label }: { value: string; label: string }) {
   return (
-    <div>
-      <div className="font-semibold">{value}</div>
+    <div className="min-w-0">
+      <div className="break-words font-semibold">{value}</div>
       <div className="mt-1 text-xs text-muted-foreground">{label}</div>
     </div>
   );

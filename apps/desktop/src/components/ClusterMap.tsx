@@ -210,7 +210,7 @@ export function ClusterMap({
                   />
                   <span className="sr-only">{count} sources</span>
                 </button>
-                <div className="mt-2 max-w-36 text-sm font-medium leading-tight text-foreground">
+                <div className="mt-2 max-w-[min(9rem,40vw)] break-words text-sm font-medium leading-tight text-foreground">
                   {cluster.name}
                 </div>
                 <div className="mt-0.5 text-xs text-muted-foreground">{count} sources</div>
@@ -310,7 +310,7 @@ function ClusterDetailMap({
         className="absolute z-20 -translate-x-1/2 text-center"
         style={{ left: center.x, top: center.y + 82, width: 180 }}
       >
-        <div className="text-sm font-semibold">{cluster.name}</div>
+        <div className="break-words text-sm font-semibold">{cluster.name}</div>
         <div className="mt-0.5 text-xs text-muted-foreground">{sources.length} connected sources</div>
       </div>
       <div
@@ -338,7 +338,7 @@ function ClusterDetailMap({
             aria-label={source.title}
             type="button"
           />
-          <div className="mt-2 max-w-36 text-xs font-medium leading-tight">{source.title}</div>
+          <div className="mt-2 max-w-[min(9rem,40vw)] break-words text-xs font-medium leading-tight">{source.title}</div>
           <SourcePreview source={source} />
         </div>
       ))}
@@ -353,15 +353,15 @@ function SourcePreview({ source }: { source: Source }) {
   const canRevealLocalPath = Boolean(source.localPath && desktop?.showItemInFolder);
 
   return (
-    <div className="pointer-events-auto absolute left-6 top-6 z-40 hidden w-72 rounded-md border border-border bg-card p-3 text-left shadow-sm group-hover:block group-focus-within:block peer-focus:block">
-      <div className="truncate text-sm font-medium text-foreground">{source.title}</div>
+    <div className="pointer-events-auto absolute left-6 top-6 z-40 hidden w-[min(18rem,calc(100vw-3rem))] rounded-md border border-border bg-card p-3 text-left shadow-sm group-hover:block group-focus-within:block peer-focus:block">
+      <div className="break-words text-sm font-medium text-foreground">{source.title}</div>
       <div className="mt-1 text-xs text-muted-foreground">
         {source.type} / {source.state}
       </div>
-      <p className="mt-2 line-clamp-4 text-xs leading-5 text-muted-foreground">
+      <p className="mt-2 line-clamp-4 break-words text-xs leading-5 text-muted-foreground">
         {source.preview || source.summary || "Preview will appear after extraction."}
       </p>
-      <div className="mt-3 flex gap-2">
+      <div className="mt-3 flex flex-wrap gap-2">
         <button
           className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground disabled:opacity-45"
           disabled={!canOpenLocalPath}
@@ -407,11 +407,11 @@ function ClusterDetailPanel({ cluster, sources }: { cluster: Cluster; sources: S
   ];
 
   return (
-    <aside className="absolute bottom-6 right-6 top-24 z-30 hidden w-[340px] overflow-hidden rounded-md border border-border bg-card shadow-sm xl:block">
+    <aside className="absolute bottom-6 right-6 top-24 z-30 hidden w-[min(340px,calc(100vw-3rem))] overflow-hidden rounded-md border border-border bg-card shadow-sm xl:block">
       <div className="border-b border-border px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">{cluster.name}</div>
+            <div className="break-words text-sm font-semibold">{cluster.name}</div>
             <div className="text-xs text-muted-foreground">{sources.length} connected data points</div>
           </div>
           <ExpertBadge status={cluster.expert} />
@@ -434,8 +434,8 @@ function ClusterDetailPanel({ cluster, sources }: { cluster: Cluster; sources: S
           <div className="mt-3 space-y-2">
             {adapterEvents.map((event) => (
               <div key={event} className="flex gap-2 text-xs text-muted-foreground">
-                <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary/55" />
-                <span>{event}</span>
+                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary/55" />
+                <span className="min-w-0 break-words">{event}</span>
               </div>
             ))}
           </div>

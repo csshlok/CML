@@ -1980,10 +1980,14 @@ class AdditionalQACases(unittest.TestCase):
         self.assertFalse(any("WHERE message_id = ?" in sql for sql in snapshot_queries))
 
     def test_bridge_operator_lists_are_bounded_and_preserve_order(self) -> None:
+        from fastapi import HTTPException
+
         from backend.app.api.routes.bridge import (
             create_bridge_client,
+            list_bridge_captures,
             list_bridge_clients,
             list_bridge_requests,
+            list_bridge_writeback_reviews,
             update_bridge_settings,
         )
         from backend.app.core.database import connect, utc_now
@@ -2023,10 +2027,75 @@ class AdditionalQACases(unittest.TestCase):
                     ('req-3', NULL, 'gamma', 'q3', 'context', 'allowed', 1, 10, '2026-06-14T00:00:03Z')
                 """
             )
+            review_sources = [
+                (
+                    f"bridge-source-{index:03d}",
+                    "vault-1",
+                    None,
+                    f"Bridge Capture {index:03d}",
+                    "external_transcript",
+                    "indexed",
+                    "",
+                    "",
+                    "",
+                    "bridge_capture",
+                    "external_capture",
+                    "[]",
+                    "{}",
+                    f"raw bridge text {index}",
+                    f"raw bridge text {index}",
+                    "",
+                    "[]",
+                    None,
+                    None,
+                    f"2026-06-14T00:{index // 60:02d}:{index % 60:02d}+00:00",
+                    f"2026-06-14T00:{index // 60:02d}:{index % 60:02d}+00:00",
+                )
+                for index in range(205)
+            ]
+            conn.executemany(
+                """
+                INSERT INTO sources (
+                    id, vault_id, cluster_id, title, source_type, state, original_path, url,
+                    checksum, provenance, trust_tier, security_labels, parser_security_json,
+                    raw_text, extracted_text, summary, tags, cover_image_url, deleted_at,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                review_sources,
+            )
+            review_rows = [
+                (
+                    f"bridge-review-{index:03d}",
+                    f"bridge-source-{index:03d}",
+                    "vault-1",
+                    f"context-{index:03d}",
+                    "ungrounded",
+                    "[]",
+                    0,
+                    f"2026-06-14T01:{index // 60:02d}:{index % 60:02d}+00:00",
+                    f"2026-06-14T01:{index // 60:02d}:{index % 60:02d}+00:00",
+                )
+                for index in range(205)
+            ]
+            conn.executemany(
+                """
+                INSERT INTO bridge_writeback_reviews (
+                    id, source_id, vault_id, context_request_id, quality_state, reasons_json,
+                    approved, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                review_rows,
+            )
 
         client_page = list_bridge_clients(limit=2, offset=1)
         request_page = list_bridge_requests(limit=2, offset=1)
         clamped_clients = list_bridge_clients(limit=500, offset=-2)
+        review_page = list_bridge_writeback_reviews(vault_id="vault-1", pending_only=True, limit=2, offset=1)
+        clamped_reviews = list_bridge_writeback_reviews(vault_id="vault-1", pending_only=True, limit=500)
+        capture_page = list_bridge_captures(vault_id="vault-1", limit=2, offset=203)
 
         self.assertEqual(len(client_page), 2)
         self.assertEqual(client_page[0]["id"], created_ids[2])
@@ -2035,6 +2104,28 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual([item["id"] for item in request_page], ["req-2", "req-1"])
         self.assertEqual(len(clamped_clients), 4)
         self.assertEqual(clamped_clients[0]["id"], created_ids[3])
+        self.assertEqual([item["source_id"] for item in review_page], ["bridge-source-203", "bridge-source-202"])
+        self.assertEqual(len(clamped_reviews), 200)
+        self.assertEqual([item["source_id"] for item in capture_page], ["bridge-source-001", "bridge-source-000"])
+        with self.assertRaises(HTTPException) as missing_review_vault:
+            list_bridge_writeback_reviews(vault_id="vault-missing")
+        self.assertEqual(missing_review_vault.exception.status_code, 404)
+        self.assertEqual(missing_review_vault.exception.detail, "vault_not_found")
+        with self.assertRaises(HTTPException) as missing_capture_vault:
+            list_bridge_captures(vault_id="vault-missing")
+        self.assertEqual(missing_capture_vault.exception.status_code, 404)
+        self.assertEqual(missing_capture_vault.exception.detail, "vault_not_found")
+
+        repo_root = Path(__file__).resolve().parents[2]
+        backend_client = (repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
+        self.assertIn("function paginationQuery(options: { limit?: number; offset?: number } = {})", backend_client)
+        self.assertIn("listBridgeRequests(options: { limit?: number; offset?: number } = {})", backend_client)
+        self.assertIn("listBridgeClients(options: { limit?: number; offset?: number } = {})", backend_client)
+        self.assertIn(
+            "listBridgeWritebackReviews(\n  vaultId?: string,\n  pendingOnly = false,\n  options: { limit?: number; offset?: number } = {},",
+            backend_client,
+        )
+        self.assertIn("listBridgeCaptures(vaultId?: string, options: { limit?: number; offset?: number } = {})", backend_client)
 
     def test_bridge_client_token_lookup_uses_direct_hash_query(self) -> None:
         from backend.app.api.routes.bridge import _bridge_client_for_token, create_bridge_client, update_bridge_settings
@@ -2724,6 +2815,341 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("refresh?: boolean", backend)
         self.assertIn('query.set("refresh", "true")', backend)
         self.assertIn("body: JSON.stringify(payload ?? {})", backend)
+
+    def test_bridge_route_wraps_long_operator_content_on_narrow_windows(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        bridge = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.bridge.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("max-w-4xl px-4 py-8 sm:px-6 lg:px-8", bridge)
+        self.assertIn("flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between", bridge)
+        self.assertIn("max-w-full break-all rounded-md bg-muted", bridge)
+        self.assertIn("break-all font-mono text-xs", bridge)
+        self.assertIn("Path {item.observed_executable_path", bridge)
+        self.assertIn("Path {client.observed_executable_path", bridge)
+        self.assertIn("mt-1 break-all text-xs text-muted-foreground", bridge)
+        self.assertIn("mt-1 break-words text-xs text-muted-foreground", bridge)
+        self.assertIn("sm:grid-cols-[minmax(0,1fr)_auto]", bridge)
+        self.assertIn("lg:grid-cols-[minmax(0,1fr)_auto]", bridge)
+        self.assertIn("grid gap-1 py-2 sm:grid-cols-[120px_minmax(0,1fr)_90px]", bridge)
+        self.assertIn("flex flex-wrap gap-2", bridge)
+        self.assertIn("flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between", bridge)
+        self.assertNotIn("grid-cols-[1fr_auto]", bridge)
+        self.assertNotIn("grid-cols-[120px_1fr_90px]", bridge)
+        self.assertNotIn("flex items-center justify-between", bridge)
+
+    def test_timeline_route_stacks_detail_panel_and_wraps_long_activity_text(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        timeline = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.timeline.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", timeline)
+        self.assertIn("xl:grid-cols-[minmax(0,1fr)_320px] xl:overflow-hidden", timeline)
+        self.assertIn("px-4 py-6 sm:px-6 lg:px-8", timeline)
+        self.assertIn("md:grid-cols-[minmax(0,1fr)_auto]", timeline)
+        self.assertIn("sm:grid-cols-[96px_32px_minmax(0,1fr)]", timeline)
+        self.assertIn("md:grid-cols-[116px_32px_minmax(0,1fr)]", timeline)
+        self.assertIn("xl:w-[var(--panel-width)] xl:min-w-[var(--panel-width)]", timeline)
+        self.assertIn("break-words text-xl", timeline)
+        self.assertIn("break-words text-sm", timeline)
+        self.assertIn("break-all sm:text-right", timeline)
+        self.assertNotIn("grid-cols-[minmax(0,1fr)_320px] overflow-hidden", timeline)
+        self.assertNotIn("right-panel px-6 py-8", timeline)
+        self.assertNotIn("md:grid-cols-[116px_32px_1fr]", timeline)
+        self.assertNotIn("md:grid-cols-[1fr_auto]", timeline)
+
+    def test_tasks_route_contains_dense_table_and_wraps_long_job_detail(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        tasks = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.tasks.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", tasks)
+        self.assertIn("xl:grid-cols-[minmax(0,1fr)_320px] xl:overflow-hidden", tasks)
+        self.assertIn("px-4 py-6 sm:px-6 lg:px-8", tasks)
+        self.assertIn("md:grid-cols-[minmax(0,1fr)_auto]", tasks)
+        self.assertIn("overflow-x-auto", tasks)
+        self.assertIn("min-w-[720px]", tasks)
+        self.assertIn("grid-cols-[104px_minmax(0,1fr)_120px_112px_104px_80px]", tasks)
+        self.assertIn("xl:w-[var(--panel-width)] xl:min-w-[var(--panel-width)]", tasks)
+        self.assertIn("break-words text-[15px]", tasks)
+        self.assertIn("break-words text-sm", tasks)
+        self.assertIn("break-all sm:text-right", tasks)
+        self.assertIn("mt-5 flex flex-wrap gap-2", tasks)
+        self.assertNotIn("grid-cols-[minmax(0,1fr)_320px] overflow-hidden", tasks)
+        self.assertNotIn("right-panel px-6 py-8", tasks)
+        self.assertNotIn("grid-cols-[104px_1fr_120px_112px_104px_80px]", tasks)
+        self.assertNotIn("md:grid-cols-[1fr_auto]", tasks)
+
+    def test_search_route_stacks_library_panel_and_wraps_long_source_content(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        search = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.search.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", search)
+        self.assertIn("xl:grid-cols-[minmax(0,1fr)_320px] xl:overflow-hidden", search)
+        self.assertIn("px-4 py-5 sm:px-6", search)
+        self.assertIn("flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between", search)
+        self.assertIn("lg:grid-cols-[minmax(0,1fr)_auto_auto]", search)
+        self.assertIn("mb-4 break-words rounded-md border", search)
+        self.assertIn("border-t border-border bg-card/55 p-4 sm:p-5 xl:border-l xl:border-t-0", search)
+        self.assertIn("break-all text-right font-medium", search)
+        self.assertIn('DialogTitle className="break-words"', search)
+        self.assertIn("flex flex-col gap-2 sm:flex-row", search)
+        self.assertIn('className="min-w-0"', search)
+        self.assertIn("break-words rounded-md border border-border bg-muted/35", search)
+        self.assertIn("max-w-full break-words rounded-md", search)
+        self.assertIn("flex flex-wrap justify-end gap-2", search)
+        self.assertNotIn("grid-cols-[minmax(0,1fr)_320px] overflow-hidden", search)
+        self.assertNotIn("flex items-start justify-between gap-6", search)
+        self.assertNotIn("lg:grid-cols-[1fr_auto_auto]", search)
+        self.assertNotIn("mb-4 flex items-center justify-between text-sm", search)
+        self.assertNotIn("hidden border-l border-border", search)
+
+    def test_sources_route_exposes_inspector_and_wraps_long_source_content_on_narrow_windows(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        sources = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.sources.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", sources)
+        self.assertIn("xl:grid-cols-[minmax(0,1fr)_326px] xl:overflow-hidden", sources)
+        self.assertIn("min-w-0 px-7 py-8 xl:overflow-y-auto", sources)
+        self.assertIn("relative mr-auto min-w-0 flex-[1_1_240px] sm:max-w-sm", sources)
+        self.assertIn("text-destructive break-words", sources)
+        self.assertIn("text-muted-foreground break-words", sources)
+        self.assertIn("overflow-x-auto", sources)
+        self.assertIn("min-w-[760px] w-full text-sm", sources)
+        self.assertIn("break-words font-semibold", sources)
+        self.assertIn("line-clamp-2 break-words text-xs", sources)
+        self.assertIn("mt-8 flex flex-col gap-3 text-sm", sources)
+        self.assertIn("border-t border-border bg-card/35 px-7 py-8 xl:border-l xl:border-t-0", sources)
+        self.assertIn("overflow-y-visible border-t border-border bg-card/35", sources)
+        self.assertIn("flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between", sources)
+        self.assertIn("break-words text-lg font-semibold", sources)
+        self.assertIn("mt-4 break-words text-sm leading-6", sources)
+        self.assertIn("text-muted-foreground break-words", sources)
+        self.assertIn("mt-2 break-words", sources)
+        self.assertIn("break-words text-right", sources)
+        self.assertNotIn("hidden overflow-y-auto border-l border-border", sources)
+        self.assertNotIn("hidden border-l border-border bg-card/35", sources)
+        self.assertNotIn("grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[1fr_326px]", sources)
+        self.assertNotIn("relative mr-auto min-w-[240px] max-w-sm flex-1", sources)
+        self.assertNotIn("truncate font-semibold", sources)
+        self.assertNotIn("mt-1 truncate text-xs", sources)
+        self.assertNotIn("mt-8 flex items-center justify-between text-sm", sources)
+
+    def test_cluster_detail_loads_expert_status_and_wraps_long_content_on_narrow_windows(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        cluster_detail = (
+            repo_root / "apps" / "desktop" / "src" / "routes" / "_app.clusters.$clusterId.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("const [sourceRows, chatRows, jobRows, artifactRows, statusRow] = await Promise.all", cluster_detail)
+        self.assertIn("getClusterExpertStatus(clusterRow.id).catch(() => null)", cluster_detail)
+        self.assertIn("setExpertStatus(statusRow)", cluster_detail)
+        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", cluster_detail)
+        self.assertIn("xl:grid-cols-[minmax(0,1fr)_326px] xl:overflow-hidden", cluster_detail)
+        self.assertIn("px-4 py-6 sm:px-6 lg:px-9 xl:overflow-y-auto", cluster_detail)
+        self.assertIn("page-title break-words", cluster_detail)
+        self.assertIn("overflow-x-auto border-b border-border", cluster_detail)
+        self.assertIn("min-w-[520px]", cluster_detail)
+        self.assertIn("min-w-[560px]", cluster_detail)
+        self.assertIn("break-words text-muted-foreground", cluster_detail)
+        self.assertIn("grid-cols-1 gap-3 rounded-md border", cluster_detail)
+        self.assertIn("sm:grid-cols-[minmax(0,1fr)_104px_112px]", cluster_detail)
+        self.assertIn("sm:grid-cols-[minmax(0,1fr)_132px_20px]", cluster_detail)
+        self.assertIn("flex flex-col gap-3 border-b border-border pb-4", cluster_detail)
+        self.assertIn("flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between", cluster_detail)
+        self.assertIn("break-all font-mono text-[11px]", cluster_detail)
+        self.assertIn("grid grid-cols-1 gap-2 px-4 py-3 text-sm", cluster_detail)
+        self.assertIn("w-[min(190px,78vw)]", cluster_detail)
+        self.assertIn("w-[min(164px,44vw)]", cluster_detail)
+        self.assertIn("line-clamp-2 break-words font-medium", cluster_detail)
+        self.assertIn("border-t border-border bg-card/35 px-4 py-6", cluster_detail)
+        self.assertIn("grid grid-cols-2 gap-4 sm:grid-cols-4", cluster_detail)
+        self.assertNotIn("setExpertStatus(statusRow);\n      } catch", cluster_detail.split("statusRow] = await Promise.all")[0])
+        self.assertNotIn("grid h-full grid-cols-[minmax(0,1fr)_326px] overflow-hidden", cluster_detail)
+        self.assertNotIn("right-panel px-6 py-8", cluster_detail)
+        self.assertNotIn("grid-cols-[1.4fr_1fr_72px]", cluster_detail)
+        self.assertNotIn("grid-cols-[1fr_44px_92px_72px]", cluster_detail)
+        self.assertNotIn("grid-cols-[1fr_48px_120px_20px]", cluster_detail)
+        self.assertNotIn("grid-cols-[minmax(0,1fr)_104px_112px] items-center", cluster_detail)
+        self.assertNotIn("grid-cols-[minmax(0,1fr)_132px_20px] items-center", cluster_detail)
+        self.assertNotIn('className="right-panel', cluster_detail)
+        self.assertNotIn("block truncate font-medium", cluster_detail)
+        self.assertNotIn("max-w-full truncate", cluster_detail)
+
+    def test_map_route_stacks_detail_rail_and_wraps_long_graph_content_on_narrow_windows(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        map_route = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.map.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", map_route)
+        self.assertIn("xl:grid-cols-[minmax(0,1fr)_326px] xl:overflow-hidden", map_route)
+        self.assertIn("px-4 py-6 sm:px-6 lg:px-8 xl:overflow-y-auto", map_route)
+        self.assertIn("w-full items-center gap-2", map_route)
+        self.assertIn("sm:w-[220px]", map_route)
+        self.assertIn("h-[520px] overflow-hidden", map_route)
+        self.assertIn("sm:h-[660px]", map_route)
+        self.assertIn("flex flex-col gap-2 text-xs sm:flex-row", map_route)
+        self.assertIn("sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5", map_route)
+        self.assertIn("border-t border-border bg-card/35 px-4 py-6", map_route)
+        self.assertIn("min-w-0 flex-1 break-words text-lg font-semibold", map_route)
+        self.assertIn("max-w-[44vw]", map_route)
+        self.assertIn("width: `min(${node.w ?? 170}px, 44vw)`", map_route)
+        self.assertIn('width: "min(190px, 78vw)"', map_route)
+        self.assertIn('width: "min(150px, 42vw)"', map_route)
+        self.assertIn("line-clamp-2 break-words text-sm font-semibold", map_route)
+        self.assertIn("line-clamp-2 break-words text-xs font-medium", map_route)
+        self.assertIn("grid grid-cols-2 gap-4 sm:grid-cols-4", map_route)
+        self.assertIn("flex w-full min-w-0 items-center gap-3", map_route)
+        self.assertNotIn("grid h-full grid-cols-[minmax(0,1fr)_326px] overflow-hidden", map_route)
+        self.assertNotIn("right-panel px-7 py-8", map_route)
+        self.assertNotIn("width: node.w ?? 170", map_route)
+        self.assertNotIn("width: 190", map_route)
+        self.assertNotIn("width: 150", map_route)
+        self.assertNotIn("block truncate text-sm font-medium", map_route)
+        self.assertNotIn("truncate text-xs font-medium", map_route)
+        self.assertNotIn("mt-1 truncate text-[11px]", map_route)
+        self.assertNotIn("grid grid-cols-4 gap-4", map_route)
+
+    def test_clusters_route_exposes_inspector_and_wraps_long_cluster_content_on_narrow_windows(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        clusters = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.clusters.tsx").read_text(
+            encoding="utf-8",
+        )
+
+        self.assertIn("xl:grid-cols-[minmax(0,1fr)_340px]", clusters)
+        self.assertIn("min-w-0 px-4 py-6 sm:px-7 sm:py-8", clusters)
+        self.assertIn("page-title flex flex-wrap items-center gap-3", clusters)
+        self.assertIn("vault-card mt-5 break-words", clusters)
+        self.assertIn("overflow-x-auto", clusters)
+        self.assertIn("min-w-[760px]", clusters)
+        self.assertIn("grid-cols-[minmax(0,1fr)_96px_96px_140px_32px]", clusters)
+        self.assertIn("break-words text-sm font-semibold", clusters)
+        self.assertIn("line-clamp-2 break-words text-sm text-muted-foreground", clusters)
+        self.assertIn("flex flex-col gap-3 px-4 py-3 sm:flex-row", clusters)
+        self.assertIn("flex shrink-0 flex-wrap items-center gap-2", clusters)
+        self.assertIn("border-t border-border bg-card/35 px-4 py-6", clusters)
+        self.assertIn("xl:sticky xl:top-8", clusters)
+        self.assertIn("min-w-0 break-words text-base font-semibold", clusters)
+        self.assertIn("mt-1 break-words text-muted-foreground", clusters)
+        self.assertIn("line-clamp-2 break-words font-medium", clusters)
+        self.assertIn("break-words text-xl font-semibold tabular-nums", clusters)
+        self.assertNotIn("hidden border-l border-border bg-card/35", clusters)
+        self.assertNotIn("grid-cols-[1fr_96px_96px_140px_32px]", clusters)
+        self.assertNotIn("truncate text-sm font-semibold", clusters)
+        self.assertNotIn("mt-1 truncate text-sm", clusters)
+        self.assertNotIn("truncate text-sm font-medium", clusters)
+        self.assertNotIn("flex items-center justify-between gap-4 px-4 py-3", clusters)
+
+    def test_chat_landing_stacks_panels_and_wraps_long_chat_content_on_narrow_windows(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        chat = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.chat.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", chat)
+        self.assertIn("lg:grid-cols-[260px_minmax(0,1fr)]", chat)
+        self.assertIn("xl:grid-cols-[320px_minmax(0,1fr)_326px] xl:overflow-hidden", chat)
+        self.assertIn("border-b border-border bg-card/35 px-4 py-4", chat)
+        self.assertIn("max-h-56 space-y-1 overflow-y-auto lg:max-h-none", chat)
+        self.assertIn("min-w-0 flex-1 break-words px-3 py-2 text-sm", chat)
+        self.assertIn("px-4 py-5 sm:px-6 lg:px-10", chat)
+        self.assertIn("mb-2 break-words rounded-md border", chat)
+        self.assertIn("h-8 w-full min-w-0 gap-2", chat)
+        self.assertIn("gap-2 sm:ml-auto", chat)
+        self.assertIn("max-w-full break-all rounded-md", chat)
+        self.assertIn("border-t border-border bg-card/35 px-4 py-6", chat)
+        self.assertIn("min-w-0 flex-1 break-words text-lg font-semibold", chat)
+        self.assertIn("flex w-full min-w-0 items-center gap-3", chat)
+        self.assertIn("break-words font-semibold", chat)
+        self.assertNotIn("grid h-full grid-cols-[320px_minmax(0,1fr)_326px] overflow-hidden", chat)
+        self.assertNotIn("min-w-0 flex-1 truncate", chat)
+        self.assertNotIn("right-panel", chat)
+        self.assertNotIn("overflow-y-auto border-l border-border bg-card/35 px-7 py-8", chat)
+        self.assertNotIn("className=\"ml-auto gap-2\"", chat)
+
+    def test_chat_detail_stacks_context_and_wraps_long_message_content_on_narrow_windows(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        chat_detail = (
+            repo_root / "apps" / "desktop" / "src" / "routes" / "_app.chat.$chatId.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", chat_detail)
+        self.assertIn("lg:grid-cols-[240px_minmax(0,1fr)]", chat_detail)
+        self.assertIn("xl:grid-cols-[256px_minmax(0,1fr)_320px] xl:overflow-hidden", chat_detail)
+        self.assertIn("border-b border-border bg-card/30 p-2", chat_detail)
+        self.assertIn("max-h-48 space-y-0.5 overflow-y-auto lg:max-h-none", chat_detail)
+        self.assertIn("block break-words rounded-md px-2.5 py-1.5 text-sm", chat_detail)
+        self.assertIn("h-8 w-full gap-2 text-xs sm:w-52", chat_detail)
+        self.assertIn("flex min-w-0 flex-wrap items-center gap-2 sm:ml-auto", chat_detail)
+        self.assertIn("grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px]", chat_detail)
+        self.assertIn("border-t border-border bg-card/20 p-4", chat_detail)
+        self.assertIn("break-words text-sm font-medium", chat_detail)
+        self.assertIn("line-clamp-4 break-words text-xs", chat_detail)
+        self.assertIn("li key={warning} className=\"break-words\"", chat_detail)
+        self.assertIn("max-w-full break-all rounded-md", chat_detail)
+        self.assertIn("mx-auto mt-1.5 max-w-3xl break-words", chat_detail)
+        self.assertIn("max-w-[85%] break-words rounded-md", chat_detail)
+        self.assertIn("whitespace-pre-wrap break-words text-sm", chat_detail)
+        self.assertIn("inline-flex max-w-full items-center gap-1", chat_detail)
+        self.assertIn("PopoverContent className=\"w-80 max-w-[calc(100vw-2rem)] text-xs\"", chat_detail)
+        self.assertIn("mt-3 flex flex-wrap items-center gap-1", chat_detail)
+        self.assertNotIn("hidden w-64", chat_detail)
+        self.assertNotIn("hidden w-80", chat_detail)
+        self.assertNotIn("block truncate rounded-md", chat_detail)
+        self.assertNotIn("w-52 gap-2 text-xs", chat_detail)
+        self.assertNotIn("ml-auto flex items-center gap-2", chat_detail)
+        self.assertNotIn("truncate text-sm font-medium", chat_detail)
+        self.assertNotIn("PopoverContent className=\"w-80 text-xs\"", chat_detail)
+
+    def test_home_shell_and_cluster_map_wrap_long_user_content_on_narrow_windows(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        home = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.home.tsx").read_text(
+            encoding="utf-8",
+        )
+        shell = (repo_root / "apps" / "desktop" / "src" / "components" / "AppShell.tsx").read_text(
+            encoding="utf-8",
+        )
+        styles = (repo_root / "apps" / "desktop" / "src" / "styles.css").read_text(encoding="utf-8")
+        cluster_map = (repo_root / "apps" / "desktop" / "src" / "components" / "ClusterMap.tsx").read_text(
+            encoding="utf-8",
+        )
+
+        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", home)
+        self.assertIn("xl:grid-cols-[minmax(0,1fr)_326px] xl:overflow-hidden", home)
+        self.assertIn("px-4 py-6 sm:px-8 sm:py-10", home)
+        self.assertIn("flex flex-wrap items-center gap-3 px-1 pb-1", home)
+        self.assertIn("line-clamp-2 break-words text-sm font-semibold", home)
+        self.assertIn("break-words text-sm font-semibold", home)
+        self.assertIn("line-clamp-2 break-words text-xs text-muted-foreground", home)
+        self.assertIn("max-w-[36%] break-words text-right", home)
+        self.assertIn("border-t border-border bg-card/35 px-4 py-6", home)
+        self.assertIn("block break-words text-xs text-muted-foreground", home)
+        self.assertNotIn("grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[1fr_326px]", home)
+        self.assertNotIn("truncate text-sm font-semibold", home)
+        self.assertNotIn("mt-1 truncate text-xs", home)
+        self.assertNotIn("block truncate text-xs", home)
+        self.assertNotIn("hidden overflow-y-auto border-l", home)
+
+        self.assertIn("items-start gap-2 text-left", shell)
+        self.assertIn("min-w-0 flex-1 break-all", shell)
+        self.assertIn("flex min-h-7 items-start gap-2", shell)
+        self.assertIn("min-w-0 flex-1 break-words", shell)
+        self.assertIn("block break-words rounded-md", shell)
+        self.assertIn("break-all text-[12px]", shell)
+        self.assertIn("vault-footer flex shrink-0 flex-wrap", shell)
+        self.assertNotIn("flex w-full items-center gap-2 truncate", shell)
+        self.assertNotIn("<span className=\"truncate\">", shell)
+        self.assertNotIn("block truncate rounded-md", shell)
+        self.assertNotIn("truncate text-[13px]", shell)
+        self.assertNotIn("truncate text-[12px]", shell)
+        self.assertIn("min-height: 32px;", styles)
+        self.assertNotIn("\n    height: 32px;", styles)
+
+        self.assertIn("max-w-[min(9rem,40vw)] break-words", cluster_map)
+        self.assertIn("w-[min(18rem,calc(100vw-3rem))]", cluster_map)
+        self.assertIn("break-words text-sm font-medium text-foreground", cluster_map)
+        self.assertIn("line-clamp-4 break-words text-xs", cluster_map)
+        self.assertIn("w-[min(340px,calc(100vw-3rem))]", cluster_map)
+        self.assertIn("min-w-0 break-words", cluster_map)
+        self.assertNotIn("mt-2 max-w-36 text-sm", cluster_map)
+        self.assertNotIn("mt-2 max-w-36 text-xs", cluster_map)
+        self.assertNotIn("truncate text-sm font-medium text-foreground", cluster_map)
+        self.assertNotIn("truncate text-sm font-semibold", cluster_map)
+        self.assertNotIn("hidden w-[340px]", cluster_map)
 
     def test_extension_capture_rejects_core_api_token(self) -> None:
         os.environ["CML_API_TOKEN"] = "core-token"

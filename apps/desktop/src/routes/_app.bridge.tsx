@@ -432,9 +432,9 @@ function BridgeView() {
 
   return (
     <div className="vault-page-wash h-full overflow-y-auto">
-      <div className="mx-auto max-w-4xl px-8 py-10">
-        <div className="flex items-start justify-between gap-6">
-          <div>
+      <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Cable className="h-4 w-4" />
               Bridge
@@ -450,7 +450,7 @@ function BridgeView() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 rounded-md border border-border bg-card p-3">
+          <div className="flex items-center gap-2 rounded-md border border-border bg-card p-3 lg:shrink-0">
             <div className="flex items-center gap-3">
               <Switch
                 checked={Boolean(status?.enabled)}
@@ -498,8 +498,8 @@ function BridgeView() {
         </div>
 
         <section className="mt-8 rounded-md border border-border bg-card p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
                 Local backend
               </div>
@@ -511,7 +511,7 @@ function BridgeView() {
                     : "Backend is not running."}
               </p>
             </div>
-            <code className="rounded-md bg-muted px-2 py-1 text-xs">{backend.url}</code>
+            <code className="max-w-full break-all rounded-md bg-muted px-2 py-1 text-xs">{backend.url}</code>
           </div>
         </section>
 
@@ -526,7 +526,7 @@ function BridgeView() {
             <div className="font-medium">Permissions</div>
           </div>
           <div className="mt-4 grid gap-6 md:grid-cols-2">
-            <div>
+            <div className="min-w-0">
               <div className="text-sm font-medium">Allowed libraries</div>
               <div className="mt-2 space-y-1.5">
                 {vaults.length > 0 ? (
@@ -593,8 +593,8 @@ function BridgeView() {
         </section>
 
         <section className="mt-4 rounded-md border border-border bg-card p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
                 Extension pairing
               </div>
@@ -602,11 +602,11 @@ function BridgeView() {
                 Set up a browser/extension capture client without dropping to raw API calls. Start a pairing, approve it here, and then monitor captures.
               </p>
             </div>
-            <div className="flex min-w-0 gap-2">
+            <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap lg:w-auto lg:justify-end">
               <select
                 value={extensionVaultId}
                 onChange={(event) => setExtensionVaultId(event.target.value)}
-                className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+                className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm sm:w-48"
                 aria-label="Extension library scope"
               >
                 <option value="">All allowed libraries</option>
@@ -619,7 +619,7 @@ function BridgeView() {
               <Input
                 value={extensionName}
                 onChange={(event) => setExtensionName(event.target.value)}
-                className="h-8 w-52"
+                className="h-8 w-full sm:w-52"
                 aria-label="Extension client name"
               />
               <Button size="sm" variant="outline" disabled={saving} onClick={() => void createPairingSession()}>
@@ -656,7 +656,7 @@ function BridgeView() {
           <div className="mt-4 divide-y divide-border border-y border-border">
             {extensionPairings.length > 0 ? (
               extensionPairings.slice(0, 6).map((pairing) => (
-                <div key={pairing.id} className="grid gap-3 py-3 lg:grid-cols-[1fr_auto]">
+                <div key={pairing.id} className="grid gap-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <div className="truncate text-sm font-medium">{pairing.requested_name}</div>
@@ -664,7 +664,7 @@ function BridgeView() {
                         {pairing.status}
                       </span>
                     </div>
-                    <div className="mt-1 font-mono text-xs text-muted-foreground">{pairing.pairing_code}</div>
+                    <div className="mt-1 break-all font-mono text-xs text-muted-foreground">{pairing.pairing_code}</div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       Expires {new Date(pairing.expires_at).toLocaleString()}
                     </div>
@@ -672,7 +672,7 @@ function BridgeView() {
                       Scope: {describeExtensionScope(pairing.allowed_vault_ids, extensionVaultNamesById)}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                     <Button variant="outline" size="sm" disabled={saving} onClick={() => void copyBridgeText(pairing.pairing_code)}>
                       Copy code
                     </Button>
@@ -691,8 +691,8 @@ function BridgeView() {
         </section>
 
         <section className="mt-4 rounded-md border border-border bg-card p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
                 Extension clients and captures
               </div>
@@ -707,7 +707,7 @@ function BridgeView() {
           <div className="mt-4 divide-y divide-border border-y border-border">
             {extensionClients.length > 0 ? (
               extensionClients.map((client) => (
-                <div key={client.id} className="grid gap-3 py-3 lg:grid-cols-[1fr_auto]">
+                <div key={client.id} className="grid gap-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <div className="truncate text-sm font-medium">{client.name}</div>
@@ -719,7 +719,7 @@ function BridgeView() {
                       Scope {describeExtensionScope(client.allowed_vault_ids, extensionVaultNamesById)} / updated {new Date(client.updated_at).toLocaleString()}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                     <Switch checked={client.enabled} disabled={saving} onCheckedChange={(enabled) => void toggleExtensionClient(client, enabled)} />
                     <Button
                       variant="outline"
@@ -750,7 +750,7 @@ function BridgeView() {
           <div className="mt-4 divide-y divide-border border-y border-border">
             {extensionCaptures.length > 0 ? (
               extensionCaptures.slice(0, 6).map((capture) => (
-                <div key={capture.id} className="grid grid-cols-[1fr_auto] gap-3 py-3">
+                <div key={capture.id} className="grid gap-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium">{capture.title}</div>
                     <div className="mt-1 text-xs text-muted-foreground">
@@ -766,8 +766,8 @@ function BridgeView() {
         </section>
 
         <section className="mt-4 rounded-md border border-border bg-card p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
                 Extension permission audit
               </div>
@@ -780,7 +780,7 @@ function BridgeView() {
           <div className="mt-4 divide-y divide-border border-y border-border">
             {extensionAudit.length > 0 ? (
               extensionAudit.slice(0, 8).map((event) => (
-                <div key={event.id} className="grid gap-3 py-3 lg:grid-cols-[1fr_auto]">
+                <div key={event.id} className="grid gap-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <div className="truncate text-sm font-medium">{event.event_type.replace(/_/g, " ")}</div>
@@ -790,11 +790,11 @@ function BridgeView() {
                         </span>
                       )}
                     </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
+                    <div className="mt-1 break-words text-xs text-muted-foreground">
                       {event.detail || "No extra detail recorded."}
                     </div>
                   </div>
-                  <div className="text-xs text-muted-foreground">{new Date(event.created_at).toLocaleString()}</div>
+                  <div className="text-xs text-muted-foreground lg:text-right">{new Date(event.created_at).toLocaleString()}</div>
                 </div>
               ))
             ) : (
@@ -804,8 +804,8 @@ function BridgeView() {
         </section>
 
         <section className="mt-4 rounded-md border border-border bg-card p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
                 Save external context
               </div>
@@ -813,7 +813,7 @@ function BridgeView() {
                 Paste an external answer or a full prompt-response pair and store it directly in Vault. For faster everyday saves, use Quick save from the sidebar, command palette, or Ctrl/Cmd Shift S.
               </p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2 lg:justify-end">
               <Button
                 variant={captureMode === "artifact" ? "default" : "outline"}
                 size="sm"
@@ -893,8 +893,8 @@ function BridgeView() {
               />
             </label>
           </div>
-          <div className="mt-4 flex items-center justify-between gap-3">
-            <div className="text-xs text-muted-foreground">
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 break-words text-xs text-muted-foreground">
               {captureNotice ?? "Stored captures inherit the same Bridge trust and review rules as external MCP writeback."}
             </div>
             <Button size="sm" disabled={saving || !captureVaultId || !captureResponse.trim()} onClick={() => void submitManualCapture()}>
@@ -904,8 +904,8 @@ function BridgeView() {
         </section>
 
         <section className="mt-4 rounded-md border border-border bg-card p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
                 Pending approvals
               </div>
@@ -923,7 +923,7 @@ function BridgeView() {
               approvalRequests
                 .filter((item) => item.status === "pending")
                 .map((item) => (
-                  <div key={item.id} className="grid gap-3 py-3 lg:grid-cols-[1fr_auto]">
+                  <div key={item.id} className="grid gap-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto]">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <div className="truncate text-sm font-medium">{item.claimed_name}</div>
@@ -938,14 +938,14 @@ function BridgeView() {
                         {item.requested_vault_ids.length || 0} libraries / {item.requested_cluster_ids.length || 0} clusters / raw text{" "}
                         {item.allow_raw_snippets ? "requested" : "off"}
                       </div>
-                      <div className="mt-1 text-xs text-muted-foreground">
+                      <div className="mt-1 break-all text-xs text-muted-foreground">
                         Path {item.observed_executable_path || item.executable_path_claim || "not provided"}
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">
                         Publisher {item.publisher_name || "not available"} / expires {new Date(item.expires_at).toLocaleString()}
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                       <Button size="sm" disabled={saving} onClick={() => void approveRequest(item)}>
                         Approve
                       </Button>
@@ -971,11 +971,11 @@ function BridgeView() {
                 Give each external tool its own token and permission set. Newly created tokens are shown once.
               </p>
             </div>
-            <div className="flex min-w-0 gap-2">
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-end">
               <Input
                 value={clientName}
                 onChange={(event) => setClientName(event.target.value)}
-                className="h-8 w-52"
+                className="h-8 w-full sm:w-52"
                 aria-label="Bridge client name"
               />
               <Button size="sm" className="gap-1" disabled={saving || !status} onClick={() => void addBridgeClient()}>
@@ -1000,7 +1000,7 @@ function BridgeView() {
           <div className="mt-4 divide-y divide-border border-y border-border">
             {clients.length > 0 ? (
               clients.map((client) => (
-                <div key={client.id} className="grid gap-3 py-3 lg:grid-cols-[1fr_auto]">
+                <div key={client.id} className="grid gap-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <div className="truncate text-sm font-medium">{client.name}</div>
@@ -1015,7 +1015,7 @@ function BridgeView() {
                       Identity {client.verified_identity ? client.verified_identity_label : "unverified"} / signature{" "}
                       {client.signature_status.replace(/_/g, " ")}
                     </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
+                    <div className="mt-1 break-all text-xs text-muted-foreground">
                       Path {client.observed_executable_path || client.executable_path_claim || "not recorded"}
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
@@ -1023,7 +1023,7 @@ function BridgeView() {
                       {client.last_request_at ? ` / last ${new Date(client.last_request_at).toLocaleString()}` : ""}
                     </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                     <Switch
                       checked={client.enabled}
                       disabled={saving}
@@ -1056,8 +1056,8 @@ function BridgeView() {
         </section>
 
         <section className="mt-4 rounded-md border border-border bg-card p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
                 Capture review queue
               </div>
@@ -1070,7 +1070,7 @@ function BridgeView() {
           <div className="mt-4 divide-y divide-border border-y border-border">
             {reviews.length > 0 ? (
               reviews.map((review) => (
-                <div key={review.source_id} className="grid gap-3 py-3 lg:grid-cols-[1fr_auto]">
+                <div key={review.source_id} className="grid gap-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <div className="truncate text-sm font-medium">{review.title}</div>
@@ -1081,14 +1081,14 @@ function BridgeView() {
                         {review.trust_tier}
                       </span>
                     </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
+                    <div className="mt-1 break-words text-xs text-muted-foreground">
                       Reasons: {review.reasons.join(", ") || "none recorded"}
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       Updated {new Date(review.updated_at).toLocaleString()}
                     </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                     <Button size="sm" disabled={saving} onClick={() => void reviewCapture(review.source_id, true)}>
                       Approve
                     </Button>
@@ -1104,14 +1104,14 @@ function BridgeView() {
           </div>
           {reviewNotice && (
             <div className="mt-4 rounded-md border border-[var(--status-ready)]/35 bg-[var(--status-ready)]/10 px-3 py-2 text-xs">
-              {reviewNotice}
+              <span className="break-words">{reviewNotice}</span>
             </div>
           )}
         </section>
 
         <section className="mt-4 rounded-md border border-border bg-card p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
                 Saved captures
               </div>
@@ -1124,7 +1124,7 @@ function BridgeView() {
           <div className="mt-4 divide-y divide-border border-y border-border">
             {captures.length > 0 ? (
               captures.slice(0, 8).map((capture) => (
-                <div key={capture.source_id} className="grid grid-cols-[1fr_auto] gap-3 py-3">
+                <div key={capture.source_id} className="grid gap-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <div className="truncate text-sm font-medium">{capture.title}</div>
@@ -1142,7 +1142,7 @@ function BridgeView() {
                       {capture.approved ? "Approved for trusted reuse" : "Stored with current trust gate"} / {new Date(capture.created_at).toLocaleString()}
                     </div>
                     {capture.security_labels.length > 0 && (
-                      <div className="mt-1 text-xs text-muted-foreground">
+                      <div className="mt-1 break-words text-xs text-muted-foreground">
                         Labels: {capture.security_labels.join(", ")}
                       </div>
                     )}
@@ -1162,7 +1162,7 @@ function BridgeView() {
           {requests.length > 0 ? (
             <div className="mt-3 divide-y divide-border text-sm">
               {requests.slice(0, 5).map((request) => (
-                <div key={request.id} className="grid grid-cols-[120px_1fr_90px] gap-3 py-2">
+                <div key={request.id} className="grid gap-1 py-2 sm:grid-cols-[120px_minmax(0,1fr)_90px] sm:gap-3">
                   <span className="truncate text-muted-foreground">{request.client_name}</span>
                   <span className="truncate">{request.query}</span>
                   <span className="text-right text-xs text-muted-foreground">{request.mode}</span>
@@ -1172,7 +1172,7 @@ function BridgeView() {
           ) : (
             <p className="mt-3 text-sm text-muted-foreground">No external context requests yet.</p>
           )}
-          <div className="mt-4 flex gap-2">
+          <div className="mt-4 flex flex-wrap gap-2">
             <Button
               variant="outline"
               size="sm"
@@ -1249,9 +1249,9 @@ function BridgeView() {
               <div className="text-xs font-medium text-muted-foreground">Token rotation history</div>
               <div className="mt-2 space-y-1 text-xs text-muted-foreground">
                 {rotations.slice(0, 3).map((rotation) => (
-                  <div key={rotation.id} className="flex justify-between gap-3">
-                    <span>{rotation.reason.replace(/_/g, " ")}</span>
-                    <span>{new Date(rotation.rotated_at).toLocaleString()}</span>
+                  <div key={rotation.id} className="flex flex-wrap justify-between gap-3">
+                    <span className="min-w-0 break-words">{rotation.reason.replace(/_/g, " ")}</span>
+                    <span className="shrink-0">{new Date(rotation.rotated_at).toLocaleString()}</span>
                   </div>
                 ))}
               </div>
@@ -1262,9 +1262,9 @@ function BridgeView() {
               <div className="text-xs font-medium text-muted-foreground">Recent Bridge security events</div>
               <div className="mt-2 space-y-1 text-xs text-muted-foreground">
                 {auditEvents.slice(0, 5).map((event) => (
-                  <div key={event.id} className="flex justify-between gap-3">
-                    <span className="truncate">{event.event_type.replace(/_/g, " ")}</span>
-                    <span>{new Date(event.created_at).toLocaleString()}</span>
+                  <div key={event.id} className="flex flex-wrap justify-between gap-3">
+                    <span className="min-w-0 break-words">{event.event_type.replace(/_/g, " ")}</span>
+                    <span className="shrink-0">{new Date(event.created_at).toLocaleString()}</span>
                   </div>
                 ))}
               </div>
@@ -1290,10 +1290,10 @@ function PermissionRow({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-4 py-3">
-      <div>
+    <div className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
         <div className="text-sm font-medium">{label}</div>
-        <div className="mt-0.5 text-xs text-muted-foreground">{detail}</div>
+        <div className="mt-0.5 break-words text-xs text-muted-foreground">{detail}</div>
       </div>
       <Switch checked={checked} disabled={disabled} onCheckedChange={onChange} />
     </div>
@@ -1303,8 +1303,8 @@ function PermissionRow({
 function BridgeCard({ icon, title, body }: { icon: ReactNode; title: string; body: string }) {
   return (
     <div className="rounded-md border border-border bg-card p-4">
-      <div className="flex items-center gap-2 text-sm font-medium">
-        {icon}
+      <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
+        <span className="shrink-0">{icon}</span>
         {title}
       </div>
       <p className="mt-2 text-sm leading-6 text-muted-foreground">{body}</p>

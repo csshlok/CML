@@ -109,11 +109,11 @@ function ClustersList() {
 
   return (
     <div className="vault-page-wash h-full overflow-y-auto">
-      <div className="mx-auto grid min-h-full max-w-[1500px] grid-cols-1 xl:grid-cols-[1fr_340px]">
-        <div className="px-7 py-8">
+      <div className="mx-auto grid min-h-full max-w-[1500px] grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-w-0 px-4 py-6 sm:px-7 sm:py-8">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-          <div className="max-w-2xl">
-            <h1 className="page-title flex items-center gap-3">
+          <div className="min-w-0 max-w-2xl">
+            <h1 className="page-title flex flex-wrap items-center gap-3">
               Clusters
               <span className="rounded bg-muted px-2 py-1 font-sans text-sm text-muted-foreground">
                 {clusters.length}
@@ -123,7 +123,7 @@ function ClustersList() {
               Your memory spaces. Organized. Private. Under your control.
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => void loadData()} disabled={loading}>
               <RefreshCw className="h-4 w-4" /> Refresh
             </Button>
@@ -142,55 +142,59 @@ function ClustersList() {
         </div>
 
         {message && (
-          <div className="vault-card mt-5 px-3 py-2 text-sm text-muted-foreground">
+          <div className="vault-card mt-5 break-words px-3 py-2 text-sm text-muted-foreground">
             {message}
           </div>
         )}
 
           <section className="mt-9">
-            <div className="grid grid-cols-[1fr_96px_96px_140px_32px] border-b border-border px-2 pb-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              <span>Name</span>
-              <span>Sources</span>
-              <span>Memories</span>
-              <span>Last activity</span>
-              <span />
-            </div>
-            <div>
-              {clusters.map((cluster) => {
-                const count = sourceCounts.get(cluster.id) ?? 0;
-                return (
-                  <button
-                    key={cluster.id}
-                    type="button"
-                    onClick={() => setSelectedClusterId(cluster.id)}
-                    className={
-                      "grid w-full grid-cols-[1fr_96px_96px_140px_32px] items-center border-b border-border px-2 py-4 text-left transition-colors hover:bg-card/65 " +
-                      (selectedCluster?.id === cluster.id ? "bg-card/80" : "")
-                    }
-                  >
-                    <div className="flex min-w-0 items-center gap-4">
-                      <ClusterDocument tint={cluster.tint} />
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold">{cluster.name}</div>
-                        <p className="mt-1 truncate text-sm text-muted-foreground">
-                          {cluster.summary || cluster.description || "No summary yet."}
-                        </p>
-                      </div>
-                    </div>
-                    <span className="text-sm tabular-nums text-muted-foreground">{count}</span>
-                    <span className="text-sm tabular-nums text-muted-foreground">
-                      {memoryCount(cluster, count).toLocaleString()}
-                    </span>
-                    <span className="text-sm text-muted-foreground">{clusterLastActivity(cluster, sources)}</span>
-                    <MoreHorizontal className="h-4 w-4 justify-self-end text-muted-foreground" />
-                  </button>
-                );
-              })}
-              {clusters.length === 0 && (
-                <div className="px-5 py-10 text-center text-sm text-muted-foreground">
-                  No clusters yet. Create one or add sources so Vault can suggest memory spaces.
+            <div className="overflow-x-auto">
+              <div className="min-w-[760px]">
+                <div className="grid grid-cols-[minmax(0,1fr)_96px_96px_140px_32px] border-b border-border px-2 pb-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  <span>Name</span>
+                  <span>Sources</span>
+                  <span>Memories</span>
+                  <span>Last activity</span>
+                  <span />
                 </div>
-              )}
+                <div>
+                  {clusters.map((cluster) => {
+                    const count = sourceCounts.get(cluster.id) ?? 0;
+                    return (
+                      <button
+                        key={cluster.id}
+                        type="button"
+                        onClick={() => setSelectedClusterId(cluster.id)}
+                        className={
+                          "grid w-full grid-cols-[minmax(0,1fr)_96px_96px_140px_32px] items-center border-b border-border px-2 py-4 text-left transition-colors hover:bg-card/65 " +
+                          (selectedCluster?.id === cluster.id ? "bg-card/80" : "")
+                        }
+                      >
+                        <div className="flex min-w-0 items-center gap-4">
+                          <ClusterDocument tint={cluster.tint} />
+                          <div className="min-w-0">
+                            <div className="break-words text-sm font-semibold">{cluster.name}</div>
+                            <p className="mt-1 line-clamp-2 break-words text-sm text-muted-foreground">
+                              {cluster.summary || cluster.description || "No summary yet."}
+                            </p>
+                          </div>
+                        </div>
+                        <span className="text-sm tabular-nums text-muted-foreground">{count}</span>
+                        <span className="text-sm tabular-nums text-muted-foreground">
+                          {memoryCount(cluster, count).toLocaleString()}
+                        </span>
+                        <span className="break-words text-sm text-muted-foreground">{clusterLastActivity(cluster, sources)}</span>
+                        <MoreHorizontal className="h-4 w-4 justify-self-end text-muted-foreground" />
+                      </button>
+                    );
+                  })}
+                  {clusters.length === 0 && (
+                    <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+                      No clusters yet. Create one or add sources so Vault can suggest memory spaces.
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </section>
 
@@ -214,8 +218,8 @@ function ClustersList() {
                       <div className="flex min-w-0 items-center gap-3">
                         <FileText className="h-4 w-4 text-[var(--cluster-accent)]" />
                         <div className="min-w-0">
-                          <div className="truncate text-sm font-semibold">{cluster.name}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">
+                          <div className="break-words text-sm font-semibold">{cluster.name}</div>
+                          <div className="mt-1 break-words text-xs text-muted-foreground">
                             {count} sources <span className="px-1.5">/</span>{" "}
                             {memoryCount(cluster, count).toLocaleString()} memories
                           </div>
@@ -225,10 +229,10 @@ function ClustersList() {
                     </div>
                     <div className="my-4 h-px bg-border" />
                     <div className="text-xs text-muted-foreground">Top memory</div>
-                    <div className="mt-2 line-clamp-2 text-sm font-medium">
+                    <div className="mt-2 line-clamp-2 break-words text-sm font-medium">
                       {topSource?.title || "No indexed memory yet"}
                     </div>
-                    <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+                    <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       <span className="rounded border border-border px-1.5 py-0.5">
                         {topSource?.type?.toUpperCase?.() || "NOTE"}
                       </span>
@@ -252,16 +256,16 @@ function ClustersList() {
                 {visibleSuggestions.map((suggestion) => (
                   <div
                     key={`${suggestion.source_id}-${suggestion.suggested_cluster_id}`}
-                    className="flex items-center justify-between gap-4 px-4 py-3"
+                    className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
                   >
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">{suggestion.source_title}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
+                      <div className="break-words text-sm font-medium">{suggestion.source_title}</div>
+                      <div className="mt-1 break-words text-xs text-muted-foreground">
                         {suggestion.suggested_cluster_name} /{" "}
                         {(suggestion.confidence * 100).toFixed(0)}% confidence
                       </div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-2">
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
                       <Button size="sm" variant="outline" onClick={() => void acceptSuggestion(suggestion)}>
                         <Check className="h-4 w-4" /> Accept
                       </Button>
@@ -282,20 +286,20 @@ function ClustersList() {
           )}
         </div>
 
-          <aside className="hidden border-l border-border bg-card/35 px-7 py-8 xl:block">
+          <aside className="border-t border-border bg-card/35 px-4 py-6 sm:px-7 xl:border-l xl:border-t-0">
             {selectedCluster ? (
-              <div className="sticky top-8">
+              <div className="xl:sticky xl:top-8">
                 <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
                     <span
-                      className="h-2.5 w-2.5 rounded-full"
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
                       style={{ background: `var(--cluster-${selectedCluster.tint})` }}
                     />
-                    <h2 className="text-base font-semibold">{selectedCluster.name}</h2>
+                    <h2 className="min-w-0 break-words text-base font-semibold">{selectedCluster.name}</h2>
                   </div>
                   <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
                 </div>
-                <p className="mt-10 text-sm leading-6 text-muted-foreground">
+                <p className="mt-10 break-words text-sm leading-6 text-muted-foreground">
                   {selectedCluster.summary || selectedCluster.description || "A private local memory space."}
                 </p>
                 <div className="mt-8 grid grid-cols-2 gap-y-6">
@@ -311,7 +315,7 @@ function ClustersList() {
                     <div key={source.id} className="relative text-sm">
                       <span className="absolute -left-[23px] top-1.5 h-1.5 w-1.5 rounded-full bg-muted-foreground" />
                       <div className="font-medium">{formatDate(source.updatedAt)}</div>
-                      <div className="mt-1 text-muted-foreground">Added {source.title}</div>
+                      <div className="mt-1 break-words text-muted-foreground">Added {source.title}</div>
                     </div>
                   ))}
                   {selectedSources.length === 0 && (
@@ -325,12 +329,12 @@ function ClustersList() {
                     <Link
                       key={source.id}
                       to="/sources"
-                      className="flex gap-3 text-sm hover:text-primary"
+                      className="flex min-w-0 gap-3 text-sm hover:text-primary"
                     >
                       <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-issue)]" />
-                      <span>
-                        <span className="line-clamp-2 font-medium">{source.title}</span>
-                        <span className="mt-1 block text-xs text-muted-foreground">{source.type.toUpperCase()} / {Math.max(1, Math.round((source.text || "").length / 120))} memories</span>
+                      <span className="min-w-0">
+                        <span className="line-clamp-2 break-words font-medium">{source.title}</span>
+                        <span className="mt-1 block break-words text-xs text-muted-foreground">{source.type.toUpperCase()} / {Math.max(1, Math.round((source.text || "").length / 120))} memories</span>
                       </span>
                     </Link>
                   ))}
@@ -368,8 +372,8 @@ function InspectorMetric({
   const display =
     typeof value === "number" ? (compact ? compactNumber(value) : value.toLocaleString()) : value;
   return (
-    <div>
-      <div className="text-xl font-semibold tabular-nums">{display}</div>
+    <div className="min-w-0">
+      <div className="break-words text-xl font-semibold tabular-nums">{display}</div>
       <div className="mt-1 text-xs text-muted-foreground">{label}</div>
     </div>
   );

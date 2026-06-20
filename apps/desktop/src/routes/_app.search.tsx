@@ -250,7 +250,7 @@ function MindView() {
 
   return (
     <div
-      className="relative grid h-full grid-cols-[minmax(0,1fr)_320px] overflow-hidden bg-background"
+      className="relative grid h-full grid-cols-1 overflow-y-auto bg-background xl:grid-cols-[minmax(0,1fr)_320px] xl:overflow-hidden"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={(event) => void handleDrop(event)}
@@ -260,16 +260,16 @@ function MindView() {
           Drop documents to add them to this library
         </div>
       )}
-      <main className="min-w-0 overflow-y-auto">
-        <div className="border-b border-border bg-background px-6 py-5">
-          <div className="flex items-start justify-between gap-6">
-            <div>
+      <main className="min-w-0 xl:overflow-y-auto">
+        <div className="border-b border-border bg-background px-4 py-5 sm:px-6">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+            <div className="min-w-0">
               <h1 className="page-title">Mind</h1>
               <p className="mt-1 max-w-xl text-sm leading-6 text-muted-foreground">
                 Search saved sources, review unclustered items, and open the context you need.
               </p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2 xl:justify-end">
               <Button variant="outline" className="gap-2" onClick={() => setAddMode("note")}>
                 <NotebookText className="h-4 w-4" />
                 Add note
@@ -289,8 +289,8 @@ function MindView() {
             </div>
           </div>
 
-          <div className="mt-5 grid gap-3 lg:grid-cols-[1fr_auto_auto]">
-            <div className="relative">
+          <div className="mt-5 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
+            <div className="relative min-w-0">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 autoFocus
@@ -325,9 +325,9 @@ function MindView() {
           </div>
         </div>
 
-        <div className="px-6 py-5">
+        <div className="px-4 py-5 sm:px-6">
           {importMessage && (
-            <div className="mb-4 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
+            <div className="mb-4 break-words rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
               {importMessage}
             </div>
           )}
@@ -342,7 +342,7 @@ function MindView() {
               </Link>
             </div>
           )}
-          <div className="mb-4 flex items-center justify-between text-sm">
+          <div className="mb-4 flex flex-col gap-2 text-sm sm:flex-row sm:items-center sm:justify-between">
             <div className="text-muted-foreground">
               {visibleSources.length} shown from {sources.length} sources
             </div>
@@ -385,7 +385,7 @@ function MindView() {
         </div>
       </main>
 
-      <aside className="hidden border-l border-border bg-card/55 p-5 lg:block">
+      <aside className="border-t border-border bg-card/55 p-4 sm:p-5 xl:border-l xl:border-t-0">
         <h2 className="text-sm font-semibold">Current library</h2>
         <div className="mt-4 space-y-2">
           <StateRow label="Sources" value={sources.length.toString()} />
@@ -479,9 +479,9 @@ function MindView() {
 
 function StateRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2 text-sm">
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2 text-sm">
       <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium">{value}</span>
+      <span className="break-all text-right font-medium">{value}</span>
     </div>
   );
 }
@@ -520,9 +520,9 @@ function MemoryCard({
             {source.summary || source.preview || "Preview will appear after extraction."}
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            {cluster && <span className="text-xs text-muted-foreground">{cluster.name}</span>}
+            {cluster && <span className="min-w-0 max-w-full truncate text-xs text-muted-foreground">{cluster.name}</span>}
             {source.tags.slice(0, 3).map((tag) => (
-              <span key={tag} className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">
+              <span key={tag} className="max-w-full truncate rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">
                 {tag}
               </span>
             ))}
@@ -569,7 +569,7 @@ function SourceDetailDialog({
     <Dialog open={Boolean(source)} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{source.title}</DialogTitle>
+          <DialogTitle className="break-words">{source.title}</DialogTitle>
           <DialogDescription>
             Inspect the extracted source preview, tags, cluster assignment, and available open actions.
           </DialogDescription>
@@ -586,12 +586,13 @@ function SourceDetailDialog({
           </div>
           <div className="grid gap-2">
             <label className="text-sm font-medium" htmlFor="cover-image-url">Card image</label>
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row">
               <Input
                 id="cover-image-url"
                 value={coverImageValue}
                 onChange={(event) => setCoverImageValue(event.target.value)}
                 placeholder="Image URL or local image path"
+                className="min-w-0"
               />
               <Button variant="outline" onClick={saveImageUrl}>Save</Button>
               <Button variant="outline" onClick={chooseLocalImage} disabled={!desktop?.selectCoverImage}>
@@ -606,25 +607,25 @@ function SourceDetailDialog({
             {cluster && (
               <>
                 <span>/</span>
-                <Link to="/clusters/$clusterId" params={{ clusterId: cluster.id }} className="underline-offset-4 hover:underline">
+                <Link to="/clusters/$clusterId" params={{ clusterId: cluster.id }} className="break-words underline-offset-4 hover:underline">
                   {cluster.name}
                 </Link>
               </>
             )}
           </div>
-          <div className="rounded-md border border-border bg-muted/35 p-4 text-sm leading-6">
+          <div className="break-words rounded-md border border-border bg-muted/35 p-4 text-sm leading-6">
             {source.preview || source.summary || "No extracted preview is available yet."}
           </div>
           {source.tags.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {source.tags.map((tag) => (
-                <span key={tag} className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">
+                <span key={tag} className="max-w-full break-words rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">
                   {tag}
                 </span>
               ))}
             </div>
           )}
-          <div className="flex justify-end gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
             <Button
               variant="outline"
               className="gap-2"

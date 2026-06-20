@@ -174,7 +174,7 @@ function ChatIndex() {
 
   return (
     <div
-      className="vault-page-wash grid h-full grid-cols-[320px_minmax(0,1fr)_326px] overflow-hidden"
+      className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)_326px] xl:overflow-hidden"
       onDragOver={(event) => {
         event.preventDefault();
         if (backendReady) setDragActive(true);
@@ -182,17 +182,17 @@ function ChatIndex() {
       onDragLeave={() => setDragActive(false)}
       onDrop={(event) => void handleDrop(event)}
     >
-      <aside className="overflow-y-auto border-r border-border bg-card/35 px-5 py-6">
+      <aside className="border-b border-border bg-card/35 px-4 py-4 sm:px-5 lg:overflow-y-auto lg:border-b-0 lg:border-r lg:py-6">
         <Button variant="ghost" className="mb-5 w-full justify-start gap-2 text-base" onClick={newChat}>
           <Plus className="h-4 w-4" /> New chat
         </Button>
-        <div className="space-y-1">
+        <div className="max-h-56 space-y-1 overflow-y-auto lg:max-h-none">
           {visibleChats.map((c) => (
             <div key={c.id} className="group flex items-center gap-1 rounded-md hover:bg-accent/60">
               <Link
                 to="/chat/$chatId"
                 params={{ chatId: c.id }}
-                className="min-w-0 flex-1 truncate px-3 py-2 text-sm text-muted-foreground group-hover:text-foreground"
+                className="min-w-0 flex-1 break-words px-3 py-2 text-sm text-muted-foreground group-hover:text-foreground"
               >
                 {c.title}
               </Link>
@@ -212,12 +212,12 @@ function ChatIndex() {
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="border-b border-border bg-card/35 px-10 py-7">
-          <div className="flex items-center gap-3">
+        <header className="border-b border-border bg-card/35 px-4 py-5 sm:px-6 lg:px-10 lg:py-7">
+          <div className="flex min-w-0 items-start gap-3">
             <MessageSquare className="h-5 w-5 text-muted-foreground" />
-            <div>
+            <div className="min-w-0">
               <h1 className="text-base font-semibold">Ask Vault</h1>
-              <p className="text-sm text-muted-foreground">
+              <p className="break-words text-sm text-muted-foreground">
                 Starts with all indexed context. Narrow to a cluster only when the question needs
                 it.
               </p>
@@ -225,15 +225,15 @@ function ChatIndex() {
           </div>
         </header>
 
-        <main className="flex flex-1 items-center justify-center overflow-y-auto px-10">
+        <main className="flex flex-1 items-center justify-center overflow-y-auto px-4 py-6 sm:px-6 lg:px-10">
           <section className="w-full max-w-[840px]">
             {dragActive && (
-              <div className="mb-2 rounded-md border border-dashed border-primary/50 bg-primary/5 px-3 py-2 text-xs text-foreground">
+              <div className="mb-2 break-words rounded-md border border-dashed border-primary/50 bg-primary/5 px-3 py-2 text-xs text-foreground">
                 Drop files to attach them to the first message.
               </div>
             )}
             {attachmentNotice && (
-              <div className="mb-2 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+              <div className="mb-2 break-words rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
                 {attachmentNotice}
               </div>
             )}
@@ -267,7 +267,7 @@ function ChatIndex() {
                   value={scopeClusterId ?? "global"}
                   onValueChange={(value) => setScopeClusterId(value === "global" ? null : value)}
                 >
-                  <SelectTrigger className="h-8 w-auto min-w-44 gap-2 px-2.5 text-xs">
+                  <SelectTrigger className="h-8 w-full min-w-0 gap-2 px-2.5 text-xs sm:w-auto sm:min-w-44">
                     <SlidersHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
                     <SelectValue />
                   </SelectTrigger>
@@ -284,7 +284,7 @@ function ChatIndex() {
                   {backendReady ? "Semantic retrieval ready" : "Create a vault to chat"}
                 </span>
                 <Button
-                  className="ml-auto gap-2"
+                  className="gap-2 sm:ml-auto"
                   onClick={() => void startPromptChat()}
                   disabled={(!prompt.trim() && attachments.length === 0) || creating}
                 >
@@ -299,7 +299,7 @@ function ChatIndex() {
                   <button
                     key={path}
                     type="button"
-                    className="rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent"
+                    className="max-w-full break-all rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent"
                     onClick={() => removeAttachment(path)}
                     title="Remove attachment"
                   >
@@ -314,15 +314,15 @@ function ChatIndex() {
           </section>
         </main>
       </div>
-      <aside className="overflow-y-auto border-l border-border bg-card/35 px-7 py-8">
-        <div className="flex items-center gap-3">
+      <aside className="border-t border-border bg-card/35 px-4 py-6 sm:px-7 xl:overflow-y-auto xl:border-l xl:border-t-0 xl:py-8">
+        <div className="flex min-w-0 items-center gap-3">
           <span className="h-2.5 w-2.5 rounded-full bg-primary" />
-          <h2 className="text-lg font-semibold">Vault context</h2>
+          <h2 className="min-w-0 flex-1 break-words text-lg font-semibold">Vault context</h2>
           <MoreHorizontal className="ml-auto h-4 w-4 text-muted-foreground" />
           <span className="h-6 w-px bg-border" />
           <X className="h-4 w-4 text-muted-foreground" />
         </div>
-        <p className="mt-8 text-sm leading-6 text-muted-foreground">
+        <p className="mt-8 break-words text-sm leading-6 text-muted-foreground">
           Start globally by default. Pick a cluster only when the question needs a narrower memory space.
         </p>
         <div className="my-8 h-px bg-border" />
@@ -345,10 +345,10 @@ function ChatIndex() {
               key={item}
               type="button"
               onClick={() => setPrompt(item)}
-              className="flex w-full items-center gap-3 rounded-md border border-border bg-background px-3 py-2 text-left text-sm hover:bg-accent/45"
+              className="flex w-full min-w-0 items-center gap-3 rounded-md border border-border bg-background px-3 py-2 text-left text-sm hover:bg-accent/45"
             >
               <MessageSquare className="h-4 w-4 text-muted-foreground" />
-              <span className="flex-1">{item}</span>
+              <span className="min-w-0 flex-1 break-words">{item}</span>
               <ArrowRight className="h-4 w-4 text-muted-foreground" />
             </button>
           ))}
@@ -365,8 +365,8 @@ function ChatIndex() {
 
 function Metric({ value, label }: { value: string; label: string }) {
   return (
-    <div>
-      <div className="font-semibold">{value}</div>
+    <div className="min-w-0">
+      <div className="break-words font-semibold">{value}</div>
       <div className="mt-1 text-xs text-muted-foreground">{label}</div>
     </div>
   );

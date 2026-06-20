@@ -75,21 +75,21 @@ function TasksView() {
   const activeJob = selected ?? rows[0] ?? null;
 
   return (
-    <div className="vault-page-wash grid h-full grid-cols-[minmax(0,1fr)_320px] overflow-hidden bg-background">
-      <main className="min-w-0 overflow-y-auto px-8 py-8">
+    <div className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto bg-background xl:grid-cols-[minmax(0,1fr)_320px] xl:overflow-hidden">
+      <main className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:overflow-y-auto">
         <header className="border-b border-border pb-6">
-          <div className="flex items-start justify-between gap-6">
-            <div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
               <h1 className="page-title">Tasks</h1>
               <p className="mt-2 text-sm text-muted-foreground">Background work that keeps your vault current.</p>
             </div>
-            <Button onClick={() => void runOnce()}>
+            <Button className="w-full sm:w-auto" onClick={() => void runOnce()}>
               <Play className="h-4 w-4" />
               Run due jobs
             </Button>
           </div>
-          <div className="mt-6 grid gap-3 md:grid-cols-[1fr_auto]">
-            <div className="relative max-w-xl">
+          <div className="mt-6 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+            <div className="relative min-w-0 max-w-xl">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input className="pl-9" placeholder="Search jobs..." value={query} onChange={(event) => setQuery(event.target.value)} />
             </div>
@@ -117,44 +117,48 @@ function TasksView() {
         )}
 
         <section className="mt-6 overflow-hidden rounded-md border border-border bg-card">
-          <div className="grid grid-cols-[104px_1fr_120px_112px_104px_80px] border-b border-border px-4 py-3 text-xs text-muted-foreground">
-            <span>Priority</span>
-            <span>Job</span>
-            <span>Scope</span>
-            <span>Status</span>
-            <span>Estimate</span>
-            <span className="text-right">Control</span>
-          </div>
-          <div className="divide-y divide-border">
-            {rows.map((job) => (
-              <button
-                key={job.id}
-                type="button"
-                onClick={() => setSelected(job)}
-                className="grid w-full grid-cols-[104px_1fr_120px_112px_104px_80px] items-center px-4 py-4 text-left text-sm transition-colors hover:bg-accent/35"
-              >
-                <span className="capitalize text-muted-foreground">{job.priority ?? "normal"}</span>
-                <span className="min-w-0">
-                  <span className="block truncate font-medium">{jobTitle(job.job_type)}</span>
-                  <span className="mt-1 block truncate text-xs text-muted-foreground">{job.status_detail || job.dedupe_key || job.id}</span>
-                </span>
-                <span className="truncate text-muted-foreground">{job.write_scope ?? "none"}</span>
-                <span className="flex items-center gap-2">
-                  {statusIcon(job.status)}
-                  <span className="capitalize">{job.status.replace(/_/g, " ")}</span>
-                </span>
-                <span className="font-mono text-xs text-muted-foreground">{formatEstimate(job)}</span>
-                <span className="text-right text-xs text-muted-foreground">{job.cancellable ? "Cancel" : "-"}</span>
-              </button>
-            ))}
-            {rows.length === 0 && (
-              <div className="px-4 py-10 text-center text-sm text-muted-foreground">No jobs in this view.</div>
-            )}
+          <div className="overflow-x-auto">
+            <div className="min-w-[720px]">
+              <div className="grid grid-cols-[104px_minmax(0,1fr)_120px_112px_104px_80px] border-b border-border px-4 py-3 text-xs text-muted-foreground">
+                <span>Priority</span>
+                <span>Job</span>
+                <span>Scope</span>
+                <span>Status</span>
+                <span>Estimate</span>
+                <span className="text-right">Control</span>
+              </div>
+              <div className="divide-y divide-border">
+                {rows.map((job) => (
+                  <button
+                    key={job.id}
+                    type="button"
+                    onClick={() => setSelected(job)}
+                    className="grid w-full grid-cols-[104px_minmax(0,1fr)_120px_112px_104px_80px] items-center px-4 py-4 text-left text-sm transition-colors hover:bg-accent/35"
+                  >
+                    <span className="capitalize text-muted-foreground">{job.priority ?? "normal"}</span>
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium">{jobTitle(job.job_type)}</span>
+                      <span className="mt-1 block truncate text-xs text-muted-foreground">{job.status_detail || job.dedupe_key || job.id}</span>
+                    </span>
+                    <span className="truncate text-muted-foreground">{job.write_scope ?? "none"}</span>
+                    <span className="flex items-center gap-2">
+                      {statusIcon(job.status)}
+                      <span className="capitalize">{job.status.replace(/_/g, " ")}</span>
+                    </span>
+                    <span className="font-mono text-xs text-muted-foreground">{formatEstimate(job)}</span>
+                    <span className="text-right text-xs text-muted-foreground">{job.cancellable ? "Cancel" : "-"}</span>
+                  </button>
+                ))}
+                {rows.length === 0 && (
+                  <div className="px-4 py-10 text-center text-sm text-muted-foreground">No jobs in this view.</div>
+                )}
+              </div>
+            </div>
           </div>
         </section>
       </main>
 
-      <aside className="right-panel px-6 py-8">
+      <aside className="min-w-0 border-t border-border bg-card px-4 py-6 sm:px-6 xl:w-[var(--panel-width)] xl:min-w-[var(--panel-width)] xl:overflow-y-auto xl:border-l xl:border-t-0 xl:py-8">
         <h2 className="text-sm font-semibold">Job detail</h2>
         {activeJob ? (
           <div className="mt-5">
@@ -162,8 +166,8 @@ function TasksView() {
               {statusIcon(activeJob.status)}
               <span className="font-medium">{activeJob.status.replace(/_/g, " ")}</span>
             </div>
-            <h3 className="mt-6 text-[15px] font-semibold leading-snug">{jobTitle(activeJob.job_type)}</h3>
-            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+            <h3 className="mt-6 break-words text-[15px] font-semibold leading-snug">{jobTitle(activeJob.job_type)}</h3>
+            <p className="mt-3 break-words text-sm leading-6 text-muted-foreground">
               {activeJob.status_detail || activeJob.last_error || "No additional job detail was reported."}
             </p>
             <dl className="mt-7 divide-y divide-border border-y border-border text-sm">
@@ -173,7 +177,7 @@ function TasksView() {
               <Meta label="Timeout" value={activeJob.timeout_seconds ? `${activeJob.timeout_seconds}s` : "none"}/>
               <Meta label="Started" value={activeJob.started_at ? formatDate(activeJob.started_at) : "not started"}/>
             </dl>
-            <div className="mt-5 flex gap-2">
+            <div className="mt-5 flex flex-wrap gap-2">
               <Button variant="outline" onClick={() => void load()}>
                 <RotateCcw className="h-4 w-4" />
                 Refresh
@@ -194,9 +198,9 @@ function TasksView() {
 
 function Meta({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex justify-between gap-4 py-3">
+    <div className="flex flex-col gap-1 py-3 sm:flex-row sm:justify-between sm:gap-4">
       <dt className="text-muted-foreground">{label}</dt>
-      <dd className="truncate text-right">{value}</dd>
+      <dd className="break-all sm:text-right">{value}</dd>
     </div>
   );
 }

@@ -216,9 +216,9 @@ export function AppShell() {
         <aside className="vault-sidebar flex flex-col">
           <div className="px-4 pb-2 pt-4">
             <div className="panel-section-title mb-2">Vault</div>
-            <button className="flex w-full items-center gap-2 truncate text-left text-[12px] text-[var(--text-primary)] hover:text-[var(--primary)]">
+            <button className="flex w-full items-start gap-2 text-left text-[12px] text-[var(--text-primary)] hover:text-[var(--primary)]">
               <FolderOpen className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
-              <span className="truncate">{vaultPath ?? "Choose library"}</span>
+              <span className="min-w-0 flex-1 break-all">{vaultPath ?? "Choose library"}</span>
             </button>
             <div className="mt-4">
               <BrandLogo className="h-7 w-auto select-none" />
@@ -256,7 +256,7 @@ export function AppShell() {
                       className="vault-nav-item flex items-center gap-3 px-2.5 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
                     >
                       <Icon className="h-4 w-4" strokeWidth={1.5} />
-                      <span className="min-w-0 flex-1">{item.label}</span>
+                      <span className="min-w-0 flex-1 break-words">{item.label}</span>
                       {item.to === "/tasks" && taskCount > 0 && (
                         <span className="rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)]">
                           {taskCount}
@@ -277,13 +277,13 @@ export function AppShell() {
                       key={cluster.id}
                       to="/clusters/$clusterId"
                       params={{ clusterId: cluster.id }}
-                      className="flex h-7 items-center gap-2 rounded-md px-2.5 text-[13px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                      className="flex min-h-7 items-start gap-2 rounded-md px-2.5 py-1 text-[13px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
                     >
                       <span
-                        className="h-2 w-2 rounded-full"
+                        className="mt-1.5 h-2 w-2 shrink-0 rounded-full"
                         style={{ background: clusterDot(index) }}
                       />
-                      <span className="truncate">{cluster.name}</span>
+                      <span className="min-w-0 flex-1 break-words">{cluster.name}</span>
                     </Link>
                   ))}
                 </div>
@@ -304,7 +304,7 @@ export function AppShell() {
                       key={c.id}
                       to="/chat/$chatId"
                       params={{ chatId: c.id }}
-                      className="block truncate rounded-md px-2.5 py-1.5 text-[13px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                      className="block break-words rounded-md px-2.5 py-1.5 text-[13px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
                     >
                       {c.title}
                     </Link>
@@ -320,10 +320,10 @@ export function AppShell() {
                 <UserRound className="h-4 w-4" strokeWidth={1.5} />
               </span>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-[13px] font-medium text-[var(--text-primary)]">
+                <div className="break-words text-[13px] font-medium text-[var(--text-primary)]">
                   {vaultPath ? vaultName(vaultPath) : "Local profile"}
                 </div>
-                <div className="truncate text-[12px] text-[var(--text-muted)]">
+                <div className="break-all text-[12px] text-[var(--text-muted)]">
                   {vaultPath ?? "No library selected"}
                 </div>
               </div>
@@ -337,10 +337,10 @@ export function AppShell() {
         </main>
       </div>
 
-      <footer className="vault-footer flex shrink-0 items-center border-t border-[var(--border-default)] px-4">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+      <footer className="vault-footer flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-[var(--border-default)] px-4 py-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${backend.status === "online" ? "bg-[var(--status-ready)]" : "bg-[var(--status-muted)]"}`} />
-          <span className="truncate">{vaultPath ?? "No active library"}</span>
+          <span className="min-w-0 break-all">{vaultPath ?? "No active library"}</span>
           <span>/</span>
           <span>{backend.status === "online" ? "Backend online" : backend.status === "checking" ? "Checking backend" : "Backend offline"}</span>
           <span>/</span>

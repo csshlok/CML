@@ -538,7 +538,7 @@ function ChatView() {
 
   return (
     <div
-      className="flex h-full"
+      className="grid h-full grid-cols-1 overflow-y-auto lg:grid-cols-[240px_minmax(0,1fr)] xl:grid-cols-[256px_minmax(0,1fr)_320px] xl:overflow-hidden"
       onDragOver={(event) => {
         event.preventDefault();
         if (backendReady) setDragActive(true);
@@ -546,7 +546,7 @@ function ChatView() {
       onDragLeave={() => setDragActive(false)}
       onDrop={(event) => void handleDrop(event)}
     >
-      <aside className="hidden w-64 shrink-0 border-r border-border bg-card/30 p-2 lg:block">
+      <aside className="border-b border-border bg-card/30 p-2 lg:border-b-0 lg:border-r lg:overflow-y-auto">
         <Button
           variant="ghost"
           className="mb-2 w-full justify-start gap-2"
@@ -554,14 +554,14 @@ function ChatView() {
         >
           <MessageSquare className="h-4 w-4" /> New chat
         </Button>
-        <div className="space-y-0.5">
+        <div className="max-h-48 space-y-0.5 overflow-y-auto lg:max-h-none">
           {backendChats.map((session) => (
             <Link
               key={session.id}
               to="/chat/$chatId"
               params={{ chatId: session.id }}
               className={
-                "block truncate rounded-md px-2.5 py-1.5 text-sm transition-colors " +
+                "block break-words rounded-md px-2.5 py-1.5 text-sm transition-colors " +
                 (session.id === backendSession?.id
                   ? "bg-accent text-foreground"
                   : "text-muted-foreground hover:bg-accent/70 hover:text-foreground")
@@ -573,7 +573,7 @@ function ChatView() {
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-col xl:min-h-0">
         <header className="flex flex-wrap items-center gap-3 border-b border-border bg-card/40 px-6 py-3">
           <Input
             value={titleDraft}
@@ -589,7 +589,7 @@ function ChatView() {
             className="h-8 min-w-0 flex-1 border-transparent bg-transparent px-2 text-sm font-medium disabled:opacity-100 md:max-w-sm"
           />
           <Select value={scopeClusterId ?? "global"} onValueChange={setScope}>
-            <SelectTrigger className="h-8 w-52 gap-2 text-xs">
+            <SelectTrigger className="h-8 w-full gap-2 text-xs sm:w-52">
               <SlidersHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
               <SelectValue />
             </SelectTrigger>
@@ -602,7 +602,7 @@ function ChatView() {
               ))}
             </SelectContent>
           </Select>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 sm:ml-auto">
             {lastError && (
               <Button variant="outline" size="sm" className="gap-1" onClick={retryLastUserMessage}>
                 <RotateCcw className="h-4 w-4" />
@@ -648,21 +648,21 @@ function ChatView() {
               <Trash2 className="h-4 w-4" />
               Delete
             </Button>
-            <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+            <span className="break-words rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
               {backendReady ? "Semantic context" : "Backend unavailable"}
             </span>
-            <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+            <span className="break-words rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
               {runtime?.available ? `LLM ${runtime.state ?? runtime.provider}` : "LLM offline"}
             </span>
             {backendSession && (
-              <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+              <span className="break-words rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
                 Memory {memoryLabel(memoryState)}
               </span>
             )}
           </div>
         </header>
 
-        <div className="flex min-h-0 flex-1">
+        <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px]">
           <div className="min-w-0 flex-1 overflow-y-auto">
             <div className="mx-auto max-w-3xl px-6 py-8">
               {messages.length === 0 && !streaming && (
@@ -693,7 +693,7 @@ function ChatView() {
                 {streaming && (
                   <div className="rounded-md border border-border bg-card p-4">
                     {streamStatus && (
-                      <div className="mb-2 text-xs text-muted-foreground">{streamStatus}</div>
+                      <div className="mb-2 break-words text-xs text-muted-foreground">{streamStatus}</div>
                     )}
                     <p className="whitespace-pre-wrap text-sm leading-relaxed">
                       {streamText}
@@ -705,9 +705,9 @@ function ChatView() {
               <div ref={endRef} />
             </div>
           </div>
-          <aside className="hidden w-80 shrink-0 overflow-y-auto border-l border-border bg-card/20 p-4 xl:block">
+          <aside className="border-t border-border bg-card/20 p-4 xl:overflow-y-auto xl:border-l xl:border-t-0">
             <div className="text-sm font-medium">Context used</div>
-            <div className="mt-3 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+            <div className="mt-3 break-words rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
               <div className="font-medium text-foreground">{latestAnalysisLabel}</div>
               {latestCoverageSummary ? <div className="mt-1">{latestCoverageSummary}</div> : null}
               {latestRuntimeState ? <div className="mt-1">Runtime: {latestRuntimeState}</div> : null}
@@ -724,7 +724,7 @@ function ChatView() {
                 }
               >
                 <div className="font-medium">Degraded mode</div>
-                <div className="mt-1">{latestPartialFailureText}</div>
+                <div className="mt-1 break-words">{latestPartialFailureText}</div>
               </div>
             )}
             <div className="mt-3 space-y-3">
@@ -740,10 +740,10 @@ function ChatView() {
                       key={`${citation.sourceId}-${index}`}
                       className="rounded-md border border-border bg-card p-3"
                     >
-                      <div className="truncate text-sm font-medium">
+                      <div className="break-words text-sm font-medium">
                         {source?.title ?? "Source"}
                       </div>
-                      <p className="mt-2 line-clamp-4 text-xs leading-5 text-muted-foreground">
+                      <p className="mt-2 line-clamp-4 break-words text-xs leading-5 text-muted-foreground">
                         {citation.snippet}
                       </p>
                     </div>
@@ -756,7 +756,7 @@ function ChatView() {
                 <div className="text-sm font-medium">Context notes</div>
                 <ul className="mt-2 space-y-2 text-xs text-muted-foreground">
                   {latestWarnings.map((warning) => (
-                    <li key={warning}>{warning}</li>
+                    <li key={warning} className="break-words">{warning}</li>
                   ))}
                 </ul>
               </div>
@@ -766,17 +766,17 @@ function ChatView() {
 
         <div className="border-t border-border bg-card/40 p-4">
           {dragActive && (
-            <div className="mx-auto mb-2 max-w-3xl rounded-md border border-dashed border-primary/50 bg-primary/5 px-3 py-2 text-xs text-foreground">
+            <div className="mx-auto mb-2 max-w-3xl break-words rounded-md border border-dashed border-primary/50 bg-primary/5 px-3 py-2 text-xs text-foreground">
               Drop files to attach them to this chat.
             </div>
           )}
           {lastError && (
-            <div className="mx-auto mb-2 max-w-3xl rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+            <div className="mx-auto mb-2 max-w-3xl break-words rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
               {lastError}
             </div>
           )}
           {backendReady && runtime && !runtime.available && (
-            <div className="mx-auto mb-2 max-w-3xl rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+            <div className="mx-auto mb-2 max-w-3xl break-words rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
               Local LLM is offline. General chat is degraded until a local model runtime is running.
             </div>
           )}
@@ -795,7 +795,7 @@ function ChatView() {
             </div>
           )}
           {attachmentNotice && (
-            <div className="mx-auto mb-2 max-w-3xl rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+            <div className="mx-auto mb-2 max-w-3xl break-words rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
               {attachmentNotice}
             </div>
           )}
@@ -838,7 +838,7 @@ function ChatView() {
                 <button
                   key={path}
                   type="button"
-                  className="rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent"
+                  className="max-w-full break-all rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent"
                   onClick={() => removeAttachment(path)}
                   title="Remove attachment"
                 >
@@ -847,7 +847,7 @@ function ChatView() {
               ))}
             </div>
           )}
-          <p className="mx-auto mt-1.5 max-w-3xl text-[11px] text-muted-foreground">
+          <p className="mx-auto mt-1.5 max-w-3xl break-words text-[11px] text-muted-foreground">
             Ctrl/Cmd Enter to send / {scope ? scope.name : "all vault context"} / {latestAnalysisLabel.toLowerCase()} / memory{" "}
             {memoryLabel(memoryState)}
           </p>
@@ -921,7 +921,7 @@ function Message({
 }) {
   if (msg.role === "user") {
     return (
-      <div className="ml-auto max-w-[85%] rounded-md bg-accent px-3.5 py-2.5 text-sm">
+      <div className="ml-auto max-w-[85%] break-words rounded-md bg-accent px-3.5 py-2.5 text-sm">
         {msg.content}
       </div>
     );
@@ -930,9 +930,9 @@ function Message({
     return (
       <div className="rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
         <div className="font-medium">Interrupted answer</div>
-        <p className="mt-1 text-amber-900">{msg.content}</p>
+        <p className="mt-1 break-words text-amber-900">{msg.content}</p>
         {msg.prompt ? (
-          <p className="mt-2 rounded border border-amber-200 bg-white/60 px-2 py-1 text-xs text-amber-900">
+          <p className="mt-2 break-words rounded border border-amber-200 bg-white/60 px-2 py-1 text-xs text-amber-900">
             {msg.prompt}
           </p>
         ) : null}
@@ -961,7 +961,7 @@ function Message({
           })}
         </div>
       )}
-      <p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</p>
+      <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{msg.content}</p>
       {msg.citations && msg.citations.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-1.5">
           {msg.citations.map((cit, i) => {
@@ -976,23 +976,23 @@ function Message({
             return (
               <Popover key={i}>
                 <PopoverTrigger asChild>
-                  <button className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-[11px] hover:bg-accent">
+                  <button className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-[11px] hover:bg-accent">
                     <Quote className="h-3 w-3" /> {title}
                     {cit.pageNumber ? <span className="text-muted-foreground">p.{cit.pageNumber}</span> : null}
                     {stateText ? <span className="text-muted-foreground">({stateText})</span> : null}
                   </button>
                 </PopoverTrigger>
-                <PopoverContent className="w-80 text-xs">
-                  <div className="mb-1 font-medium">{title}</div>
+                <PopoverContent className="w-80 max-w-[calc(100vw-2rem)] text-xs">
+                  <div className="mb-1 break-words font-medium">{title}</div>
                   {cit.pageNumber ? (
                     <div className="mb-2 text-muted-foreground">Page {cit.pageNumber}</div>
                   ) : null}
                   {stateText ? (
-                    <div className="mb-2 rounded-md border border-border bg-card px-2 py-1 text-muted-foreground">
+                    <div className="mb-2 break-words rounded-md border border-border bg-card px-2 py-1 text-muted-foreground">
                       {stateText}. Showing the excerpt saved when this answer was generated.
                     </div>
                   ) : null}
-                  <p className="text-muted-foreground">{cit.snippet}</p>
+                  <p className="break-words text-muted-foreground">{cit.snippet}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {s?.localPath && (
                       <Button
@@ -1029,7 +1029,7 @@ function Message({
           })}
         </div>
       )}
-      <div className="mt-3 flex items-center gap-1 border-t border-border pt-2 text-xs text-muted-foreground">
+      <div className="mt-3 flex flex-wrap items-center gap-1 border-t border-border pt-2 text-xs text-muted-foreground">
         <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onSaved}>
           <Bookmark className={"mr-1 h-3.5 w-3.5 " + (msg.saved ? "fill-current" : "")} />
           {msg.saved ? "Saved" : "Save answer"}

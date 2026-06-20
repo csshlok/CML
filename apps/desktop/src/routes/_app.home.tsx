@@ -119,11 +119,11 @@ export function HomeView() {
   }
 
   return (
-    <div className="vault-page-wash grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[1fr_326px]">
-      <main className="min-w-0 overflow-y-auto px-8 py-10">
-        <header className="flex items-start justify-between gap-6">
-          <div>
-            <h1 className="page-title">Mind</h1>
+    <div className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_326px] xl:overflow-hidden">
+      <main className="min-w-0 px-4 py-6 sm:px-8 sm:py-10 xl:overflow-y-auto">
+        <header className="flex flex-wrap items-start justify-between gap-6">
+          <div className="min-w-0">
+            <h1 className="page-title break-words">Mind</h1>
             <p className="mt-3 text-sm text-muted-foreground">
               Your private AI memory, ready to search.
             </p>
@@ -146,7 +146,7 @@ export function HomeView() {
               }
             }}
           />
-          <div className="flex items-center gap-3 px-1 pb-1">
+          <div className="flex flex-wrap items-center gap-3 px-1 pb-1">
             <Button variant="outline" className="gap-2">
               <Settings2 className="h-4 w-4" /> All sources
             </Button>
@@ -179,8 +179,8 @@ export function HomeView() {
         </section>
 
         <section className="mt-4 rounded-md border border-border/80 bg-card/95 p-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-medium">Suggested clusters</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="break-words text-lg font-medium">Suggested clusters</h2>
             <Link to="/clusters" className="text-sm text-primary">View all</Link>
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
@@ -194,12 +194,12 @@ export function HomeView() {
                   className="rounded-md border border-border bg-background p-3 hover:bg-accent/45"
                   style={{ ["--cluster-accent" as string]: `var(--cluster-${cluster.tint})` }}
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
                     <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[var(--cluster-accent)]/15 text-[var(--cluster-accent)]">
                       <Sparkles className="h-4 w-4" />
                     </span>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold">{cluster.name}</div>
+                    <div className="min-w-0 flex-1">
+                      <div className="line-clamp-2 break-words text-sm font-semibold">{cluster.name}</div>
                       <div className="mt-1 text-xs text-muted-foreground">
                         {count} sources <span className="px-1">/</span> {Math.max(64, count * 64)} memories
                       </div>
@@ -218,10 +218,10 @@ export function HomeView() {
         </section>
       </main>
 
-      <aside className="hidden overflow-y-auto border-l border-border bg-card/35 px-6 py-8 xl:block">
+      <aside className="border-t border-border bg-card/35 px-4 py-6 xl:block xl:overflow-y-auto xl:border-l xl:border-t-0 xl:px-6 xl:py-8">
         <section className="rounded-md border border-border bg-background p-4">
-          <div className="flex items-start justify-between">
-            <div>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
               <h2 className="text-lg font-medium">Today's health</h2>
               <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
                 <span className="h-2.5 w-2.5 rounded-full bg-[var(--status-ready)]" />
@@ -250,7 +250,7 @@ export function HomeView() {
         </section>
 
         <section className="mt-4 rounded-md border border-border bg-background p-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-lg font-medium">Activity</h2>
             <Link to="/activity" className="text-sm text-primary">View all</Link>
           </div>
@@ -259,7 +259,7 @@ export function HomeView() {
               <div key={item.id} className="relative text-sm">
                 <span className="absolute -left-[18px] top-1.5 h-2 w-2 rounded-full bg-[var(--cluster-sage)]" />
                 <div className="text-muted-foreground">{item.time}</div>
-                <div className="mt-1">{item.title}</div>
+                <div className="mt-1 break-words">{item.title}</div>
               </div>
             ))}
             {activityItems.length === 0 && (
@@ -287,8 +287,8 @@ function Panel({
 }) {
   return (
     <section className="rounded-md border border-border bg-card">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h2 className="text-lg font-medium">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <h2 className="break-words text-lg font-medium">
           {title} {typeof badge === "number" && <span className="ml-2 rounded bg-muted px-1.5 text-sm text-muted-foreground">{badge}</span>}
         </h2>
         <Link to={href} className="text-sm text-primary">{action}</Link>
@@ -300,17 +300,17 @@ function Panel({
 
 function MemoryRow({ source, cluster }: { source: Source; cluster?: Cluster }) {
   return (
-    <div className="flex items-center gap-4 px-4 py-4">
+    <div className="flex items-start gap-4 px-4 py-4">
       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-[var(--status-issue)]/10 text-[var(--status-issue)]">
         <FileText className="h-4 w-4" />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-semibold">{source.title}</div>
-        <div className="mt-1 truncate text-xs text-muted-foreground">
+        <div className="break-words text-sm font-semibold">{source.title}</div>
+        <div className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">
           {source.summary || source.preview || "Key memory summary will appear after indexing."}
         </div>
       </div>
-      <span className="text-xs text-muted-foreground">{cluster?.name ?? sourceStateText(source)}</span>
+      <span className="max-w-[36%] break-words text-right text-xs text-muted-foreground">{cluster?.name ?? sourceStateText(source)}</span>
     </div>
   );
 }
@@ -319,12 +319,12 @@ function UnsortedRow({ source, index }: { source: Source; index: number }) {
   const icons = [Mic, FileText, ImageIcon, Mic];
   const Icon = icons[index % icons.length];
   return (
-    <div className="flex items-center gap-4 px-4 py-4">
+    <div className="flex items-start gap-4 px-4 py-4">
       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground">
         <Icon className="h-4 w-4" />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-semibold">{source.title}</div>
+        <div className="break-words text-sm font-semibold">{source.title}</div>
         <div className="mt-1 text-xs text-muted-foreground">{source.type} <span className="px-1">/</span> {source.state}</div>
       </div>
       <span className="text-xs text-muted-foreground">{index === 0 ? "Today" : "Yesterday"}</span>
@@ -334,9 +334,9 @@ function UnsortedRow({ source, index }: { source: Source; index: number }) {
 
 function HealthRow({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-3 text-sm">
-      <span className="flex items-center gap-3 text-muted-foreground">{icon}{label}</span>
-      <span className="text-primary">{value}</span>
+    <div className="flex items-start justify-between gap-3 text-sm">
+      <span className="flex min-w-0 items-center gap-3 break-words text-muted-foreground">{icon}{label}</span>
+      <span className="break-words text-right text-primary">{value}</span>
     </div>
   );
 }
@@ -353,11 +353,11 @@ function QuickAction({
   href: "/sources" | "/clusters" | "/chat";
 }) {
   return (
-    <Link to={href} className="flex items-center gap-3 rounded-md p-1.5 hover:bg-accent/45">
+    <Link to={href} className="flex items-start gap-3 rounded-md p-1.5 hover:bg-accent/45">
       <span className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-primary">{icon}</span>
       <span className="min-w-0 flex-1">
-        <span className="block text-sm font-medium">{title}</span>
-        <span className="block truncate text-xs text-muted-foreground">{detail}</span>
+        <span className="block break-words text-sm font-medium">{title}</span>
+        <span className="block break-words text-xs text-muted-foreground">{detail}</span>
       </span>
       <ArrowRight className="h-4 w-4 text-muted-foreground" />
     </Link>

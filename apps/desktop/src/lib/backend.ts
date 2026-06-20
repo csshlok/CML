@@ -957,20 +957,35 @@ export async function getBridgeStatus() {
   return request<BridgeStatus>("/api/v1/bridge/status");
 }
 
-export async function listBridgeRequests() {
-  return request<BridgeRequest[]>("/api/v1/bridge/requests");
+function paginationQuery(options: { limit?: number; offset?: number } = {}) {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.offset !== undefined) params.set("offset", String(options.offset));
+  return params;
 }
 
-export async function listBridgeTokenRotations() {
-  return request<BridgeTokenRotation[]>("/api/v1/bridge/token-rotations");
+export async function listBridgeRequests(options: { limit?: number; offset?: number } = {}) {
+  const params = paginationQuery(options);
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<BridgeRequest[]>(`/api/v1/bridge/requests${suffix}`);
 }
 
-export async function listBridgeClients() {
-  return request<BridgeClientRecord[]>("/api/v1/bridge/clients");
+export async function listBridgeTokenRotations(options: { limit?: number; offset?: number } = {}) {
+  const params = paginationQuery(options);
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<BridgeTokenRotation[]>(`/api/v1/bridge/token-rotations${suffix}`);
 }
 
-export async function listBridgeApprovalRequests() {
-  return request<BridgeApprovalRequest[]>("/api/v1/bridge/approval-requests");
+export async function listBridgeClients(options: { limit?: number; offset?: number } = {}) {
+  const params = paginationQuery(options);
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<BridgeClientRecord[]>(`/api/v1/bridge/clients${suffix}`);
+}
+
+export async function listBridgeApprovalRequests(options: { limit?: number; offset?: number } = {}) {
+  const params = paginationQuery(options);
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<BridgeApprovalRequest[]>(`/api/v1/bridge/approval-requests${suffix}`);
 }
 
 export async function approveBridgeApprovalRequest(
@@ -1006,12 +1021,18 @@ export async function rejectBridgeApprovalRequest(
   );
 }
 
-export async function listBridgeAuditEvents() {
-  return request<BridgeAuditEvent[]>("/api/v1/bridge/audit-events");
+export async function listBridgeAuditEvents(options: { limit?: number; offset?: number } = {}) {
+  const params = paginationQuery(options);
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<BridgeAuditEvent[]>(`/api/v1/bridge/audit-events${suffix}`);
 }
 
-export async function listBridgeWritebackReviews(vaultId?: string, pendingOnly = false) {
-  const params = new URLSearchParams();
+export async function listBridgeWritebackReviews(
+  vaultId?: string,
+  pendingOnly = false,
+  options: { limit?: number; offset?: number } = {},
+) {
+  const params = paginationQuery(options);
   if (vaultId) params.set("vault_id", vaultId);
   if (pendingOnly) params.set("pending_only", "true");
   const suffix = params.size > 0 ? `?${params.toString()}` : "";
@@ -1025,9 +1046,11 @@ export async function decideBridgeWritebackReview(sourceId: string, approved: bo
   });
 }
 
-export async function listBridgeCaptures(vaultId?: string) {
-  const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
-  return request<BridgeCaptureRecord[]>(`/api/v1/bridge/captures${query}`);
+export async function listBridgeCaptures(vaultId?: string, options: { limit?: number; offset?: number } = {}) {
+  const params = paginationQuery(options);
+  if (vaultId) params.set("vault_id", vaultId);
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<BridgeCaptureRecord[]>(`/api/v1/bridge/captures${suffix}`);
 }
 
 export async function captureBridgeArtifact(payload: {

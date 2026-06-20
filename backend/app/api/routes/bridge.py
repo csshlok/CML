@@ -812,6 +812,7 @@ def list_bridge_writeback_reviews(
     bounded_limit = max(1, min(limit, 200))
     bounded_offset = max(offset, 0)
     with connect() as conn:
+        _ensure_bridge_vault_filter(conn, vault_id)
         rows = conn.execute(
             f"""
             SELECT reviews.*, sources.title, sources.trust_tier, sources.security_labels
@@ -836,6 +837,7 @@ def list_bridge_captures(vault_id: str | None = None, limit: int = 50, offset: i
     bounded_limit = max(1, min(limit, 200))
     bounded_offset = max(offset, 0)
     with connect() as conn:
+        _ensure_bridge_vault_filter(conn, vault_id)
         rows = conn.execute(
             f"""
             SELECT
@@ -1307,6 +1309,14 @@ def _existing_ids(conn, *, table: str, ids: list[str]) -> set[str]:
         unique_ids,
     ).fetchall()
     return {str(row["id"]) for row in rows}
+
+
+def _ensure_bridge_vault_filter(conn, vault_id: str | None) -> None:
+    if not vault_id:
+        return
+    row = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="vault_not_found")
 
 
 def _token_hash(token: str) -> str:

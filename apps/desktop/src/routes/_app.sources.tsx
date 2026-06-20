@@ -273,7 +273,7 @@ function SourcesView() {
 
   return (
     <div
-      className="vault-page-wash relative grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[1fr_326px]"
+      className="vault-page-wash relative grid h-full grid-cols-1 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_326px] xl:overflow-hidden"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={(event) => void handleDrop(event)}
@@ -283,14 +283,14 @@ function SourcesView() {
           Drop documents to import them
         </div>
       )}
-      <main className="min-w-0 overflow-y-auto px-7 py-8">
+      <main className="min-w-0 px-7 py-8 xl:overflow-y-auto">
         <header className="mb-8">
           <h1 className="page-title">Sources</h1>
           <p className="mt-3 text-sm text-muted-foreground">
             Files, links, notes, images, and transcripts stored locally.
           </p>
           <div className="mt-9 flex flex-wrap items-center gap-2">
-            <div className="relative mr-auto min-w-[240px] max-w-sm flex-1">
+            <div className="relative mr-auto min-w-0 flex-[1_1_240px] sm:max-w-sm">
               <Input
                 aria-label="Search sources"
                 placeholder="Search sources..."
@@ -316,12 +316,12 @@ function SourcesView() {
         </header>
 
         {error && (
-          <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive break-words">
             Using local mock data because the backend could not be reached: {error}
           </div>
         )}
         {ingestMessage && (
-          <div className="mb-3 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+          <div className="mb-3 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground break-words">
             {ingestMessage}
           </div>
         )}
@@ -337,77 +337,79 @@ function SourcesView() {
               : "Create a library in Settings to store real sources."}
           </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-background/95 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
-              <tr className="border-b border-border">
-                <th className="w-10 px-2 py-3 font-normal">
-                  <span className="block h-4 w-4 rounded border border-border" />
-                </th>
-                <th className="px-3 py-3 font-normal">Name</th>
-                <th className="px-3 py-3 font-normal">Type</th>
-                <th className="px-3 py-3 font-normal">Pages</th>
-                <th className="px-3 py-3 font-normal">Cluster</th>
-                <th className="px-3 py-3 font-normal">Status</th>
-                <th className="px-3 py-3 font-normal">Last indexed</th>
-                <th className="px-3 py-3 font-normal" />
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((source) => {
-                const Icon = typeIcon[source.type];
-                const cluster = clusters.find((item) => item.id === source.clusterId);
-                return (
-                  <tr
-                    key={source.id}
-                    className={
-                      "cursor-pointer border-b border-border hover:bg-card/70 " +
-                      (inspectorSource?.id === source.id ? "bg-card/80" : "")
-                    }
-                    onClick={() => setSelected(source)}
-                  >
-                    <td className="px-2 py-5">
-                      <span className="block h-4 w-4 rounded border border-border bg-background" />
-                    </td>
-                    <td className="px-3 py-5">
-                      <div className="flex items-center gap-4">
-                        <span className="flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-md border border-border bg-background text-[10px] font-semibold uppercase text-muted-foreground">
-                          <Icon className="mb-0.5 h-4 w-4" />
-                          {source.type === "file" ? fileExt(source.title) : source.type}
-                        </span>
-                        <div className="min-w-0">
-                          <div className="truncate font-semibold">{source.title}</div>
-                          <div className="mt-1 truncate text-xs text-muted-foreground">
-                            {source.summary || source.preview || "Waiting for extracted preview"}
+          <div className="overflow-x-auto">
+            <table className="min-w-[760px] w-full text-sm">
+              <thead className="sticky top-0 bg-background/95 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
+                <tr className="border-b border-border">
+                  <th className="w-10 px-2 py-3 font-normal">
+                    <span className="block h-4 w-4 rounded border border-border" />
+                  </th>
+                  <th className="px-3 py-3 font-normal">Name</th>
+                  <th className="px-3 py-3 font-normal">Type</th>
+                  <th className="px-3 py-3 font-normal">Pages</th>
+                  <th className="px-3 py-3 font-normal">Cluster</th>
+                  <th className="px-3 py-3 font-normal">Status</th>
+                  <th className="px-3 py-3 font-normal">Last indexed</th>
+                  <th className="px-3 py-3 font-normal" />
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((source) => {
+                  const Icon = typeIcon[source.type];
+                  const cluster = clusters.find((item) => item.id === source.clusterId);
+                  return (
+                    <tr
+                      key={source.id}
+                      className={
+                        "cursor-pointer border-b border-border hover:bg-card/70 " +
+                        (inspectorSource?.id === source.id ? "bg-card/80" : "")
+                      }
+                      onClick={() => setSelected(source)}
+                    >
+                      <td className="px-2 py-5">
+                        <span className="block h-4 w-4 rounded border border-border bg-background" />
+                      </td>
+                      <td className="px-3 py-5">
+                        <div className="flex items-center gap-4">
+                          <span className="flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-md border border-border bg-background text-[10px] font-semibold uppercase text-muted-foreground">
+                            <Icon className="mb-0.5 h-4 w-4" />
+                            {source.type === "file" ? fileExt(source.title) : source.type}
+                          </span>
+                          <div className="min-w-0">
+                            <div className="break-words font-semibold">{source.title}</div>
+                            <div className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">
+                              {source.summary || source.preview || "Waiting for extracted preview"}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </td>
-                    <td className="px-3 py-5 text-muted-foreground">{sourceTypeLabel(source)}</td>
-                    <td className="px-3 py-5 text-muted-foreground">{pageEstimate(source)}</td>
-                    <td className="px-3 py-5">
-                      {cluster ? (
-                        <span className="inline-flex items-center gap-1.5">
-                          <ClusterDot tint={cluster.tint} />
-                          <span className="text-muted-foreground">{cluster.name}</span>
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-5">
-                      <StateChip state={source.state} />
-                    </td>
-                    <td className="px-3 py-5 text-muted-foreground">{lastIndexed(source)}</td>
-                    <td className="px-3 py-5 text-right">
-                      <MoreHorizontal className="inline h-4 w-4 text-muted-foreground" />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                      </td>
+                      <td className="px-3 py-5 text-muted-foreground">{sourceTypeLabel(source)}</td>
+                      <td className="px-3 py-5 text-muted-foreground">{pageEstimate(source)}</td>
+                      <td className="px-3 py-5">
+                        {cluster ? (
+                          <span className="inline-flex max-w-40 items-center gap-1.5">
+                            <ClusterDot tint={cluster.tint} />
+                            <span className="break-words text-muted-foreground">{cluster.name}</span>
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-5">
+                        <StateChip state={source.state} />
+                      </td>
+                      <td className="px-3 py-5 text-muted-foreground">{lastIndexed(source)}</td>
+                      <td className="px-3 py-5 text-right">
+                        <MoreHorizontal className="inline h-4 w-4 text-muted-foreground" />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
-        <div className="mt-8 flex items-center justify-between text-sm text-muted-foreground">
+        <div className="mt-8 flex flex-col gap-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
           <span>{filtered.length} sources</span>
           <div className="flex items-center gap-4">
             <button type="button" className="text-muted-foreground">Prev</button>
@@ -500,22 +502,22 @@ function SourceInspector({
 }) {
   if (!source) {
     return (
-      <aside className="hidden border-l border-border bg-card/35 px-6 py-8 xl:block">
+      <aside className="border-t border-border bg-card/35 px-7 py-8 xl:border-l xl:border-t-0 xl:px-6">
         <div className="text-sm text-muted-foreground">Select a source to inspect it.</div>
       </aside>
     );
   }
   const Icon = typeIcon[source.type];
   return (
-    <aside className="hidden overflow-y-auto border-l border-border bg-card/35 px-6 py-8 xl:block">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex gap-4">
+    <aside className="overflow-y-visible border-t border-border bg-card/35 px-7 py-8 xl:overflow-y-auto xl:border-l xl:border-t-0 xl:px-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 gap-4">
           <span className="flex h-[72px] w-[54px] flex-col items-center justify-center rounded-md border border-border bg-background text-[10px] font-semibold uppercase text-[var(--status-issue)]">
             <Icon className="mb-1 h-5 w-5" />
             {source.type === "file" ? fileExt(source.title) : source.type}
           </span>
-          <div>
-            <h2 className="line-clamp-2 text-lg font-semibold">{source.title}</h2>
+          <div className="min-w-0">
+            <h2 className="break-words text-lg font-semibold">{source.title}</h2>
             <div className="mt-2 text-sm text-muted-foreground">
               {sourceTypeLabel(source)} <span className="px-1">/</span> {fileSizeEstimate(source)}
             </div>
@@ -531,7 +533,7 @@ function SourceInspector({
 
       <section className="mt-6">
         <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Description</div>
-        <p className="mt-4 text-sm leading-6 text-muted-foreground">
+        <p className="mt-4 break-words text-sm leading-6 text-muted-foreground">
           {source.summary || source.preview || "Vault has not generated a description for this source yet."}
         </p>
       </section>
@@ -557,12 +559,12 @@ function SourceInspector({
 
       <section className="mt-8">
         <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Preview</div>
-        <div className="mt-4 rounded-md border border-border bg-background p-4 text-sm leading-6 text-muted-foreground">
+        <div className="mt-4 rounded-md border border-border bg-background p-4 text-sm leading-6 text-muted-foreground break-words">
           <p>{source.preview || source.summary || "No extracted preview is available yet."}</p>
           {pages.length > 0 && (
             <div className="mt-4 border-t border-border pt-3 text-xs">
               {pages.slice(0, 2).map((page) => (
-                <div key={page.id} className="mt-2">
+                <div key={page.id} className="mt-2 break-words">
                   Page {page.page_number}: {page.raw_text.slice(0, 140) || "No text extracted."}
                 </div>
               ))}
@@ -600,11 +602,11 @@ function SourceInspector({
 function InspectorRow({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <span className="flex items-center gap-2 text-muted-foreground">
+      <span className="flex min-w-0 items-center gap-2 text-muted-foreground">
         {icon}
         {label}
       </span>
-      <span className="text-right">{value}</span>
+      <span className="break-words text-right">{value}</span>
     </div>
   );
 }
