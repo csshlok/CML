@@ -16,26 +16,24 @@ Required environment:
 
 ## Current State
 
-The current checked-out package artifact is not valid for clean VM launch validation.
+The current checkout does not have a valid package artifact for clean VM launch validation.
 
-On 2026-06-20, local validation against `apps/desktop/release/win-unpacked` reported missing packaged resources:
+After the 2026-06-20 rebuild attempt failed, local validation against `apps/desktop/release/win-unpacked` reported that the package root itself is absent:
 
-- `resources/backend`
-- `resources/python-runtime/python.exe`
-- `resources/expert-python-runtime/python.exe`
-- `resources/ms-playwright`
-- `resources/backend/bin/ocr/manifest.json`
-- `resources/helper-manifest.json`
+- `package_root_exists=false`
+- `resources_exists=false`
+- all packaged runtime/resource checks are false because the package root was not produced
 
 Evidence:
 
 - `.tmp/clean-machine-package-validation-2026-06-20.json`
-- `scripts/packaging/smoke-packaged-runtime.ps1 -PackageRoot apps/desktop/release/win-unpacked -Port 7464` failed on missing packaged Python runtime.
-- `scripts/packaging/smoke-packaged-app-launch.ps1 -PackageRoot apps/desktop/release/win-unpacked -TimeoutSeconds 45` failed because the packaged app did not write fresh startup status.
+- `scripts/packaging/smoke-packaged-runtime.ps1 -PackageRoot apps/desktop/release/win-unpacked -Port 7464` failed with `Packaged app root not found`.
+- `scripts/packaging/smoke-packaged-app-launch.ps1 -PackageRoot apps/desktop/release/win-unpacked -TimeoutSeconds 45` failed with `Packaged app executable not found`.
+- `npm run package:win --workspace @cml/desktop` was rerun on 2026-06-20. It passed the renderer build, downloaded OCR runtime inputs, and failed during OCR staging because the downloaded Tesseract installer did not provide a portable `tesseract.exe`; Ghostscript staging also reported `The operation was canceled by the user`.
 
 The active blocker is:
 
-- rebuild a complete package artifact
+- provide real portable OCR tool paths or fix OCR installer extraction, then rebuild a complete package artifact
 - rerun packaged runtime, packaged app launch, installed-app launch, and installer lifecycle smokes locally
 - rerun the current installer and installed-app smoke sequence on a healthier clean VM image
 - verify first-run parity for the current package

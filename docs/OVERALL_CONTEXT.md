@@ -11,10 +11,11 @@ This document preserves the pre-pruned long-form project context as a fallback f
 Desktop startup/package validation:
 
 - Source-level desktop validation passed after restoring the locked dependency tree locally: `npm run lint --workspace @cml/desktop` ran 40 Electron tests OK, and `npm run build --workspace @cml/desktop` completed client and SSR production builds.
-- The checked-out package artifact is not valid for clean VM launch validation. `scripts/packaging/validate-clean-machine-package.ps1 -PackageRoot apps/desktop/release/win-unpacked -InstallerPath apps/desktop/release/CML-0.1.0-Setup.exe -ReportPath .tmp/clean-machine-package-validation-2026-06-20.json` reported missing packaged backend, packaged Python runtime, expert Python runtime, Playwright runtime, OCR manifest, and helper manifest.
-- `scripts/packaging/smoke-packaged-runtime.ps1 -PackageRoot apps/desktop/release/win-unpacked -Port 7464` failed on missing packaged Python runtime.
-- `scripts/packaging/smoke-packaged-app-launch.ps1 -PackageRoot apps/desktop/release/win-unpacked -TimeoutSeconds 45` failed because the packaged app did not write a fresh startup status.
-- Desktop app foundation stays in progress. Next action is to rebuild a complete package, then rerun package/runtime/app-launch/installed-app smokes before attempting clean VM validation.
+- The checked-out package artifact is not valid for clean VM launch validation. After the 2026-06-20 rebuild attempt failed, `scripts/packaging/validate-clean-machine-package.ps1 -PackageRoot apps/desktop/release/win-unpacked -InstallerPath apps/desktop/release/CML-0.1.0-Setup.exe -ReportPath .tmp/clean-machine-package-validation-2026-06-20.json` now reports `package_root_exists=false`.
+- `scripts/packaging/smoke-packaged-runtime.ps1 -PackageRoot apps/desktop/release/win-unpacked -Port 7464` fails with `Packaged app root not found`.
+- `scripts/packaging/smoke-packaged-app-launch.ps1 -PackageRoot apps/desktop/release/win-unpacked -TimeoutSeconds 45` fails with `Packaged app executable not found`.
+- A real package rebuild attempt, `npm run package:win --workspace @cml/desktop`, passed the renderer build but failed during OCR runtime staging: the downloaded Tesseract installer did not stage a portable `tesseract.exe`, and Ghostscript staging reported `The operation was canceled by the user`.
+- Desktop app foundation stays in progress. Next action is to provide real portable OCR tool paths or fix installer extraction, rebuild a complete package, then rerun package/runtime/app-launch/installed-app smokes before attempting clean VM validation.
 
 LoRA expert validation:
 
