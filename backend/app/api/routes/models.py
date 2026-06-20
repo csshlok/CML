@@ -20,6 +20,9 @@ from backend.app.core.model_registry import (
     set_active_model,
     start_model_download,
 )
+from backend.app.core.model_recommender.diagnostics import export_recommendation_diagnostics
+from backend.app.core.model_recommender.benchmark_store import record_model_measurement, record_pair_measurement
+from backend.app.core.model_recommender.measurement import run_chat_measurement, run_pair_measurement
 from backend.app.schemas import (
     EmbeddingRuntimeConfigure,
     EmbeddingRuntimeStatus,
@@ -31,6 +34,9 @@ from backend.app.schemas import (
     ModelActivateRequest,
     ModelDownloadRequest,
     ModelDownloadStart,
+    ModelRecommendationMeasurementRunRequest,
+    ModelRecommendationHardwarePreviewRequest,
+    ModelRecommendationMeasurementWrite,
     ModelRecommendationRead,
     ModelRead,
     ModelRuntimeStatus,
@@ -45,8 +51,70 @@ def list_local_models() -> list[dict]:
 
 
 @router.get("/recommendations", response_model=ModelRecommendationRead)
-def get_model_recommendations() -> dict:
-    return model_recommendations()
+def get_model_recommendations(refresh: bool = False) -> dict:
+    return model_recommendations(refresh=refresh)
+
+
+@router.get("/recommendations/diagnostics")
+def get_model_recommendation_diagnostics(refresh: bool = False) -> dict:
+    return export_recommendation_diagnostics(refresh=refresh)
+
+
+@router.post("/recommendations/diagnostics/preview")
+def preview_model_recommendation_diagnostics(payload: ModelRecommendationHardwarePreviewRequest) -> dict:
+    return export_recommendation_diagnostics(
+        hardware_profile_override=dict(payload.hardware or {}),
+        refresh=payload.refresh,
+    )
+
+
+@router.post("/recommendations/measurements")
+def record_model_recommendation_measurement(payload: ModelRecommendationMeasurementWrite) -> dict:
+    if payload.model_id:
+        return {
+            "kind": "model",
+            "record": record_model_measurement(
+                payload.model_id,
+                score=payload.score,
+                estimated_tok_per_sec=payload.estimated_tok_per_sec,
+                startup_seconds=payload.startup_seconds,
+                runtime_success=payload.runtime_success,
+                training_success=payload.training_success,
+                measured_at=payload.measured_at,
+            ),
+        }
+    if payload.pair_id:
+        return {
+            "kind": "pair",
+            "record": record_pair_measurement(
+                payload.pair_id,
+                runtime_success=payload.runtime_success,
+                training_success=payload.training_success,
+                chat_tok_per_sec=payload.estimated_tok_per_sec,
+                measured_at=payload.measured_at,
+            ),
+        }
+    raise HTTPException(status_code=400, detail="model_id or pair_id is required.")
+
+
+@router.post("/recommendations/measurements/run")
+def run_model_recommendation_measurement(payload: ModelRecommendationMeasurementRunRequest) -> dict:
+    try:
+        if payload.model_id:
+            return run_chat_measurement(model_id=payload.model_id, prompt=payload.prompt)
+        if payload.pair_id:
+            if not payload.adapter_path or not payload.base_model:
+                raise HTTPException(status_code=400, detail="adapter_path and base_model are required for pair measurements.")
+            return run_pair_measurement(
+                pair_id=payload.pair_id,
+                prompt=payload.prompt,
+                adapter_path=payload.adapter_path,
+                base_model=payload.base_model,
+                max_new_tokens=payload.max_new_tokens,
+            )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise HTTPException(status_code=400, detail="model_id or pair_id is required.")
 
 
 @router.get("/discover", response_model=InstalledModelDiscoveryRead)

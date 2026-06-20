@@ -204,7 +204,11 @@ def imported_model_statuses() -> list[dict[str, Any]]:
         model_id = str(payload.get("id") or "")
         local_path = str(payload.get("local_path") or "")
         family = str(payload.get("family") or "")
-        compatibility = model_compatibility_report(local_path, registered_family=family)
+        compatibility = model_compatibility_report(
+            local_path,
+            registered_family=family,
+            include_replacement_recommendation=False,
+        )
         rows.append(
             {
                 "id": model_id,
@@ -351,38 +355,10 @@ def active_model_status() -> dict[str, Any] | None:
     return active_expert_model_status() or active_chat_model_status()
 
 
-def model_recommendations() -> dict[str, Any]:
-    hardware = hardware_module.hardware_status()
-    tier = hardware.get("hardware_tier") or "unknown"
-    if tier == "gpu_or_high_spec_candidate":
-        preferred_id = "qwen3-8b-q4_k_m"
-    elif tier == "cpu_minimum_spec":
-        preferred_id = "qwen3-4b-q4_k_m"
-    elif tier == "cpu_high_spec":
-        preferred_id = "qwen3-8b-q4_k_m"
-    else:
-        preferred_id = "phi-4-mini-instruct-q4_k_m"
-    ordered = sorted(
-        list_models(),
-        key=lambda item: (0 if item["id"] == preferred_id else 1, item["role"], item["name"]),
-    )
-    preferred_chat = next((item for item in ordered if item["id"] == preferred_id), None)
-    current_pair = active_model_pair_status()
-    discovered = discover_installed_models(max_results=12)
-    return {
-        "hardware": hardware,
-        "recommended_model_id": preferred_id,
-        "recommended_chat_model_id": preferred_id,
-        "recommended_expert_family": preferred_chat.get("family") if preferred_chat else "",
-        "active_pair": current_pair,
-        "models": ordered,
-        "detected_compatible_models": discovered["models"],
-        "detected_compatible_model_count": discovered["compatible_model_count"],
-        "detail": (
-            f"Recommended chat model selection for hardware tier {tier}. "
-            "Expert mode still requires a separate accepted local checkpoint."
-        ),
-    }
+def model_recommendations(*, refresh: bool = False) -> dict[str, Any]:
+    from backend.app.core.model_recommender import build_model_recommendations
+
+    return build_model_recommendations(refresh=refresh)
 
 
 def active_model_pair_status() -> dict[str, Any]:
@@ -390,21 +366,26 @@ def active_model_pair_status() -> dict[str, Any]:
     expert_model = active_expert_model_status()
     chat_ok = bool(chat_model and (chat_model.get("compatibility") or {}).get("chat_role_accepted"))
     expert_ok = bool(expert_model and (expert_model.get("compatibility") or {}).get("expert_role_accepted"))
-    accepted = chat_ok and expert_ok
-    detail = (
-        "Accepted chat/expert model pair is active."
-        if accepted
-        else "Select an accepted chat model and an accepted expert checkpoint to complete dual-model setup."
-    )
-    if accepted and chat_model and expert_model and chat_model.get("family") != expert_model.get("family"):
-        detail = (
-            "Accepted cross-family chat/expert pair is active. This is allowed because retrieval, not model memory, remains the citation authority."
-        )
+    if not chat_ok or not expert_ok:
+        return {
+            "accepted": False,
+            "chat_model_id": chat_model.get("id") if chat_model else "",
+            "expert_model_id": expert_model.get("id") if expert_model else "",
+            "detail": "Select an accepted chat model and an accepted expert checkpoint to complete dual-model setup.",
+            "reasons": [],
+            "pair_id": "",
+        }
+    from backend.app.core.model_recommender.hardware_profile import build_hardware_profile
+    from backend.app.core.model_recommender.pairing import resolve_pair_recommendation
+
+    pair = resolve_pair_recommendation(build_hardware_profile(), chat_model, expert_model)
     return {
-        "accepted": accepted,
+        "accepted": bool(pair.get("accepted")),
         "chat_model_id": chat_model.get("id") if chat_model else "",
         "expert_model_id": expert_model.get("id") if expert_model else "",
-        "detail": detail,
+        "detail": str(pair.get("detail") or ""),
+        "reasons": list(pair.get("reasons") or []),
+        "pair_id": str(pair.get("pair_id") or ""),
     }
 
 
@@ -579,7 +560,12 @@ def _default_model_compatibility(model: LocalModel, local_path: Path | None) -> 
     }
 
 
-def model_compatibility_report(model_path: str | Path, *, registered_family: str = "") -> dict[str, Any]:
+def model_compatibility_report(
+    model_path: str | Path,
+    *,
+    registered_family: str = "",
+    include_replacement_recommendation: bool = True,
+) -> dict[str, Any]:
     target = Path(model_path) if str(model_path).strip() else Path("")
     runtime = runtime_dependency_status()
     hardware = hardware_module.hardware_status()
@@ -607,6 +593,11 @@ def model_compatibility_report(model_path: str | Path, *, registered_family: str
 
     expert_role_accepted = not reasons
     accepted_roles = ["expert"] if expert_role_accepted else []
+    replacement_recommendation = (
+        _replacement_recommendation_for_current_hardware(family_id=family.id if family else "")
+        if include_replacement_recommendation
+        else {}
+    )
     return {
         "status": "accepted" if expert_role_accepted else "rejected",
         "accepted": expert_role_accepted,
@@ -627,11 +618,36 @@ def model_compatibility_report(model_path: str | Path, *, registered_family: str
             if expert_role_accepted and family
             else "Rejected for the expert role."
         ),
+        "replacement_recommendation": replacement_recommendation if not expert_role_accepted else {},
         "detail": (
             f"Accepted local {family.name} checkpoint for Vault and LoRA expert runtime."
             if expert_role_accepted and family
             else "; ".join(reasons)
         ),
+    }
+
+
+def _replacement_recommendation_for_current_hardware(*, family_id: str = "") -> dict[str, Any]:
+    try:
+        recommendation = model_recommendations()
+    except Exception:
+        return {}
+    recommended_chat = recommendation.get("recommended_chat_model_id") or ""
+    recommended_pair = recommendation.get("recommended_pair_id") or ""
+    recommended_expert_family = recommendation.get("recommended_expert_family") or ""
+    chat_choice = recommendation.get("chat_recommendation") or {}
+    if family_id and family_id == recommended_expert_family:
+        return {
+            "recommended_chat_model_id": recommended_chat,
+            "recommended_pair_id": recommended_pair,
+            "detail": "This device is better aligned with the currently recommended approved pair for the same expert family.",
+        }
+    return {
+        "recommended_chat_model_id": recommended_chat,
+        "recommended_pair_id": recommended_pair,
+        "recommended_expert_family": recommended_expert_family,
+        "recommended_chat_summary": chat_choice.get("summary", ""),
+        "detail": recommendation.get("detail", ""),
     }
 
 
@@ -684,7 +700,7 @@ def preferred_expert_base_model() -> dict[str, Any] | None:
         for candidate in sorted(root.glob("*")):
             if not candidate.is_dir():
                 continue
-            compatibility = model_compatibility_report(candidate)
+            compatibility = model_compatibility_report(candidate, include_replacement_recommendation=False)
             if compatibility.get("accepted"):
                 return {
                     "id": candidate.name,
@@ -741,7 +757,7 @@ def discover_installed_models(
             if normalized in seen_paths:
                 continue
             seen_paths.add(normalized)
-            compatibility = model_compatibility_report(candidate)
+            compatibility = model_compatibility_report(candidate, include_replacement_recommendation=False)
             if compatibility.get("accepted"):
                 compatible_count += 1
             accepted = bool(compatibility.get("accepted"))

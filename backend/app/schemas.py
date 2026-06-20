@@ -770,6 +770,7 @@ class ModelCompatibilityRead(BaseModel):
     hardware: dict
     reasons: list[str]
     pairing_detail: str = ""
+    replacement_recommendation: dict = {}
     detail: str
 
 
@@ -812,12 +813,61 @@ class ModelRecommendationRead(BaseModel):
     hardware: dict
     recommended_model_id: str
     recommended_chat_model_id: str = ""
+    recommended_expert_model_id: str = ""
     recommended_expert_family: str = ""
+    recommended_pair_id: str = ""
+    chat_fit_type: str = ""
+    expert_runtime_fit_type: str = ""
+    expert_training_fit_type: str = ""
+    chat_estimated_tok_per_sec: float | None = None
+    expert_estimated_tok_per_sec: float | None = None
+    evidence_level: str = "none"
+    confidence: str = "low"
+    warnings: list[str] = []
+    reasons: list[str] = []
+    fallback_low_spec: dict = {}
+    fallback_fastest: dict = {}
     active_pair: dict = {}
+    chat_recommendation: dict = {}
+    expert_recommendation: dict = {}
+    pair_recommendation: dict = {}
     models: list[ModelRead]
     detected_compatible_models: list[dict] = []
     detected_compatible_model_count: int = 0
+    rejected_candidates: list[dict] = []
     detail: str
+    operator_summary: str = ""
+    scoring_breakdown: dict = {}
+    candidate_table: list[dict] = []
+    benchmark_evidence_audit: list[dict] = []
+    catalog_version: str = ""
+    benchmark_bundle_version: str = ""
+    catalog_models: list[dict] = []
+
+
+class ModelRecommendationMeasurementWrite(BaseModel):
+    model_id: str | None = None
+    pair_id: str | None = None
+    score: float | None = None
+    estimated_tok_per_sec: float | None = None
+    startup_seconds: float | None = None
+    runtime_success: bool | None = None
+    training_success: bool | None = None
+    measured_at: str
+
+
+class ModelRecommendationMeasurementRunRequest(BaseModel):
+    model_id: str | None = None
+    pair_id: str | None = None
+    prompt: str = "Reply with a short sentence confirming the runtime is working."
+    adapter_path: str | None = None
+    base_model: str | None = None
+    max_new_tokens: int | None = None
+
+
+class ModelRecommendationHardwarePreviewRequest(BaseModel):
+    hardware: dict = {}
+    refresh: bool = False
 
 
 class DiscoveredInstalledModelRead(BaseModel):

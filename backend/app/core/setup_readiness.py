@@ -6,6 +6,7 @@ from backend.app.core.model_registry import (
     active_model_pair_status,
     discover_installed_models,
     model_integrity_manifest_status,
+    model_recommendations,
     list_models,
 )
 from backend.app.core.ocr import ocr_runtime_status
@@ -22,6 +23,21 @@ def first_run_readiness() -> dict:
     active_chat_model = active_chat_model_status()
     active_expert_model = active_expert_model_status()
     active_pair = active_model_pair_status()
+    recommendation = model_recommendations()
+    recommended_setup = {
+        "recommended_chat_model_id": recommendation.get("recommended_chat_model_id", ""),
+        "recommended_expert_model_id": recommendation.get("recommended_expert_model_id", ""),
+        "recommended_pair_id": recommendation.get("recommended_pair_id", ""),
+        "detail": recommendation.get("detail", ""),
+    }
+    if not recommended_setup["recommended_chat_model_id"] and active_chat_model:
+        recommended_setup["recommended_chat_model_id"] = str(active_chat_model.get("id") or "")
+    if not recommended_setup["recommended_expert_model_id"] and active_expert_model:
+        recommended_setup["recommended_expert_model_id"] = str(active_expert_model.get("id") or "")
+    if not recommended_setup["recommended_pair_id"] and active_pair.get("accepted"):
+        recommended_setup["recommended_pair_id"] = str(active_pair.get("pair_id") or "")
+        if not recommended_setup["detail"]:
+            recommended_setup["detail"] = str(active_pair.get("detail") or "")
     checks = [
         {
             "id": "vault_path",
@@ -84,5 +100,6 @@ def first_run_readiness() -> dict:
         "status": "ready" if ready else "setup_required",
         "degraded_mode": not ready,
         "checks": checks,
+        "recommended_setup": recommended_setup,
         "startup_staleness": startup_status_staleness(),
     }
