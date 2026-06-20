@@ -4,6 +4,7 @@ from pathlib import Path
 from backend.app.core.database import connect, dict_from_row
 from backend.app.core.embeddings import content_hash
 from backend.app.core.encrypted_storage import source_from_encrypted_row
+from backend.app.core.expert_evaluation import EVALUATION_CATEGORIES, prompt_for_category
 
 
 def build_cluster_dataset(cluster_id: str) -> dict:
@@ -147,24 +148,64 @@ def _training_records(dataset: dict) -> list[dict]:
                 f"'{dataset['cluster_name']}' and contains local knowledge."
             )
 
-        records.append(
-            {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": f"Summarize the document titled '{doc['title']}'.",
-                    },
-                    {
-                        "role": "assistant",
-                        "content": summary,
-                    },
-                ],
-                "source_id": doc["source_id"],
-                "content_hash": doc_hash,
-            }
-        )
+        for category in EVALUATION_CATEGORIES:
+            records.append(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt_for_category(category, str(doc["title"])),
+                        },
+                        {
+                            "role": "assistant",
+                            "content": _category_answer(category, doc, summary),
+                        },
+                    ],
+                    "source_id": doc["source_id"],
+                    "content_hash": doc_hash,
+                    "category": category,
+                }
+            )
 
     return records
+
+
+def _category_answer(category: str, doc: dict, summary: str) -> str:
+    title = str(doc.get("title") or "Untitled")
+    evidence = _evidence_excerpt(summary, str(doc.get("text") or ""))
+    source_prefix = f"According to source {title},"
+
+    if category == "summarization":
+        return (
+            f"According to source {title}:\n"
+            f"- {evidence}\n"
+            f"- This answer is grounded in the local source titled {title}.\n"
+            "- It should not rely on outside context beyond the local source."
+        )
+    if category == "citation_grounding":
+        return f"{source_prefix} {evidence}"
+    if category == "contradiction_handling":
+        return (
+            f"Trust the local evidence in source {title}. "
+            f"If a new claim conflicts with it, treat the new claim as unverified unless it matches: {evidence}"
+        )
+    if category == "style_transfer":
+        return f"{source_prefix} the practical note is: {evidence}"
+    if category == "out_of_scope_refusal":
+        return (
+            f"Source {title} does not provide enough evidence to answer an unrelated question. "
+            "The missing evidence is explicit coverage in the local source, so the answer should say it is not covered."
+        )
+    return f"{source_prefix} key facts include: {evidence}"
+
+
+def _evidence_excerpt(summary: str, text: str) -> str:
+    candidate = (summary or text or "").strip()
+    if not candidate:
+        return "the local source contains project-specific evidence"
+    words = candidate.replace("\r", " ").replace("\n", " ").split()
+    excerpt = " ".join(words[:80]).strip()
+    return excerpt.rstrip(".") + "."
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:

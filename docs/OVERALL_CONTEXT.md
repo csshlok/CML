@@ -22,8 +22,11 @@ LoRA expert validation:
 - `.tmp/hardware-proof-2026-06-20.json` proves `avx2=true` on this CPU via Windows `kernel32` processor feature detection.
 - `.tmp/lora-runtime-smoke-2026-06-20.json` passed live Transformers/PEFT runtime smoke against the real adapter and local Qwen2.5 0.5B base model.
 - `.tmp/lora-adapter-quality-benchmark-2026-06-20.json` failed the strict six-category live adapter benchmark: retrieval `98.33`, adapter `30.0`, delta `-68.33`.
+- `.tmp/lora-adapter-quality-benchmark-2026-06-20-retoken.json` reran the same live adapter/base benchmark with `96` generated tokens; adapter score improved to `38.67` but still failed with delta `-59.66`, so the failure is not just truncated output.
+- The training dataset exporter now emits quality-benchmark-aligned records for factual recall, summarization, citation grounding, contradiction handling, style transfer, and out-of-scope refusal. `scripts/backend/smoke-lora-expert.ps1 -AllowTestTrainer -ReportPath .tmp/lora-quality-dataset-scaffold-2026-06-20.json -WorkDir .tmp/lora-quality-dataset-scaffold-work -BenchmarkCaseLimit 6` still passed as non-release scaffold evidence.
+- A bounded real retrain attempt with the aligned dataset wrote `.tmp/lora-quality-aligned-real-smoke-work/.../dataset/dataset-manifest.json` with dataset hash `26b3a8f2f491fed1f7bf0aaa5661c9347d79d56974e8008160a2b81e66c32231`, `57` train records, and `15` validation records, but `.tmp/lora-quality-aligned-real-smoke-interrupted-2026-06-20.json` records that the CPU run reached trainer step `1/6` and produced no `adapter_model.safetensors` before it was stopped for session time.
 - `.tmp/lora-proof-2026-06-20.json` now verifies hardware proof and blocks only on `adapter_quality_benchmark_failed`.
-- Compulsory cluster experts stay in progress. Hardware proof is no longer missing on this CPU, but public expert claims remain blocked until a live adapter quality benchmark beats retrieval.
+- Compulsory cluster experts stay in progress. Hardware proof is no longer missing on this CPU, but public expert claims remain blocked until a real retrain completes and a live adapter quality benchmark beats retrieval.
 
 ## 2026-06-19 Backend / Frontend Bug Pass Snapshot
 

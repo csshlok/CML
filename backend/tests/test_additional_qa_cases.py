@@ -3666,6 +3666,53 @@ class AdditionalQACases(unittest.TestCase):
         self.assertFalse(failing["checks"]["minimum_validation_records"])
         self.assertTrue(passing["passes"])
 
+    def test_lora_training_dataset_exports_quality_benchmark_tasks(self) -> None:
+        from backend.app.core.expert_evaluation import EVALUATION_CATEGORIES
+        from backend.app.core.training_dataset import write_cluster_training_dataset
+
+        dataset = {
+            "cluster_id": "cluster-1",
+            "cluster_name": "Cluster One",
+            "source_count": 1,
+            "unique_content_hash_count": 1,
+            "duplicate_content_count": 0,
+            "duplicate_content_ratio": 0.0,
+            "total_text_chars": 2400,
+            "estimated_token_count": 600,
+            "dataset_hash": "dataset-hash",
+            "documents": [
+                {
+                    "source_id": "source-1",
+                    "title": "Public V1 Blockers",
+                    "summary": "Public V1 remains blocked until adapter quality benchmark evidence passes.",
+                    "text": "Public V1 remains blocked until adapter quality benchmark evidence passes.",
+                    "content_hash": "content-hash",
+                }
+            ],
+        }
+
+        manifest = write_cluster_training_dataset(dataset, Path(self.tmp.name) / "lora-dataset")
+        train_rows = [
+            json.loads(line)
+            for line in Path(manifest["train_path"]).read_text(encoding="utf-8").splitlines()
+        ]
+        validation_rows = [
+            json.loads(line)
+            for line in Path(manifest["validation_path"]).read_text(encoding="utf-8").splitlines()
+        ]
+        rows = train_rows + validation_rows
+        prompts = [row["messages"][0]["content"] for row in rows]
+        answers = [row["messages"][1]["content"] for row in rows]
+
+        self.assertEqual(manifest["train_count"] + manifest["validation_count"], len(EVALUATION_CATEGORIES))
+        self.assertEqual({row["category"] for row in rows}, set(EVALUATION_CATEGORIES))
+        self.assertTrue(any("key facts" in prompt for prompt in prompts))
+        self.assertTrue(any("three grounded bullets" in prompt for prompt in prompts))
+        self.assertTrue(any("cite the source title" in prompt for prompt in prompts))
+        self.assertTrue(any("not covered" in prompt for prompt in prompts))
+        self.assertTrue(any("According to source Public V1 Blockers" in answer for answer in answers))
+        self.assertTrue(any("missing evidence" in answer for answer in answers))
+
     def test_expert_evaluation_harness_covers_strict_categories_and_delta(self) -> None:
         from backend.app.core.config import get_settings
         from backend.app.core.expert_evaluation import (

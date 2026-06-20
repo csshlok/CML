@@ -27,7 +27,7 @@ def build_expert_evaluation_plan(dataset: dict, *, max_cases: int = 12) -> dict:
                 "category": category,
                 "source_id": doc.get("source_id"),
                 "source_title": title,
-                "prompt": _prompt_for_category(category, title),
+                "prompt": prompt_for_category(category, title),
                 "expected_terms": expected_terms,
                 "requires_citation": category in {"factual_recall", "citation_grounding", "summarization"},
             }
@@ -164,7 +164,7 @@ def build_expert_benchmark_report(
     }
 
 
-def _prompt_for_category(category: str, title: str) -> str:
+def prompt_for_category(category: str, title: str) -> str:
     if category == "summarization":
         return f"Summarize the local source titled '{title}' in three grounded bullets."
     if category == "citation_grounding":
@@ -176,6 +176,9 @@ def _prompt_for_category(category: str, title: str) -> str:
     if category == "out_of_scope_refusal":
         return f"Answer a question not covered by '{title}' and state what evidence is missing."
     return f"What are the key facts from the local source titled '{title}'?"
+
+
+_prompt_for_category = prompt_for_category
 
 
 def _expected_terms(title: str, text: str) -> list[str]:
