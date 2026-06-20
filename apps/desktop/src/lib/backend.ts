@@ -681,12 +681,96 @@ export type ModelRecommendationsRecord = {
   hardware: Record<string, unknown>;
   recommended_model_id: string;
   recommended_chat_model_id: string;
+  recommended_expert_model_id: string;
   recommended_expert_family: string;
+  recommended_pair_id: string;
+  chat_fit_type: string;
+  expert_runtime_fit_type: string;
+  expert_training_fit_type: string;
+  chat_estimated_tok_per_sec?: number | null;
+  expert_estimated_tok_per_sec?: number | null;
+  evidence_level: string;
+  confidence: string;
+  warnings: string[];
+  reasons: string[];
+  fallback_low_spec: {
+    id?: string;
+    name?: string;
+    detail?: string;
+  };
+  fallback_fastest: {
+    id?: string;
+    name?: string;
+    detail?: string;
+  };
   active_pair: Record<string, unknown>;
+  chat_recommendation: {
+    id?: string;
+    name?: string;
+    family?: string;
+    summary?: string;
+    score?: number;
+    reasons?: string[];
+    fit?: {
+      fit_type?: string;
+      feasible?: boolean;
+      warnings?: string[];
+    };
+    speed?: {
+      estimated_tok_per_sec?: number;
+      confidence?: string;
+      range_tok_per_sec?: [number, number] | null;
+    };
+    evidence?: {
+      source?: string;
+      confidence?: number;
+      updated_at?: string;
+    };
+  };
+  expert_recommendation: {
+    id?: string;
+    name?: string;
+    family?: string;
+    summary?: string;
+    expert_score?: number;
+    reasons?: string[];
+    expert_fit?: {
+      runtime_fit_type?: string;
+      runtime_feasible?: boolean;
+      training_fit_type?: string;
+      training_feasible?: boolean;
+      warnings?: string[];
+    };
+    evidence?: {
+      source?: string;
+      confidence?: number;
+      updated_at?: string;
+    };
+  };
+  pair_recommendation: {
+    pair_id?: string;
+    accepted?: boolean;
+    detail?: string;
+    minimum_hardware_tier?: string;
+    chat_model_id?: string;
+    expert_family?: string;
+  };
   models: LocalModelRecord[];
   detected_compatible_models: DiscoveredInstalledModelRecord[];
   detected_compatible_model_count: number;
+  rejected_candidates?: Array<{
+    candidate_id: string;
+    rejection_type: string;
+    detail: string;
+  }>;
   detail: string;
+  operator_summary?: string;
+  scoring_breakdown?: Record<string, unknown>;
+  candidate_table?: Array<Record<string, unknown>>;
+  benchmark_evidence_audit?: Array<Record<string, unknown>>;
+  catalog_version?: string;
+  benchmark_bundle_version?: string;
+  catalog_models?: Array<Record<string, unknown>>;
 };
 
 export type DiscoveredInstalledModelRecord = {

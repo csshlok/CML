@@ -39,6 +39,7 @@ import {
   getHardwareStatus,
   getUnlockStatus,
   getModelCompatibilityReport,
+  getModelRecommendations,
   importLocalModel,
   initializeVaultSecurity,
   getJobStatus,
@@ -69,6 +70,7 @@ import {
   type DiscoveredInstalledModelRecord,
   type LocalModelRecord,
   type ModelCompatibilityRecord,
+  type ModelRecommendationsRecord,
   type ModelRuntimeStatus,
   type OCRRuntimeStatusRead,
   type ReconciliationItemPage,
@@ -100,6 +102,7 @@ function SettingsView() {
   const [pathDraft, setPathDraft] = useState("");
   const [models, setModels] = useState<LocalModelRecord[]>([]);
   const [runtime, setRuntime] = useState<ModelRuntimeStatus | null>(null);
+  const [modelRecommendations, setModelRecommendations] = useState<ModelRecommendationsRecord | null>(null);
   const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
   const [embeddingDownload, setEmbeddingDownload] = useState<EmbeddingModelDownloadState | null>(null);
   const [embeddingCacheDraft, setEmbeddingCacheDraft] = useState("");
@@ -156,6 +159,7 @@ function SettingsView() {
         const [
           vaultRows,
           modelRows,
+          recommendations,
           discoveredRows,
           runtimeStatus,
           embeddingStatus,
@@ -167,6 +171,7 @@ function SettingsView() {
         ] = await Promise.all([
           listVaults(),
           listLocalModels(),
+          getModelRecommendations(),
           discoverInstalledModels({ max_results: 24 }),
           getModelRuntimeStatus(),
           getEmbeddingRuntimeStatus(),
@@ -185,6 +190,7 @@ function SettingsView() {
         const importRows = firstVault ? await listIntegrationImports(firstVault.id) : [];
         if (cancelled) return;
         setModels(modelRows);
+        setModelRecommendations(recommendations);
         setDiscoveredModels(discoveredRows.models);
         setRuntime(runtimeStatus);
         setEmbeddingRuntime(embeddingStatus);
@@ -372,7 +378,7 @@ function SettingsView() {
     setActivatingId(modelId);
     try {
       await activateLocalModel(modelId, role);
-      setModels(await listLocalModels());
+      await refreshModelRows();
       setStatusMessage(role === "chat" ? "Chat model activated." : role === "expert" ? "Expert checkpoint activated." : "Chat/expert model activated.");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not activate model.");
@@ -416,7 +422,7 @@ function SettingsView() {
         path: customModelPath.trim(),
         name: customModelName.trim() || null,
       });
-      setModels(await listLocalModels());
+      await refreshModelRows();
       setCustomModelReport(imported.compatibility);
       setStatusMessage(`${imported.name} imported.`);
     } catch (error) {
@@ -447,7 +453,7 @@ function SettingsView() {
         path: model.local_path,
         name: model.name,
       });
-      setModels(await listLocalModels());
+      await refreshModelRows();
       setCustomModelReport(imported.compatibility);
       await scanInstalledModels();
       setStatusMessage(`${imported.name} imported.`);
@@ -466,7 +472,12 @@ function SettingsView() {
   }
 
   async function refreshModelRows() {
-    setModels(await listLocalModels());
+    const [modelRows, recommendations] = await Promise.all([
+      listLocalModels(),
+      getModelRecommendations(),
+    ]);
+    setModels(modelRows);
+    setModelRecommendations(recommendations);
   }
 
   async function exportDiagnostics() {
@@ -636,6 +647,11 @@ function SettingsView() {
   const suggestedModel = models[0];
   const activeChatModel = models.find((model) => model.active_chat) ?? null;
   const activeExpertModel = models.find((model) => model.active_expert) ?? null;
+  const recommendedChatModelId = modelRecommendations?.recommended_chat_model_id ?? "";
+  const recommendedExpertModelId = modelRecommendations?.recommended_expert_model_id ?? "";
+  const recommendedChatSummary = modelRecommendations?.chat_recommendation?.summary ?? "";
+  const recommendedChatSpeed = modelRecommendations?.chat_estimated_tok_per_sec;
+  const recommendedPairAccepted = Boolean(modelRecommendations?.pair_recommendation?.accepted);
   const showSection = (...sections: string[]) => sections.includes(activeSection);
 
   return (
@@ -729,6 +745,37 @@ function SettingsView() {
             status={activeChatModel && activeExpertModel ? "Configured" : "Required"}
             statusTone={activeChatModel && activeExpertModel ? "ready" : "issue"}
           >
+            <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-medium">Recommended for this device</div>
+                <span className="text-xs text-muted-foreground">
+                  Confidence: {modelRecommendations?.confidence ?? "low"}
+                </span>
+              </div>
+              <div className="mt-2 text-foreground">
+                {recommendedChatSummary || "A recommendation will appear after CML checks this device's memory, CPU, and local runtime."}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {modelRecommendations?.detail ?? "CML keeps the recommendation conservative so the local runtime stays usable."}
+              </div>
+              {(recommendedChatSpeed || modelRecommendations?.evidence_level || modelRecommendations?.chat_fit_type) && (
+                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  {modelRecommendations?.chat_fit_type ? <span>Fit: {modelRecommendations.chat_fit_type.replaceAll("_", " ")}</span> : null}
+                  {recommendedChatSpeed ? <span>Estimated speed: {recommendedChatSpeed} tok/s</span> : null}
+                  {modelRecommendations?.evidence_level ? <span>Evidence: {modelRecommendations.evidence_level.replaceAll("_", " ")}</span> : null}
+                </div>
+              )}
+              {modelRecommendations?.warnings?.length ? (
+                <div className="mt-3 text-xs text-muted-foreground">
+                  {modelRecommendations.warnings[0]}
+                </div>
+              ) : null}
+              {!recommendedPairAccepted && modelRecommendations?.pair_recommendation?.detail ? (
+                <div className="mt-2 text-xs text-muted-foreground">
+                  {modelRecommendations.pair_recommendation.detail}
+                </div>
+              ) : null}
+            </div>
             <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
               {activeChatModel && activeExpertModel
                 ? `Chat: ${activeChatModel.name}. Expert: ${activeExpertModel.name}. Retrieval remains the citation source.`
@@ -769,6 +816,16 @@ function SettingsView() {
                         <div className="mt-1 text-xs text-muted-foreground">
                           chat: {model.compatibility?.chat_role_accepted ? "accepted" : "not accepted"} / expert: {model.compatibility?.expert_role_accepted ? "accepted" : "not accepted"}
                         </div>
+                        {model.id === recommendedChatModelId ? (
+                          <div className="mt-1 text-xs text-primary">
+                            Recommended chat model for this device
+                          </div>
+                        ) : null}
+                        {model.id === recommendedExpertModelId ? (
+                          <div className="mt-1 text-xs text-primary">
+                            Recommended expert checkpoint for this device
+                          </div>
+                        ) : null}
                       </div>
                       {model.active_chat || model.active_expert ? (
                         <span className="text-primary">
