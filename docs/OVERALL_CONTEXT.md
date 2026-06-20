@@ -1,6 +1,6 @@
 ﻿# Overall Context
 
-Last updated: 2026-06-20
+Last updated: 2026-06-21
 
 ## Fallback Context Rule
 
@@ -29,6 +29,272 @@ LoRA expert validation:
 - `.tmp/lora-proof-2026-06-20.json` now verifies hardware proof and blocks only on `adapter_quality_benchmark_failed`.
 - Compulsory cluster experts stay in progress. Hardware proof is no longer missing on this CPU, but public expert claims remain blocked until a real retrain completes and a live adapter quality benchmark beats retrieval.
 
+## 2026-06-21 Recommender Local Audit / Live Blocker Snapshot
+
+Completed:
+
+- Added a direct local-audit export path that does not depend on an HTTP backend being up. `scripts/backend/export-local-model-recommender-audit.ps1` now exports hardware, runtime, active-pair, model inventory, recommendation, and diagnostics state directly through the backend Python modules.
+- Used that script to capture a real current-machine audit at `.tmp/local-model-recommender-audit.json`, so the remaining recommender gap is now evidenced rather than inferred.
+- The live audit exposed and this pass fixed two backend correctness issues:
+  - expert-only imported checkpoints were still able to leak into the chat-candidate pool
+  - `first_run_readiness()` could leave `recommended_setup` empty even when an active accepted pair already existed
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_model_recommender.py backend/tests/test_additional_qa_cases.py -k "model_recommender or first_run_readiness or active_model_pair_status or replacement_recommendation or model_recommendations or benchmark_evidence or measurement or snapshot or run_route or diagnostics_export or diagnostics_preview or fixture_matrix or matrix_script or measurement_campaign or local_audit or expert_only_import"` passed with `36` tests.
+- `python -m compileall -q backend/app` passed.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backend/export-local-model-recommender-audit.ps1 -Refresh -OutputPath .tmp\local-model-recommender-audit.json` passed.
+
+Live blocker evidence from the generated audit:
+
+- runtime available: `false`
+- runtime detail: `No local model runtime configured.`
+- hardware tier: `cpu_minimum_spec`
+- free disk: about `2.20 GB`
+- AVX2: `null`
+- training supported: `false`
+- recommended chat model: empty
+- recommended pair: empty
+- confidence: `low`
+
+Still not completed:
+
+- At this point the remaining recommender work is externally blocked rather than code-blocked. Completing the final empirical phase now requires a release-like Windows machine with a configured local runtime and actual LoRA adapter/base assets, or equivalent external-state changes on this machine, before the measurement campaign can produce the final mismatch-rate proof the plan requires.
+
+## 2026-06-20 Recommender Measurement Campaign Snapshot
+
+Completed:
+
+- Added the last missing operator path for the empirical recommender closeout rather than leaving the final evidence loop as a set of disconnected scripts.
+- `scripts/backend/run-model-recommender-measurement-campaign.ps1` now fetches the current recommendation, runs the recommended chat measurement, optionally runs the recommended approved-pair measurement when adapter inputs are provided, and then exports the refreshed diagnostics snapshot in one pass.
+- Added focused regression coverage proving the campaign script hits the recommendation route, the runtime measurement route, and the diagnostics export route together.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_model_recommender.py backend/tests/test_additional_qa_cases.py -k "model_recommender or first_run_readiness or active_model_pair_status or replacement_recommendation or model_recommendations or benchmark_evidence or measurement or snapshot or run_route or diagnostics_export or diagnostics_preview or fixture_matrix or matrix_script or measurement_campaign"` passed with `34` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- The remaining recommender work is now purely empirical proof, not missing backend or operator infrastructure: this campaign path still needs to be run on real release-like Windows machines with actual local runtime and LoRA assets so measured mismatch-rate evidence can be collected and judged.
+
+## 2026-06-20 Recommender Fixture Matrix / Confidence Hardening Snapshot
+
+Completed:
+
+- Closed the last substantial non-empirical recommender gap by adding broader representative hardware-fixture coverage instead of relying mostly on a handful of isolated unit cases.
+- Added `backend/tests/fixtures/model_recommender_profiles/` covering CPU-only 8 GB and 16 GB classes, 8/16/24 GB NVIDIA classes, and a runtime-missing/no-AVX2 degraded class, plus a matrix test that runs the recommender across those profiles and checks pair selection, fit-class validity, and degraded confidence behavior.
+- Added `scripts/backend/evaluate-model-recommender-matrix.ps1` so operators can run the selected-machine diagnostics preview across a directory of hardware JSON profiles and export a compact matrix summary.
+- The new fixture matrix exposed one honesty gap in the backend itself: machines missing runtime detection or expert-capable hardware gates could still surface overconfident recommendation confidence. `backend/app/core/model_recommender/service.py` now downgrades confidence accordingly, and the affected route test was tightened to patch the actual imported hardware/runtime call sites.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_model_recommender.py backend/tests/test_additional_qa_cases.py -k "model_recommender or first_run_readiness or active_model_pair_status or replacement_recommendation or model_recommendations or benchmark_evidence or measurement or snapshot or run_route or diagnostics_export or diagnostics_preview or fixture_matrix or matrix_script"` passed with `33` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- The remaining recommender work is now almost entirely empirical proof rather than missing backend capability: actual release-like Windows machine measurements, wider real runtime and LoRA measurement capture, and measured mismatch-rate evidence from those real environments still remain before the implementation plan can be treated as fully closed.
+
+## 2026-06-20 Recommender Selected-Machine Preview Snapshot
+
+Completed:
+
+- Added the remaining operator-facing “fit/speed report for a selected machine” surface from the implementation plan instead of limiting diagnostics to the live host only.
+- `backend/app/api/routes/models.py` now exposes `/api/v1/models/recommendations/diagnostics/preview`, and `backend/app/core/model_recommender/service.py` can build recommendations against an injected hardware profile override without polluting the cached current-machine snapshot path.
+- Added `scripts/backend/export-model-recommender-diagnostics.ps1` so operators can export either the live-machine diagnostics or a selected-machine preview from a hardware JSON file without hand-assembling REST payloads.
+- Added focused regression coverage proving that the preview route actually uses the injected machine profile and that the export script points at the preview surface.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_model_recommender.py backend/tests/test_additional_qa_cases.py -k "model_recommender or first_run_readiness or active_model_pair_status or replacement_recommendation or model_recommendations or benchmark_evidence or measurement or snapshot or run_route or diagnostics_export or diagnostics_preview"` passed with `31` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- At this point the remaining work is almost entirely empirical proof rather than missing backend surfaces: broader real-machine measurement capture, wider representative hardware fixtures, and measured mismatch-rate evidence from release-like runtime and LoRA conditions still remain before the plan can be treated as fully complete.
+
+## 2026-06-20 Recommender Calibration Diagnostics Snapshot
+
+Completed:
+
+- Added the remaining backend-side diagnostics/calibration surface that the implementation plan still called for. `backend/app/core/model_recommender/diagnostics.py` now exports a current-machine fit/speed report instead of only echoing the recommendation snapshot.
+- The diagnostics export now also produces a calibration summary that compares estimated speed bands and conservative fit predictions against measured model/pair records already stored in the internal benchmark bundle, including match/mismatch rates, per-model calibration rows, and recommended-pair calibration context.
+- Added focused regression coverage proving that diagnostics now expose the new fit/speed report and that mismatch-rate calculations behave correctly from measured benchmark records.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_model_recommender.py backend/tests/test_additional_qa_cases.py -k "model_recommender or first_run_readiness or active_model_pair_status or replacement_recommendation or model_recommendations or benchmark_evidence or measurement or snapshot or run_route or diagnostics_export"` passed with `29` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- The backend recommender is very close to the full plan, but the remaining work is still evidence-gathering rather than architecture: real release-like machine measurements, broader representative hardware fixtures, and actual mismatch-rate proof from those measurements are still needed before the plan can be treated as complete rather than structurally complete.
+
+## 2026-06-20 Recommender Evidence-Layer Hardening Snapshot
+
+Completed:
+
+- Hardened the benchmark-evidence path toward the planned `whichllm` trust model instead of leaving inherited evidence overly permissive.
+- `backend/app/core/model_recommender/benchmark_store.py` now preserves layered benchmark-source sections for `current_sources`, `frozen_sources`, and `cml_internal_sources` in addition to the existing measured model/pair records.
+- `backend/app/core/model_recommender/benchmark_evidence.py` now resolves layered exact matches, demotes frozen-only exact hits when newer current-lineage evidence exists, rejects misleading family inheritance when the parameter gap exceeds the allowed range, and derives family-line identity from stable model identity instead of contaminating it with local-path noise.
+- Added focused regression coverage for frozen-only lineage demotion and parameter-gap rejection alongside the existing recommender suite.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_model_recommender.py backend/tests/test_additional_qa_cases.py -k "model_recommender or first_run_readiness or active_model_pair_status or replacement_recommendation or model_recommendations or benchmark_evidence or measurement or snapshot or run_route"` passed with `28` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- The recommender backend is closer to the full plan, but the remaining work is still mostly calibration and reality-proof rather than structure: real release-like machine measurements, broader hardware fixture coverage, mismatch-rate analysis between estimates and measured runtime behavior, and the final LoRA/runtime-backed proof loop are still open.
+
+## 2026-06-20 `whichllm` Reverse-Engineering Blueprint Refinement
+
+Completed:
+
+- Tightened `docs/WHICHLLM_REVERSE_ENGINEERING_PLAN.md` so it now reads as an implementation-facing reverse-engineering blueprint instead of only a descriptive analysis note.
+- Added an explicit upstream-to-CML mapping across hardware detection, candidate fetch/grouping, benchmark evidence resolution, fit estimation, speed estimation, and ranking, including which upstream assumptions CML should not copy.
+- Added a concrete reverse-engineering execution order covering boundary cloning, approved-catalog freezing, differential fixture tests, fit-before-speed calibration, exact-match internal measurement promotion, and explanation generation tied directly to the scoring ledger.
+
+Still not completed:
+
+- This remains documentation/architecture work only. The remaining practical work is still backend calibration and real-machine validation: the measurement harness now exists, but it still needs broader empirical data from release-like hardware and actual LoRA/runtime conditions.
+
+## 2026-06-20 Recommender Measurement Runner Pass Snapshot
+
+Completed:
+
+- Added the last missing backend measurement-runner surface for the recommender. `backend/app/core/model_recommender/measurement.py` now runs chat-runtime measurements and approved-pair runtime-smoke capture, and `/api/v1/models/recommendations/measurements/run` exposes that flow over the API.
+- Added a matching operator script at `scripts/backend/measure-model-recommender-runtime.ps1` so real machine measurements can be executed and persisted into the internal benchmark bundle without hand-building API payloads.
+- Added focused tests for the new runtime measurement route alongside the broader recommender suite.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_model_recommender.py backend/tests/test_additional_qa_cases.py -k "model_recommender or first_run_readiness or active_model_pair_status or replacement_recommendation or model_recommendations or benchmark_evidence or measurement or snapshot or run_route"` passed with `26` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- At this point the remaining recommender gap is mostly empirical proof, not missing backend structure: the new measurement runner needs to be exercised on real release-like machines with actual local runtime and LoRA assets, and those results still need to inform final constant tuning and mismatch-rate proof.
+
+## 2026-06-20 Recommender Snapshot / Measurement Harness Pass Snapshot
+
+Completed:
+
+- Implemented the explicit storage/refresh part of the recommender plan. Recommendation snapshots are now persisted with an input fingerprint, and the recommendations API can be forced to bypass cache with `refresh=true`.
+- Added a backend measurement-ingest surface so real machine calibration data has a first-class path into the internal benchmark bundle: `/api/v1/models/recommendations/measurements` now records model or pair measurements, and `scripts/backend/record-model-recommender-measurement.ps1` provides a simple operator path for posting those records.
+- Added focused tests for snapshot caching behavior, exhaustive approved-pair acceptance/rejection by tier, and the new measurement route/script surface.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_model_recommender.py backend/tests/test_additional_qa_cases.py -k "model_recommender or first_run_readiness or active_model_pair_status or replacement_recommendation or model_recommendations or benchmark_evidence or measurement or snapshot"` passed with `23` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- The remaining work is now mostly empirical calibration rather than missing backend structure: collecting real release-like machine measurements, exercising the measurement route/harness with actual runtime and LoRA results, and tuning mismatch rates between estimated and measured behavior.
+
+## 2026-06-20 Recommender Pair Enforcement / Guidance Pass Snapshot
+
+Completed:
+
+- Fixed a real recommender contract bug in the backend: active chat/expert setup is no longer considered valid merely because both chosen models are individually accepted. The active pair now has to pass the approved-pair matrix and current hardware-tier gate.
+- `first_run_readiness()` now carries recommended chat/expert/pair guidance so setup diagnostics can point directly at the current recommended configuration.
+- Rejected expert-checkpoint compatibility reports now include a replacement recommendation for the current hardware instead of only returning failure reasons.
+- Added write-path plumbing to the internal benchmark bundle so measured model and pair records can be persisted into the same benchmark bundle format already used for `internal_measured` evidence reads.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_model_recommender.py backend/tests/test_additional_qa_cases.py -k "model_recommender or first_run_readiness or active_model_pair_status or replacement_recommendation or model_recommendations or benchmark_evidence"` passed with `18` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- The remaining gap is now mostly calibration/proof breadth rather than missing architecture: broader representative-machine measurement inputs, fuller approved-pair validation across all intended machine classes, and runtime/training measurement capture from real release-like environments still remain before the full implementation plan can be considered finished.
+
+## 2026-06-20 Recommender Diagnostics / Fixture Matrix Pass Snapshot
+
+Completed:
+
+- Added a backend diagnostics/export surface for the recommender. `backend/app/core/model_recommender/diagnostics.py` now exports the recommendation snapshot together with benchmark-bundle context, and `/api/v1/models/recommendations/diagnostics` exposes it without changing the UI.
+- Added product-facing speed-threshold flags and explanatory notes to the speed estimator so later calibration and debugging can distinguish comfortable, acceptable, degraded, and too-slow recommendations.
+- Added a dedicated recommender unit-test module covering a broader fixture matrix and edge cases instead of relying only on the larger mixed QA file. Coverage now explicitly includes family normalization, conservative hardware normalization, insufficient disk, no-AVX2 expert blocking, shared-memory GPU notes, pair-gate rejection, explanation generation, and diagnostics export.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_model_recommender.py backend/tests/test_additional_qa_cases.py -k "model_recommender or model_recommendations or benchmark_evidence or models_discover_route_returns_detected_models"` passed with `14` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- The recommender is much closer to the plan, but the biggest remaining gap is calibration realism rather than architecture: broader representative hardware fixtures, real release-like measurement inputs for fit/speed mismatch tuning, and more exhaustive approved-pair validation remain before the full implementation plan can be treated as complete.
+
+## 2026-06-20 Recommender Internal Benchmark Pass Snapshot
+
+Completed:
+
+- Added a real internal benchmark bundle layer to the model recommender instead of leaving `internal_measured` as a placeholder. The recommender can now load a versioned benchmark bundle from local disk and promote those measurements above inherited or catalog-only evidence.
+- Expanded the response contract with backend/operator surfaces that are needed for later hardening and diagnostics work: operator summary text, structured scoring breakdowns, candidate-table output, and benchmark-evidence audit rows.
+- Added focused regression coverage proving that internal measured evidence outranks direct catalog evidence when present and that the richer response contract survives the API route.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "model_recommendations or benchmark_evidence or models_discover_route_returns_detected_models"` passed with `6` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- The recommender still needs wider fixture-matrix coverage across more hardware classes, broader validation of fit/speed thresholds, stronger pair validation against all approved pairs, and optional diagnostics/export surfaces beyond the raw API contract. Product hardening is moving, but it is not finished.
+
+## 2026-06-20 Recommender Pairing / Evidence Pass Snapshot
+
+Completed:
+
+- Deepened the backend recommender beyond the initial API scaffold. The approved catalog now carries richer metadata, imported expert checkpoints can inherit benchmark evidence through family-line and size-aware lineage instead of only a flat family fallback, and the recommendation flow now ranks approved chat/expert pairs as pairs.
+- This fixes the most important architectural weakness from the earlier pass: CML no longer simply picks the best chat candidate and best expert candidate independently and then checks whether they happen to pair. It now prefers the strongest valid approved pair when one exists.
+- Added focused regression coverage for pair-first recommendation selection and inherited benchmark evidence for accepted imported checkpoints.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "model_recommendations or benchmark_evidence or models_discover_route_returns_detected_models"` passed with `5` tests.
+- `python -m compileall -q backend/app` passed.
+
+Still not completed:
+
+- The full recommender plan is still not done. Remaining gaps include stronger structured scoring breakdowns, broader hardware fixture matrices, more complete evidence-source layering with real internal measured benchmark promotion, deeper diagnostics/export surfaces, onboarding/readiness integration, and broader validation against real machine classes.
+
+## 2026-06-20 Recommender Implementation Pass Snapshot
+
+Completed:
+
+- Landed the first working backend recommender integration instead of only planning/docs. `backend/app/core/model_recommender/` is now wired through `backend/app/core/model_registry.py` into `/api/v1/models/recommendations`.
+- The recommender output now includes richer recommendation contract fields needed for the next phases: recommended chat/expert/pair ids, conservative fit classifications, estimated chat speed, evidence level, recommendation confidence, warnings, reasons, and explicit low-spec / fastest fallback entries.
+- The desktop Settings models page now consumes the recommendation API and shows a single minimal recommendation panel plus recommended chat/expert row labels. The copy stays restrained and product-like rather than expanding the surface into a new setup flow.
+- Added focused backend coverage for the richer recommender contract and low-spec recommendation behavior.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "model_recommendations or models_discover_route_returns_detected_models"` passed with `3` tests.
+- `python -m compileall -q backend/app` passed.
+- `npm run build` in `apps/desktop` passed.
+- `npm run lint` in `apps/desktop` passed.
+
+Still not completed:
+
+- This pass does not complete the full recommender plan. Family dedupe depth, broader benchmark-evidence calibration, internal measured benchmark promotion, more fixture matrices, expert-speed estimation, onboarding integration, and broader hardware QA remain open.
+
+## 2026-06-20 `whichllm` Reverse-Engineering Plan Snapshot
+
+Completed:
+
+- Split the hardware-aware recommender documentation into two layers so the project record no longer mixes reverse-engineering analysis with the actual delivery checklist.
+- Added `docs/WHICHLLM_REVERSE_ENGINEERING_PLAN.md` as the code-informed upstream analysis document. It captures the reverse-engineered `whichllm` pipeline across hardware normalization, family grouping, benchmark evidence inheritance, conservative fit estimation, bandwidth-aware speed estimation, deterministic penalties, and explanation-first ranking.
+- Kept `docs/MODEL_RECOMMENDER_IMPLEMENTATION_PLAN.md` as the CML execution plan while making the new reverse-engineering doc the source of truth for what specifically should be copied, adapted, or rejected from the upstream design.
+
+Still not completed:
+
+- This is documentation and architecture work only. Backend recommender implementation, calibration data collection, UI surfacing, and validation remain open.
 ## 2026-06-19 Backend / Frontend Bug Pass Snapshot
 
 Completed:
