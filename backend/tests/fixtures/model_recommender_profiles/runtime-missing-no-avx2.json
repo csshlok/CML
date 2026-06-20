@@ -1,0 +1,24 @@
+{
+  "os": "Windows",
+  "architecture": "AMD64",
+  "cpu_name": "Fixture Missing Runtime",
+  "cpu_threads": 8,
+  "ram_total_bytes": 8589934592,
+  "ram_available_bytes": 6442450944,
+  "ram_usable_bytes": 6442450944,
+  "disk_free_bytes": 68719476736,
+  "has_avx2": false,
+  "has_avx512": false,
+  "hardware_tier": "cpu_minimum_spec",
+  "training_supported": false,
+  "runtime_provider": "none",
+  "runtime_backend": "none",
+  "runtime_base_url": "",
+  "runtime_detected": false,
+  "runtime_detail": "Fixture runtime missing.",
+  "detection_confidence": "medium",
+  "warnings": [
+    "Runtime not detected for fixture profile."
+  ],
+  "gpus": []
+}

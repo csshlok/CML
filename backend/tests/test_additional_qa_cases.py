@@ -33,9 +33,11 @@ class AdditionalQACases(unittest.TestCase):
     def tearDown(self) -> None:
         from backend.app.core.config import get_settings
         from backend.app.core.model_registry import invalidate_model_discovery_cache
+        from backend.app.core.model_recommender.benchmark_store import invalidate_internal_benchmark_bundle_cache
 
         get_settings.cache_clear()
         invalidate_model_discovery_cache()
+        invalidate_internal_benchmark_bundle_cache()
         os.environ.pop("CML_DATABASE_PATH", None)
         os.environ.pop("CML_DATA_DIR", None)
         os.environ.pop("CML_EMBEDDING_PROVIDER", None)
@@ -54,6 +56,7 @@ class AdditionalQACases(unittest.TestCase):
         os.environ.pop("CML_MODEL_SCAN_CACHE_SECONDS", None)
         os.environ.pop("CML_MODELS_DIR", None)
         os.environ.pop("CML_LLM_MODEL", None)
+        os.environ.pop("CML_MODEL_RECOMMENDER_BENCHMARK_BUNDLE", None)
         self.tmp.cleanup()
 
     def _write_fake_local_transformers_model(
@@ -170,11 +173,11 @@ class AdditionalQACases(unittest.TestCase):
 
         import_model_checkpoint(
             self._write_fake_local_transformers_model(
-                "phi-local",
-                model_type="phi3",
-                repo_hint="microsoft/Phi-4-mini-instruct",
+                "qwen-local",
+                model_type="qwen2",
+                repo_hint="Qwen/Qwen3-4B",
             ),
-            name="Phi Local",
+            name="Qwen Local",
         )
 
         readiness = first_run_readiness()
@@ -184,6 +187,38 @@ class AdditionalQACases(unittest.TestCase):
         self.assertTrue(chat_check["ok"])
         self.assertTrue(expert_check["ok"])
         self.assertTrue(pair_check["ok"])
+        self.assertEqual(readiness["recommended_setup"]["recommended_pair_id"], "pair-qwen3-4b-qwen")
+
+    def test_active_model_pair_status_rejects_cross_family_pair_even_when_both_roles_are_accepted(self) -> None:
+        from backend.app.core.model_registry import active_model_pair_status, import_model_checkpoint, set_active_model
+
+        self._install_default_chat_model()
+        set_active_model("qwen3-4b-q4_k_m", role="chat")
+        import_model_checkpoint(
+            self._write_fake_local_transformers_model(
+                "phi-local",
+                model_type="phi3",
+                repo_hint="microsoft/Phi-4-mini-instruct",
+            ),
+            name="Phi Local",
+        )
+
+        pair = active_model_pair_status()
+
+        self.assertFalse(pair["accepted"])
+        self.assertIn("not in the current approved pairing matrix", pair["detail"])
+
+    def test_rejected_model_compatibility_report_includes_replacement_recommendation(self) -> None:
+        from backend.app.core.model_registry import model_compatibility_report
+
+        file_path = Path(self.tmp.name) / "bad-model.gguf"
+        file_path.write_text("not-a-checkpoint", encoding="utf-8")
+
+        report = model_compatibility_report(file_path)
+
+        self.assertFalse(report["accepted"])
+        self.assertIn("replacement_recommendation", report)
+        self.assertIn("recommended_chat_model_id", report["replacement_recommendation"])
 
     def test_discover_installed_models_finds_supported_local_checkpoint(self) -> None:
         from backend.app.core.model_registry import discover_installed_models
@@ -261,6 +296,232 @@ class AdditionalQACases(unittest.TestCase):
         payload = response.json()
         self.assertGreaterEqual(payload["compatible_model_count"], 1)
         self.assertTrue(any(item["local_path"] == str(model_dir.resolve()) for item in payload["models"]))
+
+    def test_model_recommendations_prefer_conservative_chat_choice_for_low_spec_profile(self) -> None:
+        from backend.app.core.model_recommender.service import build_model_recommendations
+        from backend.app.core.model_registry import import_model_checkpoint
+
+        low_spec_profile = {
+            "os": "Windows",
+            "architecture": "AMD64",
+            "cpu_name": "Test CPU",
+            "cpu_threads": 8,
+            "ram_total_bytes": 8 * 1024**3,
+            "ram_available_bytes": 6 * 1024**3,
+            "ram_usable_bytes": 6 * 1024**3,
+            "disk_free_bytes": 32 * 1024**3,
+            "has_avx2": True,
+            "has_avx512": False,
+            "hardware_tier": "cpu_minimum_spec",
+            "training_supported": True,
+            "runtime_provider": "openai",
+            "runtime_backend": "llama_cpp_compatible",
+            "runtime_base_url": "http://127.0.0.1:8080/v1",
+            "runtime_detected": True,
+            "runtime_detail": "Configured.",
+            "detection_confidence": "high",
+            "warnings": [],
+            "gpus": [],
+        }
+
+        import_model_checkpoint(
+            self._write_fake_local_transformers_model(
+                "qwen-expert",
+                model_type="qwen2",
+                repo_hint="Qwen/Qwen3-4B",
+            ),
+            name="Qwen Expert",
+        )
+
+        with patch("backend.app.core.model_recommender.service.build_hardware_profile", return_value=low_spec_profile):
+            recommendations = build_model_recommendations()
+
+        self.assertEqual(recommendations["recommended_chat_model_id"], "qwen3-4b-q4_k_m")
+        self.assertEqual(recommendations["recommended_pair_id"], "pair-qwen3-4b-qwen")
+        self.assertEqual(recommendations["chat_fit_type"], "cpu_only")
+        self.assertIn("fallback_low_spec", recommendations)
+        self.assertIn("fallback_fastest", recommendations)
+
+    def test_model_recommendations_prefer_best_approved_pair_over_independent_top_choices(self) -> None:
+        from backend.app.core.model_recommender.service import build_model_recommendations
+        from backend.app.core.model_registry import import_model_checkpoint
+
+        profile = {
+            "os": "Windows",
+            "architecture": "AMD64",
+            "cpu_name": "Test CPU",
+            "cpu_threads": 8,
+            "ram_total_bytes": 12 * 1024**3,
+            "ram_available_bytes": 10 * 1024**3,
+            "ram_usable_bytes": 10 * 1024**3,
+            "disk_free_bytes": 64 * 1024**3,
+            "has_avx2": True,
+            "has_avx512": False,
+            "hardware_tier": "cpu_minimum_spec",
+            "training_supported": True,
+            "runtime_provider": "openai",
+            "runtime_backend": "llama_cpp_compatible",
+            "runtime_base_url": "http://127.0.0.1:8080/v1",
+            "runtime_detected": True,
+            "runtime_detail": "Configured.",
+            "detection_confidence": "high",
+            "warnings": [],
+            "gpus": [],
+        }
+
+        import_model_checkpoint(
+            self._write_fake_local_transformers_model(
+                "gemma-local-4b",
+                model_type="gemma3",
+                repo_hint="google/gemma-3-4b-it",
+            ),
+            name="Gemma 3 4B Local",
+        )
+
+        with patch("backend.app.core.model_recommender.service.build_hardware_profile", return_value=profile):
+            recommendations = build_model_recommendations()
+
+        self.assertEqual(recommendations["recommended_pair_id"], "pair-gemma3-4b-gemma")
+        self.assertEqual(recommendations["recommended_chat_model_id"], "gemma-3-4b-it-q4_k_m")
+        self.assertTrue(recommendations["pair_recommendation"]["accepted"])
+        self.assertEqual(recommendations["pair_recommendation"]["expert_model_id"], recommendations["recommended_expert_model_id"])
+
+    def test_benchmark_evidence_inherits_variant_or_lineage_for_custom_import(self) -> None:
+        from backend.app.core.model_recommender.benchmark_evidence import resolve_benchmark_evidence
+
+        evidence = resolve_benchmark_evidence(
+            {
+                "id": "custom-qwen3-8b-local",
+                "name": "Qwen3 8B Local",
+                "family": "qwen",
+                "source_kind": "custom_import",
+                "local_path": str(Path(self.tmp.name) / "Qwen3-8B-Instruct"),
+                "compatibility": {"accepted": True, "detail": "Accepted."},
+            }
+        )
+
+        self.assertIn(evidence["source"], {"variant", "line_interp", "base_model"})
+        self.assertGreater(float(evidence["confidence"]), 0.0)
+
+    def test_benchmark_evidence_prefers_internal_measured_bundle(self) -> None:
+        from backend.app.core.model_recommender.benchmark_evidence import resolve_benchmark_evidence
+        from backend.app.core.model_recommender.benchmark_store import invalidate_internal_benchmark_bundle_cache
+
+        bundle_path = Path(self.tmp.name) / "benchmarks.json"
+        bundle_path.write_text(
+            json.dumps(
+                {
+                    "version": "bundle-1",
+                    "models": {
+                        "qwen3-4b-q4_k_m": {
+                            "score": 91.5,
+                            "measured_at": "2026-06-20T00:00:00Z",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.environ["CML_MODEL_RECOMMENDER_BENCHMARK_BUNDLE"] = str(bundle_path)
+        invalidate_internal_benchmark_bundle_cache()
+
+        evidence = resolve_benchmark_evidence(
+            {
+                "id": "qwen3-4b-q4_k_m",
+                "name": "Qwen3 4B Q4_K_M",
+                "family": "qwen",
+                "source_kind": "default_choice",
+                "compatibility": {},
+            }
+        )
+
+        self.assertEqual(evidence["source"], "internal_measured")
+        self.assertEqual(float(evidence["score"]), 91.5)
+        self.assertEqual(evidence["bundle_version"], "bundle-1")
+
+    def test_model_recommendations_route_returns_rich_recommender_contract(self) -> None:
+        from backend.app.core.model_registry import import_model_checkpoint
+        from backend.app.core.model_recommender.benchmark_store import invalidate_internal_benchmark_bundle_cache
+
+        self._install_default_chat_model()
+        import_model_checkpoint(
+            self._write_fake_local_transformers_model(
+                "route-qwen-expert",
+                model_type="qwen2",
+                repo_hint="Qwen/Qwen3-4B",
+            ),
+            name="Route Qwen Expert",
+        )
+
+        hardware = {
+            "os": "Windows",
+            "machine": "AMD64",
+            "processor": "Test CPU",
+            "cpu_count": 8,
+            "total_memory_bytes": 8 * 1024**3,
+            "available_memory_bytes": 6 * 1024**3,
+            "usable_memory_bytes": 6 * 1024**3,
+            "disk_free_bytes": 32 * 1024**3,
+            "avx2": True,
+            "avx512": False,
+            "hardware_tier": "cpu_minimum_spec",
+            "training_supported": True,
+            "detail": "OK",
+            "gpus": [],
+            "warnings": [],
+        }
+        runtime = {
+            "provider": "llama.cpp",
+            "base_url": "http://127.0.0.1:8080/v1",
+            "model": "qwen3-4b-q4_k_m",
+            "available": True,
+            "state": "ready",
+            "detail": "Ready.",
+        }
+        bundle_path = Path(self.tmp.name) / "route-benchmarks.json"
+        bundle_path.write_text(
+            json.dumps(
+                {
+                    "version": "route-bundle-v1",
+                    "models": {
+                        "qwen3-4b-q4_k_m": {
+                            "score": 88.0,
+                            "measured_at": "2026-06-20T00:00:00Z",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.environ["CML_MODEL_RECOMMENDER_BENCHMARK_BUNDLE"] = str(bundle_path)
+        invalidate_internal_benchmark_bundle_cache()
+
+        with patch("backend.app.core.model_recommender.hardware_profile.hardware_status", return_value=hardware), patch(
+            "backend.app.core.model_recommender.hardware_profile.runtime_status",
+            return_value=runtime,
+        ):
+            client = self._client()
+            try:
+                response = client.get("/api/v1/models/recommendations")
+            finally:
+                client.close()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["recommended_chat_model_id"], "qwen3-4b-q4_k_m")
+        self.assertEqual(payload["recommended_pair_id"], "pair-qwen3-4b-qwen")
+        self.assertIn(payload["confidence"], {"medium", "high"})
+        self.assertEqual(payload["chat_recommendation"]["summary"], "Qwen3 4B Q4_K_M is the most feasible approved chat model for this device.")
+        self.assertIn("warnings", payload)
+        self.assertIn("reasons", payload)
+        self.assertIn("fallback_low_spec", payload)
+        self.assertIn("fallback_fastest", payload)
+        self.assertEqual(payload["benchmark_bundle_version"], "route-bundle-v1")
+        self.assertEqual(payload["chat_recommendation"]["evidence"]["source"], "internal_measured")
+        self.assertIn("operator_summary", payload)
+        self.assertIn("scoring_breakdown", payload)
+        self.assertIn("candidate_table", payload)
+        self.assertIn("benchmark_evidence_audit", payload)
 
     def test_discover_installed_models_uses_cache_until_refresh(self) -> None:
         from backend.app.core.config import get_settings

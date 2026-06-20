@@ -1,0 +1,33 @@
+{
+  "os": "Windows",
+  "architecture": "AMD64",
+  "cpu_name": "Fixture NVIDIA 8GB",
+  "cpu_threads": 12,
+  "ram_total_bytes": 17179869184,
+  "ram_available_bytes": 12884901888,
+  "ram_usable_bytes": 12884901888,
+  "disk_free_bytes": 137438953472,
+  "has_avx2": true,
+  "has_avx512": false,
+  "hardware_tier": "cpu_high_spec",
+  "training_supported": true,
+  "runtime_provider": "openai",
+  "runtime_backend": "llama_cpp_compatible",
+  "runtime_base_url": "http://127.0.0.1:8080/v1",
+  "runtime_detected": true,
+  "runtime_detail": "Fixture runtime available.",
+  "detection_confidence": "high",
+  "warnings": [],
+  "gpus": [
+    {
+      "vendor": "nvidia",
+      "name": "RTX Fixture 8GB",
+      "vram_bytes": 8589934592,
+      "usable_vram_bytes": 8589934592,
+      "shared_memory": false,
+      "memory_bandwidth_gbps": 280.0,
+      "compute_capability": "8.6",
+      "driver_confidence": "high"
+    }
+  ]
+}

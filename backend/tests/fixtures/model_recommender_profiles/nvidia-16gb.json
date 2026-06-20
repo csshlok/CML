@@ -1,0 +1,33 @@
+{
+  "os": "Windows",
+  "architecture": "AMD64",
+  "cpu_name": "Fixture NVIDIA 16GB",
+  "cpu_threads": 16,
+  "ram_total_bytes": 34359738368,
+  "ram_available_bytes": 27917287424,
+  "ram_usable_bytes": 27917287424,
+  "disk_free_bytes": 274877906944,
+  "has_avx2": true,
+  "has_avx512": false,
+  "hardware_tier": "gpu_or_high_spec_candidate",
+  "training_supported": true,
+  "runtime_provider": "openai",
+  "runtime_backend": "llama_cpp_compatible",
+  "runtime_base_url": "http://127.0.0.1:8080/v1",
+  "runtime_detected": true,
+  "runtime_detail": "Fixture runtime available.",
+  "detection_confidence": "high",
+  "warnings": [],
+  "gpus": [
+    {
+      "vendor": "nvidia",
+      "name": "RTX Fixture 16GB",
+      "vram_bytes": 17179869184,
+      "usable_vram_bytes": 17179869184,
+      "shared_memory": false,
+      "memory_bandwidth_gbps": 500.0,
+      "compute_capability": "8.9",
+      "driver_confidence": "high"
+    }
+  ]
+}
