@@ -6,6 +6,23 @@ Last updated: 2026-06-21
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
+## 2026-06-21 Desktop OCR Blocker / Quality-Aligned LoRA Retrain Snapshot
+
+Desktop startup/package validation:
+
+- The current local package artifact is still invalid for clean VM launch validation because `apps/desktop/release/win-unpacked` is absent after the failed package rebuild.
+- A 2026-06-21 OCR staging proof at `.tmp/ocr-staging-blocker-manifest-2026-06-21.json` used the real installed `C:\Program Files\Tesseract-OCR\tesseract.exe` and proved `tesseract=true`, `eng_traineddata=true`, and `qpdf=true`, but `ghostscript=false`.
+- The cached official Ghostscript installer process hung on this host and refused termination with access denied; a downloaded Ghostscript Portable binary from SourceForge matched the published SHA-256, but its installer also required UI and did not extract `gswin64c.exe` in automation.
+- Desktop app foundation stays in progress. Next action is to provide a real `gswin64c.exe` path or fix reliable Ghostscript extraction, then rebuild a complete package and rerun packaged runtime/app-launch/installed-app/startup repair smokes before clean VM validation.
+
+LoRA expert validation:
+
+- The quality-aligned real CPU retrain no longer stops at "no adapter produced" when bounded for this CPU host. With `CML_LORA_TRAINING_CUTOFF_LEN=512`, `CML_LORA_TRAINING_MAX_STEPS=1`, `CML_LORA_TRAINING_DEVICE=cpu`, and `CML_LORA_TRAINING_DTYPE=float32`, `scripts/backend/smoke-lora-expert.ps1` completed in `466.9s` of trainer runtime and wrote `.tmp/lora-quality-aligned-cpu512-step1-2026-06-21.json`.
+- The new adapter lives at `.tmp/lora-quality-aligned-cpu512-step1-work/experts/cluster-smoke/adapter-ce315f4e-1a28-497f-a65c-9acc014cd9cc`; `adapter_model.safetensors` exists and is `17,640,136` bytes. The dataset hash is `9a0f548aa9396dc8aea73ab2affed01c092828805c4ceb11fd51d1ca937b28a0`.
+- Live runtime smoke passed in the full smoke report, but the quality gate still failed. The embedded live benchmark in `.tmp/lora-quality-aligned-cpu512-step1-2026-06-21.json` reported retrieval `98.33`, adapter `49.67`, delta `-48.66`. The standalone benchmark `.tmp/lora-quality-aligned-cpu512-step1-benchmark-2026-06-21.json` reported retrieval `98.33`, adapter `61.0`, delta `-37.33`.
+- `.tmp/lora-quality-aligned-cpu512-step1-smoke-proof-2026-06-21.json` blocks only on `adapter_quality_benchmark_failed`; the standalone benchmark output is better quality evidence than the older failed adapter but still not public-quality.
+- Compulsory cluster experts stay in progress at `97%`: retrain/adapter production is now validated on this CPU baseline, but public expert claims remain blocked until a live adapter-backed quality benchmark beats retrieval across the strict categories.
+
 ## 2026-06-20 Desktop Startup / LoRA Proof Snapshot
 
 Desktop startup/package validation:
@@ -27,7 +44,7 @@ LoRA expert validation:
 - The training dataset exporter now emits quality-benchmark-aligned records for factual recall, summarization, citation grounding, contradiction handling, style transfer, and out-of-scope refusal. `scripts/backend/smoke-lora-expert.ps1 -AllowTestTrainer -ReportPath .tmp/lora-quality-dataset-scaffold-2026-06-20.json -WorkDir .tmp/lora-quality-dataset-scaffold-work -BenchmarkCaseLimit 6` still passed as non-release scaffold evidence.
 - A bounded real retrain attempt with the aligned dataset wrote `.tmp/lora-quality-aligned-real-smoke-work/.../dataset/dataset-manifest.json` with dataset hash `26b3a8f2f491fed1f7bf0aaa5661c9347d79d56974e8008160a2b81e66c32231`, `57` train records, and `15` validation records, but `.tmp/lora-quality-aligned-real-smoke-interrupted-2026-06-20.json` records that the CPU run reached trainer step `1/6` and produced no `adapter_model.safetensors` before it was stopped for session time.
 - `.tmp/lora-proof-2026-06-20.json` now verifies hardware proof and blocks only on `adapter_quality_benchmark_failed`.
-- Compulsory cluster experts stay in progress. Hardware proof is no longer missing on this CPU, but public expert claims remain blocked until a real retrain completes and a live adapter quality benchmark beats retrieval.
+- Superseded by the 2026-06-21 snapshot for retrain status: hardware proof is no longer missing on this CPU, and bounded retrain can now produce a real adapter, but public expert claims remain blocked until a live adapter quality benchmark beats retrieval.
 
 ## 2026-06-21 Recommender Local Audit / Live Blocker Snapshot
 
@@ -1343,12 +1360,12 @@ Use this section for fast status checks. Detailed historical notes remain in the
 | -------------------------- | -------------------------- | ------------------- | ------------------------------------------------------------------------------------------------ |
 | Product definition         | In progress                | `[##########] 99%`  | Windows-only public release decision record.                                                     |
 | UI prototype cleanup       | In progress                | `[##########] 99%`  | Minimized/narrow desktop shell repair, dark-version QA, packaged-flow polish, broader visual QA. |
-| Desktop app foundation     | In progress                | `[##########] 98%`  | Clean VM launch validation and broader packaged startup repair QA.                               |
+| Desktop app foundation     | In progress                | `[##########] 98%`  | Complete Ghostscript OCR staging, rebuild package, then clean VM launch validation and broader packaged startup repair QA. |
 | Local backend foundation   | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only.                                                               |
 | Vault ingestion            | Complete for current scope | `[##########] 100%` | Clean VM confirmation only.                                                                      |
 | Embeddings and clustering  | Complete for current scope | `[##########] 100%` | Larger real-vault evidence now lives under QA/hardening.                                         |
 | Chat and context routing   | Complete for current scope | `[##########] 100%` | Remaining work is UI/runtime polish rather than backend/chat routing correctness or scale. |
-| Compulsory cluster experts | In progress                | `[#########-] 95%`  | Full live adapter quality benchmark win plus hardware/pairing proof.                            |
+| Compulsory cluster experts | In progress                | `[#########-] 97%`  | Full live adapter quality benchmark win; bounded CPU retrain now produces a real adapter.        |
 | Context Bridge             | In progress                | `[##########] 98%`  | Full extension package, capture UX polish, and later external-client smoke.                      |
 | Packaging and installer    | In progress                | `[##########] 98%`  | Clean Windows VM validation.                                                                     |
 | QA and hardening           | In progress                | `[##########] 99%`  | Clean VM package validation, larger scale/performance benchmarks, model recommendation QA.       |
