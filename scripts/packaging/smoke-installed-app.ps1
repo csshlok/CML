@@ -1,6 +1,7 @@
 param(
   [string]$InstallerPath = "",
   [string]$InstallDir = "",
+  [int]$InstallerTimeoutSeconds = 600,
   [int]$TimeoutSeconds = 45
 )
 
@@ -45,17 +46,78 @@ function Get-AppendedLogText([string]$PathValue, $Snapshot) {
   return $text.Substring([int]$Snapshot.length)
 }
 
+function Get-ProcessPathSafe($Process) {
+  try {
+    return [string]$Process.Path
+  } catch {
+    return ""
+  }
+}
+
+function Test-ProcessUnderRoot($Process, [string]$RootPath) {
+  $processPath = Get-ProcessPathSafe $Process
+  return $processPath -and $processPath.StartsWith($RootPath, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Stop-InstalledRuntimeProcesses([string]$RootPath) {
+  $stopped = @()
+  $candidateProcesses = @()
+  $candidateProcesses += Get-Process -Name "CML" -ErrorAction SilentlyContinue
+  $candidateProcesses += Get-Process -Name "python" -ErrorAction SilentlyContinue
+  foreach ($candidate in $candidateProcesses) {
+    if (-not $candidate) {
+      continue
+    }
+    if (-not (Test-ProcessUnderRoot $candidate $RootPath)) {
+      continue
+    }
+    $processPath = Get-ProcessPathSafe $candidate
+    $stopped += [ordered]@{
+      id = $candidate.Id
+      name = $candidate.ProcessName
+      path = $processPath
+    }
+    Stop-Process -Id $candidate.Id -Force -ErrorAction SilentlyContinue
+  }
+  foreach ($entry in $stopped) {
+    Wait-Process -Id $entry.id -Timeout 5 -ErrorAction SilentlyContinue
+  }
+  return $stopped
+}
+
+function Invoke-SilentInstaller {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string[]]$Arguments,
+    [Parameter(Mandatory = $true)][int]$Timeout
+  )
+  $process = Start-Process -FilePath $Path -ArgumentList $Arguments -PassThru
+  if (-not $process.WaitForExit($Timeout * 1000)) {
+    try {
+      $process.Kill()
+    } catch {
+      Write-Warning "Could not terminate timed-out installer $Path`: $($_.Exception.Message)"
+    }
+    throw "Timed out waiting for installer after $Timeout second(s): $Path"
+  }
+  if ($process.ExitCode -ne 0) {
+    throw "Installer exited with $($process.ExitCode): $Path"
+  }
+}
+
 if (Test-Path -LiteralPath $installRoot) {
   Remove-Item -Recurse -Force $installRoot
 }
 
 $installArgs = @("/S", "/D=$installRoot")
-Start-Process -FilePath $installer -ArgumentList $installArgs -Wait
+Invoke-SilentInstaller -Path $installer -Arguments $installArgs -Timeout $InstallerTimeoutSeconds
 
 $exe = Join-Path $installRoot "CML.exe"
 if (-not (Test-Path -LiteralPath $exe)) {
   throw "Installed executable not found after NSIS install: $exe"
 }
+
+$installerAutostartProcesses = Stop-InstalledRuntimeProcesses $installRoot
 
 $candidateStatusPaths = @(
   (Join-Path $env:APPDATA "@cml\desktop\startup-status.json")
@@ -79,6 +141,8 @@ foreach ($candidate in ($candidateStatusPaths + $candidateStdoutLogs + $candidat
   $fileSnapshots[$candidate] = Get-FileSnapshot $candidate
 }
 
+$electronRunAsNode = $env:ELECTRON_RUN_AS_NODE
+Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 $process = Start-Process -FilePath $exe -PassThru
 try {
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -152,12 +216,13 @@ try {
     desktop_runtime_log = $runtimeLog
     renderer_ready_detected = $rendererReadyDetected
     renderer_failure_detected = $rendererFailureDetected
+    installer_autostart_processes_stopped = $installerAutostartProcesses
   } | ConvertTo-Json -Depth 5
 } finally {
-  Get-Process -Name "CML" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-  Get-Process -Name "python" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -like "*$installRoot*python-runtime*" } |
-    Stop-Process -Force -ErrorAction SilentlyContinue
+  if ($electronRunAsNode -ne $null) {
+    $env:ELECTRON_RUN_AS_NODE = $electronRunAsNode
+  }
+  Stop-InstalledRuntimeProcesses $installRoot | Out-Null
   if ($process -and -not $process.HasExited) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
   }

@@ -1,6 +1,6 @@
 param(
   [string]$InstallerPath = "",
-  [int]$TimeoutSeconds = 120
+  [int]$TimeoutSeconds = 600
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,7 +55,7 @@ function Invoke-SilentExecutable {
     [Parameter(Mandatory = $true)][string[]]$Arguments,
     [Parameter(Mandatory = $true)][int]$Timeout
   )
-  $process = Start-Process -FilePath $Path -ArgumentList $Arguments -PassThru -WindowStyle Hidden
+  $process = Start-Process -FilePath $Path -ArgumentList $Arguments -PassThru
   if (-not $process.WaitForExit($Timeout * 1000)) {
     try {
       $process.Kill()

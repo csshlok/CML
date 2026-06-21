@@ -1,6 +1,6 @@
 # Expert Validation Report
 
-Date: 2026-06-20
+Date: 2026-06-21
 
 Audit source: `docs/RELEASE_AUDIT.md`
 
@@ -20,7 +20,8 @@ The audit treats verified real LoRA expert training and runtime loading as block
 | Live adapter quality benchmark | Failed on 2026-06-20 | `scripts\backend\benchmark-lora-adapter.ps1` wrote `.tmp\lora-adapter-quality-benchmark-2026-06-20.json`; strict six-category benchmark scored retrieval `98.33`, adapter `30.0`, delta `-68.33`, so release-grade quality proof remains missing. |
 | Live adapter quality benchmark, longer generation | Failed on 2026-06-20 | `scripts\backend\benchmark-lora-adapter.ps1 ... -BenchmarkMaxNewTokens 96` wrote `.tmp\lora-adapter-quality-benchmark-2026-06-20-retoken.json`; strict six-category benchmark scored retrieval `98.33`, adapter `38.67`, delta `-59.66`, so the failure is not just clipped output. |
 | Quality-aligned dataset export | Passed on 2026-06-20 | `write_cluster_training_dataset` now emits records for all strict benchmark categories. The bounded real retrain attempt wrote `.tmp\lora-quality-aligned-real-smoke-work\experts\cluster-smoke\adapter-7474a5fa-6a24-49fe-ad89-2b029eb6ea2d\dataset\dataset-manifest.json` with dataset hash `26b3a8f2f491fed1f7bf0aaa5661c9347d79d56974e8008160a2b81e66c32231`, `57` train records, and `15` validation records. |
-| Quality-aligned real retrain | Blocked by CPU runtime in this session | `.tmp\lora-quality-aligned-real-smoke-interrupted-2026-06-20.json` records the real LLaMA Factory command, trainer log path, trainer step `1/6`, and `adapter_weights_present=false`; no new live-quality adapter was produced. |
+| Quality-aligned real retrain | Passed bounded CPU retrain on 2026-06-21 | `.tmp\lora-quality-aligned-cpu512-step1-2026-06-21.json` records a real LLaMA Factory CPU run that produced adapter `.tmp\lora-quality-aligned-cpu512-step1-work\experts\cluster-smoke\adapter-ce315f4e-1a28-497f-a65c-9acc014cd9cc` with `adapter_model.safetensors` size `17,640,136` bytes and training dataset hash `9a0f548aa9396dc8aea73ab2affed01c092828805c4ceb11fd51d1ca937b28a0`. |
+| Live adapter quality benchmark, quality-aligned adapter | Failed on 2026-06-21 | `.tmp\lora-quality-aligned-cpu512-step1-dataset-match-benchmark-2026-06-21.json` fails closed with `status=dataset_mismatch` because the current docs-derived benchmark dataset hash differs from the adapter training dataset hash. Its raw strict benchmark still failed at retrieval `98.33`, adapter `61.0`, delta `-37.33`; the embedded same-dataset benchmark in `.tmp\lora-quality-aligned-cpu512-step1-2026-06-21.json` also failed at adapter `49.67`, delta `-48.66`. |
 | Public LoRA proof export | Blocked only by quality benchmark | `.tmp\lora-proof-2026-06-20.json` verifies runtime, adapter/base pairing, expert-role compatibility, and AVX2 proof; public gate still fails with `adapter_quality_benchmark_failed`. |
 | Backend expert regression coverage | Passed | Focused LoRA/runtime regressions passed on 2026-06-15; see `docs/PROJECT_CONTEXT.md` for the current command list. |
 
@@ -64,6 +65,8 @@ Current real-smoke highlights:
 - live runtime: `ok=true`
 - 2026-06-20 strict live benchmark: failed, adapter `30.0` vs retrieval `98.33`, delta `-68.33`
 - 2026-06-20 AVX2 proof: passed, `avx2=true` through `windows-kernel32`
+- 2026-06-21 bounded quality-aligned CPU retrain: passed adapter production and live runtime smoke, but the public quality benchmark remains failed.
+- 2026-06-21 standalone benchmark guard: now reports adapter training dataset metadata and fails closed on dataset mismatch instead of silently comparing a current-docs dataset against an adapter trained on an older export.
 
 ## Public Claim Rule
 

@@ -6,22 +6,22 @@ Last updated: 2026-06-21
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
 
-## 2026-06-21 Desktop OCR Blocker / Quality-Aligned LoRA Retrain Snapshot
+## 2026-06-21 Package Rebuild / Installed Smoke / Quality-Aligned LoRA Snapshot
 
 Desktop startup/package validation:
 
-- The current local package artifact is still invalid for clean VM launch validation because `apps/desktop/release/win-unpacked` is absent after the failed package rebuild.
-- A 2026-06-21 OCR staging proof at `.tmp/ocr-staging-blocker-manifest-2026-06-21.json` used the real installed `C:\Program Files\Tesseract-OCR\tesseract.exe` and proved `tesseract=true`, `eng_traineddata=true`, and `qpdf=true`, but `ghostscript=false`.
-- The cached official Ghostscript installer process hung on this host and refused termination with access denied; a downloaded Ghostscript Portable binary from SourceForge matched the published SHA-256, but its installer also required UI and did not extract `gswin64c.exe` in automation.
-- Desktop app foundation stays in progress. Next action is to provide a real `gswin64c.exe` path or fix reliable Ghostscript extraction, then rebuild a complete package and rerun packaged runtime/app-launch/installed-app/startup repair smokes before clean VM validation.
+- The current local package artifact is rebuilt: `apps/desktop/release/win-unpacked` exists and `apps/desktop/release/test-0.1.6-Setup.exe` is the current NSIS installer.
+- OCR staging used real local tools: `C:\Program Files\Tesseract-OCR\tesseract.exe`, bundled qpdf from the staging script, and Ghostscript Portable `10.07.0` extracted from the cached PortableApps package with SHA-256 `5b8dd8077f8bb0bc64f6328c66ed8ac0cd32f412cfdf813a22e1a1ae3af443a5`.
+- Local package validation passed: `.tmp/clean-machine-package-validation-2026-06-21-after-installed-smokes.json` reports `pass=true`; packaged runtime smoke passed with packaged Tesseract, Ghostscript, qpdf, image OCR, and PDF OCR; packaged app launch reached `ready`; `scripts/packaging/smoke-installed-app.ps1` passed against the installer after clearing inherited `ELECTRON_RUN_AS_NODE`; and `scripts/packaging/smoke-windows-installer.ps1` passed from a clean local registry state, installing to `%LOCALAPPDATA%\Programs\CML` and uninstalling cleanly.
+- Desktop app foundation and Packaging/install stay in progress because a clean Windows VM run with no dev Python, Node, or host OCR tools is still required, along with broader startup repair QA.
 
 LoRA expert validation:
 
 - The quality-aligned real CPU retrain no longer stops at "no adapter produced" when bounded for this CPU host. With `CML_LORA_TRAINING_CUTOFF_LEN=512`, `CML_LORA_TRAINING_MAX_STEPS=1`, `CML_LORA_TRAINING_DEVICE=cpu`, and `CML_LORA_TRAINING_DTYPE=float32`, `scripts/backend/smoke-lora-expert.ps1` completed in `466.9s` of trainer runtime and wrote `.tmp/lora-quality-aligned-cpu512-step1-2026-06-21.json`.
 - The new 1-step adapter lives at `.tmp/lora-quality-aligned-cpu512-step1-work/experts/cluster-smoke/adapter-ce315f4e-1a28-497f-a65c-9acc014cd9cc`; `adapter_model.safetensors` exists and is `17,640,136` bytes. The dataset hash is `9a0f548aa9396dc8aea73ab2affed01c092828805c4ceb11fd51d1ca937b28a0`.
-- Live runtime smoke passed in the full smoke report, but the quality gate still failed. The embedded live benchmark in `.tmp/lora-quality-aligned-cpu512-step1-2026-06-21.json` reported retrieval `98.33`, adapter `49.67`, delta `-48.66`. The standalone benchmark `.tmp/lora-quality-aligned-cpu512-step1-benchmark-2026-06-21.json` reported retrieval `98.33`, adapter `61.0`, delta `-37.33`.
+- Live runtime smoke passed in the full smoke report, but the quality gate still failed. The embedded live benchmark in `.tmp/lora-quality-aligned-cpu512-step1-2026-06-21.json` reported retrieval `98.33`, adapter `49.67`, delta `-48.66`. The current standalone benchmark proof `.tmp/lora-quality-aligned-cpu512-step1-dataset-match-benchmark-2026-06-21.json` also failed closed with `status=dataset_mismatch` because the docs-derived benchmark dataset hash did not match the adapter training hash; its raw quality still failed with retrieval `98.33`, adapter `61.0`, delta `-37.33`.
 - A follow-up 3-step CPU run at the same cutoff completed in `1266s`, produced another valid adapter at `.tmp/lora-quality-aligned-cpu512-step3-work/experts/cluster-smoke/adapter-df7b6ab5-485f-49b7-bd7a-19294770e288`, and passed live runtime smoke, but quality did not improve: `.tmp/lora-quality-aligned-cpu512-step3-benchmark-2026-06-21.json` reported retrieval `98.33`, adapter `56.67`, delta `-41.66`.
-- `.tmp/lora-quality-aligned-cpu512-step1-smoke-proof-2026-06-21.json` blocks only on `adapter_quality_benchmark_failed`; the standalone benchmark output is better quality evidence than the older failed adapter but still not public-quality.
+- `.tmp/lora-quality-aligned-cpu512-step1-smoke-proof-2026-06-21.json` blocks only on `adapter_quality_benchmark_failed`; the updated standalone benchmark makes dataset mismatch explicit, but public quality is still not proven.
 - Compulsory cluster experts stay in progress at `97%`: retrain/adapter production is now validated on this CPU baseline, but public expert claims remain blocked until a live adapter-backed quality benchmark beats retrieval across the strict categories.
 
 ## 2026-06-20 Desktop Startup / LoRA Proof Snapshot
@@ -1361,20 +1361,20 @@ Use this section for fast status checks. Detailed historical notes remain in the
 | -------------------------- | -------------------------- | ------------------- | ------------------------------------------------------------------------------------------------ |
 | Product definition         | In progress                | `[##########] 99%`  | Windows-only public release decision record.                                                     |
 | UI prototype cleanup       | In progress                | `[##########] 99%`  | Minimized/narrow desktop shell repair, dark-version QA, packaged-flow polish, broader visual QA. |
-| Desktop app foundation     | In progress                | `[##########] 98%`  | Complete Ghostscript OCR staging, rebuild package, then clean VM launch validation and broader packaged startup repair QA. |
+| Desktop app foundation     | In progress                | `[##########] 98%`  | Clean VM launch validation and broader packaged startup repair QA against the current rebuilt artifact. |
 | Local backend foundation   | Complete for current scope | `[##########] 100%` | Future service-layer cleanup only.                                                               |
 | Vault ingestion            | Complete for current scope | `[##########] 100%` | Clean VM confirmation only.                                                                      |
 | Embeddings and clustering  | Complete for current scope | `[##########] 100%` | Larger real-vault evidence now lives under QA/hardening.                                         |
 | Chat and context routing   | Complete for current scope | `[##########] 100%` | Remaining work is UI/runtime polish rather than backend/chat routing correctness or scale. |
 | Compulsory cluster experts | In progress                | `[#########-] 97%`  | Full live adapter quality benchmark win; bounded CPU retrain now produces a real adapter.        |
 | Context Bridge             | In progress                | `[##########] 98%`  | Full extension package, capture UX polish, and later external-client smoke.                      |
-| Packaging and installer    | In progress                | `[##########] 98%`  | Clean Windows VM validation.                                                                     |
+| Packaging and installer    | In progress                | `[##########] 98%`  | Clean Windows VM validation; local package, installed-app, and installer lifecycle smokes now pass. |
 | QA and hardening           | In progress                | `[##########] 99%`  | Clean VM package validation, larger scale/performance benchmarks, model recommendation QA.       |
 | Security                   | Complete except LoRA Phase 11 | `[##########] 100%` | Phases 0-10 and 12-14 complete; only the LoRA-specific trust phase remains intentionally deferred. |
 
 ### Current Critical Path
 
-- Execute clean Windows VM validation against the 2026-06-04 package: no dev Python, no Node, no preinstalled OCR, cold first-run.
+- Execute clean Windows VM validation against `apps/desktop/release/test-0.1.6-Setup.exe`: no dev Python, no Node, no preinstalled OCR, cold first-run.
 - Keep the non-LoRA security patch closed while LoRA-specific Phase 11 remains intentionally deferred until LoRA is ready for real hardening work.
 - Keep Windows-only public V1 criteria; if blockers remain, delay release rather than ship a private demo.
 - Do not use "trained expert" language in user-facing surfaces until the live adapter quality benchmark beats retrieval; real trainer/runtime proof exists, but quality proof does not.
@@ -1398,7 +1398,7 @@ UI prototype cleanup:
 
 Desktop app foundation:
 
-- Done: Electron workspace, Vite dev server, build, file IPC, authenticated backend identity probing, dev backend process handling, single-instance handling, encrypted backend token store, active vault folder config, pre-vault/full-vault env wiring, onboarding vault activation, startup failure page, vault-lock override action, failure copy-details action, embedding folder picker, and unpacked packaged launch.
+- Done: Electron workspace, Vite dev server, build, file IPC, authenticated backend identity probing, dev backend process handling, single-instance handling, encrypted backend token store, active vault folder config, pre-vault/full-vault env wiring, onboarding vault activation, startup failure page, vault-lock override action, failure copy-details action, embedding folder picker, rebuilt package artifact, packaged runtime OCR/API smoke, packaged app launch, installed-app startup smoke, and clean installer lifecycle smoke.
 - Remaining: clean VM launch validation and broader packaged startup repair QA.
 
 Local backend foundation:

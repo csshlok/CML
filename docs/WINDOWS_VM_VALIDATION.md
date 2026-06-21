@@ -1,6 +1,6 @@
 # Windows VM Validation
 
-Last updated: 2026-06-20
+Last updated: 2026-06-21
 
 ## Release Gate
 
@@ -16,25 +16,20 @@ Required environment:
 
 ## Current State
 
-The current checkout does not have a valid package artifact for clean VM launch validation.
-
-After the 2026-06-20 rebuild attempt failed, local validation against `apps/desktop/release/win-unpacked` reported that the package root itself is absent:
-
-- `package_root_exists=false`
-- `resources_exists=false`
-- all packaged runtime/resource checks are false because the package root was not produced
+The current checkout has a locally validated package artifact, but it has not been validated on a clean VM.
 
 Evidence:
 
-- `.tmp/clean-machine-package-validation-2026-06-20.json`
-- `scripts/packaging/smoke-packaged-runtime.ps1 -PackageRoot apps/desktop/release/win-unpacked -Port 7464` failed with `Packaged app root not found`.
-- `scripts/packaging/smoke-packaged-app-launch.ps1 -PackageRoot apps/desktop/release/win-unpacked -TimeoutSeconds 45` failed with `Packaged app executable not found`.
-- `npm run package:win --workspace @cml/desktop` was rerun on 2026-06-20. It passed the renderer build, downloaded OCR runtime inputs, and failed during OCR staging because the downloaded Tesseract installer did not provide a portable `tesseract.exe`; Ghostscript staging also reported `The operation was canceled by the user`.
+- `apps/desktop/release/win-unpacked`
+- `apps/desktop/release/test-0.1.6-Setup.exe`
+- `.tmp/clean-machine-package-validation-2026-06-21-after-installed-smokes.json` reports `pass=true` on the contributor machine.
+- Local packaged runtime smoke passed with packaged Tesseract, Ghostscript, qpdf, image OCR, and PDF OCR.
+- Local packaged app launch smoke reached `ready` with renderer readiness.
+- Local installed-app startup smoke passed against `test-0.1.6-Setup.exe`.
+- Local installer lifecycle smoke passed from a clean local registry state, installing to `%LOCALAPPDATA%\Programs\CML` and uninstalling cleanly.
 
 The active blocker is:
 
-- provide real portable OCR tool paths or fix OCR installer extraction, then rebuild a complete package artifact
-- rerun packaged runtime, packaged app launch, installed-app launch, and installer lifecycle smokes locally
 - rerun the current installer and installed-app smoke sequence on a healthier clean VM image
 - verify first-run parity for the current package
 - capture installer/startup evidence from the actual VM run
@@ -45,7 +40,7 @@ The latest context docs record that the recent Hyper-V attempt was not a trustwo
 
 Observed issues in that run:
 
-- the packaged installer `CML-0.1.0-Setup.exe` crashed inside the guest with `System.dll` / `0xc0000005`
+- the older packaged installer `CML-0.1.0-Setup.exe` crashed inside the guest with `System.dll` / `0xc0000005`
 - the guest also showed Windows servicing/component-store failures
 - PowerShell Direct sessions were unstable
 
@@ -53,26 +48,15 @@ That means the VM image itself was not reliable enough to certify or reject the 
 
 ## Historical Context
 
-Earlier package validation failures were dominated by missing packaged resources and non-portable runtime layout.
-
-Those failures are present again in the current checked-out artifact, so do not send this artifact to a clean VM until it has been rebuilt and local package validation is green.
-
-Current missing-resource failures to eliminate:
-
-- missing `resources/backend`
-- missing packaged Python runtime
-- missing expert runtime
-- missing Playwright payload
-- missing OCR manifest
-- missing helper manifest
+Earlier package validation failures were dominated by missing packaged resources and non-portable runtime layout. Those failures are historical for the current artifact: the current package includes `resources/backend`, packaged Python runtime, expert runtime, Playwright payload, OCR manifest, and helper manifest.
 
 ## What Must Happen Next
 
-1. Rebuild a complete Windows package artifact.
-2. Rerun local package structure/runtime/app-launch/installed-app smokes.
-3. Use a healthier clean Windows VM image.
-4. Run the rebuilt packaged installer.
-5. Validate installed-app first run, not only `win-unpacked`.
+1. Use a healthier clean Windows VM image.
+2. Copy `apps/desktop/release/test-0.1.6-Setup.exe` to the VM.
+3. Run the rebuilt packaged installer.
+4. Validate installed-app first run, not only `win-unpacked`.
+5. Run the clean-machine package validation and installed-app smoke sequence from the repo scripts if the repo is available in the VM.
 6. Capture:
    - installer outcome
    - `startup-status.json`
@@ -85,4 +69,4 @@ Current missing-resource failures to eliminate:
 
 Status: not release-cleared.
 
-The current local package artifact is incomplete, so clean VM validation is blocked until a complete artifact is rebuilt and local package smokes pass.
+The current local package artifact is complete enough for local smokes, but clean VM validation remains unrun for this artifact.

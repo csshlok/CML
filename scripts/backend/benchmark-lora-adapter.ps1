@@ -121,6 +121,36 @@ def split_real_text(path: Path, text: str) -> list[dict]:
     return rows
 
 
+def adapter_training_dataset(adapter_path: Path) -> dict:
+    manifest_path = adapter_path / "dataset" / "dataset-manifest.json"
+    training_config_path = adapter_path / "training-config.json"
+    manifest: dict = {}
+    training_config: dict = {}
+    if manifest_path.exists():
+        try:
+            parsed_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            parsed_manifest = {}
+        if isinstance(parsed_manifest, dict):
+            manifest = parsed_manifest
+    if training_config_path.exists():
+        try:
+            parsed_config = json.loads(training_config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            parsed_config = {}
+        if isinstance(parsed_config, dict):
+            training_config = parsed_config
+    dataset_hash = str(manifest.get("dataset_hash") or training_config.get("dataset_hash") or "")
+    return {
+        "manifest_path": str(manifest_path) if manifest_path.exists() else "",
+        "training_config_path": str(training_config_path) if training_config_path.exists() else "",
+        "dataset_hash": dataset_hash,
+        "source_count": int(manifest.get("source_count") or 0),
+        "train_count": int(manifest.get("train_count") or 0),
+        "validation_count": int(manifest.get("validation_count") or 0),
+    }
+
+
 adapter_path = Path(os.environ["CML_LORA_BENCH_ADAPTER_PATH"])
 base_model = os.environ["CML_LORA_BENCH_BASE_MODEL"]
 source_paths = [Path(item) for item in json.loads(os.environ["CML_LORA_BENCH_SOURCE_PATHS_JSON"])]
@@ -148,6 +178,9 @@ dataset = {
     "dataset_hash": content_hash("\n".join(f"{doc['source_id']}:{doc['content_hash']}" for doc in documents)),
     "documents": documents,
 }
+adapter_dataset = adapter_training_dataset(adapter_path)
+adapter_dataset_hash = adapter_dataset.get("dataset_hash") or ""
+dataset_matches_adapter = bool(adapter_dataset_hash and adapter_dataset_hash == dataset["dataset_hash"])
 plan = build_expert_evaluation_plan(dataset, max_cases=max(1, case_limit))
 load_plan = runtime_adapter_load_plan(adapter_path=adapter_path, base_model=base_model)
 if not load_plan.get("available"):
@@ -207,9 +240,14 @@ benchmark = build_expert_benchmark_report(
     mode="live_adapter_benchmark",
     live_adapter_backed=True,
 )
+reported_status = benchmark["status"]
+reported_passes = bool(benchmark["passes"])
+if adapter_dataset_hash and not dataset_matches_adapter:
+    reported_status = "dataset_mismatch"
+    reported_passes = False
 report = {
-    "status": benchmark["status"],
-    "passes": benchmark["passes"],
+    "status": reported_status,
+    "passes": reported_passes,
     "adapter_path": str(adapter_path),
     "base_model": base_model,
     "source_records": [
@@ -220,6 +258,8 @@ report = {
         "source_count": len(documents),
         "dataset_hash": dataset["dataset_hash"],
     },
+    "adapter_training_dataset": adapter_dataset,
+    "dataset_matches_adapter_training": dataset_matches_adapter,
     "evaluation_plan": {"case_count": plan["case_count"], "categories": plan["categories"]},
     "adapter_load_plan": load_plan,
     "runtime": runtime,
@@ -229,8 +269,19 @@ report = {
     "hardware_status": hardware_status(),
 }
 report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-print(json.dumps({"report_path": str(report_path), "status": report["status"], "passes": report["passes"], "overall": benchmark["overall"]}, indent=2))
-if not benchmark["passes"]:
+print(
+    json.dumps(
+        {
+            "report_path": str(report_path),
+            "status": report["status"],
+            "passes": report["passes"],
+            "dataset_matches_adapter_training": dataset_matches_adapter,
+            "overall": benchmark["overall"],
+        },
+        indent=2,
+    )
+)
+if not report["passes"]:
     raise SystemExit(2)
 '@
 

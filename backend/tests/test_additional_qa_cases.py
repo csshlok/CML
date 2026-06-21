@@ -2531,6 +2531,7 @@ class AdditionalQACases(unittest.TestCase):
         installed_launch_smoke = repo_root / "scripts" / "packaging" / "smoke-installed-app.ps1"
         validate_script = repo_root / "scripts" / "packaging" / "validate-clean-machine-package.ps1"
         root_main = repo_root / "apps" / "desktop" / "main.cjs"
+        desktop_icon = repo_root / "apps" / "desktop" / "build" / "icon.ico"
         ocr_readme = repo_root / "backend" / "bin" / "ocr" / "README.md"
 
         stage_text = stage_script.read_text(encoding="utf-8")
@@ -2559,6 +2560,9 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("SkipGhostscriptInstaller", package_text)
         self.assertIn("TesseractExePath", package_text)
         self.assertIn("GhostscriptExePath", package_text)
+        self.assertIn("$ocrArgs = @{}", package_text)
+        self.assertIn('$ocrArgs["TesseractExePath"]', package_text)
+        self.assertIn('$ocrArgs["GhostscriptExePath"]', package_text)
         self.assertIn('fastapi==0.136.3', package_text)
         self.assertIn('uvicorn[standard]==0.48.0', package_text)
         self.assertIn('ocrmypdf==17.5.0', package_text)
@@ -2572,10 +2576,17 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("renderer ready signal received", installed_launch_text)
         self.assertIn("renderer never signaled readiness", packaged_launch_text)
         self.assertIn("renderer never signaled readiness", installed_launch_text)
+        self.assertIn("InstallerTimeoutSeconds", installed_launch_text)
+        self.assertIn("Timed out waiting for installer", installed_launch_text)
+        self.assertIn("installer_autostart_processes_stopped", installed_launch_text)
+        self.assertIn("ELECTRON_RUN_AS_NODE", installed_launch_text)
         self.assertIn("[switch]$RunExecutableSmokes", validate_text)
         self.assertIn("[string]$InstallerPath", validate_text)
         self.assertIn("smoke-windows-installer.ps1", validate_text)
         self.assertEqual(root_main_text.strip(), 'module.exports = require("./electron/main.cjs");')
+        icon_header = desktop_icon.read_bytes()[:6]
+        self.assertEqual(icon_header[:4], b"\x00\x00\x01\x00")
+        self.assertGreaterEqual(int.from_bytes(icon_header[4:6], "little"), 1)
         self.assertIn("scripts/packaging/stage-ocr-runtime.ps1", readme_text)
 
     def test_ocr_benchmark_script_reports_similarity_metrics(self) -> None:
@@ -4086,6 +4097,8 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("build_expert_benchmark_report", expert_text)
         self.assertIn("run_adapter_runtime_batch", adapter_benchmark_text)
         self.assertIn("live_adapter_benchmark", adapter_benchmark_text)
+        self.assertIn("dataset_matches_adapter_training", adapter_benchmark_text)
+        self.assertIn("adapter_training_dataset", adapter_benchmark_text)
         self.assertIn("write_lora_smoke_proof", proof_text)
         self.assertIn("hardware_status", hardware_text)
         self.assertIn("avx2_proof_present", hardware_text)

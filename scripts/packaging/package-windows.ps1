@@ -335,18 +335,18 @@ if (-not $SkipOcrRuntimeDownload) {
   } else {
     Write-PackageLine "Staging OCR runtime" "INFO"
     Write-PackageDetail "OCR runtime cache miss; staging OCR payload."
-    $ocrArgs = @()
+    $ocrArgs = @{}
     if ($TesseractExePath) {
-      $ocrArgs += @("-TesseractExePath", $TesseractExePath)
+      $ocrArgs["TesseractExePath"] = $TesseractExePath
     }
     if ($GhostscriptExePath) {
-      $ocrArgs += @("-GhostscriptExePath", $GhostscriptExePath)
+      $ocrArgs["GhostscriptExePath"] = $GhostscriptExePath
     }
     if ($SkipGhostscriptInstaller) {
-      $ocrArgs += "-SkipGhostscriptInstaller"
+      $ocrArgs["SkipGhostscriptInstaller"] = $true
     }
     if ($AllowPartialOcrRuntime) {
-      $ocrArgs += "-AllowPartial"
+      $ocrArgs["AllowPartial"] = $true
     }
     & $ocrStagingScript @ocrArgs
     Write-StagedRuntimeStamp $ocrRuntimeStampPath $ocrRuntimeFingerprint

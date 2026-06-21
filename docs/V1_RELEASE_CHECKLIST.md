@@ -1,6 +1,6 @@
 # V1 Release Checklist
 
-Last updated: 2026-06-15
+Last updated: 2026-06-21
 
 Audit sources:
 
@@ -19,8 +19,8 @@ Audit sources:
 | Real LoRA trainer smoke | Passed for current dev CPU smoke | 2026-06-15 real one-step LLaMA Factory run used `Qwen/Qwen2.5-0.5B-Instruct`, actual project docs, dataset hash `d0f85a6bf90dd9f0ef0489aef3ebf2e705fd896a91ad5a7f357196ba40c1c4b0`, and produced a real adapter. |
 | Real LoRA runtime smoke | Passed for current dev CPU smoke | Direct Transformers/PEFT adapter runtime evidence returned `ok=true` on CPU from `.tmp/lora-real-qwen05b-runtime-evidence.json`. |
 | Live expert quality benchmark | Open | First short live benchmark ran and failed: adapter `24.0` vs retrieval `100.0`, delta `-76.0`. Release still requires a full strict-category live adapter win. |
-| Clean Windows VM validation | Open | The active blocker is still a healthy clean-VM validation run of the current package; earlier missing-resource failures are historical, not the current package state. |
-| Installed package first-run parity | Open | Installed-app smoke exists, but a healthy clean-VM installed-app pass for the current package is still missing. |
+| Clean Windows VM validation | Open | Local package validation and smokes pass for `apps/desktop/release/test-0.1.6-Setup.exe`; the active blocker is a healthy clean-VM validation run of that current package. |
+| Installed package first-run parity | Partially passed | Local installed-app startup smoke and clean installer lifecycle smoke pass for the current installer; a healthy clean-VM installed-app pass is still missing. |
 | Hardware-aware model/setup validation | Open | Role-aware acceptance and recommendation code exists, but clean-machine QA with one imported approved checkpoint is still required. |
 | Bridge privacy/trusted-client wording | Partially documented | Project docs now describe the trusted-client boundary more honestly, but release wording still needs to stay conservative. |
 | Cloud-synced vault path safety | Open | Public-V1 storage-integrity warnings/blocking for synced vault locations remain an open release item. |
@@ -28,7 +28,7 @@ Audit sources:
 ## Current Notes
 
 - The package is no longer blocked on the older missing-runtime/missing-resource layout failure.
-- The remaining package gate is current clean-VM validation plus installed-app parity.
+- Local installed-app parity now passes on the contributor machine; the remaining package gate is current clean-VM validation plus installed-app parity in that clean environment.
 - The main open release gates are now:
   - clean-VM package validation
   - full live LoRA quality proof
