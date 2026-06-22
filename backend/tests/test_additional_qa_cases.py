@@ -3978,17 +3978,179 @@ class AdditionalQACases(unittest.TestCase):
 
         self.assertEqual(manifest["train_count"] + manifest["validation_count"], len(EVALUATION_CATEGORIES))
         self.assertEqual({row["category"] for row in rows}, set(EVALUATION_CATEGORIES))
+        self.assertIn("benchmark_record_accounting", manifest)
+        self.assertEqual(manifest["benchmark_record_accounting"]["used_source_count"], 1)
         self.assertTrue(any("key facts" in prompt for prompt in prompts))
         self.assertTrue(any("three grounded bullets" in prompt for prompt in prompts))
         self.assertTrue(any("cite the source title" in prompt for prompt in prompts))
+        self.assertTrue(any("preferred terminology" in prompt for prompt in prompts))
+        self.assertTrue(any("reasoning pattern" in prompt for prompt in prompts))
         self.assertTrue(any("not covered" in prompt for prompt in prompts))
         self.assertTrue(any("According to source Public V1 Blockers" in answer for answer in answers))
         self.assertTrue(any("missing evidence" in answer for answer in answers))
+        self.assertTrue(any("preferred local terms" in answer for answer in answers))
+        self.assertTrue(any("First, identify the local evidence" in answer for answer in answers))
+
+    def test_lora_benchmark_eligibility_report_blocks_small_or_concentrated_datasets(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.lora_training import benchmark_eligibility_report
+
+        os.environ["CML_LORA_BENCHMARK_MIN_TRAIN_RECORDS"] = "4"
+        os.environ["CML_LORA_BENCHMARK_MIN_VALIDATION_RECORDS"] = "2"
+        os.environ["CML_LORA_BENCHMARK_MIN_VALIDATION_RECORDS_PER_CATEGORY"] = "1"
+        os.environ["CML_LORA_BENCHMARK_MIN_UNIQUE_SOURCES"] = "2"
+        os.environ["CML_LORA_BENCHMARK_MIN_UNIQUE_CONTENT_HASHES"] = "2"
+        os.environ["CML_LORA_BENCHMARK_MAX_TRAIN_RECORD_SHARE_PER_SOURCE"] = "0.60"
+        os.environ["CML_LORA_BENCHMARK_MAX_VALIDATION_RECORD_SHARE_PER_SOURCE"] = "0.60"
+        os.environ["CML_LORA_BENCHMARK_MAX_VALIDATION_RECORD_SHARE_PER_SOURCE_PER_CATEGORY"] = "0.60"
+        os.environ["CML_LORA_MAX_DUPLICATE_RATIO"] = "0.40"
+        get_settings.cache_clear()
+        try:
+            failing = benchmark_eligibility_report(
+                {
+                    "benchmark_record_accounting": {
+                        "used_source_count": 1,
+                        "used_unique_content_hash_count": 1,
+                        "train": {
+                            "record_count": 4,
+                            "duplicate_content_ratio": 0.0,
+                            "max_record_share_per_source": 1.0,
+                            "category_counts": {"summarization": 1, "style_transfer": 1, "terminology_consistency": 1, "reasoning_pattern": 1},
+                            "max_record_share_per_source_per_category": {},
+                        },
+                        "validation": {
+                            "record_count": 2,
+                            "duplicate_content_ratio": 0.0,
+                            "max_record_share_per_source": 1.0,
+                            "category_counts": {"out_of_scope_refusal": 1, "summarization": 1},
+                            "max_record_share_per_source_per_category": {"out_of_scope_refusal": 1.0, "summarization": 1.0},
+                        },
+                    }
+                }
+            )
+            passing = benchmark_eligibility_report(
+                {
+                    "benchmark_record_accounting": {
+                        "used_source_count": 8,
+                        "used_unique_content_hash_count": 8,
+                        "train": {
+                            "record_count": 8,
+                            "duplicate_content_ratio": 0.0,
+                            "max_record_share_per_source": 0.25,
+                            "category_counts": {
+                                "summarization": 1,
+                                "style_transfer": 1,
+                                "terminology_consistency": 1,
+                                "reasoning_pattern": 1,
+                                "out_of_scope_refusal": 1,
+                                "factual_recall": 1,
+                                "citation_grounding": 1,
+                                "contradiction_handling": 1,
+                            },
+                            "max_record_share_per_source_per_category": {},
+                        },
+                        "validation": {
+                            "record_count": 8,
+                            "duplicate_content_ratio": 0.0,
+                            "max_record_share_per_source": 0.25,
+                            "category_counts": {
+                                "summarization": 1,
+                                "style_transfer": 1,
+                                "terminology_consistency": 1,
+                                "reasoning_pattern": 1,
+                                "out_of_scope_refusal": 1,
+                                "factual_recall": 1,
+                                "citation_grounding": 1,
+                                "contradiction_handling": 1,
+                            },
+                            "max_record_share_per_source_per_category": {
+                                "summarization": 0.25,
+                                "style_transfer": 0.25,
+                                "terminology_consistency": 0.25,
+                                "reasoning_pattern": 0.25,
+                                "out_of_scope_refusal": 0.25,
+                                "factual_recall": 0.25,
+                                "citation_grounding": 0.25,
+                                "contradiction_handling": 0.25,
+                            },
+                        },
+                    }
+                }
+            )
+        finally:
+            os.environ.pop("CML_LORA_BENCHMARK_MIN_TRAIN_RECORDS", None)
+            os.environ.pop("CML_LORA_BENCHMARK_MIN_VALIDATION_RECORDS", None)
+            os.environ.pop("CML_LORA_BENCHMARK_MIN_VALIDATION_RECORDS_PER_CATEGORY", None)
+            os.environ.pop("CML_LORA_BENCHMARK_MIN_UNIQUE_SOURCES", None)
+            os.environ.pop("CML_LORA_BENCHMARK_MIN_UNIQUE_CONTENT_HASHES", None)
+            os.environ.pop("CML_LORA_BENCHMARK_MAX_TRAIN_RECORD_SHARE_PER_SOURCE", None)
+            os.environ.pop("CML_LORA_BENCHMARK_MAX_VALIDATION_RECORD_SHARE_PER_SOURCE", None)
+            os.environ.pop("CML_LORA_BENCHMARK_MAX_VALIDATION_RECORD_SHARE_PER_SOURCE_PER_CATEGORY", None)
+            os.environ.pop("CML_LORA_MAX_DUPLICATE_RATIO", None)
+            get_settings.cache_clear()
+
+        self.assertFalse(failing["passes"])
+        self.assertFalse(failing["checks"]["minimum_unique_sources"])
+        self.assertFalse(failing["checks"]["minimum_unique_content_hashes"])
+        self.assertFalse(failing["checks"]["maximum_train_record_share_per_source"])
+        self.assertFalse(failing["checks"]["maximum_validation_record_share_per_source"])
+        self.assertFalse(failing["checks"]["maximum_validation_record_share_per_source_per_category"])
+        self.assertFalse(failing["checks"]["minimum_validation_records_per_category"])
+        self.assertTrue(passing["passes"])
+
+    def test_lora_benchmark_gate_treats_small_record_sets_as_non_diagnostic(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.lora_training import benchmark_eligibility_report
+        from backend.app.core.training_dataset import write_cluster_training_dataset
+
+        os.environ["CML_LORA_BENCHMARK_MIN_TRAIN_RECORDS"] = "20"
+        os.environ["CML_LORA_BENCHMARK_MIN_VALIDATION_RECORDS"] = "8"
+        os.environ["CML_LORA_BENCHMARK_MIN_VALIDATION_RECORDS_PER_CATEGORY"] = "1"
+        os.environ["CML_LORA_BENCHMARK_MIN_UNIQUE_SOURCES"] = "4"
+        os.environ["CML_LORA_BENCHMARK_MIN_UNIQUE_CONTENT_HASHES"] = "4"
+        get_settings.cache_clear()
+        try:
+            dataset = {
+                "cluster_id": "cluster-1",
+                "cluster_name": "Cluster One",
+                "source_count": 3,
+                "unique_content_hash_count": 3,
+                "duplicate_content_count": 0,
+                "duplicate_content_ratio": 0.0,
+                "total_text_chars": 6000,
+                "estimated_token_count": 1500,
+                "dataset_hash": "dataset-hash",
+                "documents": [
+                    {
+                        "source_id": f"source-{index}",
+                        "title": f"Doc {index}",
+                        "summary": "Cluster evidence that is long enough for record export and benchmark scaffolding.",
+                        "text": "Cluster evidence that is long enough for record export and benchmark scaffolding.",
+                        "content_hash": f"content-hash-{index}",
+                    }
+                    for index in range(3)
+                ],
+            }
+            manifest = write_cluster_training_dataset(dataset, Path(self.tmp.name) / "small-lora-benchmark")
+            report = benchmark_eligibility_report(manifest)
+        finally:
+            os.environ.pop("CML_LORA_BENCHMARK_MIN_TRAIN_RECORDS", None)
+            os.environ.pop("CML_LORA_BENCHMARK_MIN_VALIDATION_RECORDS", None)
+            os.environ.pop("CML_LORA_BENCHMARK_MIN_VALIDATION_RECORDS_PER_CATEGORY", None)
+            os.environ.pop("CML_LORA_BENCHMARK_MIN_UNIQUE_SOURCES", None)
+            os.environ.pop("CML_LORA_BENCHMARK_MIN_UNIQUE_CONTENT_HASHES", None)
+            get_settings.cache_clear()
+
+        self.assertFalse(report["passes"])
+        self.assertLess(manifest["train_count"], report["minimum_train_records"])
+        self.assertFalse(report["checks"]["minimum_unique_sources"])
 
     def test_expert_evaluation_harness_covers_strict_categories_and_delta(self) -> None:
         from backend.app.core.config import get_settings
         from backend.app.core.expert_evaluation import (
+            DIAGNOSTIC_ONLY_CATEGORIES,
             EVALUATION_CATEGORIES,
+            GRADUATION_CATEGORIES,
             build_expert_benchmark_report,
             build_expert_evaluation_plan,
             compare_retrieval_vs_adapter,
@@ -4005,10 +4167,10 @@ class AdditionalQACases(unittest.TestCase):
                     {
                         "source_id": f"source-{index}",
                         "title": f"Evaluation source {index}",
-                        "summary": "adapter retrieval grounded citation evidence strict benchmark",
-                        "text": "adapter retrieval grounded citation evidence strict benchmark",
+                        "summary": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
+                        "text": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
                     }
-                    for index in range(6)
+                    for index in range(len(EVALUATION_CATEGORIES))
                 ],
             }
             plan = build_expert_evaluation_plan(dataset)
@@ -4020,7 +4182,11 @@ class AdditionalQACases(unittest.TestCase):
                 {
                     **score_expert_response(
                         case,
-                        f"According to source {case['source_title']}, adapter retrieval evidence is present.",
+                        (
+                            f"According to source {case['source_title']}, adapter retrieval evidence is present."
+                            if case["category"] in {"factual_recall", "citation_grounding"}
+                            else "This answer stays grounded but uses generic wording."
+                        ),
                     ),
                     "case_id": case["id"],
                 }
@@ -4031,8 +4197,20 @@ class AdditionalQACases(unittest.TestCase):
                     **score_expert_response(
                         case,
                         (
-                            f"According to source {case['source_title']}, adapter retrieval grounded citation "
-                            "evidence strict benchmark is present."
+                            f"According to source {case['source_title']}, adapter retrieval grounded citation evidence strict benchmark is present.\n"
+                            "- grounded practical note\n"
+                            "- preferred local terms stay intact\n"
+                            "- first, then, therefore reasoning stays explicit"
+                            if case["category"] == "summarization"
+                            else f"According to source {case['source_title']}, the practical note is: adapter retrieval grounded citation evidence strict benchmark is present."
+                            if case["category"] == "style_transfer"
+                            else f"According to source {case['source_title']}, use the preferred local terms and cluster terminology: adapter, retrieval, benchmark."
+                            if case["category"] == "terminology_consistency"
+                            else f"First, identify the local evidence from source {case['source_title']}. Then interpret it. Therefore, keep the reasoning pattern explicit."
+                            if case["category"] == "reasoning_pattern"
+                            else f"Source {case['source_title']} does not provide enough evidence; the answer should say it is not covered and evidence is missing."
+                            if case["category"] == "out_of_scope_refusal"
+                            else f"According to source {case['source_title']}, adapter retrieval grounded citation evidence strict benchmark is present."
                         ),
                     ),
                     "case_id": case["id"],
@@ -4060,7 +4238,9 @@ class AdditionalQACases(unittest.TestCase):
             get_settings.cache_clear()
 
         self.assertEqual(plan["categories"], list(EVALUATION_CATEGORIES))
-        self.assertEqual(plan["case_count"], 6)
+        self.assertEqual(plan["graduation_categories"], list(GRADUATION_CATEGORIES))
+        self.assertEqual(plan["diagnostic_only_categories"], list(DIAGNOSTIC_ONLY_CATEGORIES))
+        self.assertEqual(plan["case_count"], len(EVALUATION_CATEGORIES))
         self.assertGreater(scored["score"], 70)
         self.assertTrue(scored["citation_present"])
         self.assertEqual(report["status"], "passed")
@@ -4068,6 +4248,11 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(report["mode"], "unit_strict_category_benchmark")
         self.assertFalse(report["missing_categories"])
         self.assertEqual(set(report["category_scores"]), set(EVALUATION_CATEGORIES))
+        self.assertEqual(set(report["graduation_categories"]), set(GRADUATION_CATEGORIES))
+        self.assertEqual(set(report["diagnostic_only_categories"]), set(DIAGNOSTIC_ONLY_CATEGORIES))
+        self.assertTrue(report["graduation_overall"]["passes"])
+        self.assertFalse(report["category_scores"]["factual_recall"]["counts_toward_graduation"])
+        self.assertEqual(report["category_scores"]["style_transfer"]["owner"], "adapter")
         self.assertEqual(pending_report["status"], "pending_live_adapter_benchmark")
         self.assertFalse(pending_report["live_adapter_backed"])
         self.assertFalse(pending_report["passes"])
@@ -4080,6 +4265,7 @@ class AdditionalQACases(unittest.TestCase):
         expert_smoke = repo_root / "scripts" / "backend" / "smoke-lora-expert.ps1"
         runtime_smoke = repo_root / "scripts" / "backend" / "smoke-lora-runtime.ps1"
         adapter_benchmark = repo_root / "scripts" / "backend" / "benchmark-lora-adapter.ps1"
+        size_matrix = repo_root / "scripts" / "backend" / "run-lora-size-matrix.ps1"
         proof_export = repo_root / "scripts" / "backend" / "export-lora-proof.ps1"
         hardware_proof = repo_root / "scripts" / "backend" / "export-hardware-proof.ps1"
 
@@ -4087,11 +4273,13 @@ class AdditionalQACases(unittest.TestCase):
         expert_text = expert_smoke.read_text(encoding="utf-8")
         runtime_text = runtime_smoke.read_text(encoding="utf-8")
         adapter_benchmark_text = adapter_benchmark.read_text(encoding="utf-8")
+        size_matrix_text = size_matrix.read_text(encoding="utf-8")
         proof_text = proof_export.read_text(encoding="utf-8")
         hardware_text = hardware_proof.read_text(encoding="utf-8")
 
         self.assertIn("Graduation Gates", policy_text)
-        self.assertIn("retrieval-vs-adapter", policy_text.lower())
+        self.assertIn("retrieval owns facts", policy_text.lower())
+        self.assertIn("1.5b", policy_text.lower())
         self.assertIn("CML_LORA_TRAINER_COMMAND", expert_text)
         self.assertIn("AllowTestTrainer", expert_text)
         self.assertIn("build_expert_benchmark_report", expert_text)
@@ -4099,6 +4287,9 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("live_adapter_benchmark", adapter_benchmark_text)
         self.assertIn("dataset_matches_adapter_training", adapter_benchmark_text)
         self.assertIn("adapter_training_dataset", adapter_benchmark_text)
+        self.assertIn("BaseModel15B", size_matrix_text)
+        self.assertIn("BaseModel2B", size_matrix_text)
+        self.assertIn("BaseModel3B", size_matrix_text)
         self.assertIn("write_lora_smoke_proof", proof_text)
         self.assertIn("hardware_status", hardware_text)
         self.assertIn("avx2_proof_present", hardware_text)

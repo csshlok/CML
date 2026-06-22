@@ -6,7 +6,7 @@ param(
   [string[]]$SourcePaths = @("docs/PROJECT_CONTEXT.md", "docs/OVERALL_CONTEXT.md"),
   [string]$ReportPath = ".tmp/lora-adapter-quality-benchmark.json",
   [int]$MaxRealSources = 12,
-  [int]$BenchmarkCaseLimit = 6,
+  [int]$BenchmarkCaseLimit = 8,
   [int]$BenchmarkMaxNewTokens = 16
 )
 

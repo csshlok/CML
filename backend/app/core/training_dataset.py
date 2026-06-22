@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 from pathlib import Path
 
 from backend.app.core.database import connect, dict_from_row
@@ -99,6 +100,10 @@ def write_cluster_training_dataset(dataset: dict, output_dir: Path) -> dict:
 
     _write_jsonl(train_path, train_records)
     _write_jsonl(validation_path, validation_records)
+    record_accounting = _benchmark_record_accounting(
+        train_records=train_records,
+        validation_records=validation_records,
+    )
 
     manifest = {
         "cluster_id": dataset["cluster_id"],
@@ -112,6 +117,7 @@ def write_cluster_training_dataset(dataset: dict, output_dir: Path) -> dict:
         "dataset_hash": dataset["dataset_hash"],
         "train_count": len(train_records),
         "validation_count": len(validation_records),
+        "benchmark_record_accounting": record_accounting,
     }
 
     manifest_path.write_text(
@@ -189,6 +195,17 @@ def _category_answer(category: str, doc: dict, summary: str) -> str:
             f"Trust the local evidence in source {title}. "
             f"If a new claim conflicts with it, treat the new claim as unverified unless it matches: {evidence}"
         )
+    if category == "terminology_consistency":
+        return (
+            f"{source_prefix} use the preferred local terms: {_preferred_terms(title, summary, str(doc.get('text') or ''))}. "
+            f"Keep the terminology consistent with the cluster notes. {evidence}"
+        )
+    if category == "reasoning_pattern":
+        return (
+            f"First, identify the local evidence from source {title}: {evidence} "
+            "Then, interpret what it means for the cluster context. "
+            "Therefore, the conclusion should follow the same reasoning pattern as the local notes."
+        )
     if category == "style_transfer":
         return f"{source_prefix} the practical note is: {evidence}"
     if category == "out_of_scope_refusal":
@@ -208,6 +225,18 @@ def _evidence_excerpt(summary: str, text: str) -> str:
     return excerpt.rstrip(".") + "."
 
 
+def _preferred_terms(title: str, summary: str, text: str) -> str:
+    seen = []
+    for raw in f"{title} {summary} {text}".replace("_", " ").replace("-", " ").split():
+        token = "".join(char for char in raw.lower() if char.isalnum())
+        if len(token) < 5 or token in seen:
+            continue
+        seen.append(token)
+        if len(seen) >= 3:
+            break
+    return ", ".join(seen) if seen else "local project vocabulary"
+
+
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text(
         "".join(
@@ -221,6 +250,55 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 def _estimate_tokens(text_chars: int) -> int:
     # Conservative language-agnostic estimate for graduation gates.
     return max(0, text_chars // 4)
+
+
+def _benchmark_record_accounting(*, train_records: list[dict], validation_records: list[dict]) -> dict:
+    combined_records = [*train_records, *validation_records]
+    combined_source_ids = {str(row.get("source_id") or "") for row in combined_records if str(row.get("source_id") or "").strip()}
+    combined_hashes = {str(row.get("content_hash") or "") for row in combined_records if str(row.get("content_hash") or "").strip()}
+    return {
+        "used_source_count": len(combined_source_ids),
+        "used_unique_content_hash_count": len(combined_hashes),
+        "train": _split_record_accounting(train_records),
+        "validation": _split_record_accounting(validation_records),
+    }
+
+
+def _split_record_accounting(rows: list[dict]) -> dict:
+    total = len(rows)
+    source_counts = Counter(str(row.get("source_id") or "") for row in rows if str(row.get("source_id") or "").strip())
+    category_counts = Counter(str(row.get("category") or "") for row in rows if str(row.get("category") or "").strip())
+    content_hashes = [str(row.get("content_hash") or "") for row in rows if str(row.get("content_hash") or "").strip()]
+    unique_hashes = set(content_hashes)
+    per_category_source_counts: dict[str, Counter] = {}
+    max_share_per_source_per_category: dict[str, float] = {}
+    for category in category_counts:
+        counter = Counter(
+            str(row.get("source_id") or "")
+            for row in rows
+            if str(row.get("category") or "") == category and str(row.get("source_id") or "").strip()
+        )
+        per_category_source_counts[category] = counter
+        denominator = category_counts[category]
+        max_share_per_source_per_category[category] = (
+            max((count / denominator) for count in counter.values())
+            if denominator > 0 and counter
+            else 0.0
+        )
+    return {
+        "record_count": total,
+        "unique_source_count": len(source_counts),
+        "unique_content_hash_count": len(unique_hashes),
+        "duplicate_content_ratio": (max(0, total - len(unique_hashes)) / total) if total else 0.0,
+        "category_counts": dict(category_counts),
+        "source_record_counts": dict(source_counts),
+        "max_record_share_per_source": (max((count / total) for count in source_counts.values()) if total and source_counts else 0.0),
+        "source_record_counts_per_category": {
+            category: dict(counter)
+            for category, counter in per_category_source_counts.items()
+        },
+        "max_record_share_per_source_per_category": max_share_per_source_per_category,
+    }
 
 
 def _exclude_from_training(source: dict) -> bool:

@@ -24,6 +24,26 @@ LoRA expert validation:
 - `.tmp/lora-quality-aligned-cpu512-step1-smoke-proof-2026-06-21.json` blocks only on `adapter_quality_benchmark_failed`; the updated standalone benchmark makes dataset mismatch explicit, but public quality is still not proven.
 - Compulsory cluster experts stay in progress at `97%`: retrain/adapter production is now validated on this CPU baseline, but public expert claims remain blocked until a live adapter-backed quality benchmark beats retrieval across the strict categories.
 
+## 2026-06-21 LoRA Benchmark Reframe / Base-Size Matrix Snapshot
+
+Completed:
+
+- Reframed the LoRA quality contract so retrieval keeps ownership of factual recall, citation grounding, and contradiction handling, while LoRA is judged primarily on style transfer, terminology consistency, reasoning-pattern reuse, summarization, and out-of-scope refusal.
+- Raised the default LoRA data floor in backend config so tiny clusters stop entering training by default: source count, unique-source count, token count, and validation-record minimums are all now materially higher.
+- Expanded the benchmark/training category set with explicit adapter-owned categories for `terminology_consistency` and `reasoning_pattern`, and updated dataset export so training records now reflect that narrower division of labor.
+- Added `scripts/backend/run-lora-size-matrix.ps1`, which sets up three explicit run slots for `1.5B`, `2B`, and `3B` base-model tests instead of treating the old `0.5B` CPU smoke as decisive product evidence.
+- Added a separate benchmark-eligibility gate in the backend so benchmark-grade LoRA runs now require high post-split record counts, distinct source/content-hash floors, and per-source share caps. Small or overly concentrated clusters now fail with `insufficient_benchmark_diversity` instead of producing misleading benchmark outcomes.
+
+Verification:
+
+- `.venv\Scripts\python.exe -m pytest -q backend/tests/test_additional_qa_cases.py -k "lora_dataset_graduation_report_enforces_source_token_and_validation_gates or lora_training_dataset_exports_quality_benchmark_tasks or expert_evaluation_harness_covers_strict_categories_and_delta or lora_mvp_policy_and_smoke_scripts_are_present"` passed with `4` tests.
+- `python -m compileall -q backend/app` passed.
+- PowerShell parser validation passed for `scripts/backend/run-lora-size-matrix.ps1`.
+
+Still not completed:
+
+- No new empirical LoRA result exists yet from the larger bases. The next real evidence step is to run the new matrix on actual `1.5B`, `2B`, and `3B` expert-capable local checkpoints and inspect whether the adapter-owned categories improve while retrieval-owned factual/citation categories remain diagnostic only.
+
 ## 2026-06-20 Desktop Startup / LoRA Proof Snapshot
 
 Desktop startup/package validation:

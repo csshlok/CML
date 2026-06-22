@@ -4,7 +4,7 @@ param(
   [string[]]$SourcePaths = @("docs/PROJECT_CONTEXT.md", "docs/OVERALL_CONTEXT.md"),
   [string]$BaseModelPath = $env:CML_LORA_BASE_MODEL_PATH,
   [int]$MaxRealSources = 12,
-  [int]$BenchmarkCaseLimit = 6,
+  [int]$BenchmarkCaseLimit = 8,
   [switch]$AllowBenchmarkFailure,
   [int]$RuntimeMaxNewTokens = 16,
   [int]$BenchmarkMaxNewTokens = 16,

@@ -27,6 +27,7 @@ from backend.app.core.expert_evaluation import build_expert_benchmark_report, bu
 from backend.app.core.lora_training import (
     LoraTrainerMissingError,
     adapter_validation_report,
+    benchmark_eligibility_report,
     dataset_graduation_report,
     new_artifact_dir,
     run_lora_training_process,
@@ -955,6 +956,17 @@ def _run_train_cluster_adapter(payload: dict) -> None:
                 hardware_tier=hardware["hardware_tier"],
             )
             raise RuntimeError("Cluster does not meet LoRA graduation validation gates.")
+        benchmark_gate = benchmark_eligibility_report(dataset_manifest)
+        if not benchmark_gate["passes"]:
+            _mark_expert_training_failed(
+                conn,
+                cluster_id=cluster_id,
+                expert_job_id=expert_job_id,
+                failure_code="insufficient_benchmark_diversity",
+                detail=f"Cluster does not meet benchmark-eligibility diversity gates: {benchmark_gate}",
+                hardware_tier=hardware["hardware_tier"],
+            )
+            raise RuntimeError("Cluster does not meet benchmark-eligibility diversity gates.")
         preferred_model = preferred_expert_base_model()
         if preferred_model is None:
             _mark_expert_training_failed(
@@ -1044,6 +1056,7 @@ def _run_train_cluster_adapter(payload: dict) -> None:
         )
         evaluation_plan = build_expert_evaluation_plan(dataset)
         metrics["dataset_gate"] = dataset_gate
+        metrics["benchmark_gate"] = benchmark_gate
         metrics["adapter_validation"] = adapter_validation
         metrics["runtime_load"] = runtime_load
         metrics["evaluation_plan"] = {

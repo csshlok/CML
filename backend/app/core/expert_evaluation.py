@@ -3,18 +3,69 @@ from __future__ import annotations
 from backend.app.core.config import get_settings
 
 
-EVALUATION_CATEGORIES = (
-    "factual_recall",
-    "summarization",
-    "citation_grounding",
-    "contradiction_handling",
-    "style_transfer",
-    "out_of_scope_refusal",
+_CATEGORY_SPECS = {
+    "factual_recall": {
+        "owner": "retrieval",
+        "counts_toward_graduation": False,
+        "requires_citation": True,
+        "markers": [],
+    },
+    "citation_grounding": {
+        "owner": "retrieval",
+        "counts_toward_graduation": False,
+        "requires_citation": True,
+        "markers": [],
+    },
+    "contradiction_handling": {
+        "owner": "retrieval",
+        "counts_toward_graduation": False,
+        "requires_citation": False,
+        "markers": ["trust", "evidence", "unverified"],
+    },
+    "summarization": {
+        "owner": "shared",
+        "counts_toward_graduation": True,
+        "requires_citation": True,
+        "markers": ["-", "grounded"],
+    },
+    "style_transfer": {
+        "owner": "adapter",
+        "counts_toward_graduation": True,
+        "requires_citation": False,
+        "markers": ["practical", "note", "actionable"],
+    },
+    "terminology_consistency": {
+        "owner": "adapter",
+        "counts_toward_graduation": True,
+        "requires_citation": False,
+        "markers": ["preferred", "local terms", "terminology"],
+    },
+    "reasoning_pattern": {
+        "owner": "adapter",
+        "counts_toward_graduation": True,
+        "requires_citation": False,
+        "markers": ["first", "then", "therefore"],
+    },
+    "out_of_scope_refusal": {
+        "owner": "shared",
+        "counts_toward_graduation": True,
+        "requires_citation": False,
+        "markers": ["missing", "not covered", "insufficient"],
+    },
+}
+
+EVALUATION_CATEGORIES = tuple(_CATEGORY_SPECS)
+GRADUATION_CATEGORIES = tuple(
+    category for category, spec in _CATEGORY_SPECS.items() if spec["counts_toward_graduation"]
+)
+DIAGNOSTIC_ONLY_CATEGORIES = tuple(
+    category for category, spec in _CATEGORY_SPECS.items() if not spec["counts_toward_graduation"]
 )
 
 
 def build_expert_evaluation_plan(dataset: dict, *, max_cases: int = 12) -> dict:
-    documents = list(dataset.get("documents") or [])[:max_cases]
+    normalized_max_cases = max(int(max_cases or 0), len(EVALUATION_CATEGORIES))
+    documents = list(dataset.get("documents") or [])[:normalized_max_cases]
     cases = []
     for index, doc in enumerate(documents):
         category = EVALUATION_CATEGORIES[index % len(EVALUATION_CATEGORIES)]
@@ -25,11 +76,14 @@ def build_expert_evaluation_plan(dataset: dict, *, max_cases: int = 12) -> dict:
             {
                 "id": f"{dataset.get('cluster_id', 'cluster')}-{index + 1}",
                 "category": category,
+                "owner": _CATEGORY_SPECS[category]["owner"],
+                "counts_toward_graduation": _CATEGORY_SPECS[category]["counts_toward_graduation"],
                 "source_id": doc.get("source_id"),
                 "source_title": title,
                 "prompt": prompt_for_category(category, title),
                 "expected_terms": expected_terms,
-                "requires_citation": category in {"factual_recall", "citation_grounding", "summarization"},
+                "markers": list(_CATEGORY_SPECS[category]["markers"]),
+                "requires_citation": _CATEGORY_SPECS[category]["requires_citation"],
             }
         )
     return {
@@ -37,6 +91,8 @@ def build_expert_evaluation_plan(dataset: dict, *, max_cases: int = 12) -> dict:
         "dataset_hash": dataset.get("dataset_hash"),
         "case_count": len(cases),
         "categories": list(EVALUATION_CATEGORIES),
+        "graduation_categories": list(GRADUATION_CATEGORIES),
+        "diagnostic_only_categories": list(DIAGNOSTIC_ONLY_CATEGORIES),
         "cases": cases,
     }
 
@@ -50,13 +106,17 @@ def score_expert_response(case: dict, response_text: str) -> dict:
     refusal_score = 1.0
     if case.get("category") == "out_of_scope_refusal":
         refusal_score = 1.0 if _has_refusal_marker(response) else 0.0
-    score = round(((term_score * 70.0) + (citation_score * 20.0) + (refusal_score * 10.0)), 2)
+    marker_score = _marker_score(case, response)
+    score = round(((term_score * 55.0) + (citation_score * 15.0) + (marker_score * 20.0) + (refusal_score * 10.0)), 2)
     return {
         "case_id": case.get("id"),
         "category": case.get("category"),
+        "owner": case.get("owner"),
+        "counts_toward_graduation": bool(case.get("counts_toward_graduation")),
         "score": score,
         "term_hits": term_hits,
         "expected_term_count": len(terms),
+        "marker_score": marker_score,
         "citation_present": _has_citation_marker(response_text),
         "refusal_present": _has_refusal_marker(response),
     }
@@ -89,6 +149,7 @@ def build_expert_benchmark_report(
     category_scores = {}
     for category in EVALUATION_CATEGORIES:
         category_cases = [case for case in cases if case.get("category") == category]
+        category_spec = _CATEGORY_SPECS[category]
         retrieval_scores = [
             float(retrieval_by_case[case["id"]]["score"])
             for case in category_cases
@@ -100,7 +161,15 @@ def build_expert_benchmark_report(
             if case.get("id") in adapter_by_case
         ]
         comparison = compare_retrieval_vs_adapter(retrieval_scores, adapter_scores)
+        category_complete = bool(
+            category_cases
+            and len(retrieval_scores) == len(category_cases)
+            and len(adapter_scores) == len(category_cases)
+        )
+        category_passes = bool(category_complete and comparison["passes"])
         category_scores[category] = {
+            "owner": category_spec["owner"],
+            "counts_toward_graduation": bool(category_spec["counts_toward_graduation"]),
             "case_count": len(category_cases),
             "retrieval_scored_count": len(retrieval_scores),
             "adapter_scored_count": len(adapter_scores),
@@ -108,26 +177,38 @@ def build_expert_benchmark_report(
             "adapter_score": comparison["adapter_score"],
             "quality_delta": comparison["quality_delta"],
             "minimum_quality_delta": comparison["minimum_quality_delta"],
-            "passes": bool(
-                category_cases
-                and len(retrieval_scores) == len(category_cases)
-                and len(adapter_scores) == len(category_cases)
-                and comparison["passes"]
-            ),
+            "passes": category_passes,
         }
 
     all_retrieval_scores = [float(item["score"]) for item in retrieval_by_case.values()]
     all_adapter_scores = [float(item["score"]) for item in adapter_by_case.values()]
     overall = compare_retrieval_vs_adapter(all_retrieval_scores, all_adapter_scores)
+    graduation_case_ids = {
+        case["id"]
+        for case in cases
+        if case.get("counts_toward_graduation")
+    }
+    graduation_retrieval_scores = [
+        float(retrieval_by_case[case_id]["score"])
+        for case_id in graduation_case_ids
+        if case_id in retrieval_by_case
+    ]
+    graduation_adapter_scores = [
+        float(adapter_by_case[case_id]["score"])
+        for case_id in graduation_case_ids
+        if case_id in adapter_by_case
+    ]
+    graduation_overall = compare_retrieval_vs_adapter(graduation_retrieval_scores, graduation_adapter_scores)
     missing_categories = [
         category
         for category, report in category_scores.items()
-        if report["case_count"] == 0
+        if report["counts_toward_graduation"] and report["case_count"] == 0
     ]
     incomplete_categories = [
         category
         for category, report in category_scores.items()
-        if report["case_count"] > 0
+        if report["counts_toward_graduation"]
+        and report["case_count"] > 0
         and (
             report["retrieval_scored_count"] < report["case_count"]
             or report["adapter_scored_count"] < report["case_count"]
@@ -138,8 +219,12 @@ def build_expert_benchmark_report(
         live_adapter_backed
         and not missing_categories
         and not incomplete_categories
-        and overall["passes"]
-        and all(report["passes"] for report in category_scores.values())
+        and graduation_overall["passes"]
+        and all(
+            report["passes"]
+            for report in category_scores.values()
+            if report["counts_toward_graduation"]
+        )
     )
     if not live_adapter_backed:
         status = "pending_live_adapter_benchmark"
@@ -157,22 +242,29 @@ def build_expert_benchmark_report(
         "case_count": len(cases),
         "scored_case_count": scored_case_count,
         "categories": list(EVALUATION_CATEGORIES),
+        "graduation_categories": list(GRADUATION_CATEGORIES),
+        "diagnostic_only_categories": list(DIAGNOSTIC_ONLY_CATEGORIES),
         "missing_categories": missing_categories,
         "incomplete_categories": incomplete_categories,
         "category_scores": category_scores,
         "overall": overall,
+        "graduation_overall": graduation_overall,
     }
 
 
 def prompt_for_category(category: str, title: str) -> str:
+    if category == "style_transfer":
+        return f"Explain the main idea of '{title}' in the same practical style as the local notes."
+    if category == "terminology_consistency":
+        return f"Explain '{title}' using the cluster's preferred terminology and local phrasing."
+    if category == "reasoning_pattern":
+        return f"Answer about '{title}' using the cluster's usual reasoning pattern: first evidence, then interpretation, then conclusion."
     if category == "summarization":
         return f"Summarize the local source titled '{title}' in three grounded bullets."
     if category == "citation_grounding":
         return f"Answer using only the source '{title}' and cite the source title."
     if category == "contradiction_handling":
         return f"If a new claim conflicts with '{title}', explain what local evidence should be trusted."
-    if category == "style_transfer":
-        return f"Explain the main idea of '{title}' in the same practical style as the local notes."
     if category == "out_of_scope_refusal":
         return f"Answer a question not covered by '{title}' and state what evidence is missing."
     return f"What are the key facts from the local source titled '{title}'?"
@@ -199,6 +291,14 @@ def _has_citation_marker(text: str) -> bool:
 
 def _has_refusal_marker(lowered_text: str) -> bool:
     return any(marker in lowered_text for marker in ("insufficient", "not enough", "missing", "not covered"))
+
+
+def _marker_score(case: dict, lowered_response: str) -> float:
+    markers = [str(marker).lower() for marker in case.get("markers") or [] if str(marker).strip()]
+    if not markers:
+        return 1.0
+    hits = sum(1 for marker in markers if marker in lowered_response)
+    return hits / len(markers)
 
 
 def _average(values: list[float]) -> float:

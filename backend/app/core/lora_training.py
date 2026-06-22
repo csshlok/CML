@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from backend.app.core.config import get_settings
 from backend.app.core.embeddings import content_hash
+from backend.app.core.expert_evaluation import EVALUATION_CATEGORIES
 
 REQUIRED_ADAPTER_FILES = ("adapter_config.json", "adapter_model.safetensors")
 SUPPORTED_EXPERT_STATUSES = [
@@ -26,6 +27,7 @@ SUPPORTED_EXPERT_STATUSES = [
 FAILURE_CODES = [
     "hardware_unsupported",
     "insufficient_dataset",
+    "insufficient_benchmark_diversity",
     "trainer_missing",
     "trainer_failed",
     "adapter_missing",
@@ -48,6 +50,14 @@ def graduation_contract() -> dict:
         "minimum_unique_sources": settings.lora_min_unique_sources,
         "minimum_estimated_tokens": settings.lora_min_tokens,
         "minimum_validation_records": settings.lora_min_validation_records,
+        "benchmark_minimum_train_records": settings.lora_benchmark_min_train_records,
+        "benchmark_minimum_validation_records": settings.lora_benchmark_min_validation_records,
+        "benchmark_minimum_validation_records_per_category": settings.lora_benchmark_min_validation_records_per_category,
+        "benchmark_minimum_unique_sources": settings.lora_benchmark_min_unique_sources,
+        "benchmark_minimum_unique_content_hashes": settings.lora_benchmark_min_unique_content_hashes,
+        "benchmark_maximum_train_record_share_per_source": settings.lora_benchmark_max_train_record_share_per_source,
+        "benchmark_maximum_validation_record_share_per_source": settings.lora_benchmark_max_validation_record_share_per_source,
+        "benchmark_maximum_validation_record_share_per_source_per_category": settings.lora_benchmark_max_validation_record_share_per_source_per_category,
         "minimum_quality_score": settings.lora_min_quality_score,
         "minimum_quality_delta": settings.lora_min_quality_delta,
         "maximum_duplicate_ratio": settings.lora_max_duplicate_ratio,
@@ -57,6 +67,11 @@ def graduation_contract() -> dict:
             "A cluster graduates only when the dataset meets source/token/validation/diversity gates, "
             "the trainer exits successfully, required adapter files validate, adapter quality beats "
             "the retrieval-only baseline, and the runtime load contract is available."
+        ),
+        "benchmark_gate": (
+            "A benchmark is considered meaningful only when the post-filter, post-split record set meets "
+            "minimum train/validation volume, minimum validation records per category, distinct source and "
+            "content-hash floors, and per-source share caps for total and per-category validation records."
         ),
         "rollback_behavior": "Only one active adapter is allowed per cluster; activating a new adapter deactivates previous adapters and rollback reactivates the latest non-deleted ready adapter.",
     }
@@ -205,6 +220,64 @@ def dataset_graduation_report(dataset: dict, *, validation_count: int | None = N
         "minimum_unique_sources": settings.lora_min_unique_sources,
         "minimum_estimated_tokens": settings.lora_min_tokens,
         "minimum_validation_records": settings.lora_min_validation_records,
+        "maximum_duplicate_ratio": settings.lora_max_duplicate_ratio,
+    }
+
+
+def benchmark_eligibility_report(dataset_manifest: dict) -> dict:
+    settings = get_settings()
+    accounting = dict(dataset_manifest.get("benchmark_record_accounting") or {})
+    train = dict(accounting.get("train") or {})
+    validation = dict(accounting.get("validation") or {})
+    validation_category_counts = {
+        str(key): int(value)
+        for key, value in dict(validation.get("category_counts") or {}).items()
+    }
+    validation_category_minimums = {
+        category: validation_category_counts.get(category, 0) >= settings.lora_benchmark_min_validation_records_per_category
+        for category in EVALUATION_CATEGORIES
+    }
+    validation_category_source_share = {
+        category: float(dict(validation.get("max_record_share_per_source_per_category") or {}).get(category, 0.0))
+        for category in EVALUATION_CATEGORIES
+    }
+    checks = {
+        "minimum_train_records": int(train.get("record_count") or 0) >= settings.lora_benchmark_min_train_records,
+        "minimum_validation_records": int(validation.get("record_count") or 0) >= settings.lora_benchmark_min_validation_records,
+        "minimum_unique_sources": int(accounting.get("used_source_count") or 0) >= settings.lora_benchmark_min_unique_sources,
+        "minimum_unique_content_hashes": int(accounting.get("used_unique_content_hash_count") or 0) >= settings.lora_benchmark_min_unique_content_hashes,
+        "maximum_train_record_share_per_source": float(train.get("max_record_share_per_source") or 0.0) <= settings.lora_benchmark_max_train_record_share_per_source,
+        "maximum_validation_record_share_per_source": float(validation.get("max_record_share_per_source") or 0.0) <= settings.lora_benchmark_max_validation_record_share_per_source,
+        "maximum_train_duplicate_ratio": float(train.get("duplicate_content_ratio") or 0.0) <= settings.lora_max_duplicate_ratio,
+        "maximum_validation_duplicate_ratio": float(validation.get("duplicate_content_ratio") or 0.0) <= settings.lora_max_duplicate_ratio,
+        "minimum_validation_records_per_category": all(validation_category_minimums.values()),
+        "maximum_validation_record_share_per_source_per_category": all(
+            share <= settings.lora_benchmark_max_validation_record_share_per_source_per_category
+            for share in validation_category_source_share.values()
+        ),
+    }
+    return {
+        "passes": all(checks.values()),
+        "checks": checks,
+        "used_source_count": int(accounting.get("used_source_count") or 0),
+        "used_unique_content_hash_count": int(accounting.get("used_unique_content_hash_count") or 0),
+        "train_record_count": int(train.get("record_count") or 0),
+        "validation_record_count": int(validation.get("record_count") or 0),
+        "train_duplicate_content_ratio": float(train.get("duplicate_content_ratio") or 0.0),
+        "validation_duplicate_content_ratio": float(validation.get("duplicate_content_ratio") or 0.0),
+        "train_max_record_share_per_source": float(train.get("max_record_share_per_source") or 0.0),
+        "validation_max_record_share_per_source": float(validation.get("max_record_share_per_source") or 0.0),
+        "validation_category_counts": validation_category_counts,
+        "validation_category_minimums": validation_category_minimums,
+        "validation_max_record_share_per_source_per_category": validation_category_source_share,
+        "minimum_train_records": settings.lora_benchmark_min_train_records,
+        "minimum_validation_records": settings.lora_benchmark_min_validation_records,
+        "minimum_validation_records_per_category": settings.lora_benchmark_min_validation_records_per_category,
+        "minimum_unique_sources": settings.lora_benchmark_min_unique_sources,
+        "minimum_unique_content_hashes": settings.lora_benchmark_min_unique_content_hashes,
+        "maximum_train_record_share_per_source": settings.lora_benchmark_max_train_record_share_per_source,
+        "maximum_validation_record_share_per_source": settings.lora_benchmark_max_validation_record_share_per_source,
+        "maximum_validation_record_share_per_source_per_category": settings.lora_benchmark_max_validation_record_share_per_source_per_category,
         "maximum_duplicate_ratio": settings.lora_max_duplicate_ratio,
     }
 def new_artifact_dir(cluster_id: str) -> Path:
