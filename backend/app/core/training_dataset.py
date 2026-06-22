@@ -270,6 +270,20 @@ def _split_record_accounting(rows: list[dict]) -> dict:
     category_counts = Counter(str(row.get("category") or "") for row in rows if str(row.get("category") or "").strip())
     content_hashes = [str(row.get("content_hash") or "") for row in rows if str(row.get("content_hash") or "").strip()]
     unique_hashes = set(content_hashes)
+    # Benchmark exports intentionally fan one source out into multiple category-specific
+    # records. Treat duplicate content at the source/hash level rather than the raw record
+    # level so category fan-out does not look like corpus duplication.
+    source_to_hash = {
+        str(row.get("source_id") or ""): str(row.get("content_hash") or "")
+        for row in rows
+        if str(row.get("source_id") or "").strip() and str(row.get("content_hash") or "").strip()
+    }
+    unique_source_count = len(source_to_hash)
+    duplicate_source_content_ratio = (
+        max(0, unique_source_count - len(set(source_to_hash.values()))) / unique_source_count
+        if unique_source_count
+        else 0.0
+    )
     per_category_source_counts: dict[str, Counter] = {}
     max_share_per_source_per_category: dict[str, float] = {}
     for category in category_counts:
@@ -289,7 +303,7 @@ def _split_record_accounting(rows: list[dict]) -> dict:
         "record_count": total,
         "unique_source_count": len(source_counts),
         "unique_content_hash_count": len(unique_hashes),
-        "duplicate_content_ratio": (max(0, total - len(unique_hashes)) / total) if total else 0.0,
+        "duplicate_content_ratio": duplicate_source_content_ratio,
         "category_counts": dict(category_counts),
         "source_record_counts": dict(source_counts),
         "max_record_share_per_source": (max((count / total) for count in source_counts.values()) if total and source_counts else 0.0),

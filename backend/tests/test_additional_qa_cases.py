@@ -3990,6 +3990,8 @@ class AdditionalQACases(unittest.TestCase):
         self.assertTrue(any("missing evidence" in answer for answer in answers))
         self.assertTrue(any("preferred local terms" in answer for answer in answers))
         self.assertTrue(any("First, identify the local evidence" in answer for answer in answers))
+        self.assertEqual(manifest["benchmark_record_accounting"]["train"]["duplicate_content_ratio"], 0.0)
+        self.assertEqual(manifest["benchmark_record_accounting"]["validation"]["duplicate_content_ratio"], 0.0)
 
     def test_lora_benchmark_eligibility_report_blocks_small_or_concentrated_datasets(self) -> None:
         from backend.app.core.config import get_settings
@@ -4251,6 +4253,8 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(set(report["graduation_categories"]), set(GRADUATION_CATEGORIES))
         self.assertEqual(set(report["diagnostic_only_categories"]), set(DIAGNOSTIC_ONLY_CATEGORIES))
         self.assertTrue(report["graduation_overall"]["passes"])
+        self.assertTrue(report["gate_report"]["passes"])
+        self.assertTrue(report["gate_report"]["adapter_owned"]["passes"])
         self.assertFalse(report["category_scores"]["factual_recall"]["counts_toward_graduation"])
         self.assertEqual(report["category_scores"]["style_transfer"]["owner"], "adapter")
         self.assertEqual(pending_report["status"], "pending_live_adapter_benchmark")
@@ -4258,6 +4262,66 @@ class AdditionalQACases(unittest.TestCase):
         self.assertFalse(pending_report["passes"])
         self.assertTrue(passing["passes"])
         self.assertFalse(failing["passes"])
+
+    def test_adapter_training_evaluation_plan_uses_exported_validation_records(self) -> None:
+        from backend.app.core.expert_evaluation import build_adapter_training_evaluation_plan
+
+        adapter_dir = Path(self.tmp.name) / "adapter"
+        dataset_dir = adapter_dir / "dataset"
+        dataset_dir.mkdir(parents=True)
+        (dataset_dir / "dataset-manifest.json").write_text(
+            json.dumps({"dataset_hash": "adapter-hash"}),
+            encoding="utf-8",
+        )
+        (dataset_dir / "validation.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": "Explain 'Doc One' using the cluster's preferred terminology and local phrasing.",
+                                },
+                                {
+                                    "role": "assistant",
+                                    "content": "According to source Doc One, use the preferred local terms and terminology: adapter, retrieval, benchmark.",
+                                },
+                            ],
+                            "source_id": "source-1",
+                            "category": "terminology_consistency",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": "Summarize the local source titled 'Doc Two' in three grounded bullets.",
+                                },
+                                {
+                                    "role": "assistant",
+                                    "content": "According to source Doc Two:\n- grounded practical note\n- preferred local terms stay intact\n- first, then, therefore reasoning stays explicit",
+                                },
+                            ],
+                            "source_id": "source-2",
+                            "category": "summarization",
+                        }
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        plan = build_adapter_training_evaluation_plan(adapter_dir, cluster_id="cluster-smoke")
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan["dataset_hash"], "adapter-hash")
+        self.assertEqual(plan["case_count"], 2)
+        self.assertEqual(plan["cases"][0]["source_title"], "Doc One")
+        self.assertEqual(plan["cases"][1]["source_title"], "Doc Two")
+        self.assertEqual(plan["cases"][0]["category"], "terminology_consistency")
 
     def test_lora_mvp_policy_and_smoke_scripts_are_present(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -4285,6 +4349,7 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("build_expert_benchmark_report", expert_text)
         self.assertIn("run_adapter_runtime_batch", adapter_benchmark_text)
         self.assertIn("live_adapter_benchmark", adapter_benchmark_text)
+        self.assertIn("build_adapter_training_evaluation_plan", adapter_benchmark_text)
         self.assertIn("dataset_matches_adapter_training", adapter_benchmark_text)
         self.assertIn("adapter_training_dataset", adapter_benchmark_text)
         self.assertIn("BaseModel15B", size_matrix_text)
@@ -4299,6 +4364,98 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("runtime_adapter_load_plan", runtime_text)
         self.assertNotIn("<<'PY'", expert_text)
         self.assertNotIn("<<'PY'", runtime_text)
+
+    def test_run_live_expert_benchmark_scores_real_runtime_outputs(self) -> None:
+        from backend.app.core.expert_evaluation import run_live_expert_benchmark
+
+        dataset = {
+            "cluster_id": "cluster-1",
+            "dataset_hash": "hash",
+            "documents": [
+                {
+                    "source_id": f"source-{index}",
+                    "title": f"Evaluation source {index}",
+                    "summary": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
+                    "text": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
+                }
+                for index in range(8)
+            ],
+        }
+
+        with patch(
+            "backend.app.core.expert_runtime.run_adapter_runtime_batch",
+            return_value={
+                "ok": True,
+                "responses": [
+                    {
+                        "response_text": (
+                            f"According to source Evaluation source {index}, adapter retrieval grounded citation evidence strict benchmark is present.\n"
+                            if index == 0
+                            else f"According to source Evaluation source {index}, adapter retrieval grounded citation evidence strict benchmark is present."
+                            if index == 1
+                            else "Trust the evidence from source Evaluation source 2 and mark conflicting claims as unverified."
+                            if index == 2
+                            else "According to source Evaluation source 3, adapter retrieval grounded citation evidence strict benchmark is present.\n- grounded practical note\n- preferred local terms stay intact\n- first, then, therefore reasoning stays explicit"
+                            if index == 3
+                            else "According to source Evaluation source 4, the practical note is: adapter retrieval grounded citation evidence strict benchmark is present and actionable."
+                            if index == 4
+                            else "According to source Evaluation source 5, use the preferred local terms and cluster terminology: adapter, retrieval, benchmark."
+                            if index == 5
+                            else "First, identify the local evidence from source Evaluation source 6 that shows adapter retrieval grounded citation evidence strict benchmark. Then interpret it. Therefore, keep the reasoning pattern explicit."
+                            if index == 6
+                            else "Source Evaluation source 7 is not covered with sufficient evidence, and key adapter retrieval grounded citation evidence strict benchmark details are missing."
+                        )
+                    }
+                    for index in range(8)
+                ],
+            },
+        ) as runtime_batch:
+            report = run_live_expert_benchmark(
+                dataset,
+                adapter_path="adapter-path",
+                base_model="base-model",
+                max_new_tokens=64,
+            )
+
+        runtime_batch.assert_called_once()
+        self.assertTrue(report["runtime"]["ok"])
+        self.assertEqual(report["benchmark_report"]["status"], "passed")
+        self.assertTrue(report["benchmark_report"]["passes"])
+        self.assertEqual(len(report["adapter_case_scores"]), 8)
+        self.assertEqual(len(report["retrieval_case_scores"]), 8)
+        self.assertGreater(report["benchmark_report"]["graduation_overall"]["adapter_score"], 0)
+
+    def test_run_live_expert_benchmark_reports_runtime_failure(self) -> None:
+        from backend.app.core.expert_evaluation import run_live_expert_benchmark
+
+        dataset = {
+            "cluster_id": "cluster-1",
+            "dataset_hash": "hash",
+            "documents": [
+                {
+                    "source_id": "source-1",
+                    "title": "Evaluation source",
+                    "summary": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
+                    "text": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
+                }
+            ],
+        }
+
+        with patch(
+            "backend.app.core.expert_runtime.run_adapter_runtime_batch",
+            return_value={"ok": False, "error": "runtime boom", "responses": []},
+        ):
+            report = run_live_expert_benchmark(
+                dataset,
+                adapter_path="adapter-path",
+                base_model="base-model",
+            )
+
+        self.assertFalse(report["runtime"]["ok"])
+        self.assertEqual(report["benchmark_report"]["status"], "runtime_failed")
+        self.assertFalse(report["benchmark_report"]["passes"])
+        self.assertEqual(report["adapter_case_scores"], [])
+        self.assertEqual(report["retrieval_case_scores"], [])
 
     def test_lora_smoke_proof_blocks_without_benchmark_or_hardware_proof(self) -> None:
         from backend.app.core.lora_proof import build_lora_smoke_proof

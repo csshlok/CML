@@ -1,10 +1,41 @@
 ﻿# Overall Context
 
-Last updated: 2026-06-21
+Last updated: 2026-06-22
 
 ## Fallback Context Rule
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
+
+## 2026-06-22 Clean 1.5B Live Rescore / Activation-Gate Correction Snapshot
+
+Completed:
+
+- Removed the old proxy quality path from expert activation. `evaluate_adapter_quality(...)` had been scoring based on dataset size plus adapter existence, not on live adapter outputs, so old activation-time adapter scores are now treated as unverified historical evidence.
+- Moved activation-time quality judgment onto the live benchmark path. The backend now runs real adapter inference and scores responses through the same benchmark machinery used by the standalone benchmark scripts.
+- Fixed the benchmark wrapper and dataset-alignment path so a clean rerun can evaluate against the adapter's own exported validation set instead of rebuilding a mismatched docs-derived benchmark dataset.
+- Added ownership-aware gating instead of a flat "beat retrieval everywhere" rule: adapter-owned categories must show positive margin, shared categories cannot regress past a capped limit, and retrieval-owned categories cannot regress catastrophically.
+
+Verified 1.5B result:
+
+- The first clean trustworthy larger-base result is `.tmp/rescore-1p5b-live-clean.json`.
+- It is now dataset-aligned: `dataset_matches_adapter_training=true`, evaluation dataset hash `6717db0345a9a4e26067b305cb70782492e9ac27b8cf03780a894fc804f7d60d`.
+- It still fails overall: retrieval `85.89`, adapter `79.74`, delta `-6.15`.
+- It also fails on the graduation subset: retrieval `80.75`, adapter `76.45`, delta `-4.3`.
+- Per-category shape is now trustworthy and is the current best LoRA finding:
+  - wins: `terminology_consistency` `+6.87`, `contradiction_handling` `+5.67`
+  - near-flat: `style_transfer` `-0.3`
+  - losses: `reasoning_pattern` `-9.58`, `summarization` `-11.69`, `out_of_scope_refusal` `-6.83`
+  - large retrieval-owned loss: `citation_grounding` `-22.31`
+- Ownership-aware gate still fails:
+  - adapter-owned fails on `style_transfer` and `reasoning_pattern`
+  - shared fails on `summarization` and `out_of_scope_refusal`
+  - retrieval-owned fails on `citation_grounding`
+
+Interpretation:
+
+- This is the first trustworthy LoRA quality result in the project.
+- It confirms a narrower product truth: the current `1.5B` LoRA path shows signal for local terminology consistency and some contradiction framing, but it does not currently clear the product bar for an expert mode that must coexist cleanly with retrieval.
+- The next empirical step is not more `1.5B` tuning. It is to preserve this result as the trustworthy baseline, then run the same corrected process for `2B` and `3B`, while using the new ownership-aware gate instead of the retired proxy gate.
 
 ## 2026-06-21 Package Rebuild / Installed Smoke / Quality-Aligned LoRA Snapshot
 

@@ -111,7 +111,7 @@ def training_config(base_model: str, dataset_hash: str) -> dict:
         "template": "chatml",
         "cutoff_len": int(settings.lora_training_cutoff_len),
         "learning_rate": 0.0002,
-        "num_train_epochs": 1,
+        "num_train_epochs": float(settings.lora_training_num_train_epochs),
     }
     payload["training_config_hash"] = content_hash(json.dumps(payload, sort_keys=True))
     return payload

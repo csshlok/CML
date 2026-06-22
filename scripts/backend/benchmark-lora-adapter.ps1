@@ -17,9 +17,12 @@ if (-not (Test-Path $python)) {
   $python = "python"
 }
 
-$adapterFullPath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $AdapterPath))
-$baseModelFullPath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $BaseModel))
-$reportFullPath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $ReportPath))
+$adapterCandidate = if ([System.IO.Path]::IsPathRooted($AdapterPath)) { $AdapterPath } else { Join-Path $repoRoot $AdapterPath }
+$baseModelCandidate = if ([System.IO.Path]::IsPathRooted($BaseModel)) { $BaseModel } else { Join-Path $repoRoot $BaseModel }
+$reportCandidate = if ([System.IO.Path]::IsPathRooted($ReportPath)) { $ReportPath } else { Join-Path $repoRoot $ReportPath }
+$adapterFullPath = [System.IO.Path]::GetFullPath($adapterCandidate)
+$baseModelFullPath = [System.IO.Path]::GetFullPath($baseModelCandidate)
+$reportFullPath = [System.IO.Path]::GetFullPath($reportCandidate)
 $reportDir = Split-Path -Parent $reportFullPath
 if ($reportDir) {
   New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
@@ -53,9 +56,11 @@ from pathlib import Path
 
 from backend.app.core.embeddings import content_hash
 from backend.app.core.expert_evaluation import (
+    build_adapter_training_evaluation_plan,
     build_expert_benchmark_report,
     build_expert_evaluation_plan,
     score_expert_response,
+    retrieval_case_scores,
 )
 from backend.app.core.expert_runtime import run_adapter_runtime_batch, runtime_adapter_load_plan
 from backend.app.core.hardware import hardware_status
@@ -180,8 +185,13 @@ dataset = {
 }
 adapter_dataset = adapter_training_dataset(adapter_path)
 adapter_dataset_hash = adapter_dataset.get("dataset_hash") or ""
-dataset_matches_adapter = bool(adapter_dataset_hash and adapter_dataset_hash == dataset["dataset_hash"])
 plan = build_expert_evaluation_plan(dataset, max_cases=max(1, case_limit))
+adapter_plan = build_adapter_training_evaluation_plan(adapter_path, cluster_id="cluster-smoke")
+if adapter_plan is not None:
+    plan = adapter_plan
+if plan.get("dataset_hash"):
+    dataset["dataset_hash"] = str(plan["dataset_hash"])
+dataset_matches_adapter = bool(adapter_dataset_hash and adapter_dataset_hash == dataset["dataset_hash"])
 load_plan = runtime_adapter_load_plan(adapter_path=adapter_path, base_model=base_model)
 if not load_plan.get("available"):
     report_path.write_text(
@@ -225,17 +235,10 @@ adapter_case_scores = [
     score_expert_response(case, (responses[index] or {}).get("response_text") or "")
     for index, case in enumerate(plan["cases"])
 ]
-retrieval_case_scores = [
-    score_expert_response(
-        case,
-        "According to source " + str(case["source_title"]) + ", "
-        + " ".join(str(term) for term in case.get("expected_terms") or []),
-    )
-    for case in plan["cases"]
-]
+baseline_case_scores = retrieval_case_scores(plan["cases"])
 benchmark = build_expert_benchmark_report(
     plan,
-    retrieval_case_scores=retrieval_case_scores,
+    retrieval_case_scores=baseline_case_scores,
     adapter_case_scores=adapter_case_scores,
     mode="live_adapter_benchmark",
     live_adapter_backed=True,
@@ -264,7 +267,7 @@ report = {
     "adapter_load_plan": load_plan,
     "runtime": runtime,
     "adapter_case_scores": adapter_case_scores,
-    "retrieval_case_scores": retrieval_case_scores,
+    "retrieval_case_scores": baseline_case_scores,
     "benchmark_report": benchmark,
     "hardware_status": hardware_status(),
 }

@@ -21,9 +21,8 @@ from backend.app.core.vector_maintenance import vector_repair_plan
 from backend.app.core.context_memory import rebuild_chat_session_memory, rebuild_source_memory
 from backend.app.core.analysis_packets import build_analysis_packets
 from backend.app.core.training_dataset import build_cluster_dataset, write_cluster_training_dataset
-from backend.app.core.training_evaluation import evaluate_adapter_quality, evaluate_cluster_dataset
 from backend.app.core.unlock_state import should_pause_vault_job
-from backend.app.core.expert_evaluation import build_expert_benchmark_report, build_expert_evaluation_plan
+from backend.app.core.expert_evaluation import build_adapter_training_evaluation_plan, run_live_expert_benchmark
 from backend.app.core.lora_training import (
     LoraTrainerMissingError,
     adapter_validation_report,
@@ -942,7 +941,6 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             )
             raise RuntimeError("Cluster does not meet LoRA graduation dataset gates.")
 
-        quality_score = evaluate_cluster_dataset(dataset)
         artifact_dir = new_artifact_dir(cluster_id)
         dataset_manifest = write_cluster_training_dataset(dataset, artifact_dir / "dataset")
         dataset_gate = dataset_graduation_report(dataset, validation_count=int(dataset_manifest["validation_count"]))
@@ -1048,32 +1046,46 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             )
             raise RuntimeError("Cluster sources changed before adapter activation.")
 
-        metrics = evaluate_adapter_quality(
-            dataset_score=quality_score,
-            adapter_dir_exists=True,
-            adapter_valid=True,
-            validation_count=int(dataset_manifest["validation_count"]),
+        evaluation_plan = build_adapter_training_evaluation_plan(
+            train_result["adapter_path"],
+            cluster_id=cluster_id,
         )
-        evaluation_plan = build_expert_evaluation_plan(dataset)
+        benchmark_run = run_live_expert_benchmark(
+            dataset,
+            adapter_path=train_result["adapter_path"],
+            base_model=config["base_model"],
+            max_new_tokens=get_settings().lora_runtime_max_new_tokens,
+            evaluation_plan=evaluation_plan,
+        )
+        benchmark_report = benchmark_run["benchmark_report"]
+        graduation_overall = dict(benchmark_report.get("graduation_overall") or {})
+        overall_scores = dict(benchmark_report.get("overall") or {})
+        metrics = {
+            "retrieval_only_score": overall_scores.get("retrieval_only_score"),
+            "adapter_score": overall_scores.get("adapter_score"),
+            "quality_delta": overall_scores.get("quality_delta"),
+            "minimum_quality_delta": overall_scores.get("minimum_quality_delta"),
+            "validation_count": int(dataset_manifest["validation_count"]),
+            "adapter_dir_exists": True,
+            "adapter_valid": True,
+        }
         metrics["dataset_gate"] = dataset_gate
         metrics["benchmark_gate"] = benchmark_gate
         metrics["adapter_validation"] = adapter_validation
         metrics["runtime_load"] = runtime_load
         metrics["evaluation_plan"] = {
-            "case_count": evaluation_plan["case_count"],
-            "categories": evaluation_plan["categories"],
-            "dataset_hash": evaluation_plan.get("dataset_hash"),
+            "case_count": benchmark_run["evaluation_plan"]["case_count"],
+            "categories": benchmark_run["evaluation_plan"]["categories"],
+            "dataset_hash": benchmark_run["evaluation_plan"].get("dataset_hash"),
         }
-        metrics["benchmark_report"] = build_expert_benchmark_report(
-            evaluation_plan,
-            retrieval_case_scores=[],
-            adapter_case_scores=[],
-            mode="pending_live_adapter_benchmark",
-            live_adapter_backed=False,
-        )
+        metrics["live_runtime_batch"] = benchmark_run["runtime"]
+        metrics["retrieval_case_scores"] = benchmark_run["retrieval_case_scores"]
+        metrics["adapter_case_scores"] = benchmark_run["adapter_case_scores"]
+        metrics["benchmark_report"] = benchmark_report
         min_quality = get_settings().lora_min_quality_score
-        min_delta = get_settings().lora_min_quality_delta
-        if float(metrics["adapter_score"]) < min_quality or float(metrics["quality_delta"]) < min_delta:
+        benchmark_failed = not bool(benchmark_report.get("passes"))
+        graduated_score = float(graduation_overall.get("adapter_score") or 0.0)
+        if benchmark_failed or graduated_score < min_quality:
             _mark_expert_training_failed(
                 conn,
                 cluster_id=cluster_id,
@@ -1127,7 +1139,7 @@ def _run_train_cluster_adapter(payload: dict) -> None:
                 train_result["adapter_path"],
                 config["base_model"],
                 hardware["hardware_tier"],
-                metrics["adapter_score"],
+                graduated_score,
                 dataset["dataset_hash"],
                 config["training_config_hash"],
                 json.dumps(metrics, separators=(",", ":")),
@@ -1149,7 +1161,8 @@ def _run_train_cluster_adapter(payload: dict) -> None:
                 """,
                 (
                     "completed",
-                    f"LoRA adapter trained and activated. Adapter score={metrics['adapter_score']}",
+                    "LoRA adapter trained and activated. "
+                    f"Graduation adapter score={graduated_score}, gate={benchmark_report.get('gate_report')}",
                     hardware["hardware_tier"],
                     now,
                     expert_job_id,

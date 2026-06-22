@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     lora_trainer_command: str | None = None
     lora_min_quality_score: float = 60.0
     lora_min_quality_delta: float = 1.0
+    lora_adapter_owned_min_quality_delta: float = 1.0
+    lora_shared_max_quality_regression: float = 5.0
+    lora_retrieval_owned_max_quality_regression: float = 15.0
     lora_min_sources: int = 8
     lora_min_unique_sources: int = 8
     lora_min_tokens: int = 6000
@@ -63,6 +66,7 @@ class Settings(BaseSettings):
     lora_training_device: str = "auto"
     lora_training_dtype: str = "auto"
     lora_training_cutoff_len: int = 4096
+    lora_training_num_train_epochs: float = 1.0
     lora_training_max_steps: int | None = None
     lora_training_batch_size: int = 1
     lora_training_gradient_accumulation_steps: int = 1

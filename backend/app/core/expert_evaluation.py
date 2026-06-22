@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
+
 from backend.app.core.config import get_settings
 
 
@@ -60,6 +64,15 @@ GRADUATION_CATEGORIES = tuple(
 )
 DIAGNOSTIC_ONLY_CATEGORIES = tuple(
     category for category, spec in _CATEGORY_SPECS.items() if not spec["counts_toward_graduation"]
+)
+ADAPTER_OWNED_CATEGORIES = tuple(
+    category for category, spec in _CATEGORY_SPECS.items() if spec["owner"] == "adapter"
+)
+SHARED_CATEGORIES = tuple(
+    category for category, spec in _CATEGORY_SPECS.items() if spec["owner"] == "shared"
+)
+RETRIEVAL_OWNED_CATEGORIES = tuple(
+    category for category, spec in _CATEGORY_SPECS.items() if spec["owner"] == "retrieval"
 )
 
 
@@ -135,6 +148,149 @@ def compare_retrieval_vs_adapter(retrieval_scores: list[float], adapter_scores: 
     }
 
 
+def retrieval_case_scores(cases: list[dict]) -> list[dict]:
+    return [
+        score_expert_response(
+            case,
+            "According to source "
+            + str(case.get("source_title") or "")
+            + ", "
+            + " ".join(str(term) for term in case.get("expected_terms") or []),
+        )
+        for case in cases
+    ]
+
+
+def build_adapter_training_evaluation_plan(
+    adapter_path: str | Path,
+    *,
+    cluster_id: str = "cluster",
+) -> dict | None:
+    adapter_dir = Path(adapter_path)
+    validation_path = adapter_dir / "dataset" / "validation.jsonl"
+    if not validation_path.exists():
+        return None
+    rows = []
+    for line in validation_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    if not rows:
+        return None
+    cases = []
+    for index, row in enumerate(rows):
+        messages = list(row.get("messages") or [])
+        prompt = str(((messages[0] if messages else {}) or {}).get("content") or "")
+        answer = str(((messages[1] if len(messages) > 1 else {}) or {}).get("content") or "")
+        category = str(row.get("category") or "")
+        if category not in _CATEGORY_SPECS:
+            continue
+        title = _title_from_prompt(prompt) or "Untitled"
+        cases.append(
+            {
+                "id": f"{cluster_id}-{index + 1}",
+                "category": category,
+                "owner": _CATEGORY_SPECS[category]["owner"],
+                "counts_toward_graduation": _CATEGORY_SPECS[category]["counts_toward_graduation"],
+                "source_id": row.get("source_id"),
+                "source_title": title,
+                "prompt": prompt,
+                "expected_terms": _expected_terms(title, answer),
+                "markers": list(_CATEGORY_SPECS[category]["markers"]),
+                "requires_citation": _CATEGORY_SPECS[category]["requires_citation"],
+            }
+        )
+    return {
+        "cluster_id": cluster_id,
+        "dataset_hash": _adapter_dataset_hash(adapter_dir),
+        "case_count": len(cases),
+        "categories": list(EVALUATION_CATEGORIES),
+        "graduation_categories": list(GRADUATION_CATEGORIES),
+        "diagnostic_only_categories": list(DIAGNOSTIC_ONLY_CATEGORIES),
+        "cases": cases,
+    }
+
+
+def run_live_expert_benchmark(
+    dataset: dict,
+    *,
+    adapter_path: str,
+    base_model: str,
+    max_new_tokens: int | None = None,
+    mode: str = "live_adapter_benchmark",
+    evaluation_plan: dict | None = None,
+) -> dict:
+    from backend.app.core.expert_runtime import run_adapter_runtime_batch
+
+    resolved_plan = evaluation_plan
+    if resolved_plan is None:
+        case_limit = max(len(EVALUATION_CATEGORIES), len(list(dataset.get("documents") or [])))
+        resolved_plan = build_expert_evaluation_plan(dataset, max_cases=case_limit)
+    benchmark_prompts = [case["prompt"] for case in resolved_plan["cases"]]
+    runtime = run_adapter_runtime_batch(
+        adapter_path=adapter_path,
+        base_model=base_model,
+        prompts=benchmark_prompts,
+        max_new_tokens=max_new_tokens,
+    )
+    if not runtime.get("ok"):
+        return {
+            "evaluation_plan": resolved_plan,
+            "runtime": runtime,
+            "retrieval_case_scores": [],
+            "adapter_case_scores": [],
+            "benchmark_report": {
+                "cluster_id": resolved_plan.get("cluster_id"),
+                "dataset_hash": resolved_plan.get("dataset_hash"),
+                "mode": mode,
+                "live_adapter_backed": True,
+                "status": "runtime_failed",
+                "passes": False,
+                "case_count": resolved_plan.get("case_count", 0),
+                "scored_case_count": 0,
+                "categories": list(EVALUATION_CATEGORIES),
+                "graduation_categories": list(GRADUATION_CATEGORIES),
+                "diagnostic_only_categories": list(DIAGNOSTIC_ONLY_CATEGORIES),
+                "adapter_owned_categories": list(ADAPTER_OWNED_CATEGORIES),
+                "shared_categories": list(SHARED_CATEGORIES),
+                "retrieval_owned_categories": list(RETRIEVAL_OWNED_CATEGORIES),
+                "missing_categories": list(GRADUATION_CATEGORIES),
+                "incomplete_categories": [],
+                "category_scores": {},
+                "overall": compare_retrieval_vs_adapter([], []),
+                "graduation_overall": compare_retrieval_vs_adapter([], []),
+                "gate_report": {},
+            },
+        }
+
+    responses = runtime.get("responses") or []
+    adapter_case_scores = [
+        score_expert_response(case, (responses[index] or {}).get("response_text") or "")
+        for index, case in enumerate(resolved_plan["cases"])
+    ]
+    baseline_case_scores = retrieval_case_scores(resolved_plan["cases"])
+    benchmark_report = build_expert_benchmark_report(
+        resolved_plan,
+        retrieval_case_scores=baseline_case_scores,
+        adapter_case_scores=adapter_case_scores,
+        mode=mode,
+        live_adapter_backed=True,
+    )
+    return {
+        "evaluation_plan": evaluation_plan,
+        "runtime": runtime,
+        "retrieval_case_scores": baseline_case_scores,
+        "adapter_case_scores": adapter_case_scores,
+        "benchmark_report": benchmark_report,
+    }
+
+
 def build_expert_benchmark_report(
     evaluation_plan: dict,
     *,
@@ -199,6 +355,7 @@ def build_expert_benchmark_report(
         if case_id in adapter_by_case
     ]
     graduation_overall = compare_retrieval_vs_adapter(graduation_retrieval_scores, graduation_adapter_scores)
+    gate_report = _graduation_gate_report(category_scores)
     missing_categories = [
         category
         for category, report in category_scores.items()
@@ -219,12 +376,7 @@ def build_expert_benchmark_report(
         live_adapter_backed
         and not missing_categories
         and not incomplete_categories
-        and graduation_overall["passes"]
-        and all(
-            report["passes"]
-            for report in category_scores.values()
-            if report["counts_toward_graduation"]
-        )
+        and bool(gate_report.get("passes"))
     )
     if not live_adapter_backed:
         status = "pending_live_adapter_benchmark"
@@ -244,11 +396,15 @@ def build_expert_benchmark_report(
         "categories": list(EVALUATION_CATEGORIES),
         "graduation_categories": list(GRADUATION_CATEGORIES),
         "diagnostic_only_categories": list(DIAGNOSTIC_ONLY_CATEGORIES),
+        "adapter_owned_categories": list(ADAPTER_OWNED_CATEGORIES),
+        "shared_categories": list(SHARED_CATEGORIES),
+        "retrieval_owned_categories": list(RETRIEVAL_OWNED_CATEGORIES),
         "missing_categories": missing_categories,
         "incomplete_categories": incomplete_categories,
         "category_scores": category_scores,
         "overall": overall,
         "graduation_overall": graduation_overall,
+        "gate_report": gate_report,
     }
 
 
@@ -282,6 +438,32 @@ def _expected_terms(title: str, text: str) -> list[str]:
         if len(words) >= 5:
             break
     return words
+
+
+def _adapter_dataset_hash(adapter_dir: Path) -> str:
+    for path in (
+        adapter_dir / "dataset" / "dataset-manifest.json",
+        adapter_dir / "training-config.json",
+    ):
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            dataset_hash = str(payload.get("dataset_hash") or "")
+            if dataset_hash:
+                return dataset_hash
+    return ""
+
+
+def _title_from_prompt(prompt: str) -> str:
+    for pattern in (r"'([^']+)'", r'"([^"]+)"'):
+        match = re.search(pattern, prompt)
+        if match:
+            return match.group(1).strip()
+    return ""
 
 
 def _has_citation_marker(text: str) -> bool:
@@ -321,3 +503,54 @@ def _scores_by_case_id(scores: list[dict]) -> dict[str, dict]:
             continue
         normalized[case_id] = {**item, "case_id": case_id, "score": score}
     return normalized
+
+
+def _graduation_gate_report(category_scores: dict[str, dict]) -> dict:
+    settings = get_settings()
+
+    def _group_report(categories: tuple[str, ...], *, min_delta: float | None = None, max_regression: float | None = None) -> dict:
+        failing = []
+        for category in categories:
+            row = dict(category_scores.get(category) or {})
+            if not row:
+                failing.append(category)
+                continue
+            delta = float(row.get("quality_delta") or 0.0)
+            if min_delta is not None and delta < min_delta:
+                failing.append(category)
+                continue
+            if max_regression is not None and delta < (-1.0 * max_regression):
+                failing.append(category)
+        return {
+            "categories": list(categories),
+            "passes": not failing,
+            "failing_categories": failing,
+        }
+
+    adapter_owned = _group_report(
+        ADAPTER_OWNED_CATEGORIES,
+        min_delta=float(settings.lora_adapter_owned_min_quality_delta),
+    )
+    shared = _group_report(
+        SHARED_CATEGORIES,
+        max_regression=float(settings.lora_shared_max_quality_regression),
+    )
+    retrieval_owned = _group_report(
+        RETRIEVAL_OWNED_CATEGORIES,
+        max_regression=float(settings.lora_retrieval_owned_max_quality_regression),
+    )
+    return {
+        "passes": bool(adapter_owned["passes"] and shared["passes"] and retrieval_owned["passes"]),
+        "adapter_owned": {
+            **adapter_owned,
+            "minimum_quality_delta": float(settings.lora_adapter_owned_min_quality_delta),
+        },
+        "shared": {
+            **shared,
+            "maximum_quality_regression": float(settings.lora_shared_max_quality_regression),
+        },
+        "retrieval_owned": {
+            **retrieval_owned,
+            "maximum_quality_regression": float(settings.lora_retrieval_owned_max_quality_regression),
+        },
+    }
