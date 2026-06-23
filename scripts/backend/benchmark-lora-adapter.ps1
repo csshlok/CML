@@ -7,7 +7,7 @@ param(
   [string]$ReportPath = ".tmp/lora-adapter-quality-benchmark.json",
   [int]$MaxRealSources = 12,
   [int]$BenchmarkCaseLimit = 8,
-  [int]$BenchmarkMaxNewTokens = 16
+  [int]$BenchmarkMaxNewTokens = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,12 +57,11 @@ from pathlib import Path
 from backend.app.core.embeddings import content_hash
 from backend.app.core.expert_evaluation import (
     build_adapter_training_evaluation_plan,
-    build_expert_benchmark_report,
     build_expert_evaluation_plan,
-    score_expert_response,
-    retrieval_case_scores,
+    default_expert_benchmark_token_budgets,
+    run_live_expert_benchmark,
 )
-from backend.app.core.expert_runtime import run_adapter_runtime_batch, runtime_adapter_load_plan
+from backend.app.core.expert_runtime import runtime_adapter_load_plan
 from backend.app.core.hardware import hardware_status
 
 
@@ -162,7 +161,7 @@ source_paths = [Path(item) for item in json.loads(os.environ["CML_LORA_BENCH_SOU
 report_path = Path(os.environ["CML_LORA_BENCH_REPORT_PATH"])
 max_real_sources = int(os.environ.get("CML_LORA_BENCH_MAX_REAL_SOURCES") or "12")
 case_limit = int(os.environ.get("CML_LORA_BENCH_CASE_LIMIT") or "6")
-max_new_tokens = int(os.environ.get("CML_LORA_BENCH_MAX_NEW_TOKENS") or "16")
+max_new_tokens = int(os.environ.get("CML_LORA_BENCH_MAX_NEW_TOKENS") or "0")
 
 source_records = real_source_records(source_paths, limit=max_real_sources)
 if not source_records:
@@ -186,7 +185,11 @@ dataset = {
 adapter_dataset = adapter_training_dataset(adapter_path)
 adapter_dataset_hash = adapter_dataset.get("dataset_hash") or ""
 plan = build_expert_evaluation_plan(dataset, max_cases=max(1, case_limit))
-adapter_plan = build_adapter_training_evaluation_plan(adapter_path, cluster_id="cluster-smoke")
+adapter_plan = build_adapter_training_evaluation_plan(
+    adapter_path,
+    cluster_id="cluster-smoke",
+    max_cases=max(1, case_limit),
+)
 if adapter_plan is not None:
     plan = adapter_plan
 if plan.get("dataset_hash"):
@@ -208,12 +211,15 @@ if not load_plan.get("available"):
     )
     raise SystemExit("Adapter runtime load plan is not available.")
 
-runtime = run_adapter_runtime_batch(
-    adapter_path=adapter_path,
+benchmark_run = run_live_expert_benchmark(
+    dataset,
+    adapter_path=str(adapter_path),
     base_model=base_model,
-    prompts=[case["prompt"] for case in plan["cases"]],
-    max_new_tokens=max_new_tokens,
+    max_new_tokens=(max_new_tokens if max_new_tokens > 0 else None),
+    max_new_tokens_by_category=(None if max_new_tokens > 0 else default_expert_benchmark_token_budgets()),
+    evaluation_plan=plan,
 )
+runtime = benchmark_run.get("runtime") or {}
 if not runtime.get("ok"):
     report_path.write_text(
         json.dumps(
@@ -230,19 +236,9 @@ if not runtime.get("ok"):
     )
     raise SystemExit(runtime.get("error") or "Adapter runtime benchmark failed.")
 
-responses = runtime.get("responses") or []
-adapter_case_scores = [
-    score_expert_response(case, (responses[index] or {}).get("response_text") or "")
-    for index, case in enumerate(plan["cases"])
-]
-baseline_case_scores = retrieval_case_scores(plan["cases"])
-benchmark = build_expert_benchmark_report(
-    plan,
-    retrieval_case_scores=baseline_case_scores,
-    adapter_case_scores=adapter_case_scores,
-    mode="live_adapter_benchmark",
-    live_adapter_backed=True,
-)
+adapter_case_scores = list(benchmark_run.get("adapter_case_scores") or [])
+baseline_case_scores = list(benchmark_run.get("retrieval_case_scores") or [])
+benchmark = dict(benchmark_run.get("benchmark_report") or {})
 reported_status = benchmark["status"]
 reported_passes = bool(benchmark["passes"])
 if adapter_dataset_hash and not dataset_matches_adapter:

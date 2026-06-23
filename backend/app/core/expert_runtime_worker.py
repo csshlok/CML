@@ -23,6 +23,7 @@ def main() -> int:
         "prompt": payload["prompt"],
         "prompts": payload.get("prompts") or [payload["prompt"]],
         "max_new_tokens": int(payload.get("max_new_tokens") or 48),
+        "max_new_tokens_per_prompt": [int(item) for item in (payload.get("max_new_tokens_per_prompt") or [])],
         "packages": _package_versions(),
         "response_text": "",
         "responses": [],
@@ -60,12 +61,17 @@ def main() -> int:
         adapter_model.eval()
         model_device = next(adapter_model.parameters()).device
         responses = []
-        for prompt in report["prompts"]:
+        for index, prompt in enumerate(report["prompts"]):
             inputs = _tokenize_prompt(tokenizer, str(prompt))
             inputs = {key: value.to(model_device) for key, value in inputs.items()}
+            prompt_max_new_tokens = (
+                int(report["max_new_tokens_per_prompt"][index])
+                if index < len(report["max_new_tokens_per_prompt"])
+                else int(payload.get("max_new_tokens") or 48)
+            )
             generated = adapter_model.generate(
                 **inputs,
-                max_new_tokens=int(payload.get("max_new_tokens") or 48),
+                max_new_tokens=prompt_max_new_tokens,
                 do_sample=False,
                 pad_token_id=tokenizer.pad_token_id,
             )

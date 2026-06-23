@@ -54,7 +54,7 @@ _CATEGORY_SPECS = {
         "owner": "shared",
         "counts_toward_graduation": True,
         "requires_citation": False,
-        "markers": ["missing", "not covered", "insufficient"],
+        "markers": ["missing", "not covered", "insufficient", "cannot answer", "outside scope"],
     },
 }
 
@@ -74,6 +74,17 @@ SHARED_CATEGORIES = tuple(
 RETRIEVAL_OWNED_CATEGORIES = tuple(
     category for category, spec in _CATEGORY_SPECS.items() if spec["owner"] == "retrieval"
 )
+
+_DEFAULT_MAX_NEW_TOKENS_BY_CATEGORY = {
+    "factual_recall": 160,
+    "citation_grounding": 256,
+    "contradiction_handling": 384,
+    "summarization": 640,
+    "style_transfer": 384,
+    "terminology_consistency": 256,
+    "reasoning_pattern": 384,
+    "out_of_scope_refusal": 192,
+}
 
 
 def build_expert_evaluation_plan(dataset: dict, *, max_cases: int = 12) -> dict:
@@ -165,6 +176,7 @@ def build_adapter_training_evaluation_plan(
     adapter_path: str | Path,
     *,
     cluster_id: str = "cluster",
+    max_cases: int | None = None,
 ) -> dict | None:
     adapter_dir = Path(adapter_path)
     validation_path = adapter_dir / "dataset" / "validation.jsonl"
@@ -184,6 +196,7 @@ def build_adapter_training_evaluation_plan(
     if not rows:
         return None
     cases = []
+    normalized_max_cases = int(max_cases) if max_cases is not None else None
     for index, row in enumerate(rows):
         messages = list(row.get("messages") or [])
         prompt = str(((messages[0] if messages else {}) or {}).get("content") or "")
@@ -206,6 +219,8 @@ def build_adapter_training_evaluation_plan(
                 "requires_citation": _CATEGORY_SPECS[category]["requires_citation"],
             }
         )
+        if normalized_max_cases is not None and normalized_max_cases > 0 and len(cases) >= normalized_max_cases:
+            break
     return {
         "cluster_id": cluster_id,
         "dataset_hash": _adapter_dataset_hash(adapter_dir),
@@ -223,6 +238,7 @@ def run_live_expert_benchmark(
     adapter_path: str,
     base_model: str,
     max_new_tokens: int | None = None,
+    max_new_tokens_by_category: dict[str, int] | None = None,
     mode: str = "live_adapter_benchmark",
     evaluation_plan: dict | None = None,
 ) -> dict:
@@ -232,12 +248,13 @@ def run_live_expert_benchmark(
     if resolved_plan is None:
         case_limit = max(len(EVALUATION_CATEGORIES), len(list(dataset.get("documents") or [])))
         resolved_plan = build_expert_evaluation_plan(dataset, max_cases=case_limit)
-    benchmark_prompts = [case["prompt"] for case in resolved_plan["cases"]]
-    runtime = run_adapter_runtime_batch(
+    runtime = _run_category_aware_runtime_batch(
+        resolved_plan["cases"],
         adapter_path=adapter_path,
         base_model=base_model,
-        prompts=benchmark_prompts,
         max_new_tokens=max_new_tokens,
+        max_new_tokens_by_category=max_new_tokens_by_category,
+        batch_runner=run_adapter_runtime_batch,
     )
     if not runtime.get("ok"):
         return {
@@ -289,6 +306,10 @@ def run_live_expert_benchmark(
         "adapter_case_scores": adapter_case_scores,
         "benchmark_report": benchmark_report,
     }
+
+
+def default_expert_benchmark_token_budgets() -> dict[str, int]:
+    return dict(_DEFAULT_MAX_NEW_TOKENS_BY_CATEGORY)
 
 
 def build_expert_benchmark_report(
@@ -426,6 +447,51 @@ def prompt_for_category(category: str, title: str) -> str:
     return f"What are the key facts from the local source titled '{title}'?"
 
 
+def _run_category_aware_runtime_batch(
+    cases: list[dict],
+    *,
+    adapter_path: str,
+    base_model: str,
+    max_new_tokens: int | None,
+    max_new_tokens_by_category: dict[str, int] | None,
+    batch_runner,
+) -> dict:
+    if max_new_tokens is not None:
+        benchmark_prompts = [case["prompt"] for case in cases]
+        runtime = batch_runner(
+            adapter_path=adapter_path,
+            base_model=base_model,
+            prompts=benchmark_prompts,
+            max_new_tokens=max_new_tokens,
+        )
+        runtime["effective_max_new_tokens"] = {"global": int(max_new_tokens)}
+        return runtime
+
+    category_limits = default_expert_benchmark_token_budgets()
+    for key, value in dict(max_new_tokens_by_category or {}).items():
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            continue
+        if normalized > 0:
+            category_limits[str(key)] = normalized
+
+    per_prompt_limits = [
+        int(category_limits.get(str(case.get("category") or ""), 256))
+        for case in cases
+    ]
+    runtime = batch_runner(
+        adapter_path=adapter_path,
+        base_model=base_model,
+        prompts=[str(case["prompt"]) for case in cases],
+        max_new_tokens=max(per_prompt_limits) if per_prompt_limits else None,
+        max_new_tokens_per_prompt=per_prompt_limits,
+    )
+    runtime["effective_max_new_tokens"] = category_limits
+    runtime["max_new_tokens_per_prompt"] = per_prompt_limits
+    return runtime
+
+
 _prompt_for_category = prompt_for_category
 
 
@@ -472,10 +538,45 @@ def _has_citation_marker(text: str) -> bool:
 
 
 def _has_refusal_marker(lowered_text: str) -> bool:
-    return any(marker in lowered_text for marker in ("insufficient", "not enough", "missing", "not covered"))
+    intent_patterns = (
+        r"\bcannot answer\b",
+        r"\bcan'?t answer\b",
+        r"\bunable to answer\b",
+        r"\bdo not have enough\b",
+        r"\bdon't have enough\b",
+        r"\bnot enough\b",
+        r"\binsufficient\b",
+        r"\bmissing\b",
+        r"\bnot covered\b",
+        r"\boutside (the )?scope\b",
+        r"\bunrelated to\b",
+    )
+    evidence_patterns = (
+        r"\bevidence\b",
+        r"\bsource\b",
+        r"\bcontext\b",
+        r"\bcoverage\b",
+        r"\bdocument\b",
+        r"\bmaterial\b",
+    )
+    has_intent = any(re.search(pattern, lowered_text) for pattern in intent_patterns)
+    has_evidence_gap = any(re.search(pattern, lowered_text) for pattern in evidence_patterns)
+    return bool(has_intent and has_evidence_gap)
 
 
 def _marker_score(case: dict, lowered_response: str) -> float:
+    if case.get("category") == "out_of_scope_refusal":
+        marker_groups = (
+            (r"\bmissing\b", r"\bnot enough\b", r"\binsufficient\b", r"\blacks?\b"),
+            (r"\bnot covered\b", r"\boutside (the )?scope\b", r"\bunrelated\b"),
+            (r"\bcannot answer\b", r"\bcan'?t answer\b", r"\bunable to answer\b"),
+        )
+        hits = sum(
+            1
+            for group in marker_groups
+            if any(re.search(pattern, lowered_response) for pattern in group)
+        )
+        return hits / len(marker_groups)
     markers = [str(marker).lower() for marker in case.get("markers") or [] if str(marker).strip()]
     if not markers:
         return 1.0

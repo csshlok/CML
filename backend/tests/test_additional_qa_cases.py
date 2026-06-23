@@ -3975,6 +3975,7 @@ class AdditionalQACases(unittest.TestCase):
         rows = train_rows + validation_rows
         prompts = [row["messages"][0]["content"] for row in rows]
         answers = [row["messages"][1]["content"] for row in rows]
+        answers_by_category = {row["category"]: row["messages"][1]["content"] for row in rows}
 
         self.assertEqual(manifest["train_count"] + manifest["validation_count"], len(EVALUATION_CATEGORIES))
         self.assertEqual({row["category"] for row in rows}, set(EVALUATION_CATEGORIES))
@@ -3990,6 +3991,10 @@ class AdditionalQACases(unittest.TestCase):
         self.assertTrue(any("missing evidence" in answer for answer in answers))
         self.assertTrue(any("preferred local terms" in answer for answer in answers))
         self.assertTrue(any("First, identify the local evidence" in answer for answer in answers))
+        self.assertIn("Grounded takeaway:", answers_by_category["summarization"])
+        self.assertIn("Key detail:", answers_by_category["summarization"])
+        self.assertIn("practical note:", answers_by_category["style_transfer"])
+        self.assertNotIn("```", answers_by_category["style_transfer"])
         self.assertEqual(manifest["benchmark_record_accounting"]["train"]["duplicate_content_ratio"], 0.0)
         self.assertEqual(manifest["benchmark_record_accounting"]["validation"]["duplicate_content_ratio"], 0.0)
 
@@ -4263,6 +4268,34 @@ class AdditionalQACases(unittest.TestCase):
         self.assertTrue(passing["passes"])
         self.assertFalse(failing["passes"])
 
+    def test_out_of_scope_refusal_scoring_accepts_semantic_refusals(self) -> None:
+        from backend.app.core.expert_evaluation import build_expert_evaluation_plan, score_expert_response
+
+        dataset = {
+            "cluster_id": "cluster-1",
+            "dataset_hash": "hash",
+            "documents": [
+                {
+                    "source_id": f"source-{index}",
+                    "title": f"Evaluation source {index}",
+                    "summary": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
+                    "text": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
+                }
+                for index in range(8)
+            ],
+        }
+        plan = build_expert_evaluation_plan(dataset)
+        case = next(item for item in plan["cases"] if item["category"] == "out_of_scope_refusal")
+
+        scored = score_expert_response(
+            case,
+            "I cannot answer that from this source because the document does not cover the question and the needed evidence is missing.",
+        )
+
+        self.assertTrue(scored["refusal_present"])
+        self.assertGreaterEqual(scored["marker_score"], 0.66)
+        self.assertGreater(scored["score"], 45.0)
+
     def test_adapter_training_evaluation_plan_uses_exported_validation_records(self) -> None:
         from backend.app.core.expert_evaluation import build_adapter_training_evaluation_plan
 
@@ -4456,6 +4489,57 @@ class AdditionalQACases(unittest.TestCase):
         self.assertFalse(report["benchmark_report"]["passes"])
         self.assertEqual(report["adapter_case_scores"], [])
         self.assertEqual(report["retrieval_case_scores"], [])
+
+    def test_run_live_expert_benchmark_uses_category_token_budgets_by_default(self) -> None:
+        from backend.app.core.expert_evaluation import run_live_expert_benchmark
+
+        dataset = {
+            "cluster_id": "cluster-1",
+            "dataset_hash": "hash",
+            "documents": [
+                {
+                    "source_id": f"source-{index}",
+                    "title": f"Evaluation source {index}",
+                    "summary": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
+                    "text": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
+                }
+                for index in range(8)
+            ],
+        }
+
+        calls: list[dict] = []
+
+        def fake_runtime_batch(*, adapter_path, base_model, prompts, max_new_tokens, max_new_tokens_per_prompt=None):
+            calls.append(
+                {
+                    "max_new_tokens": int(max_new_tokens),
+                    "max_new_tokens_per_prompt": list(max_new_tokens_per_prompt or []),
+                }
+            )
+            return {
+                "ok": True,
+                "responses": [
+                    {"prompt": prompt, "response_text": f"According to source synthetic, response for {prompt}"}
+                    for prompt in prompts
+                ],
+                "stdout": "",
+                "stderr": "",
+                "unloaded": True,
+            }
+
+        with patch("backend.app.core.expert_runtime.run_adapter_runtime_batch", side_effect=fake_runtime_batch):
+            report = run_live_expert_benchmark(
+                dataset,
+                adapter_path="adapter-path",
+                base_model="base-model",
+            )
+
+        self.assertTrue(report["runtime"]["ok"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0]["max_new_tokens_per_prompt"]), 8)
+        self.assertEqual(calls[0]["max_new_tokens"], 640)
+        self.assertIn("summarization", report["runtime"]["effective_max_new_tokens"])
+        self.assertEqual(report["runtime"]["effective_max_new_tokens"]["summarization"], 640)
 
     def test_lora_smoke_proof_blocks_without_benchmark_or_hardware_proof(self) -> None:
         from backend.app.core.lora_proof import build_lora_smoke_proof

@@ -1,4 +1,5 @@
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -182,11 +183,12 @@ def _category_answer(category: str, doc: dict, summary: str) -> str:
     source_prefix = f"According to source {title},"
 
     if category == "summarization":
+        bullets = _grounded_summary_bullets(summary, str(doc.get("text") or ""), title)
         return (
             f"According to source {title}:\n"
-            f"- {evidence}\n"
-            f"- This answer is grounded in the local source titled {title}.\n"
-            "- It should not rely on outside context beyond the local source."
+            f"- {bullets[0]}\n"
+            f"- {bullets[1]}\n"
+            f"- {bullets[2]}"
         )
     if category == "citation_grounding":
         return f"{source_prefix} {evidence}"
@@ -201,13 +203,18 @@ def _category_answer(category: str, doc: dict, summary: str) -> str:
             f"Keep the terminology consistent with the cluster notes. {evidence}"
         )
     if category == "reasoning_pattern":
+        reasoning_evidence = _evidence_excerpt(summary, str(doc.get("text") or ""), max_words=28)
         return (
-            f"First, identify the local evidence from source {title}: {evidence} "
-            "Then, interpret what it means for the cluster context. "
-            "Therefore, the conclusion should follow the same reasoning pattern as the local notes."
+            f"First, identify the local evidence from source {title}: {reasoning_evidence} "
+            "Then, interpret what it means for the cluster context in plain language. "
+            "Therefore, the conclusion should stay practical and follow only what the local notes support."
         )
     if category == "style_transfer":
-        return f"{source_prefix} the practical note is: {evidence}"
+        practical_note = _practical_note_excerpt(summary, str(doc.get("text") or ""))
+        return (
+            f"{source_prefix} practical note: {practical_note} "
+            "Keep the wording concrete, local, and action-oriented."
+        )
     if category == "out_of_scope_refusal":
         return (
             f"Source {title} does not provide enough evidence to answer an unrelated question. "
@@ -216,13 +223,65 @@ def _category_answer(category: str, doc: dict, summary: str) -> str:
     return f"{source_prefix} key facts include: {evidence}"
 
 
-def _evidence_excerpt(summary: str, text: str) -> str:
-    candidate = (summary or text or "").strip()
+def _evidence_excerpt(summary: str, text: str, *, max_words: int = 80) -> str:
+    candidate = _normalized_source_text(summary or text or "")
     if not candidate:
         return "the local source contains project-specific evidence"
-    words = candidate.replace("\r", " ").replace("\n", " ").split()
-    excerpt = " ".join(words[:80]).strip()
+    words = candidate.split()
+    excerpt = " ".join(words[:max_words]).strip()
     return excerpt.rstrip(".") + "."
+
+
+def _grounded_summary_bullets(summary: str, text: str, title: str) -> list[str]:
+    candidate = _normalized_source_text(summary or text or "")
+    segments = _source_segments(candidate)
+    concise_segments = [_truncate_words(segment, 20) for segment in segments if segment]
+    while len(concise_segments) < 2:
+        concise_segments.append("Grounded takeaway: the source contains local project-specific evidence.")
+    return [
+        f"Grounded takeaway: {concise_segments[0].rstrip('.')}.",
+        f"Key detail: {concise_segments[1].rstrip('.')}.",
+        f"Grounding stays inside the local source titled {title}.",
+    ]
+
+
+def _practical_note_excerpt(summary: str, text: str) -> str:
+    candidate = _normalized_source_text(summary or text or "")
+    segments = _source_segments(candidate)
+    if not segments:
+        return "the local source captures a cluster-specific practical detail."
+    top_segments = [_truncate_words(segment, 18) for segment in segments[:3]]
+    return "; ".join(segment.rstrip(".") for segment in top_segments).strip() + "."
+
+
+def _normalized_source_text(text: str) -> str:
+    cleaned = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    cleaned = cleaned.replace("`", " ")
+    cleaned = re.sub(r"[{}\\[\\]]", " ", cleaned)
+    cleaned = re.sub(r"\|", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+def _source_segments(text: str) -> list[str]:
+    if not text:
+        return []
+    raw_segments = re.split(r"(?<=[.!?])\s+|(?:\s+-\s+)|(?:\s+\d+\.\s+)", text)
+    segments = []
+    for raw in raw_segments:
+        segment = raw.strip(" -")
+        if len(segment) < 12:
+            continue
+        if segment not in segments:
+            segments.append(segment)
+    return segments[:6]
+
+
+def _truncate_words(text: str, limit: int) -> str:
+    words = text.split()
+    if len(words) <= limit:
+        return text.strip()
+    return " ".join(words[:limit]).strip()
 
 
 def _preferred_terms(title: str, summary: str, text: str) -> str:

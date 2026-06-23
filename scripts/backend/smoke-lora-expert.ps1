@@ -6,8 +6,8 @@ param(
   [int]$MaxRealSources = 12,
   [int]$BenchmarkCaseLimit = 8,
   [switch]$AllowBenchmarkFailure,
-  [int]$RuntimeMaxNewTokens = 16,
-  [int]$BenchmarkMaxNewTokens = 16,
+  [int]$RuntimeMaxNewTokens = 48,
+  [int]$BenchmarkMaxNewTokens = 0,
   [string]$WorkDir = ""
 )
 
@@ -111,11 +111,11 @@ from backend.app.api.routes.sources import create_source
 from backend.app.core.background_jobs import job_queue_status, run_due_jobs_once
 from backend.app.core.database import connect, init_db, utc_now
 from backend.app.core.expert_evaluation import (
-    build_expert_benchmark_report,
     build_expert_evaluation_plan,
-    score_expert_response,
+    default_expert_benchmark_token_budgets,
+    run_live_expert_benchmark,
 )
-from backend.app.core.expert_runtime import run_adapter_runtime_batch, run_adapter_runtime_smoke
+from backend.app.core.expert_runtime import run_adapter_runtime_smoke
 from backend.app.core.hardware import hardware_status as actual_hardware_status
 from backend.app.core.lora_training import trainer_dependency_status
 from backend.app.core.model_registry import model_compatibility_report
@@ -127,7 +127,7 @@ allow_benchmark_failure = os.environ.get("CML_LORA_SMOKE_ALLOW_BENCHMARK_FAILURE
 max_real_sources = int(os.environ.get("CML_LORA_SMOKE_MAX_REAL_SOURCES") or "12")
 benchmark_case_limit = int(os.environ.get("CML_LORA_SMOKE_BENCHMARK_CASE_LIMIT") or "6")
 runtime_max_new_tokens = int(os.environ.get("CML_LORA_SMOKE_RUNTIME_MAX_NEW_TOKENS") or "16")
-benchmark_max_new_tokens = int(os.environ.get("CML_LORA_SMOKE_BENCHMARK_MAX_NEW_TOKENS") or "16")
+benchmark_max_new_tokens = int(os.environ.get("CML_LORA_SMOKE_BENCHMARK_MAX_NEW_TOKENS") or "0")
 source_paths = json.loads(os.environ.get("CML_LORA_SMOKE_SOURCE_PATHS_JSON") or "[]")
 base_model_path = os.environ.get("CML_LORA_SMOKE_BASE_MODEL_PATH") or ""
 
@@ -322,35 +322,17 @@ if artifacts:
         max_new_tokens=runtime_max_new_tokens,
     )
     if runtime_smoke.get("ok"):
-        benchmark_prompts = [case["prompt"] for case in plan["cases"]]
-        live_runtime_batch = run_adapter_runtime_batch(
+        benchmark_run = run_live_expert_benchmark(
+            dataset,
             adapter_path=active["local_path"],
             base_model=str(active["base_model"]),
-            prompts=benchmark_prompts,
-            max_new_tokens=benchmark_max_new_tokens,
-        )
-        responses = live_runtime_batch.get("responses") or []
-        adapter_case_scores = [
-            score_expert_response(case, (responses[index] or {}).get("response_text") or "")
-            for index, case in enumerate(plan["cases"])
-        ]
-        retrieval_case_scores = [
-            score_expert_response(
-                case,
-                "According to source "
-                + str(case["source_title"])
-                + ", "
-                + " ".join(str(term) for term in case.get("expected_terms") or []),
-            )
-            for case in plan["cases"]
-        ]
-        benchmark_report = build_expert_benchmark_report(
-            plan,
-            retrieval_case_scores=retrieval_case_scores,
-            adapter_case_scores=adapter_case_scores,
+            max_new_tokens=(benchmark_max_new_tokens if benchmark_max_new_tokens > 0 else None),
+            max_new_tokens_by_category=(None if benchmark_max_new_tokens > 0 else default_expert_benchmark_token_budgets()),
             mode="ci_scaffold_non_release_benchmark" if allow_test_trainer else "live_adapter_benchmark",
-            live_adapter_backed=not allow_test_trainer,
+            evaluation_plan=plan,
         )
+        live_runtime_batch = benchmark_run.get("runtime")
+        benchmark_report = benchmark_run.get("benchmark_report")
     else:
         benchmark_report = {"status": "runtime_failed", "passes": False, "live_adapter_backed": True}
 else:

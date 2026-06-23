@@ -232,6 +232,7 @@ def run_adapter_runtime_batch(
     base_model: str,
     prompts: list[str],
     max_new_tokens: int | None = None,
+    max_new_tokens_per_prompt: list[int] | None = None,
 ) -> dict:
     adapter_dir = Path(adapter_path)
     plan = runtime_adapter_load_plan(adapter_path=adapter_dir, base_model=base_model)
@@ -267,6 +268,7 @@ def run_adapter_runtime_batch(
             "prompt": prompts[0] if prompts else "",
             "prompts": prompts,
             "max_new_tokens": int(max_new_tokens or getattr(get_settings(), "lora_runtime_max_new_tokens", 48)),
+            "max_new_tokens_per_prompt": [int(item) for item in (max_new_tokens_per_prompt or [])],
             "device": getattr(get_settings(), "lora_runtime_device", "auto"),
             "dtype": getattr(get_settings(), "lora_runtime_dtype", "auto"),
             "report_path": str(report_path),

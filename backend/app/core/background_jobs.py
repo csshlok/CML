@@ -1054,7 +1054,6 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             dataset,
             adapter_path=train_result["adapter_path"],
             base_model=config["base_model"],
-            max_new_tokens=get_settings().lora_runtime_max_new_tokens,
             evaluation_plan=evaluation_plan,
         )
         benchmark_report = benchmark_run["benchmark_report"]
