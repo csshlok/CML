@@ -36,7 +36,43 @@ class SourcePageIndexingTests(unittest.TestCase):
         os.environ.pop("CML_LORA_TRAINER_COMMAND", None)
         os.environ.pop("CML_LLM_MODEL", None)
         os.environ.pop("CML_LLM_CONTEXT_TOKEN_BUDGET", None)
+        for key in (
+            "CML_LORA_MIN_SOURCES",
+            "CML_LORA_MIN_UNIQUE_SOURCES",
+            "CML_LORA_MIN_TOKENS",
+            "CML_LORA_MIN_VALIDATION_RECORDS",
+            "CML_LORA_BENCHMARK_MIN_TRAIN_RECORDS",
+            "CML_LORA_BENCHMARK_MIN_VALIDATION_RECORDS",
+            "CML_LORA_BENCHMARK_MIN_VALIDATION_RECORDS_PER_CATEGORY",
+            "CML_LORA_BENCHMARK_MIN_UNIQUE_SOURCES",
+            "CML_LORA_BENCHMARK_MIN_UNIQUE_CONTENT_HASHES",
+            "CML_LORA_BENCHMARK_MAX_TRAIN_RECORD_SHARE_PER_SOURCE",
+            "CML_LORA_BENCHMARK_MAX_VALIDATION_RECORD_SHARE_PER_SOURCE",
+            "CML_LORA_BENCHMARK_MAX_VALIDATION_RECORD_SHARE_PER_SOURCE_PER_CATEGORY",
+        ):
+            os.environ.pop(key, None)
         self.tmp.cleanup()
+
+    def _use_permissive_lora_test_gates(self) -> None:
+        os.environ.update(
+            {
+                "CML_LORA_MIN_SOURCES": "1",
+                "CML_LORA_MIN_UNIQUE_SOURCES": "1",
+                "CML_LORA_MIN_TOKENS": "1",
+                "CML_LORA_MIN_VALIDATION_RECORDS": "1",
+                "CML_LORA_BENCHMARK_MIN_TRAIN_RECORDS": "1",
+                "CML_LORA_BENCHMARK_MIN_VALIDATION_RECORDS": "1",
+                "CML_LORA_BENCHMARK_MIN_VALIDATION_RECORDS_PER_CATEGORY": "0",
+                "CML_LORA_BENCHMARK_MIN_UNIQUE_SOURCES": "1",
+                "CML_LORA_BENCHMARK_MIN_UNIQUE_CONTENT_HASHES": "1",
+                "CML_LORA_BENCHMARK_MAX_TRAIN_RECORD_SHARE_PER_SOURCE": "1",
+                "CML_LORA_BENCHMARK_MAX_VALIDATION_RECORD_SHARE_PER_SOURCE": "1",
+                "CML_LORA_BENCHMARK_MAX_VALIDATION_RECORD_SHARE_PER_SOURCE_PER_CATEGORY": "1",
+            }
+        )
+        from backend.app.core.config import get_settings
+
+        get_settings.cache_clear()
 
     def _write_fake_local_transformers_model(self, model_name: str = "smoke-base-model") -> str:
         model_dir = Path(self.tmp.name) / "models" / model_name
@@ -3872,6 +3908,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         from backend.app.schemas import SourceCreate
 
         os.environ["CML_ALLOW_LORA_TEST_TRAINER"] = "1"
+        self._use_permissive_lora_test_gates()
         self._write_fake_local_transformers_model()
         get_settings.cache_clear()
         now = utc_now()
@@ -3905,9 +3942,36 @@ class SourcePageIndexingTests(unittest.TestCase):
             "hardware_tier": "cpu_minimum_spec",
             "detail": "test hardware",
         }
+        benchmark_run = {
+            "evaluation_plan": {
+                "case_count": 1,
+                "categories": ["style_transfer"],
+                "dataset_hash": "test-dataset",
+            },
+            "runtime": {"ok": True, "responses": []},
+            "retrieval_case_scores": [],
+            "adapter_case_scores": [],
+            "benchmark_report": {
+                "status": "passed",
+                "passes": True,
+                "live_adapter_backed": True,
+                "overall": {
+                    "retrieval_only_score": 60.0,
+                    "adapter_score": 80.0,
+                    "quality_delta": 20.0,
+                    "minimum_quality_delta": 1.0,
+                },
+                "graduation_overall": {"adapter_score": 80.0},
+                "gate_report": {"passes": True},
+            },
+        }
         with (
             patch("backend.app.core.expert_lifecycle.hardware_status", return_value=hardware),
             patch("backend.app.core.hardware.hardware_status", return_value=hardware),
+            patch(
+                "backend.app.core.background_jobs.run_live_expert_benchmark",
+                return_value=benchmark_run,
+            ),
         ):
             contract = get_expert_graduation_contract("cluster-1")
             expert_job = queue_expert_retrain("cluster-1")
@@ -3934,9 +3998,9 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertTrue(metrics["runtime_load"]["available"])
         self.assertEqual(
             metrics["benchmark_report"]["status"],
-            "pending_live_adapter_benchmark",
+            "passed",
         )
-        self.assertFalse(metrics["benchmark_report"]["live_adapter_backed"])
+        self.assertTrue(metrics["benchmark_report"]["live_adapter_backed"])
         self.assertEqual(metrics["evaluation_plan"]["case_count"], 1)
         with connect() as conn:
             cluster = conn.execute("SELECT expert_status FROM clusters WHERE id = 'cluster-1'").fetchone()
@@ -3966,6 +4030,7 @@ class SourcePageIndexingTests(unittest.TestCase):
 
         os.environ.pop("CML_ALLOW_LORA_TEST_TRAINER", None)
         os.environ["CML_LORA_TRAINER_COMMAND"] = ""
+        self._use_permissive_lora_test_gates()
         model_name = self._write_fake_local_transformers_model("missing-trainer-base")
         get_settings.cache_clear()
         now = utc_now()
@@ -4044,6 +4109,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         from backend.app.core.background_jobs import _run_train_cluster_adapter
         from backend.app.core.database import connect, utc_now
 
+        self._use_permissive_lora_test_gates()
         now = utc_now()
         text = "dataset changed expert training evidence " * 240
         base_dataset = {
@@ -4174,6 +4240,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         from backend.app.core.background_jobs import _run_train_cluster_adapter
         from backend.app.core.database import connect, utc_now
 
+        self._use_permissive_lora_test_gates()
         now = utc_now()
         text = "dataset changed expert training evidence " * 240
         adapter_dir = Path(self.tmp.name) / "adapter-ready-before-retrain"

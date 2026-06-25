@@ -151,6 +151,15 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertTrue(status["setup_required"])
 
     def test_semantic_search_returns_409_when_embeddings_unavailable(self) -> None:
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+
         client = self._client()
         try:
             with patch(

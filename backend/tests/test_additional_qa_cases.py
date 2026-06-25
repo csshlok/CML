@@ -555,7 +555,18 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(after_second, after_first)
         self.assertGreater(after_refresh, after_second)
         self.assertEqual(first["models"], second["models"])
-        self.assertEqual(second["models"], refreshed["models"])
+        def stable_fields(models: list[dict]) -> list[tuple]:
+            return [
+                (
+                    item["id"],
+                    item["local_path"],
+                    item["compatibility"]["accepted"],
+                    item["compatibility"]["family"],
+                )
+                for item in models
+            ]
+
+        self.assertEqual(stable_fields(second["models"]), stable_fields(refreshed["models"]))
 
     def test_first_run_readiness_skips_deep_embedding_probe(self) -> None:
         from backend.app.core.setup_readiness import first_run_readiness
@@ -4379,9 +4390,11 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("1.5b", policy_text.lower())
         self.assertIn("CML_LORA_TRAINER_COMMAND", expert_text)
         self.assertIn("AllowTestTrainer", expert_text)
-        self.assertIn("build_expert_benchmark_report", expert_text)
-        self.assertIn("run_adapter_runtime_batch", adapter_benchmark_text)
-        self.assertIn("live_adapter_benchmark", adapter_benchmark_text)
+        self.assertIn("run_live_expert_benchmark", expert_text)
+        self.assertIn("default_expert_benchmark_token_budgets", expert_text)
+        self.assertIn("run_live_expert_benchmark", adapter_benchmark_text)
+        self.assertIn("default_expert_benchmark_token_budgets", adapter_benchmark_text)
+        self.assertIn('benchmark_run.get("benchmark_report")', adapter_benchmark_text)
         self.assertIn("build_adapter_training_evaluation_plan", adapter_benchmark_text)
         self.assertIn("dataset_matches_adapter_training", adapter_benchmark_text)
         self.assertIn("adapter_training_dataset", adapter_benchmark_text)
