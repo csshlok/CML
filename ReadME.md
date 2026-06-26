@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="apps/desktop/public/brand/vault-logo.png" width="148" alt="CML logo">
+  <img src="apps/desktop/public/brand/logo.svg" width="148" alt="CML logo">
 </p>
 
 <h1 align="center">CML</h1>
