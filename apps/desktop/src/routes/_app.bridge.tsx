@@ -584,7 +584,7 @@ function BridgeView() {
             />
             <PermissionRow
               label="Local experts"
-              detail="Allow clients to call cluster experts after the expert lifecycle is implemented."
+              detail="Allow clients to request expert compression after the expert lifecycle is implemented."
               checked={Boolean(status?.allow_expert_calls)}
               disabled={!status || saving}
               onChange={(checked) => void patchSettings({ allow_expert_calls: checked })}

@@ -31,21 +31,23 @@ export function ClusterChip({ cluster, asLink = true }: { cluster: Cluster; asLi
 
 export function ExpertBadge({ status }: { status: ExpertStatus }) {
   const color =
-    status === "ready"
+    status === "expert-ready" || status === "searchable"
       ? "var(--status-ready)"
+      : status === "expert-stale"
+      ? "var(--status-learning)"
       : status === "issue"
       ? "var(--status-issue)"
       : status === "paused"
       ? "var(--status-paused)"
-      : status === "searchable"
-      ? "var(--status-ready)"
       : "var(--status-learning)";
   const label = {
-    searchable: "Searchable now",
+    searchable: "Searchable",
+    "retrieval-only": "Retrieval-only mode",
     "setting-up": "Setting up",
-    learning: "Learning",
-    ready: "Ready",
-    "needs-update": "Needs update",
+    "training-pending": "Preparing expert compression",
+    "training-running": "Training cluster compressor",
+    "expert-ready": "Expert compression ready",
+    "expert-stale": "Expert needs update",
     paused: "Paused",
     issue: "Issue",
   }[status];

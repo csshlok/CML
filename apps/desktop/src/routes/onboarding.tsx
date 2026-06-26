@@ -271,7 +271,7 @@ function Onboarding() {
         role === "chat"
           ? "Chat model activated."
           : role === "expert"
-            ? "Expert checkpoint activated."
+            ? "Expert-compression runtime activated."
             : "Chat/expert model activated.",
       );
     } catch (err) {
@@ -702,19 +702,19 @@ function Onboarding() {
                 {step === 5 && (
                   <SetupPanel
                     icon={<PlugZap className="h-5 w-5" />}
-                    title="Choose the chat model and expert checkpoint"
+                    title="Choose the chat model and expert-compression runtime"
                     sub="Chat uses a local runtime model. Expert workflows use a separate accepted local checkpoint. Retrieval remains the source of citations for both."
                   >
                     <div className="grid gap-3 sm:grid-cols-2">
                       <ChoiceButton
                         selected={modelChoice === "recommended"}
                         title="Chat + expert"
-                        description="Download a chat model, then pair it with an accepted expert checkpoint."
+                        description="Download a chat model, then pair it with an accepted expert-compression runtime."
                         onClick={() => setModelChoice("recommended")}
                       />
                       <ChoiceButton
                         selected={modelChoice === "custom"}
-                        title="Import expert checkpoint"
+                        title="Import expert-compression runtime"
                         description="Validate a local Transformers checkpoint and accept or reject it for expert use."
                         onClick={() => setModelChoice("custom")}
                       />
@@ -809,7 +809,7 @@ function Onboarding() {
                               </div>
                               <div className="mt-1 text-muted-foreground">
                                 Vault can scan common local model folders and offer one-click import
-                                for accepted expert checkpoints.
+                                for accepted expert-compression runtimes.
                               </div>
                             </div>
                             <Button
@@ -1344,7 +1344,7 @@ function ModelRow({
           (roleLabel === "expert" && model.compatibility?.expert_role_accepted)) &&
         !roleActive ? (
           <Button variant="outline" size="sm" onClick={onActivate} disabled={activating}>
-            {activating ? "Activating" : roleLabel === "chat" ? "Use for chat" : "Use for expert"}
+            {activating ? "Activating" : roleLabel === "chat" ? "Use for chat" : "Use for expert compression"}
           </Button>
         ) : null}
         {downloading ? (

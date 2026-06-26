@@ -10,10 +10,12 @@ export type ClusterTint =
 
 export type ExpertStatus =
   | "searchable"
+  | "retrieval-only"
   | "setting-up"
-  | "learning"
-  | "ready"
-  | "needs-update"
+  | "training-pending"
+  | "training-running"
+  | "expert-ready"
+  | "expert-stale"
   | "paused"
   | "issue";
 
@@ -118,7 +120,7 @@ const seedClusters: Cluster[] = [
     name: "Design Research",
     tint: "sage",
     description: "Notes, case studies, and inspiration on product design.",
-    expert: "ready",
+    expert: "expert-ready",
     lastActive: now(),
     summary: "A calm research space for interface principles, case studies, and visual systems.",
     styleProfile: "Measured, observational, reference-heavy.",
@@ -128,7 +130,7 @@ const seedClusters: Cluster[] = [
     name: "Product Strategy",
     tint: "terracotta",
     description: "Roadmaps, positioning, GTM, and market insights.",
-    expert: "ready",
+    expert: "expert-ready",
     lastActive: now(),
     summary: "Positioning notes, decision frameworks, and product-market signals.",
     styleProfile: "Direct, decision-oriented, concise.",
@@ -138,7 +140,7 @@ const seedClusters: Cluster[] = [
     name: "Health & Longevity",
     tint: "sky",
     description: "Books, papers, and personal notes on health.",
-    expert: "ready",
+    expert: "expert-ready",
     lastActive: now(),
     summary: "Health research, sleep notes, supplements, and longevity reading.",
     styleProfile: "Careful, evidence-first, practical.",
@@ -148,7 +150,7 @@ const seedClusters: Cluster[] = [
     name: "Travel Japan 2025",
     tint: "lavender",
     description: "Plans, places, learnings from our Japan trip.",
-    expert: "needs-update",
+    expert: "expert-stale",
     lastActive: now(),
     summary: "Kyoto cafes, Tokyo logistics, shrine notes, and travel planning.",
     styleProfile: "Personal, compact, itinerary-aware.",
@@ -158,7 +160,7 @@ const seedClusters: Cluster[] = [
     name: "Meeting Notes",
     tint: "sand",
     description: "Internal syncs, decisions, and action items.",
-    expert: "learning",
+    expert: "training-running",
     lastActive: now(),
     summary: "Weekly planning, product decisions, and follow-up tasks.",
     styleProfile: "Action-oriented, crisp, chronological.",
@@ -404,11 +406,13 @@ export const useStore = create<State>((set, get) => ({
 export const tintVar = (t: ClusterTint) => `var(--cluster-${t})`;
 
 export const expertLabel: Record<ExpertStatus, string> = {
-  searchable: "Searchable now",
+  searchable: "Searchable",
+  "retrieval-only": "Retrieval-only mode",
   "setting-up": "Setting up",
-  learning: "Learning",
-  ready: "Ready",
-  "needs-update": "Needs update",
+  "training-pending": "Preparing expert compression",
+  "training-running": "Training cluster compressor",
+  "expert-ready": "Expert compression ready",
+  "expert-stale": "Expert needs update",
   paused: "Paused",
   issue: "Issue",
 };

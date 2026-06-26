@@ -236,7 +236,8 @@ function SettingsView() {
         ? await unlockVaultWithPassphrase({ vault_id: vaultId, passphrase: vaultPassphrase })
         : await initializeVaultSecurity({ vault_id: vaultId, passphrase: vaultPassphrase, unlock_mode: "convenience" });
       setUnlockStatus(next);
-      if ("recovery_key" in next && typeof next.recovery_key === "string") setRecoveryKey(next.recovery_key);
+      const recoveryKey = "recovery_key" in next && typeof next.recovery_key === "string" ? next.recovery_key : null;
+      if (recoveryKey) setRecoveryKey(recoveryKey);
       setVaultPassphrase("");
       setStatusMessage(next.state === "ready" ? "Library ready." : next.message);
     } catch (error) {
@@ -379,7 +380,7 @@ function SettingsView() {
     try {
       await activateLocalModel(modelId, role);
       await refreshModelRows();
-      setStatusMessage(role === "chat" ? "Chat model activated." : role === "expert" ? "Expert checkpoint activated." : "Chat/expert model activated.");
+      setStatusMessage(role === "chat" ? "Chat model activated." : role === "expert" ? "Expert-compression runtime activated." : "Chat/expert model activated.");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not activate model.");
     } finally {
@@ -779,7 +780,7 @@ function SettingsView() {
             <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
               {activeChatModel && activeExpertModel
                 ? `Chat: ${activeChatModel.name}. Expert: ${activeExpertModel.name}. Retrieval remains the citation source.`
-                : "Pick one accepted chat model and one accepted expert checkpoint. GGUF/runtime downloads satisfy the chat role only."}
+                : "Pick one accepted chat model and one accepted expert-compression runtime. GGUF/runtime downloads satisfy the chat role only."}
             </div>
             <label className="mt-5 block text-sm font-medium">LLM download location</label>
             <div className="mt-2 flex flex-wrap gap-2">
@@ -823,7 +824,7 @@ function SettingsView() {
                         ) : null}
                         {model.id === recommendedExpertModelId ? (
                           <div className="mt-1 text-xs text-primary">
-                            Recommended expert checkpoint for this device
+                            Recommended expert-compression runtime for this device
                           </div>
                         ) : null}
                       </div>
@@ -864,7 +865,7 @@ function SettingsView() {
                       ) : null}
                       {model.compatibility?.expert_role_accepted && !model.active_expert ? (
                         <Button variant="outline" onClick={() => void activateModel(model.id, "expert")} disabled={activatingId === model.id}>
-                          {activatingId === model.id ? "Activating..." : "Use for expert"}
+                          {activatingId === model.id ? "Activating..." : "Use for expert compression"}
                         </Button>
                       ) : null}
                     </div>
@@ -929,7 +930,7 @@ function SettingsView() {
                 ))
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  Scan common local model folders to detect accepted expert checkpoints already installed on this device.
+                  Scan common local model folders to detect accepted expert-compression runtimes already installed on this device.
                 </p>
               )}
             </div>

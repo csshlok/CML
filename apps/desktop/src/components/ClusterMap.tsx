@@ -201,7 +201,7 @@ export function ClusterMap({
                     style={{
                       background: tintHex[cluster.tint],
                       animation:
-                        cluster.expert === "learning" ? "cml-pulse-glow 3.2s ease-in-out infinite" : undefined,
+                        cluster.expert === "training-running" ? "cml-pulse-glow 3.2s ease-in-out infinite" : undefined,
                     }}
                   />
                   <span
@@ -403,7 +403,11 @@ function ClusterDetailPanel({ cluster, sources }: { cluster: Cluster; sources: S
     "Built retrieval memory for this cluster",
     "Generated first-pass summary and tags",
     indexedCount > 0 ? `Indexed ${indexedCount} connected sources` : "Waiting for indexed sources",
-    cluster.expert === "learning" ? "Local expert learning pass in progress" : "Local expert ready for next update",
+    cluster.expert === "training-running"
+      ? "Expert-compression training pass in progress"
+      : cluster.expert === "expert-ready"
+      ? "Expert compression is ready for grounded bundle use"
+      : "Retrieval remains available while expert compression updates",
   ];
 
   return (
@@ -424,13 +428,13 @@ function ClusterDetailPanel({ cluster, sources }: { cluster: Cluster; sources: S
             {expertLabel[cluster.expert]}
           </div>
           <p className="mt-2 text-xs leading-5 text-muted-foreground">
-            This cluster can already retrieve context. The local expert will use accepted sources,
-            summaries, tags, style profile, and useful chat feedback as its learning set.
+            Retrieval remains the authority for facts and citations. Expert compression only rewrites
+            retrieved evidence into a smaller cluster-aware packet.
           </p>
         </section>
 
         <section className="mt-5">
-          <div className="text-xs font-medium text-muted-foreground">Learning activity</div>
+          <div className="text-xs font-medium text-muted-foreground">Bundle activity</div>
           <div className="mt-3 space-y-2">
             {adapterEvents.map((event) => (
               <div key={event} className="flex gap-2 text-xs text-muted-foreground">
@@ -444,7 +448,7 @@ function ClusterDetailPanel({ cluster, sources }: { cluster: Cluster; sources: S
         <section className="mt-5">
           <div className="text-xs font-medium text-muted-foreground">Expert controls</div>
           <div className="mt-3 rounded-md border border-dashed border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
-            Retrain, pause, rollback, and expert settings appear here after the training queue is implemented.
+            Retrain, pause, rollback, and expert-compression settings appear here after the training queue is implemented.
           </div>
         </section>
       </div>

@@ -16,6 +16,7 @@ import {
 import {
   type Cluster,
   type Source,
+  expertLabel,
 } from "@/lib/mockStore";
 import { Button } from "@/components/ui/button";
 import {
@@ -278,15 +279,15 @@ function ReferenceTable({
 function LearningStatus({ cluster, sourceCount }: { cluster: Cluster; sourceCount: number }) {
   return (
     <section className="mt-4 rounded-md border border-border bg-card px-5 py-5">
-      <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Learning status</h3>
+      <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Bundle status</h3>
       <div className="mt-5 grid gap-5 md:grid-cols-4">
         <StatusItem icon={<FileText className="h-6 w-6" />} label="Memory profile" value={sourceCount > 0 ? "Ready" : "Empty"} meta={`Updated ${formatDate(cluster.lastActive)}`} />
         <StatusItem icon={<span className="h-7 w-7 rounded-full border-4 border-primary border-r-muted" />} label="Coverage" value={`${sourceCount} sources`} meta={`${sourceCount} linked sources`} />
         <StatusItem icon={<Clock3 className="h-6 w-6" />} label="Last updated" value={formatDate(cluster.lastActive)} meta="Automatic sync on" />
-        <StatusItem icon={<Clock3 className="h-6 w-6" />} label="Next check" value="Queued by backend" meta="Background refresh" />
+        <StatusItem icon={<Clock3 className="h-6 w-6" />} label="Expert compression" value={expertLabel[cluster.expert]} meta="Grounded bundle status" />
       </div>
-      {cluster.expert === "learning" && (
-        <div className="mt-4 text-xs text-muted-foreground">A local memory profile pass is running in the background.</div>
+      {cluster.expert === "training-running" && (
+        <div className="mt-4 text-xs text-muted-foreground">A grounded expert-compression training pass is running in the background.</div>
       )}
     </section>
   );
@@ -452,11 +453,11 @@ function ClusterExpertPanel({
         <div className="min-w-0">
           <h2 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Cluster expert</h2>
           <p className="mt-2 max-w-2xl break-words text-sm text-muted-foreground">
-            Retrieval is available before training. The UI only shows a trained expert after adapter graduation passes.
+            Retrieval stays available before and after training. Expert compression is optional and only rewrites retrieved evidence after bundle graduation passes.
           </p>
         </div>
         <span className="max-w-full break-words rounded-full border border-border bg-card px-3 py-1 text-sm">
-          {status?.user_status || "Searchable now"}
+          {status?.user_status || "Searchable"}
         </span>
       </div>
 
@@ -466,7 +467,7 @@ function ClusterExpertPanel({
             <div className="min-w-0">
               <h3 className="text-sm font-semibold">Graduation state</h3>
               <p className="mt-2 break-words text-sm leading-6 text-muted-foreground">
-                {status?.detail || "This cluster can answer through retrieval while local LoRA training is pending."}
+                {status?.detail || "This cluster can answer through retrieval while expert compression training remains optional."}
               </p>
             </div>
             <Gauge className="h-5 w-5 text-muted-foreground" />
@@ -488,10 +489,10 @@ function ClusterExpertPanel({
           <h3 className="text-sm font-semibold">Runtime load</h3>
           <div className="mt-4 flex items-center gap-2 text-sm">
             <span className={`h-2 w-2 rounded-full ${runtimeReady ? "bg-primary" : "bg-muted-foreground"}`} />
-            <span>{runtimeReady ? "Adapter load contract ready" : "Runtime smoke still required"}</span>
+            <span>{runtimeReady ? "Expert-compression runtime ready" : "Runtime smoke still required"}</span>
           </div>
           <p className="mt-3 break-words text-sm leading-6 text-muted-foreground">
-            {status?.runtime_load?.detail || "Connect a real local inference runtime and run the adapter smoke before public trained-expert claims."}
+            {status?.runtime_load?.detail || "Connect a real local inference runtime and run the expert-compression smoke before public expert-ready claims."}
           </p>
           {status?.failure_code && (
             <p className="mt-4 break-words rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
