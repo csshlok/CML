@@ -6,7 +6,26 @@ from pathlib import Path
 from backend.app.core.database import connect, dict_from_row
 from backend.app.core.embeddings import content_hash
 from backend.app.core.encrypted_storage import source_from_encrypted_row
-from backend.app.core.expert_evaluation import EVALUATION_CATEGORIES, prompt_for_category
+
+TRAINING_RECORD_TYPES = (
+    "evidence_compression",
+    "terminology_normalization",
+    "style_rewrite",
+    "reasoning_hint",
+    "conflict_summary",
+    "uncertainty_boundary",
+    "glossary_extract",
+)
+
+LEGACY_CATEGORY_BY_RECORD_TYPE = {
+    "evidence_compression": "summarization",
+    "terminology_normalization": "terminology_consistency",
+    "style_rewrite": "style_transfer",
+    "reasoning_hint": "reasoning_pattern",
+    "conflict_summary": "contradiction_handling",
+    "uncertainty_boundary": "out_of_scope_refusal",
+    "glossary_extract": "terminology_consistency",
+}
 
 
 def build_cluster_dataset(cluster_id: str) -> dict:
@@ -28,13 +47,13 @@ def build_cluster_dataset(cluster_id: str) -> dict:
         source_rows = [
             source_from_encrypted_row(conn, row)
             for row in conn.execute(
-            """
-            SELECT *
-            FROM sources
-            WHERE cluster_id = ?
-            ORDER BY updated_at DESC
-            """,
-            (cluster_id,),
+                """
+                SELECT *
+                FROM sources
+                WHERE cluster_id = ?
+                ORDER BY updated_at DESC
+                """,
+                (cluster_id,),
             ).fetchall()
         ]
 
@@ -42,16 +61,20 @@ def build_cluster_dataset(cluster_id: str) -> dict:
     total_text_chars = 0
 
     for source in source_rows:
-        text = source.get("extracted_text") or ""
-        if not text.strip() or source.get("deleted_at") or _exclude_from_training(source):
+        title = str(source.get("title") or "").strip()
+        if title.upper() == "MANIFEST.JSON":
+            continue
+        text = str(source.get("extracted_text") or source.get("raw_text") or "").strip()
+        if not text or source.get("deleted_at") or _exclude_from_training(source):
             continue
 
+        summary = str(source.get("summary") or "").strip()
         total_text_chars += len(text)
         documents.append(
             {
                 "source_id": source["id"],
-                "title": source["title"],
-                "summary": source.get("summary") or "",
+                "title": title or "Untitled",
+                "summary": summary,
                 "text": text,
                 "content_hash": content_hash(text),
             }
@@ -64,10 +87,7 @@ def build_cluster_dataset(cluster_id: str) -> dict:
     dataset_hash = content_hash(
         "\n".join(
             f"{doc['source_id']}:{doc['content_hash']}"
-            for doc in sorted(
-                documents,
-                key=lambda item: item["source_id"],
-            )
+            for doc in sorted(documents, key=lambda item: item["source_id"])
         )
     )
 
@@ -101,6 +121,7 @@ def write_cluster_training_dataset(dataset: dict, output_dir: Path) -> dict:
         train_records=train_records,
         validation_records=validation_records,
     )
+    record_type_distribution = Counter(str(row.get("record_type") or "") for row in records if str(row.get("record_type") or "").strip())
 
     manifest = {
         "cluster_id": dataset["cluster_id"],
@@ -114,13 +135,14 @@ def write_cluster_training_dataset(dataset: dict, output_dir: Path) -> dict:
         "dataset_hash": dataset["dataset_hash"],
         "train_count": len(train_records),
         "validation_count": len(validation_records),
+        "record_type_distribution": dict(record_type_distribution),
+        "training_record_types": list(TRAINING_RECORD_TYPES),
+        "expert_objective_version": "retrieval_grounded_compression_v1",
+        "requires_retrieved_evidence": True,
         "benchmark_record_accounting": record_accounting,
     }
 
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2),
-        encoding="utf-8",
-    )
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     return {
         "dataset_dir": str(output_dir),
@@ -158,114 +180,183 @@ def _split_training_records(records: list[dict]) -> tuple[list[dict], list[dict]
 def _training_records(dataset: dict) -> list[dict]:
     records = []
     seen_hashes = set()
-
     for doc in dataset.get("documents", []):
-        doc_hash = doc.get("content_hash")
-
-        if doc_hash in seen_hashes:
+        doc_hash = str(doc.get("content_hash") or "")
+        if not doc_hash or doc_hash in seen_hashes:
             continue
-
         seen_hashes.add(doc_hash)
-
-        summary = (doc.get("summary") or "").strip()
-
-        if len(summary) < 20:
-            summary = (
-                f"This document belongs to the cluster "
-                f"'{dataset['cluster_name']}' and contains local knowledge."
-            )
-
-        for category in EVALUATION_CATEGORIES:
-            records.append(
-                {
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": prompt_for_category(category, str(doc["title"])),
-                        },
-                        {
-                            "role": "assistant",
-                            "content": _category_answer(category, doc, summary),
-                        },
-                    ],
-                    "source_id": doc["source_id"],
-                    "content_hash": doc_hash,
-                    "category": category,
-                }
-            )
-
+        records.extend(_records_for_document(dataset, doc))
     return records
 
 
-def _category_answer(category: str, doc: dict, summary: str) -> str:
+def _records_for_document(dataset: dict, doc: dict) -> list[dict]:
     title = str(doc.get("title") or "Untitled")
-    evidence = _evidence_excerpt(summary, str(doc.get("text") or ""))
-    source_prefix = f"According to source {title},"
-
-    if category == "summarization":
-        bullets = _grounded_summary_bullets(summary, str(doc.get("text") or ""), title)
-        return "\n".join(f"- {bullet}" for bullet in bullets)
-    if category == "citation_grounding":
-        return f"{source_prefix} {evidence}"
-    if category == "contradiction_handling":
-        return (
-            f"Trust the local evidence in source {title}. "
-            f"If a new claim conflicts with it, treat the new claim as unverified unless it matches: {evidence}"
-        )
-    if category == "terminology_consistency":
-        terms = _preferred_terms(title, summary, str(doc.get("text") or ""))
-        return (
-            f"{source_prefix} {evidence} "
-            f"Use consistent cluster vocabulary such as {terms}."
-        )
-    if category == "reasoning_pattern":
-        reasoning_evidence = _evidence_excerpt(summary, str(doc.get("text") or ""), max_words=28)
-        return (
-            f"The source evidence is: {reasoning_evidence} "
-            "That suggests a concrete local interpretation. "
-            "The practical conclusion is to follow the pattern the note supports."
-        )
-    if category == "style_transfer":
-        practical_note = _practical_note_excerpt(summary, str(doc.get("text") or ""))
-        return (
-            f"{practical_note} "
-            "Start small, keep it concrete, and adjust one variable at a time."
-        )
-    if category == "out_of_scope_refusal":
-        return (
-            f"Source {title} does not provide enough evidence to answer an unrelated question. "
-            "The missing evidence is explicit coverage in the local source, so the answer should say it is not covered."
-        )
-    return f"{source_prefix} key facts include: {evidence}"
-
-
-def _evidence_excerpt(summary: str, text: str, *, max_words: int = 80) -> str:
-    candidate = _normalized_source_text(text or summary or "")
-    if not candidate:
-        return "the local source contains project-specific evidence"
-    words = candidate.split()
-    excerpt = " ".join(words[:max_words]).strip()
-    return excerpt.rstrip(".") + "."
-
-
-def _grounded_summary_bullets(summary: str, text: str, title: str) -> list[str]:
-    candidate = _normalized_source_text(text or summary or "")
-    segments = _source_segments(candidate)
-    concise_segments = [_truncate_words(segment, 20) for segment in segments if segment]
-    while len(concise_segments) < 2:
-        concise_segments.append("The source contains local project-specific evidence.")
-    return [
-        f"{concise_segments[0].rstrip('.')}.",
-        f"{concise_segments[1].rstrip('.')}.",
-        f"Source: {title}.",
+    summary = (doc.get("summary") or "").strip()
+    text = str(doc.get("text") or "")
+    snippets = _evidence_snippets(text or summary, max_items=5)
+    if not snippets:
+        snippets = ["The local source contains cluster-specific evidence."]
+    evidence_handles = [f"source:{doc['source_id']}#snippet-{index + 1}" for index in range(len(snippets))]
+    local_terms = _preferred_terms(title, summary, text)
+    evidence_block = "\n".join(
+        f"[{index + 1}] {snippet}"
+        for index, snippet in enumerate(snippets)
+    )
+    shared_metadata = {
+        "source_id": doc["source_id"],
+        "content_hash": doc["content_hash"],
+        "source_ids": [doc["source_id"]],
+        "content_hashes": [doc["content_hash"]],
+        "evidence_handles": evidence_handles,
+        "grounding_required": True,
+    }
+    records = [
+        _build_record(
+            record_type="evidence_compression",
+            category=LEGACY_CATEGORY_BY_RECORD_TYPE["evidence_compression"],
+            user_prompt=(
+                f"Compress the retrieved evidence for '{title}' into a short grounded digest.\n\n"
+                f"Evidence:\n{evidence_block}"
+            ),
+            assistant_target=_grounded_digest(title, snippets),
+            metadata=shared_metadata,
+        ),
+        _build_record(
+            record_type="terminology_normalization",
+            category=LEGACY_CATEGORY_BY_RECORD_TYPE["terminology_normalization"],
+            user_prompt=(
+                f"Rewrite the evidence for '{title}' using the cluster's preferred terminology only.\n\n"
+                f"Evidence:\n{evidence_block}\n\nGeneric phrasing: explain this in neutral wording."
+            ),
+            assistant_target=(
+                f"Use cluster-preferred phrasing such as {', '.join(local_terms) if local_terms else 'local cluster vocabulary'}. "
+                f"Keep the rewrite grounded in: {snippets[0]}"
+            ),
+            metadata=shared_metadata,
+        ),
+        _build_record(
+            record_type="style_rewrite",
+            category=LEGACY_CATEGORY_BY_RECORD_TYPE["style_rewrite"],
+            user_prompt=(
+                f"Rewrite a neutral answer for '{title}' in the cluster's local style without adding facts.\n\n"
+                f"Evidence:\n{evidence_block}\n\nNeutral answer: {snippets[0]}"
+            ),
+            assistant_target=(
+                f"{_practical_note_excerpt(summary, text)} "
+                f"Ground the answer in the evidence and keep it concrete: {snippets[0]}"
+            ),
+            metadata=shared_metadata,
+        ),
+        _build_record(
+            record_type="reasoning_hint",
+            category=LEGACY_CATEGORY_BY_RECORD_TYPE["reasoning_hint"],
+            user_prompt=(
+                f"Give a short reasoning hint for '{title}' supported by the retrieved evidence.\n\n"
+                f"Evidence:\n{evidence_block}"
+            ),
+            assistant_target=(
+                f"Evidence first: {snippets[0]} "
+                f"Interpretation: this supports a local pattern around {', '.join(local_terms[:2]) if local_terms else 'the cluster context'}. "
+                "Conclusion: keep the next answer aligned with that pattern."
+            ),
+            metadata=shared_metadata,
+        ),
+        _build_record(
+            record_type="conflict_summary",
+            category=LEGACY_CATEGORY_BY_RECORD_TYPE["conflict_summary"],
+            user_prompt=(
+                f"Summarize the evidence for '{title}' while noting any uncertainty or internal tension.\n\n"
+                f"Evidence:\n{evidence_block}"
+            ),
+            assistant_target=(
+                f"Current evidence from {title} supports: {snippets[0]} "
+                "If a later snippet conflicts, note the conflict neutrally and keep the source handle visible."
+            ),
+            metadata=shared_metadata,
+        ),
+        _build_record(
+            record_type="uncertainty_boundary",
+            category=LEGACY_CATEGORY_BY_RECORD_TYPE["uncertainty_boundary"],
+            user_prompt=(
+                f"State what can and cannot be said from partial evidence for '{title}'.\n\n"
+                f"Evidence:\n{evidence_block}"
+            ),
+            assistant_target=(
+                f"The available evidence supports: {snippets[0]} "
+                "Anything beyond those retrieved details should be marked as missing or uncertain."
+            ),
+            metadata=shared_metadata,
+        ),
+        _build_record(
+            record_type="glossary_extract",
+            category=LEGACY_CATEGORY_BY_RECORD_TYPE["glossary_extract"],
+            user_prompt=(
+                f"Extract a small grounded glossary for '{title}' from the retrieved evidence.\n\n"
+                f"Evidence:\n{evidence_block}"
+            ),
+            assistant_target=_glossary_target(local_terms, snippets),
+            metadata=shared_metadata,
+        ),
     ]
+    return records
+
+
+def _build_record(
+    *,
+    record_type: str,
+    category: str,
+    user_prompt: str,
+    assistant_target: str,
+    metadata: dict,
+) -> dict:
+    input_token_estimate = _estimate_text_tokens(user_prompt)
+    target_token_estimate = _estimate_text_tokens(assistant_target)
+    return {
+        "messages": [
+            {"role": "user", "content": user_prompt},
+            {"role": "assistant", "content": assistant_target},
+        ],
+        "record_type": record_type,
+        "category": category,
+        "source_id": metadata["source_id"],
+        "content_hash": metadata["content_hash"],
+        "source_ids": list(metadata["source_ids"]),
+        "content_hashes": list(metadata["content_hashes"]),
+        "evidence_handles": list(metadata["evidence_handles"]),
+        "input_token_estimate": input_token_estimate,
+        "target_token_estimate": target_token_estimate,
+        "grounding_required": bool(metadata["grounding_required"]),
+    }
+
+
+def _grounded_digest(title: str, snippets: list[str]) -> str:
+    lines = [
+        f"Digest for {title}: {snippets[0]}",
+    ]
+    if len(snippets) > 1:
+        lines.append(f"Supporting detail: {snippets[1]}")
+    lines.append("Use only the retrieved evidence above for downstream synthesis.")
+    return " ".join(lines)
+
+
+def _glossary_target(local_terms: list[str], snippets: list[str]) -> str:
+    if not local_terms:
+        return f"Local terms remain grounded in the evidence: {snippets[0]}"
+    parts = [f"{term}: grounded local term from the retrieved evidence." for term in local_terms[:3]]
+    return " ".join(parts)
+
+
+def _evidence_snippets(text: str, *, max_items: int) -> list[str]:
+    candidate = _normalized_source_text(text)
+    segments = _source_segments(candidate)
+    return [_truncate_words(segment, 24).rstrip(".") + "." for segment in segments[:max_items]]
 
 
 def _practical_note_excerpt(summary: str, text: str) -> str:
     candidate = _normalized_source_text(text or summary or "")
     segments = _source_segments(candidate)
     if not segments:
-        return "the local source captures a cluster-specific practical detail."
+        return "The local source captures a cluster-specific practical detail."
     top_segments = [_truncate_words(segment, 18) for segment in segments[:3]]
     return "; ".join(segment.rstrip(".") for segment in top_segments).strip() + "."
 
@@ -273,7 +364,7 @@ def _practical_note_excerpt(summary: str, text: str) -> str:
 def _normalized_source_text(text: str) -> str:
     cleaned = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
     cleaned = cleaned.replace("`", " ")
-    cleaned = re.sub(r"[{}\\[\\]]", " ", cleaned)
+    cleaned = re.sub(r"[{}\[\]]", " ", cleaned)
     cleaned = re.sub(r"\|", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned.strip()
@@ -300,31 +391,31 @@ def _truncate_words(text: str, limit: int) -> str:
     return " ".join(words[:limit]).strip()
 
 
-def _preferred_terms(title: str, summary: str, text: str) -> str:
+def _preferred_terms(title: str, summary: str, text: str) -> list[str]:
     seen = []
     for raw in f"{title} {summary} {text}".replace("_", " ").replace("-", " ").split():
         token = "".join(char for char in raw.lower() if char.isalnum())
         if len(token) < 5 or token in seen:
             continue
         seen.append(token)
-        if len(seen) >= 3:
+        if len(seen) >= 4:
             break
-    return ", ".join(seen) if seen else "local project vocabulary"
+    return seen
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
-    path.write_text(
-        "".join(
-            json.dumps(row, separators=(",", ":")) + "\n"
-            for row in rows
-        ),
-        encoding="utf-8",
-    )
+    path.write_text("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows), encoding="utf-8")
 
 
 def _estimate_tokens(text_chars: int) -> int:
-    # Conservative language-agnostic estimate for graduation gates.
     return max(0, text_chars // 4)
+
+
+def _estimate_text_tokens(text: str) -> int:
+    cleaned = " ".join(str(text or "").split())
+    if not cleaned:
+        return 0
+    return max(1, (len(cleaned) + 3) // 4)
 
 
 def _benchmark_record_accounting(*, train_records: list[dict], validation_records: list[dict]) -> dict:
@@ -348,12 +439,10 @@ def _benchmark_record_accounting(*, train_records: list[dict], validation_record
 def _split_record_accounting(rows: list[dict]) -> dict:
     total = len(rows)
     source_counts = Counter(str(row.get("source_id") or "") for row in rows if str(row.get("source_id") or "").strip())
+    record_type_counts = Counter(str(row.get("record_type") or "") for row in rows if str(row.get("record_type") or "").strip())
     category_counts = Counter(str(row.get("category") or "") for row in rows if str(row.get("category") or "").strip())
     content_hashes = [str(row.get("content_hash") or "") for row in rows if str(row.get("content_hash") or "").strip()]
     unique_hashes = set(content_hashes)
-    # Benchmark exports intentionally fan one source out into multiple category-specific
-    # records. Treat duplicate content at the source/hash level rather than the raw record
-    # level so category fan-out does not look like corpus duplication.
     source_to_hash = {
         str(row.get("source_id") or ""): str(row.get("content_hash") or "")
         for row in rows
@@ -365,17 +454,17 @@ def _split_record_accounting(rows: list[dict]) -> dict:
         if unique_source_count
         else 0.0
     )
-    per_category_source_counts: dict[str, Counter] = {}
-    max_share_per_source_per_category: dict[str, float] = {}
-    for category in category_counts:
+    per_record_type_source_counts: dict[str, Counter] = {}
+    max_share_per_source_per_record_type: dict[str, float] = {}
+    for record_type in record_type_counts:
         counter = Counter(
             str(row.get("source_id") or "")
             for row in rows
-            if str(row.get("category") or "") == category and str(row.get("source_id") or "").strip()
+            if str(row.get("record_type") or "") == record_type and str(row.get("source_id") or "").strip()
         )
-        per_category_source_counts[category] = counter
-        denominator = category_counts[category]
-        max_share_per_source_per_category[category] = (
+        per_record_type_source_counts[record_type] = counter
+        denominator = record_type_counts[record_type]
+        max_share_per_source_per_record_type[record_type] = (
             max((count / denominator) for count in counter.values())
             if denominator > 0 and counter
             else 0.0
@@ -385,14 +474,17 @@ def _split_record_accounting(rows: list[dict]) -> dict:
         "unique_source_count": len(source_counts),
         "unique_content_hash_count": len(unique_hashes),
         "duplicate_content_ratio": duplicate_source_content_ratio,
+        "record_type_counts": dict(record_type_counts),
         "category_counts": dict(category_counts),
         "source_record_counts": dict(source_counts),
         "max_record_share_per_source": (max((count / total) for count in source_counts.values()) if total and source_counts else 0.0),
-        "source_record_counts_per_category": {
-            category: dict(counter)
-            for category, counter in per_category_source_counts.items()
+        "source_record_counts_per_record_type": {
+            record_type: dict(counter)
+            for record_type, counter in per_record_type_source_counts.items()
         },
-        "max_record_share_per_source_per_category": max_share_per_source_per_category,
+        "max_record_share_per_source_per_record_type": max_share_per_source_per_record_type,
+        # Keep the legacy key name so older reporting code still has a stable field to read.
+        "max_record_share_per_source_per_category": dict(max_share_per_source_per_record_type),
     }
 
 

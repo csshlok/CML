@@ -68,6 +68,10 @@ def main() -> int:
             is_trainable=False,
             local_files_only=True,
         )
+        if quantization_config is None:
+            target_device = _target_device(torch, str(payload.get("device") or "auto"))
+            if target_device is not None:
+                adapter_model = adapter_model.to(target_device)
         adapter_model.eval()
         model_device = next(adapter_model.parameters()).device
         responses = []
@@ -137,22 +141,27 @@ def _device_map(raw_device: str):
     return {"": raw_device}
 
 
+def _target_device(torch_module, raw_device: str) -> str | None:
+    value = raw_device.strip().lower()
+    if value == "cpu":
+        return "cpu"
+    if value in {"", "auto", "cuda"}:
+        if torch_module.cuda.is_available():
+            return "cuda"
+        return None
+    return raw_device
+
+
 def _load_kwargs(torch_module, *, device: str, report_dir: Path, quantized: bool) -> dict:
     value = device.strip().lower()
-    kwargs = {"device_map": _device_map(device), "low_cpu_mem_usage": True}
+    kwargs: dict = {}
     if quantized:
+        kwargs = {"device_map": _device_map(device), "low_cpu_mem_usage": True}
         if value in {"", "auto", "cuda"} and torch_module.cuda.is_available():
             kwargs["device_map"] = "auto"
         return kwargs
-    if value in {"", "auto", "cuda"} and torch_module.cuda.is_available():
-        offload_dir = report_dir / "offload"
-        offload_dir.mkdir(parents=True, exist_ok=True)
-        kwargs["offload_folder"] = str(offload_dir)
-        kwargs["offload_state_dict"] = True
-        kwargs["max_memory"] = {
-            0: os.environ.get("CML_LORA_RUNTIME_GPU_MAX_MEMORY", "4GiB"),
-            "cpu": os.environ.get("CML_LORA_RUNTIME_CPU_MAX_MEMORY", "10GiB"),
-        }
+    if value == "cpu":
+        kwargs["device_map"] = {"": "cpu"}
     return kwargs
 
 

@@ -11,20 +11,29 @@ from uuid import uuid4
 
 from backend.app.core.config import get_settings
 from backend.app.core.embeddings import content_hash
-from backend.app.core.expert_evaluation import EVALUATION_CATEGORIES
+from backend.app.core.training_dataset import TRAINING_RECORD_TYPES
 
 REQUIRED_ADAPTER_FILES = ("adapter_config.json", "adapter_model.safetensors")
 SUPPORTED_EXPERT_STATUSES = [
     "retrieval_ready",
-    "training_pending",
-    "training_running",
-    "training_ready",
+    "retrieval_only",
+    "expert_training_pending",
+    "expert_training_running",
+    "expert_compression_ready",
     "training_failed",
     "hardware_unsupported",
     "rollback_ready",
-    "needs-update",
+    "expert_stale",
     "paused",
 ]
+LEGACY_EXPERT_STATUS_ALIASES = {
+    "training_pending": "expert_training_pending",
+    "training_running": "expert_training_running",
+    "training_ready": "expert_compression_ready",
+    "needs-update": "expert_stale",
+    "ready": "expert_compression_ready",
+    "searchable": "retrieval_ready",
+}
 FAILURE_CODES = [
     "hardware_unsupported",
     "insufficient_dataset",
@@ -47,6 +56,7 @@ def graduation_contract() -> dict:
     settings = get_settings()
     return {
         "supported_statuses": SUPPORTED_EXPERT_STATUSES,
+        "legacy_status_aliases": dict(LEGACY_EXPERT_STATUS_ALIASES),
         "minimum_sources": settings.lora_min_sources,
         "minimum_unique_sources": settings.lora_min_unique_sources,
         "minimum_estimated_tokens": settings.lora_min_tokens,
@@ -66,8 +76,8 @@ def graduation_contract() -> dict:
         "failure_codes": FAILURE_CODES,
         "graduation_gate": (
             "A cluster graduates only when the dataset meets source/token/validation/diversity gates, "
-            "the trainer exits successfully, required adapter files validate, adapter quality beats "
-            "the retrieval-only baseline, and the runtime load contract is available."
+            "the trainer exits successfully, required adapter files validate, expert-compression bundle quality beats "
+            "the retrieval-grounded bundle benchmark, and the runtime load contract is available."
         ),
         "benchmark_gate": (
             "A benchmark is considered meaningful only when the post-filter, post-split record set meets "
@@ -324,17 +334,19 @@ def benchmark_eligibility_report(dataset_manifest: dict) -> dict:
     accounting = dict(dataset_manifest.get("benchmark_record_accounting") or {})
     train = dict(accounting.get("train") or {})
     validation = dict(accounting.get("validation") or {})
-    validation_category_counts = {
+    validation_record_type_counts = {
         str(key): int(value)
-        for key, value in dict(validation.get("category_counts") or {}).items()
+        for key, value in dict(validation.get("record_type_counts") or validation.get("category_counts") or {}).items()
     }
-    validation_category_minimums = {
-        category: validation_category_counts.get(category, 0) >= settings.lora_benchmark_min_validation_records_per_category
-        for category in EVALUATION_CATEGORIES
+    validation_record_type_minimums = {
+        record_type: validation_record_type_counts.get(record_type, 0) >= settings.lora_benchmark_min_validation_records_per_category
+        for record_type in TRAINING_RECORD_TYPES
     }
-    validation_category_source_share = {
-        category: float(dict(validation.get("max_record_share_per_source_per_category") or {}).get(category, 0.0))
-        for category in EVALUATION_CATEGORIES
+    validation_record_type_source_share = {
+        record_type: float(
+            dict(validation.get("max_record_share_per_source_per_record_type") or validation.get("max_record_share_per_source_per_category") or {}).get(record_type, 0.0)
+        )
+        for record_type in TRAINING_RECORD_TYPES
     }
     checks = {
         "minimum_train_records": int(train.get("record_count") or 0) >= settings.lora_benchmark_min_train_records,
@@ -345,10 +357,10 @@ def benchmark_eligibility_report(dataset_manifest: dict) -> dict:
         "maximum_validation_record_share_per_source": float(validation.get("max_record_share_per_source") or 0.0) <= settings.lora_benchmark_max_validation_record_share_per_source,
         "maximum_train_duplicate_ratio": float(train.get("duplicate_content_ratio") or 0.0) <= settings.lora_max_duplicate_ratio,
         "maximum_validation_duplicate_ratio": float(validation.get("duplicate_content_ratio") or 0.0) <= settings.lora_max_duplicate_ratio,
-        "minimum_validation_records_per_category": all(validation_category_minimums.values()),
-        "maximum_validation_record_share_per_source_per_category": all(
+        "minimum_validation_records_per_record_type": all(validation_record_type_minimums.values()),
+        "maximum_validation_record_share_per_source_per_record_type": all(
             share <= settings.lora_benchmark_max_validation_record_share_per_source_per_category
-            for share in validation_category_source_share.values()
+            for share in validation_record_type_source_share.values()
         ),
     }
     return {
@@ -362,17 +374,17 @@ def benchmark_eligibility_report(dataset_manifest: dict) -> dict:
         "validation_duplicate_content_ratio": float(validation.get("duplicate_content_ratio") or 0.0),
         "train_max_record_share_per_source": float(train.get("max_record_share_per_source") or 0.0),
         "validation_max_record_share_per_source": float(validation.get("max_record_share_per_source") or 0.0),
-        "validation_category_counts": validation_category_counts,
-        "validation_category_minimums": validation_category_minimums,
-        "validation_max_record_share_per_source_per_category": validation_category_source_share,
+        "validation_record_type_counts": validation_record_type_counts,
+        "validation_record_type_minimums": validation_record_type_minimums,
+        "validation_max_record_share_per_source_per_record_type": validation_record_type_source_share,
         "minimum_train_records": settings.lora_benchmark_min_train_records,
         "minimum_validation_records": settings.lora_benchmark_min_validation_records,
-        "minimum_validation_records_per_category": settings.lora_benchmark_min_validation_records_per_category,
+        "minimum_validation_records_per_record_type": settings.lora_benchmark_min_validation_records_per_category,
         "minimum_unique_sources": settings.lora_benchmark_min_unique_sources,
         "minimum_unique_content_hashes": settings.lora_benchmark_min_unique_content_hashes,
         "maximum_train_record_share_per_source": settings.lora_benchmark_max_train_record_share_per_source,
         "maximum_validation_record_share_per_source": settings.lora_benchmark_max_validation_record_share_per_source,
-        "maximum_validation_record_share_per_source_per_category": settings.lora_benchmark_max_validation_record_share_per_source_per_category,
+        "maximum_validation_record_share_per_source_per_record_type": settings.lora_benchmark_max_validation_record_share_per_source_per_category,
         "maximum_duplicate_ratio": settings.lora_max_duplicate_ratio,
     }
 def new_artifact_dir(cluster_id: str) -> Path:

@@ -3992,8 +3992,8 @@ class AdditionalQACases(unittest.TestCase):
                 {
                     "source_id": "source-1",
                     "title": "Public V1 Blockers",
-                    "summary": "Public V1 remains blocked until adapter quality benchmark evidence passes.",
-                    "text": "Public V1 remains blocked until adapter quality benchmark evidence passes.",
+                    "summary": "Public V1 remains blocked until expert bundle benchmark evidence passes.",
+                    "text": "Public V1 remains blocked until expert bundle benchmark evidence passes.",
                     "content_hash": "content-hash",
                 }
             ],
@@ -4700,7 +4700,8 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("write_lora_smoke_proof", proof_text)
         self.assertIn("hardware_status", hardware_text)
         self.assertIn("avx2_proof_present", hardware_text)
-        self.assertIn('benchmark_report = {"status": "runtime_failed", "passes": False, "live_adapter_backed": True}', expert_text)
+        self.assertIn('"status": "runtime_failed"', expert_text)
+        self.assertIn('"bundle_readiness": {"status": "runtime_failed"', expert_text)
         self.assertIn('if not runtime_smoke or not runtime_smoke.get("ok"):', expert_text)
         self.assertNotIn("scaffold_case_scores", expert_text)
         self.assertIn("runtime_adapter_load_plan", runtime_text)
@@ -5160,12 +5161,12 @@ class AdditionalQACases(unittest.TestCase):
         proof = build_lora_smoke_proof(report)
 
         self.assertFalse(proof["public_gate"]["passes"])
-        self.assertIn("adapter_quality_benchmark_failed", proof["public_gate"]["blocked_reasons"])
+        self.assertIn("expert_bundle_benchmark_failed", proof["public_gate"]["blocked_reasons"])
         self.assertIn("hardware_avx2_proof_missing", proof["public_gate"]["blocked_reasons"])
         self.assertTrue(proof["pairing"]["adapter_declared_base_matches"])
         self.assertEqual(proof["pairing"]["target_modules"], ["q_proj", "v_proj"])
         self.assertEqual(proof["benchmark"]["baseline_score"], 98.33)
-        self.assertEqual(proof["benchmark"]["adapter_score"], 41.67)
+        self.assertEqual(proof["benchmark"]["bundle_with_expert_score"], 41.67)
 
         unsupported_report = {
             **report,

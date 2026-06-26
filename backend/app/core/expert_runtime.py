@@ -1,10 +1,12 @@
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+from collections import OrderedDict
 from importlib import metadata
 from importlib.util import find_spec
 from pathlib import Path
@@ -382,6 +384,87 @@ def run_cluster_expert_prompt(
     }
 
 
+def run_cluster_expert_compression(
+    conn,
+    *,
+    cluster_id: str,
+    prompt: str,
+    citations: list[dict],
+    cluster_profile: dict | None = None,
+    artifact_id: str | None = None,
+    max_new_tokens: int | None = None,
+) -> dict:
+    if not citations:
+        return {
+            "ok": False,
+            "mode": "no_evidence",
+            "detail": "Expert compression requires retrieved evidence.",
+            "artifact_id": None,
+            "digest": "",
+            "warnings": [],
+            "unsupported_claims": [],
+        }
+    compression_prompt = build_expert_compression_prompt(
+        prompt=prompt,
+        citations=citations,
+        cluster_profile=cluster_profile,
+    )
+    attempted: list[dict[str, str]] = []
+    for artifact in select_cluster_expert_candidates(conn, cluster_id=cluster_id, artifact_id=artifact_id):
+        attempted.append({"artifact_id": str(artifact["id"]), "base_model": str(artifact["base_model"])})
+        smoke = run_adapter_runtime_smoke(
+            adapter_path=artifact["local_path"],
+            base_model=str(artifact["base_model"]),
+            prompt=compression_prompt,
+            max_new_tokens=max_new_tokens,
+        )
+        if not smoke["ok"]:
+            continue
+        parsed = _parse_expert_compression_output(str(smoke.get("response_text") or ""))
+        unsupported_claims = _unsupported_claims_against_evidence(
+            parsed.get("digest") or "",
+            citations,
+            cluster_profile=cluster_profile,
+        )
+        unsupported_claims.extend(str(item).strip() for item in parsed.get("unsupported_claims") or [] if str(item).strip())
+        unsupported_claims = list(OrderedDict.fromkeys(item for item in unsupported_claims if item))
+        if unsupported_claims:
+            return {
+                "ok": False,
+                "mode": "unsupported_claims",
+                "detail": "Expert digest contained unsupported claims and was discarded.",
+                "artifact_id": artifact["id"],
+                "attempted_artifacts": attempted,
+                "warnings": ["Expert digest failed grounding validation."],
+                "unsupported_claims": unsupported_claims,
+                "runtime_smoke": smoke,
+            }
+        return {
+            "ok": True,
+            "mode": "retrieval_grounded_compression",
+            "cluster_id": cluster_id,
+            "artifact_id": artifact["id"],
+            "attempted_artifacts": attempted,
+            "digest": str(parsed.get("digest") or "").strip(),
+            "local_terms": list(parsed.get("local_terms") or []),
+            "reasoning_hints": list(parsed.get("reasoning_hints") or []),
+            "uncertainties": list(parsed.get("uncertainties") or []),
+            "unsupported_claims": [],
+            "warnings": [],
+            "runtime_smoke": smoke,
+            "load_plan": smoke.get("plan") or {},
+        }
+    return {
+        "ok": False,
+        "mode": "expert_unavailable",
+        "detail": "No compatible ready adapter could be loaded for retrieval-grounded compression.",
+        "artifact_id": None,
+        "attempted_artifacts": attempted,
+        "warnings": [],
+        "unsupported_claims": [],
+    }
+
+
 def select_cluster_expert_candidates(conn, *, cluster_id: str, artifact_id: str | None = None) -> list[dict]:
     params: list[Any] = [cluster_id]
     artifact_filter = ""
@@ -429,6 +512,121 @@ def select_cluster_expert_candidates(conn, *, cluster_id: str, artifact_id: str 
         (cluster_id,),
     ).fetchall()
     return [dict_from_row(row) for row in fallback_rows]
+
+
+def build_expert_compression_prompt(
+    *,
+    prompt: str,
+    citations: list[dict],
+    cluster_profile: dict | None = None,
+) -> str:
+    evidence_lines = []
+    for index, citation in enumerate(citations[:5], start=1):
+        evidence_lines.append(
+            f"[{index}] {citation.get('source_title') or 'Untitled source'} :: "
+            f"{' '.join(str(citation.get('snippet') or '').split())}"
+        )
+    local_terms = ", ".join(str(item) for item in (cluster_profile or {}).get("local_terms") or [] if str(item).strip())
+    style_profile = str((cluster_profile or {}).get("style_profile") or "").strip()
+    return (
+        "Task: Compress the retrieved evidence into a cluster-aware context digest.\n"
+        "Authority: Use only the evidence below.\n"
+        "Forbidden: Do not invent citations, source titles, names, dates, quantities, or facts.\n"
+        "Output: JSON with keys digest, local_terms, reasoning_hints, uncertainties, unsupported_claims.\n\n"
+        f"User query: {prompt.strip()}\n"
+        f"Cluster local terms: {local_terms or 'none'}\n"
+        f"Cluster style profile: {style_profile or 'none'}\n\n"
+        "Retrieved evidence:\n"
+        f"{chr(10).join(evidence_lines)}"
+    )
+
+
+def _parse_expert_compression_output(text: str) -> dict:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return {
+            "digest": "",
+            "local_terms": [],
+            "reasoning_hints": [],
+            "uncertainties": [],
+            "unsupported_claims": [],
+        }
+    if stripped.startswith("{"):
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            return {
+                "digest": str(payload.get("digest") or "").strip(),
+                "local_terms": [str(item).strip() for item in payload.get("local_terms") or [] if str(item).strip()],
+                "reasoning_hints": [str(item).strip() for item in payload.get("reasoning_hints") or [] if str(item).strip()],
+                "uncertainties": [str(item).strip() for item in payload.get("uncertainties") or [] if str(item).strip()],
+                "unsupported_claims": [str(item).strip() for item in payload.get("unsupported_claims") or [] if str(item).strip()],
+            }
+    return {
+        "digest": stripped,
+        "local_terms": [],
+        "reasoning_hints": [],
+        "uncertainties": [],
+        "unsupported_claims": [],
+    }
+
+
+def _unsupported_claims_against_evidence(
+    digest: str,
+    citations: list[dict],
+    *,
+    cluster_profile: dict | None = None,
+) -> list[str]:
+    evidence_titles = {
+        str(item.get("source_title") or "").strip()
+        for item in citations
+        if str(item.get("source_title") or "").strip()
+    }
+    evidence_text = " ".join(
+        part
+        for item in citations
+        for part in (
+            str(item.get("source_title") or "").strip(),
+            str(item.get("snippet") or "").strip(),
+        )
+        if part
+    )
+    allowed_terms = {
+        str(item).strip()
+        for item in (cluster_profile or {}).get("local_terms") or []
+        if str(item).strip()
+    }
+    unsupported: list[str] = []
+    for title in re.findall(r"'([^']+)'|\"([^\"]+)\"", digest):
+        candidate = next((part for part in title if part), "").strip()
+        if candidate and candidate not in evidence_titles:
+            unsupported.append(f"unsupported source title: {candidate}")
+    evidence_lower = evidence_text.lower()
+    for number in re.findall(r"\b\d[\d,./:-]*\b", digest):
+        if number.lower() not in evidence_lower:
+            unsupported.append(f"unsupported quantity/date: {number}")
+    stop_words = {
+        "The",
+        "This",
+        "That",
+        "These",
+        "Those",
+        "Use",
+        "Retrieved",
+        "Cluster",
+        "Evidence",
+        "Digest",
+        "Reasoning",
+        "Local",
+    }
+    for token in re.findall(r"\b[A-Z][a-zA-Z0-9_-]{2,}\b", digest):
+        if token in stop_words or token in allowed_terms:
+            continue
+        if token.lower() not in evidence_lower:
+            unsupported.append(f"unsupported entity: {token}")
+    return unsupported
 
 
 def _base_model_candidate_strings(base_model: str, adapter_metadata: dict | None) -> list[str]:
