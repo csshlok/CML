@@ -333,7 +333,7 @@ At the end of meaningful work, keep [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTE
 - [docs/V1_RELEASE_CHECKLIST.md](docs/V1_RELEASE_CHECKLIST.md) — live release-gate summary
 - [docs/WINDOWS_VM_VALIDATION.md](docs/WINDOWS_VM_VALIDATION.md) — clean-VM validation state
 - [docs/PACKAGING_INVESTIGATION.md](docs/PACKAGING_INVESTIGATION.md) — packaging state and remaining blocker
-- [docs/EXPERT_VALIDATION_REPORT.md](docs/EXPERT_VALIDATION_REPORT.md) — real LoRA proof status
+- [docs/CLUSTER_BUNDLE_EXPERT_IMPLEMENTATION_PLAN.md](docs/CLUSTER_BUNDLE_EXPERT_IMPLEMENTATION_PLAN.md) — retrieval-grounded cluster expert bundle implementation plan
 - [docs/RELEASE_AUDIT.md](docs/RELEASE_AUDIT.md) — release-readiness audit
 
 ## Notes

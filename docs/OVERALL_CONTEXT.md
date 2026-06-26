@@ -1,5 +1,44 @@
-﻿# Overall Context
+# Overall Context
 
+Last updated: 2026-06-26
+
+This is the long-form project context. Keep detailed historical notes here when `docs/PROJECT_CONTEXT.md` is pruned.
+
+## 2026-06-26 Current Architecture Update
+
+The compact source of truth is `docs/PROJECT_CONTEXT.md`. The detailed implementation plan for the latest architecture shift is `docs/CLUSTER_BUNDLE_EXPERT_IMPLEMENTATION_PLAN.md`.
+
+Current cluster expert decision:
+
+- The old standalone prompt-only LoRA expert goal is superseded.
+- The shippable target is a retrieval-grounded cluster expert bundle.
+- The bundle is the expert; the LoRA adapter is only an optional compression component.
+- Retrieval owns facts, citations, source IDs, quotes, dates, names, numbers, and missing-evidence refusal.
+- LoRA may assist only with grounded compression, terminology normalization, local style, and reasoning-pattern hints after retrieved evidence exists.
+- Product paths must not call prompt-only adapter generation for cluster answers.
+- Future benchmarks must measure bundle quality and token savings, not whether an adapter beats retrieval at factual recall.
+
+Target flow:
+
+```text
+User query
+-> router selects cluster bundle
+-> retrieval gets source-grounded evidence
+-> optional LoRA compresses/interprets that evidence
+-> bundle returns compact packet with citations and expansion handles
+-> final model answers from packet
+```
+
+Important latest LoRA evidence:
+
+- Training/runtime infrastructure is real and useful, including Transformers/PEFT runtime loading, CUDA training, eval-loss logging, and best-checkpoint selection.
+- Prompt-only adapter quality is not shippable as a factual-memory feature because real samples showed wrong source titles, entity/name drift, and unsupported fluent claims.
+- Previous adapter-vs-retrieval scores are historical diagnostics only and should not be used as release proof.
+- Do not spend more GPU time on 2B/3B prompt-only adapter runs until the bundle objective and benchmark are implemented.
+
+Long-form historical context is preserved below for continuity. When older sections conflict with this update, this 2026-06-26 architecture update is authoritative.
+
+## Restored Historical Context
 Last updated: 2026-06-26
 
 ## Fallback Context Rule
