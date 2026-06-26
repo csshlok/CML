@@ -190,6 +190,18 @@ class UnlockPhase2Tests(unittest.TestCase):
         self.assertTrue(body["recovery_key"].startswith("CMLR-"))
         self.assertEqual(duplicate.status_code, 409)
 
+    def test_initialize_endpoint_rejects_weak_passphrase(self) -> None:
+        client = self._client()
+        try:
+            response = client.post(
+                "/api/v1/system/unlock/initialize",
+                json={"vault_id": "vault-phase2", "passphrase": "short"},
+            )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 422)
+
     def test_recovery_reset_unlocks_with_new_passphrase(self) -> None:
         client = self._client()
         try:
@@ -222,6 +234,27 @@ class UnlockPhase2Tests(unittest.TestCase):
         self.assertEqual(old.status_code, 401)
         self.assertEqual(new.status_code, 200)
         self.assertEqual(new.json()["state"], "ready")
+
+    def test_recovery_reset_rejects_weak_new_passphrase(self) -> None:
+        client = self._client()
+        try:
+            setup = client.post(
+                "/api/v1/system/unlock/initialize",
+                json={"vault_id": "vault-phase2", "passphrase": "correct horse battery staple"},
+            ).json()
+            client.post("/api/v1/system/unlock/lock")
+            reset = client.post(
+                "/api/v1/system/unlock/recovery/reset",
+                json={
+                    "vault_id": "vault-phase2",
+                    "recovery_key": setup["recovery_key"],
+                    "new_passphrase": "short",
+                },
+            )
+        finally:
+            client.close()
+
+        self.assertEqual(reset.status_code, 422)
 
     def test_backend_restart_does_not_regain_ready_state(self) -> None:
         self._initialize_security_directly()

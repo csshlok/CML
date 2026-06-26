@@ -3,6 +3,7 @@ import binascii
 import json
 import re
 import secrets
+import threading
 from dataclasses import dataclass
 from typing import Literal
 
@@ -20,6 +21,8 @@ WRAP_NONCE_BYTES = 12
 SALT_BYTES = 16
 RECOVERY_KEY_BYTES = 32
 RECOVERY_KEY_GROUP = 4
+MIN_PASSPHRASE_LENGTH = 12
+MIN_PASSPHRASE_UNIQUE_CHARS = 4
 KDF_ALGORITHM = "argon2id"
 DEFAULT_KDF_PARAMS = {
     "length": 32,
@@ -89,6 +92,11 @@ class VaultSetupResult:
 
 
 _ACTIVE_KEYS: dict[str, VaultKeyMaterial] = {}
+_ACTIVE_KEYS_LOCK = threading.RLock()
+ZEROIZATION_LIMITATION = (
+    "Best-effort only: Python bytes are immutable, so lock/unlock flows remove key references "
+    "but do not guarantee in-memory scrubbing of key material."
+)
 
 
 def initialize_vault_security(
@@ -98,7 +106,7 @@ def initialize_vault_security(
     unlock_mode: Literal["convenience", "strict"] = "convenience",
     kdf_params: dict | None = None,
 ) -> VaultSetupResult:
-    _validate_secret(passphrase, "passphrase")
+    _validate_secret(passphrase, "passphrase", require_strength=True)
     if unlock_mode not in {"convenience", "strict"}:
         raise ValueError("unlock_mode must be convenience or strict")
     params = _normalize_kdf_params(kdf_params)
@@ -152,14 +160,16 @@ def initialize_vault_security(
             """,
             metadata,
         )
-    _ACTIVE_KEYS[vault_id] = VaultKeyMaterial(vault_id=vault_id, master_key=master_key)
+    with _ACTIVE_KEYS_LOCK:
+        _ACTIVE_KEYS[vault_id] = VaultKeyMaterial(vault_id=vault_id, master_key=master_key)
     return VaultSetupResult(vault_id=vault_id, recovery_key=recovery_key)
 
 
 def unlock_vault_with_passphrase(vault_id: str, passphrase: str) -> VaultKeyMaterial:
     master_key = _unwrap_master_key_with_passphrase(vault_id, passphrase)
     material = VaultKeyMaterial(vault_id=vault_id, master_key=master_key)
-    _ACTIVE_KEYS[vault_id] = material
+    with _ACTIVE_KEYS_LOCK:
+        _ACTIVE_KEYS[vault_id] = material
     return material
 
 
@@ -182,7 +192,8 @@ def unlock_vault_with_recovery_key(vault_id: str, recovery_key: str) -> VaultKey
     kek = _derive_kek(recovery_bytes, salt, params)
     master_key = _unwrap_key(kek, wrapped, vault_id, "recovery")
     material = VaultKeyMaterial(vault_id=vault_id, master_key=master_key)
-    _ACTIVE_KEYS[vault_id] = material
+    with _ACTIVE_KEYS_LOCK:
+        _ACTIVE_KEYS[vault_id] = material
     return material
 
 
@@ -193,7 +204,7 @@ def reset_passphrase_with_recovery_key(
     *,
     kdf_params: dict | None = None,
 ) -> None:
-    _validate_secret(new_passphrase, "passphrase")
+    _validate_secret(new_passphrase, "passphrase", require_strength=True)
     material = unlock_vault_with_recovery_key(vault_id, recovery_key)
     row = _metadata(vault_id)
     params = _normalize_kdf_params(kdf_params or _row_kdf_params(row))
@@ -223,7 +234,8 @@ def reset_passphrase_with_recovery_key(
                 vault_id,
             ),
         )
-    _ACTIVE_KEYS[vault_id] = material
+    with _ACTIVE_KEYS_LOCK:
+        _ACTIVE_KEYS[vault_id] = material
 
 
 def verify_sensitive_action(vault_id: str, passphrase: str) -> bool:
@@ -242,29 +254,35 @@ def derive_vault_subkeys(material: VaultKeyMaterial) -> VaultSubkeys:
 
 
 def lock_vault(vault_id: str) -> None:
-    material = _ACTIVE_KEYS.pop(vault_id, None)
+    with _ACTIVE_KEYS_LOCK:
+        material = _ACTIVE_KEYS.pop(vault_id, None)
     if material is not None:
         _best_effort_zeroize(material.master_key)
 
 
 def lock_all_vaults() -> None:
-    for vault_id in list(_ACTIVE_KEYS):
+    with _ACTIVE_KEYS_LOCK:
+        vault_ids = list(_ACTIVE_KEYS)
+    for vault_id in vault_ids:
         lock_vault(vault_id)
 
 
 def is_vault_unlocked(vault_id: str) -> bool:
-    return vault_id in _ACTIVE_KEYS
+    with _ACTIVE_KEYS_LOCK:
+        return vault_id in _ACTIVE_KEYS
 
 
 def require_unlocked_key_material(vault_id: str) -> VaultKeyMaterial:
-    material = _ACTIVE_KEYS.get(vault_id)
+    with _ACTIVE_KEYS_LOCK:
+        material = _ACTIVE_KEYS.get(vault_id)
     if material is None:
         raise VaultLockedError()
     return material
 
 
 def active_key_count() -> int:
-    return len(_ACTIVE_KEYS)
+    with _ACTIVE_KEYS_LOCK:
+        return len(_ACTIVE_KEYS)
 
 
 def get_vault_security_metadata(vault_id: str) -> dict:
@@ -389,11 +407,18 @@ def _normalize_kdf_params(params: dict | None) -> dict:
     return {key: normalized[key] for key in ("length", "iterations", "lanes", "memory_cost")}
 
 
-def _validate_secret(value: str, name: str) -> None:
+def _validate_secret(value: str, name: str, *, require_strength: bool = False) -> None:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{name}_required")
+    if require_strength and name == "passphrase":
+        normalized = value.strip()
+        if (
+            len(normalized) < MIN_PASSPHRASE_LENGTH
+            or len(set(normalized)) < MIN_PASSPHRASE_UNIQUE_CHARS
+        ):
+            raise ValueError("passphrase_too_weak")
 
 
 def _best_effort_zeroize(value: bytes) -> None:
-    # Python bytes are immutable; this is a documented best-effort hook for future native storage.
+    # Best-effort only; see ZEROIZATION_LIMITATION.
     _ = value

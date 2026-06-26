@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field, field_validator
 
+MIN_VAULT_PASSPHRASE_LENGTH = 12
+
 
 def _blank_to_none(value: str | None) -> str | None:
     if value is None:
@@ -1239,7 +1241,7 @@ class UnlockStatusRead(BaseModel):
 
 class UnlockInitializeRequest(BaseModel):
     vault_id: str
-    passphrase: str = Field(min_length=1)
+    passphrase: str = Field(min_length=MIN_VAULT_PASSPHRASE_LENGTH)
     unlock_mode: str = "convenience"
 
 
@@ -1260,7 +1262,7 @@ class UnlockRecoveryRequest(BaseModel):
 class UnlockRecoveryResetRequest(BaseModel):
     vault_id: str
     recovery_key: str = Field(min_length=1)
-    new_passphrase: str = Field(min_length=1)
+    new_passphrase: str = Field(min_length=MIN_VAULT_PASSPHRASE_LENGTH)
 
 
 class UnlockSettingsUpdate(BaseModel):

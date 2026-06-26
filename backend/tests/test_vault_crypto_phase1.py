@@ -2,6 +2,7 @@ import importlib
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -140,6 +141,72 @@ class VaultCryptoPhase1Tests(unittest.TestCase):
         self.assertTrue(vault_crypto.verify_sensitive_action("vault-crypto", "sensitive-passphrase"))
         self.assertFalse(vault_crypto.is_vault_unlocked("vault-crypto"))
         self.assertEqual(vault_crypto.active_key_count(), 0)
+
+    def test_initialize_rejects_weak_passphrase(self) -> None:
+        from backend.app.core import vault_crypto
+
+        with self.assertRaises(ValueError) as raised:
+            vault_crypto.initialize_vault_security(
+                "vault-crypto",
+                "aaaaaaaaaaaa",
+                kdf_params=vault_crypto.TEST_KDF_PARAMS,
+            )
+
+        self.assertEqual(str(raised.exception), "passphrase_too_weak")
+        self.assertFalse(vault_crypto.is_vault_unlocked("vault-crypto"))
+
+    def test_reset_rejects_weak_new_passphrase(self) -> None:
+        from backend.app.core import vault_crypto
+
+        setup = vault_crypto.initialize_vault_security(
+            "vault-crypto",
+            "correct horse battery staple",
+            kdf_params=vault_crypto.TEST_KDF_PARAMS,
+        )
+        with self.assertRaises(ValueError) as raised:
+            vault_crypto.reset_passphrase_with_recovery_key(
+                "vault-crypto",
+                setup.recovery_key,
+                "bbbbbbbbbbbb",
+                kdf_params=vault_crypto.TEST_KDF_PARAMS,
+            )
+
+        self.assertEqual(str(raised.exception), "passphrase_too_weak")
+
+    def test_zeroization_limitation_is_explicit(self) -> None:
+        from backend.app.core import vault_crypto
+
+        self.assertIn("Best-effort only", vault_crypto.ZEROIZATION_LIMITATION)
+        self.assertIn("do not guarantee in-memory scrubbing", vault_crypto.ZEROIZATION_LIMITATION)
+
+    def test_active_key_registry_tolerates_concurrent_lock_and_unlock(self) -> None:
+        from backend.app.core import vault_crypto
+
+        vault_crypto.initialize_vault_security(
+            "vault-crypto",
+            "correct horse battery staple",
+            kdf_params=vault_crypto.TEST_KDF_PARAMS,
+        )
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                for _ in range(10):
+                    vault_crypto.unlock_vault_with_passphrase("vault-crypto", "correct horse battery staple")
+                    vault_crypto.is_vault_unlocked("vault-crypto")
+                    vault_crypto.require_unlocked_key_material("vault-crypto")
+                    vault_crypto.lock_vault("vault-crypto")
+            except BaseException as exc:  # pragma: no cover - defensive capture for concurrent failures
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(errors, [])
+        self.assertLessEqual(vault_crypto.active_key_count(), 1)
 
     def test_public_metadata_redacts_wrapped_keys_and_vendor_recovery_is_absent(self) -> None:
         from backend.app.core import vault_crypto

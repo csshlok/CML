@@ -146,6 +146,8 @@ def unlock_recovery(payload: UnlockRecoveryRequest) -> dict:
 def reset_unlock_passphrase(payload: UnlockRecoveryResetRequest) -> dict:
     try:
         return reset_passphrase(payload.vault_id, payload.recovery_key, payload.new_passphrase)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RepairRequiredError as exc:
         raise HTTPException(status_code=423, detail=str(exc)) from exc
     except Exception as exc:
