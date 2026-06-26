@@ -3,9 +3,11 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowRight,
   CheckCircle2,
+  Copy,
   Database,
   FileText,
   Image as ImageIcon,
+  Loader2,
   Mail,
   MessageSquare,
   Mic,
@@ -31,6 +33,7 @@ import {
   type VaultRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
+import { copyElementToFigma } from "@/lib/figmaExport";
 
 export const Route = createFileRoute("/_app/home")({
   head: () => ({ meta: [{ title: "Home" }] }),
@@ -45,6 +48,29 @@ export function HomeView() {
   const [chats, setChats] = useState<ChatSessionRecord[]>([]);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
   const [query, setQuery] = useState("");
+  const [figmaExporting, setFigmaExporting] = useState(false);
+
+  const canExportToFigma =
+    import.meta.env.DEV &&
+    typeof window !== "undefined" &&
+    !(window as Window & { cmlDesktop?: unknown }).cmlDesktop;
+
+  async function exportHomeScreenToFigma() {
+    setFigmaExporting(true);
+
+    try {
+      await copyElementToFigma({
+        element: document.body,
+        name: "Vault Home",
+      });
+
+      window.alert("Copied Home screen to clipboard. Now paste it into Figma.");
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Could not copy the Home screen to Figma.");
+    } finally {
+      setFigmaExporting(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -91,14 +117,17 @@ export function HomeView() {
         .slice(0, 5),
     [sources],
   );
+
   const unsorted = sources.filter((source) => !source.clusterId).slice(0, 4);
   const indexedCount = sources.filter((source) => source.state === "indexed").length;
   const activeJobs = (jobs?.running ?? 0) + (jobs?.queued ?? 0);
+
   const activityItems = [
     ...recentSources.slice(0, 3).map((source) => ({
       id: `source:${source.id}`,
       time: formatRelativeDay(source.updatedAt),
-      title: source.state === "indexed" ? `Indexed ${source.title}` : `${source.state} ${source.title}`,
+      title:
+        source.state === "indexed" ? `Indexed ${source.title}` : `${source.state} ${source.title}`,
     })),
     ...chats.slice(0, 2).map((chat) => ({
       id: `chat:${chat.id}`,
@@ -128,9 +157,29 @@ export function HomeView() {
               Your private AI memory, ready to search.
             </p>
           </div>
-          <Button variant="outline" className="gap-2">
-            <Settings2 className="h-4 w-4" /> Filters
-          </Button>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {canExportToFigma && (
+              <Button
+                type="button"
+                variant="outline"
+                className="gap-2"
+                onClick={() => void exportHomeScreenToFigma()}
+                disabled={figmaExporting}
+              >
+                {figmaExporting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+                Copy to Figma
+              </Button>
+            )}
+
+            <Button variant="outline" className="gap-2">
+              <Settings2 className="h-4 w-4" /> Filters
+            </Button>
+          </div>
         </header>
 
         <section className="mt-16 rounded-md border border-border bg-card p-3">
@@ -181,7 +230,9 @@ export function HomeView() {
         <section className="mt-4 rounded-md border border-border/80 bg-card/95 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="break-words text-lg font-medium">Suggested clusters</h2>
-            <Link to="/clusters" className="text-sm text-primary">View all</Link>
+            <Link to="/clusters" className="text-sm text-primary">
+              View all
+            </Link>
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
             {clusters.slice(0, 4).map((cluster) => {
@@ -199,9 +250,12 @@ export function HomeView() {
                       <Sparkles className="h-4 w-4" />
                     </span>
                     <div className="min-w-0 flex-1">
-                      <div className="line-clamp-2 break-words text-sm font-semibold">{cluster.name}</div>
+                      <div className="line-clamp-2 break-words text-sm font-semibold">
+                        {cluster.name}
+                      </div>
                       <div className="mt-1 text-xs text-muted-foreground">
-                        {count} sources <span className="px-1">/</span> {Math.max(64, count * 64)} memories
+                        {count} sources <span className="px-1">/</span> {Math.max(64, count * 64)}{" "}
+                        memories
                       </div>
                     </div>
                   </div>
@@ -233,26 +287,56 @@ export function HomeView() {
           <div className="mt-6 space-y-4 border-t border-border pt-5">
             <HealthRow icon={<ShieldCheck className="h-4 w-4" />} label="Vault" value="Healthy" />
             <HealthRow icon={<Database className="h-4 w-4" />} label="Database" value="Healthy" />
-            <HealthRow icon={<CheckCircle2 className="h-4 w-4" />} label="Embeddings" value="Healthy" />
+            <HealthRow
+              icon={<CheckCircle2 className="h-4 w-4" />}
+              label="Embeddings"
+              value="Healthy"
+            />
             <HealthRow icon={<MessageSquare className="h-4 w-4" />} label="Model" value="Ready" />
-            <HealthRow icon={<FileText className="h-4 w-4" />} label="Jobs" value={`${activeJobs} running`} />
+            <HealthRow
+              icon={<FileText className="h-4 w-4" />}
+              label="Jobs"
+              value={`${activeJobs} running`}
+            />
           </div>
         </section>
 
         <section className="mt-4 rounded-md border border-border bg-background p-4">
           <h2 className="text-lg font-medium">Quick actions</h2>
           <div className="mt-4 space-y-4">
-            <QuickAction icon={<FileText className="h-4 w-4" />} title="Add source" detail="Import files, links, or notes" href="/sources" />
-            <QuickAction icon={<Plus className="h-4 w-4" />} title="New cluster" detail="Organize related memories" href="/clusters" />
-            <QuickAction icon={<Search className="h-4 w-4" />} title="Run analysis" detail="Ask Vault to analyze a topic" href="/chat" />
-            <QuickAction icon={<Mail className="h-4 w-4" />} title="Open inbox" detail="Review unprocessed sources" href="/sources" />
+            <QuickAction
+              icon={<FileText className="h-4 w-4" />}
+              title="Add source"
+              detail="Import files, links, or notes"
+              href="/sources"
+            />
+            <QuickAction
+              icon={<Plus className="h-4 w-4" />}
+              title="New cluster"
+              detail="Organize related memories"
+              href="/clusters"
+            />
+            <QuickAction
+              icon={<Search className="h-4 w-4" />}
+              title="Run analysis"
+              detail="Ask Vault to analyze a topic"
+              href="/chat"
+            />
+            <QuickAction
+              icon={<Mail className="h-4 w-4" />}
+              title="Open inbox"
+              detail="Review unprocessed sources"
+              href="/sources"
+            />
           </div>
         </section>
 
         <section className="mt-4 rounded-md border border-border bg-background p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-lg font-medium">Activity</h2>
-            <Link to="/activity" className="text-sm text-primary">View all</Link>
+            <Link to="/activity" className="text-sm text-primary">
+              View all
+            </Link>
           </div>
           <div className="mt-5 space-y-4 border-l border-border pl-4">
             {activityItems.map((item) => (
@@ -289,9 +373,16 @@ function Panel({
     <section className="rounded-md border border-border bg-card">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
         <h2 className="break-words text-lg font-medium">
-          {title} {typeof badge === "number" && <span className="ml-2 rounded bg-muted px-1.5 text-sm text-muted-foreground">{badge}</span>}
+          {title}{" "}
+          {typeof badge === "number" && (
+            <span className="ml-2 rounded bg-muted px-1.5 text-sm text-muted-foreground">
+              {badge}
+            </span>
+          )}
         </h2>
-        <Link to={href} className="text-sm text-primary">{action}</Link>
+        <Link to={href} className="text-sm text-primary">
+          {action}
+        </Link>
       </div>
       <div className="divide-y divide-border">{children}</div>
     </section>
@@ -310,7 +401,9 @@ function MemoryRow({ source, cluster }: { source: Source; cluster?: Cluster }) {
           {source.summary || source.preview || "Key memory summary will appear after indexing."}
         </div>
       </div>
-      <span className="max-w-[36%] break-words text-right text-xs text-muted-foreground">{cluster?.name ?? sourceStateText(source)}</span>
+      <span className="max-w-[36%] break-words text-right text-xs text-muted-foreground">
+        {cluster?.name ?? sourceStateText(source)}
+      </span>
     </div>
   );
 }
@@ -325,7 +418,9 @@ function UnsortedRow({ source, index }: { source: Source; index: number }) {
       </span>
       <div className="min-w-0 flex-1">
         <div className="break-words text-sm font-semibold">{source.title}</div>
-        <div className="mt-1 text-xs text-muted-foreground">{source.type} <span className="px-1">/</span> {source.state}</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          {source.type} <span className="px-1">/</span> {source.state}
+        </div>
       </div>
       <span className="text-xs text-muted-foreground">{index === 0 ? "Today" : "Yesterday"}</span>
     </div>
@@ -335,7 +430,10 @@ function UnsortedRow({ source, index }: { source: Source; index: number }) {
 function HealthRow({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
   return (
     <div className="flex items-start justify-between gap-3 text-sm">
-      <span className="flex min-w-0 items-center gap-3 break-words text-muted-foreground">{icon}{label}</span>
+      <span className="flex min-w-0 items-center gap-3 break-words text-muted-foreground">
+        {icon}
+        {label}
+      </span>
       <span className="break-words text-right text-primary">{value}</span>
     </div>
   );
@@ -354,7 +452,9 @@ function QuickAction({
 }) {
   return (
     <Link to={href} className="flex items-start gap-3 rounded-md p-1.5 hover:bg-accent/45">
-      <span className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-primary">{icon}</span>
+      <span className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-primary">
+        {icon}
+      </span>
       <span className="min-w-0 flex-1">
         <span className="block break-words text-sm font-medium">{title}</span>
         <span className="block break-words text-xs text-muted-foreground">{detail}</span>

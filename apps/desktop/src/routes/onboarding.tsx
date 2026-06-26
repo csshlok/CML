@@ -97,7 +97,9 @@ function Onboarding() {
   const [embeddingChoice, setEmbeddingChoice] = useState<EmbeddingChoice>("recommended");
   const [embeddingCacheDir, setEmbeddingCacheDir] = useState("");
   const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
-  const [embeddingDownload, setEmbeddingDownload] = useState<EmbeddingModelDownloadState | null>(null);
+  const [embeddingDownload, setEmbeddingDownload] = useState<EmbeddingModelDownloadState | null>(
+    null,
+  );
   const [diskPreflight, setDiskPreflight] = useState<DiskPreflightResponse | null>(null);
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
   const [figmaExporting, setFigmaExporting] = useState(false);
@@ -131,7 +133,16 @@ function Onboarding() {
     if (step === 5) return models.some(isChatSetupProgress);
     if (step === 6) return Boolean(embeddingRuntime?.available);
     return true;
-  }, [displayName, email, embeddingRuntime?.available, models, signupMethod, step, vaultName, vaultPath]);
+  }, [
+    displayName,
+    email,
+    embeddingRuntime?.available,
+    models,
+    signupMethod,
+    step,
+    vaultName,
+    vaultPath,
+  ]);
 
   const canExportToFigma = import.meta.env.DEV && !desktop;
 
@@ -190,7 +201,9 @@ function Onboarding() {
       setDiscoveredModels(discovered.models);
     } catch (err) {
       setDiscoveredModels([]);
-      setError(err instanceof Error ? err.message : "Could not scan for installed compatible models.");
+      setError(
+        err instanceof Error ? err.message : "Could not scan for installed compatible models.",
+      );
     } finally {
       setDiscoveringModels(false);
     }
@@ -254,7 +267,13 @@ function Onboarding() {
     try {
       await activateLocalModel(modelId, role);
       await refreshModels();
-      setMessage(role === "chat" ? "Chat model activated." : role === "expert" ? "Expert checkpoint activated." : "Chat/expert model activated.");
+      setMessage(
+        role === "chat"
+          ? "Chat model activated."
+          : role === "expert"
+            ? "Expert checkpoint activated."
+            : "Chat/expert model activated.",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not activate the model.");
     } finally {
@@ -336,7 +355,9 @@ function Onboarding() {
         await new Promise((resolve) => setTimeout(resolve, 650));
       }
     }
-    throw lastError instanceof Error ? lastError : new Error("The backend did not reopen the vault in time.");
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("The backend did not reopen the vault in time.");
   }
 
   async function startDownload(modelId: string) {
@@ -416,7 +437,9 @@ function Onboarding() {
           cache_dir: embeddingCacheDir.trim() || null,
         }),
       );
-      setMessage("Memory-search model download started. Keep this setup window open to watch status.");
+      setMessage(
+        "Memory-search model download started. Keep this setup window open to watch status.",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start the memory-search download.");
       setMessage(null);
@@ -436,7 +459,9 @@ function Onboarding() {
     setError(null);
     setMessage(null);
     if (step === 0 && signupMethod === "google") {
-      setMessage("Google OAuth is not connected in this local build; a local profile will be created.");
+      setMessage(
+        "Google OAuth is not connected in this local build; a local profile will be created.",
+      );
     }
     setStep(Math.min(step + 1, 7) as Step);
   }
@@ -498,7 +523,8 @@ function Onboarding() {
               Private memory starts here
             </div>
             <p className="mt-5 max-w-[280px] text-sm leading-6 text-muted-foreground">
-              Choose a real vault folder, connect local models, and keep setup honest before the app opens.
+              Choose a real vault folder, connect local models, and keep setup honest before the app
+              opens.
             </p>
           </div>
 
@@ -626,359 +652,423 @@ function Onboarding() {
                     title="Choose where Vault lives"
                     sub="This folder becomes your real storage location. Vault data is written inside a hidden .vault folder there."
                   >
-                  <Field label="Library location">
-                    <div className="flex flex-col gap-2 sm:flex-row">
-                      <Input
-                        value={vaultPath}
-                        onChange={(event) => {
-                          setVaultPath(event.target.value);
-                          setDiskPreflight(null);
-                        }}
-                        onBlur={(event) => void runVaultDiskPreflight(event.target.value)}
-                        placeholder="C:\\Users\\You\\Documents\\Vault"
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={chooseVaultFolder}
-                        disabled={!desktop?.selectVaultFolder}
-                      >
-                        <FolderOpen className="h-4 w-4" />
-                        Browse
-                      </Button>
-                    </div>
-                  </Field>
-                  {resolvedVaultPath && (
-                    <div className="rounded-md border border-border bg-secondary/55 p-4 text-sm">
-                      <div className="flex items-center gap-2 font-medium">
-                        <HardDrive className="h-4 w-4" />
-                        Data path
-                      </div>
-                      <div className="mt-2 break-all font-mono text-xs text-muted-foreground">
-                        {resolvedVaultPath}
-                      </div>
-                      {diskPreflight && (
-                        <div
-                          className={cn(
-                            "mt-3 text-xs",
-                            diskPreflight.ok ? "text-[var(--status-ready)]" : "text-destructive",
-                          )}
-                        >
-                          {diskPreflight.message} {formatBytes(diskPreflight.available_bytes)} available.
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </SetupPanel>
-              )}
-
-                {step === 5 && (
-                <SetupPanel
-                  icon={<PlugZap className="h-5 w-5" />}
-                  title="Choose the chat model and expert checkpoint"
-                  sub="Chat uses a local runtime model. Expert workflows use a separate accepted local checkpoint. Retrieval remains the source of citations for both."
-                >
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <ChoiceButton
-                      selected={modelChoice === "recommended"}
-                      title="Chat + expert"
-                      description="Download a chat model, then pair it with an accepted expert checkpoint."
-                      onClick={() => setModelChoice("recommended")}
-                    />
-                    <ChoiceButton
-                      selected={modelChoice === "custom"}
-                      title="Import expert checkpoint"
-                      description="Validate a local Transformers checkpoint and accept or reject it for expert use."
-                      onClick={() => setModelChoice("custom")}
-                    />
-                  </div>
-
-                  {modelChoice === "recommended" ? (
-                    <div className="grid gap-3">
-                      <div className="rounded-md border border-border bg-secondary/55 p-4 text-sm text-muted-foreground">
-                        Downloaded GGUF/runtime models satisfy the chat role only. Expert setup still requires an accepted local Transformers checkpoint. Vault citations still come from retrieval, not model memory.
-                      </div>
-                      <Field label="LLM download location">
-                        <div className="flex flex-col gap-2 sm:flex-row">
-                          <Input
-                            value={modelDownloadRoot}
-                            onChange={(event) => setModelDownloadRoot(event.target.value)}
-                            placeholder="Choose where Vault should store downloaded GGUF models"
-                          />
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={() => void chooseModelDownloadFolder()}
-                            disabled={!desktop?.selectModelFolder}
-                          >
-                            <FolderOpen className="h-4 w-4" />
-                            Browse
-                          </Button>
-                        </div>
-                        <p className="mt-2 text-xs text-muted-foreground">
-                          Leave blank to use Vault's default model folder. Downloads continue in the background while you finish setup.
-                        </p>
-                      </Field>
-                      <div className="grid gap-3">
-                        <div className="text-sm font-medium">Chat model</div>
-                        {modelsLoading && <p className="text-sm text-muted-foreground">Loading model options...</p>}
-                        {models
-                          .filter((model) => model.compatibility?.chat_role_accepted || model.source_kind === "default_choice")
-                          .map((model) => (
-                            <ModelRow
-                              key={`chat-${model.id}`}
-                              model={model}
-                              selected={selectedModelId === model.id}
-                              busy={downloadingId === model.id}
-                              activating={activatingId === model.id}
-                              roleLabel="chat"
-                              roleActive={Boolean(model.active_chat)}
-                              onSelect={() => setSelectedModelId(model.id)}
-                              onDownload={() => void startDownload(model.id)}
-                              onCancel={() => void cancelDownload(model.id)}
-                              onActivate={() => void activateModel(model.id, "chat")}
-                            />
-                          ))}
-                      </div>
-                      <div className="grid gap-3">
-                        <div className="text-sm font-medium">Expert checkpoint</div>
-                        {models
-                          .filter((model) => model.compatibility?.expert_role_accepted)
-                          .map((model) => (
-                            <ModelRow
-                              key={`expert-${model.id}`}
-                              model={model}
-                              selected={selectedModelId === model.id}
-                              busy={downloadingId === model.id}
-                              activating={activatingId === model.id}
-                              roleLabel="expert"
-                              roleActive={Boolean(model.active_expert)}
-                              onSelect={() => setSelectedModelId(model.id)}
-                              onDownload={() => void startDownload(model.id)}
-                              onCancel={() => void cancelDownload(model.id)}
-                              onActivate={() => void activateModel(model.id, "expert")}
-                            />
-                          ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="grid gap-4">
-                      <div className="rounded-md border border-border bg-secondary/35 p-4 text-sm">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div>
-                            <div className="font-medium text-foreground">Compatible models already on this device</div>
-                            <div className="mt-1 text-muted-foreground">
-                              Vault can scan common local model folders and offer one-click import for accepted expert checkpoints.
-                            </div>
-                          </div>
-                          <Button variant="outline" onClick={() => void refreshDetectedModels(true)} disabled={discoveringModels}>
-                            {discoveringModels ? "Scanning..." : "Scan device"}
-                          </Button>
-                        </div>
-                        <div className="mt-3 grid gap-3">
-                          {discoveringModels ? (
-                            <p className="text-xs text-muted-foreground">Scanning configured and common model folders...</p>
-                          ) : discoveredModels.length ? (
-                            discoveredModels.map((model) => (
-                              <div key={model.id} className="rounded-md border border-border bg-card p-3">
-                                <div className="flex flex-wrap items-start justify-between gap-3">
-                                  <div>
-                                    <div className="font-medium">{model.name}</div>
-                                    <div className="mt-1 text-xs text-muted-foreground">
-                                      {model.family_name || model.family || "Approved family"} / {model.local_path}
-                                    </div>
-                                    <div className="mt-1 text-xs text-muted-foreground">{model.detail}</div>
-                                  </div>
-                                  <Button
-                                    variant="outline"
-                                    onClick={() => void importDiscoveredModel(model)}
-                                    disabled={model.already_imported}
-                                  >
-                                    {model.already_imported ? "Already imported" : "Import"}
-                                  </Button>
-                                </div>
-                              </div>
-                            ))
-                          ) : (
-                            <p className="text-xs text-muted-foreground">
-                              No accepted local Transformers checkpoints were found in the configured or common model directories.
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      <Field label="Checkpoint folder">
-                        <div className="flex flex-col gap-2 sm:flex-row">
-                          <Input
-                            value={customModelPath}
-                            onChange={(event) => setCustomModelPath(event.target.value)}
-                            placeholder="D:\\Models\\Qwen3-4B"
-                          />
-                          <Button type="button" variant="outline" onClick={() => void chooseModelFolder()} disabled={!desktop?.selectModelFolder}>
-                            <FolderOpen className="h-4 w-4" />
-                            Browse
-                          </Button>
-                        </div>
-                      </Field>
-                      <Field label="Display name">
+                    <Field label="Library location">
+                      <div className="flex flex-col gap-2 sm:flex-row">
                         <Input
-                          value={customModelName}
-                          onChange={(event) => setCustomModelName(event.target.value)}
-                          placeholder="My local Qwen checkpoint"
+                          value={vaultPath}
+                          onChange={(event) => {
+                            setVaultPath(event.target.value);
+                            setDiskPreflight(null);
+                          }}
+                          onBlur={(event) => void runVaultDiskPreflight(event.target.value)}
+                          placeholder="C:\\Users\\You\\Documents\\Vault"
                         />
-                      </Field>
-                      <div className="flex flex-wrap gap-2">
-                        <Button variant="outline" onClick={() => void validateCustomModel()} disabled={!customModelPath.trim()}>
-                          Test model
-                        </Button>
-                        <Button onClick={() => void importApprovedModel()} disabled={!customModelReport?.accepted}>
-                          Import approved model
-                        </Button>
-                      </div>
-                      {customModelReport && (
-                        <div className="rounded-md border border-border bg-card p-4 text-sm">
-                          <div className="font-medium">
-                            {customModelReport.accepted ? "Accepted" : "Rejected"}
-                          </div>
-                          <div className="mt-2 text-muted-foreground">{customModelReport.detail}</div>
-                          <div className="mt-2 text-xs text-muted-foreground">{customModelReport.pairing_detail}</div>
-                          {!!customModelReport.reasons.length && (
-                            <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-                              {customModelReport.reasons.map((reason) => (
-                                <li key={reason}>{reason}</li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <p className="text-xs text-muted-foreground">
-                    You can continue after a chat model is installed, active, or downloading. Expert checkpoints can be imported now or later from Settings.
-                  </p>
-                </SetupPanel>
-              )}
-
-                {step === 6 && (
-                <SetupPanel
-                  icon={<Sparkles className="h-5 w-5" />}
-                  title="Choose the memory-search model"
-                  sub="This step is required. Download the recommended model after install, or link a compatible model cache already on this device."
-                >
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <ChoiceButton
-                      selected={embeddingChoice === "recommended"}
-                      title="Vault recommended"
-                      description="Use all-MiniLM-L6-v2 after you download it locally."
-                      onClick={() => setEmbeddingChoice("recommended")}
-                    />
-                    <ChoiceButton
-                      selected={embeddingChoice === "existing"}
-                      title="Existing cache"
-                      description="Point Vault at a local model cache folder."
-                      onClick={() => setEmbeddingChoice("existing")}
-                    />
-                  </div>
-
-                  <Field label={embeddingChoice === "recommended" ? "Downloaded model folder" : "Embedding cache folder"}>
-                    <div className="flex flex-col gap-2 sm:flex-row">
-                      <Input
-                        value={embeddingCacheDir}
-                        onChange={(event) => setEmbeddingCacheDir(event.target.value)}
-                        placeholder={
-                          embeddingChoice === "recommended"
-                            ? "Choose a local embedding model folder"
-                            : "Choose an existing embedding cache folder"
-                        }
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => void chooseEmbeddingFolder()}
-                        disabled={!desktop?.selectEmbeddingFolder}
-                      >
-                        <FolderOpen className="h-4 w-4" />
-                        Browse
-                      </Button>
-                      {embeddingChoice === "recommended" && (
                         <Button
                           type="button"
                           variant="outline"
-                          onClick={() => void startEmbeddingModelDownload()}
-                          disabled={embeddingDownload?.status === "queued" || embeddingDownload?.status === "downloading"}
+                          onClick={chooseVaultFolder}
+                          disabled={!desktop?.selectVaultFolder}
                         >
-                          <Download className="h-4 w-4" />
-                          Download
+                          <FolderOpen className="h-4 w-4" />
+                          Browse
+                        </Button>
+                      </div>
+                    </Field>
+                    {resolvedVaultPath && (
+                      <div className="rounded-md border border-border bg-secondary/55 p-4 text-sm">
+                        <div className="flex items-center gap-2 font-medium">
+                          <HardDrive className="h-4 w-4" />
+                          Data path
+                        </div>
+                        <div className="mt-2 break-all font-mono text-xs text-muted-foreground">
+                          {resolvedVaultPath}
+                        </div>
+                        {diskPreflight && (
+                          <div
+                            className={cn(
+                              "mt-3 text-xs",
+                              diskPreflight.ok ? "text-[var(--status-ready)]" : "text-destructive",
+                            )}
+                          >
+                            {diskPreflight.message} {formatBytes(diskPreflight.available_bytes)}{" "}
+                            available.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </SetupPanel>
+                )}
+
+                {step === 5 && (
+                  <SetupPanel
+                    icon={<PlugZap className="h-5 w-5" />}
+                    title="Choose the chat model and expert checkpoint"
+                    sub="Chat uses a local runtime model. Expert workflows use a separate accepted local checkpoint. Retrieval remains the source of citations for both."
+                  >
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <ChoiceButton
+                        selected={modelChoice === "recommended"}
+                        title="Chat + expert"
+                        description="Download a chat model, then pair it with an accepted expert checkpoint."
+                        onClick={() => setModelChoice("recommended")}
+                      />
+                      <ChoiceButton
+                        selected={modelChoice === "custom"}
+                        title="Import expert checkpoint"
+                        description="Validate a local Transformers checkpoint and accept or reject it for expert use."
+                        onClick={() => setModelChoice("custom")}
+                      />
+                    </div>
+
+                    {modelChoice === "recommended" ? (
+                      <div className="grid gap-3">
+                        <div className="rounded-md border border-border bg-secondary/55 p-4 text-sm text-muted-foreground">
+                          Downloaded GGUF/runtime models satisfy the chat role only. Expert setup
+                          still requires an accepted local Transformers checkpoint. Vault citations
+                          still come from retrieval, not model memory.
+                        </div>
+                        <Field label="LLM download location">
+                          <div className="flex flex-col gap-2 sm:flex-row">
+                            <Input
+                              value={modelDownloadRoot}
+                              onChange={(event) => setModelDownloadRoot(event.target.value)}
+                              placeholder="Choose where Vault should store downloaded GGUF models"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => void chooseModelDownloadFolder()}
+                              disabled={!desktop?.selectModelFolder}
+                            >
+                              <FolderOpen className="h-4 w-4" />
+                              Browse
+                            </Button>
+                          </div>
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            Leave blank to use Vault's default model folder. Downloads continue in
+                            the background while you finish setup.
+                          </p>
+                        </Field>
+                        <div className="grid gap-3">
+                          <div className="text-sm font-medium">Chat model</div>
+                          {modelsLoading && (
+                            <p className="text-sm text-muted-foreground">
+                              Loading model options...
+                            </p>
+                          )}
+                          {models
+                            .filter(
+                              (model) =>
+                                model.compatibility?.chat_role_accepted ||
+                                model.source_kind === "default_choice",
+                            )
+                            .map((model) => (
+                              <ModelRow
+                                key={`chat-${model.id}`}
+                                model={model}
+                                selected={selectedModelId === model.id}
+                                busy={downloadingId === model.id}
+                                activating={activatingId === model.id}
+                                roleLabel="chat"
+                                roleActive={Boolean(model.active_chat)}
+                                onSelect={() => setSelectedModelId(model.id)}
+                                onDownload={() => void startDownload(model.id)}
+                                onCancel={() => void cancelDownload(model.id)}
+                                onActivate={() => void activateModel(model.id, "chat")}
+                              />
+                            ))}
+                        </div>
+                        <div className="grid gap-3">
+                          <div className="text-sm font-medium">Expert checkpoint</div>
+                          {models
+                            .filter((model) => model.compatibility?.expert_role_accepted)
+                            .map((model) => (
+                              <ModelRow
+                                key={`expert-${model.id}`}
+                                model={model}
+                                selected={selectedModelId === model.id}
+                                busy={downloadingId === model.id}
+                                activating={activatingId === model.id}
+                                roleLabel="expert"
+                                roleActive={Boolean(model.active_expert)}
+                                onSelect={() => setSelectedModelId(model.id)}
+                                onDownload={() => void startDownload(model.id)}
+                                onCancel={() => void cancelDownload(model.id)}
+                                onActivate={() => void activateModel(model.id, "expert")}
+                              />
+                            ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid gap-4">
+                        <div className="rounded-md border border-border bg-secondary/35 p-4 text-sm">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <div className="font-medium text-foreground">
+                                Compatible models already on this device
+                              </div>
+                              <div className="mt-1 text-muted-foreground">
+                                Vault can scan common local model folders and offer one-click import
+                                for accepted expert checkpoints.
+                              </div>
+                            </div>
+                            <Button
+                              variant="outline"
+                              onClick={() => void refreshDetectedModels(true)}
+                              disabled={discoveringModels}
+                            >
+                              {discoveringModels ? "Scanning..." : "Scan device"}
+                            </Button>
+                          </div>
+                          <div className="mt-3 grid gap-3">
+                            {discoveringModels ? (
+                              <p className="text-xs text-muted-foreground">
+                                Scanning configured and common model folders...
+                              </p>
+                            ) : discoveredModels.length ? (
+                              discoveredModels.map((model) => (
+                                <div
+                                  key={model.id}
+                                  className="rounded-md border border-border bg-card p-3"
+                                >
+                                  <div className="flex flex-wrap items-start justify-between gap-3">
+                                    <div>
+                                      <div className="font-medium">{model.name}</div>
+                                      <div className="mt-1 text-xs text-muted-foreground">
+                                        {model.family_name || model.family || "Approved family"} /{" "}
+                                        {model.local_path}
+                                      </div>
+                                      <div className="mt-1 text-xs text-muted-foreground">
+                                        {model.detail}
+                                      </div>
+                                    </div>
+                                    <Button
+                                      variant="outline"
+                                      onClick={() => void importDiscoveredModel(model)}
+                                      disabled={model.already_imported}
+                                    >
+                                      {model.already_imported ? "Already imported" : "Import"}
+                                    </Button>
+                                  </div>
+                                </div>
+                              ))
+                            ) : (
+                              <p className="text-xs text-muted-foreground">
+                                No accepted local Transformers checkpoints were found in the
+                                configured or common model directories.
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <Field label="Checkpoint folder">
+                          <div className="flex flex-col gap-2 sm:flex-row">
+                            <Input
+                              value={customModelPath}
+                              onChange={(event) => setCustomModelPath(event.target.value)}
+                              placeholder="D:\\Models\\Qwen3-4B"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => void chooseModelFolder()}
+                              disabled={!desktop?.selectModelFolder}
+                            >
+                              <FolderOpen className="h-4 w-4" />
+                              Browse
+                            </Button>
+                          </div>
+                        </Field>
+                        <Field label="Display name">
+                          <Input
+                            value={customModelName}
+                            onChange={(event) => setCustomModelName(event.target.value)}
+                            placeholder="My local Qwen checkpoint"
+                          />
+                        </Field>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            variant="outline"
+                            onClick={() => void validateCustomModel()}
+                            disabled={!customModelPath.trim()}
+                          >
+                            Test model
+                          </Button>
+                          <Button
+                            onClick={() => void importApprovedModel()}
+                            disabled={!customModelReport?.accepted}
+                          >
+                            Import approved model
+                          </Button>
+                        </div>
+                        {customModelReport && (
+                          <div className="rounded-md border border-border bg-card p-4 text-sm">
+                            <div className="font-medium">
+                              {customModelReport.accepted ? "Accepted" : "Rejected"}
+                            </div>
+                            <div className="mt-2 text-muted-foreground">
+                              {customModelReport.detail}
+                            </div>
+                            <div className="mt-2 text-xs text-muted-foreground">
+                              {customModelReport.pairing_detail}
+                            </div>
+                            {!!customModelReport.reasons.length && (
+                              <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+                                {customModelReport.reasons.map((reason) => (
+                                  <li key={reason}>{reason}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <p className="text-xs text-muted-foreground">
+                      You can continue after a chat model is installed, active, or downloading.
+                      Expert checkpoints can be imported now or later from Settings.
+                    </p>
+                  </SetupPanel>
+                )}
+
+                {step === 6 && (
+                  <SetupPanel
+                    icon={<Sparkles className="h-5 w-5" />}
+                    title="Choose the memory-search model"
+                    sub="This step is required. Download the recommended model after install, or link a compatible model cache already on this device."
+                  >
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <ChoiceButton
+                        selected={embeddingChoice === "recommended"}
+                        title="Vault recommended"
+                        description="Use all-MiniLM-L6-v2 after you download it locally."
+                        onClick={() => setEmbeddingChoice("recommended")}
+                      />
+                      <ChoiceButton
+                        selected={embeddingChoice === "existing"}
+                        title="Existing cache"
+                        description="Point Vault at a local model cache folder."
+                        onClick={() => setEmbeddingChoice("existing")}
+                      />
+                    </div>
+
+                    <Field
+                      label={
+                        embeddingChoice === "recommended"
+                          ? "Downloaded model folder"
+                          : "Embedding cache folder"
+                      }
+                    >
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <Input
+                          value={embeddingCacheDir}
+                          onChange={(event) => setEmbeddingCacheDir(event.target.value)}
+                          placeholder={
+                            embeddingChoice === "recommended"
+                              ? "Choose a local embedding model folder"
+                              : "Choose an existing embedding cache folder"
+                          }
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void chooseEmbeddingFolder()}
+                          disabled={!desktop?.selectEmbeddingFolder}
+                        >
+                          <FolderOpen className="h-4 w-4" />
+                          Browse
+                        </Button>
+                        {embeddingChoice === "recommended" && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void startEmbeddingModelDownload()}
+                            disabled={
+                              embeddingDownload?.status === "queued" ||
+                              embeddingDownload?.status === "downloading"
+                            }
+                          >
+                            <Download className="h-4 w-4" />
+                            Download
+                          </Button>
+                        )}
+                      </div>
+                    </Field>
+
+                    <div className="rounded-md border border-border bg-card p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="text-sm font-medium">
+                            {embeddingRuntime?.available
+                              ? "Memory search ready"
+                              : "Memory search needs setup"}
+                          </div>
+                          <div className="mt-1 text-sm text-muted-foreground">
+                            {embeddingRuntime?.detail ??
+                              "Run a local test before entering Vault. Setup cannot finish until this passes."}
+                          </div>
+                        </div>
+                        {embeddingRuntime?.available && (
+                          <Check className="h-5 w-5 text-[var(--status-ready)]" />
+                        )}
+                      </div>
+                      {embeddingDownload && embeddingDownload.status !== "idle" && (
+                        <div className="mt-3 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="truncate">{embeddingDownload.model_id}</span>
+                            <span className="text-foreground">{embeddingDownload.status}</span>
+                          </div>
+                          {embeddingDownload.local_path && (
+                            <div className="mt-1 truncate font-mono">
+                              {embeddingDownload.local_path}
+                            </div>
+                          )}
+                          {embeddingDownload.error && (
+                            <div className="mt-1 text-destructive">{embeddingDownload.error}</div>
+                          )}
+                        </div>
+                      )}
+                      {(embeddingDownload?.status === "queued" ||
+                        embeddingDownload?.status === "downloading") && (
+                        <Button
+                          variant="outline"
+                          className="mt-3"
+                          onClick={() => void cancelEmbeddingModelDownload()}
+                        >
+                          <X className="h-4 w-4" />
+                          Cancel download
                         </Button>
                       )}
-                    </div>
-                  </Field>
-
-                  <div className="rounded-md border border-border bg-card p-4">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-medium">
-                          {embeddingRuntime?.available ? "Memory search ready" : "Memory search needs setup"}
-                        </div>
-                        <div className="mt-1 text-sm text-muted-foreground">
-                          {embeddingRuntime?.detail ??
-                            "Run a local test before entering Vault. Setup cannot finish until this passes."}
-                        </div>
-                      </div>
-                      {embeddingRuntime?.available && <Check className="h-5 w-5 text-[var(--status-ready)]" />}
-                    </div>
-                    {embeddingDownload && embeddingDownload.status !== "idle" && (
-                      <div className="mt-3 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="truncate">{embeddingDownload.model_id}</span>
-                          <span className="text-foreground">{embeddingDownload.status}</span>
-                        </div>
-                        {embeddingDownload.local_path && (
-                          <div className="mt-1 truncate font-mono">{embeddingDownload.local_path}</div>
-                        )}
-                        {embeddingDownload.error && (
-                          <div className="mt-1 text-destructive">{embeddingDownload.error}</div>
-                        )}
-                      </div>
-                    )}
-                    {(embeddingDownload?.status === "queued" || embeddingDownload?.status === "downloading") && (
                       <Button
-                        variant="outline"
-                        className="mt-3"
-                        onClick={() => void cancelEmbeddingModelDownload()}
+                        className="mt-4"
+                        onClick={() => void saveEmbeddingRuntime()}
+                        disabled={embeddingSaving}
                       >
-                        <X className="h-4 w-4" />
-                        Cancel download
+                        {embeddingSaving && <Loader2 className="h-4 w-4 animate-spin" />}
+                        Test memory search
                       </Button>
-                    )}
-                    <Button
-                      className="mt-4"
-                      onClick={() => void saveEmbeddingRuntime()}
-                      disabled={embeddingSaving}
-                    >
-                      {embeddingSaving && <Loader2 className="h-4 w-4 animate-spin" />}
-                      Test memory search
-                    </Button>
-                  </div>
-                </SetupPanel>
-              )}
+                    </div>
+                  </SetupPanel>
+                )}
 
                 {step === 7 && (
-                <SetupPanel
-                  icon={<Check className="h-5 w-5" />}
-                  title="Welcome to Vault"
-                  sub="Your library is ready. Add sources from the Mind workspace, or start with chat when you want to ask across everything."
-                >
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <SummaryRow label="Profile" value={displayName.trim() || "Local user"} />
-                    <SummaryRow label="Library" value={vault?.name ?? vaultName.trim()} />
-                    <SummaryRow label="Storage" value={resolvedVaultPath || "Selected library folder"} />
-                    <SummaryRow
-                      label="Memory search"
-                      value={embeddingRuntime?.available ? "Ready" : "Needs setup"}
-                    />
-                  </div>
-                </SetupPanel>
+                  <SetupPanel
+                    icon={<Check className="h-5 w-5" />}
+                    title="Welcome to Vault"
+                    sub="Your library is ready. Add sources from the Mind workspace, or start with chat when you want to ask across everything."
+                  >
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <SummaryRow label="Profile" value={displayName.trim() || "Local user"} />
+                      <SummaryRow label="Library" value={vault?.name ?? vaultName.trim()} />
+                      <SummaryRow
+                        label="Storage"
+                        value={resolvedVaultPath || "Selected library folder"}
+                      />
+                      <SummaryRow
+                        label="Memory search"
+                        value={embeddingRuntime?.available ? "Ready" : "Needs setup"}
+                      />
+                    </div>
+                  </SetupPanel>
                 )}
               </div>
 
@@ -1008,7 +1098,10 @@ function Onboarding() {
                     {step + 1} of {steps.length}
                   </div>
                   {step === 4 ? (
-                    <Button onClick={() => void createVaultAfterFolderSelection()} disabled={!canContinue}>
+                    <Button
+                      onClick={() => void createVaultAfterFolderSelection()}
+                      disabled={!canContinue}
+                    >
                       Create vault
                       <ArrowRight className="h-4 w-4" />
                     </Button>
@@ -1070,14 +1163,17 @@ function StepRail({ step }: { step: Step }) {
           <span
             className={cn(
               "flex h-6 w-6 items-center justify-center rounded-md border text-xs transition-colors",
-              index < step && "border-[var(--status-ready)] bg-[var(--status-ready)]/12 text-foreground",
+              index < step &&
+                "border-[var(--status-ready)] bg-[var(--status-ready)]/12 text-foreground",
               index === step && "border-primary bg-primary text-primary-foreground",
               index > step && "border-border bg-card/60 text-muted-foreground",
             )}
           >
             {index < step ? <Check className="h-3.5 w-3.5" /> : index + 1}
           </span>
-          <span className={cn(index === step ? "font-medium text-foreground" : "text-muted-foreground")}>
+          <span
+            className={cn(index === step ? "font-medium text-foreground" : "text-muted-foreground")}
+          >
             {label}
           </span>
         </div>
@@ -1187,13 +1283,14 @@ function ModelRow({
   onCancel: () => void;
   onActivate: () => void;
 }) {
-  const downloading = model.download?.status === "resolving" || model.download?.status === "downloading";
+  const downloading =
+    model.download?.status === "resolving" || model.download?.status === "downloading";
   const totalBytes = model.download?.total_bytes ?? model.download?.bytes_total ?? null;
-  const progress = model.download?.progress_percent ?? (
-    model.download?.bytes_downloaded && totalBytes
+  const progress =
+    model.download?.progress_percent ??
+    (model.download?.bytes_downloaded && totalBytes
       ? Math.round((model.download.bytes_downloaded / totalBytes) * 100)
-      : 0
-  );
+      : 0);
 
   return (
     <div
@@ -1207,7 +1304,8 @@ function ModelRow({
           <div>
             <div className="text-sm font-medium">{model.name}</div>
             <div className="mt-1 text-xs text-muted-foreground">
-              {model.role} / {model.quantization} / {model.approximate_download_gb} GB / {model.recommended_ram_gb} GB RAM
+              {model.role} / {model.quantization} / {model.approximate_download_gb} GB /{" "}
+              {model.recommended_ram_gb} GB RAM
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
               {roleLabel === "chat"
@@ -1222,10 +1320,16 @@ function ModelRow({
           {(selected || roleActive) && <Check className="h-4 w-4 text-primary" />}
         </div>
         <p className="mt-2 text-sm leading-5 text-muted-foreground">{model.notes}</p>
-        {model.local_path && <p className="mt-2 truncate font-mono text-xs text-muted-foreground">{model.local_path}</p>}
-        {model.compatibility && roleLabel === "expert" && !model.compatibility.expert_role_accepted && (
-          <p className="mt-2 text-xs text-destructive">{model.compatibility.detail}</p>
+        {model.local_path && (
+          <p className="mt-2 truncate font-mono text-xs text-muted-foreground">
+            {model.local_path}
+          </p>
         )}
+        {model.compatibility &&
+          roleLabel === "expert" &&
+          !model.compatibility.expert_role_accepted && (
+            <p className="mt-2 text-xs text-destructive">{model.compatibility.detail}</p>
+          )}
       </button>
 
       {downloading && (
@@ -1249,7 +1353,12 @@ function ModelRow({
             Cancel
           </Button>
         ) : (
-          <Button variant={model.installed ? "outline" : "secondary"} size="sm" onClick={onDownload} disabled={model.installed || busy}>
+          <Button
+            variant={model.installed ? "outline" : "secondary"}
+            size="sm"
+            onClick={onDownload}
+            disabled={model.installed || busy}
+          >
             <Download className="h-4 w-4" />
             {roleActive ? "Active" : model.installed ? "Installed" : busy ? "Starting" : "Download"}
           </Button>
@@ -1266,10 +1375,8 @@ function isChatSetupProgress(model: LocalModelRecord) {
     (downloadStatus === "resolving" || downloadStatus === "downloading");
   return Boolean(
     managedChatDownloadInProgress ||
-      (model.compatibility?.chat_role_accepted &&
-        (model.active_chat ||
-          model.installed ||
-          downloadStatus === "installed")),
+    (model.compatibility?.chat_role_accepted &&
+      (model.active_chat || model.installed || downloadStatus === "installed")),
   );
 }
 
@@ -1279,7 +1386,9 @@ function selectVisibleModelDownload(
 ) {
   const visible = models
     .map((model) => model.download)
-    .filter((download): download is NonNullable<LocalModelRecord["download"]> => Boolean(download?.status && download.status !== "idle"));
+    .filter((download): download is NonNullable<LocalModelRecord["download"]> =>
+      Boolean(download?.status && download.status !== "idle"),
+    );
   return (
     visible.find((download) => isActiveModelDownloadStatus(download.status)) ??
     (fallback && isActiveModelDownloadStatus(fallback.status) ? fallback : null) ??
@@ -1300,11 +1409,11 @@ function ModelDownloadToast({
   onCancel: () => void;
 }) {
   const totalBytes = download.total_bytes ?? download.bytes_total ?? null;
-  const progress = download.progress_percent ?? (
-    download.bytes_downloaded && totalBytes
+  const progress =
+    download.progress_percent ??
+    (download.bytes_downloaded && totalBytes
       ? Math.round((download.bytes_downloaded / totalBytes) * 100)
-      : null
-  );
+      : null);
   const active = isActiveModelDownloadStatus(download.status);
   const fallbackProgress = active ? 10 : download.status === "installed" ? 100 : 0;
 
@@ -1322,7 +1431,11 @@ function ModelDownloadToast({
       <div className="mt-3">
         <Progress value={progress ?? fallbackProgress} className="h-1.5" />
         <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-          <span>{progress !== null && progress !== undefined ? `${Math.round(progress)}%` : "Preparing download"}</span>
+          <span>
+            {progress !== null && progress !== undefined
+              ? `${Math.round(progress)}%`
+              : "Preparing download"}
+          </span>
           <span>
             {formatBytes(download.bytes_downloaded ?? 0)}
             {totalBytes ? ` / ${formatBytes(totalBytes)}` : ""}
@@ -1330,7 +1443,9 @@ function ModelDownloadToast({
         </div>
       </div>
       {download.local_path && (
-        <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground">{download.local_path}</div>
+        <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground">
+          {download.local_path}
+        </div>
       )}
       {download.error && <div className="mt-2 text-xs text-destructive">{download.error}</div>}
       {active && (
