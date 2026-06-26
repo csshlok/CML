@@ -41,8 +41,8 @@ def concise_chat_summary(choice: dict[str, Any]) -> str:
 
 def concise_expert_summary(choice: dict[str, Any] | None) -> str:
     if not choice:
-        return "No accepted local expert checkpoint is configured yet."
-    return f"{choice.get('name')} is the strongest accepted expert checkpoint currently available on this device."
+        return "No accepted local expert-compression runtime is configured yet."
+    return f"{choice.get('name')} is the strongest accepted expert-compression runtime currently available on this device."
 
 
 def build_operator_summary(
@@ -55,7 +55,7 @@ def build_operator_summary(
     if not expert_choice:
         return (
             f"Chat recommendation resolved to {chat_choice.get('id')} with {chat_choice.get('fit', {}).get('fit_type')} fit, "
-            "but no accepted expert checkpoint passed the local expert recommendation path."
+            "but no accepted expert-compression runtime passed the local recommendation path."
         )
     if pair.get("accepted"):
         return (

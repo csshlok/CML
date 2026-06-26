@@ -371,7 +371,7 @@ def active_model_pair_status() -> dict[str, Any]:
             "accepted": False,
             "chat_model_id": chat_model.get("id") if chat_model else "",
             "expert_model_id": expert_model.get("id") if expert_model else "",
-            "detail": "Select an accepted chat model and an accepted expert checkpoint to complete dual-model setup.",
+            "detail": "Select an accepted chat model and an accepted expert-compression runtime to complete dual-runtime setup.",
             "reasons": [],
             "pair_id": "",
         }
@@ -527,8 +527,8 @@ def _missing_model_compatibility(family_id: str, notes: str = "") -> dict[str, A
         "reasons": [
             "No compatible local Transformers checkpoint is installed for this model family."
         ],
-        "pairing_detail": "A separate approved expert checkpoint is required for expert workflows.",
-        "detail": notes or "Install or import a compatible local Transformers checkpoint to enable expert features.",
+        "pairing_detail": "A separate approved expert-compression runtime is required for expert workflows.",
+        "detail": notes or "Install or import a compatible local Transformers checkpoint to enable expert-compression features.",
     }
 
 
@@ -555,8 +555,8 @@ def _default_model_compatibility(model: LocalModel, local_path: Path | None) -> 
         "runtime_dependencies": runtime_dependency_status(),
         "hardware": hardware,
         "reasons": [],
-        "pairing_detail": "Accepted for chat. Pair this with an approved expert checkpoint for expert workflows.",
-        "detail": "Accepted local chat runtime model. A separate approved expert checkpoint is still required for expert workflows.",
+        "pairing_detail": "Accepted for chat. Pair this with an approved expert-compression runtime for expert workflows.",
+        "detail": "Accepted local chat runtime model. A separate approved expert-compression runtime is still required for expert workflows.",
     }
 
 

@@ -1927,7 +1927,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         )
         run_due_jobs_once(limit=1)
 
-        with patch("backend.app.api.routes.chat.build_analysis_packets", wraps=build_analysis_packets) as packet_mock:
+        with patch("backend.app.core.cluster_bundle.build_analysis_packets", wraps=build_analysis_packets) as packet_mock:
             response = build_chat_context(
                 ChatContextRequest(
                     vault_id="vault-1",
@@ -2001,7 +2001,7 @@ class SourcePageIndexingTests(unittest.TestCase):
             )
         run_due_jobs_once(limit=4)
 
-        with patch("backend.app.api.routes.chat.semantic_search", side_effect=AssertionError("complete analysis should not rely on top-k semantic search")):
+        with patch("backend.app.core.cluster_bundle.semantic_search", side_effect=AssertionError("complete analysis should not rely on top-k semantic search")):
             response = build_chat_context(
                 ChatContextRequest(
                     vault_id="vault-1",
@@ -3982,6 +3982,10 @@ class SourcePageIndexingTests(unittest.TestCase):
                 "status": "passed",
                 "passes": True,
                 "live_adapter_backed": True,
+                "bundle_benchmark_summary": {"bundle_with_expert_score": 80.0},
+                "bundle_release_gate": {"passes": True},
+                "bundle_readiness": {"passes": True, "failure_reasons": []},
+                "bundle_mode_coverage": {"passes": True, "missing_modes": [], "incomplete_modes": []},
                 "overall": {
                     "retrieval_only_score": 60.0,
                     "adapter_score": 80.0,
@@ -4016,7 +4020,8 @@ class SourcePageIndexingTests(unittest.TestCase):
             expert_job = queue_expert_retrain("cluster-1")
             processed = run_due_jobs_once(limit=2)
 
-        self.assertIn("training_ready", contract["supported_statuses"])
+        self.assertIn("expert_compression_ready", contract["supported_statuses"])
+        self.assertEqual(contract["legacy_status_aliases"]["training_ready"], "expert_compression_ready")
         self.assertIn("minimum_estimated_tokens", contract)
         self.assertIn("runtime_load_failed", contract["failure_codes"])
         self.assertEqual(expert_job["status"], "queued")
@@ -4047,7 +4052,7 @@ class SourcePageIndexingTests(unittest.TestCase):
                 "SELECT status, failure_code, detail FROM cluster_expert_jobs WHERE id = ?",
                 (expert_job["id"],),
             ).fetchone()
-        self.assertEqual(cluster["expert_status"], "training_ready")
+        self.assertEqual(cluster["expert_status"], "expert_compression_ready")
         self.assertEqual(job["status"], "completed")
         self.assertEqual(job["failure_code"], "")
         from backend.app.api.routes.clusters import get_expert_status
@@ -4057,7 +4062,7 @@ class SourcePageIndexingTests(unittest.TestCase):
             return_value={"available": True, "detail": "runtime available"},
         ):
             status = get_expert_status("cluster-1")
-        self.assertEqual(status["user_status"], "Ready")
+        self.assertEqual(status["user_status"], "Expert compression ready")
         self.assertTrue(status["trained"])
         self.assertTrue(status["runtime_load"]["available"])
 
@@ -4200,6 +4205,10 @@ class SourcePageIndexingTests(unittest.TestCase):
             "benchmark_report": {
                 "status": "failed",
                 "passes": False,
+                "bundle_benchmark_summary": {"bundle_with_expert_score": 55.0},
+                "bundle_release_gate": {"passes": False},
+                "bundle_readiness": {"passes": False, "failure_reasons": ["quality_regression_vs_retrieval_full"]},
+                "bundle_mode_coverage": {"passes": True, "missing_modes": [], "incomplete_modes": []},
                 "gate_report": {"passes": False},
                 "overall": {
                     "retrieval_only_score": 77.42,
@@ -4272,7 +4281,7 @@ class SourcePageIndexingTests(unittest.TestCase):
                 "SELECT status, quality_score, metrics_json FROM expert_artifacts WHERE cluster_id = 'cluster-1'"
             ).fetchone()
 
-        self.assertEqual(cluster["expert_status"], "training_ready")
+        self.assertEqual(cluster["expert_status"], "expert_compression_ready")
         self.assertEqual(job["status"], "completed")
         self.assertEqual(job["failure_code"], "")
         self.assertIn("Quality gate bypassed for diagnostic run.", job["detail"])
@@ -4647,12 +4656,12 @@ class SourcePageIndexingTests(unittest.TestCase):
             ).fetchone()
             artifact_count = conn.execute("SELECT COUNT(*) AS count FROM expert_artifacts").fetchone()["count"]
 
-        self.assertEqual(cluster["expert_status"], "needs-update")
+        self.assertEqual(cluster["expert_status"], "expert_stale")
         self.assertEqual(job["status"], "failed")
         self.assertEqual(job["failure_code"], "dataset_changed")
         self.assertEqual(artifact_count, 1)
-        self.assertEqual(status["expert_status"], "needs-update")
-        self.assertEqual(status["user_status"], "Needs update")
+        self.assertEqual(status["expert_status"], "expert_stale")
+        self.assertEqual(status["user_status"], "Expert needs update")
         self.assertTrue(status["stale"])
         self.assertFalse(status["trained"])
         self.assertEqual(status["failure_code"], "dataset_changed")
@@ -4803,6 +4812,10 @@ class SourcePageIndexingTests(unittest.TestCase):
             "benchmark_report": {
                 "status": "passed",
                 "passes": True,
+                "bundle_benchmark_summary": {"bundle_with_expert_score": 82.0},
+                "bundle_release_gate": {"passes": True},
+                "bundle_readiness": {"passes": True, "failure_reasons": []},
+                "bundle_mode_coverage": {"passes": True, "missing_modes": [], "incomplete_modes": []},
                 "overall": {
                     "retrieval_only_score": 80.0,
                     "adapter_score": 82.0,
@@ -4874,6 +4887,7 @@ class SourcePageIndexingTests(unittest.TestCase):
             rollback_expert_artifact,
         )
         from backend.app.core.database import connect, utc_now
+        from backend.app.core.training_dataset import build_cluster_dataset
 
         now = utc_now()
         adapter_a = Path(self.tmp.name) / "adapter-a"
@@ -4899,17 +4913,36 @@ class SourcePageIndexingTests(unittest.TestCase):
                 """,
                 (now, now),
             )
+        current_dataset_hash = build_cluster_dataset("cluster-1")["dataset_hash"]
+        with connect() as conn:
             for artifact_id, path, active in (("artifact-a", adapter_a, 0), ("artifact-b", adapter_b, 1)):
                 conn.execute(
                     """
                     INSERT INTO expert_artifacts (
                         id, cluster_id, vault_id, artifact_type, status, local_path,
-                        base_model, hardware_tier, quality_score, active,
+                        base_model, hardware_tier, quality_score, dataset_hash, metrics_json, active,
                         created_at, updated_at
                     )
-                    VALUES (?, 'cluster-1', 'vault-1', 'lora_adapter', 'ready', ?, 'base', 'cpu', 80, ?, ?, ?)
+                    VALUES (?, 'cluster-1', 'vault-1', 'lora_adapter', 'ready', ?, 'base', 'cpu', 80, ?, ?, ?, ?, ?)
                     """,
-                    (artifact_id, str(path), active, now, now),
+                    (
+                        artifact_id,
+                        str(path),
+                        current_dataset_hash,
+                        json.dumps(
+                            {
+                                "expert_objective_version": "retrieval_grounded_compression_v1",
+                                "benchmark_report": {
+                                    "passes": True,
+                                    "dataset_hash": current_dataset_hash,
+                                    "metadata": {"expert_objective_version": "retrieval_grounded_compression_v1"},
+                                },
+                            }
+                        ),
+                        active,
+                        now,
+                        now,
+                    ),
                 )
 
         with self.assertRaises(Exception):
@@ -4923,6 +4956,52 @@ class SourcePageIndexingTests(unittest.TestCase):
         with connect() as conn:
             artifact_a = conn.execute("SELECT deleted_at FROM expert_artifacts WHERE id = 'artifact-a'").fetchone()
         self.assertIsNotNone(artifact_a["deleted_at"])
+
+    def test_activate_expert_artifact_rejects_legacy_prompt_only_artifact(self) -> None:
+        from backend.app.api.routes.clusters import activate_expert_artifact
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        adapter_path = Path(self.tmp.name) / "adapter-legacy"
+        adapter_path.mkdir()
+        (adapter_path / "adapter_config.json").write_text(
+            '{"peft_type":"LORA","base_model_name_or_path":"base"}',
+            encoding="utf-8",
+        )
+        (adapter_path / "adapter_model.safetensors").write_bytes(b"adapter")
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', 'expert_stale', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO expert_artifacts (
+                    id, cluster_id, vault_id, artifact_type, status, local_path, base_model,
+                    hardware_tier, quality_score, dataset_hash, metrics_json, active, created_at, updated_at
+                )
+                VALUES (?, 'cluster-1', 'vault-1', 'lora_adapter', 'ready', ?, 'base', 'cpu', 80, 'dataset-live', ?, 0, ?, ?)
+                """,
+                (
+                    "artifact-legacy",
+                    str(adapter_path),
+                    json.dumps({"expert_objective_version": "legacy_prompt_only"}),
+                    now,
+                    now,
+                ),
+            )
+
+        with self.assertRaises(Exception):
+            activate_expert_artifact("cluster-1", "artifact-legacy")
 
     def test_expert_status_marks_active_adapter_stale_when_cluster_sources_change(self) -> None:
         from backend.app.api.routes.clusters import get_expert_status
@@ -4990,7 +5069,7 @@ class SourcePageIndexingTests(unittest.TestCase):
 
         status = get_expert_status("cluster-1")
 
-        self.assertEqual(status["user_status"], "Needs update")
+        self.assertEqual(status["user_status"], "Expert needs update")
         self.assertTrue(status["stale"])
         self.assertFalse(status["trained"])
         self.assertEqual(status["active_dataset_hash"], trained_hash)
@@ -5082,7 +5161,7 @@ class SourcePageIndexingTests(unittest.TestCase):
             jobs = latest_expert_jobs(conn, "cluster-1", limit=10)
             cluster = conn.execute("SELECT expert_status FROM clusters WHERE id = 'cluster-1'").fetchone()
 
-        self.assertEqual(cluster["expert_status"], "needs-update")
+        self.assertEqual(cluster["expert_status"], "expert_stale")
         refresh_jobs = [job for job in jobs if job["action"] == "refresh-needed"]
         self.assertEqual(len(refresh_jobs), 1)
         self.assertEqual(refresh_jobs[0]["status"], "completed")

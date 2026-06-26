@@ -252,10 +252,10 @@ def _detail_text(chat: dict[str, Any] | None, expert: dict[str, Any] | None, pai
     if not chat:
         return "No approved chat model fits this device conservatively. Start with the lowest-cost local runtime path or a weaker machine profile."
     if not expert:
-        return f"{chat['name']} is the best chat recommendation for this device. Add an accepted local expert checkpoint to complete expert-capable setup."
+        return f"{chat['name']} is the best chat recommendation for this device. Add an accepted local expert-compression runtime to complete dual-runtime setup."
     if not pair.get("accepted"):
-        return f"{chat['name']} is the best chat recommendation and {expert['name']} is the strongest accepted expert checkpoint currently available, but the approved pair is still incomplete."
-    return f"{chat['name']} is the best chat recommendation for this device, and {expert['name']} completes the strongest approved expert pair currently available."
+        return f"{chat['name']} is the best chat recommendation and {expert['name']} is the strongest accepted expert-compression runtime currently available, but the approved pair is still incomplete."
+    return f"{chat['name']} is the best chat recommendation for this device, and {expert['name']} completes the strongest approved chat plus expert-compression pair currently available."
 
 
 def _fallback_low_spec(chat_candidates: list[dict[str, Any]]) -> dict[str, Any]:

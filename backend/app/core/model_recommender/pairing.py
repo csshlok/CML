@@ -15,7 +15,7 @@ def resolve_pair_recommendation(
         return {
             "pair_id": "",
             "accepted": False,
-            "detail": "Choose an approved chat model and an accepted local expert checkpoint to complete dual-model setup.",
+            "detail": "Choose an approved chat model and an accepted local expert-compression runtime to complete dual-runtime setup.",
             "reasons": [],
         }
     hardware_tier = str(profile.get("hardware_tier") or "unknown")

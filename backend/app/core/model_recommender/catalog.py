@@ -211,7 +211,7 @@ _APPROVED_PAIRS: tuple[ApprovedPairSpec, ...] = (
         expert_family="gemma",
         minimum_hardware_tier="cpu_minimum_spec",
         status="approved",
-        reason="Alternate approved pair for Gemma-family expert checkpoints.",
+        reason="Alternate approved pair for Gemma-family expert-compression runtimes.",
     ),
     ApprovedPairSpec(
         pair_id="pair-gemma3-12b-gemma",

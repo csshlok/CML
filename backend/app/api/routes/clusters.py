@@ -5,7 +5,12 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.core.cluster_suggestions import suggest_source_cluster_moves
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.expert_lifecycle import create_expert_job, expert_status_report, latest_expert_jobs
+from backend.app.core.expert_lifecycle import (
+    activation_guard_report,
+    create_expert_job,
+    expert_status_report,
+    latest_expert_jobs,
+)
 from backend.app.core.lora_training import graduation_contract, verify_adapter_artifact
 from backend.app.core.retrieval_cache import invalidate_caches_for_source
 from backend.app.core.sql import build_update_assignments
@@ -172,7 +177,7 @@ def queue_expert_retrain(cluster_id: str) -> dict:
             cluster_id=cluster_id,
             vault_id=cluster["vault_id"],
             action="retrain",
-            detail="Manual local expert learning pass queued.",
+            detail="Manual expert-compression training pass queued.",
         )
 
 
@@ -180,6 +185,12 @@ def queue_expert_retrain(cluster_id: str) -> dict:
 def activate_expert_artifact(cluster_id: str, artifact_id: str) -> dict:
     now = utc_now()
     with connect() as conn:
+        cluster = conn.execute(
+            "SELECT id FROM clusters WHERE id = ?",
+            (cluster_id,),
+        ).fetchone()
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
         row = conn.execute(
             """
             SELECT * FROM expert_artifacts
@@ -194,13 +205,25 @@ def activate_expert_artifact(cluster_id: str, artifact_id: str) -> dict:
             verify_adapter_artifact(artifact["local_path"])
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        current_dataset_hash = str((expert_status_report(conn, cluster_id) or {}).get("current_dataset_hash") or "")
+        guard = activation_guard_report(
+            artifact,
+            current_dataset_hash=current_dataset_hash,
+            require_current_dataset_match=True,
+        )
+        if not guard["ok"]:
+            conn.execute(
+                "UPDATE clusters SET expert_status = 'expert_stale', updated_at = ? WHERE id = ?",
+                (now, cluster_id),
+            )
+            raise HTTPException(status_code=409, detail=str(guard["detail"] or guard["failure_code"] or "Artifact cannot be activated"))
         conn.execute("UPDATE expert_artifacts SET active = 0, updated_at = ? WHERE cluster_id = ?", (now, cluster_id))
         conn.execute(
             "UPDATE expert_artifacts SET active = 1, rolled_back_at = NULL, updated_at = ? WHERE id = ?",
             (now, artifact_id),
         )
         conn.execute(
-            "UPDATE clusters SET expert_status = 'training_ready', updated_at = ? WHERE id = ?",
+            "UPDATE clusters SET expert_status = 'expert_compression_ready', updated_at = ? WHERE id = ?",
             (now, cluster_id),
         )
         updated = conn.execute("SELECT * FROM expert_artifacts WHERE id = ?", (artifact_id,)).fetchone()
@@ -211,6 +234,9 @@ def activate_expert_artifact(cluster_id: str, artifact_id: str) -> dict:
 def rollback_expert_artifact(cluster_id: str) -> dict:
     now = utc_now()
     with connect() as conn:
+        cluster = conn.execute("SELECT id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
         active = conn.execute(
             "SELECT id FROM expert_artifacts WHERE cluster_id = ? AND active = 1 AND deleted_at IS NULL",
             (cluster_id,),
@@ -236,9 +262,22 @@ def rollback_expert_artifact(cluster_id: str) -> dict:
                 (now, cluster_id),
             )
             raise HTTPException(status_code=409, detail="No previous ready adapter is available for rollback")
+        replacement_artifact = dict_from_row(replacement)
+        current_dataset_hash = str((expert_status_report(conn, cluster_id) or {}).get("current_dataset_hash") or "")
+        guard = activation_guard_report(
+            replacement_artifact,
+            current_dataset_hash=current_dataset_hash,
+            require_current_dataset_match=True,
+        )
+        if not guard["ok"]:
+            conn.execute(
+                "UPDATE clusters SET expert_status = 'expert_stale', updated_at = ? WHERE id = ?",
+                (now, cluster_id),
+            )
+            raise HTTPException(status_code=409, detail=str(guard["detail"] or guard["failure_code"] or "Artifact cannot be rolled back"))
         conn.execute("UPDATE expert_artifacts SET active = 1, rolled_back_at = NULL, updated_at = ? WHERE id = ?", (now, replacement["id"]))
         conn.execute(
-            "UPDATE clusters SET expert_status = 'training_ready', updated_at = ? WHERE id = ?",
+            "UPDATE clusters SET expert_status = 'expert_compression_ready', updated_at = ? WHERE id = ?",
             (now, cluster_id),
         )
         updated = conn.execute("SELECT * FROM expert_artifacts WHERE id = ?", (replacement["id"],)).fetchone()
@@ -333,7 +372,7 @@ def merge_cluster(cluster_id: str, payload: ClusterMergeRequest) -> dict:
         for source_id in moved_sources:
             invalidate_caches_for_source(source_id, conn=conn)
         conn.execute(
-            "UPDATE clusters SET expert_status = 'needs-update', updated_at = ? WHERE id = ?",
+            "UPDATE clusters SET expert_status = 'expert_stale', updated_at = ? WHERE id = ?",
             (now, payload.target_cluster_id),
         )
         conn.execute("DELETE FROM clusters WHERE id = ?", (cluster_id,))
@@ -406,7 +445,7 @@ def rollback_cluster_merge_artifact(artifact_id: str) -> dict:
                     str(source_snapshot.get("name") or "Restored cluster"),
                     str(source_snapshot.get("description") or ""),
                     str(source_snapshot.get("color") or "sage"),
-                    "needs-update",
+                    "expert_stale",
                     str(source_snapshot.get("created_at") or now),
                     now,
                 ),
@@ -434,7 +473,7 @@ def rollback_cluster_merge_artifact(artifact_id: str) -> dict:
                 (source_cluster_id, now, chat_id, artifact["vault_id"]),
             )
         conn.execute(
-            "UPDATE clusters SET expert_status = 'needs-update', updated_at = ? WHERE id IN (?, ?)",
+            "UPDATE clusters SET expert_status = 'expert_stale', updated_at = ? WHERE id IN (?, ?)",
             (now, source_cluster_id, artifact["target_cluster_id"]),
         )
         conn.execute(

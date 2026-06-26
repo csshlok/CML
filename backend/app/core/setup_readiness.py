@@ -78,7 +78,7 @@ def first_run_readiness() -> dict:
             "detail": (
                 active_expert_model.get("compatibility", {}).get("detail", "")
                 if active_expert_model
-                else "No accepted expert checkpoint is configured."
+                else "No accepted expert-compression runtime is configured."
             ),
         },
         {
