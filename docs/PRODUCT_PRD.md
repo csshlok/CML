@@ -191,7 +191,7 @@ These are part of the V1 promise and cannot be silently deferred:
 - grounded chat quality under hostile or weak evidence
 - dynamic evidence budgeting by hardware and model tier
 - clean Windows packaging and clean-machine validation
-- verified LoRA cluster expert quality, not only scaffolding
+- verified retrieval-grounded expert-compression bundle quality, not only scaffolding
 
 ### 8.3 Explicitly Out Of Scope
 

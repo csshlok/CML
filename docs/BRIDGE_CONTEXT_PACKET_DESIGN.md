@@ -1,6 +1,6 @@
 # Bridge Context Packet Design
 
-Last updated: 2026-06-14
+Last updated: 2026-06-26
 
 ## Current Status
 
@@ -10,9 +10,15 @@ What is complete in the repo:
 
 - MCP `get_cluster_context` defaults to model-readable packet text instead of raw JSON.
 - Raw JSON is opt-in through `format=json` or debug paths.
+- Bridge and MCP now route through the shared retrieval-grounded cluster bundle builder instead of assembling expert/context fields independently.
 - Bridge capture tools default to human-readable receipts.
 - Shared packet helpers now exist in `backend/app/core/context_packets.py` and are used by both Bridge and internal grounded-chat paths.
 - Expansion handles and MCP/HTTP expansion flows exist.
+- Bundle metadata now reaches packet consumers:
+  - `expert_digest`
+  - `retrieval_authority`
+  - `token_ledger`
+  - `bundle_status`
 - MCP review queue tools now exist for downgraded writebacks:
   - `list_writeback_reviews`
   - `decide_writeback_review`
@@ -53,6 +59,9 @@ Completed:
   - `Citations`
   - `Trust And Limits`
   - `Expansion Handles`
+  - `Cluster Expert Digest`
+  - `Authority`
+  - `Token Savings`
 - Packet telemetry includes:
   - raw JSON bytes
   - packet bytes
@@ -66,6 +75,10 @@ Completed:
 - Bridge uses `build_bridge_context_packet(...)`.
 - Grounded chat uses `build_chat_context_packet(...)`.
 - The shared renderer gives both paths the same instruction framing, trust wording, evidence presentation, and expansion-handle surface.
+- Packet rendering now carries the bundle-era contract explicitly:
+  - retrieval remains the authority for facts and citations
+  - expert digest is compression only
+  - token savings are visible to the caller
 
 ### Expansion
 
@@ -110,6 +123,27 @@ The original problem statement still stands:
 - Bridge should send compact, model-usable context rather than source-shaped raw API JSON.
 - Context reduction should come from local evidence shaping and reversible expansion, not from forcing external models to parse CML schema.
 - External model outputs must not become authoritative memory without grounding checks.
+- Expert compression is optional and must never become citation authority.
+
+## Bundle Contract
+
+The current packet contract is the retrieval-grounded cluster expert bundle, not a standalone adapter response.
+
+Current packet/API bundle fields:
+
+- `expert_digest`
+- `expert_used`
+- `expert_mode`
+- `retrieval_authority`
+- `token_ledger`
+- `bundle_status`
+- `expansion_handles`
+
+Authority rules:
+
+- Facts and citations come from retrieved evidence.
+- Expert digest is a non-authoritative compression layer only.
+- Expansion handles must always resolve back to source/chunk/page evidence, not adapter-only text.
 
 ## Remaining Gaps
 
@@ -133,6 +167,7 @@ Still open or still needing broader proof:
 - Review queue tools exist for downgraded captures.
 - Expansion handles and expansion tools exist.
 - Shared Bridge/chat packet rendering exists.
+- Shared Bridge/chat bundle rendering exists with expert digest, authority, token-ledger, and bundle-status fields.
 - Packet telemetry exists.
 - External response quality gating exists.
 - Content-aware chunking exists across the main supported structured source classes.

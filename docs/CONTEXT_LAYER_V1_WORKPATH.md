@@ -1,6 +1,6 @@
 # Context Layer V1 Work Path
 
-Last updated: 2026-06-14
+Last updated: 2026-06-26
 
 ## Goal
 
@@ -143,6 +143,9 @@ Deliverables:
   - working memory
   - supporting evidence snippets
   - citations
+  - optional expert digest
+  - retrieval-authority statement
+  - token ledger
   - warnings / trust state
 - Bridge writeback quality state for external model responses:
   - grounded
@@ -153,6 +156,7 @@ Deliverables:
 - Default Bridge/MCP context packet text with:
   - how external models should use the context
   - citation handle rules
+  - expert digest authority limits
   - trust and limit explanations
 - Strict token budgeting and trimming for external clients, not only internal chat.
 - Content-type-aware packet shaping for:
@@ -162,6 +166,7 @@ Deliverables:
   - tables / JSON
   - transcript history
 - Reversible compacted items with expansion handles instead of raw full-text by default.
+- Shared bundle path for chat and Bridge so retrieval, digest eligibility, token telemetry, and bundle status stay consistent.
 
 Primary repo areas:
 
@@ -177,6 +182,7 @@ Exit criteria:
 - Pass-1 Bridge/MCP context output is materially smaller and easier for outside LLMs to use than raw source-shaped JSON.
 - Internal chat and Bridge/MCP share the same packet builder and compaction rules after the required Pass-2 evidence-model convergence.
 - External model responses are not promoted into authoritative memory unless quality-gated.
+- Facts and citations remain retrieval-owned even when expert compression is enabled.
 
 ### 6. Reversible Expansion And Telemetry
 

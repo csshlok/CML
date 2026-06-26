@@ -1,6 +1,6 @@
 # CML UI Architecture
 
-Last updated: 2026-06-04
+Last updated: 2026-06-26
 
 ## Purpose
 
@@ -17,7 +17,7 @@ The user should feel:
 - Their personal material is organized into living spaces.
 - The app is private, local, and trustworthy.
 - Search, chat, clusters, and map are different views of the same memory system.
-- Models, embeddings, jobs, OCR, and LoRA are hidden behind plain language unless the user opens advanced details.
+- Models, embeddings, jobs, OCR, and expert-compression runtime details are hidden behind plain language unless the user opens advanced details.
 - The interface is quiet enough for daily use but dense enough for power users.
 
 The desired references are:
@@ -44,7 +44,7 @@ Use user-facing language by default.
 | Database | Vault storage | SQLite database |
 | Embeddings | Memory search | Embedding model |
 | Vector index | Search index | Vector index |
-| LoRA adapter | Local expert | Adapter |
+| LoRA adapter / expert runtime | Expert compression | Adapter / runtime |
 | Fine-tuning | Learning | Training |
 | Model runtime | Local chat | Runtime endpoint |
 | MCP/API | Bridge connection | MCP/API |
@@ -71,11 +71,23 @@ Avoid default-path labels:
 - backend
 - LoRA
 - fine-tune
+- LoRA
 - database
 - token
 - JSON-RPC
 
+Cluster/expert status language must distinguish:
+
+- `Searchable`
+- `Retrieval-only mode`
+- `Preparing expert compression`
+- `Training cluster compressor`
+- `Expert compression ready`
+- `Expert needs update`
+- `Expert compression unavailable on this device`
+
 Technical labels are acceptable in Settings, diagnostics, Bridge setup, and expandable detail panels.
+User-facing surfaces must not imply that an adapter memorizes the cluster or acts as factual authority by itself.
 
 ## App Shell Architecture
 

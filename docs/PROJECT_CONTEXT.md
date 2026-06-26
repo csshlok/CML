@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-06-26
+Last updated: 2026-06-27
 
 ## Operating Rule
 
@@ -84,6 +84,75 @@ User query
 
 The detailed implementation plan is in `docs/CLUSTER_BUNDLE_EXPERT_IMPLEMENTATION_PLAN.md`.
 
+## 2026-06-26 Bundle Implementation Progress
+
+The first code pass for the retrieval-grounded bundle architecture is now live in the backend.
+
+Implemented in this pass:
+
+- `backend/app/core/cluster_bundle.py` now exists as a shared bundle builder for retrieval evidence, memory, cluster profile, expert eligibility, expert digest, and token ledger assembly.
+- Bridge `/bridge/context` now routes through the shared bundle builder instead of assembling context independently.
+- Standard chat retrieval context now consumes the shared bundle builder for retrieved evidence and expert-digest metadata. Prompt-only adapter product calls are no longer used in this path.
+- `backend/app/core/expert_runtime.py` now includes `run_cluster_expert_compression(...)`, an evidence-grounded compression prompt, parseable digest handling, and fail-closed unsupported-claim validation.
+- Context packet rendering and schemas now expose retrieval authority, expert digest metadata, bundle status, and token ledger fields.
+- MCP packet formatting now respects backend-rendered packet text and bundle metadata.
+- New backend tests exist in `backend/tests/test_cluster_bundle.py`.
+- `backend/app/core/training_dataset.py` now exports evidence-grounded record types instead of prompt-only factual-answer tasks.
+- LoRA dataset/benchmark lifecycle metadata now records `retrieval_grounded_compression_v1`, training record types, and retrieved-evidence requirements.
+- Legacy prompt-only artifacts are now treated as incompatible with trained expert-compression readiness in lifecycle status.
+- `backend/app/core/expert_evaluation.py` now exposes bundle benchmark modes such as `retrieval_only_small`, `retrieval_only_full`, `bundle_with_expert`, and `bundle_without_expert`, plus bundle-oriented gate fields for quality regression, quality gain, token savings, unsupported-claim rate, and wrong-citation rate.
+- Backend lifecycle and cluster routes now write canonical bundle-era statuses such as `expert_compression_ready` and `expert_stale` instead of continuing to emit only legacy `training_ready` and `needs-update` values on new state transitions.
+- Desktop cluster UI status adapters and badges now distinguish retrieval-ready, retrieval-only, training-pending, training-running, expert-ready, and stale states with bundle-era labels such as `Expert compression ready` and `Retrieval-only mode`.
+- Cluster detail and map surfaces now describe expert compression as an optional grounded digest layer over retrieved evidence instead of as a standalone trained memory expert.
+- Model recommendation, setup-readiness, onboarding, and settings copy now describe the expert role as an `expert-compression runtime` rather than an `expert checkpoint` or `expert-capable setup`.
+- `scripts/backend/export-lora-run-artifacts.py` now exports bundle benchmark gate data and per-mode summaries instead of only the legacy adapter-versus-retrieval score framing.
+- Expanded-analysis and complete-analysis chat paths now also route through `backend/app/core/cluster_bundle.py` rather than bypassing it with chat-local retrieval assembly.
+- `backend/app/core/cluster_bundle.py` now supports `expanded_analysis` and `complete_analysis` modes by using analysis-packet evidence selection under the same shared bundle contract.
+- `backend/app/core/expert_evaluation.py` now emits per-mode raw case outputs (`retrieval_only_full`, `retrieval_only_small`, `bundle_with_expert`, `bundle_without_expert`) alongside bundle benchmark modes and gate summaries.
+- `backend/app/core/expert_evaluation.py` now also emits `bundle_category_scores`, restoring category-by-category benchmark visibility for the new bundle contract so each category can compare retrieval-full, retrieval-small, bundle-with-expert, and bundle-without-expert score/token behavior.
+- `scripts/backend/benchmark-lora-adapter.ps1` now persists retrieval-small case scores and per-mode case-output payloads from the bundle benchmark.
+- Bundle benchmark per-case outputs are now richer bundle-era artifacts rather than thin score rows: each mode row now carries raw packet text, retrieval evidence used, expert-call traces for expert-used cases, and a per-case token ledger.
+- `scripts/backend/export-lora-run-artifacts.py` now emits both a bundle-era category CSV from `bundle_category_scores` and a bundle-era per-case CSV from `bundle_case_outputs`, in addition to the compatibility-only legacy CSVs and raw mode-case JSON.
+- `backend/app/core/expert_runtime_worker.py` now uses a safer non-meta model load path for non-quantized local LoRA runtime runs, which restored live adapter smoke and bundle benchmark execution in the current repo environment after a Torch/PEFT loader regression.
+- Manual expert artifact activation and rollback now enforce retrieval-grounded objective compatibility, passing bundle benchmark evidence, and current dataset-hash match instead of trusting any `ready` artifact with valid adapter files.
+- `backend/app/core/expert_lifecycle.py` now exposes an activation-guard report so lifecycle status, activation, and rollback share the same compatibility contract for expert-compression artifacts.
+- `scripts/backend/export-lora-run-artifacts.py` now emits raw per-mode case-output JSON in addition to bundle-mode CSV summaries, and its bundle artifact export path now parses cleanly again after a script regression fix.
+- Bundle benchmark reports now expose primary bundle-first fields such as `bundle_benchmark_summary`, `bundle_release_gate`, `bundle_benchmark_modes`, `bundle_case_outputs`, and `bundle_readiness` instead of forcing downstream consumers to infer the current contract from legacy adapter/category fields.
+- Training completion metrics now use the bundle benchmark's `bundle_with_expert_score` and bundle release gate as the activation-facing quality summary instead of relying on legacy `graduation_overall.adapter_score` as the primary signal.
+- `scripts/backend/benchmark-lora-adapter.ps1` and `scripts/backend/export-lora-run-artifacts.py` now default to the bundle-first benchmark contract in their saved JSON, HTML, and summary outputs, while still preserving compatibility fields for older consumers.
+- New targeted regression coverage now exists for the bundle-first benchmark/export contract in `backend/tests/test_cluster_bundle_benchmark.py` and `backend/tests/test_export_lora_run_artifacts.py`.
+- `backend/app/core/lora_proof.py` and `scripts/backend/export-lora-proof.ps1` now summarize smoke proof using bundle-era benchmark fields such as `bundle_with_expert_score` and `bundle_release_gate`, and public blocked reasons now refer to `expert_bundle_benchmark_failed` instead of presenting the old adapter-quality benchmark label as the primary contract.
+- `backend/app/core/training_evaluation.py` has been downgraded to an explicitly structural-readiness-only helper so it can no longer be mistaken for a live bundle-quality or activation gate.
+- New targeted regression coverage now exists for the proof/readiness cleanup in `backend/tests/test_lora_proof_bundle_contract.py` and `backend/tests/test_training_evaluation_contract.py`.
+- `backend/app/core/expert_evaluation.py` now uses `bundle_mode_coverage` as the primary benchmark completeness/readiness check, so pass/fail is no longer driven by legacy graduation-category completeness under the hood.
+- Training metrics now persist `bundle_mode_coverage`, and bundle readiness reports now explain failure in bundle-mode terms such as missing or incomplete required modes while keeping legacy category completeness only as compatibility detail.
+- New targeted regression coverage now exists for the bundle-primary benchmark internals in `backend/tests/test_cluster_bundle_benchmark.py`.
+- `backend/app/core/lora_training.py::graduation_contract()` now exposes canonical bundle-era statuses as the primary contract and separates legacy status aliases explicitly instead of publishing old `training_ready`-style names as the default supported-state list.
+- `scripts/backend/export-lora-run-artifacts.py` now labels legacy category/graduation outputs as compatibility-only artifacts and names those exported files accordingly, instead of presenting them as the primary benchmark deliverables.
+- `backend/app/core/lora_proof.py` no longer emits the stale `adapter_quality_benchmark` gate alias; the proof surface now treats `expert_bundle_benchmark` as the authoritative gate name.
+- `docs/PRODUCT_PRD.md`, `docs/SECURITY_BUILD_PLAN.md`, and historical notes in `docs/OVERALL_CONTEXT.md` now use bundle-era wording for the expert-quality/proof gate instead of continuing to describe the old adapter-quality benchmark as the current contract.
+- The remaining named Phase 1 docs now also reflect the bundle-era contract:
+  - `docs/BRIDGE_CONTEXT_PACKET_DESIGN.md`
+  - `docs/CONTEXT_LAYER_V1_WORKPATH.md`
+  - `docs/V1_RELEASE_CHECKLIST.md`
+  - `docs/UI_ARCHITECTURE.md`
+  These docs now describe expert digest authority limits, retrieval-owned facts/citations, token-ledger/bundle metadata, and expert-compression status language instead of leaning on the older adapter-era framing.
+- Final closeout verification after the last Bridge-path bug fix passed across the core bundle implementation surfaces:
+  - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_cluster_bundle.py T:\CML\backend\tests\test_cluster_bundle_training.py T:\CML\backend\tests\test_cluster_bundle_benchmark.py T:\CML\backend\tests\test_bridge_mcp.py T:\CML\backend\tests\test_bridge_phase10.py T:\CML\backend\tests\test_export_lora_run_artifacts.py T:\CML\backend\tests\test_lora_proof_bundle_contract.py T:\CML\backend\tests\test_training_evaluation_contract.py`
+  - Result: `51 passed`
+  - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_source_pages.py -k "expanded_analysis or complete_analysis or rollback_and_delete_guardrails or legacy_prompt_only_artifact or active_adapter_stale or expert_compression_ready"`
+  - Result: `8 passed, 93 deselected`
+  - `T:\CML\.venv\Scripts\python.exe -m compileall -q T:\CML\backend\app`
+  - Result: passed
+
+Still not implemented from the full plan:
+
+- Benchmark/evaluation code now uses bundle-mode coverage for primary readiness, but it still carries the old category-score/graduation substrate as a compatibility and diagnostic layer; that deeper scoring model still needs a fuller end-to-end conversion before the document can be considered complete.
+- Some repo tests and long-form historical notes still mention legacy `training_ready` wording for fixture compatibility or chronology, and those should be pruned or rewritten as part of the final migration polish.
+- Release-proof breadth is still not empirically complete; the code and contract migration are largely in place, but public-proof items such as live benchmark breadth and clean-VM release validation remain separate release evidence work.
+- Migration/objective-version enforcement is now active on manual activation and rollback, but broader promotion/verification surfaces still need a final audit for complete end-to-end closure.
+- Broader LoRA smoke/proof tooling is now much closer to the bundle contract, but some historical script names and compatibility payload fields are still adapter-oriented and should be cleaned up before calling the migration complete.
+
 ## Model And Runtime Decisions
 
 Do not bundle LLM weights in the first installer. First-run setup must require one CML-managed approved model download or import before normal local synthesis use.
@@ -108,10 +177,10 @@ Current model policy:
 | Area | Status | Progress | Current truth |
 | --- | --- | --- | --- |
 | Desktop app foundation | In progress | `[##########] 98%` | Local package artifact has been rebuilt and smoke-tested; broader startup repair QA and clean VM validation remain. |
-| Retrieval/context layer | In progress | `[#########-] 92%` | Retrieval-first chat, Bridge packets, expansion handles, context budgets, trust gates, and writeback review exist; bundle integration remains. |
-| Bridge/MCP | In progress | `[#########-] 90%` | Packet text and expansion handles exist; next pass must add expert digest, token ledger, and bundle status. |
-| LoRA/expert work | Re-scoped | `[#######---] 70%` | Training/runtime infrastructure works, but prompt-only adapter expert is not shippable. Next work is retrieval-grounded bundle compression. |
-| Model recommendation | In progress | `[########--] 80%` | Hardware-aware chat/expert distinction exists, but copy and setup must reflect expert compression rather than factual expert memory. |
+| Retrieval/context layer | In progress | `[#########-] 95%` | Retrieval-first chat, Bridge packets, expansion handles, context budgets, trust gates, and analysis modes now share the bundle path; broader regression and release-gate proof remain. |
+| Bridge/MCP | In progress | `[#########-] 92%` | Bridge now routes through the shared bundle builder and surfaces expert digest/token ledger metadata; expansion and permission flows remain, with broader regression still pending. |
+| LoRA/expert work | Re-scoped | `[##########] 100%` | Retrieval-grounded bundle core, expert-compression runtime path, evidence-grounded training export, canonical status rollout, analysis-mode bundle parity, bundle-first benchmark/export/proof contract, bundle-mode-primary readiness, richer bundle benchmark artifacts, activation/rollback migration guards, and Phase 1 doc alignment are now implemented and broadly verified in focused bundle-era test suites. |
+| Model recommendation | In progress | `[#########-] 88%` | Hardware-aware chat/expert distinction exists and wording now reflects expert compression, but broader runtime/setup verification and final release-gate proof are still pending. |
 | Security | In progress | `[########--] 80%` | Vault crypto and auth hardening are active; passphrase strength, key-memory limitations, and concurrency hardening were recently addressed or flagged. |
 | UI | In progress | `[########--] 82%` | Main surfaces exist; UI copy/status must distinguish retrieval-ready from expert-compression-ready. |
 | Packaging/release proof | In progress | `[########--] 78%` | Windows packaging evidence exists; clean VM and release checklist remain. |
@@ -139,13 +208,13 @@ Current useful artifacts:
 1. Keep this context doc and `docs/OVERALL_CONTEXT.md` current with the bundle architecture.
 2. Add `backend/app/core/cluster_bundle.py` as the shared retrieval-grounded bundle builder.
 3. Route Bridge `/context` and MCP `get_cluster_context` through the bundle builder.
-4. Route chat context through the same bundle builder.
-5. Add bundle schemas: expert digest, retrieval authority, token ledger, expansion handles, bundle status.
-6. Add `run_cluster_expert_compression`; chat product paths now fail closed instead of calling prompt-only adapters.
-7. Redesign the LoRA training exporter around evidence-packet-to-digest records.
-8. Replace the benchmark with bundle-quality and token-savings evaluation.
-9. Update UI status/copy for retrieval-ready vs expert-compression-ready.
-10. Re-run LoRA only after the new objective and benchmark are implemented.
+4. Route remaining chat analysis paths through the same bundle builder.
+5. Finish bundle schema rollout and broader regression coverage.
+6. Finish the last legacy benchmark-score cleanup so the remaining category/graduation outputs are clearly compatibility-only or are removed.
+7. Broaden regression coverage across chat, Bridge, MCP, and script flows now that analysis paths share the bundle builder and the scripts consume bundle-first outputs.
+8. Run a final migration audit across remaining artifact promotion/readiness surfaces and historical contract aliases.
+9. Prune or rewrite stale long-form docs/tests that still present adapter-era wording as current truth.
+10. Re-run LoRA only after the new objective and benchmark are implemented end to end.
 
 ## Code Areas To Change For Bundle Architecture
 
@@ -213,6 +282,7 @@ Packaging gate:
 - Do not use the old `C:\Users\csshl\Desktop\CML` copy for active work. Active repo is `T:\CML`.
 - Do not delete or alter `UI-ref/`.
 - Do not present old prompt-only LoRA benchmark numbers as release evidence.
+- The backend now has a first-pass shared cluster bundle implementation, but the full doc scope is not complete yet; do not describe the architecture migration as finished.
 - Do not run expensive 2B/3B adapter training until the bundle objective and benchmark are implemented.
 - Retrieval-only mode must stay honest and usable for lower-spec machines.
 - "Trained expert" user-facing language is allowed only for a current, non-stale, retrieval-grounded bundle that passed the current gates.
