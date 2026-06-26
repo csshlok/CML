@@ -3909,7 +3909,12 @@ class SourcePageIndexingTests(unittest.TestCase):
 
         os.environ["CML_ALLOW_LORA_TEST_TRAINER"] = "1"
         self._use_permissive_lora_test_gates()
-        self._write_fake_local_transformers_model()
+        model_name = self._write_fake_local_transformers_model()
+        preferred_model = {
+            "id": model_name,
+            "local_path": str(Path(self.tmp.name) / "models" / model_name),
+            "compatibility": {"accepted": True, "expert_role_accepted": True},
+        }
         get_settings.cache_clear()
         now = utc_now()
         with connect() as conn:
@@ -3942,6 +3947,28 @@ class SourcePageIndexingTests(unittest.TestCase):
             "hardware_tier": "cpu_minimum_spec",
             "detail": "test hardware",
         }
+
+        def fake_training_process(*, output_dir, config, **_kwargs):
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "adapter_config.json").write_text(
+                json.dumps(
+                    {
+                        "peft_type": "LORA",
+                        "task_type": "CAUSAL_LM",
+                        "base_model_name_or_path": config["base_model"],
+                        "target_modules": ["q_proj", "v_proj"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "adapter_model.safetensors").write_bytes(b"adapter")
+            return {
+                "status": "succeeded",
+                "adapter_path": str(output_dir),
+                "stdout_path": str(output_dir / "trainer.stdout.log"),
+                "stderr_path": str(output_dir / "trainer.stderr.log"),
+            }
+
         benchmark_run = {
             "evaluation_plan": {
                 "case_count": 1,
@@ -3968,6 +3995,18 @@ class SourcePageIndexingTests(unittest.TestCase):
         with (
             patch("backend.app.core.expert_lifecycle.hardware_status", return_value=hardware),
             patch("backend.app.core.hardware.hardware_status", return_value=hardware),
+            patch(
+                "backend.app.core.background_jobs.preferred_expert_base_model",
+                return_value=preferred_model,
+            ),
+            patch(
+                "backend.app.core.background_jobs.run_lora_training_process",
+                side_effect=fake_training_process,
+            ),
+            patch(
+                "backend.app.core.background_jobs.runtime_adapter_load_plan",
+                return_value={"available": True, "detail": "runtime available"},
+            ),
             patch(
                 "backend.app.core.background_jobs.run_live_expert_benchmark",
                 return_value=benchmark_run,
@@ -4013,7 +4052,11 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(job["failure_code"], "")
         from backend.app.api.routes.clusters import get_expert_status
 
-        status = get_expert_status("cluster-1")
+        with patch(
+            "backend.app.core.expert_lifecycle.runtime_adapter_load_plan",
+            return_value={"available": True, "detail": "runtime available"},
+        ):
+            status = get_expert_status("cluster-1")
         self.assertEqual(status["user_status"], "Ready")
         self.assertTrue(status["trained"])
         self.assertTrue(status["runtime_load"]["available"])
@@ -4197,7 +4240,7 @@ class SourcePageIndexingTests(unittest.TestCase):
                     return_value={"available": True, "detail": "runtime available"},
                 ),
                 patch(
-                    "backend.app.core.background_jobs.build_adapter_training_evaluation_plan",
+                    "backend.app.core.background_jobs.build_expert_evaluation_plan",
                     return_value=evaluation_plan,
                 ),
                 patch(
@@ -4799,7 +4842,7 @@ class SourcePageIndexingTests(unittest.TestCase):
                     return_value={"available": True, "detail": "runtime available"},
                 ),
                 patch(
-                    "backend.app.core.background_jobs.build_adapter_training_evaluation_plan",
+                    "backend.app.core.background_jobs.build_expert_evaluation_plan",
                     side_effect=fake_build_plan,
                 ),
                 patch(

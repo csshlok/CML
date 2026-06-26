@@ -204,12 +204,7 @@ def _category_answer(category: str, doc: dict, summary: str) -> str:
 
     if category == "summarization":
         bullets = _grounded_summary_bullets(summary, str(doc.get("text") or ""), title)
-        return (
-            f"According to source {title}:\n"
-            f"- {bullets[0]}\n"
-            f"- {bullets[1]}\n"
-            f"- {bullets[2]}"
-        )
+        return "\n".join(f"- {bullet}" for bullet in bullets)
     if category == "citation_grounding":
         return f"{source_prefix} {evidence}"
     if category == "contradiction_handling":
@@ -218,22 +213,23 @@ def _category_answer(category: str, doc: dict, summary: str) -> str:
             f"If a new claim conflicts with it, treat the new claim as unverified unless it matches: {evidence}"
         )
     if category == "terminology_consistency":
+        terms = _preferred_terms(title, summary, str(doc.get("text") or ""))
         return (
-            f"{source_prefix} use the preferred local terms: {_preferred_terms(title, summary, str(doc.get('text') or ''))}. "
-            f"Keep the terminology consistent with the cluster notes. {evidence}"
+            f"{source_prefix} {evidence} "
+            f"Use consistent cluster vocabulary such as {terms}."
         )
     if category == "reasoning_pattern":
         reasoning_evidence = _evidence_excerpt(summary, str(doc.get("text") or ""), max_words=28)
         return (
-            f"First, identify the local evidence from source {title}: {reasoning_evidence} "
-            "Then, interpret what it means for the cluster context in plain language. "
-            "Therefore, the conclusion should stay practical and follow only what the local notes support."
+            f"The source evidence is: {reasoning_evidence} "
+            "That suggests a concrete local interpretation. "
+            "The practical conclusion is to follow the pattern the note supports."
         )
     if category == "style_transfer":
         practical_note = _practical_note_excerpt(summary, str(doc.get("text") or ""))
         return (
-            f"{source_prefix} practical note: {practical_note} "
-            "Keep the wording concrete, local, and action-oriented."
+            f"{practical_note} "
+            "Start small, keep it concrete, and adjust one variable at a time."
         )
     if category == "out_of_scope_refusal":
         return (
@@ -244,7 +240,7 @@ def _category_answer(category: str, doc: dict, summary: str) -> str:
 
 
 def _evidence_excerpt(summary: str, text: str, *, max_words: int = 80) -> str:
-    candidate = _normalized_source_text(summary or text or "")
+    candidate = _normalized_source_text(text or summary or "")
     if not candidate:
         return "the local source contains project-specific evidence"
     words = candidate.split()
@@ -253,20 +249,20 @@ def _evidence_excerpt(summary: str, text: str, *, max_words: int = 80) -> str:
 
 
 def _grounded_summary_bullets(summary: str, text: str, title: str) -> list[str]:
-    candidate = _normalized_source_text(summary or text or "")
+    candidate = _normalized_source_text(text or summary or "")
     segments = _source_segments(candidate)
     concise_segments = [_truncate_words(segment, 20) for segment in segments if segment]
     while len(concise_segments) < 2:
-        concise_segments.append("Grounded takeaway: the source contains local project-specific evidence.")
+        concise_segments.append("The source contains local project-specific evidence.")
     return [
-        f"Grounded takeaway: {concise_segments[0].rstrip('.')}.",
-        f"Key detail: {concise_segments[1].rstrip('.')}.",
-        f"Grounding stays inside the local source titled {title}.",
+        f"{concise_segments[0].rstrip('.')}.",
+        f"{concise_segments[1].rstrip('.')}.",
+        f"Source: {title}.",
     ]
 
 
 def _practical_note_excerpt(summary: str, text: str) -> str:
-    candidate = _normalized_source_text(summary or text or "")
+    candidate = _normalized_source_text(text or summary or "")
     segments = _source_segments(candidate)
     if not segments:
         return "the local source captures a cluster-specific practical detail."

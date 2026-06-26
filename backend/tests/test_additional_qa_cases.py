@@ -4025,11 +4025,11 @@ class AdditionalQACases(unittest.TestCase):
         self.assertTrue(any("not covered" in prompt for prompt in prompts))
         self.assertTrue(any("According to source Public V1 Blockers" in answer for answer in answers))
         self.assertTrue(any("missing evidence" in answer for answer in answers))
-        self.assertTrue(any("preferred local terms" in answer for answer in answers))
-        self.assertTrue(any("First, identify the local evidence" in answer for answer in answers))
-        self.assertIn("Grounded takeaway:", answers_by_category["summarization"])
-        self.assertIn("Key detail:", answers_by_category["summarization"])
-        self.assertIn("practical note:", answers_by_category["style_transfer"])
+        self.assertTrue(any("Use consistent cluster vocabulary such as" in answer for answer in answers))
+        self.assertTrue(any("The source evidence is:" in answer for answer in answers))
+        self.assertIn("- ", answers_by_category["summarization"])
+        self.assertIn("Source:", answers_by_category["summarization"])
+        self.assertIn("Start small, keep it concrete", answers_by_category["style_transfer"])
         self.assertNotIn("```", answers_by_category["style_transfer"])
         self.assertEqual(manifest["benchmark_record_accounting"]["train"]["duplicate_content_ratio"], 0.0)
         self.assertEqual(manifest["benchmark_record_accounting"]["validation"]["duplicate_content_ratio"], 0.0)
@@ -4298,16 +4298,15 @@ class AdditionalQACases(unittest.TestCase):
                     **score_expert_response(
                         case,
                         (
-                            f"According to source {case['source_title']}, adapter retrieval grounded citation evidence strict benchmark is present.\n"
-                            "- grounded practical note\n"
-                            "- preferred local terms stay intact\n"
-                            "- first, then, therefore reasoning stays explicit"
+                            "- adapter retrieval grounded citation evidence strict benchmark is present\n"
+                            "- source language remains concrete and grounded\n"
+                            f"- Source: {case['source_title']}."
                             if case["category"] == "summarization"
-                            else f"According to source {case['source_title']}, the practical note is: adapter retrieval grounded citation evidence strict benchmark is present."
+                            else "Adapter retrieval grounded citation evidence strict benchmark is present. Start with one small change and track the result."
                             if case["category"] == "style_transfer"
-                            else f"According to source {case['source_title']}, use the preferred local terms and cluster terminology: adapter, retrieval, benchmark."
+                            else f"According to source {case['source_title']}, adapter retrieval grounded citation evidence strict benchmark is present. Keep terms aligned, including adapter, retrieval, and benchmark."
                             if case["category"] == "terminology_consistency"
-                            else f"First, identify the local evidence from source {case['source_title']}. Then interpret it. Therefore, keep the reasoning pattern explicit."
+                            else f"Source evidence from {case['source_title']} shows adapter retrieval grounded citation evidence strict benchmark is present. The practical takeaway should follow that evidence."
                             if case["category"] == "reasoning_pattern"
                             else f"Source {case['source_title']} does not provide enough evidence; the answer should say it is not covered and evidence is missing."
                             if case["category"] == "out_of_scope_refusal"
@@ -4466,6 +4465,144 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(grounded["grounding_consistency_score"], 1.0)
         self.assertGreater(grounded["score"], swapped["score"])
 
+    def test_contradiction_handling_scoring_accepts_grounded_paraphrase_without_keyword_echo(self) -> None:
+        from backend.app.core.expert_evaluation import score_expert_response
+
+        case = {
+            "id": "cluster-1-2",
+            "category": "contradiction_handling",
+            "owner": "retrieval",
+            "counts_toward_graduation": False,
+            "source_title": "Doc One",
+            "expected_terms": ["language", "learning", "plateau", "instructional", "howto"],
+            "reference_text": (
+                "Track one variable at a time so you actually learn something from each attempt. "
+                "Ask someone who's done it before before assuming your first instinct is right."
+            ),
+            "markers": ["trust", "evidence", "unverified"],
+            "requires_citation": False,
+        }
+
+        scored = score_expert_response(
+            case,
+            (
+                "Trust the local evidence first. If a new claim conflicts with the note, treat it as unverified "
+                "until it matches what the source actually supports."
+            ),
+        )
+
+        self.assertEqual(scored["term_hits"], 0)
+        self.assertGreaterEqual(scored["marker_score"], 0.66)
+        self.assertGreater(scored["score"], 70.0)
+
+    def test_build_expert_evaluation_plan_prefers_full_text_for_grounding(self) -> None:
+        from backend.app.core.expert_evaluation import build_expert_evaluation_plan, score_expert_response
+
+        dataset = {
+            "cluster_id": "cluster-1",
+            "dataset_hash": "hash",
+            "documents": [
+                {
+                    "source_id": "source-1",
+                    "title": "Doc One",
+                    "summary": "Short overview without the entity names.",
+                    "text": "Tom moved to Toronto and started tracking spider mites in the greenhouse.",
+                }
+            ],
+        }
+
+        plan = build_expert_evaluation_plan(dataset)
+        case = plan["cases"][0]
+        scored = score_expert_response(
+            case,
+            "According to source Doc One, key facts include: Tom moved to Toronto and started tracking spider mites in the greenhouse.",
+        )
+
+        self.assertEqual(case["reference_text"], dataset["documents"][0]["text"])
+        self.assertEqual(scored["grounding_consistency_score"], 1.0)
+
+    def test_style_transfer_marker_score_penalizes_instruction_echo(self) -> None:
+        from backend.app.core.expert_evaluation import _marker_score
+
+        case = {
+            "category": "style_transfer",
+            "markers": ["practical", "note", "actionable"],
+            "expected_terms": ["network", "router", "latency"],
+        }
+
+        meta = _marker_score(case, "practical note: keep the wording concrete, local, and action-oriented.")
+        substantive = _marker_score(case, "Start with one router change, track latency, and keep the fix small enough to reverse.")
+
+        self.assertLess(meta, substantive)
+
+    def test_terminology_consistency_marker_score_penalizes_prompt_echo(self) -> None:
+        from backend.app.core.expert_evaluation import _marker_score
+
+        case = {
+            "category": "terminology_consistency",
+            "markers": ["preferred", "local terms", "terminology"],
+            "expected_terms": ["router", "latency", "segment"],
+        }
+
+        meta = _marker_score(case, "Use the preferred local terms and keep the terminology consistent with the cluster notes.")
+        substantive = _marker_score(case, "Keep router, latency, and segment vocabulary aligned across the note.")
+
+        self.assertLess(meta, substantive)
+
+    def test_reasoning_pattern_scoring_does_not_require_literal_title_term_echo(self) -> None:
+        from backend.app.core.expert_evaluation import score_expert_response
+
+        case = {
+            "id": "cluster-1-4",
+            "category": "reasoning_pattern",
+            "owner": "adapter",
+            "counts_toward_graduation": True,
+            "source_title": "Doc Reasoning",
+            "expected_terms": ["language", "learning", "plateau", "instructional", "howto"],
+            "reference_text": "Source evidence points to starting small and tracking one variable.",
+            "markers": ["first", "then", "therefore"],
+            "requires_citation": False,
+        }
+
+        scored = score_expert_response(
+            case,
+            (
+                "The source emphasizes starting small and tracking one variable at a time. "
+                "That suggests the writer values controlled experiments over guesswork. "
+                "The practical takeaway is to change one thing, observe it, and then decide what to do next."
+            ),
+        )
+
+        self.assertEqual(scored["term_hits"], 0)
+        self.assertGreater(scored["marker_score"], 0.25)
+        self.assertGreater(scored["score"], 45.0)
+
+    def test_terminology_consistency_scoring_caps_wrong_source_attribution(self) -> None:
+        from backend.app.core.expert_evaluation import score_expert_response
+
+        case = {
+            "id": "cluster-1-3",
+            "category": "terminology_consistency",
+            "owner": "adapter",
+            "counts_toward_graduation": True,
+            "source_title": "articles_041_language_learning_plateau_instructional_howto.pdf - articles_041_language_learning_plateau_instructional_howto.pdf",
+            "expected_terms": ["language", "learning", "plateau", "instructional", "howto"],
+            "reference_text": "Use the cluster's preferred terminology and local phrasing for this source.",
+            "markers": ["preferred", "local terms", "terminology"],
+            "requires_citation": False,
+        }
+
+        scored = score_expert_response(
+            case,
+            (
+                "According to source articles_039_biology_of_stress_research_summary.pdf, use the preferred "
+                "local terms and terminology for language learning plateaus."
+            ),
+        )
+
+        self.assertEqual(scored["grounding_consistency_score"], 0.0)
+        self.assertLessEqual(scored["score"], 45.0)
+
     def test_adapter_training_evaluation_plan_uses_exported_validation_records(self) -> None:
         from backend.app.core.expert_evaluation import build_adapter_training_evaluation_plan
 
@@ -4488,7 +4625,7 @@ class AdditionalQACases(unittest.TestCase):
                                 },
                                 {
                                     "role": "assistant",
-                                    "content": "According to source Doc One, use the preferred local terms and terminology: adapter, retrieval, benchmark.",
+                                    "content": "According to source Doc One, adapter retrieval benchmark evidence stays local. Use consistent cluster vocabulary such as adapter, retrieval, benchmark.",
                                 },
                             ],
                             "source_id": "source-1",
@@ -4504,7 +4641,7 @@ class AdditionalQACases(unittest.TestCase):
                                 },
                                 {
                                     "role": "assistant",
-                                    "content": "According to source Doc Two:\n- grounded practical note\n- preferred local terms stay intact\n- first, then, therefore reasoning stays explicit",
+                                    "content": "- adapter retrieval benchmark evidence stays local\n- source language remains concrete and grounded\n- Source: Doc Two.",
                                 },
                             ],
                             "source_id": "source-2",
@@ -4554,7 +4691,7 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("run_live_expert_benchmark", adapter_benchmark_text)
         self.assertIn("default_expert_benchmark_token_budgets", adapter_benchmark_text)
         self.assertIn('benchmark_run.get("benchmark_report")', adapter_benchmark_text)
-        self.assertIn("build_adapter_training_evaluation_plan", adapter_benchmark_text)
+        self.assertIn("build_expert_evaluation_plan", adapter_benchmark_text)
         self.assertIn("dataset_matches_adapter_training", adapter_benchmark_text)
         self.assertIn("adapter_training_dataset", adapter_benchmark_text)
         self.assertIn("BaseModel15B", size_matrix_text)
@@ -4627,13 +4764,13 @@ class AdditionalQACases(unittest.TestCase):
                             if index == 1
                             else "Trust the evidence from source Evaluation source 2 and mark conflicting claims as unverified."
                             if index == 2
-                            else "According to source Evaluation source 3, adapter retrieval grounded citation evidence strict benchmark is present.\n- grounded practical note\n- preferred local terms stay intact\n- first, then, therefore reasoning stays explicit"
+                            else "- adapter retrieval grounded citation evidence strict benchmark is present\n- source language remains concrete and grounded\n- Source: Evaluation source 3."
                             if index == 3
-                            else "According to source Evaluation source 4, the practical note is: adapter retrieval grounded citation evidence strict benchmark is present and actionable."
+                            else "Adapter retrieval grounded citation evidence strict benchmark is present and actionable. Start with one small change and track the result."
                             if index == 4
-                            else "According to source Evaluation source 5, use the preferred local terms and cluster terminology: adapter, retrieval, benchmark."
+                            else "According to source Evaluation source 5, adapter retrieval grounded citation evidence strict benchmark is present. Keep terms aligned, including adapter, retrieval, and benchmark."
                             if index == 5
-                            else "First, identify the local evidence from source Evaluation source 6 that shows adapter retrieval grounded citation evidence strict benchmark. Then interpret it. Therefore, keep the reasoning pattern explicit."
+                            else "Source evidence from Evaluation source 6 shows adapter retrieval grounded citation evidence strict benchmark is present. The practical takeaway should follow that evidence."
                             if index == 6
                             else "Source Evaluation source 7 is not covered with sufficient evidence, and key adapter retrieval grounded citation evidence strict benchmark details are missing."
                         )
@@ -4832,17 +4969,17 @@ class AdditionalQACases(unittest.TestCase):
             },
             {
                 "prompt": "p",
-                "response_text": "Practical note: Alice moved to Berlin in 2024.",
+                "response_text": "Alice moved to Berlin in 2024. Start with one small change, keep it reversible, and track what changed.",
                 "citations": [{"snippet": "Alice moved to Berlin in 2024."}],
             },
             {
                 "prompt": "p",
-                "response_text": "According to source Evaluation source 5, use the preferred local terms.",
+                "response_text": "According to source Evaluation source 5, Alice moved to Berlin in 2024. Keep terms aligned with the source wording.",
                 "citations": [{"snippet": "Alice moved to Berlin in 2024."}],
             },
             {
                 "prompt": "p",
-                "response_text": "First, the source says Alice moved to Berlin in 2024. Then interpret it. Therefore, keep it practical.",
+                "response_text": "Source evidence: Alice moved to Berlin in 2024. The practical takeaway should follow directly from that local evidence.",
                 "citations": [{"snippet": "Alice moved to Berlin in 2024."}],
             },
             {

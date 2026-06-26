@@ -7,7 +7,8 @@ param(
   [int]$ExpectedSourceCount = 205,
   [int]$BenchmarkCaseLimit = 24,
   [int]$EvalSteps = 200,
-  [int]$EarlyStoppingSteps = 2
+  [int]$EarlyStoppingSteps = 2,
+  [switch]$SkipQualityGate
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,7 +21,10 @@ if (-not (Test-Path $resolvedVaultRoot)) {
 }
 
 $sources = Get-ChildItem -LiteralPath $resolvedVaultRoot -File -Recurse |
-  Where-Object { $_.Extension.ToLowerInvariant() -in @('.pdf', '.md', '.txt') } |
+  Where-Object {
+    $_.Name.ToLowerInvariant() -ne 'manifest.json' -and
+    $_.Extension.ToLowerInvariant() -in @('.pdf', '.md', '.txt')
+  } |
   Sort-Object FullName |
   ForEach-Object { $_.FullName }
 
@@ -36,6 +40,7 @@ $env:CML_LORA_TRAINING_NUM_TRAIN_EPOCHS = [string]$Epochs
 $env:CML_LORA_TRAINING_EVAL_STEPS = [string]$EvalSteps
 $env:CML_LORA_TRAINING_EARLY_STOPPING_STEPS = [string]$EarlyStoppingSteps
 $env:CML_LORA_TRAINER_TIMEOUT_SECONDS = "21600"
+$env:CML_LORA_SKIP_QUALITY_GATE = if ($SkipQualityGate) { "1" } else { "0" }
 
 & ".\scripts\backend\smoke-lora-expert.ps1" `
   -ReportPath $ReportPath `

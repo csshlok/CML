@@ -23,7 +23,11 @@ from backend.app.core.context_memory import rebuild_chat_session_memory, rebuild
 from backend.app.core.analysis_packets import build_analysis_packets
 from backend.app.core.training_dataset import build_cluster_dataset, write_cluster_training_dataset
 from backend.app.core.unlock_state import should_pause_vault_job
-from backend.app.core.expert_evaluation import build_adapter_training_evaluation_plan, run_live_expert_benchmark
+from backend.app.core.expert_evaluation import (
+    EVALUATION_CATEGORIES,
+    build_expert_evaluation_plan,
+    run_live_expert_benchmark,
+)
 from backend.app.core.lora_training import (
     LoraTrainerMissingError,
     adapter_validation_report,
@@ -1048,10 +1052,13 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             raise RuntimeError("Cluster sources changed before adapter activation.")
 
         benchmark_case_limit = int(get_settings().lora_benchmark_case_limit or 0)
-        evaluation_plan = build_adapter_training_evaluation_plan(
-            train_result["adapter_path"],
-            cluster_id=cluster_id,
-            max_cases=(benchmark_case_limit if benchmark_case_limit > 0 else None),
+        evaluation_plan = build_expert_evaluation_plan(
+            dataset,
+            max_cases=(
+                max(len(EVALUATION_CATEGORIES), benchmark_case_limit)
+                if benchmark_case_limit > 0
+                else max(len(EVALUATION_CATEGORIES), len(list(dataset.get("documents") or [])))
+            ),
         )
         benchmark_run = run_live_expert_benchmark(
             dataset,

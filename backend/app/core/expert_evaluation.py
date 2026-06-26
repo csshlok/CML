@@ -96,6 +96,63 @@ ROUTE_AWAY_CATEGORIES = (
     "out_of_scope_refusal",
 )
 
+_SCORING_WEIGHTS = {
+    "default": {
+        "term": 60.0,
+        "citation": 20.0,
+        "marker": 20.0,
+        "refusal": 0.0,
+    },
+    "factual_recall": {
+        "term": 60.0,
+        "citation": 20.0,
+        "marker": 20.0,
+        "refusal": 0.0,
+    },
+    "citation_grounding": {
+        "term": 40.0,
+        "citation": 35.0,
+        "marker": 25.0,
+        "refusal": 0.0,
+    },
+    "contradiction_handling": {
+        "term": 0.0,
+        "citation": 0.0,
+        "marker": 100.0,
+        "refusal": 0.0,
+    },
+    "summarization": {
+        "term": 25.0,
+        "citation": 15.0,
+        "marker": 60.0,
+        "refusal": 0.0,
+    },
+    "style_transfer": {
+        "term": 20.0,
+        "citation": 0.0,
+        "marker": 80.0,
+        "refusal": 0.0,
+    },
+    "terminology_consistency": {
+        "term": 60.0,
+        "citation": 0.0,
+        "marker": 40.0,
+        "refusal": 0.0,
+    },
+    "reasoning_pattern": {
+        "term": 0.0,
+        "citation": 0.0,
+        "marker": 100.0,
+        "refusal": 0.0,
+    },
+    "out_of_scope_refusal": {
+        "term": 20.0,
+        "citation": 0.0,
+        "marker": 40.0,
+        "refusal": 40.0,
+    },
+}
+
 REASONING_PATTERN_SCORING_FIXTURES = {
     "bad_scaffold_only": [
         "First, identify the evidence from the source. Then, interpret it in plain language. Therefore, the conclusion should follow the local notes.",
@@ -117,7 +174,7 @@ def build_expert_evaluation_plan(dataset: dict, *, max_cases: int = 12) -> dict:
     for index, doc in enumerate(documents):
         category = EVALUATION_CATEGORIES[index % len(EVALUATION_CATEGORIES)]
         title = str(doc.get("title") or "Untitled")
-        text = str(doc.get("summary") or doc.get("text") or "")
+        text = str(doc.get("text") or doc.get("summary") or "")
         expected_terms = _expected_terms(title, text)
         cases.append(
             {
@@ -146,17 +203,27 @@ def build_expert_evaluation_plan(dataset: dict, *, max_cases: int = 12) -> dict:
 
 
 def score_expert_response(case: dict, response_text: str) -> dict:
+    category = str(case.get("category") or "")
     response = response_text.lower()
     terms = [str(term).lower() for term in case.get("expected_terms") or []]
     term_hits = sum(1 for term in terms if term and term in response)
-    term_score = term_hits / max(1, len(terms))
+    term_score = _term_score(case, response_text, term_hits, len(terms))
     citation_score = 1.0 if not case.get("requires_citation") or _has_citation_marker(response_text) else 0.0
     refusal_score = 1.0
     if case.get("category") == "out_of_scope_refusal":
         refusal_score = 1.0 if _has_refusal_marker(response) else 0.0
     marker_score = _marker_score(case, response)
     grounding_consistency_score = _grounding_consistency_score(case, response_text)
-    score = round(((term_score * 55.0) + (citation_score * 15.0) + (marker_score * 20.0) + (refusal_score * 10.0)), 2)
+    weights = _SCORING_WEIGHTS.get(category, _SCORING_WEIGHTS["default"])
+    score = round(
+        (
+            (term_score * float(weights["term"]))
+            + (citation_score * float(weights["citation"]))
+            + (marker_score * float(weights["marker"]))
+            + (refusal_score * float(weights["refusal"]))
+        ),
+        2,
+    )
     if grounding_consistency_score < 1.0:
         score = min(score, 45.0)
     return {
@@ -172,6 +239,10 @@ def score_expert_response(case: dict, response_text: str) -> dict:
         "citation_present": _has_citation_marker(response_text),
         "refusal_present": _has_refusal_marker(response),
     }
+
+
+def _term_score(case: dict, response_text: str, term_hits: int, expected_term_count: int) -> float:
+    return term_hits / max(1, expected_term_count)
 
 
 def compare_retrieval_vs_adapter(retrieval_scores: list[float], adapter_scores: list[float]) -> dict:
@@ -681,6 +752,15 @@ def _has_refusal_marker(lowered_text: str) -> bool:
 
 
 def _marker_score(case: dict, lowered_response: str) -> float:
+    category = str(case.get("category") or "")
+    if category == "contradiction_handling":
+        return _contradiction_handling_score(lowered_response)
+    if category == "summarization":
+        return _summarization_score(lowered_response)
+    if category == "style_transfer":
+        return _style_transfer_score(lowered_response)
+    if category == "terminology_consistency":
+        return _terminology_consistency_score(case, lowered_response)
     if case.get("category") == "reasoning_pattern":
         return _reasoning_pattern_score(lowered_response)
     if case.get("category") == "out_of_scope_refusal":
@@ -703,18 +783,41 @@ def _marker_score(case: dict, lowered_response: str) -> float:
 
 
 def _grounding_consistency_score(case: dict, response_text: str) -> float:
-    if case.get("category") not in {"factual_recall", "summarization", "citation_grounding"}:
+    score = 1.0
+    if case.get("category") in {"factual_recall", "summarization", "citation_grounding"}:
+        reference_text = str(case.get("reference_text") or "")
+        if reference_text.strip():
+            source_specifics = _specific_grounding_tokens(reference_text)
+            response_specifics = _specific_grounding_tokens(_normalize_response_for_grounding(case, response_text))
+            unexpected_entities = response_specifics["entities"] - source_specifics["entities"]
+            unexpected_numbers = response_specifics["numbers"] - source_specifics["numbers"]
+            if unexpected_entities or unexpected_numbers:
+                score = 0.0
+    return min(score, _source_attribution_consistency_score(case, response_text))
+
+
+def _source_attribution_consistency_score(case: dict, response_text: str) -> float:
+    title = str(case.get("source_title") or "")
+    if not title.strip():
         return 1.0
-    reference_text = str(case.get("reference_text") or "")
-    if not reference_text.strip():
+    mentions = [
+        mention
+        for mention in _extract_cited_source_mentions(response_text)
+        if _looks_like_source_title_mention(mention)
+    ]
+    if not mentions:
         return 1.0
-    source_specifics = _specific_grounding_tokens(reference_text)
-    response_specifics = _specific_grounding_tokens(response_text)
-    unexpected_entities = response_specifics["entities"] - source_specifics["entities"]
-    unexpected_numbers = response_specifics["numbers"] - source_specifics["numbers"]
-    if unexpected_entities or unexpected_numbers:
-        return 0.0
-    return 1.0
+    expected_tokens = _significant_title_tokens(title)
+    if not expected_tokens:
+        return 1.0
+    for mention in mentions:
+        mention_tokens = _significant_title_tokens(mention)
+        if not mention_tokens:
+            continue
+        overlap = expected_tokens & mention_tokens
+        if overlap and (len(overlap) / max(1, len(expected_tokens))) >= 0.4:
+            return 1.0
+    return 0.0
 
 
 def _specific_grounding_tokens(text: str) -> dict[str, set[str]]:
@@ -742,6 +845,83 @@ def _specific_grounding_tokens(text: str) -> dict[str, set[str]]:
     }
     numbers = set(number_pattern.findall(text))
     return {"entities": entities, "numbers": numbers}
+
+
+def _extract_cited_source_mentions(text: str) -> list[str]:
+    mentions: list[str] = []
+    for pattern in (
+        r"\[source:\s*([^\]\n]+)\]",
+        r"according to source\s+([^\n.]+)",
+        r"source\s+([^\n.]+?)(?:,|\n|$)",
+    ):
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            mention = str(match.group(1) or "").strip(" '\"")
+            if mention:
+                mentions.append(mention)
+    return mentions
+
+
+def _normalize_response_for_grounding(case: dict, response_text: str) -> str:
+    normalized = str(response_text or "")
+    for mention in _extract_cited_source_mentions(normalized):
+        normalized = normalized.replace(mention, " ")
+    title = str(case.get("source_title") or "").strip()
+    if title:
+        normalized = normalized.replace(title, " ")
+    normalized = re.sub(r"\[source:\s*[^\]\n]+\]", " ", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"according to source\s+[^\n.]+", " ", normalized, flags=re.IGNORECASE)
+    return normalized
+
+
+def _looks_like_source_title_mention(text: str) -> bool:
+    lowered = str(text or "").lower()
+    if not lowered.strip():
+        return False
+    title_markers = (
+        ".pdf",
+        ".md",
+        ".txt",
+        ".doc",
+        ".docx",
+        ".html",
+        ".json",
+        "_",
+        " - ",
+        "/",
+        "\\",
+    )
+    return any(marker in lowered for marker in title_markers)
+
+
+def _significant_title_tokens(text: str) -> set[str]:
+    exclusions = {
+        "source",
+        "sources",
+        "local",
+        "title",
+        "document",
+        "documents",
+        "notes",
+        "note",
+        "personal",
+        "saved",
+        "links",
+        "link",
+        "chat",
+        "transcript",
+        "transcripts",
+        "articles",
+        "article",
+        "research",
+        "summary",
+        "pdf",
+    }
+    cleaned = text.split(" - ", 1)[0].replace("_", " ").replace("-", " ")
+    tokens = {
+        "".join(char for char in raw.lower() if char.isalnum())
+        for raw in cleaned.split()
+    }
+    return {token for token in tokens if len(token) >= 4 and token not in exclusions}
 
 
 def _reasoning_pattern_score(lowered_response: str) -> float:
@@ -781,6 +961,79 @@ def _reasoning_pattern_score(lowered_response: str) -> float:
     substance_score = min(1.0, substantive_hits / 2.0)
     penalty = min(0.6, placeholder_hits * 0.2)
     return max(0.0, min(1.0, (structure_score * 0.45) + (substance_score * 0.55) - penalty))
+
+
+def _contradiction_handling_score(lowered_response: str) -> float:
+    concept_groups = (
+        (r"\btrust\b", r"\brely\b", r"\bpriorit", r"\bdefer to\b"),
+        (r"\blocal evidence\b", r"\bsource\b", r"\bnote\b", r"\bdocument\b"),
+        (r"\bconflict", r"\bcontradict", r"\bnew claim\b", r"\bdisagree"),
+        (r"\bunverified\b", r"\bunsupported\b", r"\buntil it matches\b", r"\bunless it matches\b"),
+    )
+    hits = sum(
+        1
+        for group in concept_groups
+        if any(re.search(pattern, lowered_response) for pattern in group)
+    )
+    return hits / len(concept_groups)
+
+
+def _summarization_score(lowered_response: str) -> float:
+    bullet_hits = len(re.findall(r"(?m)^\s*[-*]\s+\S", lowered_response))
+    bullet_score = min(1.0, bullet_hits / 3.0)
+    non_meta_lines = [
+        line.strip()
+        for line in lowered_response.splitlines()
+        if line.strip() and not re.search(r"\bgrounding means\b|\bgrounded takeaway\b|\bkey detail\b", line)
+    ]
+    contentful_bullets = sum(
+        1
+        for line in non_meta_lines
+        if re.match(r"^[-*]\s+\S", line) and len(re.findall(r"\b[a-z]{4,}\b", line)) >= 4
+    )
+    content_score = min(1.0, contentful_bullets / 3.0)
+    return (bullet_score * 0.4) + (content_score * 0.6)
+
+
+def _style_transfer_score(lowered_response: str) -> float:
+    action_patterns = (
+        r"\bstart\b",
+        r"\bkeep\b",
+        r"\btrack\b",
+        r"\buse\b",
+        r"\bcheck\b",
+        r"\bwrite\b",
+        r"\bavoid\b",
+        r"\bfocus on\b",
+    )
+    action_hits = sum(1 for pattern in action_patterns if re.search(pattern, lowered_response))
+    meta_penalties = sum(
+        1
+        for pattern in (r"\bpractical note\b", r"\baction-oriented\b", r"\bkeep the wording\b")
+        if re.search(pattern, lowered_response)
+    )
+    clause_score = 1.0 if ";" in lowered_response or len(re.findall(r"[.!?]", lowered_response)) >= 2 else 0.5
+    action_score = min(1.0, action_hits / 3.0)
+    penalty = min(0.6, meta_penalties * 0.25)
+    return max(0.0, min(1.0, (action_score * 0.6) + (clause_score * 0.4) - penalty))
+
+
+def _terminology_consistency_score(case: dict, lowered_response: str) -> float:
+    expected_terms = [str(term).lower() for term in case.get("expected_terms") or [] if str(term).strip()]
+    expected_hits = sum(1 for term in expected_terms if term in lowered_response)
+    expected_score = min(1.0, expected_hits / 2.0)
+    meta_penalties = sum(
+        1
+        for pattern in (
+            r"\bpreferred local terms\b",
+            r"\bpreferred terminology\b",
+            r"\bkeep the terminology consistent\b",
+            r"\bcluster terminology\b",
+        )
+        if re.search(pattern, lowered_response)
+    )
+    penalty = min(0.75, meta_penalties * 0.25)
+    return max(0.0, min(1.0, expected_score - penalty))
 
 
 def _run_real_retrieval_baseline(
@@ -850,17 +1103,22 @@ def _build_retrieval_extract_answer(case: dict, citations: list[dict]) -> str:
     if category == "citation_grounding":
         return f"{primary}\n[Source: {title}]"
     if category == "contradiction_handling":
-        return f"Trust the local evidence in source {title}. If a new claim conflicts with it, treat the new claim as unverified unless it matches: {primary}"
+        return (
+            f"According to source {title}, {primary} "
+            "If a conflicting claim appears, keep the local-source version until matching evidence shows otherwise."
+        )
     if category == "summarization":
         bullets = "\n".join(f"- {snippet}" for snippet in snippets[:3])
-        return f"According to source {title}:\n{bullets}"
+        return f"{bullets}\n- Source: {title}."
     if category == "style_transfer":
-        return f"Practical note: {primary}"
+        return f"{primary} Start with one small change, keep it reversible, and track what changed."
     if category == "terminology_consistency":
         terms = ", ".join(case.get("expected_terms") or [])
-        return f"According to source {title}, use the preferred local terms: {terms}. {primary}"
+        if terms:
+            return f"According to source {title}, {primary} Keep terms aligned with the source wording, including {terms}."
+        return f"According to source {title}, {primary}"
     if category == "reasoning_pattern":
-        return f"First, the source says: {primary} Then, interpret what it means in plain language. Therefore, keep the conclusion practical and local."
+        return f"Source evidence: {primary} The practical takeaway should follow directly from that local evidence."
     if category == "out_of_scope_refusal":
         return f"Source {title} does not provide enough evidence to answer an unrelated question. The missing evidence is explicit coverage in the local source."
     return primary

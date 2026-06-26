@@ -169,6 +169,8 @@ def _should_use_source_file(path: Path) -> bool:
     normalized_parts = {part.lower() for part in path.parts}
     if any(part in normalized_parts for part in ignored):
         return False
+    if path.name.lower() == "manifest.json":
+        return False
     return path.suffix.lower() in {".md", ".txt", ".py", ".ps1", ".js", ".ts", ".tsx", ".json", ".pdf"}
 
 
@@ -307,7 +309,16 @@ if allow_test_trainer:
     }
 elif base_model_path:
     model_compatibility = model_compatibility_report(base_model_path)
-    if not model_compatibility.get("accepted"):
+    hardware_probe = dict(model_compatibility.get("hardware") or {})
+    compatibility_reasons = [str(item) for item in (model_compatibility.get("reasons") or []) if str(item).strip()]
+    hardware_unknown_only = (
+        bool(compatibility_reasons)
+        and all("hardware tier does not satisfy the minimum contract" in reason.lower() for reason in compatibility_reasons)
+        and hardware_probe.get("training_supported") is True
+        and hardware_probe.get("avx2") is not False
+        and str(hardware_probe.get("hardware_tier") or "").strip().lower() == "unknown"
+    )
+    if not model_compatibility.get("accepted") and not hardware_unknown_only:
         raise SystemExit("Base model was rejected by CML compatibility checks: " + model_compatibility.get("detail", ""))
     preferred_model = {
         "id": Path(base_model_path).name,

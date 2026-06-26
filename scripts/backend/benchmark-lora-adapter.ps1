@@ -57,7 +57,6 @@ from pathlib import Path
 
 from backend.app.core.embeddings import content_hash
 from backend.app.core.expert_evaluation import (
-    build_adapter_training_evaluation_plan,
     build_expert_evaluation_plan,
     default_expert_benchmark_token_budgets,
     run_live_expert_benchmark,
@@ -204,13 +203,6 @@ dataset = {
 adapter_dataset = adapter_training_dataset(adapter_path)
 adapter_dataset_hash = adapter_dataset.get("dataset_hash") or ""
 plan = build_expert_evaluation_plan(dataset, max_cases=max(1, case_limit))
-adapter_plan = build_adapter_training_evaluation_plan(
-    adapter_path,
-    cluster_id="cluster-smoke",
-    max_cases=max(1, case_limit),
-)
-if adapter_plan is not None:
-    plan = adapter_plan
 if plan.get("dataset_hash"):
     dataset["dataset_hash"] = str(plan["dataset_hash"])
 dataset_matches_adapter = bool(adapter_dataset_hash and adapter_dataset_hash == dataset["dataset_hash"])
