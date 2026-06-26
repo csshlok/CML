@@ -985,6 +985,7 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             base_model=str(preferred_model.get("local_path") or preferred_model.get("id") or get_settings().llm_model),
             dataset_hash=dataset["dataset_hash"],
         )
+        config["expert_objective_version"] = "retrieval_grounded_compression_v1"
 
         try:
             train_result = run_lora_training_process(
@@ -1067,17 +1068,23 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             evaluation_plan=evaluation_plan,
         )
         benchmark_report = benchmark_run["benchmark_report"]
-        graduation_overall = dict(benchmark_report.get("graduation_overall") or {})
+        bundle_summary = dict(benchmark_report.get("bundle_benchmark_summary") or {})
         overall_scores = dict(benchmark_report.get("overall") or {})
         metrics = {
             "retrieval_only_score": overall_scores.get("retrieval_only_score"),
             "adapter_score": overall_scores.get("adapter_score"),
+            "bundle_with_expert_score": bundle_summary.get("bundle_with_expert_score"),
+            "retrieval_only_full_score": bundle_summary.get("retrieval_only_full_score"),
+            "retrieval_only_small_score": bundle_summary.get("retrieval_only_small_score"),
             "quality_delta": overall_scores.get("quality_delta"),
             "minimum_quality_delta": overall_scores.get("minimum_quality_delta"),
             "validation_count": int(dataset_manifest["validation_count"]),
             "adapter_dir_exists": True,
             "adapter_valid": True,
         }
+        metrics["expert_objective_version"] = "retrieval_grounded_compression_v1"
+        metrics["training_record_types"] = list(dataset_manifest.get("training_record_types") or [])
+        metrics["requires_retrieved_evidence"] = bool(dataset_manifest.get("requires_retrieved_evidence"))
         metrics["dataset_gate"] = dataset_gate
         metrics["benchmark_gate"] = benchmark_gate
         metrics["adapter_validation"] = adapter_validation
@@ -1087,10 +1094,18 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             "categories": benchmark_run["evaluation_plan"]["categories"],
             "dataset_hash": benchmark_run["evaluation_plan"].get("dataset_hash"),
         }
+        metrics["bundle_benchmark_summary"] = bundle_summary
+        metrics["bundle_release_gate"] = dict(benchmark_report.get("bundle_release_gate") or {})
+        metrics["bundle_readiness"] = dict(benchmark_report.get("bundle_readiness") or {})
+        metrics["bundle_mode_coverage"] = dict(benchmark_report.get("bundle_mode_coverage") or {})
+        metrics["bundle_benchmark_modes"] = dict(benchmark_report.get("bundle_benchmark_modes") or {})
         metrics["live_runtime_batch"] = benchmark_run["runtime"]
         metrics["retrieval_case_scores"] = benchmark_run["retrieval_case_scores"]
+        metrics["retrieval_small_case_scores"] = benchmark_run.get("retrieval_small_case_scores") or []
         metrics["adapter_case_scores"] = benchmark_run["adapter_case_scores"]
         metrics["benchmark_report"] = benchmark_report
+        metrics["mode_case_outputs"] = dict(benchmark_report.get("mode_case_outputs") or {})
+        metrics["bundle_case_outputs"] = dict(benchmark_report.get("bundle_case_outputs") or {})
         benchmark_artifact_path = _write_adapter_benchmark_report(
             train_result["adapter_path"],
             payload={
@@ -1100,15 +1115,21 @@ def _run_train_cluster_adapter(payload: dict) -> None:
                 "base_model": config["base_model"],
                 "dataset_hash": dataset.get("dataset_hash"),
                 "created_at": now,
+                "metadata": {
+                    "expert_objective_version": "retrieval_grounded_compression_v1",
+                    "training_record_types": list(dataset_manifest.get("training_record_types") or []),
+                    "requires_retrieved_evidence": bool(dataset_manifest.get("requires_retrieved_evidence")),
+                },
                 "metrics": metrics,
                 "benchmark_run": benchmark_run,
             },
         )
         metrics["post_training_benchmark_path"] = benchmark_artifact_path
+        metrics["bundle_benchmark_hash"] = content_hash(json.dumps(benchmark_report, sort_keys=True))
         min_quality = get_settings().lora_min_quality_score
         skip_quality_gate = bool(get_settings().lora_skip_quality_gate)
         benchmark_failed = not bool(benchmark_report.get("passes"))
-        graduated_score = float(graduation_overall.get("adapter_score") or 0.0)
+        graduated_score = float(bundle_summary.get("bundle_with_expert_score") or 0.0)
         metrics["quality_gate"] = {
             "skipped": skip_quality_gate,
             "benchmark_failed": benchmark_failed,
@@ -1129,7 +1150,7 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             raise RuntimeError("Adapter did not pass the LoRA quality gate.")
         completion_detail = (
             "LoRA adapter trained and activated. "
-            f"Graduation adapter score={graduated_score}, gate={benchmark_report.get('gate_report')}"
+            f"Expert-compression bundle score={graduated_score}, gate={benchmark_report.get('bundle_release_gate') or benchmark_report.get('gate_report')}"
         )
         if quality_gate_failed and skip_quality_gate:
             completion_detail += " Quality gate bypassed for diagnostic run."
@@ -1216,7 +1237,7 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             WHERE id = ?
             """,
             (
-                "training_ready",
+                "expert_compression_ready",
                 now,
                 cluster_id,
             ),
@@ -1284,7 +1305,7 @@ def _mark_expert_dataset_changed(
         """,
         (cluster_id,),
     ).fetchone()
-    next_status = "needs-update" if active_ready is not None else "training_failed"
+    next_status = "expert_stale" if active_ready is not None else "training_failed"
     conn.execute(
         """
         UPDATE clusters

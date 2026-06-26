@@ -33,8 +33,9 @@ print(
             "output_path": os.environ["CML_LORA_PROOF_OUTPUT_PATH"],
             "public_gate": proof["public_gate"],
             "baseline_score": proof["benchmark"]["baseline_score"],
-            "adapter_score": proof["benchmark"]["adapter_score"],
+            "bundle_with_expert_score": proof["benchmark"]["bundle_with_expert_score"],
             "quality_delta": proof["benchmark"]["quality_delta"],
+            "bundle_release_gate": proof["benchmark"]["bundle_release_gate"],
         },
         indent=2,
     )

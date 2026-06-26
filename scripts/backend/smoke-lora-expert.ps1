@@ -375,9 +375,21 @@ if artifacts:
         live_runtime_batch = benchmark_run.get("runtime")
         benchmark_report = benchmark_run.get("benchmark_report")
     else:
-        benchmark_report = {"status": "runtime_failed", "passes": False, "live_adapter_backed": True}
+        benchmark_report = {
+            "status": "runtime_failed",
+            "passes": False,
+            "live_adapter_backed": True,
+            "bundle_readiness": {"status": "runtime_failed", "passes": False, "failure_reasons": ["runtime_failed"]},
+            "bundle_release_gate": {},
+        }
 else:
-    benchmark_report = {"status": "no_adapter_artifact", "passes": False, "live_adapter_backed": False}
+    benchmark_report = {
+        "status": "no_adapter_artifact",
+        "passes": False,
+        "live_adapter_backed": False,
+        "bundle_readiness": {"status": "no_adapter_artifact", "passes": False, "failure_reasons": ["no_adapter_artifact"]},
+        "bundle_release_gate": {},
+    }
 
 report = {
     "mode": "ci_scaffold_non_release" if allow_test_trainer else "real_local_lora_smoke",

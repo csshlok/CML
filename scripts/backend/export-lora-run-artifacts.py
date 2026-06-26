@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import sys
 from pathlib import Path
 
 
@@ -27,7 +28,12 @@ def main() -> None:
     benchmark_report = dict(metrics.get("benchmark_report") or {})
     overall = dict(benchmark_report.get("overall") or {})
     graduation = dict(benchmark_report.get("graduation_overall") or {})
+    bundle_summary = dict(benchmark_report.get("bundle_benchmark_summary") or {})
     category_scores = dict(benchmark_report.get("category_scores") or {})
+    bundle_category_scores = dict(benchmark_report.get("bundle_category_scores") or {})
+    gate_report = dict(benchmark_report.get("bundle_release_gate") or benchmark_report.get("gate_report") or {})
+    benchmark_modes = dict(benchmark_report.get("bundle_benchmark_modes") or benchmark_report.get("benchmark_modes") or {})
+    mode_case_outputs = dict(benchmark_report.get("bundle_case_outputs") or benchmark_report.get("mode_case_outputs") or {})
     retrieval_case_scores = list(metrics.get("retrieval_case_scores") or [])
     adapter_case_scores = list(metrics.get("adapter_case_scores") or [])
     quality_gate = dict(metrics.get("quality_gate") or {})
@@ -50,7 +56,15 @@ def main() -> None:
         "created_at": benchmark_payload.get("created_at"),
         "status": benchmark_payload.get("status"),
         "passes": benchmark_payload.get("passes"),
+        "compatibility_only": {
+            "legacy_category_scores": True,
+            "legacy_graduation_overall": True,
+            "legacy_overall_adapter_labels": True,
+        },
         "quality_gate": quality_gate,
+        "bundle_gate": gate_report,
+        "bundle_benchmark_summary": bundle_summary,
+        "benchmark_modes": benchmark_modes,
         "overall": overall,
         "graduation_overall": graduation,
         "best_metric": trainer_state.get("best_metric"),
@@ -60,6 +74,7 @@ def main() -> None:
         "epoch": trainer_state.get("epoch"),
         "eval_points": len(eval_curve),
         "category_count": len(category_scores),
+        "bundle_mode_count": len(benchmark_modes),
         "case_count": benchmark_report.get("case_count"),
         "scored_case_count": benchmark_report.get("scored_case_count"),
         "evaluation_plan_case_count": ((metrics.get("evaluation_plan") or {}).get("case_count")),
@@ -75,7 +90,7 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(eval_curve)
 
-    category_csv_path = output_prefix.with_name(output_prefix.name + "-category-scores.csv")
+    category_csv_path = output_prefix.with_name(output_prefix.name + "-legacy-category-scores.csv")
     with category_csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
@@ -105,7 +120,89 @@ def main() -> None:
                 }
             )
 
-    case_csv_path = output_prefix.with_name(output_prefix.name + "-case-scores.csv")
+    bundle_category_csv_path = output_prefix.with_name(output_prefix.name + "-bundle-category-scores.csv")
+    with bundle_category_csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "category",
+                "owner",
+                "counts_toward_graduation",
+                "case_count",
+                "meaningful_case_count_reached",
+                "complete",
+                "retrieval_only_full_score",
+                "retrieval_only_small_score",
+                "bundle_with_expert_score",
+                "bundle_without_expert_score",
+                "retrieval_only_full_tokens",
+                "retrieval_only_small_tokens",
+                "bundle_with_expert_tokens",
+                "bundle_without_expert_tokens",
+                "quality_regression_vs_retrieval_full",
+                "quality_gain_vs_retrieval_small",
+                "token_savings_vs_retrieval_full",
+                "unsupported_claim_rate",
+                "wrong_citation_rate",
+            ],
+        )
+        writer.writeheader()
+        for category, report in bundle_category_scores.items():
+            retrieval_full = dict(report.get("retrieval_only_full") or {})
+            retrieval_small = dict(report.get("retrieval_only_small") or {})
+            bundle_with_expert = dict(report.get("bundle_with_expert") or {})
+            bundle_without_expert = dict(report.get("bundle_without_expert") or {})
+            writer.writerow(
+                {
+                    "category": category,
+                    "owner": report.get("owner"),
+                    "counts_toward_graduation": report.get("counts_toward_graduation"),
+                    "case_count": report.get("case_count"),
+                    "meaningful_case_count_reached": report.get("meaningful_case_count_reached"),
+                    "complete": report.get("complete"),
+                    "retrieval_only_full_score": retrieval_full.get("score"),
+                    "retrieval_only_small_score": retrieval_small.get("score"),
+                    "bundle_with_expert_score": bundle_with_expert.get("score"),
+                    "bundle_without_expert_score": bundle_without_expert.get("score"),
+                    "retrieval_only_full_tokens": retrieval_full.get("token_count"),
+                    "retrieval_only_small_tokens": retrieval_small.get("token_count"),
+                    "bundle_with_expert_tokens": bundle_with_expert.get("token_count"),
+                    "bundle_without_expert_tokens": bundle_without_expert.get("token_count"),
+                    "quality_regression_vs_retrieval_full": report.get("quality_regression_vs_retrieval_full"),
+                    "quality_gain_vs_retrieval_small": report.get("quality_gain_vs_retrieval_small"),
+                    "token_savings_vs_retrieval_full": report.get("token_savings_vs_retrieval_full"),
+                    "unsupported_claim_rate": bundle_with_expert.get("unsupported_claim_rate"),
+                    "wrong_citation_rate": bundle_with_expert.get("wrong_citation_rate"),
+                }
+            )
+
+    modes_csv_path = output_prefix.with_name(output_prefix.name + "-bundle-modes.csv")
+    with modes_csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "mode",
+                "score",
+                "token_count",
+                "latency_ms",
+                "unsupported_claim_rate",
+                "wrong_citation_rate",
+            ],
+        )
+        writer.writeheader()
+        for mode_name, report in benchmark_modes.items():
+            writer.writerow(
+                {
+                    "mode": mode_name,
+                    "score": report.get("score"),
+                    "token_count": report.get("token_count"),
+                    "latency_ms": report.get("latency_ms"),
+                    "unsupported_claim_rate": report.get("unsupported_claim_rate"),
+                    "wrong_citation_rate": report.get("wrong_citation_rate"),
+                }
+            )
+
+    case_csv_path = output_prefix.with_name(output_prefix.name + "-legacy-case-scores.csv")
     adapter_by_case = {item.get("case_id"): item for item in adapter_case_scores}
     with case_csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
@@ -138,18 +235,71 @@ def main() -> None:
                 }
             )
 
+    bundle_case_csv_path = output_prefix.with_name(output_prefix.name + "-bundle-case-outputs.csv")
+    with bundle_case_csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "mode",
+                "case_id",
+                "category",
+                "source_title",
+                "expert_used",
+                "score",
+                "grounding_consistency_score",
+                "citation_present",
+                "retrieval_hits",
+                "prompt_tokens_estimate",
+                "retrieval_evidence_tokens_estimate",
+                "response_tokens_estimate",
+                "packet_tokens_estimate",
+                "total_tokens_estimate",
+                "raw_packet_text",
+                "adapter_prompt",
+                "adapter_raw_output",
+            ],
+        )
+        writer.writeheader()
+        for mode_name, rows in mode_case_outputs.items():
+            for row in list(rows or []):
+                token_ledger = dict(row.get("token_ledger") or {})
+                writer.writerow(
+                    {
+                        "mode": mode_name,
+                        "case_id": row.get("case_id"),
+                        "category": row.get("category"),
+                        "source_title": row.get("source_title"),
+                        "expert_used": row.get("expert_used"),
+                        "score": row.get("score"),
+                        "grounding_consistency_score": row.get("grounding_consistency_score"),
+                        "citation_present": row.get("citation_present"),
+                        "retrieval_hits": row.get("retrieval_hits"),
+                        "prompt_tokens_estimate": token_ledger.get("prompt_tokens_estimate"),
+                        "retrieval_evidence_tokens_estimate": token_ledger.get("retrieval_evidence_tokens_estimate"),
+                        "response_tokens_estimate": token_ledger.get("response_tokens_estimate"),
+                        "packet_tokens_estimate": token_ledger.get("packet_tokens_estimate"),
+                        "total_tokens_estimate": token_ledger.get("total_tokens_estimate"),
+                        "raw_packet_text": row.get("raw_packet_text"),
+                        "adapter_prompt": row.get("adapter_prompt"),
+                        "adapter_raw_output": row.get("adapter_raw_output"),
+                    }
+                )
+
+    mode_case_json_path = output_prefix.with_name(output_prefix.name + "-mode-case-outputs.json")
+    mode_case_json_path.write_text(json.dumps(mode_case_outputs, indent=2), encoding="utf-8")
+
     overall_svg_path = output_prefix.with_name(output_prefix.name + "-overall.svg")
     overall_svg_path.write_text(
         _overall_svg(
-            retrieval=float(overall.get("retrieval_only_score") or 0.0),
-            adapter=float(overall.get("adapter_score") or 0.0),
-            graduation_retrieval=float(graduation.get("retrieval_only_score") or 0.0),
-            graduation_adapter=float(graduation.get("adapter_score") or 0.0),
+            retrieval_full=float(bundle_summary.get("retrieval_only_full_score") or overall.get("retrieval_only_score") or 0.0),
+            retrieval_small=float(bundle_summary.get("retrieval_only_small_score") or 0.0),
+            bundle_with_expert=float(bundle_summary.get("bundle_with_expert_score") or overall.get("adapter_score") or 0.0),
+            bundle_without_expert=float(bundle_summary.get("bundle_without_expert_score") or 0.0),
         ),
         encoding="utf-8",
     )
 
-    category_svg_path = output_prefix.with_name(output_prefix.name + "-category-deltas.svg")
+    category_svg_path = output_prefix.with_name(output_prefix.name + "-legacy-category-deltas.svg")
     category_svg_path.write_text(
         _category_delta_svg(
             [
@@ -173,12 +323,17 @@ def main() -> None:
             summary_path=summary_path.name,
             eval_csv_path=eval_csv_path.name,
             category_csv_path=category_csv_path.name,
+            bundle_category_csv_path=bundle_category_csv_path.name,
             case_csv_path=case_csv_path.name,
+            bundle_case_csv_path=bundle_case_csv_path.name,
+            modes_csv_path=modes_csv_path.name,
             overall_svg_path=overall_svg_path.name,
             category_svg_path=category_svg_path.name,
             eval_svg_path=eval_svg_path.name,
+            bundle_summary=bundle_summary,
             overall=overall,
             graduation=graduation,
+            gate_report=gate_report,
             best_metric=trainer_state.get("best_metric"),
             best_model_checkpoint=trainer_state.get("best_model_checkpoint"),
         ),
@@ -191,7 +346,11 @@ def main() -> None:
                 "summary": str(summary_path),
                 "eval_curve_csv": str(eval_csv_path),
                 "category_scores_csv": str(category_csv_path),
+                "bundle_category_scores_csv": str(bundle_category_csv_path),
                 "case_scores_csv": str(case_csv_path),
+                "bundle_case_outputs_csv": str(bundle_case_csv_path),
+                "bundle_modes_csv": str(modes_csv_path),
+                "mode_case_outputs_json": str(mode_case_json_path),
                 "overall_svg": str(overall_svg_path),
                 "category_deltas_svg": str(category_svg_path),
                 "eval_loss_svg": str(eval_svg_path),
@@ -202,14 +361,14 @@ def main() -> None:
     )
 
 
-def _overall_svg(*, retrieval: float, adapter: float, graduation_retrieval: float, graduation_adapter: float) -> str:
+def _overall_svg(*, retrieval_full: float, retrieval_small: float, bundle_with_expert: float, bundle_without_expert: float) -> str:
     series = [
-        ("Overall Retrieval", retrieval, "#1f77b4"),
-        ("Overall Adapter", adapter, "#d62728"),
-        ("Grad Retrieval", graduation_retrieval, "#4c78a8"),
-        ("Grad Adapter", graduation_adapter, "#e15759"),
+        ("Retrieval Full", retrieval_full, "#1f77b4"),
+        ("Retrieval Small", retrieval_small, "#4c78a8"),
+        ("Bundle With Expert", bundle_with_expert, "#d62728"),
+        ("Bundle Without Expert", bundle_without_expert, "#e15759"),
     ]
-    return _bar_chart_svg("Overall Scores", series, max_value=100.0, unit="")
+    return _bar_chart_svg("Bundle Benchmark Scores", series, max_value=100.0, unit="")
 
 
 def _category_delta_svg(rows: list[tuple[str, float, bool]]) -> str:
@@ -326,13 +485,15 @@ def _bar_chart_svg(title: str, rows: list[tuple[str, float, str]], *, max_value:
 
 
 def _index_html(**kwargs: str | dict | float | None) -> str:
+    bundle_summary = kwargs["bundle_summary"]
     overall = kwargs["overall"]
     graduation = kwargs["graduation"]
+    gate_report = kwargs["gate_report"]
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>LoRA Run Artifacts</title>
+  <title>Cluster Bundle Run Artifacts</title>
   <style>
     body {{ font-family: Segoe UI, Arial, sans-serif; margin: 24px; color: #111; }}
     .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }}
@@ -344,22 +505,28 @@ def _index_html(**kwargs: str | dict | float | None) -> str:
   </style>
 </head>
 <body>
-  <h1>LoRA Run Artifacts</h1>
+  <h1>Cluster Bundle Run Artifacts</h1>
   <div class="grid">
-    <div class="card"><div class="label">Overall Retrieval</div><div class="value">{float(overall.get("retrieval_only_score") or 0.0):.2f}</div></div>
-    <div class="card"><div class="label">Overall Adapter</div><div class="value">{float(overall.get("adapter_score") or 0.0):.2f}</div></div>
-    <div class="card"><div class="label">Grad Retrieval</div><div class="value">{float(graduation.get("retrieval_only_score") or 0.0):.2f}</div></div>
-    <div class="card"><div class="label">Grad Adapter</div><div class="value">{float(graduation.get("adapter_score") or 0.0):.2f}</div></div>
+    <div class="card"><div class="label">Retrieval Full</div><div class="value">{float(bundle_summary.get("retrieval_only_full_score") or overall.get("retrieval_only_score") or 0.0):.2f}</div></div>
+    <div class="card"><div class="label">Bundle With Expert</div><div class="value">{float(bundle_summary.get("bundle_with_expert_score") or overall.get("adapter_score") or 0.0):.2f}</div></div>
+    <div class="card"><div class="label">Token Savings</div><div class="value">{float(gate_report.get("token_savings_vs_retrieval_full") or 0.0):.2f}%</div></div>
+    <div class="card"><div class="label">Quality Gain Vs Small</div><div class="value">{float(gate_report.get("quality_gain_vs_retrieval_small") or 0.0):.2f}</div></div>
   </div>
+  <p>Retrieval small: <strong>{float(bundle_summary.get("retrieval_only_small_score") or 0.0):.2f}</strong><br/>Bundle without expert: <strong>{float(bundle_summary.get("bundle_without_expert_score") or 0.0):.2f}</strong></p>
+  <p>Bundle gate: quality regression vs retrieval full <strong>{float(gate_report.get("quality_regression_vs_retrieval_full") or 0.0):.2f}</strong>, unsupported claim rate <strong>{float(gate_report.get("unsupported_claim_rate") or 0.0):.2f}</strong>, wrong citation rate <strong>{float(gate_report.get("wrong_citation_rate") or 0.0):.2f}</strong></p>
+  <p>Legacy compatibility summary: graduation retrieval <strong>{float(graduation.get("retrieval_only_score") or 0.0):.2f}</strong>, graduation adapter <strong>{float(graduation.get("adapter_score") or 0.0):.2f}</strong></p>
   <p>Best eval loss: <strong>{float(kwargs["best_metric"] or 0.0):.4f}</strong><br/>Best checkpoint: <code>{_esc(str(kwargs["best_model_checkpoint"] or ""))}</code></p>
   <ul>
     <li><a href="{kwargs["summary_path"]}">Summary JSON</a></li>
     <li><a href="{kwargs["eval_csv_path"]}">Eval Curve CSV</a></li>
-    <li><a href="{kwargs["category_csv_path"]}">Category Scores CSV</a></li>
-    <li><a href="{kwargs["case_csv_path"]}">Case Scores CSV</a></li>
+    <li><a href="{kwargs["category_csv_path"]}">Legacy Category Scores CSV</a></li>
+    <li><a href="{kwargs["bundle_category_csv_path"]}">Bundle Category Scores CSV</a></li>
+    <li><a href="{kwargs["case_csv_path"]}">Legacy Case Scores CSV</a></li>
+    <li><a href="{kwargs["bundle_case_csv_path"]}">Bundle Case Outputs CSV</a></li>
+    <li><a href="{kwargs["modes_csv_path"]}">Bundle Modes CSV</a></li>
   </ul>
   <img src="{kwargs["overall_svg_path"]}" alt="Overall scores" />
-  <img src="{kwargs["category_svg_path"]}" alt="Category deltas" />
+  <img src="{kwargs["category_svg_path"]}" alt="Legacy category deltas" />
   <img src="{kwargs["eval_svg_path"]}" alt="Eval loss curve" />
 </body>
 </html>"""
@@ -376,4 +543,4 @@ def _esc(value: str) -> str:
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

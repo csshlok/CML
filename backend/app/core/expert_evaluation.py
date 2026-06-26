@@ -153,6 +153,12 @@ _SCORING_WEIGHTS = {
     },
 }
 
+_BUNDLE_BENCHMARK_THRESHOLDS = {
+    "token_savings_vs_retrieval_full": 40.0,
+    "quality_regression_vs_retrieval_full": 5.0,
+    "quality_gain_vs_retrieval_small": 10.0,
+}
+
 REASONING_PATTERN_SCORING_FIXTURES = {
     "bad_scaffold_only": [
         "First, identify the evidence from the source. Then, interpret it in plain language. Therefore, the conclusion should follow the local notes.",
@@ -372,6 +378,16 @@ def run_live_expert_benchmark(
                 "category_scores": {},
                 "overall": compare_retrieval_vs_adapter([], []),
                 "graduation_overall": compare_retrieval_vs_adapter([], []),
+                "bundle_benchmark_summary": {},
+                "bundle_readiness": {
+                    "status": "retrieval_failed",
+                    "passes": False,
+                    "failure_reasons": ["retrieval_failed"],
+                },
+                "bundle_mode_coverage": {},
+                "bundle_release_gate": {},
+                "bundle_benchmark_modes": {},
+                "bundle_case_outputs": {},
                 "gate_report": {},
             },
         }
@@ -409,11 +425,28 @@ def run_live_expert_benchmark(
                 "category_scores": {},
                 "overall": compare_retrieval_vs_adapter([], []),
                 "graduation_overall": compare_retrieval_vs_adapter([], []),
+                "bundle_benchmark_summary": {},
+                "bundle_readiness": {
+                    "status": "runtime_failed",
+                    "passes": False,
+                    "failure_reasons": ["runtime_failed"],
+                },
+                "bundle_mode_coverage": {},
+                "bundle_release_gate": {},
+                "bundle_benchmark_modes": {},
+                "bundle_case_outputs": {},
                 "gate_report": {},
             },
         }
 
     baseline_case_scores = list(retrieval_runtime.get("case_scores") or [])
+    retrieval_small_runtime = _run_small_retrieval_baseline(
+        dataset,
+        resolved_plan["cases"],
+        max_new_tokens=max_new_tokens,
+        max_new_tokens_by_category=max_new_tokens_by_category,
+    )
+    retrieval_small_case_scores = list(retrieval_small_runtime.get("case_scores") or [])
     retrieval_by_case = _scores_by_case_id(baseline_case_scores)
     responses = runtime.get("responses") or []
     retrieval_responses = list(retrieval_runtime.get("responses") or [])
@@ -435,15 +468,21 @@ def run_live_expert_benchmark(
     benchmark_report = build_expert_benchmark_report(
         resolved_plan,
         retrieval_case_scores=baseline_case_scores,
+        retrieval_small_case_scores=retrieval_small_case_scores,
         adapter_case_scores=adapter_case_scores,
         mode=mode,
         live_adapter_backed=True,
+        retrieval_runtime=retrieval_runtime,
+        retrieval_small_runtime=retrieval_small_runtime,
+        adapter_runtime=runtime,
     )
     return {
         "evaluation_plan": evaluation_plan,
         "runtime": runtime,
         "retrieval_runtime": retrieval_runtime,
+        "retrieval_small_runtime": retrieval_small_runtime,
         "retrieval_case_scores": baseline_case_scores,
+        "retrieval_small_case_scores": retrieval_small_case_scores,
         "adapter_case_scores": adapter_case_scores,
         "benchmark_report": benchmark_report,
     }
@@ -457,12 +496,17 @@ def build_expert_benchmark_report(
     evaluation_plan: dict,
     *,
     retrieval_case_scores: list[dict] | None = None,
+    retrieval_small_case_scores: list[dict] | None = None,
     adapter_case_scores: list[dict] | None = None,
     mode: str = "live_adapter_benchmark",
     live_adapter_backed: bool = True,
+    retrieval_runtime: dict | None = None,
+    retrieval_small_runtime: dict | None = None,
+    adapter_runtime: dict | None = None,
 ) -> dict:
     cases = list(evaluation_plan.get("cases") or [])
     retrieval_by_case = _scores_by_case_id(retrieval_case_scores or [])
+    retrieval_small_by_case = _scores_by_case_id(retrieval_small_case_scores or [])
     adapter_by_case = _scores_by_case_id(adapter_case_scores or [])
     category_scores = {}
     for category in EVALUATION_CATEGORIES:
@@ -499,8 +543,10 @@ def build_expert_benchmark_report(
         }
 
     all_retrieval_scores = [float(item["score"]) for item in retrieval_by_case.values()]
+    all_retrieval_small_scores = [float(item["score"]) for item in retrieval_small_by_case.values()]
     all_adapter_scores = [float(item["score"]) for item in adapter_by_case.values()]
     overall = compare_retrieval_vs_adapter(all_retrieval_scores, all_adapter_scores)
+    retrieval_small_overall = compare_retrieval_vs_adapter(all_retrieval_small_scores, all_retrieval_scores)
     graduation_case_ids = {
         case["id"]
         for case in cases
@@ -517,7 +563,43 @@ def build_expert_benchmark_report(
         if case_id in adapter_by_case
     ]
     graduation_overall = compare_retrieval_vs_adapter(graduation_retrieval_scores, graduation_adapter_scores)
-    gate_report = _graduation_gate_report(category_scores)
+    bundle_modes = _bundle_mode_summaries(
+        retrieval_runtime=retrieval_runtime or {},
+        retrieval_small_runtime=retrieval_small_runtime or {},
+        adapter_runtime=adapter_runtime or {},
+        retrieval_case_scores=list(retrieval_by_case.values()),
+        retrieval_small_case_scores=list(retrieval_small_by_case.values()),
+        adapter_case_scores=list(adapter_by_case.values()),
+    )
+    bundle_category_scores = _bundle_category_scores(
+        cases=cases,
+        retrieval_runtime=retrieval_runtime or {},
+        retrieval_small_runtime=retrieval_small_runtime or {},
+        adapter_runtime=adapter_runtime or {},
+        retrieval_case_scores=list(retrieval_by_case.values()),
+        retrieval_small_case_scores=list(retrieval_small_by_case.values()),
+        adapter_case_scores=list(adapter_by_case.values()),
+    )
+    bundle_gate = _bundle_quality_gate(bundle_modes)
+    bundle_mode_coverage = _bundle_mode_coverage(
+        cases=cases,
+        retrieval_runtime=retrieval_runtime or {},
+        retrieval_small_runtime=retrieval_small_runtime or {},
+        adapter_runtime=adapter_runtime or {},
+        retrieval_case_scores=list(retrieval_by_case.values()),
+        retrieval_small_case_scores=list(retrieval_small_by_case.values()),
+        adapter_case_scores=list(adapter_by_case.values()),
+    )
+    mode_case_outputs = _mode_case_outputs(
+        cases=cases,
+        retrieval_runtime=retrieval_runtime or {},
+        retrieval_small_runtime=retrieval_small_runtime or {},
+        adapter_runtime=adapter_runtime or {},
+        retrieval_case_scores=list(retrieval_by_case.values()),
+        retrieval_small_case_scores=list(retrieval_small_by_case.values()),
+        adapter_case_scores=list(adapter_by_case.values()),
+    )
+    legacy_gate_report = _graduation_gate_report(category_scores)
     missing_categories = [
         category
         for category, report in category_scores.items()
@@ -536,9 +618,8 @@ def build_expert_benchmark_report(
     scored_case_count = len({*retrieval_by_case.keys(), *adapter_by_case.keys()})
     passes = bool(
         live_adapter_backed
-        and not missing_categories
-        and not incomplete_categories
-        and bool(gate_report.get("passes"))
+        and bool(bundle_mode_coverage.get("passes"))
+        and bool(bundle_gate.get("passes"))
     )
     if not live_adapter_backed:
         status = "pending_live_adapter_benchmark"
@@ -546,6 +627,15 @@ def build_expert_benchmark_report(
         status = "passed"
     else:
         status = "failed"
+    bundle_summary = _bundle_benchmark_summary(bundle_modes, bundle_gate)
+    bundle_readiness = _bundle_readiness_report(
+        live_adapter_backed=live_adapter_backed,
+        bundle_mode_coverage=bundle_mode_coverage,
+        missing_categories=missing_categories,
+        incomplete_categories=incomplete_categories,
+        bundle_gate=bundle_gate,
+        status=status,
+    )
     return {
         "cluster_id": evaluation_plan.get("cluster_id"),
         "dataset_hash": evaluation_plan.get("dataset_hash"),
@@ -565,8 +655,23 @@ def build_expert_benchmark_report(
         "incomplete_categories": incomplete_categories,
         "category_scores": category_scores,
         "overall": overall,
+        "retrieval_small_overall": retrieval_small_overall,
         "graduation_overall": graduation_overall,
-        "gate_report": gate_report,
+        "bundle_benchmark_summary": bundle_summary,
+        "bundle_readiness": bundle_readiness,
+        "bundle_mode_coverage": bundle_mode_coverage,
+        "bundle_release_gate": bundle_gate,
+        "bundle_benchmark_modes": bundle_modes,
+        "bundle_category_scores": bundle_category_scores,
+        "bundle_case_outputs": mode_case_outputs,
+        "gate_report": bundle_gate,
+        "legacy_category_gate_report": legacy_gate_report,
+        "benchmark_modes": bundle_modes,
+        "mode_case_outputs": mode_case_outputs,
+        "metadata": {
+            "expert_objective_version": "retrieval_grounded_compression_v1",
+            "bundle_thresholds": dict(_BUNDLE_BENCHMARK_THRESHOLDS),
+        },
     }
 
 
@@ -1087,6 +1192,57 @@ def _run_real_retrieval_baseline(
     }
 
 
+def _run_small_retrieval_baseline(
+    dataset: dict,
+    cases: list[dict],
+    *,
+    max_new_tokens: int | None,
+    max_new_tokens_by_category: dict[str, int] | None,
+) -> dict:
+    documents = {str(doc.get("title") or ""): doc for doc in list(dataset.get("documents") or [])}
+    category_limits = default_expert_benchmark_token_budgets()
+    for key, value in dict(max_new_tokens_by_category or {}).items():
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            continue
+        if normalized > 0:
+            category_limits[str(key)] = normalized
+    responses = []
+    case_scores = []
+    for case in cases:
+        title = str(case.get("source_title") or "")
+        doc = documents.get(title) or {}
+        citations = _document_citations(doc, title=title)[:1]
+        answer = _build_small_retrieval_answer(case, citations)
+        responses.append(
+            {
+                "prompt": str(case.get("prompt") or ""),
+                "response_text": answer,
+                "retrieval_hits": len(citations),
+                "truncated": True,
+                "citations": citations,
+                "effective_max_new_tokens": (
+                    int(max_new_tokens)
+                    if max_new_tokens is not None
+                    else max(32, int(category_limits.get(str(case.get("category") or ""), 256) * 0.35))
+                ),
+            }
+        )
+        case_scores.append(score_expert_response(case, answer))
+    return {
+        "ok": True,
+        "mode": "small_retrieval_extract_baseline",
+        "responses": responses,
+        "case_scores": case_scores,
+        "effective_max_new_tokens": (
+            {"global": int(max_new_tokens)}
+            if max_new_tokens is not None
+            else {key: max(32, int(value * 0.35)) for key, value in category_limits.items()}
+        ),
+    }
+
+
 def _build_retrieval_extract_answer(case: dict, citations: list[dict]) -> str:
     prompt = str(case.get("prompt") or "")
     title = str(case.get("source_title") or "")
@@ -1122,6 +1278,25 @@ def _build_retrieval_extract_answer(case: dict, citations: list[dict]) -> str:
     if category == "out_of_scope_refusal":
         return f"Source {title} does not provide enough evidence to answer an unrelated question. The missing evidence is explicit coverage in the local source."
     return primary
+
+
+def _build_small_retrieval_answer(case: dict, citations: list[dict]) -> str:
+    prompt = str(case.get("prompt") or "")
+    title = str(case.get("source_title") or "")
+    category = str(case.get("category") or "")
+    if not citations:
+        return f'No matching indexed context was found for "{prompt}".'
+    primary = str((citations[0] or {}).get("snippet") or "").strip()
+    condensed = _truncate_words(primary, 14)
+    if category == "summarization":
+        return f"- {condensed}\n- Source: {title}."
+    if category == "citation_grounding":
+        return f"{condensed}\n[Source: {title}]"
+    if category == "out_of_scope_refusal":
+        return f"Source {title} is not enough evidence for an unrelated answer."
+    if category == "reasoning_pattern":
+        return f"Evidence: {condensed} Follow the source directly."
+    return f"According to source {title}, {condensed}"
 
 
 def _document_citations(doc: dict, *, title: str) -> list[dict]:
@@ -1173,6 +1348,501 @@ def _average(values: list[float]) -> float:
     if not values:
         return 0.0
     return round(sum(float(value) for value in values) / len(values), 2)
+
+
+def _bundle_mode_summaries(
+    *,
+    retrieval_runtime: dict,
+    retrieval_small_runtime: dict,
+    adapter_runtime: dict,
+    retrieval_case_scores: list[dict],
+    retrieval_small_case_scores: list[dict],
+    adapter_case_scores: list[dict],
+) -> dict:
+    retrieval_full_score = _average([float(item.get("score") or 0.0) for item in retrieval_case_scores])
+    retrieval_small_score = _average([float(item.get("score") or 0.0) for item in retrieval_small_case_scores])
+    adapter_score = _average([float(item.get("score") or 0.0) for item in adapter_case_scores])
+    retrieval_full_tokens = _runtime_response_token_total(retrieval_runtime)
+    retrieval_small_tokens = _runtime_response_token_total(retrieval_small_runtime)
+    adapter_tokens = _runtime_response_token_total(adapter_runtime)
+    unsupported_claim_rate = _unsupported_claim_rate(adapter_case_scores)
+    wrong_citation_rate = _wrong_citation_rate(adapter_case_scores)
+    return {
+        "retrieval_only_full": {
+            "score": retrieval_full_score,
+            "token_count": retrieval_full_tokens,
+            "latency_hint": retrieval_runtime.get("mode") or "",
+        },
+        "retrieval_only_small": {
+            "score": retrieval_small_score,
+            "token_count": retrieval_small_tokens,
+            "latency_hint": retrieval_small_runtime.get("mode") or "",
+        },
+        "bundle_with_expert": {
+            "score": adapter_score,
+            "token_count": adapter_tokens,
+            "unsupported_claim_rate": unsupported_claim_rate,
+            "wrong_citation_rate": wrong_citation_rate,
+        },
+        "bundle_without_expert": {
+            "score": retrieval_full_score,
+            "token_count": retrieval_full_tokens,
+        },
+    }
+
+
+def _bundle_category_scores(
+    *,
+    cases: list[dict],
+    retrieval_runtime: dict,
+    retrieval_small_runtime: dict,
+    adapter_runtime: dict,
+    retrieval_case_scores: list[dict],
+    retrieval_small_case_scores: list[dict],
+    adapter_case_scores: list[dict],
+) -> dict[str, dict]:
+    retrieval_by_case = _scores_by_case_id(retrieval_case_scores)
+    retrieval_small_by_case = _scores_by_case_id(retrieval_small_case_scores)
+    adapter_by_case = _scores_by_case_id(adapter_case_scores)
+    retrieval_runtime_tokens = _runtime_tokens_by_case_id(cases, retrieval_runtime)
+    retrieval_small_runtime_tokens = _runtime_tokens_by_case_id(cases, retrieval_small_runtime)
+    adapter_runtime_tokens = _runtime_tokens_by_case_id(cases, adapter_runtime)
+    meaningful_threshold = 10
+    rows: dict[str, dict] = {}
+    for category in EVALUATION_CATEGORIES:
+        category_cases = [case for case in cases if str(case.get("category") or "") == category]
+        case_ids = [str(case.get("id") or "") for case in category_cases if str(case.get("id") or "")]
+        retrieval_scores = [
+            float((retrieval_by_case.get(case_id) or {}).get("score") or 0.0)
+            for case_id in case_ids
+            if case_id in retrieval_by_case
+        ]
+        retrieval_small_scores = [
+            float((retrieval_small_by_case.get(case_id) or {}).get("score") or 0.0)
+            for case_id in case_ids
+            if case_id in retrieval_small_by_case
+        ]
+        adapter_scores = [
+            float((adapter_by_case.get(case_id) or {}).get("score") or 0.0)
+            for case_id in case_ids
+            if case_id in adapter_by_case
+        ]
+        retrieval_full_tokens = sum(int(retrieval_runtime_tokens.get(case_id) or 0) for case_id in case_ids)
+        retrieval_small_tokens = sum(int(retrieval_small_runtime_tokens.get(case_id) or 0) for case_id in case_ids)
+        adapter_tokens = sum(int(adapter_runtime_tokens.get(case_id) or 0) for case_id in case_ids)
+        retrieval_full_score = _average(retrieval_scores)
+        retrieval_small_score = _average(retrieval_small_scores)
+        adapter_score = _average(adapter_scores)
+        quality_regression = round(retrieval_full_score - adapter_score, 2)
+        quality_gain = round(adapter_score - retrieval_small_score, 2)
+        token_savings = round(max(0.0, 100.0 * (1.0 - (adapter_tokens / max(1, retrieval_full_tokens)))), 2)
+        adapter_category_scores = [adapter_by_case.get(case_id) or {} for case_id in case_ids if case_id in adapter_by_case]
+        rows[category] = {
+            "owner": _CATEGORY_SPECS[category]["owner"],
+            "counts_toward_graduation": bool(_CATEGORY_SPECS[category]["counts_toward_graduation"]),
+            "case_count": len(category_cases),
+            "meaningful_case_count_minimum": meaningful_threshold,
+            "meaningful_case_count_reached": len(category_cases) >= meaningful_threshold,
+            "retrieval_only_full": {
+                "score": retrieval_full_score,
+                "score_count": len(retrieval_scores),
+                "token_count": retrieval_full_tokens,
+            },
+            "retrieval_only_small": {
+                "score": retrieval_small_score,
+                "score_count": len(retrieval_small_scores),
+                "token_count": retrieval_small_tokens,
+            },
+            "bundle_with_expert": {
+                "score": adapter_score,
+                "score_count": len(adapter_scores),
+                "token_count": adapter_tokens,
+                "unsupported_claim_rate": _unsupported_claim_rate(adapter_category_scores),
+                "wrong_citation_rate": _wrong_citation_rate(adapter_category_scores),
+            },
+            "bundle_without_expert": {
+                "score": retrieval_full_score,
+                "score_count": len(retrieval_scores),
+                "token_count": retrieval_full_tokens,
+            },
+            "quality_regression_vs_retrieval_full": quality_regression,
+            "quality_gain_vs_retrieval_small": quality_gain,
+            "token_savings_vs_retrieval_full": token_savings,
+            "complete": bool(
+                category_cases
+                and len(retrieval_scores) == len(category_cases)
+                and len(retrieval_small_scores) == len(category_cases)
+                and len(adapter_scores) == len(category_cases)
+            ),
+        }
+    return rows
+
+
+def _bundle_quality_gate(bundle_modes: dict) -> dict:
+    retrieval_full = dict(bundle_modes.get("retrieval_only_full") or {})
+    retrieval_small = dict(bundle_modes.get("retrieval_only_small") or {})
+    bundle_with_expert = dict(bundle_modes.get("bundle_with_expert") or {})
+    thresholds = dict(_BUNDLE_BENCHMARK_THRESHOLDS)
+    full_score = float(retrieval_full.get("score") or 0.0)
+    small_score = float(retrieval_small.get("score") or 0.0)
+    expert_score = float(bundle_with_expert.get("score") or 0.0)
+    full_tokens = max(1, int(retrieval_full.get("token_count") or 0))
+    expert_tokens = int(bundle_with_expert.get("token_count") or 0)
+    quality_regression_vs_retrieval_full = round(full_score - expert_score, 2)
+    quality_gain_vs_retrieval_small = round(expert_score - small_score, 2)
+    token_savings_vs_retrieval_full = round(max(0.0, 100.0 * (1.0 - (expert_tokens / full_tokens))), 2)
+    unsupported_claim_rate = float(bundle_with_expert.get("unsupported_claim_rate") or 0.0)
+    wrong_citation_rate = float(bundle_with_expert.get("wrong_citation_rate") or 0.0)
+    checks = {
+        "quality_regression_vs_retrieval_full": quality_regression_vs_retrieval_full <= thresholds["quality_regression_vs_retrieval_full"],
+        "quality_gain_vs_retrieval_small": quality_gain_vs_retrieval_small >= thresholds["quality_gain_vs_retrieval_small"],
+        "token_savings_vs_retrieval_full": token_savings_vs_retrieval_full >= thresholds["token_savings_vs_retrieval_full"],
+        "unsupported_claim_rate": unsupported_claim_rate == 0.0,
+        "wrong_citation_rate": wrong_citation_rate == 0.0,
+    }
+    return {
+        "passes": all(checks.values()),
+        "checks": checks,
+        "quality_regression_vs_retrieval_full": quality_regression_vs_retrieval_full,
+        "quality_gain_vs_retrieval_small": quality_gain_vs_retrieval_small,
+        "token_savings_vs_retrieval_full": token_savings_vs_retrieval_full,
+        "unsupported_claim_rate": unsupported_claim_rate,
+        "wrong_citation_rate": wrong_citation_rate,
+        "thresholds": thresholds,
+    }
+
+
+def _bundle_benchmark_summary(bundle_modes: dict, bundle_gate: dict) -> dict:
+    retrieval_full = dict(bundle_modes.get("retrieval_only_full") or {})
+    retrieval_small = dict(bundle_modes.get("retrieval_only_small") or {})
+    bundle_with_expert = dict(bundle_modes.get("bundle_with_expert") or {})
+    bundle_without_expert = dict(bundle_modes.get("bundle_without_expert") or {})
+    return {
+        "retrieval_only_full_score": float(retrieval_full.get("score") or 0.0),
+        "retrieval_only_small_score": float(retrieval_small.get("score") or 0.0),
+        "bundle_with_expert_score": float(bundle_with_expert.get("score") or 0.0),
+        "bundle_without_expert_score": float(bundle_without_expert.get("score") or 0.0),
+        "retrieval_only_full_tokens": int(retrieval_full.get("token_count") or 0),
+        "retrieval_only_small_tokens": int(retrieval_small.get("token_count") or 0),
+        "bundle_with_expert_tokens": int(bundle_with_expert.get("token_count") or 0),
+        "bundle_without_expert_tokens": int(bundle_without_expert.get("token_count") or 0),
+        "quality_regression_vs_retrieval_full": float(bundle_gate.get("quality_regression_vs_retrieval_full") or 0.0),
+        "quality_gain_vs_retrieval_small": float(bundle_gate.get("quality_gain_vs_retrieval_small") or 0.0),
+        "token_savings_vs_retrieval_full": float(bundle_gate.get("token_savings_vs_retrieval_full") or 0.0),
+        "unsupported_claim_rate": float(bundle_gate.get("unsupported_claim_rate") or 0.0),
+        "wrong_citation_rate": float(bundle_gate.get("wrong_citation_rate") or 0.0),
+        "passes": bool(bundle_gate.get("passes")),
+    }
+
+
+def _bundle_mode_coverage(
+    *,
+    cases: list[dict],
+    retrieval_runtime: dict,
+    retrieval_small_runtime: dict,
+    adapter_runtime: dict,
+    retrieval_case_scores: list[dict],
+    retrieval_small_case_scores: list[dict],
+    adapter_case_scores: list[dict],
+) -> dict:
+    expected_count = len(cases)
+    retrieval_score_count = len(_scores_by_case_id(retrieval_case_scores))
+    retrieval_small_score_count = len(_scores_by_case_id(retrieval_small_case_scores))
+    adapter_score_count = len(_scores_by_case_id(adapter_case_scores))
+    mode_rows = {
+        "retrieval_only_full": {
+            "response_count": len(list(retrieval_runtime.get("responses") or [])),
+            "score_count": retrieval_score_count,
+        },
+        "retrieval_only_small": {
+            "response_count": len(list(retrieval_small_runtime.get("responses") or [])),
+            "score_count": retrieval_small_score_count,
+        },
+        "bundle_with_expert": {
+            "response_count": len(list(adapter_runtime.get("responses") or [])),
+            "score_count": adapter_score_count,
+        },
+        "bundle_without_expert": {
+            "response_count": len(list(retrieval_runtime.get("responses") or [])),
+            "score_count": retrieval_score_count,
+        },
+    }
+    missing_modes: list[str] = []
+    incomplete_modes: list[str] = []
+    for mode_name, row in mode_rows.items():
+        if expected_count == 0:
+            row["complete"] = True
+            continue
+        response_count = int(row["response_count"])
+        score_count = int(row["score_count"])
+        complete = response_count >= expected_count and score_count >= expected_count
+        row["complete"] = complete
+        if response_count == 0 and score_count == 0:
+            missing_modes.append(mode_name)
+        elif not complete:
+            incomplete_modes.append(mode_name)
+    return {
+        "expected_case_count": expected_count,
+        "passes": not missing_modes and not incomplete_modes,
+        "missing_modes": missing_modes,
+        "incomplete_modes": incomplete_modes,
+        "modes": mode_rows,
+    }
+
+
+def _bundle_readiness_report(
+    *,
+    live_adapter_backed: bool,
+    bundle_mode_coverage: dict,
+    missing_categories: list[str],
+    incomplete_categories: list[str],
+    bundle_gate: dict,
+    status: str,
+) -> dict:
+    failure_reasons: list[str] = []
+    if not live_adapter_backed:
+        failure_reasons.append("pending_live_adapter_benchmark")
+    if list(bundle_mode_coverage.get("missing_modes") or []):
+        failure_reasons.append("missing_bundle_modes")
+    if list(bundle_mode_coverage.get("incomplete_modes") or []):
+        failure_reasons.append("incomplete_bundle_modes")
+    if missing_categories:
+        failure_reasons.append("legacy_missing_graduation_categories")
+    if incomplete_categories:
+        failure_reasons.append("legacy_incomplete_graduation_categories")
+    for check_name, passed in dict(bundle_gate.get("checks") or {}).items():
+        if not passed:
+            failure_reasons.append(check_name)
+    return {
+        "status": status,
+        "passes": bool(bundle_gate.get("passes")) and not failure_reasons,
+        "failure_reasons": failure_reasons,
+        "mode_coverage": bundle_mode_coverage,
+        "legacy_category_completeness": {
+            "missing_categories": list(missing_categories),
+            "incomplete_categories": list(incomplete_categories),
+        },
+    }
+
+
+def _mode_case_outputs(
+    *,
+    cases: list[dict],
+    retrieval_runtime: dict,
+    retrieval_small_runtime: dict,
+    adapter_runtime: dict,
+    retrieval_case_scores: list[dict],
+    retrieval_small_case_scores: list[dict],
+    adapter_case_scores: list[dict],
+) -> dict:
+    retrieval_scores = _scores_by_case_id(retrieval_case_scores)
+    retrieval_small_scores = _scores_by_case_id(retrieval_small_case_scores)
+    adapter_scores = _scores_by_case_id(adapter_case_scores)
+    return {
+        "retrieval_only_full": _runtime_mode_case_rows(
+            mode_name="retrieval_only_full",
+            cases=cases,
+            runtime=retrieval_runtime,
+            scores_by_case=retrieval_scores,
+        ),
+        "retrieval_only_small": _runtime_mode_case_rows(
+            mode_name="retrieval_only_small",
+            cases=cases,
+            runtime=retrieval_small_runtime,
+            scores_by_case=retrieval_small_scores,
+        ),
+        "bundle_with_expert": _runtime_mode_case_rows(
+            mode_name="bundle_with_expert",
+            cases=cases,
+            runtime=adapter_runtime,
+            scores_by_case=adapter_scores,
+        ),
+        "bundle_without_expert": _runtime_mode_case_rows(
+            mode_name="bundle_without_expert",
+            cases=cases,
+            runtime=retrieval_runtime,
+            scores_by_case=retrieval_scores,
+        ),
+    }
+
+
+def _runtime_mode_case_rows(
+    *,
+    mode_name: str,
+    cases: list[dict],
+    runtime: dict,
+    scores_by_case: dict[str, dict],
+) -> list[dict]:
+    responses = list(runtime.get("responses") or [])
+    rows: list[dict] = []
+    for index, case in enumerate(cases):
+        response = responses[index] if index < len(responses) else {}
+        score = dict(scores_by_case.get(str(case.get("id") or "")) or {})
+        runtime_prompt = str(response.get("prompt") or case.get("prompt") or "")
+        response_text = str(response.get("response_text") or "")
+        retrieval_evidence = _normalized_retrieval_evidence(response.get("citations"))
+        raw_packet_text = _benchmark_packet_text(
+            mode_name=mode_name,
+            prompt=runtime_prompt,
+            response_text=response_text,
+            retrieval_evidence=retrieval_evidence,
+        )
+        token_ledger = _benchmark_token_ledger(
+            prompt=runtime_prompt,
+            response_text=response_text,
+            retrieval_evidence=retrieval_evidence,
+            raw_packet_text=raw_packet_text,
+        )
+        expert_used = mode_name == "bundle_with_expert"
+        rows.append(
+            {
+                "mode": mode_name,
+                "case_id": str(case.get("id") or ""),
+                "category": str(case.get("category") or ""),
+                "prompt": str(case.get("prompt") or ""),
+                "runtime_prompt": runtime_prompt,
+                "source_title": str(case.get("source_title") or ""),
+                "response_text": response_text,
+                "raw_packet_text": raw_packet_text,
+                "citations": retrieval_evidence,
+                "retrieval_evidence": retrieval_evidence,
+                "retrieval_hits": int(response.get("retrieval_hits") or 0),
+                "truncated": bool(response.get("truncated")),
+                "effective_max_new_tokens": response.get("effective_max_new_tokens"),
+                "expert_used": expert_used,
+                "adapter_prompt": runtime_prompt if expert_used else "",
+                "adapter_raw_output": response_text if expert_used else "",
+                "token_ledger": token_ledger,
+                "score": score.get("score"),
+                "grounding_consistency_score": score.get("grounding_consistency_score"),
+                "citation_present": score.get("citation_present"),
+                "routed_away": bool(score.get("routed_away")),
+            }
+        )
+    return rows
+
+
+def _normalized_retrieval_evidence(citations: list[dict] | None) -> list[dict]:
+    normalized: list[dict] = []
+    for item in list(citations or []):
+        if not isinstance(item, dict):
+            continue
+        normalized.append(
+            {
+                "source_id": str(item.get("source_id") or ""),
+                "title": str(item.get("title") or ""),
+                "snippet": str(item.get("snippet") or ""),
+                "page": item.get("page"),
+                "chunk_id": item.get("chunk_id"),
+            }
+        )
+    return normalized
+
+
+def _benchmark_packet_text(
+    *,
+    mode_name: str,
+    prompt: str,
+    response_text: str,
+    retrieval_evidence: list[dict],
+) -> str:
+    lines = [
+        f"Mode: {mode_name}",
+        f"Prompt: {prompt.strip()}",
+        "",
+        "Packet response:",
+        str(response_text or "").strip(),
+    ]
+    if retrieval_evidence:
+        lines.extend(["", "Retrieval evidence:"])
+        for item in retrieval_evidence:
+            title = str(item.get("title") or "").strip() or "Untitled"
+            snippet = str(item.get("snippet") or "").strip()
+            source_id = str(item.get("source_id") or "").strip()
+            evidence_line = f"- [{title}]"
+            if source_id:
+                evidence_line += f" ({source_id})"
+            if snippet:
+                evidence_line += f": {snippet}"
+            lines.append(evidence_line)
+    return "\n".join(lines).strip()
+
+
+def _benchmark_token_ledger(
+    *,
+    prompt: str,
+    response_text: str,
+    retrieval_evidence: list[dict],
+    raw_packet_text: str,
+) -> dict:
+    retrieval_evidence_text = "\n".join(
+        f"{str(item.get('title') or '').strip()} {str(item.get('snippet') or '').strip()}".strip()
+        for item in retrieval_evidence
+    ).strip()
+    prompt_tokens = _estimate_text_tokens(prompt)
+    response_tokens = _estimate_text_tokens(response_text)
+    retrieval_tokens = _estimate_text_tokens(retrieval_evidence_text)
+    packet_tokens = _estimate_text_tokens(raw_packet_text)
+    return {
+        "prompt_tokens_estimate": prompt_tokens,
+        "response_tokens_estimate": response_tokens,
+        "retrieval_evidence_tokens_estimate": retrieval_tokens,
+        "packet_tokens_estimate": packet_tokens,
+        "total_tokens_estimate": prompt_tokens + response_tokens + retrieval_tokens,
+    }
+
+
+def _runtime_tokens_by_case_id(cases: list[dict], runtime: dict) -> dict[str, int]:
+    responses = list(runtime.get("responses") or [])
+    rows: dict[str, int] = {}
+    for index, case in enumerate(cases):
+        case_id = str(case.get("id") or "")
+        if not case_id:
+            continue
+        response = responses[index] if index < len(responses) else {}
+        rows[case_id] = _estimate_text_tokens(str(response.get("response_text") or ""))
+    return rows
+
+
+def _runtime_response_token_total(runtime: dict) -> int:
+    responses = list(runtime.get("responses") or [])
+    total = 0
+    for response in responses:
+        total += _estimate_text_tokens(str(response.get("response_text") or ""))
+    return total
+
+
+def _estimate_text_tokens(text: str) -> int:
+    cleaned = " ".join(str(text or "").split())
+    if not cleaned:
+        return 0
+    return max(1, (len(cleaned) + 3) // 4)
+
+
+def _truncate_words(text: str, limit: int) -> str:
+    words = str(text or "").split()
+    if len(words) <= limit:
+        return str(text or "").strip()
+    return " ".join(words[:limit]).strip()
+
+
+def _unsupported_claim_rate(case_scores: list[dict]) -> float:
+    if not case_scores:
+        return 0.0
+    unsupported = sum(
+        1
+        for item in case_scores
+        if float(item.get("grounding_consistency_score") or 0.0) < 1.0
+    )
+    return round(unsupported / len(case_scores), 4)
+
+
+def _wrong_citation_rate(case_scores: list[dict]) -> float:
+    citation_cases = [item for item in case_scores if str(item.get("category") or "") == "citation_grounding"]
+    if not citation_cases:
+        return 0.0
+    wrong = sum(1 for item in citation_cases if not bool(item.get("citation_present")))
+    return round(wrong / len(citation_cases), 4)
 
 
 def _scores_by_case_id(scores: list[dict]) -> dict[str, dict]:

@@ -54,10 +54,22 @@ def build_lora_smoke_proof(report: dict[str, Any]) -> dict[str, Any]:
         "pairing": pairing,
         "benchmark": {
             "report": benchmark,
-            "baseline_score": (benchmark.get("overall") or {}).get("retrieval_only_score"),
-            "adapter_score": (benchmark.get("overall") or {}).get("adapter_score"),
-            "quality_delta": (benchmark.get("overall") or {}).get("quality_delta"),
+            "baseline_score": (benchmark.get("bundle_benchmark_summary") or {}).get("retrieval_only_full_score")
+            or (benchmark.get("overall") or {}).get("retrieval_only_score"),
+            "retrieval_only_full_score": (benchmark.get("bundle_benchmark_summary") or {}).get("retrieval_only_full_score"),
+            "retrieval_only_small_score": (benchmark.get("bundle_benchmark_summary") or {}).get("retrieval_only_small_score"),
+            "bundle_with_expert_score": (benchmark.get("bundle_benchmark_summary") or {}).get("bundle_with_expert_score")
+            or (benchmark.get("overall") or {}).get("adapter_score"),
+            "bundle_without_expert_score": (benchmark.get("bundle_benchmark_summary") or {}).get("bundle_without_expert_score"),
+            "quality_delta": (benchmark.get("bundle_release_gate") or {}).get("quality_regression_vs_retrieval_full")
+            if (benchmark.get("bundle_release_gate") or {})
+            else (benchmark.get("overall") or {}).get("quality_delta"),
             "passes": bool(benchmark.get("passes")),
+            "expert_objective_version": str((benchmark.get("metadata") or {}).get("expert_objective_version") or ""),
+            "bundle_benchmark_summary": benchmark.get("bundle_benchmark_summary") or {},
+            "bundle_release_gate": benchmark.get("bundle_release_gate") or benchmark.get("gate_report") or {},
+            "bundle_readiness": benchmark.get("bundle_readiness") or {},
+            "legacy_overall": benchmark.get("overall") or {},
         },
         "gates": gates,
         "public_gate": {
@@ -130,7 +142,7 @@ def _gate_report(*, report: dict[str, Any], runtime_smoke: dict[str, Any], bench
     for ok, reason in (
         (real_data_ok, "real_dataset_missing"),
         (runtime_ok, "live_runtime_smoke_failed"),
-        (benchmark_ok, "adapter_quality_benchmark_failed"),
+        (benchmark_ok, "expert_bundle_benchmark_failed"),
         (pairing_ok, "adapter_base_pairing_unproven"),
         (hardware_proof_present, "hardware_avx2_proof_missing"),
         (hardware_supported, "hardware_avx2_unsupported"),
@@ -140,7 +152,7 @@ def _gate_report(*, report: dict[str, Any], runtime_smoke: dict[str, Any], bench
     return {
         "real_dataset": {"ok": real_data_ok},
         "live_runtime_smoke": {"ok": runtime_ok},
-        "adapter_quality_benchmark": {"ok": benchmark_ok},
+        "expert_bundle_benchmark": {"ok": benchmark_ok},
         "adapter_base_pairing": {"ok": pairing_ok},
         "hardware_proof": {"ok": hardware_proof_present},
         "hardware_support": {"ok": hardware_supported and hardware_proof_present},

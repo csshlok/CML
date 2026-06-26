@@ -249,7 +249,13 @@ if not runtime.get("ok"):
 
 adapter_case_scores = list(benchmark_run.get("adapter_case_scores") or [])
 baseline_case_scores = list(benchmark_run.get("retrieval_case_scores") or [])
+retrieval_small_case_scores = list(benchmark_run.get("retrieval_small_case_scores") or [])
+mode_case_outputs = dict((benchmark_run.get("benchmark_report") or {}).get("mode_case_outputs") or {})
+bundle_case_outputs = dict((benchmark_run.get("benchmark_report") or {}).get("bundle_case_outputs") or mode_case_outputs)
 benchmark = dict(benchmark_run.get("benchmark_report") or {})
+bundle_summary = dict(benchmark.get("bundle_benchmark_summary") or {})
+bundle_release_gate = dict(benchmark.get("bundle_release_gate") or benchmark.get("gate_report") or {})
+bundle_category_scores = dict(benchmark.get("bundle_category_scores") or {})
 reported_status = benchmark["status"]
 reported_passes = bool(benchmark["passes"])
 if adapter_dataset_hash and not dataset_matches_adapter:
@@ -275,7 +281,17 @@ report = {
     "runtime": runtime,
     "adapter_case_scores": adapter_case_scores,
     "retrieval_case_scores": baseline_case_scores,
+    "retrieval_small_case_scores": retrieval_small_case_scores,
+    "bundle_case_outputs": bundle_case_outputs,
+    "mode_case_outputs": mode_case_outputs,
     "benchmark_report": benchmark,
+    "bundle_benchmark_summary": bundle_summary,
+    "bundle_release_gate": bundle_release_gate,
+    "bundle_category_scores": bundle_category_scores,
+    "quality_gate_report": bundle_release_gate,
+    "adapter_training_dataset_hash": adapter_dataset_hash,
+    "benchmark_dataset_hash": dataset["dataset_hash"],
+    "model_runtime_load_plan": load_plan,
     "hardware_status": hardware_status(),
 }
 report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -286,7 +302,8 @@ print(
             "status": report["status"],
             "passes": report["passes"],
             "dataset_matches_adapter_training": dataset_matches_adapter,
-            "overall": benchmark["overall"],
+            "bundle_benchmark_summary": bundle_summary,
+            "bundle_release_gate": bundle_release_gate,
         },
         indent=2,
     )
