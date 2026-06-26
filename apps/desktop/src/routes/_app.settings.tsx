@@ -236,7 +236,7 @@ function SettingsView() {
         ? await unlockVaultWithPassphrase({ vault_id: vaultId, passphrase: vaultPassphrase })
         : await initializeVaultSecurity({ vault_id: vaultId, passphrase: vaultPassphrase, unlock_mode: "convenience" });
       setUnlockStatus(next);
-      if ("recovery_key" in next) setRecoveryKey(next.recovery_key);
+      if ("recovery_key" in next && typeof next.recovery_key === "string") setRecoveryKey(next.recovery_key);
       setVaultPassphrase("");
       setStatusMessage(next.state === "ready" ? "Library ready." : next.message);
     } catch (error) {

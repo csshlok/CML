@@ -141,7 +141,7 @@ Current useful artifacts:
 3. Route Bridge `/context` and MCP `get_cluster_context` through the bundle builder.
 4. Route chat context through the same bundle builder.
 5. Add bundle schemas: expert digest, retrieval authority, token ledger, expansion handles, bundle status.
-6. Add `run_cluster_expert_compression` and stop using prompt-only adapter calls in product paths.
+6. Add `run_cluster_expert_compression`; chat product paths now fail closed instead of calling prompt-only adapters.
 7. Redesign the LoRA training exporter around evidence-packet-to-digest records.
 8. Replace the benchmark with bundle-quality and token-savings evaluation.
 9. Update UI status/copy for retrieval-ready vs expert-compression-ready.
@@ -150,7 +150,7 @@ Current useful artifacts:
 ## Code Areas To Change For Bundle Architecture
 
 - `backend/app/core/cluster_bundle.py`: new shared bundle builder.
-- `backend/app/api/routes/chat.py`: replace direct expert assist with bundle result.
+- `backend/app/api/routes/chat.py`: prompt-only expert assist is disabled; replace pending route with bundle result.
 - `backend/app/api/routes/bridge.py`: route Bridge context through bundle builder.
 - `backend/app/bridge_mcp.py`: expose bundle packet by default.
 - `backend/app/core/context_packets.py`: render expert digest, authority, token ledger, and expansion handles.

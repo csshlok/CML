@@ -556,13 +556,16 @@ function SourceDetailDialog({
 
   async function chooseLocalImage() {
     const selectedPath = await desktop?.selectCoverImage?.();
-    if (!selectedPath || !source) return;
+    const currentSource = source;
+    if (!selectedPath || !currentSource) return;
     setCoverImageValue(selectedPath);
-    await onCoverImageChange(source, selectedPath);
+    await onCoverImageChange(currentSource, selectedPath);
   }
 
   async function saveImageUrl() {
-    await onCoverImageChange(source, coverImageValue.trim() || null);
+    const currentSource = source;
+    if (!currentSource) return;
+    await onCoverImageChange(currentSource, coverImageValue.trim() || null);
   }
 
   return (

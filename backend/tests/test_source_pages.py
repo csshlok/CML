@@ -2071,7 +2071,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIn("low_relevance", {packet["status"] for packet in packets})
         self.assertIn("ready", {packet["status"] for packet in packets})
 
-    def test_cluster_chat_uses_ready_expert_as_reasoning_aid(self) -> None:
+    def test_cluster_chat_does_not_call_prompt_only_expert_generation(self) -> None:
         from unittest.mock import patch
 
         from backend.app.api.routes.chat import build_chat_context
@@ -2125,8 +2125,8 @@ class SourcePageIndexingTests(unittest.TestCase):
 
         with (
             patch(
-                "backend.app.api.routes.chat.run_cluster_expert_prompt",
-                return_value={"ok": True, "response_text": "expert draft", "detail": ""},
+                "backend.app.core.expert_runtime.run_cluster_expert_prompt",
+                side_effect=AssertionError("product chat must not call prompt-only expert generation"),
             ),
             patch("backend.app.api.routes.chat.generate_grounded_answer", side_effect=fake_generate),
         ):
@@ -2138,13 +2138,13 @@ class SourcePageIndexingTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(seen["expert_assist"], "expert draft")
-        self.assertEqual(response["coverage_ledger"]["expert_route_mode"], "expert_assisted")
-        self.assertTrue(response["coverage_ledger"]["expert_assist_attempted"])
-        self.assertTrue(response["coverage_ledger"]["expert_assist_used"])
-        self.assertTrue(any("reasoning aid" in warning for warning in response["warnings"]))
+        self.assertIsNone(seen["expert_assist"])
+        self.assertEqual(response["coverage_ledger"]["expert_route_mode"], "expert_compression_pending")
+        self.assertFalse(response["coverage_ledger"]["expert_assist_attempted"])
+        self.assertFalse(response["coverage_ledger"]["expert_assist_used"])
+        self.assertFalse(any("reasoning aid" in warning for warning in response["warnings"]))
 
-    def test_cluster_chat_records_unavailable_expert_route_without_failing(self) -> None:
+    def test_cluster_chat_reports_ready_adapter_as_compression_pending(self) -> None:
         from unittest.mock import patch
 
         from backend.app.api.routes.chat import build_chat_context
@@ -2192,8 +2192,8 @@ class SourcePageIndexingTests(unittest.TestCase):
 
         with (
             patch(
-                "backend.app.api.routes.chat.run_cluster_expert_prompt",
-                return_value={"ok": False, "response_text": "", "detail": "runtime smoke failed"},
+                "backend.app.core.expert_runtime.run_cluster_expert_prompt",
+                side_effect=AssertionError("product chat must not call prompt-only expert generation"),
             ),
             patch(
                 "backend.app.api.routes.chat.generate_grounded_answer",
@@ -2208,10 +2208,10 @@ class SourcePageIndexingTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(response["coverage_ledger"]["expert_route_mode"], "expert_unavailable")
-        self.assertTrue(response["coverage_ledger"]["expert_assist_attempted"])
+        self.assertEqual(response["coverage_ledger"]["expert_route_mode"], "expert_compression_pending")
+        self.assertFalse(response["coverage_ledger"]["expert_assist_attempted"])
         self.assertFalse(response["coverage_ledger"]["expert_assist_used"])
-        self.assertTrue(any("stayed retrieval-first" in warning for warning in response["warnings"]))
+        self.assertTrue(any("expert compression is pending" in warning for warning in response["warnings"]))
 
     def test_chat_context_applies_token_budget_and_reports_trimmed_citations(self) -> None:
         from unittest.mock import patch
@@ -2396,7 +2396,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(response["coverage_ledger"]["partial_failure_mode"], "runtime_unavailable_extract_fallback")
         self.assertTrue(any("retrieval draft fallback" in warning for warning in response["warnings"]))
 
-    def test_cluster_chat_uses_expert_draft_in_runtime_fallback(self) -> None:
+    def test_cluster_chat_runtime_fallback_excludes_prompt_only_expert_draft(self) -> None:
         from unittest.mock import patch
 
         from backend.app.api.routes.chat import build_chat_context
@@ -2445,8 +2445,8 @@ class SourcePageIndexingTests(unittest.TestCase):
 
         with (
             patch(
-                "backend.app.api.routes.chat.run_cluster_expert_prompt",
-                return_value={"ok": True, "response_text": "expert draft fallback", "detail": ""},
+                "backend.app.core.expert_runtime.run_cluster_expert_prompt",
+                side_effect=AssertionError("product chat must not call prompt-only expert generation"),
             ),
             patch(
                 "backend.app.api.routes.chat.generate_grounded_answer",
@@ -2463,9 +2463,9 @@ class SourcePageIndexingTests(unittest.TestCase):
 
         self.assertEqual(
             response["coverage_ledger"]["partial_failure_mode"],
-            "runtime_unavailable_expert_extract_fallback",
+            "runtime_unavailable_extract_fallback",
         )
-        self.assertIn("expert draft fallback", response["answer"])
+        self.assertNotIn("expert draft fallback", response["answer"])
 
     def test_vault_safety_status_can_create_backup(self) -> None:
         from backend.app.core.vault_safety import vault_safety_status

@@ -334,7 +334,7 @@ function ClustersList() {
                       <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-issue)]" />
                       <span className="min-w-0">
                         <span className="line-clamp-2 break-words font-medium">{source.title}</span>
-                        <span className="mt-1 block break-words text-xs text-muted-foreground">{source.type.toUpperCase()} / {Math.max(1, Math.round((source.text || "").length / 120))} memories</span>
+                        <span className="mt-1 block break-words text-xs text-muted-foreground">{source.type.toUpperCase()} / {Math.max(1, Math.round((source.preview || source.summary || "").length / 120))} memories</span>
                       </span>
                     </Link>
                   ))}
@@ -397,8 +397,8 @@ function clusterLastActivity(cluster: Cluster, sources: Source[]) {
     .filter((item) => item.clusterId === cluster.id)
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
   if (!source) return "No activity";
-  if (source.status === "failed" || source.state === "failed") return "Needs review";
-  if (source.status === "extracting" || source.state === "extracting") return "In progress";
+  if (source.state === "failed") return "Needs review";
+  if (source.state === "extracting") return "In progress";
   return formatDate(source.updatedAt);
 }
 

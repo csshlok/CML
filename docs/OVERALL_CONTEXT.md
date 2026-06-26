@@ -1857,7 +1857,7 @@ Exit criteria:
   - added managed embedding-model download status/start/cancel backend routes plus onboarding/settings controls for the recommended memory-search model path
   - tightened startup repair UX with native confirmation before lock override and copyable diagnostic details on startup failure
   - extended deletion/Bridge/embedding tests for per-client Bridge permissions, embedding download failure handling, and chat transcript source/chunk cleanup
-  - ran a thorough Playwright UI interaction audit and documented findings in [UI_INTERACTION_AUDIT_2026-06-01.md](UI_INTERACTION_AUDIT_2026-06-01.md)
+  - ran a thorough Playwright UI interaction audit and documented findings in the historical `UI_INTERACTION_AUDIT_2026-06-01.md` artifact, which is not present in this checkout
 - Added Electron-facing vault-lock Open-anyway recovery from the startup repair page, with one-shot backend override env wiring and backend audit records that capture the explicit `open_anyway` user choice.
 - Added an Electron embedding-model folder picker and wired it into onboarding and Settings so required SentenceTransformers setup can be selected and tested from the app instead of only typed manually.
 - Removed seeded mock-data fallbacks from the shared sidebar, Home/Mind summary, Sources, and Settings storage/profile surfaces so missing backend/vault states stay visibly empty and honest.

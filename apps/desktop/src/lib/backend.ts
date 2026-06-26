@@ -262,6 +262,27 @@ export type BridgeCaptureResponse = {
   warnings: string[];
 };
 
+export type BridgeArtifactCapturePayload = {
+  vault_id?: string | null;
+  cluster_id?: string | null;
+  client_name: string;
+  title: string;
+  content: string;
+  artifact_type?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type BridgeExternalTurnPayload = {
+  vault_id?: string | null;
+  cluster_id?: string | null;
+  client_name: string;
+  user_prompt: string;
+  model_response: string;
+  context_request_id?: string | null;
+  model_name?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
 export type VaultRecord = {
   id: string;
   name: string;
@@ -801,6 +822,7 @@ export type ModelRuntimeStatus = {
   base_url: string;
   model: string;
   available: boolean;
+  state?: string;
   detail: string;
 };
 
@@ -1137,31 +1159,14 @@ export async function listBridgeCaptures(vaultId?: string, options: { limit?: nu
   return request<BridgeCaptureRecord[]>(`/api/v1/bridge/captures${suffix}`);
 }
 
-export async function captureBridgeArtifact(payload: {
-  vault_id?: string | null;
-  cluster_id?: string | null;
-  client_name: string;
-  title: string;
-  content: string;
-  artifact_type?: string;
-  metadata?: Record<string, unknown>;
-}) {
+export async function captureBridgeArtifact(payload: BridgeArtifactCapturePayload) {
   return request<BridgeCaptureResponse>("/api/v1/bridge/artifacts", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
-export async function captureBridgeExternalTurn(payload: {
-  vault_id?: string | null;
-  cluster_id?: string | null;
-  client_name: string;
-  user_prompt: string;
-  model_response: string;
-  context_request_id?: string | null;
-  model_name?: string | null;
-  metadata?: Record<string, unknown>;
-}) {
+export async function captureBridgeExternalTurn(payload: BridgeExternalTurnPayload) {
   return request<BridgeCaptureResponse>("/api/v1/bridge/external-turn", {
     method: "POST",
     body: JSON.stringify(payload),
@@ -1562,7 +1567,19 @@ export async function streamChatContext(
     for (const eventBlock of events) {
       const event = parseSseEvent(eventBlock);
       if (!event) continue;
-      if (event.event === "meta") handlers.onMeta?.(event.data);
+      if (event.event === "meta")
+        handlers.onMeta?.(
+          event.data as Pick<
+            ChatContextResponse,
+            | "clusters_used"
+            | "citations"
+            | "coverage_ledger"
+            | "attachments_stored"
+            | "intent"
+            | "runtime_state"
+            | "warnings"
+          >,
+        );
       if (event.event === "token" && typeof event.data.text === "string")
         handlers.onToken(event.data.text);
       if (event.event === "done") handlers.onDone?.(event.data);

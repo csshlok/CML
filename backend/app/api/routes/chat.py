@@ -19,7 +19,6 @@ from backend.app.core.embeddings import (
     require_embeddings_available,
     reindex_source_chunks,
 )
-from backend.app.core.expert_runtime import run_cluster_expert_prompt
 from backend.app.core.expert_evaluation import ROUTE_AWAY_CATEGORIES, adapter_route_away_category
 from backend.app.core.encrypted_storage import (
     delete_source_encrypted_content,
@@ -818,6 +817,10 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     elif expert_assist["attempted"] and expert_assist["detail"]:
         warnings.append(
             f"Cluster expert assist was unavailable, so this answer stayed retrieval-first: {expert_assist['detail']}"
+        )
+    elif expert_assist["mode"] == "expert_compression_pending" and expert_assist["detail"]:
+        warnings.append(
+            f"Cluster expert compression is pending, so this answer stayed retrieval-first: {expert_assist['detail']}"
         )
     if not citations:
         warnings.append("No semantic citations were found.")
@@ -1651,22 +1654,15 @@ def _maybe_run_cluster_expert_assist(*, payload: ChatContextRequest, intent: str
             "text": None,
             "detail": "",
         }
-    with connect() as conn:
-        result = run_cluster_expert_prompt(conn, cluster_id=payload.cluster_id, prompt=payload.prompt)
-    if result.get("ok"):
-        return {
-            "mode": "expert_assisted",
-            "attempted": True,
-            "used": True,
-            "text": str(result.get("response_text") or "").strip() or None,
-            "detail": "",
-        }
     return {
-        "mode": "expert_unavailable",
-        "attempted": True,
+        "mode": "expert_compression_pending",
+        "attempted": False,
         "used": False,
         "text": None,
-        "detail": str(result.get("detail") or "").strip(),
+        "detail": (
+            "Prompt-only cluster adapter generation is disabled until retrieval-grounded "
+            "expert compression is available."
+        ),
     }
 
 
