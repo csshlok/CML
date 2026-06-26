@@ -4018,6 +4018,227 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertTrue(status["trained"])
         self.assertTrue(status["runtime_load"]["available"])
 
+    def test_lora_training_can_bypass_quality_gate_for_diagnostic_runs(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.core.background_jobs import _run_train_cluster_adapter
+        from backend.app.core.config import get_settings
+        from backend.app.core.database import connect, utc_now
+
+        os.environ["CML_LORA_SKIP_QUALITY_GATE"] = "1"
+        os.environ["CML_LORA_MIN_SOURCES"] = "1"
+        os.environ["CML_LORA_MIN_UNIQUE_SOURCES"] = "1"
+        os.environ["CML_LORA_MIN_TOKENS"] = "1"
+        os.environ["CML_LORA_MIN_VALIDATION_RECORDS"] = "1"
+        get_settings.cache_clear()
+        now = utc_now()
+        text = "quality gate bypass evidence " * 240
+        dataset = {
+            "cluster_id": "cluster-1",
+            "cluster_name": "Research",
+            "source_count": 1,
+            "unique_content_hash_count": 1,
+            "duplicate_content_count": 0,
+            "duplicate_content_ratio": 0.0,
+            "total_text_chars": len(text),
+            "estimated_token_count": len(text) // 4,
+            "dataset_hash": "dataset-hash",
+            "documents": [
+                {
+                    "source_id": "source-1",
+                    "title": "Source",
+                    "summary": "A sufficiently descriptive local source summary for adapter training.",
+                    "text": text,
+                    "content_hash": "content-1",
+                }
+            ],
+        }
+
+        def fake_training_process(*, output_dir, **_kwargs):
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "adapter_config.json").write_text(
+                '{"peft_type":"LORA","base_model_name_or_path":"diagnostic-base"}',
+                encoding="utf-8",
+            )
+            (output_dir / "adapter_model.safetensors").write_bytes(b"adapter")
+            return {
+                "status": "succeeded",
+                "adapter_path": str(output_dir),
+                "stdout_path": str(output_dir / "trainer.stdout.log"),
+                "stderr_path": str(output_dir / "trainer.stderr.log"),
+            }
+
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', 'training_pending', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO cluster_expert_jobs (
+                    id, cluster_id, vault_id, action, status, detail, created_at, updated_at
+                )
+                VALUES ('expert-job-1', 'cluster-1', 'vault-1', 'retrain', 'running', '', ?, ?)
+                """,
+                (now, now),
+            )
+
+        hardware = {
+            "training_supported": True,
+            "hardware_tier": "cpu_minimum_spec",
+            "detail": "test hardware",
+        }
+        preferred_model = {
+            "id": "diagnostic-base",
+            "local_path": "diagnostic-base",
+            "compatibility": {"accepted": True, "expert_role_accepted": True},
+        }
+        dataset_manifest = {
+            "dataset_dir": self.tmp.name,
+            "train_path": str(Path(self.tmp.name) / "train.jsonl"),
+            "validation_path": str(Path(self.tmp.name) / "validation.jsonl"),
+            "validation_count": 80,
+            "benchmark_record_accounting": {
+                "used_source_count": 60,
+                "used_unique_content_hash_count": 60,
+                "train": {
+                    "record_count": 400,
+                    "duplicate_content_ratio": 0.0,
+                    "max_record_share_per_source": 0.05,
+                },
+                "validation": {
+                    "record_count": 80,
+                    "duplicate_content_ratio": 0.0,
+                    "max_record_share_per_source": 0.05,
+                    "category_counts": {
+                        "factual_recall": 10,
+                        "citation_grounding": 10,
+                        "contradiction_handling": 10,
+                        "summarization": 10,
+                        "style_transfer": 10,
+                        "terminology_consistency": 10,
+                        "reasoning_pattern": 10,
+                        "out_of_scope_refusal": 10,
+                    },
+                    "max_record_share_per_source_per_category": {
+                        "factual_recall": 0.1,
+                        "citation_grounding": 0.1,
+                        "contradiction_handling": 0.1,
+                        "summarization": 0.1,
+                        "style_transfer": 0.1,
+                        "terminology_consistency": 0.1,
+                        "reasoning_pattern": 0.1,
+                        "out_of_scope_refusal": 0.1,
+                    },
+                },
+            },
+        }
+        evaluation_plan = {
+            "cluster_id": "cluster-1",
+            "dataset_hash": "dataset-hash",
+            "case_count": 12,
+            "categories": [],
+            "cases": [],
+        }
+        benchmark_run = {
+            "evaluation_plan": {"case_count": 12, "categories": [], "dataset_hash": "dataset-hash"},
+            "runtime": {"ok": True, "responses": []},
+            "retrieval_case_scores": [],
+            "adapter_case_scores": [],
+            "benchmark_report": {
+                "status": "failed",
+                "passes": False,
+                "gate_report": {"passes": False},
+                "overall": {
+                    "retrieval_only_score": 77.42,
+                    "adapter_score": 72.47,
+                    "quality_delta": -4.95,
+                    "minimum_quality_delta": 1.0,
+                },
+                "graduation_overall": {
+                    "retrieval_only_score": 77.42,
+                    "adapter_score": 55.0,
+                    "quality_delta": -22.42,
+                    "minimum_quality_delta": 1.0,
+                },
+            },
+        }
+
+        try:
+            with (
+                patch("backend.app.core.hardware.hardware_status", return_value=hardware),
+                patch(
+                    "backend.app.core.background_jobs.preferred_expert_base_model",
+                    return_value=preferred_model,
+                ),
+                patch(
+                    "backend.app.core.background_jobs.build_cluster_dataset",
+                    side_effect=[dataset, dataset],
+                ),
+                patch(
+                    "backend.app.core.background_jobs.write_cluster_training_dataset",
+                    return_value=dataset_manifest,
+                ),
+                patch(
+                    "backend.app.core.background_jobs.run_lora_training_process",
+                    side_effect=fake_training_process,
+                ),
+                patch(
+                    "backend.app.core.background_jobs.runtime_adapter_load_plan",
+                    return_value={"available": True, "detail": "runtime available"},
+                ),
+                patch(
+                    "backend.app.core.background_jobs.build_adapter_training_evaluation_plan",
+                    return_value=evaluation_plan,
+                ),
+                patch(
+                    "backend.app.core.background_jobs.run_live_expert_benchmark",
+                    return_value=benchmark_run,
+                ),
+            ):
+                _run_train_cluster_adapter(
+                    {
+                        "cluster_id": "cluster-1",
+                        "vault_id": "vault-1",
+                        "expert_job_id": "expert-job-1",
+                    }
+                )
+        finally:
+            os.environ.pop("CML_LORA_SKIP_QUALITY_GATE", None)
+            os.environ.pop("CML_LORA_MIN_SOURCES", None)
+            os.environ.pop("CML_LORA_MIN_UNIQUE_SOURCES", None)
+            os.environ.pop("CML_LORA_MIN_TOKENS", None)
+            os.environ.pop("CML_LORA_MIN_VALIDATION_RECORDS", None)
+            get_settings.cache_clear()
+
+        with connect() as conn:
+            cluster = conn.execute("SELECT expert_status FROM clusters WHERE id = 'cluster-1'").fetchone()
+            job = conn.execute(
+                "SELECT status, failure_code, detail, artifact_path FROM cluster_expert_jobs WHERE id = 'expert-job-1'"
+            ).fetchone()
+            artifact = conn.execute(
+                "SELECT status, quality_score, metrics_json FROM expert_artifacts WHERE cluster_id = 'cluster-1'"
+            ).fetchone()
+
+        self.assertEqual(cluster["expert_status"], "training_ready")
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["failure_code"], "")
+        self.assertIn("Quality gate bypassed for diagnostic run.", job["detail"])
+        self.assertIsNotNone(job["artifact_path"])
+        self.assertEqual(artifact["status"], "ready")
+        self.assertEqual(float(artifact["quality_score"]), 55.0)
+        metrics = json.loads(artifact["metrics_json"])
+        self.assertTrue(metrics["quality_gate"]["skipped"])
+
     def test_lora_training_without_configured_trainer_records_trainer_missing(self) -> None:
         from unittest.mock import patch
 
@@ -4393,6 +4614,215 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertFalse(status["trained"])
         self.assertEqual(status["failure_code"], "dataset_changed")
         self.assertIn("Queue a fresh retrain", status["detail"])
+
+    def test_lora_training_respects_configured_benchmark_case_limit(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.core.background_jobs import _run_train_cluster_adapter
+        from backend.app.core.config import get_settings
+        from backend.app.core.database import connect, utc_now
+
+        os.environ["CML_LORA_BENCHMARK_CASE_LIMIT"] = "12"
+        os.environ["CML_LORA_MIN_SOURCES"] = "1"
+        os.environ["CML_LORA_MIN_UNIQUE_SOURCES"] = "1"
+        os.environ["CML_LORA_MIN_TOKENS"] = "1"
+        os.environ["CML_LORA_MIN_VALIDATION_RECORDS"] = "1"
+        get_settings.cache_clear()
+        now = utc_now()
+        text = "benchmark case limit evidence " * 240
+        dataset = {
+            "cluster_id": "cluster-1",
+            "cluster_name": "Research",
+            "source_count": 1,
+            "unique_content_hash_count": 1,
+            "duplicate_content_count": 0,
+            "duplicate_content_ratio": 0.0,
+            "total_text_chars": len(text),
+            "estimated_token_count": len(text) // 4,
+            "dataset_hash": "dataset-hash",
+            "documents": [
+                {
+                    "source_id": "source-1",
+                    "title": "Source",
+                    "summary": "A sufficiently descriptive local source summary for adapter training.",
+                    "text": text,
+                    "content_hash": "content-1",
+                }
+            ],
+        }
+
+        def fake_training_process(*, output_dir, **_kwargs):
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "adapter_config.json").write_text(
+                '{"peft_type":"LORA","base_model_name_or_path":"limit-base"}',
+                encoding="utf-8",
+            )
+            (output_dir / "adapter_model.safetensors").write_bytes(b"adapter")
+            return {
+                "status": "succeeded",
+                "adapter_path": str(output_dir),
+                "stdout_path": str(output_dir / "trainer.stdout.log"),
+                "stderr_path": str(output_dir / "trainer.stderr.log"),
+            }
+
+        captured_max_cases: list[int | None] = []
+
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', 'training_pending', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO cluster_expert_jobs (
+                    id, cluster_id, vault_id, action, status, detail, created_at, updated_at
+                )
+                VALUES ('expert-job-1', 'cluster-1', 'vault-1', 'retrain', 'running', '', ?, ?)
+                """,
+                (now, now),
+            )
+
+        hardware = {
+            "training_supported": True,
+            "hardware_tier": "cpu_minimum_spec",
+            "detail": "test hardware",
+        }
+        preferred_model = {
+            "id": "limit-base",
+            "local_path": "limit-base",
+            "compatibility": {"accepted": True, "expert_role_accepted": True},
+        }
+        dataset_manifest = {
+            "dataset_dir": self.tmp.name,
+            "train_path": str(Path(self.tmp.name) / "train.jsonl"),
+            "validation_path": str(Path(self.tmp.name) / "validation.jsonl"),
+            "validation_count": 80,
+            "benchmark_record_accounting": {
+                "used_source_count": 60,
+                "used_unique_content_hash_count": 60,
+                "train": {
+                    "record_count": 400,
+                    "duplicate_content_ratio": 0.0,
+                    "max_record_share_per_source": 0.05,
+                },
+                "validation": {
+                    "record_count": 80,
+                    "duplicate_content_ratio": 0.0,
+                    "max_record_share_per_source": 0.05,
+                    "category_counts": {
+                        "factual_recall": 10,
+                        "citation_grounding": 10,
+                        "contradiction_handling": 10,
+                        "summarization": 10,
+                        "style_transfer": 10,
+                        "terminology_consistency": 10,
+                        "reasoning_pattern": 10,
+                        "out_of_scope_refusal": 10,
+                    },
+                    "max_record_share_per_source_per_category": {
+                        "factual_recall": 0.1,
+                        "citation_grounding": 0.1,
+                        "contradiction_handling": 0.1,
+                        "summarization": 0.1,
+                        "style_transfer": 0.1,
+                        "terminology_consistency": 0.1,
+                        "reasoning_pattern": 0.1,
+                        "out_of_scope_refusal": 0.1,
+                    },
+                },
+            },
+        }
+
+        def fake_build_plan(*_args, **kwargs):
+            captured_max_cases.append(kwargs.get("max_cases"))
+            return {
+                "cluster_id": "cluster-1",
+                "dataset_hash": "dataset-hash",
+                "case_count": 12,
+                "categories": [],
+                "cases": [],
+            }
+
+        benchmark_run = {
+            "evaluation_plan": {"case_count": 12, "categories": [], "dataset_hash": "dataset-hash"},
+            "runtime": {"ok": True, "responses": []},
+            "retrieval_case_scores": [],
+            "adapter_case_scores": [],
+            "benchmark_report": {
+                "status": "passed",
+                "passes": True,
+                "overall": {
+                    "retrieval_only_score": 80.0,
+                    "adapter_score": 82.0,
+                    "quality_delta": 2.0,
+                    "minimum_quality_delta": 1.0,
+                },
+                "graduation_overall": {
+                    "retrieval_only_score": 80.0,
+                    "adapter_score": 82.0,
+                    "quality_delta": 2.0,
+                    "minimum_quality_delta": 1.0,
+                },
+            },
+        }
+
+        try:
+            with (
+                patch("backend.app.core.hardware.hardware_status", return_value=hardware),
+                patch(
+                    "backend.app.core.background_jobs.preferred_expert_base_model",
+                    return_value=preferred_model,
+                ),
+                patch(
+                    "backend.app.core.background_jobs.build_cluster_dataset",
+                    side_effect=[dataset, dataset],
+                ),
+                patch(
+                    "backend.app.core.background_jobs.write_cluster_training_dataset",
+                    return_value=dataset_manifest,
+                ),
+                patch(
+                    "backend.app.core.background_jobs.run_lora_training_process",
+                    side_effect=fake_training_process,
+                ),
+                patch(
+                    "backend.app.core.background_jobs.runtime_adapter_load_plan",
+                    return_value={"available": True, "detail": "runtime available"},
+                ),
+                patch(
+                    "backend.app.core.background_jobs.build_adapter_training_evaluation_plan",
+                    side_effect=fake_build_plan,
+                ),
+                patch(
+                    "backend.app.core.background_jobs.run_live_expert_benchmark",
+                    return_value=benchmark_run,
+                ),
+            ):
+                _run_train_cluster_adapter(
+                    {
+                        "cluster_id": "cluster-1",
+                        "vault_id": "vault-1",
+                        "expert_job_id": "expert-job-1",
+                    }
+                )
+        finally:
+            os.environ.pop("CML_LORA_BENCHMARK_CASE_LIMIT", None)
+            os.environ.pop("CML_LORA_MIN_SOURCES", None)
+            os.environ.pop("CML_LORA_MIN_UNIQUE_SOURCES", None)
+            os.environ.pop("CML_LORA_MIN_TOKENS", None)
+            os.environ.pop("CML_LORA_MIN_VALIDATION_RECORDS", None)
+            get_settings.cache_clear()
+
+        self.assertEqual(captured_max_cases, [12])
 
     def test_lora_adapter_rollback_and_delete_guardrails(self) -> None:
         from backend.app.api.routes.clusters import (

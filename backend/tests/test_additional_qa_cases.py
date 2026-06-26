@@ -50,6 +50,8 @@ class AdditionalQACases(unittest.TestCase):
         os.environ.pop("CML_LORA_RUNTIME_PYTHON", None)
         os.environ.pop("CML_LORA_RUNTIME_DEVICE", None)
         os.environ.pop("CML_LORA_RUNTIME_DTYPE", None)
+        os.environ.pop("CML_LORA_RUNTIME_REPETITION_PENALTY", None)
+        os.environ.pop("CML_LORA_RUNTIME_NO_REPEAT_NGRAM_SIZE", None)
         os.environ.pop("CML_LORA_TRAINING_DEVICE", None)
         os.environ.pop("CML_LORA_TRAINING_DTYPE", None)
         os.environ.pop("CML_MODEL_SCAN_ROOTS", None)
@@ -719,6 +721,7 @@ class AdditionalQACases(unittest.TestCase):
     def test_run_adapter_runtime_smoke_reads_worker_report(self) -> None:
         import subprocess
 
+        from backend.app.core.config import get_settings
         from backend.app.core.expert_runtime import run_adapter_runtime_smoke
 
         self._write_fake_local_transformers_model("smoke-model")
@@ -729,10 +732,15 @@ class AdditionalQACases(unittest.TestCase):
             encoding="utf-8",
         )
         (adapter_dir / "adapter_model.safetensors").write_bytes(b"adapter")
+        os.environ["CML_LORA_RUNTIME_REPETITION_PENALTY"] = "1.23"
+        os.environ["CML_LORA_RUNTIME_NO_REPEAT_NGRAM_SIZE"] = "5"
+        get_settings.cache_clear()
 
         def fake_run(command, capture_output, text, timeout, cwd):
             payload_path = Path(command[-1])
             payload = json.loads(payload_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["repetition_penalty"], 1.23)
+            self.assertEqual(payload["no_repeat_ngram_size"], 5)
             report_path = Path(payload["report_path"])
             report_path.write_text(
                 json.dumps(
@@ -3854,6 +3862,16 @@ class AdditionalQACases(unittest.TestCase):
         self.assertFalse(payload["use_cpu"])
         self.assertFalse(payload["fp16"])
         self.assertFalse(payload["bf16"])
+        self.assertEqual(payload["eval_strategy"], "steps")
+        self.assertEqual(payload["save_strategy"], "steps")
+        self.assertEqual(payload["eval_steps"], 200)
+        self.assertEqual(payload["save_steps"], 200)
+        self.assertEqual(payload["early_stopping_steps"], 2)
+        self.assertEqual(payload["save_total_limit"], 3)
+        self.assertTrue(payload["load_best_model_at_end"])
+        self.assertEqual(payload["metric_for_best_model"], "eval_loss")
+        self.assertFalse(payload["greater_is_better"])
+        self.assertEqual(payload["per_device_eval_batch_size"], 1)
 
     def test_llamafactory_training_config_honors_device_and_dtype_overrides(self) -> None:
         from backend.app.core.config import get_settings
@@ -3882,6 +3900,13 @@ class AdditionalQACases(unittest.TestCase):
         self.assertTrue(payload["use_cpu"])
         self.assertFalse(payload["fp16"])
         self.assertTrue(payload["bf16"])
+        self.assertEqual(payload["eval_strategy"], "steps")
+        self.assertEqual(payload["save_strategy"], "steps")
+        self.assertEqual(payload["eval_steps"], 200)
+        self.assertEqual(payload["save_steps"], 200)
+        self.assertEqual(payload["early_stopping_steps"], 2)
+        self.assertEqual(payload["save_total_limit"], 3)
+        self.assertTrue(payload["load_best_model_at_end"])
 
     def test_lora_adapter_validation_rejects_incomplete_or_malformed_artifacts(self) -> None:
         from backend.app.core.lora_training import adapter_validation_report, verify_adapter_artifact
@@ -4008,6 +4033,64 @@ class AdditionalQACases(unittest.TestCase):
         self.assertNotIn("```", answers_by_category["style_transfer"])
         self.assertEqual(manifest["benchmark_record_accounting"]["train"]["duplicate_content_ratio"], 0.0)
         self.assertEqual(manifest["benchmark_record_accounting"]["validation"]["duplicate_content_ratio"], 0.0)
+        self.assertEqual(manifest["benchmark_record_accounting"]["train_validation_source_overlap_count"], 1)
+        self.assertEqual(manifest["benchmark_record_accounting"]["train_validation_content_hash_overlap_count"], 1)
+
+    def test_lora_training_dataset_holds_out_whole_sources_for_validation(self) -> None:
+        from backend.app.core.expert_evaluation import EVALUATION_CATEGORIES
+        from backend.app.core.training_dataset import write_cluster_training_dataset
+
+        dataset = {
+            "cluster_id": "cluster-1",
+            "cluster_name": "Cluster One",
+            "source_count": 3,
+            "unique_content_hash_count": 3,
+            "duplicate_content_count": 0,
+            "duplicate_content_ratio": 0.0,
+            "total_text_chars": 7200,
+            "estimated_token_count": 1800,
+            "dataset_hash": "dataset-hash",
+            "documents": [
+                {
+                    "source_id": f"source-{index}",
+                    "title": f"Doc {index}",
+                    "summary": f"Source {index} summary with enough text for export and benchmark coverage.",
+                    "text": f"Source {index} summary with enough text for export and benchmark coverage.",
+                    "content_hash": f"content-hash-{index}",
+                }
+                for index in range(3)
+            ],
+        }
+
+        manifest = write_cluster_training_dataset(dataset, Path(self.tmp.name) / "heldout-sources-dataset")
+        train_rows = [
+            json.loads(line)
+            for line in Path(manifest["train_path"]).read_text(encoding="utf-8").splitlines()
+        ]
+        validation_rows = [
+            json.loads(line)
+            for line in Path(manifest["validation_path"]).read_text(encoding="utf-8").splitlines()
+        ]
+
+        train_sources = {row["source_id"] for row in train_rows}
+        validation_sources = {row["source_id"] for row in validation_rows}
+        train_hashes = {row["content_hash"] for row in train_rows}
+        validation_hashes = {row["content_hash"] for row in validation_rows}
+
+        self.assertEqual(train_sources & validation_sources, set())
+        self.assertEqual(train_hashes & validation_hashes, set())
+        self.assertEqual(
+            manifest["benchmark_record_accounting"]["train_validation_source_overlap_count"],
+            0,
+        )
+        self.assertEqual(
+            manifest["benchmark_record_accounting"]["train_validation_content_hash_overlap_count"],
+            0,
+        )
+        self.assertEqual(
+            len(train_rows) + len(validation_rows),
+            len(dataset["documents"]) * len(EVALUATION_CATEGORIES),
+        )
 
     def test_lora_benchmark_eligibility_report_blocks_small_or_concentrated_datasets(self) -> None:
         from backend.app.core.config import get_settings
@@ -4289,8 +4372,14 @@ class AdditionalQACases(unittest.TestCase):
                 {
                     "source_id": f"source-{index}",
                     "title": f"Evaluation source {index}",
-                    "summary": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
-                    "text": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
+                    "summary": (
+                        "spider mites fungus gnats diagnosis tools practical takeaway "
+                        "evidence interpretation conclusion"
+                    ),
+                    "text": (
+                        "The source says spider mites and fungus gnats mattered more than buying new gear. "
+                        "It suggests prioritizing diagnosis over tools and keeping a log of changes."
+                    ),
                 }
                 for index in range(8)
             ],
@@ -4306,6 +4395,76 @@ class AdditionalQACases(unittest.TestCase):
         self.assertTrue(scored["refusal_present"])
         self.assertGreaterEqual(scored["marker_score"], 0.66)
         self.assertGreater(scored["score"], 45.0)
+
+    def test_reasoning_pattern_scoring_penalizes_scaffold_only_and_accepts_substance(self) -> None:
+        from backend.app.core.expert_evaluation import (
+            REASONING_PATTERN_SCORING_FIXTURES,
+            build_expert_evaluation_plan,
+            score_expert_response,
+        )
+
+        dataset = {
+            "cluster_id": "cluster-1",
+            "dataset_hash": "hash",
+            "documents": [
+                {
+                    "source_id": f"source-{index}",
+                    "title": f"Evaluation source {index}",
+                    "summary": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
+                    "text": "adapter retrieval grounded citation evidence strict benchmark preferred terminology reasoning pattern practical note",
+                }
+                for index in range(8)
+            ],
+        }
+        plan = build_expert_evaluation_plan(dataset)
+        case = next(item for item in plan["cases"] if item["category"] == "reasoning_pattern")
+
+        bad_scores = [score_expert_response(case, text) for text in REASONING_PATTERN_SCORING_FIXTURES["bad_scaffold_only"]]
+        good_scores = [score_expert_response(case, text) for text in REASONING_PATTERN_SCORING_FIXTURES["good_without_literal_scaffold"]]
+
+        self.assertTrue(all(item["score"] < 70.0 for item in bad_scores))
+        self.assertTrue(all(item["marker_score"] >= 0.7 for item in good_scores))
+        self.assertGreater(
+            min(item["marker_score"] for item in good_scores),
+            max(item["marker_score"] for item in bad_scores),
+        )
+
+    def test_factual_recall_scoring_caps_entity_substitution(self) -> None:
+        from backend.app.core.expert_evaluation import score_expert_response
+
+        case = {
+            "id": "cluster-1-1",
+            "category": "factual_recall",
+            "owner": "retrieval",
+            "counts_toward_graduation": False,
+            "expected_terms": ["houseplant", "Toronto", "Tom", "spider mites"],
+            "reference_text": (
+                "I've been getting into houseplant pest control since moving to Toronto. "
+                "Tom from down the street got me started, mostly by accident."
+            ),
+            "markers": [],
+            "requires_citation": True,
+        }
+
+        swapped = score_expert_response(
+            case,
+            (
+                "According to source, key facts include: I've been getting into houseplant "
+                "pest control since moving to Berlin. Priya from down the street got me started, mostly by accident."
+            ),
+        )
+        grounded = score_expert_response(
+            case,
+            (
+                "According to source, key facts include: I've been getting into houseplant "
+                "pest control since moving to Toronto. Tom from down the street got me started, mostly by accident."
+            ),
+        )
+
+        self.assertEqual(swapped["grounding_consistency_score"], 0.0)
+        self.assertLessEqual(swapped["score"], 45.0)
+        self.assertEqual(grounded["grounding_consistency_score"], 1.0)
+        self.assertGreater(grounded["score"], swapped["score"])
 
     def test_adapter_training_evaluation_plan_uses_exported_validation_records(self) -> None:
         from backend.app.core.expert_evaluation import build_adapter_training_evaluation_plan
@@ -4429,6 +4588,33 @@ class AdditionalQACases(unittest.TestCase):
         }
 
         with patch(
+            "backend.app.core.expert_evaluation._run_real_retrieval_baseline",
+            return_value={
+                "ok": True,
+                "responses": [{"prompt": "p", "response_text": "Based on the closest local context for: \"p\"\n\n1. grounded citation evidence strict benchmark"}],
+                "case_scores": [
+                    {
+                        "case_id": f"cluster-1-{index + 1}",
+                        "category": category,
+                        "owner": "retrieval",
+                        "counts_toward_graduation": category in {"summarization", "style_transfer", "terminology_consistency", "reasoning_pattern"},
+                        "score": 80.0,
+                    }
+                    for index, category in enumerate(
+                        [
+                            "factual_recall",
+                            "citation_grounding",
+                            "contradiction_handling",
+                            "summarization",
+                            "style_transfer",
+                            "terminology_consistency",
+                            "reasoning_pattern",
+                            "out_of_scope_refusal",
+                        ]
+                    )
+                ],
+            },
+        ), patch(
             "backend.app.core.expert_runtime.run_adapter_runtime_batch",
             return_value={
                 "ok": True,
@@ -4465,11 +4651,11 @@ class AdditionalQACases(unittest.TestCase):
 
         runtime_batch.assert_called_once()
         self.assertTrue(report["runtime"]["ok"])
-        self.assertEqual(report["benchmark_report"]["status"], "passed")
-        self.assertTrue(report["benchmark_report"]["passes"])
+        self.assertEqual(report["benchmark_report"]["scored_case_count"], 8)
         self.assertEqual(len(report["adapter_case_scores"]), 8)
         self.assertEqual(len(report["retrieval_case_scores"]), 8)
         self.assertGreater(report["benchmark_report"]["graduation_overall"]["adapter_score"], 0)
+        self.assertTrue(report["retrieval_runtime"]["ok"])
 
     def test_run_live_expert_benchmark_reports_runtime_failure(self) -> None:
         from backend.app.core.expert_evaluation import run_live_expert_benchmark
@@ -4488,6 +4674,9 @@ class AdditionalQACases(unittest.TestCase):
         }
 
         with patch(
+            "backend.app.core.expert_evaluation._run_real_retrieval_baseline",
+            return_value={"ok": True, "responses": [], "case_scores": []},
+        ), patch(
             "backend.app.core.expert_runtime.run_adapter_runtime_batch",
             return_value={"ok": False, "error": "runtime boom", "responses": []},
         ):
@@ -4540,7 +4729,34 @@ class AdditionalQACases(unittest.TestCase):
                 "unloaded": True,
             }
 
-        with patch("backend.app.core.expert_runtime.run_adapter_runtime_batch", side_effect=fake_runtime_batch):
+        with patch(
+            "backend.app.core.expert_evaluation._run_real_retrieval_baseline",
+            return_value={
+                "ok": True,
+                "responses": [],
+                "case_scores": [
+                    {
+                        "case_id": f"cluster-1-{index + 1}",
+                        "category": category,
+                        "owner": "retrieval",
+                        "counts_toward_graduation": category in {"summarization", "style_transfer", "terminology_consistency", "reasoning_pattern"},
+                        "score": 80.0,
+                    }
+                    for index, category in enumerate(
+                        [
+                            "factual_recall",
+                            "citation_grounding",
+                            "contradiction_handling",
+                            "summarization",
+                            "style_transfer",
+                            "terminology_consistency",
+                            "reasoning_pattern",
+                            "out_of_scope_refusal",
+                        ]
+                    )
+                ],
+            },
+        ), patch("backend.app.core.expert_runtime.run_adapter_runtime_batch", side_effect=fake_runtime_batch):
             report = run_live_expert_benchmark(
                 dataset,
                 adapter_path="adapter-path",
@@ -4553,6 +4769,215 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(calls[0]["max_new_tokens"], 640)
         self.assertIn("summarization", report["runtime"]["effective_max_new_tokens"])
         self.assertEqual(report["runtime"]["effective_max_new_tokens"]["summarization"], 640)
+
+    def test_run_live_expert_benchmark_routes_away_retrieval_owned_cases(self) -> None:
+        from backend.app.core.expert_evaluation import run_live_expert_benchmark
+
+        dataset = {
+            "cluster_id": "cluster-1",
+            "dataset_hash": "hash",
+            "documents": [
+                {
+                    "source_id": f"source-{index}",
+                    "title": f"Evaluation source {index}",
+                    "summary": "Alice moved to Berlin in 2024 and documented a practical workflow.",
+                    "text": "Alice moved to Berlin in 2024 and documented a practical workflow.",
+                }
+                for index in range(8)
+            ],
+        }
+
+        retrieval_scores = [
+            {
+                "case_id": f"cluster-1-{index + 1}",
+                "category": category,
+                "owner": "retrieval",
+                "counts_toward_graduation": category in {"summarization", "style_transfer", "terminology_consistency", "reasoning_pattern"},
+                "score": 88.0 if category == "factual_recall" else 77.0,
+            }
+            for index, category in enumerate(
+                [
+                    "factual_recall",
+                    "citation_grounding",
+                    "contradiction_handling",
+                    "summarization",
+                    "style_transfer",
+                    "terminology_consistency",
+                    "reasoning_pattern",
+                    "out_of_scope_refusal",
+                ]
+            )
+        ]
+
+        retrieval_responses = [
+            {
+                "prompt": "p",
+                "response_text": "According to source Evaluation source 0, Alice moved to Berlin in 2024.",
+                "citations": [{"snippet": "Alice moved to Berlin in 2024."}],
+            },
+            {
+                "prompt": "p",
+                "response_text": "Alice moved to Berlin in 2024. [Source: Evaluation source 1]",
+                "citations": [{"snippet": "Alice moved to Berlin in 2024."}],
+            },
+            {
+                "prompt": "p",
+                "response_text": "Trust the local evidence.",
+                "citations": [{"snippet": "Alice moved to Berlin in 2024."}],
+            },
+            {
+                "prompt": "p",
+                "response_text": "According to source Evaluation source 3:\n- Alice moved to Berlin in 2024.\n- Practical workflow.",
+                "citations": [{"snippet": "Alice moved to Berlin in 2024."}],
+            },
+            {
+                "prompt": "p",
+                "response_text": "Practical note: Alice moved to Berlin in 2024.",
+                "citations": [{"snippet": "Alice moved to Berlin in 2024."}],
+            },
+            {
+                "prompt": "p",
+                "response_text": "According to source Evaluation source 5, use the preferred local terms.",
+                "citations": [{"snippet": "Alice moved to Berlin in 2024."}],
+            },
+            {
+                "prompt": "p",
+                "response_text": "First, the source says Alice moved to Berlin in 2024. Then interpret it. Therefore, keep it practical.",
+                "citations": [{"snippet": "Alice moved to Berlin in 2024."}],
+            },
+            {
+                "prompt": "p",
+                "response_text": "Source Evaluation source 7 does not provide enough evidence.",
+                "citations": [{"snippet": "Alice moved to Berlin in 2024."}],
+            },
+        ]
+
+        with patch(
+            "backend.app.core.expert_evaluation._run_real_retrieval_baseline",
+            return_value={"ok": True, "responses": retrieval_responses, "case_scores": retrieval_scores},
+        ), patch(
+            "backend.app.core.expert_runtime.run_adapter_runtime_batch",
+            return_value={
+                "ok": True,
+                "responses": [{"response_text": "bad adapter output"} for _ in range(8)],
+            },
+        ):
+            report = run_live_expert_benchmark(
+                dataset,
+                adapter_path="adapter-path",
+                base_model="base-model",
+            )
+
+        adapter_by_case = {item["case_id"]: item for item in report["adapter_case_scores"]}
+        self.assertEqual(adapter_by_case["cluster-1-1"]["score"], 88.0)
+        self.assertTrue(adapter_by_case["cluster-1-1"]["routed_away"])
+        self.assertEqual(adapter_by_case["cluster-1-2"]["score"], 77.0)
+        self.assertTrue(adapter_by_case["cluster-1-2"]["routed_away"])
+        self.assertNotIn("routed_away", adapter_by_case["cluster-1-5"])
+
+    def test_runtime_batch_timeout_scales_with_prompt_count(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.expert_runtime import _runtime_batch_timeout_seconds
+
+        os.environ["CML_LORA_RUNTIME_BATCH_TIMEOUT_SECONDS"] = "1800"
+        os.environ["CML_LORA_RUNTIME_BATCH_TIMEOUT_PER_PROMPT_SECONDS"] = "15"
+        get_settings.cache_clear()
+        try:
+            self.assertEqual(_runtime_batch_timeout_seconds(1), 1815)
+            self.assertEqual(_runtime_batch_timeout_seconds(12), 1980)
+            self.assertEqual(_runtime_batch_timeout_seconds(328), 6720)
+        finally:
+            os.environ.pop("CML_LORA_RUNTIME_BATCH_TIMEOUT_SECONDS", None)
+            os.environ.pop("CML_LORA_RUNTIME_BATCH_TIMEOUT_PER_PROMPT_SECONDS", None)
+            get_settings.cache_clear()
+
+    def test_cluster_expert_assist_routes_retrieval_owned_and_entity_sensitive_prompts_away(self) -> None:
+        from backend.app.api.routes.chat import _maybe_run_cluster_expert_assist
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-route", "Vault", self.tmp.name, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                )
+                VALUES ('cluster-route', 'vault-route', 'Route cluster', '', 'sage', 'training_ready', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO expert_artifacts (
+                    id, cluster_id, vault_id, job_id, artifact_type, status, local_path, base_model,
+                    hardware_tier, quality_score, dataset_hash, training_config_hash, metrics_json,
+                    active, rolled_back_at, deleted_at, created_at, updated_at
+                )
+                VALUES ('artifact-route', 'cluster-route', 'vault-route', NULL, 'lora_adapter', 'ready', 'adapter', 'base', 'gpu', 90, 'hash', 'cfg', '{}', 1, NULL, NULL, ?, ?)
+                """,
+                (now, now),
+            )
+
+        factual = _maybe_run_cluster_expert_assist(
+            payload=ChatContextRequest(
+                vault_id="vault-route",
+                cluster_id="cluster-route",
+                prompt="What are the key facts from the local source titled 'foo'?",
+            ),
+            intent="cluster_question",
+            citations=[{"snippet": "Moved to Toronto after meeting Tom during a workshop."}],
+        )
+        summary = _maybe_run_cluster_expert_assist(
+            payload=ChatContextRequest(
+                vault_id="vault-route",
+                cluster_id="cluster-route",
+                prompt="Summarize the local source titled 'foo' in three grounded bullets.",
+            ),
+            intent="cluster_question",
+            citations=[{"snippet": "Moved to Toronto in 2024 after Tom introduced the process."}],
+        )
+        citation = _maybe_run_cluster_expert_assist(
+            payload=ChatContextRequest(
+                vault_id="vault-route",
+                cluster_id="cluster-route",
+                prompt="Answer using only the source 'foo' and cite the source title.",
+            ),
+            intent="cluster_question",
+            citations=[{"snippet": "evidence"}],
+        )
+        refusal = _maybe_run_cluster_expert_assist(
+            payload=ChatContextRequest(
+                vault_id="vault-route",
+                cluster_id="cluster-route",
+                prompt="Answer a question not covered by 'foo' and state what evidence is missing.",
+            ),
+            intent="cluster_question",
+            citations=[{"snippet": "evidence"}],
+        )
+
+        self.assertEqual(factual["mode"], "retrieval_routed")
+        self.assertFalse(factual["used"])
+        self.assertEqual(summary["mode"], "retrieval_routed")
+        self.assertFalse(summary["used"])
+        self.assertEqual(citation["mode"], "retrieval_routed")
+        self.assertFalse(citation["used"])
+        self.assertEqual(refusal["mode"], "retrieval_routed")
+        self.assertFalse(refusal["used"])
+
+    def test_cluster_expert_assist_allows_low_specificity_summarization_prompts(self) -> None:
+        from backend.app.api.routes.chat import _adapter_route_away_category
+
+        category = _adapter_route_away_category(
+            "Summarize the local source titled 'foo' in three grounded bullets.",
+            [{"snippet": "keep a simple log, focus on the process, and write practical follow-ups"}],
+        )
+
+        self.assertIsNone(category)
 
     def test_lora_smoke_proof_blocks_without_benchmark_or_hardware_proof(self) -> None:
         from backend.app.core.lora_proof import build_lora_smoke_proof
