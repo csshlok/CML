@@ -3,6 +3,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import ctypes
 from importlib import metadata
 from importlib.util import find_spec
 from pathlib import Path
@@ -143,6 +144,8 @@ def run_lora_training_process(*, dataset_manifest: dict, output_dir: Path, confi
     if not settings.lora_trainer_command:
         raise LoraTrainerMissingError("LoRA trainer command is not configured.")
 
+    _ensure_windows_virtual_memory_headroom(config["base_model"])
+
     env = {
         **os.environ,
         "CML_LORA_DATASET_DIR": str(dataset_manifest["dataset_dir"]),
@@ -162,10 +165,19 @@ def run_lora_training_process(*, dataset_manifest: dict, output_dir: Path, confi
     )
     if _looks_like_llamafactory_train_command(command):
         env.setdefault("NPROC_PER_NODE", "1")
-    result = subprocess.run(command, shell=False, capture_output=True, text=True, env=env, timeout=7200)
+    result = subprocess.run(
+        command,
+        shell=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=_trainer_timeout_seconds(),
+    )
     stdout_path.write_text(result.stdout[-200_000:], encoding="utf-8")
     stderr_path.write_text(result.stderr[-200_000:], encoding="utf-8")
     if result.returncode != 0:
+        if "os error 1455" in result.stderr.lower() or "paging file is too small" in result.stderr.lower():
+            raise RuntimeError(_windows_virtual_memory_failure_detail(config["base_model"]))
         raise RuntimeError(f"LoRA trainer failed with exit code {result.returncode}.")
     _verify_adapter_files(output_dir)
     return {
@@ -175,6 +187,89 @@ def run_lora_training_process(*, dataset_manifest: dict, output_dir: Path, confi
         "stderr_path": str(stderr_path),
         "cml_config_path": str(cml_config_path),
         "llamafactory_config_path": str(llamafactory_config_path),
+    }
+
+
+def _ensure_windows_virtual_memory_headroom(base_model: str) -> None:
+    if os.name != "nt":
+        return
+    report = _windows_virtual_memory_report(base_model)
+    if not report["check_performed"]:
+        return
+    if report["available_pagefile_bytes"] >= report["recommended_available_pagefile_bytes"]:
+        return
+    raise RuntimeError(_windows_virtual_memory_failure_detail(base_model, report=report))
+
+
+def _windows_virtual_memory_failure_detail(base_model: str, *, report: dict | None = None) -> str:
+    payload = report or _windows_virtual_memory_report(base_model)
+    recommended_gib = payload["recommended_available_pagefile_bytes"] / (1024 ** 3)
+    available_gib = payload["available_pagefile_bytes"] / (1024 ** 3)
+    model_gib = payload["model_weight_bytes"] / (1024 ** 3)
+    return (
+        "Windows virtual-memory headroom is too low for this LoRA run. "
+        f"Base model weights are about {model_gib:.2f} GiB, available pagefile headroom is about {available_gib:.2f} GiB, "
+        f"and CML requires roughly {recommended_gib:.2f} GiB free before starting training. "
+        "Increase the Windows paging file, close other memory-heavy apps, or use a smaller base model, then retry."
+    )
+
+
+def _windows_virtual_memory_report(base_model: str) -> dict:
+    model_weight_bytes = _model_weight_bytes(base_model)
+    report = {
+        "check_performed": False,
+        "model_weight_bytes": model_weight_bytes,
+        "available_pagefile_bytes": 0,
+        "total_pagefile_bytes": 0,
+        "recommended_available_pagefile_bytes": max(8 * 1024 ** 3, model_weight_bytes * 2),
+    }
+    if model_weight_bytes <= 0:
+        return report
+    status = _windows_memory_status()
+    if status is None:
+        return report
+    report["check_performed"] = True
+    report["available_pagefile_bytes"] = int(status["avail_pagefile"])
+    report["total_pagefile_bytes"] = int(status["total_pagefile"])
+    return report
+
+
+def _model_weight_bytes(base_model: str) -> int:
+    base_model_path = Path(str(base_model))
+    if base_model_path.is_file():
+        return int(base_model_path.stat().st_size)
+    if not base_model_path.exists():
+        return 0
+    weight_paths = list(base_model_path.glob("*.safetensors")) + list(base_model_path.glob("*.bin"))
+    return int(sum(path.stat().st_size for path in weight_paths if path.is_file()))
+
+
+def _windows_memory_status() -> dict | None:
+    if os.name != "nt":
+        return None
+
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    status = MEMORYSTATUSEX()
+    status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return None
+    return {
+        "total_phys": int(status.ullTotalPhys),
+        "avail_phys": int(status.ullAvailPhys),
+        "total_pagefile": int(status.ullTotalPageFile),
+        "avail_pagefile": int(status.ullAvailPageFile),
     }
 
 
@@ -448,6 +543,9 @@ def _llamafactory_training_config(dataset_manifest: dict, output_dir: Path, conf
     settings = get_settings()
     training_device = str(getattr(settings, "lora_training_device", "auto") or "auto").strip().lower()
     training_dtype = str(getattr(settings, "lora_training_dtype", "auto") or "auto").strip().lower()
+    eval_strategy = str(getattr(settings, "lora_training_eval_strategy", "steps") or "steps").strip().lower()
+    if eval_strategy not in {"steps", "epoch"}:
+        eval_strategy = "steps"
     payload = {
         "model_name_or_path": config["base_model"],
         "stage": "sft",
@@ -468,13 +566,26 @@ def _llamafactory_training_config(dataset_manifest: dict, output_dir: Path, conf
         "gradient_accumulation_steps": int(settings.lora_training_gradient_accumulation_steps),
         "output_dir": str(output_dir),
         "overwrite_output_dir": True,
-        "save_strategy": "epoch",
+        "eval_strategy": eval_strategy,
+        "save_strategy": eval_strategy,
+        "save_total_limit": int(getattr(settings, "lora_training_save_total_limit", 3) or 3),
+        "load_best_model_at_end": True,
+        "metric_for_best_model": "eval_loss",
+        "greater_is_better": False,
+        "per_device_eval_batch_size": 1,
         "logging_steps": 1,
         "report_to": "none",
         "use_cpu": training_device == "cpu",
         "fp16": training_dtype == "fp16",
         "bf16": training_dtype == "bf16",
     }
+    if eval_strategy == "steps":
+        eval_steps = max(1, int(getattr(settings, "lora_training_eval_steps", 200) or 200))
+        payload["eval_steps"] = eval_steps
+        payload["save_steps"] = eval_steps
+    early_stopping_steps = int(getattr(settings, "lora_training_early_stopping_steps", 0) or 0)
+    if early_stopping_steps > 0:
+        payload["early_stopping_steps"] = early_stopping_steps
     if settings.lora_training_max_steps is not None and int(settings.lora_training_max_steps) > 0:
         payload["max_steps"] = int(settings.lora_training_max_steps)
     return payload
@@ -537,6 +648,17 @@ def _path_with_python_scripts(existing_path: str) -> str:
     if scripts_dir.lower() in {item.lower() for item in entries}:
         return existing_path
     return os.pathsep.join([scripts_dir, *entries])
+
+
+def _trainer_timeout_seconds() -> int:
+    raw = os.environ.get("CML_LORA_TRAINER_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return 7200
+    try:
+        value = int(raw)
+    except ValueError:
+        return 7200
+    return max(300, value)
 
 
 def _package_status(name: str) -> dict:

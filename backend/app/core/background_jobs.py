@@ -3,6 +3,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from backend.app.core.database import connect, dict_from_row, utc_now
@@ -1046,9 +1047,11 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             )
             raise RuntimeError("Cluster sources changed before adapter activation.")
 
+        benchmark_case_limit = int(get_settings().lora_benchmark_case_limit or 0)
         evaluation_plan = build_adapter_training_evaluation_plan(
             train_result["adapter_path"],
             cluster_id=cluster_id,
+            max_cases=(benchmark_case_limit if benchmark_case_limit > 0 else None),
         )
         benchmark_run = run_live_expert_benchmark(
             dataset,
@@ -1081,10 +1084,32 @@ def _run_train_cluster_adapter(payload: dict) -> None:
         metrics["retrieval_case_scores"] = benchmark_run["retrieval_case_scores"]
         metrics["adapter_case_scores"] = benchmark_run["adapter_case_scores"]
         metrics["benchmark_report"] = benchmark_report
+        benchmark_artifact_path = _write_adapter_benchmark_report(
+            train_result["adapter_path"],
+            payload={
+                "status": benchmark_report.get("status"),
+                "passes": benchmark_report.get("passes"),
+                "adapter_path": train_result["adapter_path"],
+                "base_model": config["base_model"],
+                "dataset_hash": dataset.get("dataset_hash"),
+                "created_at": now,
+                "metrics": metrics,
+                "benchmark_run": benchmark_run,
+            },
+        )
+        metrics["post_training_benchmark_path"] = benchmark_artifact_path
         min_quality = get_settings().lora_min_quality_score
+        skip_quality_gate = bool(get_settings().lora_skip_quality_gate)
         benchmark_failed = not bool(benchmark_report.get("passes"))
         graduated_score = float(graduation_overall.get("adapter_score") or 0.0)
-        if benchmark_failed or graduated_score < min_quality:
+        metrics["quality_gate"] = {
+            "skipped": skip_quality_gate,
+            "benchmark_failed": benchmark_failed,
+            "graduated_score": graduated_score,
+            "minimum_quality_score": min_quality,
+        }
+        quality_gate_failed = benchmark_failed or graduated_score < min_quality
+        if quality_gate_failed and not skip_quality_gate:
             _mark_expert_training_failed(
                 conn,
                 cluster_id=cluster_id,
@@ -1092,8 +1117,15 @@ def _run_train_cluster_adapter(payload: dict) -> None:
                 failure_code="quality_gate_failed",
                 detail=f"Adapter did not pass quality gate: {metrics}",
                 hardware_tier=hardware["hardware_tier"],
+                artifact_path=benchmark_artifact_path,
             )
             raise RuntimeError("Adapter did not pass the LoRA quality gate.")
+        completion_detail = (
+            "LoRA adapter trained and activated. "
+            f"Graduation adapter score={graduated_score}, gate={benchmark_report.get('gate_report')}"
+        )
+        if quality_gate_failed and skip_quality_gate:
+            completion_detail += " Quality gate bypassed for diagnostic run."
 
         artifact_id = f"artifact-{uuid4()}"
         conn.execute(
@@ -1154,14 +1186,15 @@ def _run_train_cluster_adapter(payload: dict) -> None:
                 UPDATE cluster_expert_jobs
                 SET status = ?,
                     detail = ?,
+                    artifact_path = ?,
                     hardware_tier = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
                 (
                     "completed",
-                    "LoRA adapter trained and activated. "
-                    f"Graduation adapter score={graduated_score}, gate={benchmark_report.get('gate_report')}",
+                    completion_detail,
+                    benchmark_artifact_path,
                     hardware["hardware_tier"],
                     now,
                     expert_job_id,
@@ -1191,6 +1224,7 @@ def _mark_expert_training_failed(
     failure_code: str,
     detail: str,
     hardware_tier: str,
+    artifact_path: str | None = None,
 ) -> None:
     now = utc_now()
     conn.execute(
@@ -1209,13 +1243,20 @@ def _mark_expert_training_failed(
             SET status = 'failed',
                 failure_code = ?,
                 detail = ?,
+                artifact_path = COALESCE(?, artifact_path),
                 hardware_tier = ?,
                 updated_at = ?
             WHERE id = ?
             """,
-            (failure_code, detail[:1000], hardware_tier, now, expert_job_id),
+            (failure_code, detail[:1000], artifact_path, hardware_tier, now, expert_job_id),
     )
     conn.commit()
+
+
+def _write_adapter_benchmark_report(adapter_path: str, *, payload: dict) -> str:
+    report_path = Path(adapter_path) / "post-training-benchmark.json"
+    report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return str(report_path)
 
 
 def _mark_expert_dataset_changed(

@@ -1,6 +1,7 @@
 from collections import OrderedDict
 import json
 from pathlib import Path
+import re
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
@@ -19,6 +20,7 @@ from backend.app.core.embeddings import (
     reindex_source_chunks,
 )
 from backend.app.core.expert_runtime import run_cluster_expert_prompt
+from backend.app.core.expert_evaluation import ROUTE_AWAY_CATEGORIES, adapter_route_away_category
 from backend.app.core.encrypted_storage import (
     delete_source_encrypted_content,
     source_from_encrypted_row,
@@ -1605,6 +1607,15 @@ def _maybe_run_cluster_expert_assist(*, payload: ChatContextRequest, intent: str
             "text": None,
             "detail": "",
         }
+    blocked_category = _adapter_route_away_category(payload.prompt, citations)
+    if blocked_category is not None:
+        return {
+            "mode": "retrieval_routed",
+            "attempted": False,
+            "used": False,
+            "text": None,
+            "detail": f"Prompt category '{blocked_category}' is retrieval-routed and cannot use cluster expert assist.",
+        }
     with connect() as conn:
         cluster = conn.execute(
             """
@@ -1657,6 +1668,26 @@ def _maybe_run_cluster_expert_assist(*, payload: ChatContextRequest, intent: str
         "text": None,
         "detail": str(result.get("detail") or "").strip(),
     }
+
+
+def _adapter_route_away_category(prompt: str, citations: list[dict] | None = None) -> str | None:
+    return adapter_route_away_category(prompt, citations)
+
+
+def _retrieved_context_requires_strict_grounding(citations: list[dict]) -> bool:
+    snippets = [
+        " ".join(str(item.get("snippet") or "").split())
+        for item in citations
+        if str(item.get("snippet") or "").strip()
+    ]
+    if not snippets:
+        return False
+    combined = " ".join(snippets)
+    if re.search(r"\b\d[\d,./:-]*\b", combined):
+        return True
+    proper_noun_hits = re.findall(r"\b[A-Z][a-z]{2,}\b", combined)
+    unique_hits = {token for token in proper_noun_hits if token not in {"Based", "According", "Grounded", "Key"}}
+    return len(unique_hits) >= 2
 
 
 def _persist_chat_turn(

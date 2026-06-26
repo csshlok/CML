@@ -269,6 +269,8 @@ def run_adapter_runtime_batch(
             "prompts": prompts,
             "max_new_tokens": int(max_new_tokens or getattr(get_settings(), "lora_runtime_max_new_tokens", 48)),
             "max_new_tokens_per_prompt": [int(item) for item in (max_new_tokens_per_prompt or [])],
+            "repetition_penalty": float(getattr(get_settings(), "lora_runtime_repetition_penalty", 1.1)),
+            "no_repeat_ngram_size": int(getattr(get_settings(), "lora_runtime_no_repeat_ngram_size", 4)),
             "device": getattr(get_settings(), "lora_runtime_device", "auto"),
             "dtype": getattr(get_settings(), "lora_runtime_dtype", "auto"),
             "report_path": str(report_path),
@@ -285,12 +287,13 @@ def run_adapter_runtime_batch(
             adapter_dir,
             plan["resolved_base_model"]["base_model_path"],
         )
+        timeout_seconds = _runtime_batch_timeout_seconds(len(prompts))
         try:
             completed = subprocess.run(
                 command,
                 capture_output=True,
                 text=True,
-                timeout=1800,
+                timeout=timeout_seconds,
                 cwd=str(ROOT_DIR),
             )
         except Exception as exc:
@@ -327,6 +330,17 @@ def run_adapter_runtime_batch(
             report.get("error") or "unknown runtime error",
         )
     return report
+
+
+def _runtime_batch_timeout_seconds(prompt_count: int) -> int:
+    settings = get_settings()
+    base_timeout = max(60, int(getattr(settings, "lora_runtime_batch_timeout_seconds", 1800) or 1800))
+    per_prompt_timeout = max(
+        0,
+        int(getattr(settings, "lora_runtime_batch_timeout_per_prompt_seconds", 15) or 15),
+    )
+    normalized_prompt_count = max(1, int(prompt_count or 0))
+    return base_timeout + (per_prompt_timeout * normalized_prompt_count)
 
 
 def run_cluster_expert_prompt(

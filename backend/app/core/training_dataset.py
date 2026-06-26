@@ -89,11 +89,7 @@ def write_cluster_training_dataset(dataset: dict, output_dir: Path) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     records = _training_records(dataset)
-
-    split_at = max(1, int(len(records) * 0.8)) if len(records) > 1 else len(records)
-
-    train_records = records[:split_at]
-    validation_records = records[split_at:] or records[-1:]
+    train_records, validation_records = _split_training_records(records)
 
     train_path = output_dir / "train.jsonl"
     validation_path = output_dir / "validation.jsonl"
@@ -133,6 +129,30 @@ def write_cluster_training_dataset(dataset: dict, output_dir: Path) -> dict:
         "manifest_path": str(manifest_path),
         **manifest,
     }
+
+
+def _split_training_records(records: list[dict]) -> tuple[list[dict], list[dict]]:
+    if len(records) <= 1:
+        return records, records[-1:] if records else []
+    grouped_records: dict[str, list[dict]] = {}
+    ordered_source_ids: list[str] = []
+    for row in records:
+        source_id = str(row.get("source_id") or "")
+        if source_id not in grouped_records:
+            grouped_records[source_id] = []
+            ordered_source_ids.append(source_id)
+        grouped_records[source_id].append(row)
+    groups = [grouped_records[source_id] for source_id in ordered_source_ids]
+    if len(groups) == 1:
+        only_group = groups[0]
+        split_at = max(1, len(only_group) - 1)
+        return only_group[:split_at], only_group[split_at:] or only_group[-1:]
+    split_at = max(1, int(len(groups) * 0.8))
+    if split_at >= len(groups):
+        split_at = len(groups) - 1
+    train_records = [row for group in groups[:split_at] for row in group]
+    validation_records = [row for group in groups[split_at:] for row in group]
+    return train_records, validation_records
 
 
 def _training_records(dataset: dict) -> list[dict]:
@@ -315,9 +335,15 @@ def _benchmark_record_accounting(*, train_records: list[dict], validation_record
     combined_records = [*train_records, *validation_records]
     combined_source_ids = {str(row.get("source_id") or "") for row in combined_records if str(row.get("source_id") or "").strip()}
     combined_hashes = {str(row.get("content_hash") or "") for row in combined_records if str(row.get("content_hash") or "").strip()}
+    train_source_ids = {str(row.get("source_id") or "") for row in train_records if str(row.get("source_id") or "").strip()}
+    validation_source_ids = {str(row.get("source_id") or "") for row in validation_records if str(row.get("source_id") or "").strip()}
+    train_hashes = {str(row.get("content_hash") or "") for row in train_records if str(row.get("content_hash") or "").strip()}
+    validation_hashes = {str(row.get("content_hash") or "") for row in validation_records if str(row.get("content_hash") or "").strip()}
     return {
         "used_source_count": len(combined_source_ids),
         "used_unique_content_hash_count": len(combined_hashes),
+        "train_validation_source_overlap_count": len(train_source_ids & validation_source_ids),
+        "train_validation_content_hash_overlap_count": len(train_hashes & validation_hashes),
         "train": _split_record_accounting(train_records),
         "validation": _split_record_accounting(validation_records),
     }

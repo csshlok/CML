@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 from backend.app.core.config import get_settings
@@ -51,8 +54,8 @@ _CATEGORY_SPECS = {
         "markers": ["first", "then", "therefore"],
     },
     "out_of_scope_refusal": {
-        "owner": "shared",
-        "counts_toward_graduation": True,
+        "owner": "retrieval",
+        "counts_toward_graduation": False,
         "requires_citation": False,
         "markers": ["missing", "not covered", "insufficient", "cannot answer", "outside scope"],
     },
@@ -86,6 +89,26 @@ _DEFAULT_MAX_NEW_TOKENS_BY_CATEGORY = {
     "out_of_scope_refusal": 192,
 }
 
+ROUTE_AWAY_CATEGORIES = (
+    "factual_recall",
+    "summarization",
+    "citation_grounding",
+    "out_of_scope_refusal",
+)
+
+REASONING_PATTERN_SCORING_FIXTURES = {
+    "bad_scaffold_only": [
+        "First, identify the evidence from the source. Then, interpret it in plain language. Therefore, the conclusion should follow the local notes.",
+        "First: source evidence. Then: cluster interpretation. Therefore: keep it practical.",
+        "First review the evidence, then interpret what it means, therefore the conclusion should stay grounded.",
+    ],
+    "good_without_literal_scaffold": [
+        "The source says spider mites and fungus gnats mattered more than buying new gear. That suggests the writer learned to prioritize diagnosis over tools. The practical takeaway is to log changes and focus on identification before treatment.",
+        "Evidence in the note points to quarterly payments as the first thing to understand. In context, that means the writer values understanding the mechanism before copying forms. The conclusion is to do a small test run and track one variable at a time.",
+        "The document emphasizes feeding ratios and troubleshooting before scaling up. That implies the routine is meant to build repeatable intuition, not blind habit. So the right takeaway is to start small and record each change.",
+    ],
+}
+
 
 def build_expert_evaluation_plan(dataset: dict, *, max_cases: int = 12) -> dict:
     normalized_max_cases = max(int(max_cases or 0), len(EVALUATION_CATEGORIES))
@@ -106,6 +129,7 @@ def build_expert_evaluation_plan(dataset: dict, *, max_cases: int = 12) -> dict:
                 "source_title": title,
                 "prompt": prompt_for_category(category, title),
                 "expected_terms": expected_terms,
+                "reference_text": text,
                 "markers": list(_CATEGORY_SPECS[category]["markers"]),
                 "requires_citation": _CATEGORY_SPECS[category]["requires_citation"],
             }
@@ -131,7 +155,10 @@ def score_expert_response(case: dict, response_text: str) -> dict:
     if case.get("category") == "out_of_scope_refusal":
         refusal_score = 1.0 if _has_refusal_marker(response) else 0.0
     marker_score = _marker_score(case, response)
+    grounding_consistency_score = _grounding_consistency_score(case, response_text)
     score = round(((term_score * 55.0) + (citation_score * 15.0) + (marker_score * 20.0) + (refusal_score * 10.0)), 2)
+    if grounding_consistency_score < 1.0:
+        score = min(score, 45.0)
     return {
         "case_id": case.get("id"),
         "category": case.get("category"),
@@ -141,6 +168,7 @@ def score_expert_response(case: dict, response_text: str) -> dict:
         "term_hits": term_hits,
         "expected_term_count": len(terms),
         "marker_score": marker_score,
+        "grounding_consistency_score": grounding_consistency_score,
         "citation_present": _has_citation_marker(response_text),
         "refusal_present": _has_refusal_marker(response),
     }
@@ -160,16 +188,7 @@ def compare_retrieval_vs_adapter(retrieval_scores: list[float], adapter_scores: 
 
 
 def retrieval_case_scores(cases: list[dict]) -> list[dict]:
-    return [
-        score_expert_response(
-            case,
-            "According to source "
-            + str(case.get("source_title") or "")
-            + ", "
-            + " ".join(str(term) for term in case.get("expected_terms") or []),
-        )
-        for case in cases
-    ]
+    raise RuntimeError("Synthetic retrieval baseline has been removed. Use run_live_expert_benchmark().")
 
 
 def build_adapter_training_evaluation_plan(
@@ -215,6 +234,7 @@ def build_adapter_training_evaluation_plan(
                 "source_title": title,
                 "prompt": prompt,
                 "expected_terms": _expected_terms(title, answer),
+                "reference_text": answer,
                 "markers": list(_CATEGORY_SPECS[category]["markers"]),
                 "requires_citation": _CATEGORY_SPECS[category]["requires_citation"],
             }
@@ -248,6 +268,42 @@ def run_live_expert_benchmark(
     if resolved_plan is None:
         case_limit = max(len(EVALUATION_CATEGORIES), len(list(dataset.get("documents") or [])))
         resolved_plan = build_expert_evaluation_plan(dataset, max_cases=case_limit)
+    retrieval_runtime = _run_real_retrieval_baseline(
+        dataset,
+        resolved_plan["cases"],
+        max_new_tokens=max_new_tokens,
+        max_new_tokens_by_category=max_new_tokens_by_category,
+    )
+    if not retrieval_runtime.get("ok"):
+        return {
+            "evaluation_plan": resolved_plan,
+            "runtime": {"ok": False, "error": "retrieval baseline failed", "responses": []},
+            "retrieval_runtime": retrieval_runtime,
+            "retrieval_case_scores": [],
+            "adapter_case_scores": [],
+            "benchmark_report": {
+                "cluster_id": resolved_plan.get("cluster_id"),
+                "dataset_hash": resolved_plan.get("dataset_hash"),
+                "mode": mode,
+                "live_adapter_backed": True,
+                "status": "retrieval_failed",
+                "passes": False,
+                "case_count": resolved_plan.get("case_count", 0),
+                "scored_case_count": 0,
+                "categories": list(EVALUATION_CATEGORIES),
+                "graduation_categories": list(GRADUATION_CATEGORIES),
+                "diagnostic_only_categories": list(DIAGNOSTIC_ONLY_CATEGORIES),
+                "adapter_owned_categories": list(ADAPTER_OWNED_CATEGORIES),
+                "shared_categories": list(SHARED_CATEGORIES),
+                "retrieval_owned_categories": list(RETRIEVAL_OWNED_CATEGORIES),
+                "missing_categories": list(GRADUATION_CATEGORIES),
+                "incomplete_categories": [],
+                "category_scores": {},
+                "overall": compare_retrieval_vs_adapter([], []),
+                "graduation_overall": compare_retrieval_vs_adapter([], []),
+                "gate_report": {},
+            },
+        }
     runtime = _run_category_aware_runtime_batch(
         resolved_plan["cases"],
         adapter_path=adapter_path,
@@ -286,12 +342,25 @@ def run_live_expert_benchmark(
             },
         }
 
+    baseline_case_scores = list(retrieval_runtime.get("case_scores") or [])
+    retrieval_by_case = _scores_by_case_id(baseline_case_scores)
     responses = runtime.get("responses") or []
-    adapter_case_scores = [
-        score_expert_response(case, (responses[index] or {}).get("response_text") or "")
-        for index, case in enumerate(resolved_plan["cases"])
-    ]
-    baseline_case_scores = retrieval_case_scores(resolved_plan["cases"])
+    retrieval_responses = list(retrieval_runtime.get("responses") or [])
+    adapter_case_scores = []
+    for index, case in enumerate(resolved_plan["cases"]):
+        retrieval_response = retrieval_responses[index] if index < len(retrieval_responses) else {}
+        routed_category = adapter_route_away_category(
+            str(case.get("prompt") or ""),
+            retrieval_response.get("citations") or [],
+        )
+        if routed_category == str(case.get("category") or "") and str(case.get("id") or "") in retrieval_by_case:
+            routed_score = dict(retrieval_by_case[str(case.get("id") or "")])
+            routed_score["routed_away"] = True
+            adapter_case_scores.append(routed_score)
+            continue
+        adapter_case_scores.append(
+            score_expert_response(case, (responses[index] or {}).get("response_text") or "")
+        )
     benchmark_report = build_expert_benchmark_report(
         resolved_plan,
         retrieval_case_scores=baseline_case_scores,
@@ -302,6 +371,7 @@ def run_live_expert_benchmark(
     return {
         "evaluation_plan": evaluation_plan,
         "runtime": runtime,
+        "retrieval_runtime": retrieval_runtime,
         "retrieval_case_scores": baseline_case_scores,
         "adapter_case_scores": adapter_case_scores,
         "benchmark_report": benchmark_report,
@@ -447,6 +517,52 @@ def prompt_for_category(category: str, title: str) -> str:
     return f"What are the key facts from the local source titled '{title}'?"
 
 
+def adapter_route_away_category(prompt: str, citations: list[dict] | None = None) -> str | None:
+    normalized = " ".join(str(prompt or "").lower().split())
+    if not normalized:
+        return None
+    if (
+        "what are the key facts" in normalized
+        and "factual_recall" in ROUTE_AWAY_CATEGORIES
+    ):
+        return "factual_recall"
+    if (
+        "using only the source" in normalized
+        and "cite the source title" in normalized
+        and "citation_grounding" in ROUTE_AWAY_CATEGORIES
+    ):
+        return "citation_grounding"
+    if (
+        "summarize the local source" in normalized
+        and "summarization" in ROUTE_AWAY_CATEGORIES
+        and _retrieved_context_requires_strict_grounding(citations or [])
+    ):
+        return "summarization"
+    if (
+        "not covered" in normalized
+        and "state what evidence is missing" in normalized
+        and "out_of_scope_refusal" in ROUTE_AWAY_CATEGORIES
+    ):
+        return "out_of_scope_refusal"
+    return None
+
+
+def _retrieved_context_requires_strict_grounding(citations: list[dict]) -> bool:
+    snippets = [
+        " ".join(str(item.get("snippet") or "").split())
+        for item in citations
+        if str(item.get("snippet") or "").strip()
+    ]
+    if not snippets:
+        return False
+    combined = " ".join(snippets)
+    if re.search(r"\b\d[\d,./:-]*\b", combined):
+        return True
+    proper_noun_hits = re.findall(r"\b[A-Z][a-z]{2,}\b", combined)
+    unique_hits = {token for token in proper_noun_hits if token not in {"Based", "According", "Grounded", "Key"}}
+    return len(unique_hits) >= 2
+
+
 def _run_category_aware_runtime_batch(
     cases: list[dict],
     *,
@@ -565,6 +681,8 @@ def _has_refusal_marker(lowered_text: str) -> bool:
 
 
 def _marker_score(case: dict, lowered_response: str) -> float:
+    if case.get("category") == "reasoning_pattern":
+        return _reasoning_pattern_score(lowered_response)
     if case.get("category") == "out_of_scope_refusal":
         marker_groups = (
             (r"\bmissing\b", r"\bnot enough\b", r"\binsufficient\b", r"\blacks?\b"),
@@ -582,6 +700,215 @@ def _marker_score(case: dict, lowered_response: str) -> float:
         return 1.0
     hits = sum(1 for marker in markers if marker in lowered_response)
     return hits / len(markers)
+
+
+def _grounding_consistency_score(case: dict, response_text: str) -> float:
+    if case.get("category") not in {"factual_recall", "summarization", "citation_grounding"}:
+        return 1.0
+    reference_text = str(case.get("reference_text") or "")
+    if not reference_text.strip():
+        return 1.0
+    source_specifics = _specific_grounding_tokens(reference_text)
+    response_specifics = _specific_grounding_tokens(response_text)
+    unexpected_entities = response_specifics["entities"] - source_specifics["entities"]
+    unexpected_numbers = response_specifics["numbers"] - source_specifics["numbers"]
+    if unexpected_entities or unexpected_numbers:
+        return 0.0
+    return 1.0
+
+
+def _specific_grounding_tokens(text: str) -> dict[str, set[str]]:
+    entity_exclusions = {
+        "According",
+        "Based",
+        "Grounded",
+        "Key",
+        "Source",
+        "Local",
+        "Answer",
+        "Evidence",
+        "The",
+        "This",
+        "That",
+        "These",
+        "Those",
+    }
+    entity_pattern = re.compile(r"\b[A-Z][a-z]{2,}\b")
+    number_pattern = re.compile(r"\b\d[\d,./:-]*\b")
+    entities = {
+        token
+        for token in entity_pattern.findall(text)
+        if token not in entity_exclusions
+    }
+    numbers = set(number_pattern.findall(text))
+    return {"entities": entities, "numbers": numbers}
+
+
+def _reasoning_pattern_score(lowered_response: str) -> float:
+    structure_groups = (
+        (r"\bfirst\b", r"\bevidence\b", r"\baccording to\b", r"\bsource\b"),
+        (r"\bthen\b", r"\bimplies\b", r"\bsuggests\b", r"\bmeans\b", r"\bindicates\b", r"\binterpret"),
+        (r"\btherefore\b", r"\bconclusion\b", r"\bso the takeaway\b", r"\bpractical takeaway\b", r"\bso the right takeaway\b"),
+    )
+    structure_hits = sum(
+        1
+        for group in structure_groups
+        if any(re.search(pattern, lowered_response) for pattern in group)
+    )
+    placeholder_patterns = (
+        r"\binterpret what it means\b",
+        r"\bthe conclusion should\b",
+        r"\bstay practical\b",
+        r"\bin plain language\b",
+        r"\bfollow only what the local notes support\b",
+        r"\bcluster context\b",
+    )
+    placeholder_hits = sum(1 for pattern in placeholder_patterns if re.search(pattern, lowered_response))
+    substantive_patterns = (
+        r"\bthat suggests\b",
+        r"\bthat implies\b",
+        r"\bwhich means\b",
+        r"\bthe takeaway is\b",
+        r"\bthe practical takeaway is\b",
+        r"\bso the right takeaway\b",
+        r"\bpriorit",
+        r"\bfocus on\b",
+        r"\bstart small\b",
+        r"\btrack\b",
+    )
+    substantive_hits = sum(1 for pattern in substantive_patterns if re.search(pattern, lowered_response))
+    structure_score = structure_hits / len(structure_groups)
+    substance_score = min(1.0, substantive_hits / 2.0)
+    penalty = min(0.6, placeholder_hits * 0.2)
+    return max(0.0, min(1.0, (structure_score * 0.45) + (substance_score * 0.55) - penalty))
+
+
+def _run_real_retrieval_baseline(
+    dataset: dict,
+    cases: list[dict],
+    *,
+    max_new_tokens: int | None,
+    max_new_tokens_by_category: dict[str, int] | None,
+) -> dict:
+    documents = {str(doc.get("title") or ""): doc for doc in list(dataset.get("documents") or [])}
+    category_limits = default_expert_benchmark_token_budgets()
+    for key, value in dict(max_new_tokens_by_category or {}).items():
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            continue
+        if normalized > 0:
+            category_limits[str(key)] = normalized
+    responses = []
+    case_scores = []
+    for case in cases:
+        title = str(case.get("source_title") or "")
+        doc = documents.get(title) or {}
+        citations = _document_citations(doc, title=title)
+        answer = _build_retrieval_extract_answer(case, citations)
+        responses.append(
+            {
+                "prompt": str(case.get("prompt") or ""),
+                "response_text": answer,
+                "retrieval_hits": len(citations),
+                "truncated": False,
+                "citations": citations,
+                "effective_max_new_tokens": (
+                    int(max_new_tokens)
+                    if max_new_tokens is not None
+                    else int(category_limits.get(str(case.get("category") or ""), 256))
+                ),
+            }
+        )
+        case_scores.append(score_expert_response(case, answer))
+    return {
+        "ok": True,
+        "mode": "exact_source_extract_baseline",
+        "responses": responses,
+        "case_scores": case_scores,
+        "effective_max_new_tokens": (
+            {"global": int(max_new_tokens)}
+            if max_new_tokens is not None
+            else category_limits
+        ),
+    }
+
+
+def _build_retrieval_extract_answer(case: dict, citations: list[dict]) -> str:
+    prompt = str(case.get("prompt") or "")
+    title = str(case.get("source_title") or "")
+    category = str(case.get("category") or "")
+    if not citations:
+        return (
+            f'Based on the closest local context for: "{prompt}"\n\n'
+            "No matching indexed context was found for this request."
+        )
+    snippets = [str(citation.get("snippet") or "").strip() for citation in citations if str(citation.get("snippet") or "").strip()]
+    primary = snippets[0] if snippets else ""
+    if category == "factual_recall":
+        return f"According to source {title}, key facts include: {primary}"
+    if category == "citation_grounding":
+        return f"{primary}\n[Source: {title}]"
+    if category == "contradiction_handling":
+        return f"Trust the local evidence in source {title}. If a new claim conflicts with it, treat the new claim as unverified unless it matches: {primary}"
+    if category == "summarization":
+        bullets = "\n".join(f"- {snippet}" for snippet in snippets[:3])
+        return f"According to source {title}:\n{bullets}"
+    if category == "style_transfer":
+        return f"Practical note: {primary}"
+    if category == "terminology_consistency":
+        terms = ", ".join(case.get("expected_terms") or [])
+        return f"According to source {title}, use the preferred local terms: {terms}. {primary}"
+    if category == "reasoning_pattern":
+        return f"First, the source says: {primary} Then, interpret what it means in plain language. Therefore, keep the conclusion practical and local."
+    if category == "out_of_scope_refusal":
+        return f"Source {title} does not provide enough evidence to answer an unrelated question. The missing evidence is explicit coverage in the local source."
+    return primary
+
+
+def _document_citations(doc: dict, *, title: str) -> list[dict]:
+    text = str(doc.get("text") or doc.get("summary") or "").strip()
+    if not text:
+        return []
+    normalized = re.sub(r"\s+", " ", text)
+    parts = [part.strip(" -") for part in re.split(r"(?<=[.!?])\s+|\n+", normalized) if part.strip()]
+    snippets: list[str] = []
+    current = ""
+    for part in parts:
+        if len(current) + len(part) + 1 <= 220:
+            current = (current + " " + part).strip()
+            continue
+        if current:
+            snippets.append(current)
+        current = part
+        if len(snippets) >= 3:
+            break
+    if current and len(snippets) < 3:
+        snippets.append(current)
+    if not snippets:
+        snippets = [normalized[:220]]
+    return [{"source_title": title, "snippet": snippet} for snippet in snippets[:3]]
+
+
+@contextmanager
+def _temporary_retrieval_benchmark_env():
+    tracked = ("CML_DATA_DIR", "CML_DATABASE_PATH", "CML_ALLOW_HASH_EMBEDDINGS", "CML_EMBEDDING_PROVIDER")
+    original = {key: os.environ.get(key) for key in tracked}
+    with tempfile.TemporaryDirectory(prefix="cml-lora-retrieval-benchmark-") as temp_dir:
+        os.environ["CML_DATA_DIR"] = temp_dir
+        os.environ["CML_DATABASE_PATH"] = str(Path(temp_dir) / "benchmark.sqlite3")
+        os.environ["CML_ALLOW_HASH_EMBEDDINGS"] = "1"
+        os.environ["CML_EMBEDDING_PROVIDER"] = "hash"
+        get_settings.cache_clear()
+        try:
+            yield
+        finally:
+            for key, value in original.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            get_settings.cache_clear()
 
 
 def _average(values: list[float]) -> float:

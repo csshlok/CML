@@ -1,5 +1,6 @@
 import gc
 import json
+import os
 import sys
 from importlib import metadata
 from pathlib import Path
@@ -24,6 +25,8 @@ def main() -> int:
         "prompts": payload.get("prompts") or [payload["prompt"]],
         "max_new_tokens": int(payload.get("max_new_tokens") or 48),
         "max_new_tokens_per_prompt": [int(item) for item in (payload.get("max_new_tokens_per_prompt") or [])],
+        "repetition_penalty": float(payload.get("repetition_penalty") or 1.1),
+        "no_repeat_ngram_size": int(payload.get("no_repeat_ngram_size") or 4),
         "packages": _package_versions(),
         "response_text": "",
         "responses": [],
@@ -37,11 +40,12 @@ def main() -> int:
     try:
         import torch
         from peft import PeftModel
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
         base_model_path = str(Path(payload["base_model_path"]).resolve())
         adapter_path = str(Path(payload["adapter_path"]).resolve())
         dtype = _torch_dtype(torch, str(payload.get("dtype") or "auto"))
+        quantization_config = _quantization_config(BitsAndBytesConfig)
         tokenizer = AutoTokenizer.from_pretrained(base_model_path, local_files_only=True, trust_remote_code=False)
         if tokenizer.pad_token is None and tokenizer.eos_token is not None:
             tokenizer.pad_token = tokenizer.eos_token
@@ -50,7 +54,13 @@ def main() -> int:
             local_files_only=True,
             trust_remote_code=False,
             torch_dtype=dtype,
-            device_map=_device_map(str(payload.get("device") or "auto")),
+            quantization_config=quantization_config,
+            **_load_kwargs(
+                torch,
+                device=str(payload.get("device") or "auto"),
+                report_dir=report_path.parent,
+                quantized=quantization_config is not None,
+            ),
         )
         adapter_model = PeftModel.from_pretrained(
             model,
@@ -73,6 +83,8 @@ def main() -> int:
                 **inputs,
                 max_new_tokens=prompt_max_new_tokens,
                 do_sample=False,
+                repetition_penalty=max(1.0, float(report["repetition_penalty"])),
+                no_repeat_ngram_size=max(0, int(report["no_repeat_ngram_size"])),
                 pad_token_id=tokenizer.pad_token_id,
             )
             prompt_length = inputs["input_ids"].shape[-1]
@@ -123,6 +135,41 @@ def _device_map(raw_device: str):
     if value == "cpu":
         return {"": "cpu"}
     return {"": raw_device}
+
+
+def _load_kwargs(torch_module, *, device: str, report_dir: Path, quantized: bool) -> dict:
+    value = device.strip().lower()
+    kwargs = {"device_map": _device_map(device), "low_cpu_mem_usage": True}
+    if quantized:
+        if value in {"", "auto", "cuda"} and torch_module.cuda.is_available():
+            kwargs["device_map"] = "auto"
+        return kwargs
+    if value in {"", "auto", "cuda"} and torch_module.cuda.is_available():
+        offload_dir = report_dir / "offload"
+        offload_dir.mkdir(parents=True, exist_ok=True)
+        kwargs["offload_folder"] = str(offload_dir)
+        kwargs["offload_state_dict"] = True
+        kwargs["max_memory"] = {
+            0: os.environ.get("CML_LORA_RUNTIME_GPU_MAX_MEMORY", "4GiB"),
+            "cpu": os.environ.get("CML_LORA_RUNTIME_CPU_MAX_MEMORY", "10GiB"),
+        }
+    return kwargs
+
+
+def _quantization_config(bits_and_bytes_config_cls):
+    mode = os.environ.get("CML_LORA_RUNTIME_QUANTIZATION", "").strip().lower()
+    if not mode or mode == "none":
+        return None
+    if mode not in {"4bit", "8bit"}:
+        raise RuntimeError(f"Unsupported runtime quantization mode: {mode}")
+    if mode == "8bit":
+        return bits_and_bytes_config_cls(load_in_8bit=True)
+    return bits_and_bytes_config_cls(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype="float16",
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+    )
 
 
 def _tokenize_prompt(tokenizer, prompt: str) -> dict:
