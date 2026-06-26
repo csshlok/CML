@@ -28,6 +28,7 @@ from backend.app.core.bridge_security import (
 )
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.background_jobs import enqueue_job
+from backend.app.core.cluster_bundle import build_cluster_bundle_context
 from backend.app.core.context_packets import build_bridge_context_packet, render_context_packet
 from backend.app.core.embeddings import content_hash
 from backend.app.core.encrypted_storage import (
@@ -567,102 +568,75 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
     with connect() as conn:
         _enforce_runtime_rate_limits(conn, client_permissions, auth_mode)
 
-    search_response = semantic_search(
-        SemanticSearchRequest(
-            vault_id=vault_id,
-            query=payload.query,
-            cluster_id=payload.cluster_id,
-            limit=payload.limit,
-        )
-    )
-    results = search_response["results"]
-    source_ids = []
-    cluster_ids = []
-    for result in results:
-        if result["source_id"] not in source_ids:
-            source_ids.append(result["source_id"])
-        cluster_id = result.get("cluster_id")
-        if cluster_id and cluster_id not in cluster_ids:
-            cluster_ids.append(cluster_id)
-
-    warnings = []
     sensitive_categories = sensitive_query_categories(payload.query)
-    if sensitive_categories:
-        warnings.append(
-            "Sensitive query categories detected: " + ", ".join(sensitive_categories) + "."
-        )
     context_request_id = payload.context_request_id or f"bridge-context-{uuid4()}"
-    ordered_sources: list[dict] = []
+    allow_expert_calls = bool(permissions["allow_expert_calls"])
+    bundle = build_cluster_bundle_context(
+        vault_id=vault_id,
+        query=payload.query,
+        cluster_id=payload.cluster_id,
+        token_budget=payload.limit,
+        allow_expert_compression=allow_expert_calls,
+        mode=payload.mode,
+    )
+    exposed_expert_digest = (bundle.get("expert_digest") or {}) if allow_expert_calls else {}
+    warnings = list(bundle.get("warnings") or [])
+    if sensitive_categories:
+        warnings.append("Sensitive query categories detected: " + ", ".join(sensitive_categories) + ".")
+    ordered_sources = []
+    source_ids = [
+        str(item.get("source_id") or item.get("id") or "")
+        for item in bundle.get("source_snippets") or []
+        if str(item.get("source_id") or item.get("id") or "").strip()
+    ]
     with connect() as conn:
-        if cluster_ids:
-            cluster_rows = conn.execute(
-                f"""
-                SELECT * FROM clusters
-                WHERE vault_id = ? AND id IN ({",".join("?" for _ in cluster_ids)})
-                ORDER BY updated_at DESC
-                """,
-                [vault_id, *cluster_ids],
-            ).fetchall()
-        elif payload.cluster_id:
-            cluster_rows = conn.execute(
-                "SELECT * FROM clusters WHERE id = ? AND vault_id = ?",
-                (payload.cluster_id, vault_id),
-            ).fetchall()
-            warnings.append("Bridge found the selected cluster but no matching indexed chunks.")
-        else:
-            cluster_rows = []
-            if not results:
-                warnings.append("Bridge did not find matching indexed chunks for this query.")
-
         source_rows = []
         if source_ids:
             source_rows = conn.execute(
-                f"""
-                SELECT * FROM sources
-                WHERE vault_id = ? AND id IN ({",".join("?" for _ in source_ids)})
-                """,
+                f"SELECT * FROM sources WHERE vault_id = ? AND id IN ({','.join('?' for _ in source_ids)})",
                 [vault_id, *source_ids],
             ).fetchall()
-        else:
-            warnings.append("Add or reindex sources before relying on Bridge context.")
-        memory_items, working_memory = get_context_memory(
-            conn,
-            vault_id=vault_id,
-            cluster_id=payload.cluster_id,
-            query=payload.query,
-        )
-        sources_by_id = {
-            row["id"]: _bridge_source_from_row(
-                row,
-                conn=conn,
-                allow_raw_snippets=bool(permissions["allow_raw_snippets"]),
-            )
-            for row in source_rows
-        }
-        ordered_sources = [sources_by_id[source_id] for source_id in source_ids if source_id in sources_by_id]
+            sources_by_id = {
+                row["id"]: _bridge_source_from_row(
+                    row,
+                    conn=conn,
+                    allow_raw_snippets=bool(permissions["allow_raw_snippets"]),
+                )
+                for row in source_rows
+            }
+            ordered_sources = [sources_by_id[source_id] for source_id in source_ids if source_id in sources_by_id]
     if not permissions["allow_raw_snippets"] and ordered_sources:
         warnings.append("Raw source text is redacted by Bridge permissions.")
-    if results:
-        warnings.append("Bridge context is ranked by local semantic search.")
     packet = build_bridge_context_packet(
         query=payload.query,
         context_request_id=context_request_id,
-        selected_clusters=[dict_from_row(row) for row in cluster_rows],
+        selected_clusters=[item for item in bundle.get("selected_clusters") or [] if isinstance(item, dict)],
         source_snippets=ordered_sources,
         warnings=warnings,
-        memory_items=memory_items,
-        working_memory=working_memory,
+        memory_items=[item for item in bundle.get("memory_items") or [] if isinstance(item, dict)],
+        working_memory=bundle.get("working_memory") or {},
+        retrieval_authority=bool(bundle.get("retrieval_authority", True)),
+        expert_digest=exposed_expert_digest,
+        token_ledger=bundle.get("token_ledger") or {},
+        bundle_status=bundle.get("bundle_status") or {},
     )
+    packet_text = render_context_packet(packet)
     response = {
         "context_request_id": context_request_id,
         "query": payload.query,
-        "selected_clusters": [dict_from_row(row) for row in cluster_rows],
+        "selected_clusters": [item for item in bundle.get("selected_clusters") or [] if isinstance(item, dict)],
         "source_snippets": ordered_sources,
         "warnings": warnings,
-        "packet_text": render_context_packet(packet),
+        "packet_text": packet_text,
         "expansion_handles": [item["handle"] for item in packet["evidence"]],
-        "memory_items": memory_items,
-        "working_memory": working_memory,
+        "memory_items": [item for item in bundle.get("memory_items") or [] if isinstance(item, dict)],
+        "working_memory": bundle.get("working_memory") or {},
+        "expert_digest": exposed_expert_digest,
+        "expert_used": bool(exposed_expert_digest.get("used")),
+        "expert_mode": str(exposed_expert_digest.get("mode") or ("disabled" if not allow_expert_calls else "not_eligible")),
+        "retrieval_authority": bool(bundle.get("retrieval_authority", True)),
+        "token_ledger": bundle.get("token_ledger") or {},
+        "bundle_status": bundle.get("bundle_status") or {},
     }
     response_bytes = len(json.dumps(response, ensure_ascii=False).encode("utf-8"))
     with connect() as conn:
@@ -688,7 +662,7 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
                 payload.cluster_id,
                 payload.client_name,
                 payload.query,
-                response["packet_text"] or "",
+                packet_text,
                 json.dumps(response["expansion_handles"], separators=(",", ":")),
                 json.dumps([item["title"] for item in packet["evidence"]], separators=(",", ":")),
                 utc_now(),

@@ -319,6 +319,12 @@ class BridgeContextResponse(BaseModel):
     expansion_handles: list[str] = []
     memory_items: list[dict] = []
     working_memory: dict = {}
+    expert_digest: dict = {}
+    expert_used: bool = False
+    expert_mode: str = "not_eligible"
+    retrieval_authority: bool = True
+    token_ledger: dict = {}
+    bundle_status: dict = {}
 
 
 class BridgeContextExpandRequest(BaseModel):
@@ -660,6 +666,10 @@ class ChatCoverageLedger(BaseModel):
     expert_route_mode: str = "not_eligible"
     expert_assist_attempted: bool = False
     expert_assist_used: bool = False
+    expert_digest_tokens_estimate: int = 0
+    retrieval_authority: bool = True
+    token_ledger: dict = {}
+    bundle_status: dict = {}
 
 
 class ChatContextResponse(BaseModel):
@@ -676,6 +686,7 @@ class ChatContextResponse(BaseModel):
     runtime_state: str | None = None
     warnings: list[str]
     memory_status: str | None = None
+    expert_digest: dict = {}
 
 
 class ChatSessionCreate(BaseModel):

@@ -7,8 +7,8 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from backend.app.api.routes.search import semantic_search
 from backend.app.core.background_jobs import enqueue_job
+from backend.app.core.cluster_bundle import build_cluster_bundle_context
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.derived_state import chunk_eligibility_sql, query_epoch_snapshot_conn
 from backend.app.core.embeddings import (
@@ -46,9 +46,7 @@ from backend.app.core.context_budget_policy import select_context_budget
 from backend.app.core.context_reduction import build_context_reduction_plan
 from backend.app.core.vector_maintenance import active_embedding_selector
 from backend.app.core.turbovec_runtime import maybe_remove_source_chunks_from_sidecar
-from backend.app.core.context_memory import get_context_memory
 from backend.app.core.synthesis_guard import analyze_synthesis_readiness
-from backend.app.core.analysis_packets import build_analysis_packets
 from backend.app.core.chat_retention import (
     chat_evidence_retention_policy,
     compact_retrieval_snapshots,
@@ -393,6 +391,7 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
         "runtime_state": context["runtime_state"],
         "warnings": warnings,
         "memory_status": "indexing" if payload.persist else None,
+        "expert_digest": context.get("expert_digest") or {},
     }
 
 
@@ -427,6 +426,7 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                 "intent": context["intent"],
                 "runtime_state": context["runtime_state"],
                 "warnings": warnings,
+                "expert_digest": context.get("expert_digest") or {},
             })
             if context["intent"] == "general_chat" and context["runtime_state"] == "ready":
                 try:
@@ -529,6 +529,7 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                 "runtime_state": context["runtime_state"],
                 "warnings": warnings,
                 "memory_status": "indexing" if payload.persist else None,
+                "expert_digest": context.get("expert_digest") or {},
             })
         except Exception as exc:
             if generation and not generation_completed:
@@ -591,110 +592,71 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     expanded_scope_requested = bool(payload.expanded_analysis)
     scope_analysis_requested = complete_scope_requested or expanded_scope_requested
     effective_limit = source_count if complete_scope_requested else 12 if expanded_scope_requested else payload.limit
-    if scope_analysis_requested:
-        analysis_packets = build_analysis_packets(
-            vault_id=payload.vault_id,
-            cluster_id=payload.cluster_id,
-            query=payload.prompt,
-            include_chat_transcripts=include_chat_transcripts,
-            limit=None if complete_scope_requested else effective_limit,
-            full_scope=complete_scope_requested,
-        )
-        analyzed_source_ids = analysis_packets["analyzed_source_ids"]
-        packet_rows = analysis_packets["packets"]
-        results = [
-            {
-                "source_id": item["source_id"],
-                "source_title": item["source_title"],
-                "chunk_id": item.get("chunk_id"),
-                "page_id": item.get("page_id"),
-                "page_number": item.get("page_number"),
-                "snippet": item.get("evidence_excerpt") or item.get("excerpt") or "",
-                "score": item["score"],
-                "provenance": item.get("provenance"),
-                "trust_tier": item.get("trust_tier"),
-                "security_labels": item.get("security_labels"),
-                "low_trust": item.get("low_trust", False),
-            }
-            for item in packet_rows
-            if item.get("status") == "ready"
-        ]
-    else:
-        search_response = semantic_search(
-            SemanticSearchRequest(
-                vault_id=payload.vault_id,
-                cluster_id=payload.cluster_id,
-                query=payload.prompt,
-                limit=min(30, max(effective_limit * 4, 12)),
-            )
-        )
-        candidate_results = [
-            result for result in search_response["results"]
-            if include_chat_transcripts or not _is_chat_transcript_result(result)
-        ]
-        results = candidate_results
-        analyzed_source_ids = _top_source_ids_from_results(results, limit=effective_limit)
-    source_ids = list(OrderedDict.fromkeys(result["source_id"] for result in results))
+    bundle_mode = (
+        "complete_analysis"
+        if complete_scope_requested
+        else "expanded_analysis"
+        if expanded_scope_requested
+        else "context"
+    )
+    bundle = build_cluster_bundle_context(
+        vault_id=payload.vault_id,
+        query=payload.prompt,
+        cluster_id=payload.cluster_id,
+        token_budget=effective_limit,
+        allow_expert_compression=True,
+        mode=bundle_mode,
+    )
+    results = [
+        {
+            "source_id": item.get("source_id"),
+            "source_title": item.get("source_title") or item.get("title"),
+            "source_type": item.get("source_type"),
+            "cluster_id": payload.cluster_id,
+            "chunk_id": item.get("chunk_id"),
+            "page_id": item.get("page_id"),
+            "page_number": item.get("page_number"),
+            "snippet": item.get("snippet") or "",
+            "score": item.get("score") or 0.0,
+            "provenance": item.get("provenance"),
+            "trust_tier": item.get("trust_tier"),
+            "security_labels": item.get("security_labels"),
+            "low_trust": item.get("low_trust", False),
+        }
+        for item in bundle.get("citations") or []
+    ]
+    analyzed_source_ids = _top_source_ids_from_results(results, limit=effective_limit)
+    candidate_citations = list(bundle.get("citations") or [])
     coverage_ledger = _build_coverage_ledger(
         vault_id=payload.vault_id,
         cluster_id=payload.cluster_id,
         analyzed_source_ids=analyzed_source_ids,
         sources_considered_override=(
-            analysis_packets["sources_considered"] if scope_analysis_requested else None
+            int(((bundle.get("bundle_status") or {}).get("sources_considered") or 0))
+            if scope_analysis_requested
+            else None
         ),
         sources_analyzed_override=(
-            len(analysis_packets["analyzed_source_ids"]) if scope_analysis_requested else None
+            int(((bundle.get("bundle_status") or {}).get("sources_analyzed") or 0))
+            if scope_analysis_requested
+            else None
         ),
         sources_low_relevance_override=(
-            analysis_packets["low_relevance_source_count"] if scope_analysis_requested else None
+            int(((bundle.get("bundle_status") or {}).get("sources_low_relevance") or 0))
+            if scope_analysis_requested
+            else None
         ),
     )
-
-    clusters_used = []
-    if results:
-        with connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT DISTINCT clusters.id, clusters.name
-                FROM clusters
-                JOIN sources ON sources.cluster_id = clusters.id
-                WHERE sources.id IN ({",".join("?" for _ in source_ids)})
-                """,
-                source_ids,
-            ).fetchall()
-        clusters_used = [
-            {
-                "cluster_id": row["id"],
-                "cluster_name": row["name"],
-                "reason": "semantic match",
-            }
-            for row in rows
-        ]
-
-    candidate_citations = [
+    clusters_used = [
         {
-            "source_id": result["source_id"],
-            "source_title": result["source_title"],
-            "chunk_id": result.get("chunk_id"),
-            "page_id": result.get("page_id"),
-            "page_number": result.get("page_number"),
-            "snippet": _trim_snippet(result["snippet"]),
-            "score": result["score"],
-            "provenance": result.get("provenance") or "local_import",
-            "trust_tier": result.get("trust_tier") or "trusted_local",
-            "security_labels": result.get("security_labels") or "[]",
-            "low_trust": bool(result.get("low_trust")),
-            "state": "current",
+            "cluster_id": item.get("id") or item.get("cluster_id"),
+            "cluster_name": item.get("name") or item.get("cluster_name"),
+            "reason": "semantic match",
         }
-        for result in results
+        for item in bundle.get("selected_clusters") or []
     ]
-    with connect() as conn:
-        memory_items, working_memory = get_context_memory(
-            conn,
-            vault_id=payload.vault_id,
-            cluster_id=payload.cluster_id,
-            query=payload.prompt,
-        )
+    memory_items = list(bundle.get("memory_items") or [])
+    working_memory = bundle.get("working_memory") or {}
     trust_gate = classify_evidence_trust(payload.prompt, candidate_citations)
     synthesis_candidates = citations_for_synthesis(candidate_citations, trust_gate)
     budget_selection = select_context_budget(
@@ -721,11 +683,23 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     working_memory = budget_plan["working_memory"]
     citations = synthesis_citations or candidate_citations[: max(1, min(4, len(candidate_citations)))]
     synthesis_guard = analyze_synthesis_readiness(payload.prompt, synthesis_citations)
-    expert_assist = _maybe_run_cluster_expert_assist(
-        payload=payload,
-        intent=intent,
-        citations=citations,
-    )
+    if bundle is not None:
+        bundle_digest = bundle.get("expert_digest") or {}
+        expert_assist = {
+            "mode": str(bundle_digest.get("mode") or "not_eligible"),
+            "attempted": str(bundle_digest.get("mode") or "not_eligible") not in {"not_eligible", "disabled", "expert_not_ready", "retrieval_routed", "not_cluster_scoped"},
+            "used": bool(bundle_digest.get("used")),
+            "text": str(bundle_digest.get("text") or "").strip() or None,
+            "detail": "; ".join(str(item) for item in bundle_digest.get("warnings") or [] if str(item).strip()),
+        }
+    else:
+        expert_assist = {
+            "mode": "not_eligible",
+            "attempted": False,
+            "used": False,
+            "text": None,
+            "detail": "",
+        }
 
     warnings = []
     if payload.complete_analysis:
@@ -753,6 +727,10 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     )
     warnings.extend(trust_gate["warnings"])
     warnings.extend(synthesis_guard["warnings"])
+    if bundle is not None:
+        warnings.extend(
+            item for item in bundle.get("warnings") or [] if item not in warnings
+        )
     coverage_ledger = {
         **coverage_ledger,
         "trust_gate_mode": trust_gate["mode"],
@@ -799,6 +777,10 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "expert_route_mode": expert_assist["mode"],
         "expert_assist_attempted": bool(expert_assist["attempted"]),
         "expert_assist_used": bool(expert_assist["used"]),
+        "expert_digest_tokens_estimate": int(((bundle or {}).get("token_ledger") or {}).get("expert_digest_tokens_estimate") or 0),
+        "retrieval_authority": bool((bundle or {}).get("retrieval_authority", True)),
+        "token_ledger": (bundle or {}).get("token_ledger") or {},
+        "bundle_status": (bundle or {}).get("bundle_status") or {},
     }
     if budget_plan["budget_applied"]:
         warnings.append(
@@ -812,11 +794,11 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         warnings.append(f"Included {len(memory_items)} distilled memory item(s) in the grounded context packet.")
     if expert_assist["used"]:
         warnings.append(
-            "A verified local cluster expert was used as a reasoning aid. Retrieval citations still remain the authority."
+            "A verified expert-compression digest was used as a reasoning aid. Retrieval citations still remain the authority."
         )
     elif expert_assist["attempted"] and expert_assist["detail"]:
         warnings.append(
-            f"Cluster expert assist was unavailable, so this answer stayed retrieval-first: {expert_assist['detail']}"
+            f"Expert compression was unavailable, so this answer stayed retrieval-first: {expert_assist['detail']}"
         )
     elif expert_assist["mode"] == "expert_compression_pending" and expert_assist["detail"]:
         warnings.append(
@@ -900,6 +882,7 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "runtime_state": runtime["state"],
         "warnings": warnings,
         "expert_assist": expert_assist["text"],
+        "expert_digest": (bundle or {}).get("expert_digest") or {},
         "supported_claims": synthesis_guard["supported_claims"],
         "memory_items": memory_items,
         "working_memory": working_memory,

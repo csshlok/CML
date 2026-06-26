@@ -7,6 +7,10 @@ def build_bridge_context_packet(
     warnings: list[str],
     memory_items: list[dict] | None = None,
     working_memory: dict | None = None,
+    retrieval_authority: bool = True,
+    expert_digest: dict | None = None,
+    token_ledger: dict | None = None,
+    bundle_status: dict | None = None,
 ) -> dict:
     evidence = [
         {
@@ -27,6 +31,10 @@ def build_bridge_context_packet(
         memory_items=memory_items or [],
         working_memory=working_memory or {},
         source_count=len(source_snippets),
+        retrieval_authority=retrieval_authority,
+        expert_digest=expert_digest or {},
+        token_ledger=token_ledger or {},
+        bundle_status=bundle_status or {},
     )
 
 
@@ -40,6 +48,10 @@ def build_chat_context_packet(
     recent_turns: list[dict] | None = None,
     memory_items: list[dict] | None = None,
     working_memory: dict | None = None,
+    retrieval_authority: bool = True,
+    expert_digest: dict | None = None,
+    token_ledger: dict | None = None,
+    bundle_status: dict | None = None,
 ) -> dict:
     evidence = [
         {
@@ -60,6 +72,10 @@ def build_chat_context_packet(
         memory_items=memory_items or [],
         working_memory=working_memory or {},
         source_count=len(citations),
+        retrieval_authority=retrieval_authority,
+        expert_digest=expert_digest or {},
+        token_ledger=token_ledger or {},
+        bundle_status=bundle_status or {},
     )
     if recent_turns:
         packet["recent_turns"] = [
@@ -81,6 +97,9 @@ def render_context_packet(packet: dict) -> str:
     memory_items = packet.get("memory_items") or []
     working_memory = packet.get("working_memory") or {}
     recent_turns = packet.get("recent_turns") or []
+    retrieval_authority = bool(packet.get("retrieval_authority", True))
+    expert_digest = packet.get("expert_digest") or {}
+    token_ledger = packet.get("token_ledger") or {}
     lines = [
         "CML Context Packet",
         "",
@@ -131,6 +150,38 @@ def render_context_packet(packet: dict) -> str:
     lines.extend(
         [
             "",
+            "Authority",
+            f"- Retrieval authority: {'yes' if retrieval_authority else 'no'}",
+            "- Facts and citations come from retrieved evidence.",
+            "",
+        ]
+    )
+    if expert_digest:
+        lines.extend(
+            [
+                "Cluster Expert Digest",
+                f"- Used: {'yes' if bool(expert_digest.get('used')) else 'no'}",
+                f"- Mode: {str(expert_digest.get('mode') or 'not_eligible')}",
+            ]
+        )
+        digest_text = str(expert_digest.get("text") or "").strip()
+        if digest_text:
+            lines.append(f"- Digest: {digest_text}")
+    if token_ledger:
+        lines.extend(
+            [
+                "",
+                "Token Savings",
+                f"- Raw scope estimate: {int(token_ledger.get('raw_scope_tokens_estimate') or 0)}",
+                f"- Retrieved packet estimate: {int(token_ledger.get('retrieved_tokens_estimate') or 0)}",
+                f"- Expert digest estimate: {int(token_ledger.get('expert_digest_tokens_estimate') or 0)}",
+                f"- Savings vs raw scope: {int(token_ledger.get('estimated_tokens_saved_vs_raw_scope') or 0)}",
+                f"- Savings vs retrieval only: {int(token_ledger.get('estimated_tokens_saved_vs_retrieval_only') or 0)}",
+            ]
+        )
+    lines.extend(
+        [
+            "",
             "Trust And Limits",
             f"- Warning count: {len(warnings)}",
         ]
@@ -172,6 +223,10 @@ def _packet_dict(
     memory_items: list[dict],
     working_memory: dict,
     source_count: int,
+    retrieval_authority: bool,
+    expert_digest: dict,
+    token_ledger: dict,
+    bundle_status: dict,
 ) -> dict:
     return {
         "query": query,
@@ -182,6 +237,10 @@ def _packet_dict(
         "memory_items": memory_items,
         "working_memory": working_memory,
         "source_count": source_count,
+        "retrieval_authority": retrieval_authority,
+        "expert_digest": expert_digest,
+        "token_ledger": token_ledger,
+        "bundle_status": bundle_status,
     }
 
 

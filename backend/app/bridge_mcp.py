@@ -512,6 +512,9 @@ def app_error_code(detail: str) -> int:
 
 
 def _format_context_packet(data: dict, *, raw_text: str) -> str:
+    packet_text = str(data.get("packet_text") or "").strip()
+    if packet_text:
+        return packet_text
     packet = build_bridge_context_packet(
         query=str(data.get("query") or ""),
         context_request_id=str(data.get("context_request_id") or "") or None,
@@ -520,6 +523,10 @@ def _format_context_packet(data: dict, *, raw_text: str) -> str:
         warnings=[str(item).strip() for item in data.get("warnings") or [] if str(item).strip()],
         memory_items=[item for item in data.get("memory_items") or [] if isinstance(item, dict)],
         working_memory=data.get("working_memory") or {},
+        retrieval_authority=bool(data.get("retrieval_authority", True)),
+        expert_digest=data.get("expert_digest") or {},
+        token_ledger=data.get("token_ledger") or {},
+        bundle_status=data.get("bundle_status") or {},
     )
     telemetry = packet_telemetry(packet, raw_text=raw_text)
     return (

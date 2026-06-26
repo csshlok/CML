@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -233,6 +234,47 @@ class BridgePhase10Tests(unittest.TestCase):
         )
 
         self.assertIn("cluster scoped bridge lookup content", expanded["text"])
+
+    def test_bridge_context_omits_expert_digest_when_client_expert_calls_are_disabled(self) -> None:
+        from backend.app.api.routes.bridge import build_context, create_bridge_client, update_bridge_settings
+        from backend.app.schemas import BridgeClientCreate, BridgeContextRequest, BridgeSettingsUpdate
+
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True))
+        client = create_bridge_client(
+            BridgeClientCreate(
+                name="No expert client",
+                allowed_cluster_ids=["cluster-1"],
+                allow_expert_calls=False,
+            )
+        )
+
+        with patch(
+            "backend.app.api.routes.bridge.build_cluster_bundle_context",
+            return_value={
+                "selected_clusters": [{"id": "cluster-1", "name": "Research"}],
+                "source_snippets": [],
+                "memory_items": [],
+                "working_memory": {},
+                "retrieval_authority": True,
+                "expert_digest": {"used": True, "mode": "retrieval_grounded_compression", "text": "hidden digest"},
+                "token_ledger": {"expert_digest_tokens_estimate": 12},
+                "bundle_status": {"mode": "context"},
+                "warnings": [],
+            },
+        ):
+            response = build_context(
+                BridgeContextRequest(
+                    cluster_id="cluster-1",
+                    query="cluster scoped bridge lookup",
+                    client_name="No expert client",
+                ),
+                x_cml_bridge_token=client["token"],
+            )
+
+        self.assertEqual(response["expert_digest"], {})
+        self.assertFalse(response["expert_used"])
+        self.assertEqual(response["expert_mode"], "disabled")
+        self.assertNotIn("Cluster Expert Digest", response["packet_text"])
 
     def test_cluster_scoped_client_can_list_clusters_without_explicit_vault_scope(self) -> None:
         from backend.app.api.routes.bridge import create_bridge_client, list_bridge_clusters, update_bridge_settings
