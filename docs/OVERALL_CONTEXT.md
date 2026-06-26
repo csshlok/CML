@@ -1,10 +1,82 @@
 ﻿# Overall Context
 
-Last updated: 2026-06-22
+Last updated: 2026-06-26
 
 ## Fallback Context Rule
 
 This document preserves the pre-pruned long-form project context as a fallback for continuity. It must follow the same maintenance discipline as `PROJECT_CONTEXT.md`: update changed decisions, progress, blockers, completed work, and running notes when relevant; prune duplicated or stale material instead of only appending; and keep `PROJECT_CONTEXT.md` as the compact source-of-truth operating brief.
+
+## 2026-06-26 Corrected Full205 Rerun / MANIFEST Exclusion / Runtime Headroom Snapshot
+
+Completed:
+
+- Patched the live benchmark harness so it now uses the same route-away logic as live chat for retrieval-owned categories instead of forcing every case through the adapter path.
+- Replaced the old semantic-search-like retrieval baseline in the benchmark with an exact-source extract baseline built directly from the benchmark documents, which removed the earlier fake `45.0` floor behavior caused by the wrong source being pulled.
+- Added grounding-consistency penalties for factual/summarization/citation cases that substitute named entities or numbers not present in the reference text.
+- Tightened `reasoning_pattern` scoring so scaffold words alone (`first / then / therefore`) no longer score as substantive reasoning.
+- Added repetition controls to the runtime worker (`repetition_penalty`, `no_repeat_ngram_size`) so the benchmark no longer relies on bare greedy decoding with no anti-looping guardrails.
+- Re-ran the full `205`-source `1.5B` sample-vault benchmark on the existing adapter with the corrected harness. The resulting reference artifact is `.tmp/lora-sample-new-vault-full205-rerun-fixed.json`; the older pre-fix full205 bundle has been removed from `.tmp`.
+
+Verified corrected full205 result:
+
+- Overall still fails, but the result is meaningfully narrower and more trustworthy than the earlier pre-fix run:
+  - overall retrieval `85.73`, adapter `82.25`, delta `-3.48`
+  - graduation-only retrieval `73.12`, adapter `71.67`, delta `-1.45`
+- Retrieval-owned route-away categories now behave correctly instead of generating misleading fake wins/losses:
+  - `factual_recall` `100.0 / 100.0`
+  - `citation_grounding` `100.0 / 100.0`
+  - `out_of_scope_refusal` `93.33 / 93.33`
+- The first clean adapter-owned win under the corrected harness is now real:
+  - `style_transfer` retrieval `82.33`, adapter `89.66`, delta `+7.33`
+- The remaining adapter-owned/shared gaps are still real blockers:
+  - `terminology_consistency` `-6.66`
+  - `reasoning_pattern` `-6.5`
+  - `summarization` stayed flat at `45.0 / 45.0`
+  - `contradiction_handling` remained a retrieval-owned regression at `-22.0`
+
+Interpretation:
+
+- The benchmark harness itself is no longer the main story. The current `1.5B` adapter appears viable as a narrower style specialist, not yet as a general cluster expert.
+- The corrected run materially improves confidence in the routing/measurement stack: the current LoRA bottleneck is now mostly model/category performance plus machine headroom, not the old proxy gate or synthetic retrieval baseline.
+
+Follow-up changes after the corrected rerun:
+
+- Patched `scripts/backend/benchmark-lora-adapter.ps1` so `MANIFEST.json` is explicitly excluded from benchmark source selection. The sample vault manifest had been leaking into benchmark records, which is not representative content for the quality pass.
+- Cleaned `.tmp` so only the current rerun-fixed bundle, the eval-smoke bundle, and a small set of comparison-worthy historical artifacts remain.
+
+Current blocker after MANIFEST exclusion:
+
+- The first rerun after excluding `MANIFEST.json` did not reveal a new benchmark-quality result because it hit machine/runtime-state issues before scoring:
+  - one rerun used the repo `.venv` and failed in PEFT/runtime loading
+  - the external-runtime rerun then failed during adapter load with Windows `os error 1455` (`The paging file is too small for this operation to complete`)
+- The machine is already configured for a system-managed paging file, so the remaining problem is practical runtime headroom on this host rather than the pagefile mode itself.
+- A GPU-forced rerun path was prepared (`cuda`, `float16`, `4bit`, bounded GPU/CPU memory env vars), but it has not yet produced a successful MANIFEST-free result.
+
+Where the project stands now:
+
+- The current LoRA state is better than it was on 2026-06-24: benchmark credibility is substantially improved, the route-away contract is behaving as intended, and there is now one clean adapter-owned `style_transfer` win under the corrected harness.
+- The current LoRA state is still not release-ready: the `1.5B` adapter does not clear the bar on `terminology_consistency` or `reasoning_pattern`, `summarization` remains unresolved, and the next clean MANIFEST-free rerun is blocked by local runtime memory pressure.
+- The next meaningful empirical step is still the same: complete one successful MANIFEST-free rerun on the current adapter, then decide whether to stay on `1.5B` for another pass or move to the `2B` / `3B` matrix.
+
+## 2026-06-24 Real-Retrieval Full-105 Audit / Route-Away Correction Snapshot
+
+Completed:
+
+- Re-ran the full `105`-source `1.5B` adapter benchmark against the corrected real retrieval baseline and replayed raw cases instead of trusting score deltas alone.
+- Audited all six replayed `factual_recall` and `summarization` cases directly. The adapter showed fluent cross-document entity substitution in `2/6` cases and source-pattern bleed in another `1/6`, while the prior scorer still rewarded some of those answers as wins.
+- Tightened runtime routing rather than only patching measurement: `factual_recall` is now retrieval-routed, and `summarization` is also retrieval-routed whenever retrieved evidence looks entity- or number-sensitive. `citation_grounding` and `out_of_scope_refusal` remain retrieval-routed.
+- Added regression coverage for both the new factual/summarization routing and the low-specificity summarization allow-path.
+
+Verified interpretation:
+
+- The apparent adapter edge on `factual_recall` / `summarization` from the full-105 rescore is no longer treated as trustworthy product evidence.
+- Raw examples showed fact substitution such as `Toronto` / `Tom` becoming `Berlin` / `Priya` while keeping fluent formatting and high keyword overlap.
+- This means the next benchmark step is not only a scorer cleanup. It is also a product-boundary correction: named-entity- and number-sensitive factual/summarization prompts should stay retrieval-owned unless later evidence proves otherwise.
+
+Important caveat:
+
+- The current synthetic sample vault cycles recurring name/city pairs across unrelated narrative documents by generator design. That likely inflates the observed substitution rate by teaching the adapter spurious narrative-template associations.
+- The failure mode itself is still real and product-dangerous, so routing was tightened immediately, but the measured rate should not yet be treated as production-calibrated until the vault is regenerated with less repetitive entity patterns or re-tested on a more natural corpus.
 
 ## 2026-06-22 Clean 1.5B Live Rescore / Activation-Gate Correction Snapshot
 

@@ -24,6 +24,7 @@ backend/bin/ocr/**
 !backend/bin/ocr/README.md
 !backend/bin/ocr/manifest.json
 out/
+output/
 .output/
 .vinxi/
 .tanstack/
@@ -112,3 +113,5 @@ docs/UI_AUDIT_BRIEF.md
 docs/PACKAGING_INVESTIGATION.md
 docs/MODEL_RECOMMENDER_IMPLEMENTATION_PLAN.md
 docs/WHICHLLM_REVERSE_ENGINEERING_PLAN.md
+sample_lora_vault
+sample_new

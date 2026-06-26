@@ -3,6 +3,7 @@ param(
   [switch]$AllowTestTrainer,
   [string[]]$SourcePaths = @("docs/PROJECT_CONTEXT.md", "docs/OVERALL_CONTEXT.md"),
   [string]$BaseModelPath = $env:CML_LORA_BASE_MODEL_PATH,
+  [int]$ExpectedSourceCount = 0,
   [int]$MaxRealSources = 12,
   [int]$BenchmarkCaseLimit = 8,
   [switch]$AllowBenchmarkFailure,
@@ -51,14 +52,20 @@ $env:CML_LORA_SMOKE_SOURCE_PATHS_JSON = ConvertTo-Json @($resolvedSources) -Comp
 $env:CML_LORA_SMOKE_BASE_MODEL_PATH = $BaseModelPath
 $env:CML_LORA_SMOKE_ALLOW_BENCHMARK_FAILURE = if ($AllowBenchmarkFailure) { "1" } else { "0" }
 $env:CML_LORA_SMOKE_MAX_REAL_SOURCES = [string]$MaxRealSources
+$env:CML_LORA_SMOKE_EXPECTED_SOURCE_COUNT = [string]$ExpectedSourceCount
 $env:CML_LORA_SMOKE_BENCHMARK_CASE_LIMIT = [string]$BenchmarkCaseLimit
+$env:CML_LORA_BENCHMARK_CASE_LIMIT = [string]$BenchmarkCaseLimit
 $env:CML_LORA_SMOKE_RUNTIME_MAX_NEW_TOKENS = [string]$RuntimeMaxNewTokens
 $env:CML_LORA_SMOKE_BENCHMARK_MAX_NEW_TOKENS = [string]$BenchmarkMaxNewTokens
 if (-not $AllowTestTrainer) {
   if (-not $WorkDir) {
     $WorkDir = ".tmp/lora-real-smoke-work"
   }
-  $workFullPath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $WorkDir))
+  if ([System.IO.Path]::IsPathRooted($WorkDir)) {
+    $workFullPath = [System.IO.Path]::GetFullPath($WorkDir)
+  } else {
+    $workFullPath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $WorkDir))
+  }
   $env:CML_LORA_SMOKE_WORK_DIR = $workFullPath
 } else {
   $env:CML_LORA_SMOKE_WORK_DIR = ""
@@ -66,6 +73,7 @@ if (-not $AllowTestTrainer) {
 
 $pythonScript = @'
 import json
+import importlib.util
 import os
 import re
 import shutil
@@ -125,6 +133,7 @@ from backend.app.schemas import SourceCreate
 allow_test_trainer = os.environ.get("CML_ALLOW_LORA_TEST_TRAINER") == "1"
 allow_benchmark_failure = os.environ.get("CML_LORA_SMOKE_ALLOW_BENCHMARK_FAILURE") == "1"
 max_real_sources = int(os.environ.get("CML_LORA_SMOKE_MAX_REAL_SOURCES") or "12")
+expected_source_count = int(os.environ.get("CML_LORA_SMOKE_EXPECTED_SOURCE_COUNT") or "0")
 benchmark_case_limit = int(os.environ.get("CML_LORA_SMOKE_BENCHMARK_CASE_LIMIT") or "6")
 runtime_max_new_tokens = int(os.environ.get("CML_LORA_SMOKE_RUNTIME_MAX_NEW_TOKENS") or "16")
 benchmark_max_new_tokens = int(os.environ.get("CML_LORA_SMOKE_BENCHMARK_MAX_NEW_TOKENS") or "0")
@@ -143,7 +152,9 @@ def _real_source_records(paths: list[Path], *, limit: int) -> list[dict]:
             candidates.append(path)
     records: list[dict] = []
     for path in candidates:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = _read_source_text(path)
+        if not text.strip():
+            continue
         for section in _split_real_text(path, text):
             records.append(section)
             if len(records) >= limit:
@@ -158,7 +169,21 @@ def _should_use_source_file(path: Path) -> bool:
     normalized_parts = {part.lower() for part in path.parts}
     if any(part in normalized_parts for part in ignored):
         return False
-    return path.suffix.lower() in {".md", ".txt", ".py", ".ps1", ".js", ".ts", ".tsx", ".json"}
+    return path.suffix.lower() in {".md", ".txt", ".py", ".ps1", ".js", ".ts", ".tsx", ".json", ".pdf"}
+
+
+def _read_source_text(path: Path) -> str:
+    if path.suffix.lower() != ".pdf":
+        return path.read_text(encoding="utf-8", errors="replace")
+    if importlib.util.find_spec("pypdf") is None:
+        return ""
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(path))
+        return "\n".join((page.extract_text() or "") for page in reader.pages).strip()
+    except Exception:
+        return ""
 
 
 def _split_real_text(path: Path, text: str) -> list[dict]:
@@ -240,6 +265,11 @@ else:
     source_records = _real_source_records([Path(item) for item in source_paths], limit=max_real_sources)
     if not source_records:
         raise SystemExit("No real source records were found for LoRA smoke.")
+    if expected_source_count > 0 and len(source_records) != expected_source_count:
+        raise SystemExit(
+            f"Expected {expected_source_count} source records for LoRA smoke, "
+            f"but only collected {len(source_records)}. Refusing to start training."
+        )
 
 for item in source_records:
     create_source(

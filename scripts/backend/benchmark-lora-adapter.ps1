@@ -50,6 +50,7 @@ $env:CML_LORA_BENCH_MAX_NEW_TOKENS = [string]$BenchmarkMaxNewTokens
 
 $pythonScript = @'
 import json
+import importlib.util
 import os
 import re
 from pathlib import Path
@@ -76,7 +77,9 @@ def real_source_records(paths: list[Path], *, limit: int) -> list[dict]:
             candidates.append(path)
     records: list[dict] = []
     for path in candidates:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = read_source_text(path)
+        if not text.strip():
+            continue
         for section in split_real_text(path, text):
             records.append(section)
             if len(records) >= limit:
@@ -91,7 +94,23 @@ def should_use_source_file(path: Path) -> bool:
     normalized_parts = {part.lower() for part in path.parts}
     if any(part in normalized_parts for part in ignored):
         return False
-    return path.suffix.lower() in {".md", ".txt", ".py", ".ps1", ".js", ".ts", ".tsx", ".json"}
+    if path.name.lower() == "manifest.json":
+        return False
+    return path.suffix.lower() in {".md", ".txt", ".py", ".ps1", ".js", ".ts", ".tsx", ".json", ".pdf"}
+
+
+def read_source_text(path: Path) -> str:
+    if path.suffix.lower() != ".pdf":
+        return path.read_text(encoding="utf-8", errors="replace")
+    if importlib.util.find_spec("pypdf") is None:
+        return ""
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(path))
+        return "\n".join((page.extract_text() or "") for page in reader.pages).strip()
+    except Exception:
+        return ""
 
 
 def split_real_text(path: Path, text: str) -> list[dict]:
