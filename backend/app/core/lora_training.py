@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from backend.app.core.config import get_settings
 from backend.app.core.embeddings import content_hash
+from backend.app.core.expert_evaluation import EVALUATION_CATEGORIES
 from backend.app.core.training_dataset import TRAINING_RECORD_TYPES
 
 REQUIRED_ADAPTER_FILES = ("adapter_config.json", "adapter_model.safetensors")
@@ -334,20 +335,29 @@ def benchmark_eligibility_report(dataset_manifest: dict) -> dict:
     accounting = dict(dataset_manifest.get("benchmark_record_accounting") or {})
     train = dict(accounting.get("train") or {})
     validation = dict(accounting.get("validation") or {})
+    uses_record_type_accounting = bool(validation.get("record_type_counts"))
+    validation_dimension_names = (
+        TRAINING_RECORD_TYPES if uses_record_type_accounting else EVALUATION_CATEGORIES
+    )
     validation_record_type_counts = {
         str(key): int(value)
         for key, value in dict(validation.get("record_type_counts") or validation.get("category_counts") or {}).items()
     }
     validation_record_type_minimums = {
         record_type: validation_record_type_counts.get(record_type, 0) >= settings.lora_benchmark_min_validation_records_per_category
-        for record_type in TRAINING_RECORD_TYPES
+        for record_type in validation_dimension_names
     }
     validation_record_type_source_share = {
         record_type: float(
             dict(validation.get("max_record_share_per_source_per_record_type") or validation.get("max_record_share_per_source_per_category") or {}).get(record_type, 0.0)
         )
-        for record_type in TRAINING_RECORD_TYPES
+        for record_type in validation_dimension_names
     }
+    minimum_validation_records_per_dimension = all(validation_record_type_minimums.values())
+    maximum_validation_share_per_dimension = all(
+        share <= settings.lora_benchmark_max_validation_record_share_per_source_per_category
+        for share in validation_record_type_source_share.values()
+    )
     checks = {
         "minimum_train_records": int(train.get("record_count") or 0) >= settings.lora_benchmark_min_train_records,
         "minimum_validation_records": int(validation.get("record_count") or 0) >= settings.lora_benchmark_min_validation_records,
@@ -357,11 +367,10 @@ def benchmark_eligibility_report(dataset_manifest: dict) -> dict:
         "maximum_validation_record_share_per_source": float(validation.get("max_record_share_per_source") or 0.0) <= settings.lora_benchmark_max_validation_record_share_per_source,
         "maximum_train_duplicate_ratio": float(train.get("duplicate_content_ratio") or 0.0) <= settings.lora_max_duplicate_ratio,
         "maximum_validation_duplicate_ratio": float(validation.get("duplicate_content_ratio") or 0.0) <= settings.lora_max_duplicate_ratio,
-        "minimum_validation_records_per_record_type": all(validation_record_type_minimums.values()),
-        "maximum_validation_record_share_per_source_per_record_type": all(
-            share <= settings.lora_benchmark_max_validation_record_share_per_source_per_category
-            for share in validation_record_type_source_share.values()
-        ),
+        "minimum_validation_records_per_record_type": minimum_validation_records_per_dimension,
+        "maximum_validation_record_share_per_source_per_record_type": maximum_validation_share_per_dimension,
+        "minimum_validation_records_per_category": minimum_validation_records_per_dimension,
+        "maximum_validation_record_share_per_source_per_category": maximum_validation_share_per_dimension,
     }
     return {
         "passes": all(checks.values()),
