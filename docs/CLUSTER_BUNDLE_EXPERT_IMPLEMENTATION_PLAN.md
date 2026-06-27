@@ -390,13 +390,14 @@ New training record types:
 
 | Record Type | Input | Target |
 | --- | --- | --- |
+| `source_fact_extract` | Evidence packet | Source-bounded fact extract |
 | `evidence_compression` | Query + 2-5 retrieved snippets | Short grounded digest |
+| `citation_boundary` | Evidence + source title | Citation boundary grounded in retrieved source |
 | `terminology_normalization` | Evidence + generic phrasing | Cluster-preferred phrasing |
 | `style_rewrite` | Evidence + neutral answer | Cluster style version without adding facts |
 | `reasoning_hint` | Evidence packet | Reasoning pattern supported by evidence |
 | `conflict_summary` | Conflicting snippets | Neutral conflict note with source handles |
 | `uncertainty_boundary` | Partial evidence | What can and cannot be said |
-| `glossary_extract` | Cluster evidence set | Local terms and definitions grounded in evidence |
 
 Do not train:
 

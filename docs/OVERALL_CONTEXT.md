@@ -48,7 +48,7 @@ Completed in code during this pass:
 - Added `backend/tests/test_cluster_bundle.py`; combined bundle and MCP tests passed in the repo venv:
   - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_cluster_bundle.py T:\CML\backend\tests\test_bridge_mcp.py`
   - Result: `24 passed`
-- Replaced the training exporter objective in `backend/app/core/training_dataset.py` so it now emits evidence-grounded record types such as `evidence_compression`, `terminology_normalization`, `style_rewrite`, `reasoning_hint`, `conflict_summary`, `uncertainty_boundary`, and `glossary_extract`.
+- Replaced the training exporter objective in `backend/app/core/training_dataset.py` so it now emits evidence-grounded record types such as `source_fact_extract`, `evidence_compression`, `citation_boundary`, `terminology_normalization`, `style_rewrite`, `reasoning_hint`, `conflict_summary`, and `uncertainty_boundary`.
 - Updated LoRA lifecycle metadata so new runs record `retrieval_grounded_compression_v1`, exported record types, and `requires_retrieved_evidence=true`.
 - Updated expert lifecycle status so legacy prompt-only artifacts are surfaced as incompatible instead of silently looking like normal trained artifacts.
 - Updated `backend/app/core/expert_evaluation.py` so benchmark reports now expose bundle-mode summaries and bundle-oriented gates:
