@@ -186,15 +186,19 @@ def expert_status_report(conn, cluster_id: str) -> dict:
         job = dict_from_row(latest_job)
         failure_code = str(job.get("failure_code") or "")
         detail = str(job.get("detail") or "")
-    if active and objective_incompatible:
+    objective_version = str(active_metadata.get("expert_objective_version") or "").strip()
+    if active and objective_incompatible and objective_version:
+        failure_code = failure_code or "legacy_prompt_only"
+        detail = detail or "Active adapter uses a legacy prompt-only objective and cannot graduate as expert compression ready."
+    elif active and runtime_load_failed:
+        failure_code = failure_code or "runtime_load_failed"
+        detail = detail or str(runtime_load.get("detail") or "Active adapter is not loadable on this machine.")
+    elif active and objective_incompatible:
         failure_code = failure_code or "legacy_prompt_only"
         detail = detail or "Active adapter uses a legacy prompt-only objective and cannot graduate as expert compression ready."
     elif active and benchmark_incompatible:
         failure_code = failure_code or "benchmark_unverified"
         detail = detail or "Active adapter is missing a passing bundle benchmark for the current expert-compression objective."
-    elif active and runtime_load_failed:
-        failure_code = failure_code or "runtime_load_failed"
-        detail = detail or str(runtime_load.get("detail") or "Active adapter is not loadable on this machine.")
 
     expert_status = _normalized_expert_status(str(cluster.get("expert_status") or "retrieval_ready"))
     if stale and expert_status == "expert_compression_ready":

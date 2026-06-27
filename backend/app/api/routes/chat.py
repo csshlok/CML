@@ -56,6 +56,7 @@ from backend.app.core.chat_retention import (
 from backend.app.core.retrieval_cache import invalidate_caches_for_source
 from backend.app.core.source_records import file_checksum, replace_source_pages, source_type_for_suffix
 from backend.app.core.sql import build_update_assignments
+from backend.app.api.routes.search import semantic_search
 from backend.app.schemas import (
     ChatContextRequest,
     ChatContextResponse,
@@ -606,6 +607,7 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         token_budget=effective_limit,
         allow_expert_compression=True,
         mode=bundle_mode,
+        search_func=semantic_search,
     )
     results = [
         {
@@ -687,7 +689,7 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         bundle_digest = bundle.get("expert_digest") or {}
         expert_assist = {
             "mode": str(bundle_digest.get("mode") or "not_eligible"),
-            "attempted": str(bundle_digest.get("mode") or "not_eligible") not in {"not_eligible", "disabled", "expert_not_ready", "retrieval_routed", "not_cluster_scoped"},
+            "attempted": str(bundle_digest.get("mode") or "not_eligible") not in {"not_eligible", "disabled", "expert_not_ready", "expert_compression_pending", "retrieval_routed", "not_cluster_scoped"},
             "used": bool(bundle_digest.get("used")),
             "text": str(bundle_digest.get("text") or "").strip() or None,
             "detail": "; ".join(str(item) for item in bundle_digest.get("warnings") or [] if str(item).strip()),

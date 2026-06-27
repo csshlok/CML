@@ -8,23 +8,25 @@ from backend.app.core.embeddings import content_hash
 from backend.app.core.encrypted_storage import source_from_encrypted_row
 
 TRAINING_RECORD_TYPES = (
+    "source_fact_extract",
     "evidence_compression",
+    "citation_boundary",
     "terminology_normalization",
     "style_rewrite",
     "reasoning_hint",
     "conflict_summary",
     "uncertainty_boundary",
-    "glossary_extract",
 )
 
 LEGACY_CATEGORY_BY_RECORD_TYPE = {
+    "source_fact_extract": "factual_recall",
     "evidence_compression": "summarization",
+    "citation_boundary": "citation_grounding",
     "terminology_normalization": "terminology_consistency",
     "style_rewrite": "style_transfer",
     "reasoning_hint": "reasoning_pattern",
     "conflict_summary": "contradiction_handling",
     "uncertainty_boundary": "out_of_scope_refusal",
-    "glossary_extract": "terminology_consistency",
 }
 
 
@@ -212,13 +214,39 @@ def _records_for_document(dataset: dict, doc: dict) -> list[dict]:
     }
     records = [
         _build_record(
+            record_type="source_fact_extract",
+            category=LEGACY_CATEGORY_BY_RECORD_TYPE["source_fact_extract"],
+            user_prompt=(
+                f"Extract the key facts from retrieved evidence for '{title}' without adding outside facts.\n\n"
+                f"Evidence:\n{evidence_block}"
+            ),
+            assistant_target=(
+                f"According to source {title}, {snippets[0]} "
+                "Use only retrieved source evidence for factual claims."
+            ),
+            metadata=shared_metadata,
+        ),
+        _build_record(
             record_type="evidence_compression",
             category=LEGACY_CATEGORY_BY_RECORD_TYPE["evidence_compression"],
             user_prompt=(
-                f"Compress the retrieved evidence for '{title}' into a short grounded digest.\n\n"
+                f"Compress the retrieved evidence for '{title}' into three grounded bullets.\n\n"
                 f"Evidence:\n{evidence_block}"
             ),
             assistant_target=_grounded_digest(title, snippets),
+            metadata=shared_metadata,
+        ),
+        _build_record(
+            record_type="citation_boundary",
+            category=LEGACY_CATEGORY_BY_RECORD_TYPE["citation_boundary"],
+            user_prompt=(
+                f"Answer using only retrieved evidence for '{title}' and cite the source title.\n\n"
+                f"Evidence:\n{evidence_block}"
+            ),
+            assistant_target=(
+                f"According to source {title}, {snippets[0]} "
+                f"Source: {title}."
+            ),
             metadata=shared_metadata,
         ),
         _build_record(
@@ -229,7 +257,7 @@ def _records_for_document(dataset: dict, doc: dict) -> list[dict]:
                 f"Evidence:\n{evidence_block}\n\nGeneric phrasing: explain this in neutral wording."
             ),
             assistant_target=(
-                f"Use cluster-preferred phrasing such as {', '.join(local_terms) if local_terms else 'local cluster vocabulary'}. "
+                f"Use consistent cluster vocabulary such as {', '.join(local_terms) if local_terms else 'local cluster vocabulary'}. "
                 f"Keep the rewrite grounded in: {snippets[0]}"
             ),
             metadata=shared_metadata,
@@ -242,7 +270,7 @@ def _records_for_document(dataset: dict, doc: dict) -> list[dict]:
                 f"Evidence:\n{evidence_block}\n\nNeutral answer: {snippets[0]}"
             ),
             assistant_target=(
-                f"{_practical_note_excerpt(summary, text)} "
+                f"Start small, keep it concrete: {_practical_note_excerpt(summary, text)} "
                 f"Ground the answer in the evidence and keep it concrete: {snippets[0]}"
             ),
             metadata=shared_metadata,
@@ -251,11 +279,11 @@ def _records_for_document(dataset: dict, doc: dict) -> list[dict]:
             record_type="reasoning_hint",
             category=LEGACY_CATEGORY_BY_RECORD_TYPE["reasoning_hint"],
             user_prompt=(
-                f"Give a short reasoning hint for '{title}' supported by the retrieved evidence.\n\n"
+                f"Give a short reasoning pattern for '{title}' supported by the retrieved evidence.\n\n"
                 f"Evidence:\n{evidence_block}"
             ),
             assistant_target=(
-                f"Evidence first: {snippets[0]} "
+                f"The source evidence is: {snippets[0]} "
                 f"Interpretation: this supports a local pattern around {', '.join(local_terms[:2]) if local_terms else 'the cluster context'}. "
                 "Conclusion: keep the next answer aligned with that pattern."
             ),
@@ -278,23 +306,13 @@ def _records_for_document(dataset: dict, doc: dict) -> list[dict]:
             record_type="uncertainty_boundary",
             category=LEGACY_CATEGORY_BY_RECORD_TYPE["uncertainty_boundary"],
             user_prompt=(
-                f"State what can and cannot be said from partial evidence for '{title}'.\n\n"
+                f"State what is not covered by partial evidence for '{title}'.\n\n"
                 f"Evidence:\n{evidence_block}"
             ),
             assistant_target=(
                 f"The available evidence supports: {snippets[0]} "
-                "Anything beyond those retrieved details should be marked as missing or uncertain."
+                "Anything beyond those retrieved details is missing evidence and should be marked uncertain."
             ),
-            metadata=shared_metadata,
-        ),
-        _build_record(
-            record_type="glossary_extract",
-            category=LEGACY_CATEGORY_BY_RECORD_TYPE["glossary_extract"],
-            user_prompt=(
-                f"Extract a small grounded glossary for '{title}' from the retrieved evidence.\n\n"
-                f"Evidence:\n{evidence_block}"
-            ),
-            assistant_target=_glossary_target(local_terms, snippets),
             metadata=shared_metadata,
         ),
     ]
@@ -331,19 +349,12 @@ def _build_record(
 
 def _grounded_digest(title: str, snippets: list[str]) -> str:
     lines = [
-        f"Digest for {title}: {snippets[0]}",
+        f"- {snippets[0]}",
     ]
     if len(snippets) > 1:
-        lines.append(f"Supporting detail: {snippets[1]}")
-    lines.append("Use only the retrieved evidence above for downstream synthesis.")
-    return " ".join(lines)
-
-
-def _glossary_target(local_terms: list[str], snippets: list[str]) -> str:
-    if not local_terms:
-        return f"Local terms remain grounded in the evidence: {snippets[0]}"
-    parts = [f"{term}: grounded local term from the retrieved evidence." for term in local_terms[:3]]
-    return " ".join(parts)
+        lines.append(f"- Supporting detail: {snippets[1]}")
+    lines.append(f"- Source: {title}.")
+    return "\n".join(lines)
 
 
 def _evidence_snippets(text: str, *, max_items: int) -> list[str]:

@@ -616,10 +616,20 @@ def build_expert_benchmark_report(
         )
     ]
     scored_case_count = len({*retrieval_by_case.keys(), *adapter_by_case.keys()})
+    has_bundle_mode_inputs = bool(
+        retrieval_runtime
+        or retrieval_small_runtime
+        or adapter_runtime
+        or retrieval_small_case_scores
+    )
+    active_gate_report = bundle_gate if has_bundle_mode_inputs else legacy_gate_report
     passes = bool(
         live_adapter_backed
-        and bool(bundle_mode_coverage.get("passes"))
-        and bool(bundle_gate.get("passes"))
+        and (
+            bool(bundle_mode_coverage.get("passes")) and bool(bundle_gate.get("passes"))
+            if has_bundle_mode_inputs
+            else bool(legacy_gate_report.get("passes"))
+        )
     )
     if not live_adapter_backed:
         status = "pending_live_adapter_benchmark"
@@ -664,7 +674,7 @@ def build_expert_benchmark_report(
         "bundle_benchmark_modes": bundle_modes,
         "bundle_category_scores": bundle_category_scores,
         "bundle_case_outputs": mode_case_outputs,
-        "gate_report": bundle_gate,
+        "gate_report": active_gate_report,
         "legacy_category_gate_report": legacy_gate_report,
         "benchmark_modes": bundle_modes,
         "mode_case_outputs": mode_case_outputs,

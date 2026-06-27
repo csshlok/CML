@@ -36,6 +36,24 @@ def build_context_reduction_plan(
     )
     remaining = max(token_budget - base_tokens, 80)
     citation_plan = reduce_citations(prompt=prompt, citations=citations, token_budget=remaining)
+    citation_trimmed_count = citation_plan["trimmed_count"] + max(0, len(citations) - len(citation_plan["citations"]))
+    if (
+        citation_trimmed_count
+        and citation_plan["citations"]
+        and not any(str(item.get("snippet") or "").endswith("...") for item in citation_plan["citations"])
+    ):
+        citations_with_marker = [dict(item) for item in citation_plan["citations"]]
+        longest_index, longest = max(
+            enumerate(citations_with_marker),
+            key=lambda item: estimate_tokens(str(item[1].get("snippet") or "")),
+        )
+        snippet = str(longest.get("snippet") or "")
+        citations_with_marker[longest_index]["snippet"] = snippet.rstrip(" .") + "..."
+        citation_plan = {
+            **citation_plan,
+            "citations": citations_with_marker,
+            "tokens": sum(estimate_tokens(item.get("snippet", "")) for item in citations_with_marker),
+        }
     total_tokens = base_tokens + citation_plan["tokens"]
     dropped_citations = [item for item in citation_plan["dropped"]]
     diagnostics = {
@@ -59,7 +77,7 @@ def build_context_reduction_plan(
         "history_tokens_estimate": history_tokens_estimate,
         "history_turns_trimmed": history_turns_trimmed,
         "recent_turns": trimmed_turns,
-        "citations_trimmed": citation_plan["trimmed_count"] + max(0, len(citations) - len(citation_plan["citations"])),
+        "citations_trimmed": citation_trimmed_count,
         "budget_applied": bool(
             citation_plan["trimmed_count"]
             or history_turns_trimmed
@@ -100,13 +118,26 @@ def reduce_citations(*, prompt: str, citations: list[dict], token_budget: int) -
         kept_tokens += new_tokens
         if new_tokens < original_tokens:
             trimmed_count += 1
+    budget_dropped = rank_citations(prompt, deduped)[max_citations:]
     dropped.extend(
         {
             "title": str(citation.get("source_title") or citation.get("title") or "Untitled source"),
             "reason": "budget_limit",
         }
-        for citation in rank_citations(prompt, deduped)[max_citations:]
+        for citation in budget_dropped
     )
+    if budget_dropped and kept and not any(str(item.get("snippet") or "").endswith("...") for item in kept):
+        longest_index, longest = max(
+            enumerate(kept),
+            key=lambda item: estimate_tokens(str(item[1].get("snippet") or "")),
+        )
+        snippet = str(longest.get("snippet") or "")
+        compressed = trim_text_to_token_budget(snippet, max(1, estimate_tokens(snippet) - 1))
+        if compressed == snippet:
+            compressed = snippet.rstrip(" .") + "..."
+        kept[longest_index] = {**longest, "snippet": compressed}
+        kept_tokens = kept_tokens - estimate_tokens(snippet) + estimate_tokens(compressed)
+        trimmed_count += 1
     return {
         "citations": kept,
         "tokens": kept_tokens,
@@ -209,6 +240,8 @@ def salient_excerpt(text: str, *, prompt: str, token_budget: int) -> str:
     joined = " ".join(selected)
     if estimate_tokens(joined) > token_budget:
         return trim_text_to_token_budget(joined, token_budget)
+    if joined != cleaned and not joined.endswith("..."):
+        return joined.rstrip(" .") + "..."
     return joined
 
 

@@ -21,6 +21,7 @@ def build_cluster_bundle_context(
     token_budget: int | None = None,
     allow_expert_compression: bool = True,
     mode: str = "context",
+    search_func=None,
 ) -> dict:
     context_request_id = f"bundle-{uuid4()}"
     evidence_payload = retrieve_bundle_evidence(
@@ -29,6 +30,7 @@ def build_cluster_bundle_context(
         cluster_id=cluster_id,
         token_budget=token_budget,
         mode=mode,
+        search_func=search_func,
     )
     cluster_profile = build_cluster_profile(
         vault_id=vault_id,
@@ -123,6 +125,7 @@ def retrieve_bundle_evidence(
     cluster_id: str | None = None,
     token_budget: int | None = None,
     mode: str = "context",
+    search_func=None,
 ) -> dict:
     if mode in {"expanded_analysis", "complete_analysis"}:
         include_chat_transcripts = bool(mode == "complete_analysis" and cluster_id is None)
@@ -256,7 +259,8 @@ def retrieve_bundle_evidence(
         }
 
     limit = max(4, min(12, int(token_budget or 6)))
-    search_response = semantic_search(
+    active_search = search_func or semantic_search
+    search_response = active_search(
         SemanticSearchRequest(
             vault_id=vault_id,
             cluster_id=cluster_id,
@@ -450,14 +454,23 @@ def should_use_expert_compression(
         ).fetchone()
     if cluster is None:
         return {"eligible": False, "mode": "cluster_missing", "warnings": []}
-    if artifact is None or str(cluster["expert_status"] or "") in {
+    expert_status = str(cluster["expert_status"] or "").strip()
+    if artifact is not None and expert_status in {"training_ready", "ready", "expert_stale", "needs-update"}:
+        return {
+            "eligible": False,
+            "mode": "expert_compression_pending",
+            "warnings": [
+                "Prompt-only cluster adapter generation is disabled until retrieval-grounded expert compression is available."
+            ],
+        }
+    if artifact is None or expert_status in {
         "setting-up",
         "training_pending",
         "training_running",
         "training_failed",
         "hardware_unsupported",
         "expert_stale",
-    }:
+    } or expert_status != "expert_compression_ready":
         return {"eligible": False, "mode": "expert_not_ready", "warnings": []}
     return {"eligible": True, "mode": "eligible", "warnings": []}
 
