@@ -403,8 +403,9 @@ def run_cluster_expert_compression(
             "digest": "",
             "warnings": [],
             "unsupported_claims": [],
+            "behavior_profile": _empty_behavior_profile(),
         }
-    compression_prompt = build_expert_compression_prompt(
+    compression_prompt = build_expert_behavior_prompt(
         prompt=prompt,
         citations=citations,
         cluster_profile=cluster_profile,
@@ -438,10 +439,11 @@ def run_cluster_expert_compression(
                 "warnings": ["Expert digest failed grounding validation."],
                 "unsupported_claims": unsupported_claims,
                 "runtime_smoke": smoke,
+                "behavior_profile": dict(parsed.get("behavior_profile") or _empty_behavior_profile()),
             }
         return {
             "ok": True,
-            "mode": "retrieval_grounded_compression",
+            "mode": "retrieval_grounded_behavior",
             "cluster_id": cluster_id,
             "artifact_id": artifact["id"],
             "attempted_artifacts": attempted,
@@ -451,6 +453,7 @@ def run_cluster_expert_compression(
             "uncertainties": list(parsed.get("uncertainties") or []),
             "unsupported_claims": [],
             "warnings": [],
+            "behavior_profile": dict(parsed.get("behavior_profile") or _empty_behavior_profile()),
             "runtime_smoke": smoke,
             "load_plan": smoke.get("plan") or {},
         }
@@ -462,6 +465,7 @@ def run_cluster_expert_compression(
         "attempted_artifacts": attempted,
         "warnings": [],
         "unsupported_claims": [],
+        "behavior_profile": _empty_behavior_profile(),
     }
 
 
@@ -514,7 +518,7 @@ def select_cluster_expert_candidates(conn, *, cluster_id: str, artifact_id: str 
     return [dict_from_row(row) for row in fallback_rows]
 
 
-def build_expert_compression_prompt(
+def build_expert_behavior_prompt(
     *,
     prompt: str,
     citations: list[dict],
@@ -528,16 +532,34 @@ def build_expert_compression_prompt(
         )
     local_terms = ", ".join(str(item) for item in (cluster_profile or {}).get("local_terms") or [] if str(item).strip())
     style_profile = str((cluster_profile or {}).get("style_profile") or "").strip()
+    answer_contract = dict((cluster_profile or {}).get("answer_contract") or {})
+    behavior_profile = dict((cluster_profile or {}).get("behavior_profile") or {})
     return (
-        "Task: Compress the retrieved evidence into a cluster-aware context digest.\n"
+        "Task: Produce a grounded cluster-aware context digest and behavior profile.\n"
         "Authority: Use only the evidence below.\n"
         "Forbidden: Do not invent citations, source titles, names, dates, quantities, or facts.\n"
-        "Output: JSON with keys digest, local_terms, reasoning_hints, uncertainties, unsupported_claims.\n\n"
+        "Output: JSON with keys digest, local_terms, reasoning_hints, uncertainties, unsupported_claims, behavior_profile.\n"
+        "The behavior_profile must contain: voice, terminology_shift, style_markers, reasoning_order, framing_rules, refusal_style, practicality_bias.\n\n"
         f"User query: {prompt.strip()}\n"
         f"Cluster local terms: {local_terms or 'none'}\n"
         f"Cluster style profile: {style_profile or 'none'}\n\n"
+        f"Cluster answer contract: {json.dumps(answer_contract, ensure_ascii=False, separators=(',', ':'))}\n"
+        f"Seed behavior profile: {json.dumps(behavior_profile, ensure_ascii=False, separators=(',', ':'))}\n\n"
         "Retrieved evidence:\n"
         f"{chr(10).join(evidence_lines)}"
+    )
+
+
+def build_expert_compression_prompt(
+    *,
+    prompt: str,
+    citations: list[dict],
+    cluster_profile: dict | None = None,
+) -> str:
+    return build_expert_behavior_prompt(
+        prompt=prompt,
+        citations=citations,
+        cluster_profile=cluster_profile,
     )
 
 
@@ -550,6 +572,7 @@ def _parse_expert_compression_output(text: str) -> dict:
             "reasoning_hints": [],
             "uncertainties": [],
             "unsupported_claims": [],
+            "behavior_profile": _empty_behavior_profile(),
         }
     if stripped.startswith("{"):
         try:
@@ -563,6 +586,7 @@ def _parse_expert_compression_output(text: str) -> dict:
                 "reasoning_hints": [str(item).strip() for item in payload.get("reasoning_hints") or [] if str(item).strip()],
                 "uncertainties": [str(item).strip() for item in payload.get("uncertainties") or [] if str(item).strip()],
                 "unsupported_claims": [str(item).strip() for item in payload.get("unsupported_claims") or [] if str(item).strip()],
+                "behavior_profile": _normalize_behavior_profile(payload.get("behavior_profile")),
             }
     return {
         "digest": stripped,
@@ -570,6 +594,7 @@ def _parse_expert_compression_output(text: str) -> dict:
         "reasoning_hints": [],
         "uncertainties": [],
         "unsupported_claims": [],
+        "behavior_profile": _empty_behavior_profile(),
     }
 
 
@@ -821,3 +846,31 @@ def _runtime_dependency_detail(status: dict) -> str:
     if issues:
         return "LoRA runtime dependency gate failed: " + "; ".join(issues) + "."
     return "Install peft, transformers, and torch or configure CML_LORA_RUNTIME_PYTHON."
+
+
+def _empty_behavior_profile() -> dict:
+    return {
+        "voice": "",
+        "terminology_shift": [],
+        "style_markers": [],
+        "reasoning_order": [],
+        "framing_rules": [],
+        "refusal_style": "",
+        "practicality_bias": "",
+    }
+
+
+def _normalize_behavior_profile(payload: Any) -> dict:
+    profile = _empty_behavior_profile()
+    if not isinstance(payload, dict):
+        return profile
+    profile["voice"] = str(payload.get("voice") or "").strip()
+    for key in ("terminology_shift", "style_markers", "reasoning_order", "framing_rules"):
+        value = payload.get(key) or []
+        if isinstance(value, list):
+            profile[key] = [str(item).strip() for item in value if str(item).strip()]
+        elif value:
+            profile[key] = [str(value).strip()]
+    profile["refusal_style"] = str(payload.get("refusal_style") or "").strip()
+    profile["practicality_bias"] = str(payload.get("practicality_bias") or "").strip()
+    return profile

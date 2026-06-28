@@ -167,6 +167,26 @@ def render_context_packet(packet: dict) -> str:
         digest_text = str(expert_digest.get("text") or "").strip()
         if digest_text:
             lines.append(f"- Digest: {digest_text}")
+        behavior_profile = expert_digest.get("behavior_profile") or {}
+        if behavior_profile:
+            voice = str(behavior_profile.get("voice") or "").strip()
+            if voice:
+                lines.append(f"- Voice: {voice}")
+            terminology = ", ".join(
+                str(item) for item in behavior_profile.get("terminology_shift") or [] if str(item).strip()
+            )
+            if terminology:
+                lines.append(f"- Terminology shift: {terminology}")
+            reasoning = " -> ".join(
+                str(item) for item in behavior_profile.get("reasoning_order") or [] if str(item).strip()
+            )
+            if reasoning:
+                lines.append(f"- Reasoning order: {reasoning}")
+            framing = "; ".join(
+                str(item) for item in behavior_profile.get("framing_rules") or [] if str(item).strip()
+            )
+            if framing:
+                lines.append(f"- Framing rules: {framing}")
     if token_ledger:
         lines.extend(
             [

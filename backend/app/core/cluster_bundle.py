@@ -55,6 +55,7 @@ def build_cluster_bundle_context(
         "reasoning_hints": [],
         "uncertainties": [],
         "unsupported_claims": [],
+        "behavior_profile": dict(cluster_profile.get("behavior_profile") or _empty_behavior_profile()),
     }
     if expert_eligibility.get("eligible"):
         with connect() as conn:
@@ -68,7 +69,7 @@ def build_cluster_bundle_context(
         if runtime_result.get("ok"):
             expert_digest = {
                 "used": True,
-                "mode": "retrieval_grounded_compression",
+                "mode": "retrieval_grounded_behavior",
                 "text": str(runtime_result.get("digest") or "").strip(),
                 "artifact_id": runtime_result.get("artifact_id"),
                 "warnings": list(runtime_result.get("warnings") or []),
@@ -76,6 +77,11 @@ def build_cluster_bundle_context(
                 "reasoning_hints": list(runtime_result.get("reasoning_hints") or []),
                 "uncertainties": list(runtime_result.get("uncertainties") or []),
                 "unsupported_claims": list(runtime_result.get("unsupported_claims") or []),
+                "behavior_profile": dict(
+                    runtime_result.get("behavior_profile")
+                    or cluster_profile.get("behavior_profile")
+                    or _empty_behavior_profile()
+                ),
             }
         else:
             expert_digest["warnings"].append(str(runtime_result.get("detail") or "Expert compression unavailable.").strip())
@@ -109,6 +115,11 @@ def build_cluster_bundle_context(
             "mode": mode,
             "expert_eligible": bool(expert_eligibility.get("eligible")),
             "expert_mode": expert_digest["mode"],
+            "behavior_profile_available": bool(
+                (expert_digest.get("behavior_profile") or {}).get("style_markers")
+                or (expert_digest.get("behavior_profile") or {}).get("reasoning_order")
+                or (expert_digest.get("behavior_profile") or {}).get("framing_rules")
+            ),
             "cluster_id": cluster_id,
             "sources_considered": int(evidence_payload.get("sources_considered") or len(evidence_payload["citations"])),
             "sources_analyzed": int(evidence_payload.get("sources_analyzed") or len(evidence_payload["citations"])),
@@ -383,6 +394,7 @@ def build_cluster_profile(*, vault_id: str, cluster_id: str | None, evidence: li
     local_terms: list[str] = []
     style_profile = ""
     reasoning_patterns: list[str] = []
+    cluster_name = ""
     if cluster_id:
         with connect() as conn:
             row = conn.execute(
@@ -390,6 +402,7 @@ def build_cluster_profile(*, vault_id: str, cluster_id: str | None, evidence: li
                 (cluster_id, vault_id),
             ).fetchone()
         if row is not None:
+            cluster_name = str(row["name"] or "").strip()
             summary = str(row["description"] or "").strip()
             if summary:
                 style_profile = f"Preserve the cluster's local framing from {row['name']}."
@@ -408,11 +421,25 @@ def build_cluster_profile(*, vault_id: str, cluster_id: str | None, evidence: li
     local_terms = list(token_counts.keys())
     if evidence:
         reasoning_patterns.append("Ground claims in retrieved evidence before synthesis.")
+        reasoning_patterns.append("Prefer evidence, then interpretation, then conclusion.")
+    behavior_profile = _build_behavior_profile(
+        cluster_name=cluster_name,
+        summary=summary,
+        local_terms=local_terms,
+        evidence=evidence,
+    )
     return {
         "summary": summary,
         "local_terms": local_terms,
         "style_profile": style_profile,
         "reasoning_patterns": reasoning_patterns,
+        "answer_contract": {
+            "voice": behavior_profile["voice"],
+            "structure": list(behavior_profile["reasoning_order"]),
+            "emphasis": list(behavior_profile["framing_rules"]),
+            "refusal_style": behavior_profile["refusal_style"],
+        },
+        "behavior_profile": behavior_profile,
     }
 
 
@@ -500,3 +527,42 @@ def _estimate_tokens(text: str) -> int:
     if not cleaned:
         return 0
     return max(1, (len(cleaned) + 3) // 4)
+
+
+def _empty_behavior_profile() -> dict:
+    return {
+        "voice": "",
+        "terminology_shift": [],
+        "style_markers": [],
+        "reasoning_order": [],
+        "framing_rules": [],
+        "refusal_style": "",
+        "practicality_bias": "",
+    }
+
+
+def _build_behavior_profile(
+    *,
+    cluster_name: str,
+    summary: str,
+    local_terms: list[str],
+    evidence: list[dict],
+) -> dict:
+    profile = _empty_behavior_profile()
+    if cluster_name:
+        profile["voice"] = f"{cluster_name} local-expert"
+    if local_terms:
+        profile["terminology_shift"] = local_terms[:4]
+    if summary:
+        profile["style_markers"].append("preserve-local-framing")
+    if evidence:
+        profile["style_markers"].extend(["grounded", "concrete", "source-aware"])
+        profile["reasoning_order"] = ["evidence", "interpretation", "conclusion"]
+        profile["framing_rules"] = [
+            "keep claims tied to retrieved evidence",
+            "prefer practical takeaways over abstract restatement",
+        ]
+        profile["refusal_style"] = "state what evidence is missing before refusing"
+        profile["practicality_bias"] = "practical"
+    profile["style_markers"] = list(OrderedDict.fromkeys(profile["style_markers"]))
+    return profile

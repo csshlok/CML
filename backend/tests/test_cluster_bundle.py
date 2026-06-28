@@ -99,6 +99,11 @@ class ClusterBundleTests(unittest.TestCase):
         self.assertEqual(len(bundle["citations"]), 1)
         self.assertFalse(bundle["expert_digest"]["used"])
         self.assertEqual(bundle["expert_digest"]["mode"], "disabled")
+        self.assertIn("behavior_profile", bundle["cluster_profile"])
+        self.assertEqual(
+            bundle["cluster_profile"]["behavior_profile"]["reasoning_order"],
+            ["evidence", "interpretation", "conclusion"],
+        )
 
     def test_bundle_calls_expert_only_when_evidence_exists(self) -> None:
         from backend.app.core.cluster_bundle import build_cluster_bundle_context
@@ -129,6 +134,15 @@ class ClusterBundleTests(unittest.TestCase):
                 "reasoning_hints": ["ground claims first"],
                 "uncertainties": [],
                 "unsupported_claims": [],
+                "behavior_profile": {
+                    "voice": "Research local-expert",
+                    "terminology_shift": ["bundle"],
+                    "style_markers": ["grounded", "concrete"],
+                    "reasoning_order": ["evidence", "interpretation", "conclusion"],
+                    "framing_rules": ["prefer practical takeaways"],
+                    "refusal_style": "state missing evidence explicitly",
+                    "practicality_bias": "practical",
+                },
             },
         ):
             from backend.app.core.database import connect, utc_now
@@ -157,6 +171,11 @@ class ClusterBundleTests(unittest.TestCase):
         self.assertTrue(bundle["expert_digest"]["used"])
         self.assertEqual(bundle["expert_digest"]["artifact_id"], "artifact-1")
         self.assertGreater(bundle["token_ledger"]["expert_digest_tokens_estimate"], 0)
+        self.assertEqual(bundle["expert_digest"]["mode"], "retrieval_grounded_behavior")
+        self.assertEqual(
+            bundle["expert_digest"]["behavior_profile"]["reasoning_order"],
+            ["evidence", "interpretation", "conclusion"],
+        )
 
     def test_bundle_rejects_unsupported_source_claims_from_expert_digest(self) -> None:
         from backend.app.core.cluster_bundle import build_cluster_bundle_context
@@ -234,7 +253,12 @@ class ClusterBundleTests(unittest.TestCase):
         prompt = build_expert_compression_prompt(
             prompt="summarize this",
             citations=[{"source_title": "Roadmap Note", "snippet": "Roadmap Note explains the bundle migration."}],
-            cluster_profile={"local_terms": ["bundle"], "style_profile": "plain"},
+            cluster_profile={
+                "local_terms": ["bundle"],
+                "style_profile": "plain",
+                "answer_contract": {"voice": "local-expert"},
+                "behavior_profile": {"reasoning_order": ["evidence", "interpretation", "conclusion"]},
+            },
         )
         unsupported = _unsupported_claims_against_evidence(
             "Roadmap Note says Berlin shipped 2028.",
@@ -243,6 +267,7 @@ class ClusterBundleTests(unittest.TestCase):
         )
 
         self.assertIn("Authority: Use only the evidence below.", prompt)
+        self.assertIn("behavior_profile", prompt)
         self.assertTrue(any("Berlin" in item or "2028" in item for item in unsupported))
 
     def test_bundle_expanded_analysis_uses_analysis_packets(self) -> None:
