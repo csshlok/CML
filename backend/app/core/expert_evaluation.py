@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from backend.app.core.config import get_settings
+from backend.app.core.expert_contract import EXPERT_OBJECTIVE_VERSION
 
 
 _CATEGORY_SPECS = {
@@ -157,6 +158,8 @@ _BUNDLE_BENCHMARK_THRESHOLDS = {
     "token_savings_vs_retrieval_full": 40.0,
     "quality_regression_vs_retrieval_full": 5.0,
     "quality_gain_vs_retrieval_small": 10.0,
+    "behavior_lift_vs_retrieval_full": 0.0,
+    "behavior_separation_vs_wrong_adapter": 5.0,
 }
 
 REASONING_PATTERN_SCORING_FIXTURES = {
@@ -174,6 +177,18 @@ REASONING_PATTERN_SCORING_FIXTURES = {
 
 
 def build_expert_evaluation_plan(dataset: dict, *, max_cases: int = 12) -> dict:
+    if dataset.get("evaluation_cases"):
+        normalized_max_cases = max(int(max_cases or 0), len(EVALUATION_CATEGORIES))
+        cases = list(dataset.get("evaluation_cases") or [])[:normalized_max_cases]
+        return {
+            "cluster_id": dataset.get("cluster_id"),
+            "dataset_hash": dataset.get("dataset_hash"),
+            "case_count": len(cases),
+            "categories": list(EVALUATION_CATEGORIES),
+            "graduation_categories": list(GRADUATION_CATEGORIES),
+            "diagnostic_only_categories": list(DIAGNOSTIC_ONLY_CATEGORIES),
+            "cases": cases,
+        }
     normalized_max_cases = max(int(max_cases or 0), len(EVALUATION_CATEGORIES))
     documents = list(dataset.get("documents") or [])[:normalized_max_cases]
     cases = []
@@ -208,11 +223,55 @@ def build_expert_evaluation_plan(dataset: dict, *, max_cases: int = 12) -> dict:
     }
 
 
+def build_heldout_bundle_evaluation_dataset(dataset_dir: str | Path, *, cluster_id: str = "cluster", max_cases: int = 24) -> dict | None:
+    root = Path(dataset_dir)
+    validation_sources_path = root / "validation-sources.jsonl"
+    validation_qa_path = root / "validation-qa.jsonl"
+    manifest_path = root / "dataset-manifest.json"
+    if not validation_sources_path.exists() or not validation_qa_path.exists():
+        return None
+    source_rows = _load_jsonl_rows(validation_sources_path)
+    qa_rows = _load_jsonl_rows(validation_qa_path)
+    if not source_rows:
+        return None
+    manifest = {}
+    if manifest_path.exists():
+        try:
+            parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            manifest = parsed
+
+    documents = [
+        {
+            "source_id": row.get("source_id"),
+            "title": row.get("title"),
+            "summary": row.get("summary"),
+            "text": row.get("text"),
+            "content_hash": row.get("content_hash"),
+        }
+        for row in source_rows
+    ]
+    cases = _heldout_cases_from_validation_rows(
+        cluster_id=cluster_id,
+        documents=documents,
+        qa_rows=qa_rows,
+        max_cases=max_cases,
+    )
+    return {
+        "cluster_id": cluster_id,
+        "dataset_hash": str(manifest.get("dataset_hash") or ""),
+        "documents": documents,
+        "evaluation_cases": cases,
+    }
+
+
 def score_expert_response(case: dict, response_text: str) -> dict:
     category = str(case.get("category") or "")
     response = response_text.lower()
     terms = [str(term).lower() for term in case.get("expected_terms") or []]
-    term_hits = sum(1 for term in terms if term and term in response)
+    term_hits = sum(1 for term in terms if term and _response_contains_term(response_text, term))
     term_score = _term_score(case, response_text, term_hits, len(terms))
     citation_score = 1.0 if not case.get("requires_citation") or _has_citation_marker(response_text) else 0.0
     refusal_score = 1.0
@@ -249,6 +308,13 @@ def score_expert_response(case: dict, response_text: str) -> dict:
 
 def _term_score(case: dict, response_text: str, term_hits: int, expected_term_count: int) -> float:
     return term_hits / max(1, expected_term_count)
+
+
+def _response_contains_term(response_text: str, term: str) -> bool:
+    normalized_term = " ".join(str(term or "").lower().split())
+    if not normalized_term:
+        return False
+    return bool(re.search(rf"(?<!\w){re.escape(normalized_term)}(?!\w)", str(response_text or "").lower()))
 
 
 def compare_retrieval_vs_adapter(retrieval_scores: list[float], adapter_scores: list[float]) -> dict:
@@ -334,12 +400,19 @@ def run_live_expert_benchmark(
     *,
     adapter_path: str,
     base_model: str,
+    wrong_adapter_path: str | None = None,
+    wrong_adapter_base_model: str | None = None,
     max_new_tokens: int | None = None,
     max_new_tokens_by_category: dict[str, int] | None = None,
     mode: str = "live_adapter_benchmark",
     evaluation_plan: dict | None = None,
 ) -> dict:
     from backend.app.core.expert_runtime import run_adapter_runtime_batch
+
+    adapter_full_path = str(Path(adapter_path).resolve())
+    wrong_adapter_full_path = str(Path(wrong_adapter_path).resolve()) if wrong_adapter_path else ""
+    if wrong_adapter_full_path and wrong_adapter_full_path == adapter_full_path:
+        raise ValueError("Wrong-adapter benchmark path must differ from the primary adapter path.")
 
     resolved_plan = evaluation_plan
     if resolved_plan is None:
@@ -465,25 +538,56 @@ def run_live_expert_benchmark(
         adapter_case_scores.append(
             score_expert_response(case, (responses[index] or {}).get("response_text") or "")
         )
+    wrong_adapter_runtime = None
+    wrong_adapter_case_scores: list[dict] = []
+    if wrong_adapter_path:
+        wrong_adapter_runtime = _run_category_aware_runtime_batch(
+            resolved_plan["cases"],
+            adapter_path=wrong_adapter_path,
+            base_model=(wrong_adapter_base_model or base_model),
+            max_new_tokens=max_new_tokens,
+            max_new_tokens_by_category=max_new_tokens_by_category,
+            batch_runner=run_adapter_runtime_batch,
+        )
+        if wrong_adapter_runtime.get("ok"):
+            wrong_responses = wrong_adapter_runtime.get("responses") or []
+            for index, case in enumerate(resolved_plan["cases"]):
+                retrieval_response = retrieval_responses[index] if index < len(retrieval_responses) else {}
+                routed_category = adapter_route_away_category(
+                    str(case.get("prompt") or ""),
+                    retrieval_response.get("citations") or [],
+                )
+                if routed_category == str(case.get("category") or "") and str(case.get("id") or "") in retrieval_by_case:
+                    routed_score = dict(retrieval_by_case[str(case.get("id") or "")])
+                    routed_score["routed_away"] = True
+                    wrong_adapter_case_scores.append(routed_score)
+                    continue
+                wrong_adapter_case_scores.append(
+                    score_expert_response(case, (wrong_responses[index] or {}).get("response_text") or "")
+                )
     benchmark_report = build_expert_benchmark_report(
         resolved_plan,
         retrieval_case_scores=baseline_case_scores,
         retrieval_small_case_scores=retrieval_small_case_scores,
         adapter_case_scores=adapter_case_scores,
+        wrong_adapter_case_scores=wrong_adapter_case_scores,
         mode=mode,
         live_adapter_backed=True,
         retrieval_runtime=retrieval_runtime,
         retrieval_small_runtime=retrieval_small_runtime,
         adapter_runtime=runtime,
+        wrong_adapter_runtime=wrong_adapter_runtime,
     )
     return {
-        "evaluation_plan": evaluation_plan,
+        "evaluation_plan": resolved_plan,
         "runtime": runtime,
         "retrieval_runtime": retrieval_runtime,
         "retrieval_small_runtime": retrieval_small_runtime,
         "retrieval_case_scores": baseline_case_scores,
         "retrieval_small_case_scores": retrieval_small_case_scores,
         "adapter_case_scores": adapter_case_scores,
+        "wrong_adapter_runtime": wrong_adapter_runtime,
+        "wrong_adapter_case_scores": wrong_adapter_case_scores,
         "benchmark_report": benchmark_report,
     }
 
@@ -498,16 +602,19 @@ def build_expert_benchmark_report(
     retrieval_case_scores: list[dict] | None = None,
     retrieval_small_case_scores: list[dict] | None = None,
     adapter_case_scores: list[dict] | None = None,
+    wrong_adapter_case_scores: list[dict] | None = None,
     mode: str = "live_adapter_benchmark",
     live_adapter_backed: bool = True,
     retrieval_runtime: dict | None = None,
     retrieval_small_runtime: dict | None = None,
     adapter_runtime: dict | None = None,
+    wrong_adapter_runtime: dict | None = None,
 ) -> dict:
     cases = list(evaluation_plan.get("cases") or [])
     retrieval_by_case = _scores_by_case_id(retrieval_case_scores or [])
     retrieval_small_by_case = _scores_by_case_id(retrieval_small_case_scores or [])
     adapter_by_case = _scores_by_case_id(adapter_case_scores or [])
+    wrong_adapter_by_case = _scores_by_case_id(wrong_adapter_case_scores or [])
     category_scores = {}
     for category in EVALUATION_CATEGORIES:
         category_cases = [case for case in cases if case.get("category") == category]
@@ -622,11 +729,23 @@ def build_expert_benchmark_report(
         or adapter_runtime
         or retrieval_small_case_scores
     )
+    bundle_summary = _bundle_benchmark_summary(bundle_modes, bundle_gate)
+    behavior_summary = _behavior_specialization_summary(
+        cases=cases,
+        retrieval_by_case=retrieval_by_case,
+        adapter_by_case=adapter_by_case,
+        wrong_adapter_by_case=wrong_adapter_by_case,
+    )
+    behavior_gate = _behavior_specialization_gate(behavior_summary)
     active_gate_report = bundle_gate if has_bundle_mode_inputs else legacy_gate_report
     passes = bool(
         live_adapter_backed
         and (
-            bool(bundle_mode_coverage.get("passes")) and bool(bundle_gate.get("passes"))
+            (
+                bool(bundle_mode_coverage.get("passes"))
+                and bool(bundle_gate.get("passes"))
+                and bool(behavior_gate.get("passes"))
+            )
             if has_bundle_mode_inputs
             else bool(legacy_gate_report.get("passes"))
         )
@@ -637,13 +756,13 @@ def build_expert_benchmark_report(
         status = "passed"
     else:
         status = "failed"
-    bundle_summary = _bundle_benchmark_summary(bundle_modes, bundle_gate)
     bundle_readiness = _bundle_readiness_report(
         live_adapter_backed=live_adapter_backed,
         bundle_mode_coverage=bundle_mode_coverage,
         missing_categories=missing_categories,
         incomplete_categories=incomplete_categories,
         bundle_gate=bundle_gate,
+        behavior_gate=behavior_gate,
         status=status,
     )
     return {
@@ -668,6 +787,8 @@ def build_expert_benchmark_report(
         "retrieval_small_overall": retrieval_small_overall,
         "graduation_overall": graduation_overall,
         "bundle_benchmark_summary": bundle_summary,
+        "behavior_specialization_summary": behavior_summary,
+        "behavior_specialization_gate": behavior_gate,
         "bundle_readiness": bundle_readiness,
         "bundle_mode_coverage": bundle_mode_coverage,
         "bundle_release_gate": bundle_gate,
@@ -679,7 +800,7 @@ def build_expert_benchmark_report(
         "benchmark_modes": bundle_modes,
         "mode_case_outputs": mode_case_outputs,
         "metadata": {
-            "expert_objective_version": "retrieval_grounded_compression_v1",
+            "expert_objective_version": EXPERT_OBJECTIVE_VERSION,
             "bundle_thresholds": dict(_BUNDLE_BENCHMARK_THRESHOLDS),
         },
     }
@@ -808,6 +929,122 @@ def _expected_terms(title: str, text: str) -> list[str]:
     return words
 
 
+def _load_jsonl_rows(path: Path) -> list[dict]:
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
+
+
+def _heldout_cases_from_validation_rows(
+    *,
+    cluster_id: str,
+    documents: list[dict],
+    qa_rows: list[dict],
+    max_cases: int,
+) -> list[dict]:
+    answerable_qa = [row for row in qa_rows if not bool(row.get("is_impossible")) and str(row.get("answer") or "").strip()]
+    impossible_qa = [row for row in qa_rows if bool(row.get("is_impossible"))]
+    docs_by_title = {str(doc.get("title") or ""): doc for doc in documents}
+    doc_index = 0
+    factual_index = 0
+    refusal_index = 0
+    cases = []
+    category_cycle = list(EVALUATION_CATEGORIES)
+    normalized_max_cases = max(int(max_cases or 0), len(category_cycle))
+    while len(cases) < normalized_max_cases:
+        category = category_cycle[len(cases) % len(category_cycle)]
+        case = None
+        if category in {"factual_recall", "citation_grounding"} and factual_index < len(answerable_qa):
+            row = answerable_qa[factual_index]
+            factual_index += 1
+            case = _qa_case_from_row(cluster_id, len(cases) + 1, category, row)
+        elif category == "out_of_scope_refusal" and refusal_index < len(impossible_qa):
+            row = impossible_qa[refusal_index]
+            refusal_index += 1
+            case = _qa_case_from_row(cluster_id, len(cases) + 1, category, row)
+        elif doc_index < len(documents):
+            doc = documents[doc_index]
+            doc_index += 1
+            case = _document_case(cluster_id, len(cases) + 1, category, doc)
+        elif category in {"factual_recall", "citation_grounding"} and answerable_qa:
+            row = answerable_qa[(len(cases) + factual_index) % len(answerable_qa)]
+            case = _qa_case_from_row(cluster_id, len(cases) + 1, category, row)
+        elif category == "out_of_scope_refusal" and impossible_qa:
+            row = impossible_qa[(len(cases) + refusal_index) % len(impossible_qa)]
+            case = _qa_case_from_row(cluster_id, len(cases) + 1, category, row)
+        elif documents:
+            doc = documents[(len(cases) + doc_index) % len(documents)]
+            case = _document_case(cluster_id, len(cases) + 1, category, doc)
+        if case is None:
+            break
+        if category in {"factual_recall", "citation_grounding", "out_of_scope_refusal"}:
+            title = str(case.get("source_title") or "")
+            if title and title in docs_by_title:
+                case["source_id"] = docs_by_title[title].get("source_id")
+        cases.append(case)
+    return cases
+
+
+def _qa_case_from_row(cluster_id: str, index: int, category: str, row: dict) -> dict:
+    title = str(row.get("title") or "Untitled")
+    question = str(row.get("question") or row.get("prompt") or "").strip()
+    context = str(row.get("context") or "").strip()
+    answers = [str(item).strip() for item in list(row.get("answers") or []) if str(item).strip()]
+    prompt = ""
+    expected_terms = []
+    if category == "factual_recall":
+        prompt = f"Using only the source '{title}', answer this question and cite the source title: {question}"
+        expected_terms = answers[:3] or _expected_terms(title, context)
+    elif category == "citation_grounding":
+        prompt = f"Answer the question using only '{title}' and cite the source title explicitly: {question}"
+        expected_terms = answers[:3] or _expected_terms(title, context)
+    else:
+        prompt = (
+            f"Using only the source '{title}', answer this question: {question}. "
+            "If the source does not contain enough evidence, say what evidence is missing."
+        )
+    return {
+        "id": f"{cluster_id}-{index}",
+        "category": category,
+        "owner": _CATEGORY_SPECS[category]["owner"],
+        "counts_toward_graduation": _CATEGORY_SPECS[category]["counts_toward_graduation"],
+        "source_id": row.get("source_id"),
+        "source_title": title,
+        "prompt": prompt,
+        "expected_terms": expected_terms,
+        "reference_text": context,
+        "markers": list(_CATEGORY_SPECS[category]["markers"]),
+        "requires_citation": _CATEGORY_SPECS[category]["requires_citation"],
+    }
+
+
+def _document_case(cluster_id: str, index: int, category: str, doc: dict) -> dict:
+    title = str(doc.get("title") or "Untitled")
+    text = str(doc.get("text") or doc.get("summary") or "")
+    return {
+        "id": f"{cluster_id}-{index}",
+        "category": category,
+        "owner": _CATEGORY_SPECS[category]["owner"],
+        "counts_toward_graduation": _CATEGORY_SPECS[category]["counts_toward_graduation"],
+        "source_id": doc.get("source_id"),
+        "source_title": title,
+        "prompt": prompt_for_category(category, title),
+        "expected_terms": _expected_terms(title, text),
+        "reference_text": text,
+        "markers": list(_CATEGORY_SPECS[category]["markers"]),
+        "requires_citation": _CATEGORY_SPECS[category]["requires_citation"],
+    }
+
+
 def _adapter_dataset_hash(adapter_dir: Path) -> str:
     for path in (
         adapter_dir / "dataset" / "dataset-manifest.json",
@@ -899,7 +1136,7 @@ def _marker_score(case: dict, lowered_response: str) -> float:
 
 def _grounding_consistency_score(case: dict, response_text: str) -> float:
     score = 1.0
-    if case.get("category") in {"factual_recall", "summarization", "citation_grounding"}:
+    if case.get("category") not in {"contradiction_handling", "out_of_scope_refusal"}:
         reference_text = str(case.get("reference_text") or "")
         if reference_text.strip():
             source_specifics = _specific_grounding_tokens(reference_text)
@@ -1128,15 +1365,25 @@ def _style_transfer_score(lowered_response: str) -> float:
         if re.search(pattern, lowered_response)
     )
     clause_score = 1.0 if ";" in lowered_response or len(re.findall(r"[.!?]", lowered_response)) >= 2 else 0.5
+    evidence_bridge_hits = sum(
+        1
+        for pattern in (r"\bbecause\b", r"\bso that\b", r"\bwhich means\b", r"\bbased on\b", r"\bfrom the source\b")
+        if re.search(pattern, lowered_response)
+    )
+    evidence_bridge_score = min(1.0, evidence_bridge_hits / 2.0)
     action_score = min(1.0, action_hits / 3.0)
     penalty = min(0.6, meta_penalties * 0.25)
-    return max(0.0, min(1.0, (action_score * 0.6) + (clause_score * 0.4) - penalty))
+    return max(
+        0.0,
+        min(1.0, (action_score * 0.45) + (clause_score * 0.2) + (evidence_bridge_score * 0.35) - penalty),
+    )
 
 
 def _terminology_consistency_score(case: dict, lowered_response: str) -> float:
     expected_terms = [str(term).lower() for term in case.get("expected_terms") or [] if str(term).strip()]
     expected_hits = sum(1 for term in expected_terms if term in lowered_response)
-    expected_score = min(1.0, expected_hits / 2.0)
+    expected_score = min(1.0, expected_hits / max(1.0, min(3.0, float(len(expected_terms) or 1))))
+    phrasing_score = 1.0 if len(re.findall(r"\b[a-z]{4,}\b", lowered_response)) >= 8 else 0.5
     meta_penalties = sum(
         1
         for pattern in (
@@ -1148,7 +1395,7 @@ def _terminology_consistency_score(case: dict, lowered_response: str) -> float:
         if re.search(pattern, lowered_response)
     )
     penalty = min(0.75, meta_penalties * 0.25)
-    return max(0.0, min(1.0, expected_score - penalty))
+    return max(0.0, min(1.0, (expected_score * 0.75) + (phrasing_score * 0.25) - penalty))
 
 
 def _run_real_retrieval_baseline(
@@ -1607,6 +1854,7 @@ def _bundle_readiness_report(
     missing_categories: list[str],
     incomplete_categories: list[str],
     bundle_gate: dict,
+    behavior_gate: dict,
     status: str,
 ) -> dict:
     failure_reasons: list[str] = []
@@ -1623,15 +1871,19 @@ def _bundle_readiness_report(
     for check_name, passed in dict(bundle_gate.get("checks") or {}).items():
         if not passed:
             failure_reasons.append(check_name)
+    for check_name, passed in dict(behavior_gate.get("checks") or {}).items():
+        if not passed:
+            failure_reasons.append(check_name)
     return {
         "status": status,
-        "passes": bool(bundle_gate.get("passes")) and not failure_reasons,
+        "passes": bool(bundle_gate.get("passes")) and bool(behavior_gate.get("passes")) and not failure_reasons,
         "failure_reasons": failure_reasons,
         "mode_coverage": bundle_mode_coverage,
         "legacy_category_completeness": {
             "missing_categories": list(missing_categories),
             "incomplete_categories": list(incomplete_categories),
         },
+        "behavior_specialization": behavior_gate,
     }
 
 
@@ -1869,6 +2121,94 @@ def _scores_by_case_id(scores: list[dict]) -> dict[str, dict]:
             continue
         normalized[case_id] = {**item, "case_id": case_id, "score": score}
     return normalized
+
+
+def _behavior_specialization_summary(
+    *,
+    cases: list[dict],
+    retrieval_by_case: dict[str, dict],
+    adapter_by_case: dict[str, dict],
+    wrong_adapter_by_case: dict[str, dict],
+) -> dict:
+    adapter_owned_cases = [case for case in cases if case.get("owner") == "adapter"]
+    if not adapter_owned_cases:
+        return {
+            "case_count": 0,
+            "wrong_adapter_case_count": 0,
+            "wrong_adapter_evaluated": False,
+            "behavior_lift_vs_retrieval_full": 0.0,
+            "behavior_separation_vs_wrong_adapter": None,
+            "category_deltas": {},
+        }
+    category_deltas: dict[str, dict] = {}
+    adapter_scores_all: list[float] = []
+    retrieval_scores_all: list[float] = []
+    wrong_scores_all: list[float] = []
+    for category in ADAPTER_OWNED_CATEGORIES:
+        category_cases = [
+            case for case in adapter_owned_cases if str(case.get("category") or "") == category
+        ]
+        if not category_cases:
+            continue
+        adapter_scores = [
+            float(adapter_by_case[case["id"]]["score"])
+            for case in category_cases
+            if case["id"] in adapter_by_case
+        ]
+        retrieval_scores = [
+            float(retrieval_by_case[case["id"]]["score"])
+            for case in category_cases
+            if case["id"] in retrieval_by_case
+        ]
+        wrong_scores = [
+            float(wrong_adapter_by_case[case["id"]]["score"])
+            for case in category_cases
+            if case["id"] in wrong_adapter_by_case
+        ]
+        adapter_scores_all.extend(adapter_scores)
+        retrieval_scores_all.extend(retrieval_scores)
+        wrong_scores_all.extend(wrong_scores)
+        category_deltas[category] = {
+            "adapter_score": _average(adapter_scores),
+            "retrieval_full_score": _average(retrieval_scores),
+            "wrong_adapter_score": _average(wrong_scores) if wrong_scores else None,
+            "behavior_lift_vs_retrieval_full": round(_average(adapter_scores) - _average(retrieval_scores), 2),
+            "behavior_separation_vs_wrong_adapter": (
+                round(_average(adapter_scores) - _average(wrong_scores), 2) if wrong_scores else None
+            ),
+        }
+    return {
+        "case_count": len(adapter_owned_cases),
+        "wrong_adapter_case_count": len(wrong_scores_all),
+        "wrong_adapter_evaluated": bool(wrong_scores_all),
+        "behavior_lift_vs_retrieval_full": round(_average(adapter_scores_all) - _average(retrieval_scores_all), 2),
+        "behavior_separation_vs_wrong_adapter": (
+            round(_average(adapter_scores_all) - _average(wrong_scores_all), 2) if wrong_scores_all else None
+        ),
+        "category_deltas": category_deltas,
+    }
+
+
+def _behavior_specialization_gate(summary: dict) -> dict:
+    lift = float(summary.get("behavior_lift_vs_retrieval_full") or 0.0)
+    separation = summary.get("behavior_separation_vs_wrong_adapter")
+    wrong_adapter_evaluated = bool(summary.get("wrong_adapter_evaluated"))
+    checks = {
+        "behavior_lift_vs_retrieval_full": lift >= float(_BUNDLE_BENCHMARK_THRESHOLDS["behavior_lift_vs_retrieval_full"]),
+        "wrong_adapter_baseline_present": wrong_adapter_evaluated,
+        "behavior_separation_vs_wrong_adapter": (
+            wrong_adapter_evaluated
+            and separation is not None
+            and float(separation) >= float(_BUNDLE_BENCHMARK_THRESHOLDS["behavior_separation_vs_wrong_adapter"])
+        ),
+    }
+    return {
+        "passes": all(checks.values()),
+        "checks": checks,
+        "behavior_lift_vs_retrieval_full": lift,
+        "behavior_separation_vs_wrong_adapter": separation,
+        "wrong_adapter_evaluated": wrong_adapter_evaluated,
+    }
 
 
 def _graduation_gate_report(category_scores: dict[str, dict]) -> dict:

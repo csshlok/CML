@@ -3,6 +3,8 @@ param(
   [string]$AdapterPath,
   [Parameter(Mandatory = $true)]
   [string]$BaseModel,
+  [string]$WrongAdapterPath = "",
+  [string]$WrongAdapterBaseModel = "",
   [string[]]$SourcePaths = @("docs/PROJECT_CONTEXT.md", "docs/OVERALL_CONTEXT.md"),
   [string]$ReportPath = ".tmp/lora-adapter-quality-benchmark.json",
   [int]$MaxRealSources = 12,
@@ -22,6 +24,17 @@ $baseModelCandidate = if ([System.IO.Path]::IsPathRooted($BaseModel)) { $BaseMod
 $reportCandidate = if ([System.IO.Path]::IsPathRooted($ReportPath)) { $ReportPath } else { Join-Path $repoRoot $ReportPath }
 $adapterFullPath = [System.IO.Path]::GetFullPath($adapterCandidate)
 $baseModelFullPath = [System.IO.Path]::GetFullPath($baseModelCandidate)
+$wrongAdapterFullPath = if ($WrongAdapterPath) {
+  $wrongAdapterCandidate = if ([System.IO.Path]::IsPathRooted($WrongAdapterPath)) { $WrongAdapterPath } else { Join-Path $repoRoot $WrongAdapterPath }
+  [System.IO.Path]::GetFullPath($wrongAdapterCandidate)
+} else { "" }
+$wrongAdapterBaseModelFullPath = if ($WrongAdapterBaseModel) {
+  $wrongBaseCandidate = if ([System.IO.Path]::IsPathRooted($WrongAdapterBaseModel)) { $WrongAdapterBaseModel } else { Join-Path $repoRoot $WrongAdapterBaseModel }
+  [System.IO.Path]::GetFullPath($wrongBaseCandidate)
+} else { "" }
+if ($wrongAdapterFullPath -and $wrongAdapterFullPath -eq $adapterFullPath) {
+  throw "WrongAdapterPath must be different from AdapterPath."
+}
 $reportFullPath = [System.IO.Path]::GetFullPath($reportCandidate)
 $reportDir = Split-Path -Parent $reportFullPath
 if ($reportDir) {
@@ -42,6 +55,8 @@ foreach ($sourcePath in $SourcePaths) {
 
 $env:CML_LORA_BENCH_ADAPTER_PATH = $adapterFullPath
 $env:CML_LORA_BENCH_BASE_MODEL = $baseModelFullPath
+$env:CML_LORA_BENCH_WRONG_ADAPTER_PATH = $wrongAdapterFullPath
+$env:CML_LORA_BENCH_WRONG_ADAPTER_BASE_MODEL = $wrongAdapterBaseModelFullPath
 $env:CML_LORA_BENCH_SOURCE_PATHS_JSON = ConvertTo-Json @($resolvedSources) -Compress
 $env:CML_LORA_BENCH_REPORT_PATH = $reportFullPath
 $env:CML_LORA_BENCH_MAX_REAL_SOURCES = [string]$MaxRealSources
@@ -57,6 +72,7 @@ from pathlib import Path
 
 from backend.app.core.embeddings import content_hash
 from backend.app.core.expert_evaluation import (
+    build_heldout_bundle_evaluation_dataset,
     build_expert_evaluation_plan,
     default_expert_benchmark_token_budgets,
     run_live_expert_benchmark,
@@ -175,33 +191,50 @@ def adapter_training_dataset(adapter_path: Path) -> dict:
 
 adapter_path = Path(os.environ["CML_LORA_BENCH_ADAPTER_PATH"])
 base_model = os.environ["CML_LORA_BENCH_BASE_MODEL"]
+wrong_adapter_path = os.environ.get("CML_LORA_BENCH_WRONG_ADAPTER_PATH") or ""
+wrong_adapter_base_model = os.environ.get("CML_LORA_BENCH_WRONG_ADAPTER_BASE_MODEL") or ""
 source_paths = [Path(item) for item in json.loads(os.environ["CML_LORA_BENCH_SOURCE_PATHS_JSON"])]
 report_path = Path(os.environ["CML_LORA_BENCH_REPORT_PATH"])
 max_real_sources = int(os.environ.get("CML_LORA_BENCH_MAX_REAL_SOURCES") or "12")
 case_limit = int(os.environ.get("CML_LORA_BENCH_CASE_LIMIT") or "6")
 max_new_tokens = int(os.environ.get("CML_LORA_BENCH_MAX_NEW_TOKENS") or "0")
 
-source_records = real_source_records(source_paths, limit=max_real_sources)
-if not source_records:
-    raise SystemExit("No real source records were found for LoRA adapter benchmark.")
-
-documents = [
-    {
-        "source_id": f"source-{index + 1}",
-        "title": item["title"],
-        "summary": item["summary"],
-        "text": item["text"],
-        "content_hash": content_hash(item["text"]),
-    }
-    for index, item in enumerate(source_records)
-]
-dataset = {
-    "cluster_id": "cluster-smoke",
-    "dataset_hash": content_hash("\n".join(f"{doc['source_id']}:{doc['content_hash']}" for doc in documents)),
-    "documents": documents,
-}
 adapter_dataset = adapter_training_dataset(adapter_path)
 adapter_dataset_hash = adapter_dataset.get("dataset_hash") or ""
+heldout_dataset = build_heldout_bundle_evaluation_dataset(
+    adapter_path / "dataset",
+    cluster_id="cluster-smoke",
+    max_cases=max(1, case_limit),
+)
+if heldout_dataset is not None:
+    dataset = heldout_dataset
+    source_records = [
+        {
+            "title": str(item.get("title") or "Untitled"),
+            "path": str((adapter_path / "dataset" / "validation-sources.jsonl")),
+            "chars": len(str(item.get("text") or "")),
+        }
+        for item in list(dataset.get("documents") or [])[:max_real_sources]
+    ]
+else:
+    source_records = real_source_records(source_paths, limit=max_real_sources)
+    if not source_records:
+        raise SystemExit("No real source records were found for LoRA adapter benchmark.")
+    documents = [
+        {
+            "source_id": f"source-{index + 1}",
+            "title": item["title"],
+            "summary": item["summary"],
+            "text": item["text"],
+            "content_hash": content_hash(item["text"]),
+        }
+        for index, item in enumerate(source_records)
+    ]
+    dataset = {
+        "cluster_id": "cluster-smoke",
+        "dataset_hash": content_hash("\n".join(f"{doc['source_id']}:{doc['content_hash']}" for doc in documents)),
+        "documents": documents,
+    }
 plan = build_expert_evaluation_plan(dataset, max_cases=max(1, case_limit))
 if plan.get("dataset_hash"):
     dataset["dataset_hash"] = str(plan["dataset_hash"])
@@ -226,6 +259,8 @@ benchmark_run = run_live_expert_benchmark(
     dataset,
     adapter_path=str(adapter_path),
     base_model=base_model,
+    wrong_adapter_path=(wrong_adapter_path or None),
+    wrong_adapter_base_model=(wrong_adapter_base_model or None),
     max_new_tokens=(max_new_tokens if max_new_tokens > 0 else None),
     max_new_tokens_by_category=(None if max_new_tokens > 0 else default_expert_benchmark_token_budgets()),
     evaluation_plan=plan,
@@ -250,12 +285,15 @@ if not runtime.get("ok"):
 adapter_case_scores = list(benchmark_run.get("adapter_case_scores") or [])
 baseline_case_scores = list(benchmark_run.get("retrieval_case_scores") or [])
 retrieval_small_case_scores = list(benchmark_run.get("retrieval_small_case_scores") or [])
+wrong_adapter_case_scores = list(benchmark_run.get("wrong_adapter_case_scores") or [])
 mode_case_outputs = dict((benchmark_run.get("benchmark_report") or {}).get("mode_case_outputs") or {})
 bundle_case_outputs = dict((benchmark_run.get("benchmark_report") or {}).get("bundle_case_outputs") or mode_case_outputs)
 benchmark = dict(benchmark_run.get("benchmark_report") or {})
 bundle_summary = dict(benchmark.get("bundle_benchmark_summary") or {})
 bundle_release_gate = dict(benchmark.get("bundle_release_gate") or benchmark.get("gate_report") or {})
 bundle_category_scores = dict(benchmark.get("bundle_category_scores") or {})
+behavior_summary = dict(benchmark.get("behavior_specialization_summary") or {})
+behavior_gate = dict(benchmark.get("behavior_specialization_gate") or {})
 reported_status = benchmark["status"]
 reported_passes = bool(benchmark["passes"])
 if adapter_dataset_hash and not dataset_matches_adapter:
@@ -282,12 +320,15 @@ report = {
     "adapter_case_scores": adapter_case_scores,
     "retrieval_case_scores": baseline_case_scores,
     "retrieval_small_case_scores": retrieval_small_case_scores,
+    "wrong_adapter_case_scores": wrong_adapter_case_scores,
     "bundle_case_outputs": bundle_case_outputs,
     "mode_case_outputs": mode_case_outputs,
     "benchmark_report": benchmark,
     "bundle_benchmark_summary": bundle_summary,
     "bundle_release_gate": bundle_release_gate,
     "bundle_category_scores": bundle_category_scores,
+    "behavior_specialization_summary": behavior_summary,
+    "behavior_specialization_gate": behavior_gate,
     "quality_gate_report": bundle_release_gate,
     "adapter_training_dataset_hash": adapter_dataset_hash,
     "benchmark_dataset_hash": dataset["dataset_hash"],
@@ -304,6 +345,8 @@ print(
             "dataset_matches_adapter_training": dataset_matches_adapter,
             "bundle_benchmark_summary": bundle_summary,
             "bundle_release_gate": bundle_release_gate,
+            "behavior_specialization_summary": behavior_summary,
+            "behavior_specialization_gate": behavior_gate,
         },
         indent=2,
     )
