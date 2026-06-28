@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     lora_benchmark_max_validation_record_share_per_source: float = 0.10
     lora_benchmark_max_validation_record_share_per_source_per_category: float = 0.20
     lora_benchmark_case_limit: int = 0
+    lora_train_source_target: int = 0
+    lora_validation_source_target: int = 0
     allow_lora_test_trainer: bool = False
     lora_model_dirs: str = ""
     lora_runtime_python: str | None = None
@@ -78,7 +80,7 @@ class Settings(BaseSettings):
     lora_training_gradient_accumulation_steps: int = 1
     lora_training_eval_strategy: str = "steps"
     lora_training_eval_steps: int = 200
-    lora_training_early_stopping_steps: int = 2
+    lora_training_early_stopping_steps: int = 0
     lora_training_save_total_limit: int = 3
     model_scan_roots: str = ""
     model_scan_max_depth: int = 4

@@ -12,7 +12,7 @@ from uuid import uuid4
 from backend.app.core.config import get_settings
 from backend.app.core.embeddings import content_hash
 from backend.app.core.expert_evaluation import EVALUATION_CATEGORIES
-from backend.app.core.training_dataset import TRAINING_RECORD_TYPES
+from backend.app.core.training_dataset import LEGACY_CATEGORY_BY_RECORD_TYPE, TRAINING_RECORD_TYPES
 
 REQUIRED_ADAPTER_FILES = ("adapter_config.json", "adapter_model.safetensors")
 SUPPORTED_EXPERT_STATUSES = [
@@ -143,6 +143,7 @@ def run_lora_training_process(*, dataset_manifest: dict, output_dir: Path, confi
     settings = get_settings()
     if settings.allow_lora_test_trainer:
         _write_test_adapter(output_dir, config)
+        _package_dataset_artifacts(dataset_manifest, output_dir)
         stdout_path.write_text("test trainer completed\n", encoding="utf-8")
         stderr_path.write_text("", encoding="utf-8")
         return {
@@ -190,6 +191,7 @@ def run_lora_training_process(*, dataset_manifest: dict, output_dir: Path, confi
         if "os error 1455" in result.stderr.lower() or "paging file is too small" in result.stderr.lower():
             raise RuntimeError(_windows_virtual_memory_failure_detail(config["base_model"]))
         raise RuntimeError(f"LoRA trainer failed with exit code {result.returncode}.")
+    _package_dataset_artifacts(dataset_manifest, output_dir)
     _verify_adapter_files(output_dir)
     return {
         "status": "succeeded",
@@ -335,21 +337,34 @@ def benchmark_eligibility_report(dataset_manifest: dict) -> dict:
     accounting = dict(dataset_manifest.get("benchmark_record_accounting") or {})
     train = dict(accounting.get("train") or {})
     validation = dict(accounting.get("validation") or {})
-    uses_record_type_accounting = bool(validation.get("record_type_counts"))
+    raw_validation_counts = dict(validation.get("record_type_counts") or validation.get("category_counts") or {})
+    raw_validation_shares = dict(
+        validation.get("max_record_share_per_source_per_record_type")
+        or validation.get("max_record_share_per_source_per_category")
+        or {}
+    )
+    validation_counts_are_record_types = any(str(key) in TRAINING_RECORD_TYPES for key in raw_validation_counts)
+    validation_shares_are_record_types = any(str(key) in TRAINING_RECORD_TYPES for key in raw_validation_shares)
     validation_dimension_names = (
-        TRAINING_RECORD_TYPES if uses_record_type_accounting else EVALUATION_CATEGORIES
+        TRAINING_RECORD_TYPES if validation_counts_are_record_types else EVALUATION_CATEGORIES
     )
     validation_record_type_counts = {
-        str(key): int(value)
-        for key, value in dict(validation.get("record_type_counts") or validation.get("category_counts") or {}).items()
+        record_type: (
+            int(raw_validation_counts.get(record_type, 0))
+            if validation_counts_are_record_types
+            else int(raw_validation_counts.get(LEGACY_CATEGORY_BY_RECORD_TYPE.get(record_type, ""), 0))
+        )
+        for record_type in TRAINING_RECORD_TYPES
     }
     validation_record_type_minimums = {
         record_type: validation_record_type_counts.get(record_type, 0) >= settings.lora_benchmark_min_validation_records_per_category
         for record_type in validation_dimension_names
     }
     validation_record_type_source_share = {
-        record_type: float(
-            dict(validation.get("max_record_share_per_source_per_record_type") or validation.get("max_record_share_per_source_per_category") or {}).get(record_type, 0.0)
+        record_type: (
+            float(raw_validation_shares.get(record_type, 0.0))
+            if validation_shares_are_record_types
+            else float(raw_validation_shares.get(LEGACY_CATEGORY_BY_RECORD_TYPE.get(record_type, ""), 0.0))
         )
         for record_type in validation_dimension_names
     }
@@ -372,6 +387,10 @@ def benchmark_eligibility_report(dataset_manifest: dict) -> dict:
         "minimum_validation_records_per_category": minimum_validation_records_per_dimension,
         "maximum_validation_record_share_per_source_per_category": maximum_validation_share_per_dimension,
     }
+    checks["maximum_validation_record_share_per_source_per_category"] = checks[
+        "maximum_validation_record_share_per_source_per_record_type"
+    ]
+    checks["minimum_validation_records_per_category"] = checks["minimum_validation_records_per_record_type"]
     return {
         "passes": all(checks.values()),
         "checks": checks,
@@ -558,6 +577,19 @@ def _write_llamafactory_dataset_info(dataset_manifest: dict) -> Path:
     path = dataset_dir / "dataset_info.json"
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
+
+
+def _package_dataset_artifacts(dataset_manifest: dict, output_dir: Path) -> Path:
+    dataset_dir = Path(str(dataset_manifest["dataset_dir"]))
+    packaged_dir = output_dir / "dataset"
+    packaged_dir.mkdir(parents=True, exist_ok=True)
+    for path in dataset_dir.iterdir():
+        target = packaged_dir / path.name
+        if path.is_dir():
+            shutil.copytree(path, target, dirs_exist_ok=True)
+            continue
+        shutil.copy2(path, target)
+    return packaged_dir
 
 
 def _llamafactory_training_config(dataset_manifest: dict, output_dir: Path, config: dict) -> dict:
