@@ -52,6 +52,26 @@ class ExportLoraRunArtifactsTests(unittest.TestCase):
                                 "scored_case_count": 1,
                                 "overall": {"retrieval_only_score": 80.0, "adapter_score": 87.0},
                                 "graduation_overall": {"retrieval_only_score": 80.0, "adapter_score": 87.0},
+                                "behavior_specialization_summary": {
+                                    "behavior_lift_vs_retrieval_full": 7.0,
+                                    "behavior_separation_vs_wrong_adapter": 9.0,
+                                    "category_deltas": {
+                                        "style_transfer": {
+                                            "adapter_score": 87.0,
+                                            "retrieval_full_score": 80.0,
+                                            "wrong_adapter_score": 78.0,
+                                            "behavior_lift_vs_retrieval_full": 7.0,
+                                            "behavior_separation_vs_wrong_adapter": 9.0,
+                                        }
+                                    },
+                                },
+                                "behavior_specialization_gate": {
+                                    "passes": True,
+                                    "checks": {
+                                        "behavior_lift_vs_retrieval_full": True,
+                                        "behavior_separation_vs_wrong_adapter": True,
+                                    },
+                                },
                                 "category_scores": {
                                     "style_transfer": {
                                         "owner": "adapter",
@@ -173,22 +193,29 @@ class ExportLoraRunArtifactsTests(unittest.TestCase):
             bundle_case_csv = bundle_case_csv_path.read_text(encoding="utf-8")
             bundle_category_csv_path = Path(output_manifest["bundle_category_scores_csv"])
             bundle_category_csv = bundle_category_csv_path.read_text(encoding="utf-8")
+            behavior_csv_path = Path(output_manifest["behavior_specialization_csv"])
+            behavior_csv = behavior_csv_path.read_text(encoding="utf-8")
 
             self.assertEqual(summary["bundle_benchmark_summary"]["bundle_with_expert_score"], 87.0)
             self.assertEqual(summary["bundle_gate"]["token_savings_vs_retrieval_full"], 42.0)
+            self.assertEqual(summary["behavior_specialization_summary"]["behavior_separation_vs_wrong_adapter"], 9.0)
             self.assertEqual(summary["bundle_mode_count"], 4)
             self.assertTrue(summary["compatibility_only"]["legacy_category_scores"])
             self.assertTrue(output_manifest["category_scores_csv"].endswith("-legacy-category-scores.csv"))
             self.assertTrue(output_manifest["bundle_category_scores_csv"].endswith("-bundle-category-scores.csv"))
+            self.assertTrue(output_manifest["behavior_specialization_csv"].endswith("-behavior-specialization.csv"))
             self.assertTrue(output_manifest["case_scores_csv"].endswith("-legacy-case-scores.csv"))
             self.assertTrue(output_manifest["bundle_case_outputs_csv"].endswith("-bundle-case-outputs.csv"))
             self.assertIn("Cluster Bundle Run Artifacts", html)
+            self.assertIn("Behavior Specialization CSV", html)
             self.assertIn("Bundle With Expert", html)
             self.assertIn("Quality Gain Vs Small", html)
             self.assertIn("Legacy Category Scores CSV", html)
             self.assertIn("Bundle Category Scores CSV", html)
             self.assertIn("Bundle Case Outputs CSV", html)
             self.assertIn("style_transfer", bundle_category_csv)
+            self.assertIn("wrong_adapter_score", behavior_csv)
+            self.assertIn("9.0", behavior_csv)
             self.assertIn("42.0", bundle_category_csv)
             self.assertIn("bundle_with_expert", bundle_case_csv)
             self.assertIn("compress this", bundle_case_csv)

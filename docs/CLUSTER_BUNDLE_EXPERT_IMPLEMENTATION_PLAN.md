@@ -1,10 +1,14 @@
-# Retrieval-Grounded Cluster Bundle Expert Implementation Plan
+# Behavior-Specialized Hybrid Cluster Expert Implementation Plan
 
-Last updated: 2026-06-26
+Last updated: 2026-06-27
 
 ## Purpose
 
-This document defines the implementation plan for changing CML's cluster expert architecture from "LoRA adapter as a standalone cluster memory expert" to "retrieval-grounded cluster bundle with optional LoRA compression."
+This document defines the implementation plan for changing CML's cluster expert architecture from "LoRA adapter as a standalone cluster memory expert" to a behavior-specialized hybrid expert:
+
+- retrieval for facts
+- LoRA for cluster-specific behavior
+- final synthesis from a retrieval-grounded packet
 
 The goal is to preserve the original product value:
 
@@ -12,11 +16,21 @@ The goal is to preserve the original product value:
 - Give local and external models compact, reusable, source-grounded cluster context.
 - Keep cluster-specific terminology, style, and reasoning patterns available without forcing every downstream model to reread hundreds of raw sources.
 
-The architecture change is necessary because recent LoRA testing showed that a small cluster adapter is not safe as the factual source of truth. It can produce fluent but wrong source titles, names, places, and citations. Retrieval must remain the authority for facts and citations. LoRA can still be useful, but only as a grounded compression and interpretation layer over retrieved evidence.
+The architecture change is necessary because recent LoRA testing showed that a small cluster adapter is not safe as the factual source of truth. It can produce fluent but wrong source titles, names, places, and citations. Retrieval must remain the authority for facts and citations.
+
+The correction in this version is important: LoRA should not be reduced to a cosmetic compression helper only. It should own the cluster's behavior where behavior is separable from factual authority:
+
+- terminology preference
+- local framing
+- answer shape
+- reasoning order
+- practical emphasis
+- conflict-handling tone
+- uncertainty language
 
 ## Product Contract
 
-The product-facing phrase "cluster expert" remains valid only if it means the full cluster bundle:
+The product-facing phrase "cluster expert" remains valid only if it means the full hybrid cluster bundle:
 
 ```text
 Cluster Expert Bundle =
@@ -25,7 +39,7 @@ Cluster Expert Bundle =
   source-trust metadata
   memory profile
   cluster glossary
-  optional LoRA adapter
+  LoRA behavior adapter
   quality and freshness metadata
   expansion handles
   token-savings telemetry
@@ -37,9 +51,20 @@ The source-of-truth contract is:
 
 ```text
 Retrieval owns facts, citations, source IDs, quotes, dates, names, numbers, and refusal when evidence is missing.
-LoRA owns grounded compression, terminology normalization, local style, and reasoning-pattern hints.
+LoRA owns grounded behavior specialization: terminology normalization, local style, reasoning-pattern hints, answer structure, and domain-specific framing.
 The final chat model or external MCP model owns user-facing synthesis from the packet.
 ```
+
+## Hybrid Expert Definition
+
+A real behavior-specialized hybrid expert is not just clustered retrieval plus a short digest. It must satisfy all of the following:
+
+- When retrieval is present, the answer still reflects cluster-specific behavior that the base model would not naturally produce.
+- When the wrong cluster adapter is paired with the same evidence, style, terminology, framing, and reasoning order degrade measurably.
+- When the correct adapter is used on weak evidence, the system still behaves like the right expert while refusing unsupported facts.
+- Final factual authority always remains in the retrieved evidence.
+
+This means the adapter is not evaluated as memory. It is evaluated as behavioral control under grounded conditions.
 
 ## Architecture Shift
 
@@ -59,12 +84,12 @@ New target flow:
 User query
 -> router selects cluster bundle
 -> bundle retrieves source-grounded evidence
--> optional LoRA compresses/interprets retrieved evidence
--> bundle returns compact packet with citations and expansion handles
+-> LoRA applies cluster-specific behavior over retrieved evidence
+-> bundle returns compact packet with citations, expansion handles, and behavior cues
 -> final model answers from packet
 ```
 
-This preserves the token-saving idea without asking the adapter to memorize a 600-700 source cluster.
+This preserves the token-saving idea without asking the adapter to memorize a 600-700 source cluster, while still giving LoRA a real product role.
 
 ## Non-Goals
 
@@ -72,6 +97,7 @@ This preserves the token-saving idea without asking the adapter to memorize a 60
 - Do not remove retrieval from expert-mode answers.
 - Do not use citation-generation from the adapter as an authority signal.
 - Do not train adapters on factual recall, citation grounding, or out-of-scope refusal as memory tasks.
+- Do not collapse the adapter back into a pure compression-only role and still call it an expert.
 - Do not ship "trained expert" UI copy unless the bundle passes quality, grounding, and freshness gates.
 
 ## New Backend Abstraction
@@ -91,7 +117,7 @@ def build_cluster_bundle_context(
     query: str,
     cluster_id: str | None = None,
     token_budget: int | None = None,
-    allow_expert_compression: bool = True,
+    allow_expert_behavior: bool = True,
     mode: str = "context",
 ) -> dict:
     ...
@@ -114,14 +140,26 @@ Expected return shape:
     "summary": "",
     "local_terms": [],
     "style_profile": "",
-    "reasoning_patterns": []
+    "reasoning_patterns": [],
+    "answer_contract": {
+      "voice": "",
+      "structure": [],
+      "emphasis": [],
+      "refusal_style": ""
+    }
   },
   "expert_digest": {
     "used": false,
     "mode": "not_eligible",
     "text": "",
     "artifact_id": null,
-    "warnings": []
+    "warnings": [],
+    "behavior_profile": {
+      "terminology_shift": [],
+      "style_markers": [],
+      "reasoning_order": [],
+      "framing_rules": []
+    }
   },
   "token_ledger": {
     "raw_scope_tokens_estimate": 0,
@@ -141,23 +179,68 @@ The bundle builder should become the shared entry point for chat, Bridge, MCP, b
 
 | Area | Current Code | Required Change |
 | --- | --- | --- |
-| Product context docs | `docs/PROJECT_CONTEXT.md`, `docs/OVERALL_CONTEXT.md` | Replace standalone "LoRA cluster expert" language with "retrieval-grounded cluster expert bundle." |
-| LoRA policy | `docs/LORA_CLUSTER_EXPERT_MVP_POLICY.md` | Redefine graduation around grounded compression and token savings, not adapter beating retrieval on answers. |
+| Product context docs | `docs/PROJECT_CONTEXT.md`, `docs/OVERALL_CONTEXT.md` | Replace standalone "LoRA cluster expert" language with "behavior-specialized hybrid cluster expert." |
+| LoRA policy | `docs/LORA_CLUSTER_EXPERT_MVP_POLICY.md` | Redefine graduation around grounded behavior specialization plus token savings, not adapter beating retrieval on facts. |
 | LoRA runbook | `docs/LORA_FINDINGS_AND_REPLICATION_RUNBOOK.md` | Add latest finding: prompt-only adapter is unsafe as factual memory; new runs must use bundle objective. |
 | Chat route | `backend/app/api/routes/chat.py::_build_retrieval_context` | Replace direct expert assist call with cluster bundle result. |
-| Expert assist | `backend/app/api/routes/chat.py::_maybe_run_cluster_expert_assist` | Stop sending prompt-only requests to the adapter. Pass retrieved evidence and cluster profile. |
-| Expert runtime | `backend/app/core/expert_runtime.py::run_cluster_expert_prompt` | Keep for smoke only. Add `run_cluster_expert_compression`. |
-| Context packets | `backend/app/core/context_packets.py` | Add expert digest, retrieval authority, token ledger, and bundle status fields to rendered packets. |
+| Expert assist | `backend/app/api/routes/chat.py::_maybe_run_cluster_expert_assist` | Stop sending prompt-only requests to the adapter. Pass retrieved evidence and cluster profile plus behavior contract. |
+| Expert runtime | `backend/app/core/expert_runtime.py::run_cluster_expert_prompt` | Keep for smoke only. Replace compression-only runtime with grounded behavior runtime. |
+| Context packets | `backend/app/core/context_packets.py` | Add expert digest, retrieval authority, token ledger, behavior profile, and bundle status fields to rendered packets. |
 | Bridge API | `backend/app/api/routes/bridge.py::build_context` | Call the bundle builder instead of assembling packet fields independently. |
 | MCP formatting | `backend/app/bridge_mcp.py` | Surface bundle packet text by default and keep raw JSON diagnostics explicit. |
 | Schemas | `backend/app/schemas.py::BridgeContextResponse`, `ChatCoverageLedger` | Add bundle status, expert digest, expert mode, token ledger, and retrieval-authority fields. |
-| Training exporter | `backend/app/core/training_dataset.py` | Replace per-source answer categories with evidence-packet-to-digest training records. |
-| Evaluation | `backend/app/core/expert_evaluation.py` | Replace retrieval-vs-adapter answer benchmark with retrieval-only vs retrieval-plus-expert packet benchmark. |
+| Training exporter | `backend/app/core/training_dataset.py` | Replace per-source answer categories with evidence-to-behavior records and packet-to-answer-shape records. |
+| Evaluation | `backend/app/core/expert_evaluation.py` | Replace compression-only grading with behavior-specialization grading under grounded retrieval. |
 | Legacy proxy scoring | `backend/app/core/training_evaluation.py` | Remove from activation paths or rename to structural readiness. Do not report as quality. |
 | Training lifecycle | `backend/app/core/lora_training.py`, `backend/app/core/background_jobs.py` | Keep early stopping, eval loss, dataset hash, rollback, and quality gates; change quality gate input to bundle benchmark. |
 | Model recommender | `backend/app/core/model_recommender/*` | Reword expert model as optional expert-compression runtime. Keep separate chat and expert hardware gates. |
 | Desktop UI | `apps/desktop/src/routes/*` | Update status copy and progress UI to distinguish retrieval-ready from expert-compression-ready. |
-| Scripts | `scripts/backend/*lora*.ps1`, `scripts/backend/export-lora-run-artifacts.py` | Generate bundle benchmark artifacts with raw packets, token ledgers, sample outputs, and per-case expert use. |
+| Scripts | `scripts/backend/*lora*.ps1`, `scripts/backend/export-lora-run-artifacts.py` | Generate bundle benchmark artifacts with raw packets, token ledgers, behavior deltas, sample outputs, and per-case expert use. |
+
+## Behavior Ownership
+
+The adapter should own these behaviors only when grounded evidence is present:
+
+- preferred local terminology
+- answer structure such as bulleting, sequencing, and conclusion style
+- reasoning order such as evidence -> interpretation -> action
+- practical or diagnostic emphasis
+- conflict and uncertainty phrasing
+- local domain framing
+
+The adapter must not own:
+
+- exact factual recall
+- citation identity
+- source-title generation from memory
+- dates, names, quantities, or quotes unless directly supported by retrieval
+
+## Router Upgrade
+
+The current router decides mainly whether expert compression is eligible. The hybrid expert router must decide:
+
+- whether retrieval evidence is sufficient
+- whether a cluster adapter is behavior-eligible
+- whether the query is behavior-sensitive or purely factual
+- whether the final answer should use:
+  - retrieval only
+  - retrieval + behavior adapter
+  - retrieval + behavior adapter + packet compression
+
+Initial route-away categories should remain fact-heavy:
+
+- factual recall
+- citation grounding
+- strict numeric/date/entity extraction
+
+Initial route-toward categories should expand:
+
+- terminology consistency
+- style transfer
+- reasoning pattern
+- practical summarization
+- conflict framing
+- uncertainty boundaries
 
 ## Phase 1: Product And Docs Contract
 
@@ -177,16 +260,16 @@ Required edits:
 
 Specific wording changes:
 
-- Replace "LoRA cluster expert" with "retrieval-grounded cluster expert bundle" where the claim is product-facing.
-- Replace "adapter knows the cluster" with "adapter compresses retrieved cluster evidence."
-- Replace "expert beats retrieval" with "expert bundle preserves answer quality while reducing context tokens."
+- Replace "LoRA cluster expert" with "behavior-specialized hybrid cluster expert" where the claim is product-facing.
+- Replace "adapter knows the cluster" with "adapter applies cluster-specific behavior to retrieved evidence."
+- Replace "expert beats retrieval" with "expert bundle improves behavior quality while preserving factual grounding."
 - Keep "citations come only from retrieval" explicit.
 - Mark standalone adapter factual recall as an invalid goal.
 
 Acceptance checks:
 
 - No public-facing doc should imply the adapter can be trusted as source memory.
-- All release gates should describe bundle quality, not adapter memory quality.
+- All release gates should describe grounded bundle quality and measurable behavior lift, not adapter memory quality.
 - Hardware docs should treat expert compression as a higher-spec optional capability unless public V1 explicitly blocks on it.
 
 ## Phase 2: Cluster Bundle Core
@@ -198,8 +281,9 @@ Responsibilities:
 - Run semantic retrieval for the selected cluster or vault scope.
 - Load memory items and working memory.
 - Build a source-grounded evidence packet.
-- Decide whether expert compression is eligible.
+- Decide whether expert behavior is eligible.
 - Call LoRA only with retrieved evidence.
+- Extract and persist behavior profile signals that can be reused downstream.
 - Produce token telemetry.
 - Return a single bundle result consumed by chat and Bridge.
 
@@ -215,7 +299,10 @@ def build_cluster_profile(...) -> dict:
 def should_use_expert_compression(...) -> dict:
     ...
 
-def build_expert_compression_prompt(...) -> str:
+def build_expert_behavior_prompt(...) -> str:
+    ...
+
+def extract_behavior_profile(...) -> dict:
     ...
 
 def estimate_bundle_token_savings(...) -> dict:
@@ -228,6 +315,7 @@ Invariants:
 - If the query is factual/citation/refusal-sensitive, adapter output may be used only as a non-authoritative digest or disabled entirely.
 - If LoRA output mentions a source title, name, number, or date not found in evidence, the digest must be discarded.
 - A failed expert call must degrade to retrieval-only without failing the chat request.
+- If the adapter does not produce measurable cluster-specific behavior beyond the base model, it must not be treated as a qualified expert artifact.
 
 Tests to add:
 
@@ -238,6 +326,32 @@ Tests to add:
 - Test bundle strips or rejects unsupported source/entity claims from expert digest.
 - Test bundle reports token savings telemetry.
 - Test bundle degrades cleanly when expert runtime fails.
+- Test bundle emits behavior profile fields only when supported by grounded evidence.
+- Test wrong-adapter-vs-right-adapter produces measurable behavior deltas with the same evidence.
+
+## Phase 2A: Behavior Profile Layer
+
+Add a behavior profile abstraction derived from the cluster corpus and reinforced by training:
+
+```json
+{
+  "terminology_shift": [],
+  "style_markers": [],
+  "reasoning_order": [],
+  "framing_rules": [],
+  "refusal_style": "",
+  "practicality_bias": ""
+}
+```
+
+This profile must be built from local evidence and attached to:
+
+- bundle construction
+- training record generation
+- runtime prompting
+- evaluation reports
+
+The behavior profile is the contract the adapter is trying to learn.
 
 ## Phase 3: Chat Integration
 
@@ -428,6 +542,204 @@ Tests to add:
 - Exporter excludes `MANIFEST.json` and other metadata files from source selection.
 - Exporter enforces source diversity and max-share caps.
 - Exporter emits manifest with record-type distribution.
+
+## External Dataset Choice And Import Plan
+
+The exact external dataset pair for the next rebuild is:
+
+- source corpus: `wikimedia/wikipedia`
+- QA and benchmark prompts: `rajpurkar/squad_v2`
+
+Use the current English Wikipedia config:
+
+```text
+dataset = wikimedia/wikipedia
+config = 20231101.en
+split = train
+```
+
+Use the default SQuAD v2 config:
+
+```text
+dataset = rajpurkar/squad_v2
+config = squad_v2
+splits = train, validation
+```
+
+This pairing is intentional:
+
+- `wikimedia/wikipedia` gives us a large clean text reservoir for the exact `700` train-source and `300` validation-source corpus split.
+- `rajpurkar/squad_v2` gives us a separate prompt-and-answer bank with explicit answerable and unanswerable cases.
+- SQuAD must not become the adapter's factual memory target. It is a prompt/answer and benchmark asset, not the factual authority for the expert runtime.
+
+### Import Contract
+
+The import must produce three distinct artifacts, not one blended dataset:
+
+- `train-sources.jsonl` and `validation-sources.jsonl`
+  - raw source documents from `wikimedia/wikipedia`
+- `train-corpus.txt` and `validation-corpus.txt`
+  - pure text concatenation of the source split for inspection and trainer sanity checks
+- `train-qa.jsonl` and `validation-qa.jsonl`
+  - prompt/answer records from `rajpurkar/squad_v2`
+
+Target counts:
+
+- source corpus: exactly `1000` Wikipedia articles
+  - `700` train
+  - `300` validation
+- QA prompts:
+  - import the full `squad_v2` `validation` split as the first benchmark/eval bank
+  - optionally import a bounded subset of `squad_v2` `train` as a separate development prompt bank
+
+### Wikipedia Selection Rules
+
+Do not ingest Wikipedia blindly. Apply source-quality gates before the `700/300` split:
+
+- language must be English via config `20231101.en`
+- keep only articles with substantive body text
+- exclude pages dominated by lists, tables, redirects, or disambiguation-style patterns
+- exclude ultra-short stubs
+- exclude duplicate normalized text
+- strip empty sections and excessive markup residue if present
+
+Initial concrete thresholds:
+
+- minimum normalized text length: `1500` characters
+- preferred article size band: `1500-20000` characters
+- maximum title duplication: `1`
+- duplicate normalized-content tolerance: `0`
+
+Selection procedure:
+
+1. Stream or batch-load `wikimedia/wikipedia`, config `20231101.en`, split `train`.
+2. Normalize article text into the exact trainer-ready plain-text form.
+3. Filter by the quality rules above.
+4. Deterministically sample `1000` accepted articles with a fixed seed.
+5. Sort the accepted sample deterministically by synthetic `source_id`.
+6. Assign the first `700` to train and the next `300` to validation.
+
+Required stored fields per imported Wikipedia source:
+
+```json
+{
+  "source_id": "wiki:<config>:<row_id>",
+  "title": "Article title",
+  "text": "Normalized article text",
+  "summary": "Short derived summary",
+  "content_hash": "hash",
+  "origin_dataset": "wikimedia/wikipedia",
+  "origin_config": "20231101.en",
+  "origin_split": "train"
+}
+```
+
+### SQuAD v2 Selection Rules
+
+SQuAD import is separate and must preserve answerability metadata.
+
+Keep fields:
+
+- `id`
+- `title`
+- `context`
+- `question`
+- `answers.text`
+- `answers.answer_start`
+- impossible or no-answer status
+
+Required stored fields per QA item:
+
+```json
+{
+  "qa_id": "squad_v2:<split>:<id>",
+  "title": "Article title",
+  "question": "User-style prompt",
+  "context": "Evidence passage",
+  "answers": ["canonical answer"],
+  "is_impossible": false,
+  "origin_dataset": "rajpurkar/squad_v2",
+  "origin_config": "squad_v2",
+  "origin_split": "validation"
+}
+```
+
+Import rules:
+
+- keep answerable and unanswerable records
+- preserve multiple gold answers when they exist
+- dedupe exact duplicate question/context pairs
+- do not rewrite answers into unsupported paraphrases
+- keep `validation` pristine as the benchmark bank
+
+### How This Fits The Hybrid-Expert Objective
+
+The role split must stay strict:
+
+- Wikipedia articles provide the raw textual source bed for behavior-specialization exports.
+- SQuAD provides independent question/answer probes so we can test whether the retrieval-grounded system answers cleanly and refuses unsupported cases correctly.
+- The LoRA objective remains behavior specialization under evidence, not memorization of Wikipedia facts or SQuAD answers.
+
+That means:
+
+- do not train the adapter to answer a SQuAD question from memory without evidence
+- do not treat SQuAD gold answers as the runtime citation authority
+- do use SQuAD prompts to benchmark retrieval grounding, refusal behavior, answer structure, and evidence use
+
+### Import Implementation Plan
+
+Implement one dedicated importer script for the external rebuild:
+
+```text
+scripts/backend/import-hf-wikipedia-squad.py
+```
+
+The script should:
+
+1. Download or stream `wikimedia/wikipedia` `20231101.en`.
+2. Build the filtered `1000`-article source pool.
+3. Export exact `700/300` source splits through `write_cluster_training_dataset(...)`.
+4. Download `rajpurkar/squad_v2`.
+5. Export separate QA banks:
+   - `train-qa.jsonl`
+   - `validation-qa.jsonl`
+   - optional raw `squad-validation-prompts.jsonl`
+6. Emit a machine-readable manifest with:
+   - dataset IDs
+   - configs
+   - split dates
+   - row counts
+   - content hashes
+   - sample IDs
+
+Suggested output layout:
+
+```text
+artifacts/external-datasets/wiki-squad-v1/
+  dataset-manifest.json
+  train-sources.jsonl
+  validation-sources.jsonl
+  train-corpus.txt
+  validation-corpus.txt
+  train-qa.jsonl
+  validation-qa.jsonl
+  squad-validation-prompts.jsonl
+```
+
+### Runtime And Benchmark Guardrails
+
+Before any LoRA retrain or benchmark run:
+
+- fail closed if Wikipedia source count is not exactly `700/300`
+- fail closed if SQuAD validation bank is missing
+- fail closed if source manifest hashes change without a new dataset version
+- record the external dataset IDs and configs in the adapter artifact manifest
+
+The dataset label for this rebuild should be:
+
+```text
+wiki-squad-hybrid-v1
+```
 
 ## Phase 7: Benchmark Redesign
 
@@ -750,4 +1062,3 @@ Product success metrics:
 - Whether Bridge clients can request expert compression per call or only inherit client-level permission.
 - Minimum benchmark sample size required for public release gating.
 - Whether token-savings targets should differ for chat, Bridge, and MCP clients.
-

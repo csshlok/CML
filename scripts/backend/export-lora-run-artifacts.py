@@ -29,6 +29,8 @@ def main() -> None:
     overall = dict(benchmark_report.get("overall") or {})
     graduation = dict(benchmark_report.get("graduation_overall") or {})
     bundle_summary = dict(benchmark_report.get("bundle_benchmark_summary") or {})
+    behavior_summary = dict(benchmark_report.get("behavior_specialization_summary") or {})
+    behavior_gate = dict(benchmark_report.get("behavior_specialization_gate") or {})
     category_scores = dict(benchmark_report.get("category_scores") or {})
     bundle_category_scores = dict(benchmark_report.get("bundle_category_scores") or {})
     gate_report = dict(benchmark_report.get("bundle_release_gate") or benchmark_report.get("gate_report") or {})
@@ -64,6 +66,8 @@ def main() -> None:
         "quality_gate": quality_gate,
         "bundle_gate": gate_report,
         "bundle_benchmark_summary": bundle_summary,
+        "behavior_specialization_summary": behavior_summary,
+        "behavior_specialization_gate": behavior_gate,
         "benchmark_modes": benchmark_modes,
         "overall": overall,
         "graduation_overall": graduation,
@@ -173,6 +177,32 @@ def main() -> None:
                     "token_savings_vs_retrieval_full": report.get("token_savings_vs_retrieval_full"),
                     "unsupported_claim_rate": bundle_with_expert.get("unsupported_claim_rate"),
                     "wrong_citation_rate": bundle_with_expert.get("wrong_citation_rate"),
+                }
+            )
+
+    behavior_csv_path = output_prefix.with_name(output_prefix.name + "-behavior-specialization.csv")
+    with behavior_csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "category",
+                "adapter_score",
+                "retrieval_full_score",
+                "wrong_adapter_score",
+                "behavior_lift_vs_retrieval_full",
+                "behavior_separation_vs_wrong_adapter",
+            ],
+        )
+        writer.writeheader()
+        for category, report in dict(behavior_summary.get("category_deltas") or {}).items():
+            writer.writerow(
+                {
+                    "category": category,
+                    "adapter_score": report.get("adapter_score"),
+                    "retrieval_full_score": report.get("retrieval_full_score"),
+                    "wrong_adapter_score": report.get("wrong_adapter_score"),
+                    "behavior_lift_vs_retrieval_full": report.get("behavior_lift_vs_retrieval_full"),
+                    "behavior_separation_vs_wrong_adapter": report.get("behavior_separation_vs_wrong_adapter"),
                 }
             )
 
@@ -324,6 +354,7 @@ def main() -> None:
             eval_csv_path=eval_csv_path.name,
             category_csv_path=category_csv_path.name,
             bundle_category_csv_path=bundle_category_csv_path.name,
+            behavior_csv_path=behavior_csv_path.name,
             case_csv_path=case_csv_path.name,
             bundle_case_csv_path=bundle_case_csv_path.name,
             modes_csv_path=modes_csv_path.name,
@@ -331,6 +362,8 @@ def main() -> None:
             category_svg_path=category_svg_path.name,
             eval_svg_path=eval_svg_path.name,
             bundle_summary=bundle_summary,
+            behavior_summary=behavior_summary,
+            behavior_gate=behavior_gate,
             overall=overall,
             graduation=graduation,
             gate_report=gate_report,
@@ -347,6 +380,7 @@ def main() -> None:
                 "eval_curve_csv": str(eval_csv_path),
                 "category_scores_csv": str(category_csv_path),
                 "bundle_category_scores_csv": str(bundle_category_csv_path),
+                "behavior_specialization_csv": str(behavior_csv_path),
                 "case_scores_csv": str(case_csv_path),
                 "bundle_case_outputs_csv": str(bundle_case_csv_path),
                 "bundle_modes_csv": str(modes_csv_path),
@@ -486,9 +520,13 @@ def _bar_chart_svg(title: str, rows: list[tuple[str, float, str]], *, max_value:
 
 def _index_html(**kwargs: str | dict | float | None) -> str:
     bundle_summary = kwargs["bundle_summary"]
+    behavior_summary = kwargs["behavior_summary"]
+    behavior_gate = kwargs["behavior_gate"]
     overall = kwargs["overall"]
     graduation = kwargs["graduation"]
     gate_report = kwargs["gate_report"]
+    separation = behavior_summary.get("behavior_separation_vs_wrong_adapter")
+    separation_value = "N/A" if separation is None else f"{float(separation):.2f}"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -512,8 +550,15 @@ def _index_html(**kwargs: str | dict | float | None) -> str:
     <div class="card"><div class="label">Token Savings</div><div class="value">{float(gate_report.get("token_savings_vs_retrieval_full") or 0.0):.2f}%</div></div>
     <div class="card"><div class="label">Quality Gain Vs Small</div><div class="value">{float(gate_report.get("quality_gain_vs_retrieval_small") or 0.0):.2f}</div></div>
   </div>
+  <div class="grid">
+    <div class="card"><div class="label">Behavior Lift</div><div class="value">{float(behavior_summary.get("behavior_lift_vs_retrieval_full") or 0.0):.2f}</div></div>
+    <div class="card"><div class="label">Wrong-Adapter Separation</div><div class="value">{separation_value}</div></div>
+    <div class="card"><div class="label">Behavior Gate</div><div class="value">{'PASS' if bool(behavior_gate.get("passes")) else 'FAIL'}</div></div>
+    <div class="card"><div class="label">Bundle Gate</div><div class="value">{'PASS' if bool(gate_report.get("passes")) else 'FAIL'}</div></div>
+  </div>
   <p>Retrieval small: <strong>{float(bundle_summary.get("retrieval_only_small_score") or 0.0):.2f}</strong><br/>Bundle without expert: <strong>{float(bundle_summary.get("bundle_without_expert_score") or 0.0):.2f}</strong></p>
   <p>Bundle gate: quality regression vs retrieval full <strong>{float(gate_report.get("quality_regression_vs_retrieval_full") or 0.0):.2f}</strong>, unsupported claim rate <strong>{float(gate_report.get("unsupported_claim_rate") or 0.0):.2f}</strong>, wrong citation rate <strong>{float(gate_report.get("wrong_citation_rate") or 0.0):.2f}</strong></p>
+  <p>Behavior gate: lift vs retrieval full <strong>{float(behavior_summary.get("behavior_lift_vs_retrieval_full") or 0.0):.2f}</strong>, separation vs wrong adapter <strong>{separation_value}</strong></p>
   <p>Legacy compatibility summary: graduation retrieval <strong>{float(graduation.get("retrieval_only_score") or 0.0):.2f}</strong>, graduation adapter <strong>{float(graduation.get("adapter_score") or 0.0):.2f}</strong></p>
   <p>Best eval loss: <strong>{float(kwargs["best_metric"] or 0.0):.4f}</strong><br/>Best checkpoint: <code>{_esc(str(kwargs["best_model_checkpoint"] or ""))}</code></p>
   <ul>
@@ -521,6 +566,7 @@ def _index_html(**kwargs: str | dict | float | None) -> str:
     <li><a href="{kwargs["eval_csv_path"]}">Eval Curve CSV</a></li>
     <li><a href="{kwargs["category_csv_path"]}">Legacy Category Scores CSV</a></li>
     <li><a href="{kwargs["bundle_category_csv_path"]}">Bundle Category Scores CSV</a></li>
+    <li><a href="{kwargs["behavior_csv_path"]}">Behavior Specialization CSV</a></li>
     <li><a href="{kwargs["case_csv_path"]}">Legacy Case Scores CSV</a></li>
     <li><a href="{kwargs["bundle_case_csv_path"]}">Bundle Case Outputs CSV</a></li>
     <li><a href="{kwargs["modes_csv_path"]}">Bundle Modes CSV</a></li>
