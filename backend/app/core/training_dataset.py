@@ -6,7 +6,9 @@ from pathlib import Path
 from backend.app.core.database import connect, dict_from_row
 from backend.app.core.embeddings import content_hash
 from backend.app.core.encrypted_storage import source_from_encrypted_row
+from backend.app.core.expert_contract import EXPERT_OBJECTIVE_VERSION
 
+TRAINABLE_TEXT_EXTENSIONS = (".md", ".txt", ".rst", ".adoc", ".html", ".htm")
 TRAINING_RECORD_TYPES = (
     "source_fact_extract",
     "evidence_compression",
@@ -92,6 +94,7 @@ def build_cluster_dataset(cluster_id: str) -> dict:
             for doc in sorted(documents, key=lambda item: item["source_id"])
         )
     )
+    behavior_profile = _dataset_behavior_profile(documents)
 
     return {
         "cluster_id": cluster["id"],
@@ -103,6 +106,82 @@ def build_cluster_dataset(cluster_id: str) -> dict:
         "total_text_chars": total_text_chars,
         "estimated_token_count": _estimate_tokens(total_text_chars),
         "dataset_hash": dataset_hash,
+        "behavior_profile": behavior_profile,
+        "documents": documents,
+    }
+
+
+def build_path_text_dataset(
+    *,
+    dataset_id: str,
+    dataset_name: str,
+    source_paths: list[str | Path],
+    minimum_chars: int = 400,
+) -> dict:
+    documents = []
+    seen_hashes: set[str] = set()
+    total_text_chars = 0
+
+    for source_path in source_paths:
+        root = Path(source_path)
+        if not root.exists():
+            continue
+        candidates = [root] if root.is_file() else sorted(item for item in root.rglob("*") if item.is_file())
+        for path in candidates:
+            if path.suffix.lower() not in TRAINABLE_TEXT_EXTENSIONS:
+                continue
+            if path.name.lower() == "manifest.json":
+                continue
+            if _looks_like_translated_readme(path.name):
+                continue
+            text = _path_text_content(path)
+            if not text:
+                continue
+            normalized = _normalized_trainable_text(text)
+            if len(normalized) < minimum_chars:
+                continue
+            if normalized.count("```") > 40:
+                continue
+            alpha_count = sum(char.isalpha() for char in normalized)
+            if alpha_count < 200:
+                continue
+            doc_hash = content_hash(normalized)
+            if doc_hash in seen_hashes:
+                continue
+            seen_hashes.add(doc_hash)
+            total_text_chars += len(normalized)
+            documents.append(
+                {
+                    "source_id": content_hash(str(path.resolve(strict=False))),
+                    "title": path.name,
+                    "summary": _truncate_words(normalized, 120),
+                    "text": normalized,
+                    "content_hash": doc_hash,
+                    "original_path": str(path),
+                }
+            )
+
+    documents = sorted(documents, key=lambda item: (str(item.get("title") or ""), str(item.get("source_id") or "")))
+    duplicate_content_count = 0
+    duplicate_content_ratio = 0.0
+    dataset_hash = content_hash(
+        "\n".join(
+            f"{doc['source_id']}:{doc['content_hash']}"
+            for doc in documents
+        )
+    )
+    behavior_profile = _dataset_behavior_profile(documents)
+    return {
+        "cluster_id": dataset_id,
+        "cluster_name": dataset_name,
+        "source_count": len(documents),
+        "unique_content_hash_count": len(documents),
+        "duplicate_content_count": duplicate_content_count,
+        "duplicate_content_ratio": duplicate_content_ratio,
+        "total_text_chars": total_text_chars,
+        "estimated_token_count": _estimate_tokens(total_text_chars),
+        "dataset_hash": dataset_hash,
+        "behavior_profile": behavior_profile,
         "documents": documents,
     }
 
@@ -110,15 +189,46 @@ def build_cluster_dataset(cluster_id: str) -> dict:
 def write_cluster_training_dataset(dataset: dict, output_dir: Path) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    records = _training_records(dataset)
-    train_records, validation_records = _split_training_records(records)
+    documents = list(dataset.get("documents") or [])
+    train_documents, validation_documents = _split_training_documents(
+        documents,
+        train_source_target=int(dataset.get("train_source_target") or 0) or None,
+        validation_source_target=int(dataset.get("validation_source_target") or 0) or None,
+    )
+    train_dataset = {**dataset, "documents": train_documents}
+    validation_dataset = {**dataset, "documents": validation_documents}
+
+    if train_documents and validation_documents:
+        train_records = _training_records(train_dataset)
+        validation_records = _training_records(validation_dataset)
+    else:
+        records = _training_records(dataset)
+        train_records, validation_records = _split_training_records(records)
+
+    records = [*train_records, *validation_records]
+    train_source_records = _source_records(train_documents)
+    validation_source_records = _source_records(validation_documents)
+    train_qa_records = _qa_records(train_dataset, train_documents)
+    validation_qa_records = _qa_records(validation_dataset, validation_documents)
 
     train_path = output_dir / "train.jsonl"
     validation_path = output_dir / "validation.jsonl"
+    train_sources_path = output_dir / "train-sources.jsonl"
+    validation_sources_path = output_dir / "validation-sources.jsonl"
+    train_corpus_path = output_dir / "train-corpus.txt"
+    validation_corpus_path = output_dir / "validation-corpus.txt"
+    train_qa_path = output_dir / "train-qa.jsonl"
+    validation_qa_path = output_dir / "validation-qa.jsonl"
     manifest_path = output_dir / "dataset-manifest.json"
 
     _write_jsonl(train_path, train_records)
     _write_jsonl(validation_path, validation_records)
+    _write_jsonl(train_sources_path, train_source_records)
+    _write_jsonl(validation_sources_path, validation_source_records)
+    _write_jsonl(train_qa_path, train_qa_records)
+    _write_jsonl(validation_qa_path, validation_qa_records)
+    train_corpus_path.write_text(_source_corpus_text(train_documents), encoding="utf-8")
+    validation_corpus_path.write_text(_source_corpus_text(validation_documents), encoding="utf-8")
     record_accounting = _benchmark_record_accounting(
         train_records=train_records,
         validation_records=validation_records,
@@ -139,9 +249,13 @@ def write_cluster_training_dataset(dataset: dict, output_dir: Path) -> dict:
         "validation_count": len(validation_records),
         "record_type_distribution": dict(record_type_distribution),
         "training_record_types": list(TRAINING_RECORD_TYPES),
-        "expert_objective_version": "retrieval_grounded_compression_v1",
+        "expert_objective_version": EXPERT_OBJECTIVE_VERSION,
         "requires_retrieved_evidence": True,
+        "behavior_profile": dict(dataset.get("behavior_profile") or {}),
+        "behavior_specialization_enabled": True,
         "benchmark_record_accounting": record_accounting,
+        "train_source_count": len(train_documents),
+        "validation_source_count": len(validation_documents),
     }
 
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -150,9 +264,48 @@ def write_cluster_training_dataset(dataset: dict, output_dir: Path) -> dict:
         "dataset_dir": str(output_dir),
         "train_path": str(train_path),
         "validation_path": str(validation_path),
+        "train_sources_path": str(train_sources_path),
+        "validation_sources_path": str(validation_sources_path),
+        "train_corpus_path": str(train_corpus_path),
+        "validation_corpus_path": str(validation_corpus_path),
+        "train_qa_path": str(train_qa_path),
+        "validation_qa_path": str(validation_qa_path),
         "manifest_path": str(manifest_path),
         **manifest,
     }
+
+
+def _split_training_documents(
+    documents: list[dict],
+    *,
+    train_source_target: int | None = None,
+    validation_source_target: int | None = None,
+) -> tuple[list[dict], list[dict]]:
+    ordered = sorted(
+        (dict(doc) for doc in documents),
+        key=lambda item: (
+            str(item.get("source_id") or ""),
+            str(item.get("content_hash") or ""),
+            str(item.get("title") or ""),
+        ),
+    )
+    if len(ordered) <= 1:
+        return ordered, []
+    if train_source_target is not None or validation_source_target is not None:
+        normalized_train = max(0, int(train_source_target or 0))
+        normalized_validation = max(0, int(validation_source_target or 0))
+        required = normalized_train + normalized_validation
+        if normalized_train <= 0 or normalized_validation <= 0:
+            raise ValueError("Explicit source split targets must both be positive.")
+        if len(ordered) < required:
+            raise ValueError(
+                f"Dataset contains {len(ordered)} sources but requires {required} for the requested train/validation split."
+            )
+        return ordered[:normalized_train], ordered[normalized_train : normalized_train + normalized_validation]
+    split_at = max(1, int(len(ordered) * 0.8))
+    if split_at >= len(ordered):
+        split_at = len(ordered) - 1
+    return ordered[:split_at], ordered[split_at:]
 
 
 def _split_training_records(records: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -211,6 +364,7 @@ def _records_for_document(dataset: dict, doc: dict) -> list[dict]:
         "content_hashes": [doc["content_hash"]],
         "evidence_handles": evidence_handles,
         "grounding_required": True,
+        "behavior_profile": dict(dataset.get("behavior_profile") or {}),
     }
     records = [
         _build_record(
@@ -272,6 +426,7 @@ def _records_for_document(dataset: dict, doc: dict) -> list[dict]:
             assistant_target=(
                 f"Start small, keep it concrete: {_practical_note_excerpt(summary, text)} "
                 f"Ground the answer in the evidence and keep it concrete: {snippets[0]}"
+                f"{_behavior_contract_suffix(shared_metadata['behavior_profile'])}"
             ),
             metadata=shared_metadata,
         ),
@@ -344,6 +499,122 @@ def _build_record(
         "input_token_estimate": input_token_estimate,
         "target_token_estimate": target_token_estimate,
         "grounding_required": bool(metadata["grounding_required"]),
+        "behavior_profile": dict(metadata.get("behavior_profile") or {}),
+    }
+
+
+def _source_records(documents: list[dict]) -> list[dict]:
+    rows = []
+    for doc in documents:
+        text = str(doc.get("text") or "").strip()
+        rows.append(
+            {
+                "source_id": str(doc.get("source_id") or ""),
+                "title": str(doc.get("title") or "Untitled"),
+                "summary": str(doc.get("summary") or "").strip(),
+                "text": text,
+                "content_hash": str(doc.get("content_hash") or ""),
+                "text_char_count": len(text),
+                "text_token_estimate": _estimate_text_tokens(text),
+            }
+        )
+    return rows
+
+
+def _source_corpus_text(documents: list[dict]) -> str:
+    blocks = []
+    for doc in documents:
+        text = str(doc.get("text") or "").strip()
+        if not text:
+            continue
+        blocks.append(
+            "\n".join(
+                [
+                    f"### SOURCE_ID: {str(doc.get('source_id') or '').strip()}",
+                    f"### TITLE: {str(doc.get('title') or 'Untitled').strip()}",
+                    text,
+                ]
+            ).strip()
+        )
+    if not blocks:
+        return ""
+    return "\n\n".join(blocks).strip() + "\n"
+
+
+def _qa_records(dataset: dict, documents: list[dict]) -> list[dict]:
+    rows = []
+    for doc in documents:
+        rows.extend(_qa_records_for_document(dataset, doc))
+    return rows
+
+
+def _qa_records_for_document(dataset: dict, doc: dict) -> list[dict]:
+    title = str(doc.get("title") or "Untitled")
+    summary = str(doc.get("summary") or "").strip()
+    text = str(doc.get("text") or "")
+    snippets = _evidence_snippets(text or summary, max_items=5)
+    if not snippets:
+        snippets = ["The local source contains cluster-specific evidence."]
+    local_terms = _preferred_terms(title, summary, text)
+    shared_metadata = {
+        "source_id": str(doc.get("source_id") or ""),
+        "content_hash": str(doc.get("content_hash") or ""),
+        "source_ids": [str(doc.get("source_id") or "")],
+        "content_hashes": [str(doc.get("content_hash") or "")],
+        "evidence_handles": [f"source:{doc['source_id']}#snippet-{index + 1}" for index in range(len(snippets))],
+        "grounding_required": True,
+        "behavior_profile": dict(dataset.get("behavior_profile") or {}),
+    }
+    return [
+        _build_qa_record(
+            record_type="evidence_compression",
+            prompt=(
+                f"Compress the retrieved evidence for '{title}' into a short grounded digest.\n\n"
+                f"Evidence:\n" + "\n".join(f"[{index + 1}] {snippet}" for index, snippet in enumerate(snippets))
+            ),
+            answer=_grounded_digest(title, snippets),
+            metadata=shared_metadata,
+        ),
+        _build_qa_record(
+            record_type="style_rewrite",
+            prompt=(
+                f"Rewrite a neutral answer for '{title}' in the cluster's local style without adding facts.\n\n"
+                f"Neutral answer: {snippets[0]}"
+            ),
+            answer=(
+                f"{_practical_note_excerpt(summary, text)} "
+                f"Ground the answer in the evidence and keep it concrete: {snippets[0]} "
+                f"{_behavior_contract_suffix(shared_metadata['behavior_profile'])}"
+            ),
+            metadata=shared_metadata,
+        ),
+        _build_qa_record(
+            record_type="reasoning_hint",
+            prompt=(
+                f"Give a short reasoning hint for '{title}' supported by the retrieved evidence."
+            ),
+            answer=(
+                f"Evidence first: {snippets[0]} "
+                f"Interpretation: this supports a local pattern around {', '.join(local_terms[:2]) if local_terms else 'the cluster context'}. "
+                "Conclusion: keep the next answer aligned with that pattern."
+            ),
+            metadata=shared_metadata,
+        ),
+    ]
+
+
+def _build_qa_record(*, record_type: str, prompt: str, answer: str, metadata: dict) -> dict:
+    return {
+        "record_type": record_type,
+        "source_id": metadata["source_id"],
+        "content_hash": metadata["content_hash"],
+        "prompt": prompt,
+        "answer": answer,
+        "input_token_estimate": _estimate_text_tokens(prompt),
+        "target_token_estimate": _estimate_text_tokens(answer),
+        "grounding_required": bool(metadata["grounding_required"]),
+        "evidence_handles": list(metadata["evidence_handles"]),
+        "behavior_profile": dict(metadata.get("behavior_profile") or {}),
     }
 
 
@@ -381,6 +652,25 @@ def _normalized_source_text(text: str) -> str:
     return cleaned.strip()
 
 
+def _normalized_trainable_text(text: str) -> str:
+    cleaned = str(text or "").replace("\ufeff", " ")
+    cleaned = re.sub(r"\r\n?", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    return cleaned.strip()
+
+
+def _path_text_content(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _looks_like_translated_readme(name: str) -> bool:
+    return bool(re.match(r"readme-[a-z]{2,3}(?:-[a-z]{2})?\.md$", str(name or "").lower()))
+
+
 def _source_segments(text: str) -> list[str]:
     if not text:
         return []
@@ -412,6 +702,47 @@ def _preferred_terms(title: str, summary: str, text: str) -> list[str]:
         if len(seen) >= 4:
             break
     return seen
+
+
+def _dataset_behavior_profile(documents: list[dict]) -> dict:
+    terms: list[str] = []
+    for doc in documents[:8]:
+        for term in _preferred_terms(
+            str(doc.get("title") or ""),
+            str(doc.get("summary") or ""),
+            str(doc.get("text") or ""),
+        ):
+            if term not in terms:
+                terms.append(term)
+            if len(terms) >= 6:
+                break
+        if len(terms) >= 6:
+            break
+    return {
+        "voice": "cluster-local-expert",
+        "terminology_shift": terms[:4],
+        "style_markers": ["grounded", "concrete", "practical"],
+        "reasoning_order": ["evidence", "interpretation", "conclusion"],
+        "framing_rules": [
+            "keep claims tied to supplied evidence",
+            "prefer practical takeaways",
+        ],
+        "refusal_style": "state missing evidence explicitly",
+        "practicality_bias": "practical",
+    }
+
+
+def _behavior_contract_suffix(profile: dict) -> str:
+    style_markers = ", ".join(str(item) for item in profile.get("style_markers") or [] if str(item).strip())
+    reasoning_order = " -> ".join(str(item) for item in profile.get("reasoning_order") or [] if str(item).strip())
+    if not style_markers and not reasoning_order:
+        return ""
+    parts = []
+    if style_markers:
+        parts.append(f"Style markers: {style_markers}.")
+    if reasoning_order:
+        parts.append(f"Reasoning order: {reasoning_order}.")
+    return " ".join(parts)
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:

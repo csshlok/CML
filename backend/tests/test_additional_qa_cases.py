@@ -3975,8 +3975,7 @@ class AdditionalQACases(unittest.TestCase):
         self.assertTrue(passing["passes"])
 
     def test_lora_training_dataset_exports_quality_benchmark_tasks(self) -> None:
-        from backend.app.core.expert_evaluation import EVALUATION_CATEGORIES
-        from backend.app.core.training_dataset import write_cluster_training_dataset
+        from backend.app.core.training_dataset import TRAINING_RECORD_TYPES, write_cluster_training_dataset
 
         dataset = {
             "cluster_id": "cluster-1",
@@ -4008,37 +4007,39 @@ class AdditionalQACases(unittest.TestCase):
             json.loads(line)
             for line in Path(manifest["validation_path"]).read_text(encoding="utf-8").splitlines()
         ]
+        qa_rows = [
+            json.loads(line)
+            for path in (manifest["train_qa_path"], manifest["validation_qa_path"])
+            for line in Path(path).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
         rows = train_rows + validation_rows
         prompts = [row["messages"][0]["content"] for row in rows]
         answers = [row["messages"][1]["content"] for row in rows]
-        answers_by_category = {row["category"]: row["messages"][1]["content"] for row in rows}
+        qa_prompts = [row["prompt"] for row in qa_rows]
+        qa_answers = [row["answer"] for row in qa_rows]
 
-        self.assertEqual(manifest["train_count"] + manifest["validation_count"], len(EVALUATION_CATEGORIES))
-        self.assertEqual({row["category"] for row in rows}, set(EVALUATION_CATEGORIES))
+        self.assertEqual(manifest["train_count"] + manifest["validation_count"], len(TRAINING_RECORD_TYPES))
+        self.assertEqual({row["record_type"] for row in rows}, set(TRAINING_RECORD_TYPES))
         self.assertIn("benchmark_record_accounting", manifest)
         self.assertEqual(manifest["benchmark_record_accounting"]["used_source_count"], 1)
-        self.assertTrue(any("key facts" in prompt for prompt in prompts))
-        self.assertTrue(any("three grounded bullets" in prompt for prompt in prompts))
-        self.assertTrue(any("cite the source title" in prompt for prompt in prompts))
+        self.assertTrue(any("Compress the retrieved evidence" in prompt for prompt in prompts))
         self.assertTrue(any("preferred terminology" in prompt for prompt in prompts))
-        self.assertTrue(any("reasoning pattern" in prompt for prompt in prompts))
-        self.assertTrue(any("not covered" in prompt for prompt in prompts))
-        self.assertTrue(any("According to source Public V1 Blockers" in answer for answer in answers))
-        self.assertTrue(any("missing evidence" in answer for answer in answers))
-        self.assertTrue(any("Use consistent cluster vocabulary such as" in answer for answer in answers))
-        self.assertTrue(any("The source evidence is:" in answer for answer in answers))
-        self.assertIn("- ", answers_by_category["summarization"])
-        self.assertIn("Source:", answers_by_category["summarization"])
-        self.assertIn("Start small, keep it concrete", answers_by_category["style_transfer"])
-        self.assertNotIn("```", answers_by_category["style_transfer"])
+        self.assertTrue(any("partial evidence" in prompt for prompt in prompts))
+        self.assertTrue(any("Extract a small grounded glossary" in prompt for prompt in prompts))
+        self.assertTrue(any("Rewrite a neutral answer" in prompt for prompt in qa_prompts))
+        self.assertTrue(any("Give a short reasoning hint" in prompt for prompt in qa_prompts))
+        self.assertTrue(any("Ground the answer in the evidence" in answer for answer in answers))
+        self.assertTrue(any("Anything beyond those retrieved details should be marked as missing or uncertain." in answer for answer in answers))
+        self.assertTrue(any("Conclusion: keep the next answer aligned with that pattern." in answer for answer in answers))
+        self.assertTrue(any("Ground the answer in the evidence" in answer for answer in qa_answers))
         self.assertEqual(manifest["benchmark_record_accounting"]["train"]["duplicate_content_ratio"], 0.0)
         self.assertEqual(manifest["benchmark_record_accounting"]["validation"]["duplicate_content_ratio"], 0.0)
         self.assertEqual(manifest["benchmark_record_accounting"]["train_validation_source_overlap_count"], 1)
         self.assertEqual(manifest["benchmark_record_accounting"]["train_validation_content_hash_overlap_count"], 1)
 
     def test_lora_training_dataset_holds_out_whole_sources_for_validation(self) -> None:
-        from backend.app.core.expert_evaluation import EVALUATION_CATEGORIES
-        from backend.app.core.training_dataset import write_cluster_training_dataset
+        from backend.app.core.training_dataset import TRAINING_RECORD_TYPES, write_cluster_training_dataset
 
         dataset = {
             "cluster_id": "cluster-1",
@@ -4089,7 +4090,7 @@ class AdditionalQACases(unittest.TestCase):
         )
         self.assertEqual(
             len(train_rows) + len(validation_rows),
-            len(dataset["documents"]) * len(EVALUATION_CATEGORIES),
+            len(dataset["documents"]) * len(TRAINING_RECORD_TYPES),
         )
 
     def test_lora_benchmark_eligibility_report_blocks_small_or_concentrated_datasets(self) -> None:

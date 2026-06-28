@@ -4931,11 +4931,11 @@ class SourcePageIndexingTests(unittest.TestCase):
                         current_dataset_hash,
                         json.dumps(
                             {
-                                "expert_objective_version": "retrieval_grounded_compression_v1",
+                                "expert_objective_version": "retrieval_grounded_behavior_v1",
                                 "benchmark_report": {
                                     "passes": True,
                                     "dataset_hash": current_dataset_hash,
-                                    "metadata": {"expert_objective_version": "retrieval_grounded_compression_v1"},
+                                    "metadata": {"expert_objective_version": "retrieval_grounded_behavior_v1"},
                                 },
                             }
                         ),
