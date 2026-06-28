@@ -1,4 +1,5 @@
 import gc
+import importlib.util
 import json
 import os
 import sys
@@ -38,6 +39,7 @@ def main() -> int:
     model = None
     adapter_model = None
     try:
+        _disable_unneeded_transformers_optional_imports()
         import torch
         from peft import PeftModel
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -206,6 +208,18 @@ def _package_versions() -> dict[str, str | None]:
         except metadata.PackageNotFoundError:
             packages[name] = None
     return packages
+
+
+def _disable_unneeded_transformers_optional_imports() -> None:
+    blocked = {"sklearn", "pandas", "pyarrow"}
+    real_find_spec = importlib.util.find_spec
+
+    def find_spec_without_optional_generation_extras(name, *args, **kwargs):
+        if str(name).split(".", 1)[0] in blocked:
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    importlib.util.find_spec = find_spec_without_optional_generation_extras
 
 
 if __name__ == "__main__":

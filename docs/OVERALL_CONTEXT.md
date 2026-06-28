@@ -12,16 +12,19 @@ The compact source of truth is `docs/PROJECT_CONTEXT.md`. The detailed implement
 
 The current debugging pass found real backend regressions in the LoRA training and benchmark contract. `backend/app/core/config.py` now restores the default `CML_LORA_TRAINING_EARLY_STOPPING_STEPS=2`, `backend/app/core/lora_training.py` correctly handles legacy category-shaped benchmark accounting, and `backend/app/core/training_dataset.py` restores the expected grounded-glossary and missing/uncertain training-record wording.
 
+The pass also isolated the Windows native access-violation stack that printed during the adapter smoke path. `backend/app/core/lora_training.py` and `backend/app/core/expert_runtime_worker.py` now block unneeded Transformers optional sklearn/pandas/pyarrow probes around the local test-trainer/runtime smoke path. The final full backend validation run did not print the previous pyarrow/pandas/sklearn/Transformers access-violation stack.
+
 Validated result:
 
 - Focused rerun of the six failing LoRA tests: `6 passed`.
-- Full backend suite: `544 passed, 3 skipped`.
+- Full backend suite after the training/benchmark fixes: `544 passed, 3 skipped`.
+- Full backend suite after the optional-import containment fix: `544 passed, 3 skipped`.
 - Desktop behavior tests: `40 passed`.
 - Desktop build: passed.
 - Browser extension tests: `19 passed`.
 - Backend compileall: passed.
 
-The full backend run still printed a Windows native access-violation stack while importing the ML dependency path through `pyarrow`/`pandas`/`sklearn`/`transformers`; because pytest continued and exited `0`, this is recorded as runtime/environment instability requiring separate investigation rather than a completed fix.
+Remaining release blockers are unchanged: clean-VM package validation, installed-app first-run parity in that clean environment, live expert-compression bundle quality proof, and hardware-aware setup QA still require release-grade evidence.
 
 Current cluster expert decision:
 

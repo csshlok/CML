@@ -4,6 +4,8 @@ import shlex
 import shutil
 import subprocess
 import ctypes
+import importlib.util
+from contextlib import contextmanager
 from importlib import metadata
 from importlib.util import find_spec
 from pathlib import Path
@@ -460,99 +462,118 @@ def _adapter_validation_errors(output_dir: Path) -> list[str]:
 
 
 def _write_test_adapter(output_dir: Path, config: dict) -> None:
-    from peft import LoraConfig, TaskType, get_peft_model
-    from transformers import AutoModelForCausalLM
+    with _without_unneeded_transformers_optional_imports():
+        from peft import LoraConfig, TaskType, get_peft_model
+        from transformers import AutoModelForCausalLM
 
-    base_model_dir = _ensure_test_base_model(Path(str(config["base_model"])).resolve())
-    model = AutoModelForCausalLM.from_pretrained(
-        str(base_model_dir),
-        local_files_only=True,
-        trust_remote_code=False,
-    )
-    adapter = get_peft_model(
-        model,
-        LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            inference_mode=True,
-            r=4,
-            lora_alpha=8,
-            lora_dropout=0.0,
-            target_modules=["c_attn"],
-        ),
-    )
+        base_model_dir = _ensure_test_base_model(Path(str(config["base_model"])).resolve())
+        model = AutoModelForCausalLM.from_pretrained(
+            str(base_model_dir),
+            local_files_only=True,
+            trust_remote_code=False,
+        )
+        adapter = get_peft_model(
+            model,
+            LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                inference_mode=True,
+                r=4,
+                lora_alpha=8,
+                lora_dropout=0.0,
+                target_modules=["c_attn"],
+            ),
+        )
     adapter.save_pretrained(str(output_dir), safe_serialization=True)
 
 
 def _ensure_test_base_model(model_dir: Path) -> Path:
-    from tokenizers import Tokenizer
-    from tokenizers.models import WordLevel
-    from tokenizers.pre_tokenizers import Whitespace
-    from transformers import GPT2Config, GPT2LMHeadModel, PreTrainedTokenizerFast
+    with _without_unneeded_transformers_optional_imports():
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from tokenizers.pre_tokenizers import Whitespace
+        from transformers import GPT2Config, GPT2LMHeadModel, PreTrainedTokenizerFast
 
-    model_dir.mkdir(parents=True, exist_ok=True)
-    vocab = {
-        "[PAD]": 0,
-        "[UNK]": 1,
-        "[BOS]": 2,
-        "[EOS]": 3,
-        ".": 4,
-        ",": 5,
-        "Reply": 6,
-        "with": 7,
-        "the": 8,
-        "single": 9,
-        "word": 10,
-        "CML": 11,
-        "Using": 12,
-        "local": 13,
-        "project": 14,
-        "context": 15,
-        "name": 16,
-        "public": 17,
-        "V1": 18,
-        "release": 19,
-        "stance": 20,
-        "in": 21,
-        "one": 22,
-        "short": 23,
-        "sentence": 24,
-        "According": 25,
-        "to": 26,
-        "source": 27,
-        "retrieval": 28,
-        "adapter": 29,
-        "training": 30,
-        "evidence": 31,
-        "strict": 32,
-        "evaluation": 33,
-        "baseline": 34,
-    }
-    tokenizer = Tokenizer(WordLevel(vocab=vocab, unk_token="[UNK]"))
-    tokenizer.pre_tokenizer = Whitespace()
-    fast_tokenizer = PreTrainedTokenizerFast(
-        tokenizer_object=tokenizer,
-        unk_token="[UNK]",
-        pad_token="[PAD]",
-        bos_token="[BOS]",
-        eos_token="[EOS]",
-    )
-    fast_tokenizer.save_pretrained(str(model_dir))
-
-    model = GPT2LMHeadModel(
-        GPT2Config(
-            vocab_size=len(vocab),
-            n_positions=128,
-            n_ctx=128,
-            n_embd=32,
-            n_layer=2,
-            n_head=4,
-            bos_token_id=vocab["[BOS]"],
-            eos_token_id=vocab["[EOS]"],
-            pad_token_id=vocab["[PAD]"],
+        model_dir.mkdir(parents=True, exist_ok=True)
+        vocab = {
+            "[PAD]": 0,
+            "[UNK]": 1,
+            "[BOS]": 2,
+            "[EOS]": 3,
+            ".": 4,
+            ",": 5,
+            "Reply": 6,
+            "with": 7,
+            "the": 8,
+            "single": 9,
+            "word": 10,
+            "CML": 11,
+            "Using": 12,
+            "local": 13,
+            "project": 14,
+            "context": 15,
+            "name": 16,
+            "public": 17,
+            "V1": 18,
+            "release": 19,
+            "stance": 20,
+            "in": 21,
+            "one": 22,
+            "short": 23,
+            "sentence": 24,
+            "According": 25,
+            "to": 26,
+            "source": 27,
+            "retrieval": 28,
+            "adapter": 29,
+            "training": 30,
+            "evidence": 31,
+            "strict": 32,
+            "evaluation": 33,
+            "baseline": 34,
+        }
+        tokenizer = Tokenizer(WordLevel(vocab=vocab, unk_token="[UNK]"))
+        tokenizer.pre_tokenizer = Whitespace()
+        fast_tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=tokenizer,
+            unk_token="[UNK]",
+            pad_token="[PAD]",
+            bos_token="[BOS]",
+            eos_token="[EOS]",
         )
-    )
-    model.save_pretrained(str(model_dir), safe_serialization=True)
+        fast_tokenizer.save_pretrained(str(model_dir))
+
+        model = GPT2LMHeadModel(
+            GPT2Config(
+                vocab_size=len(vocab),
+                n_positions=128,
+                n_ctx=128,
+                n_embd=32,
+                n_layer=2,
+                n_head=4,
+                bos_token_id=vocab["[BOS]"],
+                eos_token_id=vocab["[EOS]"],
+                pad_token_id=vocab["[PAD]"],
+            )
+        )
+        model.save_pretrained(str(model_dir), safe_serialization=True)
     return model_dir
+
+
+@contextmanager
+def _without_unneeded_transformers_optional_imports():
+    blocked = {"sklearn", "pandas", "pyarrow"}
+    real_find_spec = importlib.util.find_spec
+
+    def find_spec_without_optional_generation_extras(name, *args, **kwargs):
+        if str(name).split(".", 1)[0] in blocked:
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    importlib.util.find_spec = find_spec_without_optional_generation_extras
+    try:
+        yield
+    finally:
+        importlib.util.find_spec = real_find_spec
 
 
 def _write_llamafactory_dataset_info(dataset_manifest: dict) -> Path:

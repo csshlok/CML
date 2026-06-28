@@ -12,7 +12,7 @@ Audit sources:
 
 | Gate | Status | Current evidence |
 | --- | --- | --- |
-| Backend regression suite | Passed | 2026-06-28 full backend run passed with `544 passed, 3 skipped` after fixing the LoRA training config, benchmark eligibility accounting, and training dataset wording regressions. A non-fatal Windows native ML dependency access-violation stack still printed during the run and remains an environment/runtime risk to investigate separately. |
+| Backend regression suite | Passed | 2026-06-28 full backend run passed with `544 passed, 3 skipped` after fixing the LoRA training config, benchmark eligibility accounting, training dataset wording regressions, and optional ML import containment for the adapter smoke path. The final full run did not print the previous pyarrow/pandas/sklearn/Transformers access-violation stack. |
 | Desktop production build | Passed | `npm run build` is passing in the current repo state. |
 | Retrieval benchmark evidence | Partially passed | Synthetic 100/1k evidence, 1500-source evidence, and capped user-owned real-vault evidence now exist; broader natural-corpus confidence is still useful release proof. |
 | Context-layer release proof | Partially passed | Broader hostile/context-layer benchmark runs exist with packet-savings telemetry and hostile degradation evidence; broader real-vault recall/expansion usefulness proof is still open. |

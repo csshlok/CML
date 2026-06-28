@@ -160,11 +160,13 @@ Validated fixes now landed locally:
 - `backend/app/core/config.py` now defaults `CML_LORA_TRAINING_EARLY_STOPPING_STEPS` to `2`, restoring the expected LLaMA Factory training config contract.
 - `backend/app/core/lora_training.py` now handles legacy category-shaped validation share/count accounting correctly while preserving the new record-type benchmark contract.
 - `backend/app/core/training_dataset.py` now restores the expected grounded-glossary and missing/uncertain wording in generated bundle-era training records.
+- `backend/app/core/lora_training.py` and `backend/app/core/expert_runtime_worker.py` now hide unneeded Transformers optional sklearn/pandas/pyarrow probes around the local test-trainer/runtime smoke path, avoiding the Windows native access-violation stack that was printing during ML dependency import.
 - Validation passed:
   - `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_additional_qa_cases.py::AdditionalQACases::test_llamafactory_training_config_defaults_to_auto_hardware backend\tests\test_additional_qa_cases.py::AdditionalQACases::test_llamafactory_training_config_honors_device_and_dtype_overrides backend\tests\test_additional_qa_cases.py::AdditionalQACases::test_lora_benchmark_eligibility_report_blocks_small_or_concentrated_datasets backend\tests\test_additional_qa_cases.py::AdditionalQACases::test_lora_training_dataset_exports_quality_benchmark_tasks backend\tests\test_source_pages.py::SourcePageIndexingTests::test_lora_training_can_bypass_quality_gate_for_diagnostic_runs backend\tests\test_source_pages.py::SourcePageIndexingTests::test_lora_training_respects_configured_benchmark_case_limit`
   - Result: `6 passed`
   - `.\.venv\Scripts\python.exe -m pytest -q backend\tests`
-  - Result: `544 passed, 3 skipped`
+  - Result after the training/benchmark fixes: `544 passed, 3 skipped`
+  - Result after the optional-import containment fix: `544 passed, 3 skipped`; the previous pyarrow/pandas/sklearn/Transformers access-violation stack did not print.
   - `npm run lint`
   - Result: `40 passed`
   - `npm run build`
@@ -178,7 +180,7 @@ Validated fixes now landed locally:
 
 Current note from full backend validation:
 
-- The full run printed a Windows native access-violation stack while importing the ML dependency path through `pyarrow`/`pandas`/`sklearn`/`transformers`, but pytest continued and exited `0`. Treat this as environment/runtime instability to investigate separately, not as a completed product fix.
+- The earlier Windows native access-violation stack during ML dependency import was reproduced in the adapter smoke path, contained by blocking unneeded optional sklearn/pandas/pyarrow probes, and absent from the final full backend validation run.
 
 ## Model And Runtime Decisions
 
