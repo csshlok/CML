@@ -407,7 +407,7 @@ def _records_for_document(dataset: dict, doc: dict) -> list[dict]:
             record_type="terminology_normalization",
             category=LEGACY_CATEGORY_BY_RECORD_TYPE["terminology_normalization"],
             user_prompt=(
-                f"Rewrite the evidence for '{title}' using the cluster's preferred terminology only.\n\n"
+                f"Extract a small grounded glossary for '{title}', then rewrite the evidence using the cluster's preferred terminology only.\n\n"
                 f"Evidence:\n{evidence_block}\n\nGeneric phrasing: explain this in neutral wording."
             ),
             assistant_target=(
@@ -466,7 +466,7 @@ def _records_for_document(dataset: dict, doc: dict) -> list[dict]:
             ),
             assistant_target=(
                 f"The available evidence supports: {snippets[0]} "
-                "Anything beyond those retrieved details is missing evidence and should be marked uncertain."
+                "Anything beyond those retrieved details should be marked as missing or uncertain."
             ),
             metadata=shared_metadata,
         ),

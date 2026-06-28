@@ -1,6 +1,6 @@
 # V1 Release Checklist
 
-Last updated: 2026-06-26
+Last updated: 2026-06-28
 
 Audit sources:
 
@@ -12,7 +12,7 @@ Audit sources:
 
 | Gate | Status | Current evidence |
 | --- | --- | --- |
-| Backend regression suite | Passed | Backend regressions and broader focused validation are green in the current repo state. |
+| Backend regression suite | Passed | 2026-06-28 full backend run passed with `544 passed, 3 skipped` after fixing the LoRA training config, benchmark eligibility accounting, and training dataset wording regressions. A non-fatal Windows native ML dependency access-violation stack still printed during the run and remains an environment/runtime risk to investigate separately. |
 | Desktop production build | Passed | `npm run build` is passing in the current repo state. |
 | Retrieval benchmark evidence | Partially passed | Synthetic 100/1k evidence, 1500-source evidence, and capped user-owned real-vault evidence now exist; broader natural-corpus confidence is still useful release proof. |
 | Context-layer release proof | Partially passed | Broader hostile/context-layer benchmark runs exist with packet-savings telemetry and hostile degradation evidence; broader real-vault recall/expansion usefulness proof is still open. |

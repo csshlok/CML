@@ -1,12 +1,27 @@
 # Overall Context
 
-Last updated: 2026-06-27
+Last updated: 2026-06-28
 
 This is the long-form project context. Keep detailed historical notes here when `docs/PROJECT_CONTEXT.md` is pruned.
 
 ## 2026-06-26 Current Architecture Update
 
 The compact source of truth is `docs/PROJECT_CONTEXT.md`. The detailed implementation plan for the latest architecture shift is `docs/CLUSTER_BUNDLE_EXPERT_IMPLEMENTATION_PLAN.md`.
+
+## 2026-06-28 Debugging Status
+
+The current debugging pass found real backend regressions in the LoRA training and benchmark contract. `backend/app/core/config.py` now restores the default `CML_LORA_TRAINING_EARLY_STOPPING_STEPS=2`, `backend/app/core/lora_training.py` correctly handles legacy category-shaped benchmark accounting, and `backend/app/core/training_dataset.py` restores the expected grounded-glossary and missing/uncertain training-record wording.
+
+Validated result:
+
+- Focused rerun of the six failing LoRA tests: `6 passed`.
+- Full backend suite: `544 passed, 3 skipped`.
+- Desktop behavior tests: `40 passed`.
+- Desktop build: passed.
+- Browser extension tests: `19 passed`.
+- Backend compileall: passed.
+
+The full backend run still printed a Windows native access-violation stack while importing the ML dependency path through `pyarrow`/`pandas`/`sklearn`/`transformers`; because pytest continued and exited `0`, this is recorded as runtime/environment instability requiring separate investigation rather than a completed fix.
 
 Current cluster expert decision:
 

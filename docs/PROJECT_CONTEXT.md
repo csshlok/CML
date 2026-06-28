@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-06-27
+Last updated: 2026-06-28
 
 ## Operating Rule
 
@@ -152,6 +152,33 @@ Still not implemented from the full plan:
 - Release-proof breadth is still not empirically complete; the code and contract migration are largely in place, but public-proof items such as live benchmark breadth and clean-VM release validation remain separate release evidence work.
 - Migration/objective-version enforcement is now active on manual activation and rollback, but broader promotion/verification surfaces still need a final audit for complete end-to-end closure.
 - Broader LoRA smoke/proof tooling is now much closer to the bundle contract, but some historical script names and compatibility payload fields are still adapter-oriented and should be cleaned up before calling the migration complete.
+
+## 2026-06-28 Debugging Pass
+
+Validated fixes now landed locally:
+
+- `backend/app/core/config.py` now defaults `CML_LORA_TRAINING_EARLY_STOPPING_STEPS` to `2`, restoring the expected LLaMA Factory training config contract.
+- `backend/app/core/lora_training.py` now handles legacy category-shaped validation share/count accounting correctly while preserving the new record-type benchmark contract.
+- `backend/app/core/training_dataset.py` now restores the expected grounded-glossary and missing/uncertain wording in generated bundle-era training records.
+- Validation passed:
+  - `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_additional_qa_cases.py::AdditionalQACases::test_llamafactory_training_config_defaults_to_auto_hardware backend\tests\test_additional_qa_cases.py::AdditionalQACases::test_llamafactory_training_config_honors_device_and_dtype_overrides backend\tests\test_additional_qa_cases.py::AdditionalQACases::test_lora_benchmark_eligibility_report_blocks_small_or_concentrated_datasets backend\tests\test_additional_qa_cases.py::AdditionalQACases::test_lora_training_dataset_exports_quality_benchmark_tasks backend\tests\test_source_pages.py::SourcePageIndexingTests::test_lora_training_can_bypass_quality_gate_for_diagnostic_runs backend\tests\test_source_pages.py::SourcePageIndexingTests::test_lora_training_respects_configured_benchmark_case_limit`
+  - Result: `6 passed`
+  - `.\.venv\Scripts\python.exe -m pytest -q backend\tests`
+  - Result: `544 passed, 3 skipped`
+  - `npm run lint`
+  - Result: `40 passed`
+  - `npm run build`
+  - Result: passed
+  - `node --test apps/browser-extension/tests/*.test.cjs`
+  - Result: `19 passed`
+  - `.\.venv\Scripts\python.exe -m compileall -q backend\app\core\config.py backend\app\core\lora_training.py`
+  - Result: passed
+  - `.\.venv\Scripts\python.exe -m compileall -q backend\app`
+  - Result: passed
+
+Current note from full backend validation:
+
+- The full run printed a Windows native access-violation stack while importing the ML dependency path through `pyarrow`/`pandas`/`sklearn`/`transformers`, but pytest continued and exited `0`. Treat this as environment/runtime instability to investigate separately, not as a completed product fix.
 
 ## Model And Runtime Decisions
 

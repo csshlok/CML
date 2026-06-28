@@ -345,9 +345,7 @@ def benchmark_eligibility_report(dataset_manifest: dict) -> dict:
     )
     validation_counts_are_record_types = any(str(key) in TRAINING_RECORD_TYPES for key in raw_validation_counts)
     validation_shares_are_record_types = any(str(key) in TRAINING_RECORD_TYPES for key in raw_validation_shares)
-    validation_dimension_names = (
-        TRAINING_RECORD_TYPES if validation_counts_are_record_types else EVALUATION_CATEGORIES
-    )
+    validation_dimension_names = TRAINING_RECORD_TYPES if validation_counts_are_record_types else EVALUATION_CATEGORIES
     validation_record_type_counts = {
         record_type: (
             int(raw_validation_counts.get(record_type, 0))
@@ -356,18 +354,26 @@ def benchmark_eligibility_report(dataset_manifest: dict) -> dict:
         )
         for record_type in TRAINING_RECORD_TYPES
     }
-    validation_record_type_minimums = {
-        record_type: validation_record_type_counts.get(record_type, 0) >= settings.lora_benchmark_min_validation_records_per_category
-        for record_type in validation_dimension_names
-    }
-    validation_record_type_source_share = {
-        record_type: (
-            float(raw_validation_shares.get(record_type, 0.0))
-            if validation_shares_are_record_types
-            else float(raw_validation_shares.get(LEGACY_CATEGORY_BY_RECORD_TYPE.get(record_type, ""), 0.0))
-        )
-        for record_type in validation_dimension_names
-    }
+    if validation_counts_are_record_types:
+        validation_record_type_minimums = {
+            record_type: validation_record_type_counts.get(record_type, 0) >= settings.lora_benchmark_min_validation_records_per_category
+            for record_type in validation_dimension_names
+        }
+    else:
+        validation_record_type_minimums = {
+            category: int(raw_validation_counts.get(category, 0)) >= settings.lora_benchmark_min_validation_records_per_category
+            for category in validation_dimension_names
+        }
+    if validation_shares_are_record_types:
+        validation_record_type_source_share = {
+            record_type: float(raw_validation_shares.get(record_type, 0.0))
+            for record_type in validation_dimension_names
+        }
+    else:
+        validation_record_type_source_share = {
+            category: float(raw_validation_shares.get(category, 0.0))
+            for category in validation_dimension_names
+        }
     minimum_validation_records_per_dimension = all(validation_record_type_minimums.values())
     maximum_validation_share_per_dimension = all(
         share <= settings.lora_benchmark_max_validation_record_share_per_source_per_category

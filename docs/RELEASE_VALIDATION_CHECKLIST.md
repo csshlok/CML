@@ -9,7 +9,7 @@ Run these checks from the repository root on a Windows release machine. Each ite
   .\.venv\Scripts\python.exe -m pytest -q backend/tests
   ```
 - [ ] Expected output
-  - `189 passed, 1 skipped` (current verified baseline)
+  - `544 passed, 3 skipped` (current verified baseline from 2026-06-28)
   - Exit code `0`
 - [ ] Pass criteria
   - Pytest completes with exit code `0`

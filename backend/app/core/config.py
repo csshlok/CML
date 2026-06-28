@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     lora_training_gradient_accumulation_steps: int = 1
     lora_training_eval_strategy: str = "steps"
     lora_training_eval_steps: int = 200
-    lora_training_early_stopping_steps: int = 0
+    lora_training_early_stopping_steps: int = 2
     lora_training_save_total_limit: int = 3
     model_scan_roots: str = ""
     model_scan_max_depth: int = 4
