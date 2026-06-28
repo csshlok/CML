@@ -182,6 +182,22 @@ Current note from full backend validation:
 
 - The earlier Windows native access-violation stack during ML dependency import was reproduced in the adapter smoke path, contained by blocking unneeded optional sklearn/pandas/pyarrow probes, and absent from the final full backend validation run.
 
+Local packaged validation refreshed on 2026-06-28:
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\validate-clean-machine-package.ps1 -PackageRoot apps\desktop\release\win-unpacked`
+  - Result: `pass=true`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\smoke-packaged-runtime.ps1 -PackageRoot apps\desktop\release\win-unpacked`
+  - Result: passed; backend health, private API token enforcement, CORS blocking, model/embedding setup status, expert runtime availability, image OCR, and PDF OCR were available.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\smoke-packaged-full-vault.ps1 -PackageRoot apps\desktop\release\win-unpacked`
+  - Result: passed; vault creation, indexing/search, OCR image/PDF extraction, query-cache prune, startup phase registry, and diagnostics bundle succeeded.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\smoke-packaged-dynamic-link.ps1 -PackageRoot apps\desktop\release\win-unpacked`
+  - Result: passed.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\smoke-packaged-migration-drill.ps1 -PackageRoot apps\desktop\release\win-unpacked`
+  - Result: passed.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\smoke-packaged-app-launch.ps1 -PackageRoot apps\desktop\release\win-unpacked`
+  - Result: passed with `startup_phase=ready` and `renderer_ready_detected=true`.
+- This improves local package confidence only. It does not close the clean Windows VM or installed-app first-run parity gates because the host still has dev Python and Node on PATH.
+
 ## Model And Runtime Decisions
 
 Do not bundle LLM weights in the first installer. First-run setup must require one CML-managed approved model download or import before normal local synthesis use.

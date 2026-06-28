@@ -26,6 +26,8 @@ Validated result:
 
 Remaining release blockers are unchanged: clean-VM package validation, installed-app first-run parity in that clean environment, live expert-compression bundle quality proof, and hardware-aware setup QA still require release-grade evidence.
 
+Local package validation was refreshed on 2026-06-28 against `apps/desktop/release/win-unpacked`. The package layout check, packaged runtime smoke, packaged full-vault smoke, dynamic-link smoke, migration drill, and packaged app-launch smoke all passed locally. This improves confidence in the current package artifact but does not close the clean-VM gate because the contributor host still has developer Python and Node on PATH.
+
 Current cluster expert decision:
 
 - The old standalone prompt-only LoRA expert goal is superseded.

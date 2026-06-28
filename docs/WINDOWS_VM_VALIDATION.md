@@ -1,6 +1,6 @@
 # Windows VM Validation
 
-Last updated: 2026-06-21
+Last updated: 2026-06-28
 
 ## Release Gate
 
@@ -22,6 +22,13 @@ Evidence:
 
 - `apps/desktop/release/win-unpacked`
 - `apps/desktop/release/test-0.1.6-Setup.exe`
+- 2026-06-28 local package validation refresh:
+  - `validate-clean-machine-package.ps1` reported `pass=true` for `apps/desktop/release/win-unpacked`.
+  - `smoke-packaged-runtime.ps1` passed with backend health, auth/CORS checks, model/embedding setup status, expert runtime availability, image OCR, and PDF OCR.
+  - `smoke-packaged-full-vault.ps1` passed with vault creation, indexing/search, OCR image/PDF extraction, query-cache prune, startup phase registry, and diagnostics bundle creation.
+  - `smoke-packaged-dynamic-link.ps1` passed.
+  - `smoke-packaged-migration-drill.ps1` passed.
+  - `smoke-packaged-app-launch.ps1` passed with `startup_phase=ready` and `renderer_ready_detected=true`.
 - `.tmp/clean-machine-package-validation-2026-06-21-after-installed-smokes.json` reports `pass=true` on the contributor machine.
 - Local packaged runtime smoke passed with packaged Tesseract, Ghostscript, qpdf, image OCR, and PDF OCR.
 - Local packaged app launch smoke reached `ready` with renderer readiness.
@@ -33,6 +40,8 @@ The active blocker is:
 - rerun the current installer and installed-app smoke sequence on a healthier clean VM image
 - verify first-run parity for the current package
 - capture installer/startup evidence from the actual VM run
+
+The 2026-06-28 local validation refresh does not close this gate because the host still has developer Python and Node on PATH.
 
 ## Current Known VM Problem
 
