@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from backend.app.core.expert_contract import EXPERT_OBJECTIVE_VERSION
+
 
 class LoraProofBundleContractTests(unittest.TestCase):
     def test_smoke_proof_prefers_bundle_benchmark_contract(self) -> None:
@@ -45,7 +47,7 @@ class LoraProofBundleContractTests(unittest.TestCase):
                 "runtime_smoke": {"ok": True, "adapter_path": str(adapter_dir), "base_model": str(base_dir)},
                 "benchmark_report": {
                     "passes": False,
-                    "metadata": {"expert_objective_version": "retrieval_grounded_compression_v1"},
+                    "metadata": {"expert_objective_version": EXPERT_OBJECTIVE_VERSION},
                     "bundle_benchmark_summary": {
                         "retrieval_only_full_score": 98.33,
                         "retrieval_only_small_score": 72.0,

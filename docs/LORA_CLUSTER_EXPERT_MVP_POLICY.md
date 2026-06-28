@@ -1,8 +1,8 @@
-# Retrieval-Grounded Cluster Expert Bundle Policy
+# Behavior-Specialized Hybrid Cluster Expert Policy
 
-Last updated: 2026-06-26
+Last updated: 2026-06-27
 
-This document defines the minimum bar for public "cluster expert" claims after the architecture shift from standalone LoRA experts to retrieval-grounded cluster expert bundles.
+This document defines the minimum bar for public "cluster expert" claims after the architecture shift from standalone LoRA experts to behavior-specialized hybrid cluster experts.
 
 ## Core Rule
 
@@ -15,13 +15,26 @@ Cluster Expert Bundle =
   source-trust metadata
   memory profile
   cluster glossary
-  optional LoRA compression adapter
+  LoRA behavior adapter
   quality and freshness metadata
   expansion handles
   token-savings telemetry
 ```
 
-Retrieval owns facts. Retrieval owns citations. Retrieval owns source identity. LoRA may assist with grounded compression, cluster terminology, style, and reasoning hints only after retrieval evidence exists.
+Retrieval owns facts. Retrieval owns citations. Retrieval owns source identity. LoRA may assist with grounded behavior specialization only after retrieval evidence exists.
+
+## Behavior-Specialization Rule
+
+For a cluster adapter to count as a real expert component, it must produce measurable grounded behavior lift in at least these areas:
+
+- cluster terminology consistency
+- answer structure
+- reasoning order
+- local framing
+- practical emphasis
+- uncertainty and conflict phrasing
+
+If an adapter only shortens evidence without creating measurable behavior lift over the base model, it is a compression helper, not a qualified expert artifact.
 
 ## Graduation Gates
 
@@ -33,6 +46,7 @@ Retrieval owns facts. Retrieval owns citations. Retrieval owns source identity. 
 - Objective gate: the artifact must declare the retrieval-grounded compression objective version.
 - Bundle gate: product paths must call the adapter only with retrieved evidence, never prompt-only.
 - Quality gate: bundle evaluation must preserve answer quality while reducing context tokens.
+- Behavior gate: bundle evaluation must show that the correct adapter changes answer behavior in the intended cluster-specific direction more than a wrong-adapter or no-adapter baseline.
 - Grounding gate: wrong citation/source-title/entity/date/number insertion rate must be zero in the release-gate sample.
 - Staleness gate: dataset or objective mismatch marks the artifact stale.
 - Rollback gate: rollback can activate only a valid artifact with the same objective version.
@@ -40,7 +54,7 @@ Retrieval owns facts. Retrieval owns citations. Retrieval owns source identity. 
 ## Evaluation Ownership
 
 - Retrieval-owned: factual recall, citation grounding, source selection, exact quotes, contradiction against source text, out-of-scope refusal.
-- Adapter-owned: grounded compression, terminology normalization, local style, and reasoning-pattern hints.
+- Adapter-owned: grounded behavior specialization, including terminology normalization, local style, reasoning-pattern hints, answer structure, and framing.
 - Shared: evidence summarization only when the source evidence is supplied in the adapter input.
 
 The adapter must not be benchmarked as a source-memory system. The public benchmark must compare:
@@ -54,7 +68,7 @@ retrieval + expert compressed packet
 The success question is:
 
 ```text
-Does the expert bundle preserve quality while reducing context tokens?
+Does the expert bundle preserve quality while reducing context tokens and add measurable cluster-specific behavior?
 ```
 
 not:
@@ -73,6 +87,8 @@ Does the adapter beat retrieval at facts?
 - Useful compression.
 - Cluster terminology/style fit.
 - Reasoning usefulness.
+- Behavior delta versus base model with the same evidence.
+- Wrong-adapter versus right-adapter separation.
 - Packet token count.
 - Runtime latency.
 - Adapter load memory.
@@ -84,6 +100,7 @@ Initial public-quality targets:
 - Token savings versus retrieval-only full packet: at least `40%`.
 - Quality regression versus retrieval-only full packet: at most `5%`.
 - Quality improvement versus retrieval-only same-token packet: at least `10%`.
+- Behavior specialization lift versus retrieval-only/base-model same-evidence packet: positive on every adapter-owned graduation category.
 - Minimum meaningful eval sample: at least `10-15` cases per scored category.
 
 ## Minimum Data Floor
@@ -126,6 +143,9 @@ Allowed training record types:
 - conflict summary from supplied snippets
 - uncertainty boundary from partial evidence
 - glossary extraction from supplied evidence
+- answer-shape transfer grounded in evidence
+- framing transfer grounded in evidence
+- practical-action emphasis grounded in evidence
 
 Disallowed as adapter memory tasks:
 
@@ -141,6 +161,7 @@ Disallowed as adapter memory tasks:
 - Adapter output must be checked against retrieved evidence before inclusion.
 - Expansion handles must point to retrieval/source chunks, not adapter text.
 - Final answer citations must come from retrieved evidence.
+- Final expert qualification must depend on behavior lift under grounded retrieval, not on adapter-only generations.
 
 ## Repeatable Smokes
 
@@ -172,3 +193,4 @@ The base model directory must be a local Transformers model directory, typically
 - The bundle architecture is planned but not fully implemented yet.
 - Existing prompt-only adapter artifacts are legacy and must not be silently promoted under the new objective.
 - Current adapter-vs-retrieval benchmark scripts are historical harnesses until the bundle benchmark replaces them.
+- The current implementation still leans too heavily toward compression-only expert usage; behavior-specialization ownership must be made explicit in runtime, routing, and benchmark code before public expert claims are strong.

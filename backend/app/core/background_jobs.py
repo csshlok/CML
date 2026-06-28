@@ -14,6 +14,7 @@ from backend.app.core.encrypted_storage import (
     plaintext_column_for_text,
     update_source_content_fields,
 )
+from backend.app.core.expert_contract import EXPERT_OBJECTIVE_VERSION
 from backend.app.core.expert_lifecycle import mark_cluster_needs_update
 from backend.app.core.config import get_settings
 from backend.app.core.expert_runtime import runtime_adapter_load_plan
@@ -934,6 +935,15 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             )
 
         dataset = build_cluster_dataset(cluster_id)
+        train_source_target = int(get_settings().lora_train_source_target or 0)
+        validation_source_target = int(get_settings().lora_validation_source_target or 0)
+        if (train_source_target > 0) != (validation_source_target > 0):
+            raise RuntimeError(
+                "CML_LORA_TRAIN_SOURCE_TARGET and CML_LORA_VALIDATION_SOURCE_TARGET must both be set for exact source splits."
+            )
+        if train_source_target > 0 and validation_source_target > 0:
+            dataset["train_source_target"] = train_source_target
+            dataset["validation_source_target"] = validation_source_target
         dataset_gate = dataset_graduation_report(dataset)
         if not dataset_gate["passes"]:
             _mark_expert_training_failed(
@@ -985,7 +995,7 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             base_model=str(preferred_model.get("local_path") or preferred_model.get("id") or get_settings().llm_model),
             dataset_hash=dataset["dataset_hash"],
         )
-        config["expert_objective_version"] = "retrieval_grounded_compression_v1"
+        config["expert_objective_version"] = EXPERT_OBJECTIVE_VERSION
 
         try:
             train_result = run_lora_training_process(
@@ -1061,10 +1071,27 @@ def _run_train_cluster_adapter(payload: dict) -> None:
                 else max(len(EVALUATION_CATEGORIES), len(list(dataset.get("documents") or [])))
             ),
         )
+        wrong_adapter_row = conn.execute(
+            """
+            SELECT local_path, base_model
+            FROM expert_artifacts
+            WHERE cluster_id != ?
+              AND artifact_type = 'lora_adapter'
+              AND status = 'ready'
+              AND deleted_at IS NULL
+              AND COALESCE(local_path, '') != ''
+              AND local_path != ?
+            ORDER BY active DESC, updated_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            (cluster_id, train_result["adapter_path"]),
+        ).fetchone()
         benchmark_run = run_live_expert_benchmark(
             dataset,
             adapter_path=train_result["adapter_path"],
             base_model=config["base_model"],
+            wrong_adapter_path=(str(wrong_adapter_row["local_path"]) if wrong_adapter_row else None),
+            wrong_adapter_base_model=(str(wrong_adapter_row["base_model"]) if wrong_adapter_row else None),
             evaluation_plan=evaluation_plan,
         )
         benchmark_report = benchmark_run["benchmark_report"]
@@ -1082,7 +1109,7 @@ def _run_train_cluster_adapter(payload: dict) -> None:
             "adapter_dir_exists": True,
             "adapter_valid": True,
         }
-        metrics["expert_objective_version"] = "retrieval_grounded_compression_v1"
+        metrics["expert_objective_version"] = EXPERT_OBJECTIVE_VERSION
         metrics["training_record_types"] = list(dataset_manifest.get("training_record_types") or [])
         metrics["requires_retrieved_evidence"] = bool(dataset_manifest.get("requires_retrieved_evidence"))
         metrics["dataset_gate"] = dataset_gate
@@ -1116,7 +1143,7 @@ def _run_train_cluster_adapter(payload: dict) -> None:
                 "dataset_hash": dataset.get("dataset_hash"),
                 "created_at": now,
                 "metadata": {
-                    "expert_objective_version": "retrieval_grounded_compression_v1",
+                    "expert_objective_version": EXPERT_OBJECTIVE_VERSION,
                     "training_record_types": list(dataset_manifest.get("training_record_types") or []),
                     "requires_retrieved_evidence": bool(dataset_manifest.get("requires_retrieved_evidence")),
                 },

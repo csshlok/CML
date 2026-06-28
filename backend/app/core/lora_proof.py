@@ -68,6 +68,8 @@ def build_lora_smoke_proof(report: dict[str, Any]) -> dict[str, Any]:
             "expert_objective_version": str((benchmark.get("metadata") or {}).get("expert_objective_version") or ""),
             "bundle_benchmark_summary": benchmark.get("bundle_benchmark_summary") or {},
             "bundle_release_gate": benchmark.get("bundle_release_gate") or benchmark.get("gate_report") or {},
+            "behavior_specialization_summary": benchmark.get("behavior_specialization_summary") or {},
+            "behavior_specialization_gate": benchmark.get("behavior_specialization_gate") or {},
             "bundle_readiness": benchmark.get("bundle_readiness") or {},
             "legacy_overall": benchmark.get("overall") or {},
         },

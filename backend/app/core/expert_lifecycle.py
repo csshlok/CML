@@ -2,6 +2,7 @@ import json
 from uuid import uuid4
 
 from backend.app.core.database import dict_from_row, utc_now
+from backend.app.core.expert_contract import EXPERT_OBJECTIVE_VERSION
 from backend.app.core.expert_runtime import runtime_adapter_load_plan
 from backend.app.core.hardware import hardware_status
 from backend.app.core.training_dataset import build_cluster_dataset
@@ -266,8 +267,8 @@ def activation_guard_report(
     artifact_dataset_hash = str(artifact.get("dataset_hash") or "").strip()
     benchmark_dataset_hash = str(benchmark_report.get("dataset_hash") or "").strip()
     benchmark_passes = bool(benchmark_report.get("passes"))
-    objective_version_ok = objective_version == "retrieval_grounded_compression_v1"
-    benchmark_pass_ok = benchmark_passes and str((benchmark_report.get("metadata") or {}).get("expert_objective_version") or objective_version).strip() == "retrieval_grounded_compression_v1"
+    objective_version_ok = objective_version == EXPERT_OBJECTIVE_VERSION
+    benchmark_pass_ok = benchmark_passes and str((benchmark_report.get("metadata") or {}).get("expert_objective_version") or objective_version).strip() == EXPERT_OBJECTIVE_VERSION
     artifact_dataset = artifact_dataset_hash or metadata_dataset_hash
     dataset_match_ok = True
     if require_current_dataset_match and current_dataset_hash:
@@ -280,7 +281,7 @@ def activation_guard_report(
     detail = ""
     if not objective_version_ok:
         failure_code = "legacy_prompt_only"
-        detail = "Artifact objective version is not retrieval_grounded_compression_v1."
+        detail = f"Artifact objective version is not {EXPERT_OBJECTIVE_VERSION}."
     elif not benchmark_pass_ok:
         failure_code = "benchmark_unverified"
         detail = "Artifact does not carry a passing bundle benchmark for the retrieval-grounded expert-compression objective."
