@@ -1,6 +1,6 @@
 # Overall Context
 
-Last updated: 2026-06-28
+Last updated: 2026-06-29
 
 This is the long-form project context. Keep detailed historical notes here when `docs/PROJECT_CONTEXT.md` is pruned.
 
@@ -27,6 +27,10 @@ Validated result:
 Remaining release blockers are unchanged: clean-VM package validation, installed-app first-run parity in that clean environment, live expert-compression bundle quality proof, and hardware-aware setup QA still require release-grade evidence.
 
 Local package validation was refreshed on 2026-06-28 against `apps/desktop/release/win-unpacked`. The package layout check, packaged runtime smoke, packaged full-vault smoke, dynamic-link smoke, migration drill, and packaged app-launch smoke all passed locally. This improves confidence in the current package artifact but does not close the clean-VM gate because the contributor host still has developer Python and Node on PATH.
+
+## 2026-06-29 Initial Debug Fix
+
+The current operator docs were corrected so active work is described as the current checked-out repo root instead of stale machine-specific absolute paths. `docs/PROJECT_CONTEXT.md` also no longer names an ignored local security-plan file as a current tracked status document. Validation for this fix checked the stale-path/current-doc references and reran the existing desktop, browser-extension, and backend suites before the first push.
 
 Current cluster expert decision:
 
@@ -117,7 +121,7 @@ Still open relative to the full plan:
 - Added focused regression coverage for the canonical-status and compatibility-only cleanup:
   - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_export_lora_run_artifacts.py T:\CML\backend\tests\test_lora_proof_bundle_contract.py T:\CML\backend\tests\test_source_pages.py -k "expert_compression_ready or export or build_lora_smoke_proof"`
   - Result: `4 passed, 99 deselected`
-- Additional wording cleanup updated `docs/PRODUCT_PRD.md`, `docs/SECURITY_BUILD_PLAN.md`, and historical notes in this file so they no longer present the old adapter-quality benchmark label as the current proof contract.
+- Additional wording cleanup updated `docs/PRODUCT_PRD.md`, tracked release/status docs, and historical notes in this file so they no longer present the old adapter-quality benchmark label as the current proof contract.
 - Follow-up verification after the wording cleanup:
   - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_lora_proof_bundle_contract.py T:\CML\backend\tests\test_export_lora_run_artifacts.py`
   - Result: `2 passed`

@@ -5,7 +5,7 @@ This file is the operator runbook for local development, packaging, and version 
 Run every command from the repo root unless a section says otherwise:
 
 ```powershell
-cd C:\Users\csshl\Desktop\CML
+cd <your CML checkout>
 ```
 
 ## 1. First-Time Setup

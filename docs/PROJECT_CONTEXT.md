@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-06-28
+Last updated: 2026-06-29
 
 ## Operating Rule
 
@@ -29,7 +29,7 @@ Target user: general second-brain users, not only developers.
 - Release stance: public release only; no private alpha/demo fallback.
 - Desktop shell: Electron in `apps/desktop`.
 - Backend: FastAPI in `backend`.
-- Active repo path: `T:\CML`.
+- Active repo path: use the current checked-out workspace root; avoid hardcoded machine-specific paths in current runbooks.
 - V1 vault scope: explicit vault mode only; no full-device silent scanning.
 - V1 storage: local vault folder with `CML_DATA_DIR=<vault>/.vault` and `CML_DATABASE_PATH=<vault>/.vault/cml.sqlite3`.
 - V1 integrations: local synced folders first, including Google Drive Desktop, Dropbox, OneDrive, iCloud Drive, Obsidian folders, and normal folders.
@@ -130,7 +130,7 @@ Implemented in this pass:
 - `backend/app/core/lora_training.py::graduation_contract()` now exposes canonical bundle-era statuses as the primary contract and separates legacy status aliases explicitly instead of publishing old `training_ready`-style names as the default supported-state list.
 - `scripts/backend/export-lora-run-artifacts.py` now labels legacy category/graduation outputs as compatibility-only artifacts and names those exported files accordingly, instead of presenting them as the primary benchmark deliverables.
 - `backend/app/core/lora_proof.py` no longer emits the stale `adapter_quality_benchmark` gate alias; the proof surface now treats `expert_bundle_benchmark` as the authoritative gate name.
-- `docs/PRODUCT_PRD.md`, `docs/SECURITY_BUILD_PLAN.md`, and historical notes in `docs/OVERALL_CONTEXT.md` now use bundle-era wording for the expert-quality/proof gate instead of continuing to describe the old adapter-quality benchmark as the current contract.
+- `docs/PRODUCT_PRD.md`, tracked release/status docs, and historical notes in `docs/OVERALL_CONTEXT.md` now use bundle-era wording for the expert-quality/proof gate instead of continuing to describe the old adapter-quality benchmark as the current contract.
 - The remaining named Phase 1 docs now also reflect the bundle-era contract:
   - `docs/BRIDGE_CONTEXT_PACKET_DESIGN.md`
   - `docs/CONTEXT_LAYER_V1_WORKPATH.md`
@@ -228,7 +228,7 @@ Current model policy:
 | Model recommendation | In progress | `[#########-] 88%` | Hardware-aware chat/expert distinction exists and wording now reflects expert compression, but broader runtime/setup verification and final release-gate proof are still pending. |
 | Security | In progress | `[########--] 80%` | Vault crypto and auth hardening are active; passphrase strength, key-memory limitations, and concurrency hardening were recently addressed or flagged. |
 | UI | In progress | `[########--] 82%` | Main surfaces exist; UI copy/status must distinguish retrieval-ready from expert-compression-ready. |
-| Packaging/release proof | In progress | `[########--] 78%` | Windows packaging evidence exists; clean VM and release checklist remain. |
+| Packaging/release proof | In progress | `[########--] 78%` | Windows packaging evidence exists; current operator docs now avoid stale absolute repo paths, but clean VM and release checklist remain. |
 
 ## Latest LoRA Findings
 
@@ -324,7 +324,7 @@ Packaging gate:
 
 ## Running Notes
 
-- Do not use the old `C:\Users\csshl\Desktop\CML` copy for active work. Active repo is `T:\CML`.
+- Use the current checked-out workspace root for active work; do not follow stale machine-specific paths from historical notes.
 - Do not delete or alter `UI-ref/`.
 - Do not present old prompt-only LoRA benchmark numbers as release evidence.
 - The backend now has a first-pass shared cluster bundle implementation, but the full doc scope is not complete yet; do not describe the architecture migration as finished.
