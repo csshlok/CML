@@ -32,6 +32,8 @@ Local package validation was refreshed on 2026-06-28 against `apps/desktop/relea
 
 The current operator docs were corrected so active work is described as the current checked-out repo root instead of stale machine-specific absolute paths. `docs/PROJECT_CONTEXT.md` also no longer names an ignored local security-plan file as a current tracked status document. Validation for this fix checked the stale-path/current-doc references and reran the existing desktop, browser-extension, and backend suites before the first push.
 
+Follow-up validation found a clean-clone test risk: `backend/tests/test_system_vault_lock_and_embeddings.py` reads `docs/THREAT_MODEL.md` and `docs/CLUSTER_MERGE_POLICY.md`, but `.gitignore` still excluded both policy docs. The ignore rules were corrected, the policy docs are now intended tracked inputs, and `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_system_vault_lock_and_embeddings.py -k "backend_policy_docs"` passed with `1 passed, 68 deselected`. Final broad validation after this fix also passed: backend tests `544 passed, 3 skipped`, desktop lint `40 passed`, desktop build passed, browser-extension tests `19 passed`, and backend compileall passed.
+
 Current cluster expert decision:
 
 - The old standalone prompt-only LoRA expert goal is superseded.

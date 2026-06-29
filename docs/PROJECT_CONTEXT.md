@@ -182,6 +182,12 @@ Current note from full backend validation:
 
 - The earlier Windows native access-violation stack during ML dependency import was reproduced in the adapter smoke path, contained by blocking unneeded optional sklearn/pandas/pyarrow probes, and absent from the final full backend validation run.
 
+2026-06-29 follow-up debugging fix:
+
+- `.gitignore` no longer excludes `docs/THREAT_MODEL.md` or `docs/CLUSTER_MERGE_POLICY.md`, and both policy docs are now intended tracked inputs for backend policy validation. This fixes a clean-clone risk where `backend/tests/test_system_vault_lock_and_embeddings.py -k "backend_policy_docs"` could pass only on a local workspace that happened to keep ignored policy docs.
+- Validation passed: `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_system_vault_lock_and_embeddings.py -k "backend_policy_docs"` (`1 passed, 68 deselected`).
+- Final broad validation after the follow-up fix also passed: `.\.venv\Scripts\python.exe -m pytest -q backend\tests` (`544 passed, 3 skipped`), `npm run lint` (`40 passed`), `npm run build` (passed), `node --test apps/browser-extension/tests/*.test.cjs` (`19 passed`), and `.\.venv\Scripts\python.exe -m compileall -q backend\app` (passed).
+
 Local packaged validation refreshed on 2026-06-28:
 
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\validate-clean-machine-package.ps1 -PackageRoot apps\desktop\release\win-unpacked`
@@ -226,7 +232,7 @@ Current model policy:
 | Bridge/MCP | In progress | `[#########-] 92%` | Bridge now routes through the shared bundle builder and surfaces expert digest/token ledger metadata; expansion and permission flows remain, with broader regression still pending. |
 | LoRA/expert work | Re-scoped | `[##########] 100%` | Retrieval-grounded bundle core, expert-compression runtime path, evidence-grounded training export, canonical status rollout, analysis-mode bundle parity, bundle-first benchmark/export/proof contract, bundle-mode-primary readiness, richer bundle benchmark artifacts, activation/rollback migration guards, and Phase 1 doc alignment are now implemented and broadly verified in focused bundle-era test suites. |
 | Model recommendation | In progress | `[#########-] 88%` | Hardware-aware chat/expert distinction exists and wording now reflects expert compression, but broader runtime/setup verification and final release-gate proof are still pending. |
-| Security | In progress | `[########--] 80%` | Vault crypto and auth hardening are active; passphrase strength, key-memory limitations, and concurrency hardening were recently addressed or flagged. |
+| Security | In progress | `[########--] 80%` | Vault crypto and auth hardening are active; passphrase strength, key-memory limitations, and concurrency hardening were recently addressed or flagged; threat-model and cluster-merge policy docs are now tracked for clean-clone validation. |
 | UI | In progress | `[########--] 82%` | Main surfaces exist; UI copy/status must distinguish retrieval-ready from expert-compression-ready. |
 | Packaging/release proof | In progress | `[########--] 78%` | Windows packaging evidence exists; current operator docs now avoid stale absolute repo paths, but clean VM and release checklist remain. |
 
