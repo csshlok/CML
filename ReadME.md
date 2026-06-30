@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <strong>Compact context packets · retrieval-first chat · local vaults · verified cluster-expert path</strong>
+  <strong>Compact context packets | retrieval-first chat | local vaults | verified cluster-expert path</strong>
 </p>
 
 ---
@@ -33,7 +33,7 @@ This is not just a searchable vault. Public V1 is aiming at a real context-manag
 
 ## Why CML
 
-Most AI workspaces stop at “upload files and retrieve top-k chunks.”
+Most AI workspaces stop at "upload files and retrieve top-k chunks."
 
 CML is trying to solve a broader problem:
 
@@ -43,7 +43,7 @@ CML is trying to solve a broader problem:
 - external tools cannot reuse your local memory cleanly
 - grounded answers need more than prompt wording
 
-CML’s current architecture addresses that with:
+CML's current architecture addresses that with:
 
 - retrieval-first routing
 - grounded chat with citations
@@ -79,7 +79,7 @@ The biggest remaining gates are:
 - clean Windows VM validation of the current package
 - installed-app first-run parity on a healthy clean VM
 - real LoRA trainer/runtime proof on release-like hardware
-- live adapter quality benchmark versus retrieval baseline
+- live expert-compression bundle quality and token-savings proof
 - hardware-aware model/setup QA
 - broader real-vault and context-layer release proof
 
@@ -174,13 +174,13 @@ Core runtime rule:
 
 ## Repo Map
 
-- `apps/desktop/` — Electron shell and React desktop UI
-- `apps/browser-extension/` — packaged browser extension capture client
-- `backend/` — FastAPI service, retrieval, Bridge, ingestion, expert lifecycle, startup repair, security boundaries
-- `docs/` — PRDs, architecture, current context, release checklists, benchmark notes, design docs
-- `scripts/` — backend smokes, packaging scripts, OCR/model tooling, security checks, benchmark runners
-- `requirements/` — contributor dependency manifests
-- `UI-ref/` — preserved UI reference material
+- `apps/desktop/` - Electron shell and React desktop UI
+- `apps/browser-extension/` - packaged browser extension capture client
+- `backend/` - FastAPI service, retrieval, Bridge, ingestion, expert lifecycle, startup repair, security boundaries
+- `docs/` - PRDs, architecture, current context, release checklists, benchmark notes, design docs
+- `scripts/` - backend smokes, packaging scripts, OCR/model tooling, security checks, benchmark runners
+- `requirements/` - contributor dependency manifests
+- `UI-ref/` - preserved UI reference material
 
 ## Bridge And External Use
 
@@ -223,19 +223,21 @@ Current expert state surface includes:
 - Expert tab/state visibility
 - deterministic scaffold smokes
 
-Current expert states:
+Current bundle-era expert states:
 
 - `retrieval_ready`
 - `training_pending`
 - `training_running`
-- `training_ready`
+- `expert_compression_ready`
+- `expert_stale`
 - `training_failed`
 - `hardware_unsupported`
 - `rollback_ready`
 
 Important rule:
 
-- do not call a cluster expert “trained” in release language until a real adapter has passed graduation, runtime loading, and quality proof
+- retrieval owns facts and citations; the optional LoRA adapter is only a grounded compression layer
+- do not call a cluster expert "trained" in release language until the retrieval-grounded bundle has passed freshness, runtime, grounding, quality, and token-savings gates
 
 Useful commands:
 
