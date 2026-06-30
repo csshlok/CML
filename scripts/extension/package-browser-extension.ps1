@@ -21,10 +21,12 @@ if (Test-Path $stagingPath) {
 New-Item -ItemType Directory -Force -Path $stagingPath | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $extensionRoot "manifest.json") -Destination $stagingPath
+Copy-Item -LiteralPath (Join-Path $extensionRoot "background-core.js") -Destination $stagingPath
 Copy-Item -LiteralPath (Join-Path $extensionRoot "background.js") -Destination $stagingPath
 Copy-Item -LiteralPath (Join-Path $extensionRoot "content.js") -Destination $stagingPath
 Copy-Item -LiteralPath (Join-Path $extensionRoot "popup.html") -Destination $stagingPath
 Copy-Item -LiteralPath (Join-Path $extensionRoot "popup.css") -Destination $stagingPath
+Copy-Item -LiteralPath (Join-Path $extensionRoot "popup-core.js") -Destination $stagingPath
 Copy-Item -LiteralPath (Join-Path $extensionRoot "popup.js") -Destination $stagingPath
 Copy-Item -LiteralPath (Join-Path $extensionRoot "extension-core.js") -Destination $stagingPath
 Copy-Item -LiteralPath (Join-Path $extensionRoot "README.md") -Destination $stagingPath

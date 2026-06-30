@@ -193,6 +193,13 @@ Current note from full backend validation:
 - `ReadME.md` now uses bundle-era release-gate and local expert state language instead of the stale adapter-quality/`training_ready` framing, and the touched public overview lines now render with ASCII-safe punctuation in normal terminals.
 - Validation passed: `.\.venv\Scripts\python.exe -m pytest -q backend\tests` (`544 passed, 3 skipped`), `npm run lint` (`40 passed`), `npm run build` (passed), `node --test apps/browser-extension/tests/*.test.cjs` (`19 passed`), `.\.venv\Scripts\python.exe -m compileall -q backend\app` (passed), and targeted grep confirmed the stale README phrases were removed.
 
+2026-06-30 continued full-repo debug fix:
+
+- `scripts/extension/package-browser-extension.ps1` now includes the browser extension's imported `background-core.js` and `popup-core.js` modules in packaged output, fixing a shipped-zip risk where source tests could pass but the extension service worker/popup imports were missing from the archive.
+- Browser-extension regression coverage now runs the package script and verifies the staged package includes those module dependencies.
+- Ruff is now clean for `backend` and `scripts`; stale Bridge/chat imports and dead pre-bundle transcript helper code were removed without changing the shared bundle routing contract.
+- Final validation passed: `.\.venv\Scripts\python.exe -m pytest -q backend\tests` (`544 passed, 3 skipped`), `npm run lint` (`40 passed`), `npm run build` (passed), `node --test apps/browser-extension/tests/*.test.cjs` (`20 passed`), `.\.venv\Scripts\python.exe -m compileall -q backend\app scripts\backend backend\tests` (passed), `npx tsc --project apps\desktop\tsconfig.json --noEmit` (passed), `.\.venv\Scripts\python.exe -m ruff check backend scripts` (passed), `npm run security:renderer` (passed), `npm run security:package` (passed), and `scripts\extension\package-browser-extension.ps1 -OutputRoot .tmp\browser-extension-final-validate` (passed).
+
 Local packaged validation refreshed on 2026-06-28:
 
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\validate-clean-machine-package.ps1 -PackageRoot apps\desktop\release\win-unpacked`
@@ -239,7 +246,7 @@ Current model policy:
 | Model recommendation | In progress | `[#########-] 88%` | Hardware-aware chat/expert distinction exists and wording now reflects expert compression, but broader runtime/setup verification and final release-gate proof are still pending. |
 | Security | In progress | `[########--] 80%` | Vault crypto and auth hardening are active; passphrase strength, key-memory limitations, and concurrency hardening were recently addressed or flagged; threat-model and cluster-merge policy docs are now tracked for clean-clone validation. |
 | UI | In progress | `[########--] 82%` | Main surfaces exist; UI copy/status must distinguish retrieval-ready from expert-compression-ready. |
-| Packaging/release proof | In progress | `[########--] 78%` | Windows packaging evidence exists; current public/operator docs now avoid stale absolute paths and adapter-era release-gate wording, but clean VM and release checklist remain. |
+| Packaging/release proof | In progress | `[########--] 78%` | Windows packaging evidence exists and browser-extension zip dependency coverage now has a regression test; clean VM and release checklist remain. |
 
 ## Latest LoRA Findings
 

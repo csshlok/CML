@@ -1,4 +1,3 @@
-from collections import OrderedDict
 import json
 from pathlib import Path
 import re
@@ -19,7 +18,7 @@ from backend.app.core.embeddings import (
     require_embeddings_available,
     reindex_source_chunks,
 )
-from backend.app.core.expert_evaluation import ROUTE_AWAY_CATEGORIES, adapter_route_away_category
+from backend.app.core.expert_evaluation import adapter_route_away_category
 from backend.app.core.encrypted_storage import (
     delete_source_encrypted_content,
     source_from_encrypted_row,
@@ -64,7 +63,6 @@ from backend.app.schemas import (
     ChatSessionCreate,
     ChatSessionRead,
     ChatSessionUpdate,
-    SemanticSearchRequest,
 )
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -574,7 +572,6 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
             source_count=source_count,
         )
 
-    include_chat_transcripts = _should_include_chat_transcripts(payload.prompt)
     if intent != "general_chat":
         try:
             require_embeddings_available("Vault retrieval chat")
@@ -1413,26 +1410,6 @@ def _looks_like_math_prompt(prompt: str) -> bool:
     if stripped and all(ch in "0123456789+-*/().=?" for ch in stripped):
         return True
     return False
-
-
-def _should_include_chat_transcripts(prompt: str) -> bool:
-    normalized = prompt.lower()
-    return any(
-        phrase in normalized
-        for phrase in (
-            "previous chat",
-            "chat history",
-            "our conversation",
-            "earlier conversation",
-            "what did i ask",
-            "what did we discuss",
-            "transcript",
-        )
-    )
-
-
-def _is_chat_transcript_result(result: dict) -> bool:
-    return str(result.get("source_id") or "").startswith("chat-source-")
 
 
 def _is_chat_transcript_source(row) -> bool:

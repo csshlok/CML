@@ -5,7 +5,6 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 
-from backend.app.api.routes.search import semantic_search
 from backend.app.api.routes.sources import source_from_row
 from backend.app.core.bridge_security import (
     APPROVAL_DELIVERY_SECONDS,
@@ -44,7 +43,6 @@ from backend.app.core.memory_card import summarize_text
 from backend.app.core.context_memory import (
     apply_bridge_quality_to_source,
     classify_external_response_quality,
-    get_context_memory,
     persist_bridge_writeback_review,
     rebuild_source_memory,
     set_bridge_writeback_review_approval,
@@ -76,7 +74,6 @@ from backend.app.schemas import (
     BridgeTokenRotationRead,
     BridgeWritebackReviewDecision,
     BridgeWritebackReviewRead,
-    SemanticSearchRequest,
 )
 
 router = APIRouter(prefix="/bridge", tags=["bridge"])
