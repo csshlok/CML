@@ -387,7 +387,7 @@ Run the local adapter smoke:
 
 ```powershell
 $env:CML_LORA_MODEL_DIRS = "D:\models\hf"
-$env:CML_LORA_RUNTIME_PYTHON = "C:\Users\you\Desktop\CML\.venv-lora\Scripts\python.exe"
+$env:CML_LORA_RUNTIME_PYTHON = "<your CML checkout>\.venv-lora\Scripts\python.exe"
 .\scripts\backend\smoke-lora-runtime.ps1 -AdapterPath D:\cml\data\experts\cluster-1\adapter-1234 -BaseModel Qwen2.5-3B-Instruct
 ```
 

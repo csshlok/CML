@@ -1,6 +1,6 @@
 # LoRA Findings And Replication Runbook
 
-Last updated: 2026-06-26
+Last updated: 2026-07-01
 
 This document records the current LoRA findings that should guide future work. It intentionally replaces older append-only run notes that treated prompt-only adapter quality as the release target.
 
@@ -134,8 +134,8 @@ Fix: find the real adapter under the active workdir before benchmarking. If dele
 Typical environment variables used during current local runs:
 
 ```powershell
-$env:CML_LORA_TRAINER_COMMAND = "T:\cml-lora-venv\Scripts\llamafactory-cli.exe train {config_path}"
-$env:CML_LORA_RUNTIME_PYTHON = "T:\cml-lora-venv\Scripts\python.exe"
+$env:CML_LORA_TRAINER_COMMAND = "<lora-venv>\Scripts\llamafactory-cli.exe train {config_path}"
+$env:CML_LORA_RUNTIME_PYTHON = "<lora-venv>\Scripts\python.exe"
 $env:CML_LORA_TRAINING_DEVICE = "cuda"
 $env:CML_LORA_TRAINING_DTYPE = "fp16"
 $env:CML_LORA_RUNTIME_DEVICE = "cuda"
@@ -145,10 +145,10 @@ $env:CML_LORA_RUNTIME_REPETITION_PENALTY = "1.1"
 $env:CML_LORA_RUNTIME_NO_REPEAT_NGRAM_SIZE = "4"
 ```
 
-Use the active repo:
+Use the active repo checkout:
 
 ```powershell
-Set-Location T:\CML
+Set-Location <your CML checkout>
 ```
 
 ## Historical Benchmark Artifacts
@@ -219,7 +219,7 @@ These commands remain useful for infrastructure smoke only.
 Runtime smoke:
 
 ```powershell
-Set-Location T:\CML
+Set-Location <your CML checkout>
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\smoke-lora-runtime.ps1 `
   -AdapterPath <adapter-dir> `
   -BaseModel <base-model-dir>
@@ -228,21 +228,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\smoke-lora-r
 Trainer/runtime smoke:
 
 ```powershell
-Set-Location T:\CML
+Set-Location <your CML checkout>
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\smoke-lora-expert.ps1 `
-  -BaseModelPath T:\hf-models\Qwen2.5-1.5B-Instruct `
+  -BaseModelPath <base-model-dir> `
   -SourcePaths docs backend scripts `
   -MaxRealSources 50 `
   -BenchmarkCaseLimit 8 `
   -BenchmarkMaxNewTokens 0 `
   -AllowBenchmarkFailure `
-  -WorkDir T:\cml-lora-smoke
+  -WorkDir <lora-smoke-workdir>
 ```
 
 Monitor training:
 
 ```powershell
-Set-Location T:\CML
+Set-Location <your CML checkout>
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\monitor-lora-training.ps1 `
   -WorkDir <workdir> `
   -RefreshSeconds 5

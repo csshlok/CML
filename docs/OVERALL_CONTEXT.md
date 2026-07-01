@@ -1,6 +1,6 @@
 # Overall Context
 
-Last updated: 2026-06-29
+Last updated: 2026-07-01
 
 This is the long-form project context. Keep detailed historical notes here when `docs/PROJECT_CONTEXT.md` is pruned.
 
@@ -72,7 +72,7 @@ Completed in code during this pass:
 - Added `run_cluster_expert_compression(...)` in `backend/app/core/expert_runtime.py` with retrieved-evidence prompts, JSON-or-plain-text digest parsing, and grounding validation that fails closed on unsupported source-title/entity/number claims.
 - Extended packet rendering and response schemas so bundle metadata is visible in packets and API payloads.
 - Added `backend/tests/test_cluster_bundle.py`; combined bundle and MCP tests passed in the repo venv:
-  - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_cluster_bundle.py T:\CML\backend\tests\test_bridge_mcp.py`
+  - `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_cluster_bundle.py backend\tests\test_bridge_mcp.py`
   - Result: `24 passed`
 - Replaced the training exporter objective in `backend/app/core/training_dataset.py` so it now emits evidence-grounded record types such as `source_fact_extract`, `evidence_compression`, `citation_boundary`, `terminology_normalization`, `style_rewrite`, `reasoning_hint`, `conflict_summary`, and `uncertainty_boundary`.
 - Updated LoRA lifecycle metadata so new runs record `retrieval_grounded_compression_v1`, exported record types, and `requires_retrieved_evidence=true`.
@@ -84,7 +84,7 @@ Completed in code during this pass:
   - `bundle_without_expert`
   - gate fields for quality regression vs retrieval-full, quality gain vs retrieval-small, token savings vs retrieval-full, unsupported-claim rate, and wrong-citation rate
 - Added `backend/tests/test_cluster_bundle_training.py`; current targeted verification now passes:
-  - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_cluster_bundle.py T:\CML\backend\tests\test_cluster_bundle_training.py T:\CML\backend\tests\test_bridge_mcp.py`
+  - `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_cluster_bundle.py backend\tests\test_cluster_bundle_training.py backend\tests\test_bridge_mcp.py`
   - Result after latest benchmark-layer tests: `29 passed`
 
 Still open relative to the full plan:
@@ -105,27 +105,27 @@ Still open relative to the full plan:
 - The benchmark report contract is now bundle-first for downstream consumers: it exposes `bundle_benchmark_summary`, `bundle_release_gate`, `bundle_benchmark_modes`, `bundle_case_outputs`, and `bundle_readiness` while retaining older category/adapter fields only as compatibility output.
 - Training completion and saved benchmark artifacts now summarize readiness using the bundle benchmark's expert-compression score and release gate rather than relying on legacy graduation adapter scores as the primary success signal.
 - Added focused regression coverage for the bundle-first export/report contract:
-  - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_cluster_bundle_benchmark.py T:\CML\backend\tests\test_export_lora_run_artifacts.py`
+  - `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_cluster_bundle_benchmark.py backend\tests\test_export_lora_run_artifacts.py`
   - Result: `3 passed`
 - The LoRA smoke-proof contract is now aligned with the bundle benchmark surface: `backend/app/core/lora_proof.py` and `scripts/backend/export-lora-proof.ps1` now expose `bundle_with_expert_score`, `bundle_release_gate`, and the bundle-era blocked reason `expert_bundle_benchmark_failed` as the primary proof language.
 - `backend/app/core/training_evaluation.py` now labels its older heuristic explicitly as structural readiness only, which makes it harder to confuse with a live expert-quality benchmark or activation gate.
 - Added focused regression coverage for the proof/readiness cleanup:
-  - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_lora_proof_bundle_contract.py T:\CML\backend\tests\test_training_evaluation_contract.py T:\CML\backend\tests\test_export_lora_run_artifacts.py`
+  - `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_lora_proof_bundle_contract.py backend\tests\test_training_evaluation_contract.py backend\tests\test_export_lora_run_artifacts.py`
   - Result: `3 passed`
 - The benchmark internals now use `bundle_mode_coverage` as the primary completeness/readiness basis instead of relying on legacy graduation-category completeness to decide pass/fail under the hood.
 - Training metrics now carry `bundle_mode_coverage`, and bundle readiness reports now surface mode-level failure reasons such as missing or incomplete required benchmark modes while keeping old category completeness only as compatibility context.
 - Added focused regression coverage for the bundle-primary benchmark internals:
-  - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_cluster_bundle_benchmark.py T:\CML\backend\tests\test_source_pages.py -k "bundle_benchmark or active_adapter_stale or expert_compression_ready"`
+  - `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_cluster_bundle_benchmark.py backend\tests\test_source_pages.py -k "bundle_benchmark or active_adapter_stale or expert_compression_ready"`
   - Result: `4 passed, 100 deselected`
 - The public graduation contract now publishes canonical bundle-era statuses first and isolates legacy aliases explicitly instead of advertising old `training_ready`-style names as the default supported-state list.
 - The run-artifact exporter now marks legacy category/graduation outputs as compatibility-only and renames those emitted files accordingly, which reduces the chance that downstream readers mistake them for the primary benchmark contract.
 - The proof surface no longer emits the stale `adapter_quality_benchmark` gate alias; `expert_bundle_benchmark` is now the authoritative proof gate name.
 - Added focused regression coverage for the canonical-status and compatibility-only cleanup:
-  - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_export_lora_run_artifacts.py T:\CML\backend\tests\test_lora_proof_bundle_contract.py T:\CML\backend\tests\test_source_pages.py -k "expert_compression_ready or export or build_lora_smoke_proof"`
+  - `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_export_lora_run_artifacts.py backend\tests\test_lora_proof_bundle_contract.py backend\tests\test_source_pages.py -k "expert_compression_ready or export or build_lora_smoke_proof"`
   - Result: `4 passed, 99 deselected`
 - Additional wording cleanup updated `docs/PRODUCT_PRD.md`, tracked release/status docs, and historical notes in this file so they no longer present the old adapter-quality benchmark label as the current proof contract.
 - Follow-up verification after the wording cleanup:
-  - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_lora_proof_bundle_contract.py T:\CML\backend\tests\test_export_lora_run_artifacts.py`
+  - `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_lora_proof_bundle_contract.py backend\tests\test_export_lora_run_artifacts.py`
   - Result: `2 passed`
 - The remaining named Phase 1 docs are now aligned with the bundle-era contract as well:
   - `docs/BRIDGE_CONTEXT_PACKET_DESIGN.md`
@@ -135,11 +135,11 @@ Still open relative to the full plan:
   These now describe expert digest authority limits, retrieval-owned facts/citations, token-ledger/bundle metadata, and expert-compression status language instead of the older adapter-first framing.
 - Verification search after the doc alignment found the new bundle-era wording in those docs and no remaining old-target phrases in that current-truth set.
 - Final closeout verification after the last Bridge-path bug fix passed across the main bundle-era implementation surfaces:
-  - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_cluster_bundle.py T:\CML\backend\tests\test_cluster_bundle_training.py T:\CML\backend\tests\test_cluster_bundle_benchmark.py T:\CML\backend\tests\test_bridge_mcp.py T:\CML\backend\tests\test_bridge_phase10.py T:\CML\backend\tests\test_export_lora_run_artifacts.py T:\CML\backend\tests\test_lora_proof_bundle_contract.py T:\CML\backend\tests\test_training_evaluation_contract.py`
+  - `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_cluster_bundle.py backend\tests\test_cluster_bundle_training.py backend\tests\test_cluster_bundle_benchmark.py backend\tests\test_bridge_mcp.py backend\tests\test_bridge_phase10.py backend\tests\test_export_lora_run_artifacts.py backend\tests\test_lora_proof_bundle_contract.py backend\tests\test_training_evaluation_contract.py`
   - Result: `51 passed`
-  - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_source_pages.py -k "expanded_analysis or complete_analysis or rollback_and_delete_guardrails or legacy_prompt_only_artifact or active_adapter_stale or expert_compression_ready"`
+  - `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_source_pages.py -k "expanded_analysis or complete_analysis or rollback_and_delete_guardrails or legacy_prompt_only_artifact or active_adapter_stale or expert_compression_ready"`
   - Result: `8 passed, 93 deselected`
-  - `T:\CML\.venv\Scripts\python.exe -m compileall -q T:\CML\backend\app`
+  - `.\.venv\Scripts\python.exe -m compileall -q backend\app`
   - Result: passed
 
 Current interpretation:
@@ -1519,7 +1519,7 @@ Completed without touching LoRA:
 - Clean-machine package validation: `scripts/packaging/validate-clean-machine-package.ps1` checks package root, resources, packaged backend, packaged Python runtime, OCR manifest, and package smoke scripts. It passed against `apps/desktop/release/win-unpacked`.
 - Full-vault package smoke automation: `scripts/packaging/smoke-packaged-full-vault.ps1` starts packaged backend in full-vault mode and exercises vault creation, text ingestion, reindex, semantic search, query-cache pruning, startup phase validation, and diagnostics bundle export.
 - Startup status hardening: startup phases are validated from `shared/startup-phases.json`; non-terminal startup phases now report stale timeout state.
-- Scale/retrieval harness: `scripts/backend/benchmark-1k-vault.ps1` runs the retrieval benchmark at 1k sources by default and writes to `T:\CML-build-smoke\retrieval-1k`.
+- Scale/retrieval harness: `scripts/backend/benchmark-1k-vault.ps1` runs the retrieval benchmark at 1k sources by default and writes under `$env:TEMP\cml-build-smoke\retrieval-1k` unless `-ReportRoot` is supplied.
 - Watched-folder back-pressure: local folder scans now report scan limits, truncation, and `backpressure_required`; the integrations API exposes watched-folder limits.
 - Cluster merge provenance: `cluster_merge_artifacts` records source/target snapshots, moved source IDs, moved chat IDs, reversibility, and timestamp before destructive merge operations. Policy lives in `docs/CLUSTER_MERGE_POLICY.md`.
 - Query/evidence cache lifecycle: cache pruning removes old, invalidated, oversized, and over-limit entries through core logic and `POST /api/v1/search/query-cache/prune`.
