@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-06-30
+Last updated: 2026-07-01
 
 ## Operating Rule
 
@@ -138,11 +138,11 @@ Implemented in this pass:
   - `docs/UI_ARCHITECTURE.md`
   These docs now describe expert digest authority limits, retrieval-owned facts/citations, token-ledger/bundle metadata, and expert-compression status language instead of leaning on the older adapter-era framing.
 - Final closeout verification after the last Bridge-path bug fix passed across the core bundle implementation surfaces:
-  - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_cluster_bundle.py T:\CML\backend\tests\test_cluster_bundle_training.py T:\CML\backend\tests\test_cluster_bundle_benchmark.py T:\CML\backend\tests\test_bridge_mcp.py T:\CML\backend\tests\test_bridge_phase10.py T:\CML\backend\tests\test_export_lora_run_artifacts.py T:\CML\backend\tests\test_lora_proof_bundle_contract.py T:\CML\backend\tests\test_training_evaluation_contract.py`
+  - `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_cluster_bundle.py backend\tests\test_cluster_bundle_training.py backend\tests\test_cluster_bundle_benchmark.py backend\tests\test_bridge_mcp.py backend\tests\test_bridge_phase10.py backend\tests\test_export_lora_run_artifacts.py backend\tests\test_lora_proof_bundle_contract.py backend\tests\test_training_evaluation_contract.py`
   - Result: `51 passed`
-  - `T:\CML\.venv\Scripts\python.exe -m pytest -q T:\CML\backend\tests\test_source_pages.py -k "expanded_analysis or complete_analysis or rollback_and_delete_guardrails or legacy_prompt_only_artifact or active_adapter_stale or expert_compression_ready"`
+  - `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_source_pages.py -k "expanded_analysis or complete_analysis or rollback_and_delete_guardrails or legacy_prompt_only_artifact or active_adapter_stale or expert_compression_ready"`
   - Result: `8 passed, 93 deselected`
-  - `T:\CML\.venv\Scripts\python.exe -m compileall -q T:\CML\backend\app`
+  - `.\.venv\Scripts\python.exe -m compileall -q backend\app`
   - Result: passed
 
 Still not implemented from the full plan:
@@ -199,6 +199,11 @@ Current note from full backend validation:
 - Browser-extension regression coverage now runs the package script and verifies the staged package includes those module dependencies.
 - Ruff is now clean for `backend` and `scripts`; stale Bridge/chat imports and dead pre-bundle transcript helper code were removed without changing the shared bundle routing contract.
 - Final validation passed: `.\.venv\Scripts\python.exe -m pytest -q backend\tests` (`544 passed, 3 skipped`), `npm run lint` (`40 passed`), `npm run build` (passed), `node --test apps/browser-extension/tests/*.test.cjs` (`20 passed`), `.\.venv\Scripts\python.exe -m compileall -q backend\app scripts\backend backend\tests` (passed), `npx tsc --project apps\desktop\tsconfig.json --noEmit` (passed), `.\.venv\Scripts\python.exe -m ruff check backend scripts` (passed), `npm run security:renderer` (passed), `npm run security:package` (passed), and `scripts\extension\package-browser-extension.ps1 -OutputRoot .tmp\browser-extension-final-validate` (passed).
+
+2026-07-01 initial full-repo debug fix:
+
+- `docs/PROJECT_CONTEXT.md` no longer embeds stale machine-specific validation command paths in the current compact operating brief; the examples now use the active checkout root convention already stated in Current Product Decisions.
+- Validation passed before this cleanup: `.\.venv\Scripts\python.exe -m pytest -q backend\tests` (`544 passed, 3 skipped`), `npm run lint` (`40 passed`), `npm run build` (passed), `node --test apps/browser-extension/tests/*.test.cjs` (`20 passed`), `.\.venv\Scripts\python.exe -m compileall -q backend\app scripts\backend backend\tests` (passed), `npx tsc --project apps\desktop\tsconfig.json --noEmit` (passed), `.\.venv\Scripts\python.exe -m ruff check backend scripts` (passed), `npm run security:renderer` (passed), and `npm run security:package` (passed). Targeted grep after the edit confirmed no stale absolute repo path remains in this file.
 
 Local packaged validation refreshed on 2026-06-28:
 
