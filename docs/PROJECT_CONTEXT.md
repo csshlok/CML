@@ -204,7 +204,9 @@ Current note from full backend validation:
 
 - `docs/PROJECT_CONTEXT.md` no longer embeds stale machine-specific validation command paths in the current compact operating brief; the examples now use the active checkout root convention already stated in Current Product Decisions.
 - `docs/OVERALL_CONTEXT.md`, `docs/LORA_FINDINGS_AND_REPLICATION_RUNBOOK.md`, and `docs/WORKING_COMMANDS.md` now also avoid stale machine-specific checkout paths in current copy-paste workflow examples; LoRA external runtime/model paths use placeholders where contributor-local paths are required.
+- `.gitignore` no longer ignores the tracked `docs/UI_AUDIT_BRIEF.md` and `docs/PACKAGING_INVESTIGATION.md` files, keeping tracked project docs visible to clean-clone hygiene checks.
 - Final validation passed after this cleanup: `.\.venv\Scripts\python.exe -m pytest -q backend\tests` (`544 passed, 3 skipped`), `npm run lint` (`40 passed`), `npm run build` (passed), `node --test apps/browser-extension/tests/*.test.cjs` (`20 passed`), `.\.venv\Scripts\python.exe -m compileall -q backend\app scripts\backend backend\tests` (passed), `npx tsc --project apps\desktop\tsconfig.json --noEmit` (passed), `.\.venv\Scripts\python.exe -m ruff check backend scripts` (passed), `npm run security:renderer` (passed), `npm run security:package` (passed), tracked Markdown local-link check (passed), and targeted tracked grep confirmed no stale absolute repo path examples remain.
+- Additional hygiene validation passed: `git ls-files -ci --exclude-standard` now reports no tracked files ignored by `.gitignore`.
 
 Local packaged validation refreshed on 2026-06-28:
 
