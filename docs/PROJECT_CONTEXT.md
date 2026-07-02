@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-07-01
+Last updated: 2026-07-02
 
 ## Operating Rule
 
@@ -207,6 +207,11 @@ Current note from full backend validation:
 - `.gitignore` no longer ignores the tracked `docs/UI_AUDIT_BRIEF.md` and `docs/PACKAGING_INVESTIGATION.md` files, keeping tracked project docs visible to clean-clone hygiene checks.
 - Final validation passed after this cleanup: `.\.venv\Scripts\python.exe -m pytest -q backend\tests` (`544 passed, 3 skipped`), `npm run lint` (`40 passed`), `npm run build` (passed), `node --test apps/browser-extension/tests/*.test.cjs` (`20 passed`), `.\.venv\Scripts\python.exe -m compileall -q backend\app scripts\backend backend\tests` (passed), `npx tsc --project apps\desktop\tsconfig.json --noEmit` (passed), `.\.venv\Scripts\python.exe -m ruff check backend scripts` (passed), `npm run security:renderer` (passed), `npm run security:package` (passed), tracked Markdown local-link check (passed), and targeted tracked grep confirmed no stale absolute repo path examples remain.
 - Additional hygiene validation passed: `git ls-files -ci --exclude-standard` now reports no tracked files ignored by `.gitignore`.
+
+2026-07-02 initial full-repo debug fix:
+
+- `docs/WORKING_COMMANDS.md` now has unique, sequential top-level section numbers from 1 through 10, fixing the duplicated `## 6` runbook navigation.
+- Validation passed: heading scan for `docs/WORKING_COMMANDS.md` showed sections 1 through 10 in order; `.\.venv\Scripts\python.exe -m pytest -q backend\tests` (`544 passed, 3 skipped`), `npm run lint` (`40 passed`), `npm run build` (passed), `node --test apps\browser-extension\tests\*.test.cjs` (`20 passed`), `.\.venv\Scripts\python.exe -m compileall -q backend\app scripts\backend backend\tests` (passed), `npx tsc --project apps\desktop\tsconfig.json --noEmit` (passed), `.\.venv\Scripts\python.exe -m ruff check backend scripts` (passed), `npm run security:renderer` (passed), and `npm run security:package` (passed).
 
 Local packaged validation refreshed on 2026-06-28:
 

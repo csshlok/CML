@@ -289,7 +289,7 @@ rg -n "0\\.1\\.4|0\\.1\\.0" package.json apps\desktop\package.json backend\pypro
 - Backend diagnostics and API metadata are derived from the backend package version; keep `backend/pyproject.toml` authoritative.
 - Do not hardcode version numbers into packaging commands or tests.
 
-## 6. Daily Validation Commands
+## 7. Daily Validation Commands
 
 Run all backend tests:
 
@@ -334,7 +334,7 @@ Compile backend Python files:
 .\.venv\Scripts\python.exe -m compileall backend
 ```
 
-## 7. Benchmarks And Smokes
+## 8. Benchmarks And Smokes
 
 Run backend benchmark smoke:
 
@@ -397,7 +397,7 @@ Run the release-proof wrapper for the new parser/benchmark/extension surfaces:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\backend\validate-release-proof.ps1 -ContextVaultId vault-1 -ReportRoot .tmp\release-proof
 ```
 
-## 8. Common Output Paths
+## 9. Common Output Paths
 
 Desktop package output:
 
@@ -426,7 +426,7 @@ apps/desktop/packaging/expert-python-runtime
 apps/desktop/packaging/ms-playwright
 ```
 
-## 9. Practical Workflow
+## 10. Practical Workflow
 
 For everyday feature work:
 
