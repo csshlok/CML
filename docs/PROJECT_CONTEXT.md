@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 ## Operating Rule
 
@@ -213,6 +213,12 @@ Current note from full backend validation:
 - `docs/WORKING_COMMANDS.md` now has unique, sequential top-level section numbers from 1 through 10, fixing the duplicated `## 6` runbook navigation.
 - Validation passed: heading scan for `docs/WORKING_COMMANDS.md` showed sections 1 through 10 in order; `.\.venv\Scripts\python.exe -m pytest -q backend\tests` (`544 passed, 3 skipped`), `npm run lint` (`40 passed`), `npm run build` (passed), `node --test apps\browser-extension\tests\*.test.cjs` (`20 passed`), `.\.venv\Scripts\python.exe -m compileall -q backend\app scripts\backend backend\tests` (passed), `npx tsc --project apps\desktop\tsconfig.json --noEmit` (passed), `.\.venv\Scripts\python.exe -m ruff check backend scripts` (passed), `npm run security:renderer` (passed), and `npm run security:package` (passed).
 
+2026-07-03 continued full-repo debug fix:
+
+- Model-recommender helper scripts now default to `http://127.0.0.1:7343/api/v1`, matching the current CML backend runbook instead of the stale `8000` API default.
+- Existing model-recommender script-contract tests now assert the current default backend URL as well as the target route paths.
+- Validation passed: `.\.venv\Scripts\python.exe -m pytest -q backend\tests\test_model_recommender.py` (`26 passed`), PowerShell parser check for the five touched helper scripts (passed), targeted grep confirmed no remaining `127.0.0.1:8000/api/v1` defaults, `.\.venv\Scripts\python.exe -m pytest -q backend\tests` (`544 passed, 3 skipped`), `npm run lint` (`40 passed`), `npm run build` (passed), `node --test apps\browser-extension\tests\*.test.cjs` (`20 passed`), `.\.venv\Scripts\python.exe -m compileall -q backend\app scripts\backend backend\tests` (passed), `npx tsc --project apps\desktop\tsconfig.json --noEmit` (passed), `.\.venv\Scripts\python.exe -m ruff check backend scripts` (passed), `npm run security:renderer` (passed), and `npm run security:package` (passed).
+
 Local packaged validation refreshed on 2026-06-28:
 
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\packaging\validate-clean-machine-package.ps1 -PackageRoot apps\desktop\release\win-unpacked`
@@ -256,7 +262,7 @@ Current model policy:
 | Retrieval/context layer | In progress | `[#########-] 95%` | Retrieval-first chat, Bridge packets, expansion handles, context budgets, trust gates, and analysis modes now share the bundle path; broader regression and release-gate proof remain. |
 | Bridge/MCP | In progress | `[#########-] 92%` | Bridge now routes through the shared bundle builder and surfaces expert digest/token ledger metadata; expansion and permission flows remain, with broader regression still pending. |
 | LoRA/expert work | Re-scoped | `[##########] 100%` | Retrieval-grounded bundle core, expert-compression runtime path, evidence-grounded training export, canonical status rollout, analysis-mode bundle parity, bundle-first benchmark/export/proof contract, bundle-mode-primary readiness, richer bundle benchmark artifacts, activation/rollback migration guards, and Phase 1 doc alignment are now implemented and broadly verified in focused bundle-era test suites. |
-| Model recommendation | In progress | `[#########-] 88%` | Hardware-aware chat/expert distinction exists and wording now reflects expert compression, but broader runtime/setup verification and final release-gate proof are still pending. |
+| Model recommendation | In progress | `[#########-] 88%` | Hardware-aware chat/expert distinction exists, wording now reflects expert compression, and helper-script defaults match the current backend port; broader runtime/setup verification and final release-gate proof are still pending. |
 | Security | In progress | `[########--] 80%` | Vault crypto and auth hardening are active; passphrase strength, key-memory limitations, and concurrency hardening were recently addressed or flagged; threat-model and cluster-merge policy docs are now tracked for clean-clone validation. |
 | UI | In progress | `[########--] 82%` | Main surfaces exist; UI copy/status must distinguish retrieval-ready from expert-compression-ready. |
 | Packaging/release proof | In progress | `[########--] 78%` | Windows packaging evidence exists and browser-extension zip dependency coverage now has a regression test; clean VM and release checklist remain. |

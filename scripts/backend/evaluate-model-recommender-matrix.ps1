@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $false)]
-  [string]$BaseUrl = "http://127.0.0.1:8000/api/v1",
+  [string]$BaseUrl = "http://127.0.0.1:7343/api/v1",
   [Parameter(Mandatory = $false)]
   [string]$ProfilesDir = "backend/tests/fixtures/model_recommender_profiles",
   [Parameter(Mandatory = $false)]
