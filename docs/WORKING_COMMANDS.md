@@ -218,6 +218,37 @@ Update the root npm package version:
 npm version 0.1.6 --no-git-tag-version
 ```
 
+Update the desktop app version:
+
+```powershell
+npm version 0.1.6 --workspace @cml/desktop --no-git-tag-version
+```
+
+Then update the backend package version in:
+
+- `backend/pyproject.toml`
+
+Backend runtime, diagnostics, and MCP metadata now resolve the app version from `backend/pyproject.toml` through `backend/app/core/version.py`. Do not manually hardcode the same version into multiple Python files.
+
+Refresh npm lock metadata after version bumps:
+
+```powershell
+npm install --package-lock-only
+```
+
+If you want to check for stale version strings before committing, search for the old version directly:
+
+```powershell
+rg -n "0\\.1\\.4|0\\.1\\.0" package.json apps\desktop\package.json backend\pyproject.toml backend\app
+```
+
+### 5.2 Important Version Rules
+
+- The Windows installer artifact name is driven by `apps/desktop/package.json`.
+- If you only bump the root `package.json`, the installer version does not change.
+- Backend diagnostics and API metadata are derived from the backend package version; keep `backend/pyproject.toml` authoritative.
+- Do not hardcode version numbers into packaging commands or tests.
+
 ## 6. Benchmark Reports
 
 Render graphical benchmark reports from the current JSON artifacts:
@@ -257,37 +288,6 @@ That run:
 - ingests and indexes the corpus into a fresh benchmark vault without re-extracting the same files twice
 - runs the strict context-strategy benchmark and rejects zero-chunk or zero-hit runs
 - deletes the generated corpus before exiting unless `-KeepCorpus` is passed
-
-Update the desktop app version:
-
-```powershell
-npm version 0.1.6 --workspace @cml/desktop --no-git-tag-version
-```
-
-Then update the backend package version in:
-
-- `backend/pyproject.toml`
-
-Backend runtime, diagnostics, and MCP metadata now resolve the app version from `backend/pyproject.toml` through `backend/app/core/version.py`. Do not manually hardcode the same version into multiple Python files.
-
-Refresh npm lock metadata after version bumps:
-
-```powershell
-npm install --package-lock-only
-```
-
-If you want to check for stale version strings before committing, search for the old version directly:
-
-```powershell
-rg -n "0\\.1\\.4|0\\.1\\.0" package.json apps\desktop\package.json backend\pyproject.toml backend\app
-```
-
-### 5.2 Important Version Rules
-
-- The Windows installer artifact name is driven by `apps/desktop/package.json`.
-- If you only bump the root `package.json`, the installer version does not change.
-- Backend diagnostics and API metadata are derived from the backend package version; keep `backend/pyproject.toml` authoritative.
-- Do not hardcode version numbers into packaging commands or tests.
 
 ## 7. Daily Validation Commands
 
