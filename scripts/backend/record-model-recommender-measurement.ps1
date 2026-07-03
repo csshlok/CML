@@ -12,6 +12,8 @@ param(
   [Parameter(Mandatory = $false)]
   [double]$StartupSeconds = 0,
   [Parameter(Mandatory = $false)]
+  [string]$ApiToken = $env:CML_API_TOKEN,
+  [Parameter(Mandatory = $false)]
   [Nullable[bool]]$RuntimeSuccess = $null,
   [Parameter(Mandatory = $false)]
   [Nullable[bool]]$TrainingSuccess = $null
@@ -48,4 +50,8 @@ if ($TrainingSuccess -ne $null) {
 }
 
 $body = $payload | ConvertTo-Json -Depth 4
-Invoke-RestMethod -Method Post -Uri "$BaseUrl/models/recommendations/measurements" -ContentType "application/json" -Body $body
+$headers = @{}
+if ($ApiToken) {
+  $headers["x-cml-api-token"] = $ApiToken
+}
+Invoke-RestMethod -Method Post -Uri "$BaseUrl/models/recommendations/measurements" -Headers $headers -ContentType "application/json" -Body $body

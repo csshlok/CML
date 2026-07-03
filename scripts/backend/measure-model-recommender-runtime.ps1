@@ -12,6 +12,8 @@ param(
   [Parameter(Mandatory = $false)]
   [string]$BaseModel = "",
   [Parameter(Mandatory = $false)]
+  [string]$ApiToken = $env:CML_API_TOKEN,
+  [Parameter(Mandatory = $false)]
   [int]$MaxNewTokens = 48
 )
 
@@ -37,4 +39,8 @@ if ($PairId) {
 }
 
 $body = $payload | ConvertTo-Json -Depth 4
-Invoke-RestMethod -Method Post -Uri "$BaseUrl/models/recommendations/measurements/run" -ContentType "application/json" -Body $body
+$headers = @{}
+if ($ApiToken) {
+  $headers["x-cml-api-token"] = $ApiToken
+}
+Invoke-RestMethod -Method Post -Uri "$BaseUrl/models/recommendations/measurements/run" -Headers $headers -ContentType "application/json" -Body $body

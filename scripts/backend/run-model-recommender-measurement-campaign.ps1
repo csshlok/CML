@@ -12,6 +12,8 @@ param(
   [Parameter(Mandatory = $false)]
   [string]$OutputPath = "",
   [Parameter(Mandatory = $false)]
+  [string]$ApiToken = $env:CML_API_TOKEN,
+  [Parameter(Mandatory = $false)]
   [switch]$SkipChatMeasurement,
   [Parameter(Mandatory = $false)]
   [switch]$SkipPairMeasurement,
@@ -19,8 +21,13 @@ param(
   [switch]$Refresh
 )
 
+$headers = @{}
+if ($ApiToken) {
+  $headers["x-cml-api-token"] = $ApiToken
+}
+
 $refreshValue = if ($Refresh) { "true" } else { "false" }
-$recommendation = Invoke-RestMethod -Method Get -Uri "$BaseUrl/models/recommendations?refresh=$refreshValue"
+$recommendation = Invoke-RestMethod -Method Get -Uri "$BaseUrl/models/recommendations?refresh=$refreshValue" -Headers $headers
 
 $campaign = @{
   generated_at = [DateTime]::UtcNow.ToString("o")
@@ -36,7 +43,7 @@ if (-not $SkipChatMeasurement) {
       model_id = $chatModelId
       prompt = $Prompt
     } | ConvertTo-Json -Depth 4
-    $campaign.chat_measurement = Invoke-RestMethod -Method Post -Uri "$BaseUrl/models/recommendations/measurements/run" -ContentType "application/json" -Body $chatBody
+    $campaign.chat_measurement = Invoke-RestMethod -Method Post -Uri "$BaseUrl/models/recommendations/measurements/run" -Headers $headers -ContentType "application/json" -Body $chatBody
   }
 }
 
@@ -53,11 +60,11 @@ if (-not $SkipPairMeasurement) {
       base_model = $BaseModel
       max_new_tokens = $MaxNewTokens
     } | ConvertTo-Json -Depth 4
-    $campaign.pair_measurement = Invoke-RestMethod -Method Post -Uri "$BaseUrl/models/recommendations/measurements/run" -ContentType "application/json" -Body $pairBody
+    $campaign.pair_measurement = Invoke-RestMethod -Method Post -Uri "$BaseUrl/models/recommendations/measurements/run" -Headers $headers -ContentType "application/json" -Body $pairBody
   }
 }
 
-$campaign.diagnostics = Invoke-RestMethod -Method Get -Uri "$BaseUrl/models/recommendations/diagnostics?refresh=true"
+$campaign.diagnostics = Invoke-RestMethod -Method Get -Uri "$BaseUrl/models/recommendations/diagnostics?refresh=true" -Headers $headers
 
 if ($OutputPath) {
   $directory = Split-Path -Parent $OutputPath

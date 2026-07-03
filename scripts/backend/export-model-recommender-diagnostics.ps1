@@ -6,8 +6,15 @@ param(
   [Parameter(Mandatory = $false)]
   [string]$HardwareJsonPath = "",
   [Parameter(Mandatory = $false)]
+  [string]$ApiToken = $env:CML_API_TOKEN,
+  [Parameter(Mandatory = $false)]
   [switch]$Refresh
 )
+
+$headers = @{}
+if ($ApiToken) {
+  $headers["x-cml-api-token"] = $ApiToken
+}
 
 if ($HardwareJsonPath) {
   $hardwarePayload = Get-Content -Path $HardwareJsonPath -Raw | ConvertFrom-Json -AsHashtable
@@ -15,11 +22,11 @@ if ($HardwareJsonPath) {
     hardware = $hardwarePayload
     refresh = [bool]$Refresh
   } | ConvertTo-Json -Depth 8
-  $result = Invoke-RestMethod -Method Post -Uri "$BaseUrl/models/recommendations/diagnostics/preview" -ContentType "application/json" -Body $body
+  $result = Invoke-RestMethod -Method Post -Uri "$BaseUrl/models/recommendations/diagnostics/preview" -Headers $headers -ContentType "application/json" -Body $body
 }
 else {
   $refreshValue = if ($Refresh) { "true" } else { "false" }
-  $result = Invoke-RestMethod -Method Get -Uri "$BaseUrl/models/recommendations/diagnostics?refresh=$refreshValue"
+  $result = Invoke-RestMethod -Method Get -Uri "$BaseUrl/models/recommendations/diagnostics?refresh=$refreshValue" -Headers $headers
 }
 
 if ($OutputPath) {
