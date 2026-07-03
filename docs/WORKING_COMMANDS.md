@@ -376,7 +376,7 @@ Run a real LoRA trainer smoke:
 
 ```powershell
 $env:CML_LORA_TRAINER_COMMAND = ".\.venv-lora\Scripts\llamafactory-cli.exe train {config_path}"
-$env:CML_LORA_MODEL_DIRS = "D:\models\hf"
+$env:CML_LORA_MODEL_DIRS = "<your local HF model root>"
 $env:CML_LLM_MODEL = "Qwen2.5-3B-Instruct"
 $env:CML_LORA_TRAINING_MAX_STEPS = "1"
 $env:CML_LORA_TRAINING_CUTOFF_LEN = "512"
@@ -386,9 +386,9 @@ $env:CML_LORA_TRAINING_CUTOFF_LEN = "512"
 Run the local adapter smoke:
 
 ```powershell
-$env:CML_LORA_MODEL_DIRS = "D:\models\hf"
+$env:CML_LORA_MODEL_DIRS = "<your local HF model root>"
 $env:CML_LORA_RUNTIME_PYTHON = "<your CML checkout>\.venv-lora\Scripts\python.exe"
-.\scripts\backend\smoke-lora-runtime.ps1 -AdapterPath D:\cml\data\experts\cluster-1\adapter-1234 -BaseModel Qwen2.5-3B-Instruct
+.\scripts\backend\smoke-lora-runtime.ps1 -AdapterPath <adapter-dir> -BaseModel Qwen2.5-3B-Instruct
 ```
 
 Run the release-proof wrapper for the new parser/benchmark/extension surfaces:
