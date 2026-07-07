@@ -375,12 +375,12 @@ function SettingsView() {
     }
   }
 
-  async function activateModel(modelId: string, role: "chat" | "expert" | "pair") {
+  async function activateModel(modelId: string) {
     setActivatingId(modelId);
     try {
-      await activateLocalModel(modelId, role);
+      await activateLocalModel(modelId, "chat");
       await refreshModelRows();
-      setStatusMessage(role === "chat" ? "Chat model activated." : role === "expert" ? "Expert-compression runtime activated." : "Chat/expert model activated.");
+      setStatusMessage("Chat model activated.");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not activate model.");
     } finally {
@@ -647,12 +647,9 @@ function SettingsView() {
 
   const suggestedModel = models[0];
   const activeChatModel = models.find((model) => model.active_chat) ?? null;
-  const activeExpertModel = models.find((model) => model.active_expert) ?? null;
   const recommendedChatModelId = modelRecommendations?.recommended_chat_model_id ?? "";
-  const recommendedExpertModelId = modelRecommendations?.recommended_expert_model_id ?? "";
   const recommendedChatSummary = modelRecommendations?.chat_recommendation?.summary ?? "";
   const recommendedChatSpeed = modelRecommendations?.chat_estimated_tok_per_sec;
-  const recommendedPairAccepted = Boolean(modelRecommendations?.pair_recommendation?.accepted);
   const showSection = (...sections: string[]) => sections.includes(activeSection);
 
   return (
@@ -741,10 +738,10 @@ function SettingsView() {
           <>
           <SettingsCard
             icon={<MessageSquare className="h-4 w-4" />}
-            title="Chat and expert models"
-            description="Chat uses a local runtime model. Expert workflows use a separate accepted checkpoint."
-            status={activeChatModel && activeExpertModel ? "Configured" : "Required"}
-            statusTone={activeChatModel && activeExpertModel ? "ready" : "issue"}
+            title="Local chat model"
+            description="RAG-only mode uses one local synthesis model."
+            status={activeChatModel ? "Configured" : "Required"}
+            statusTone={activeChatModel ? "ready" : "issue"}
           >
             <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -771,16 +768,11 @@ function SettingsView() {
                   {modelRecommendations.warnings[0]}
                 </div>
               ) : null}
-              {!recommendedPairAccepted && modelRecommendations?.pair_recommendation?.detail ? (
-                <div className="mt-2 text-xs text-muted-foreground">
-                  {modelRecommendations.pair_recommendation.detail}
-                </div>
-              ) : null}
             </div>
             <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
-              {activeChatModel && activeExpertModel
-                ? `Chat: ${activeChatModel.name}. Expert: ${activeExpertModel.name}. Retrieval remains the citation source.`
-                : "Pick one accepted chat model and one accepted expert-compression runtime. GGUF/runtime downloads satisfy the chat role only."}
+              {activeChatModel
+                ? `Active model: ${activeChatModel.name}. Retrieval remains the citation source.`
+                : "Pick one accepted chat model. Retrieval remains the citation source."}
             </div>
             <label className="mt-5 block text-sm font-medium">LLM download location</label>
             <div className="mt-2 flex flex-wrap gap-2">
@@ -815,26 +807,17 @@ function SettingsView() {
                           {model.role} / {model.family || "unclassified"} / {model.approximate_download_gb} GB
                         </div>
                         <div className="mt-1 text-xs text-muted-foreground">
-                          chat: {model.compatibility?.chat_role_accepted ? "accepted" : "not accepted"} / expert: {model.compatibility?.expert_role_accepted ? "accepted" : "not accepted"}
+                          chat: {model.compatibility?.chat_role_accepted ? "accepted" : "not accepted"}
                         </div>
                         {model.id === recommendedChatModelId ? (
                           <div className="mt-1 text-xs text-primary">
                             Recommended chat model for this device
                           </div>
                         ) : null}
-                        {model.id === recommendedExpertModelId ? (
-                          <div className="mt-1 text-xs text-primary">
-                            Recommended expert-compression runtime for this device
-                          </div>
-                        ) : null}
                       </div>
-                      {model.active_chat || model.active_expert ? (
+                      {model.active_chat ? (
                         <span className="text-primary">
-                          {model.active_chat && model.active_expert
-                            ? "Chat + Expert"
-                            : model.active_chat
-                              ? "Chat"
-                              : "Expert"}
+                          Chat
                         </span>
                       ) : null}
                     </div>
@@ -859,13 +842,8 @@ function SettingsView() {
                         </Button>
                       ) : null}
                       {model.compatibility?.chat_role_accepted && !model.active_chat ? (
-                        <Button variant="outline" onClick={() => void activateModel(model.id, "chat")} disabled={activatingId === model.id}>
+                        <Button variant="outline" onClick={() => void activateModel(model.id)} disabled={activatingId === model.id}>
                           {activatingId === model.id ? "Activating..." : "Use for chat"}
-                        </Button>
-                      ) : null}
-                      {model.compatibility?.expert_role_accepted && !model.active_expert ? (
-                        <Button variant="outline" onClick={() => void activateModel(model.id, "expert")} disabled={activatingId === model.id}>
-                          {activatingId === model.id ? "Activating..." : "Use for expert compression"}
                         </Button>
                       ) : null}
                     </div>
@@ -903,7 +881,7 @@ function SettingsView() {
               <div className="mt-4 rounded-md border border-border bg-background px-3 py-3 text-sm">
                 <div className="font-medium">{customModelReport.accepted ? "Accepted" : "Rejected"}</div>
                 <div className="mt-1 text-muted-foreground">{customModelReport.detail}</div>
-                <div className="mt-1 text-xs text-muted-foreground">{customModelReport.pairing_detail}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{customModelReport.selection_detail}</div>
               </div>
             )}
             <div className="mt-4 space-y-3">
@@ -930,7 +908,7 @@ function SettingsView() {
                 ))
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  Scan common local model folders to detect accepted expert-compression runtimes already installed on this device.
+                  Scan common local model folders to detect accepted local chat checkpoints already installed on this device.
                 </p>
               )}
             </div>

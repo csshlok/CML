@@ -82,9 +82,7 @@ test("buildBackendChildEnv pins PATH to helper and system roots", () => {
     helperPaths: {
       resourcesRoot: "C:\\Package\\resources",
       pythonRuntime: "C:\\Package\\resources\\python-runtime",
-      expertRuntime: "C:\\Package\\resources\\expert-python-runtime",
       backendPython: "C:\\Package\\resources\\python-runtime\\python.exe",
-      expertPython: "C:\\Package\\resources\\expert-python-runtime\\python.exe",
       playwrightRoot: "C:\\Package\\resources\\ms-playwright",
     },
     apiPrefix: "/api/v1",
@@ -97,7 +95,6 @@ test("buildBackendChildEnv pins PATH to helper and system roots", () => {
   });
 
   assert.match(env.PATH, /python-runtime/);
-  assert.match(env.PATH, /expert-python-runtime/);
   assert.equal(env.PYTHONPATH, "C:\\Package\\resources");
   assert.equal(env.PYTHONNOUSERSITE, "1");
   assert.equal(env.CML_API_TOKEN, "token");

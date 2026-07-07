@@ -261,19 +261,13 @@ function Onboarding() {
     }
   }
 
-  async function activateModel(modelId: string, role: "chat" | "expert" | "pair") {
+  async function activateModel(modelId: string) {
     setError(null);
     setActivatingId(modelId);
     try {
-      await activateLocalModel(modelId, role);
+      await activateLocalModel(modelId, "chat");
       await refreshModels();
-      setMessage(
-        role === "chat"
-          ? "Chat model activated."
-          : role === "expert"
-            ? "Expert-compression runtime activated."
-            : "Chat/expert model activated.",
-      );
+      setMessage("Chat model activated.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not activate the model.");
     } finally {
@@ -702,20 +696,20 @@ function Onboarding() {
                 {step === 5 && (
                   <SetupPanel
                     icon={<PlugZap className="h-5 w-5" />}
-                    title="Choose the chat model and expert-compression runtime"
-                    sub="Chat uses a local runtime model. Expert workflows use a separate accepted local checkpoint. Retrieval remains the source of citations for both."
+                    title="Choose the local chat model"
+                    sub="RAG-only mode uses one local runtime model. Retrieval remains the source of citations."
                   >
                     <div className="grid gap-3 sm:grid-cols-2">
                       <ChoiceButton
                         selected={modelChoice === "recommended"}
-                        title="Chat + expert"
-                        description="Download a chat model, then pair it with an accepted expert-compression runtime."
+                        title="Download model"
+                        description="Download a local chat model that fits this device."
                         onClick={() => setModelChoice("recommended")}
                       />
                       <ChoiceButton
                         selected={modelChoice === "custom"}
-                        title="Import expert-compression runtime"
-                        description="Validate a local Transformers checkpoint and accept or reject it for expert use."
+                        title="Import checkpoint"
+                        description="Validate a local checkpoint and accept or reject it for local chat use."
                         onClick={() => setModelChoice("custom")}
                       />
                     </div>
@@ -723,9 +717,8 @@ function Onboarding() {
                     {modelChoice === "recommended" ? (
                       <div className="grid gap-3">
                         <div className="rounded-md border border-border bg-secondary/55 p-4 text-sm text-muted-foreground">
-                          Downloaded GGUF/runtime models satisfy the chat role only. Expert setup
-                          still requires an accepted local Transformers checkpoint. Vault citations
-                          still come from retrieval, not model memory.
+                          Downloaded runtime models power answer synthesis. Vault citations still
+                          come from retrieval, not model memory.
                         </div>
                         <Field label="LLM download location">
                           <div className="flex flex-col gap-2 sm:flex-row">
@@ -769,32 +762,11 @@ function Onboarding() {
                                 selected={selectedModelId === model.id}
                                 busy={downloadingId === model.id}
                                 activating={activatingId === model.id}
-                                roleLabel="chat"
                                 roleActive={Boolean(model.active_chat)}
                                 onSelect={() => setSelectedModelId(model.id)}
                                 onDownload={() => void startDownload(model.id)}
                                 onCancel={() => void cancelDownload(model.id)}
-                                onActivate={() => void activateModel(model.id, "chat")}
-                              />
-                            ))}
-                        </div>
-                        <div className="grid gap-3">
-                          <div className="text-sm font-medium">Expert checkpoint</div>
-                          {models
-                            .filter((model) => model.compatibility?.expert_role_accepted)
-                            .map((model) => (
-                              <ModelRow
-                                key={`expert-${model.id}`}
-                                model={model}
-                                selected={selectedModelId === model.id}
-                                busy={downloadingId === model.id}
-                                activating={activatingId === model.id}
-                                roleLabel="expert"
-                                roleActive={Boolean(model.active_expert)}
-                                onSelect={() => setSelectedModelId(model.id)}
-                                onDownload={() => void startDownload(model.id)}
-                                onCancel={() => void cancelDownload(model.id)}
-                                onActivate={() => void activateModel(model.id, "expert")}
+                                onActivate={() => void activateModel(model.id)}
                               />
                             ))}
                         </div>
@@ -809,7 +781,7 @@ function Onboarding() {
                               </div>
                               <div className="mt-1 text-muted-foreground">
                                 Vault can scan common local model folders and offer one-click import
-                                for accepted expert-compression runtimes.
+                                for accepted local chat checkpoints.
                               </div>
                             </div>
                             <Button
@@ -909,7 +881,7 @@ function Onboarding() {
                               {customModelReport.detail}
                             </div>
                             <div className="mt-2 text-xs text-muted-foreground">
-                              {customModelReport.pairing_detail}
+                              {customModelReport.selection_detail}
                             </div>
                             {!!customModelReport.reasons.length && (
                               <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
@@ -925,7 +897,7 @@ function Onboarding() {
 
                     <p className="text-xs text-muted-foreground">
                       You can continue after a chat model is installed, active, or downloading.
-                      Expert checkpoints can be imported now or later from Settings.
+                      Additional local chat checkpoints can be imported now or later from Settings.
                     </p>
                   </SetupPanel>
                 )}
@@ -1265,7 +1237,6 @@ function ModelRow({
   selected,
   busy,
   activating,
-  roleLabel,
   roleActive,
   onSelect,
   onDownload,
@@ -1276,7 +1247,6 @@ function ModelRow({
   selected: boolean;
   busy: boolean;
   activating: boolean;
-  roleLabel: "chat" | "expert";
   roleActive: boolean;
   onSelect: () => void;
   onDownload: () => void;
@@ -1308,13 +1278,7 @@ function ModelRow({
               {model.recommended_ram_gb} GB RAM
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
-              {roleLabel === "chat"
-                ? model.compatibility?.chat_role_accepted
-                  ? "Accepted for chat"
-                  : "Not accepted for chat"
-                : model.compatibility?.expert_role_accepted
-                  ? "Accepted for expert"
-                  : "Rejected for expert runtime"}
+              {model.compatibility?.chat_role_accepted ? "Accepted for chat" : "Not accepted for chat"}
             </div>
           </div>
           {(selected || roleActive) && <Check className="h-4 w-4 text-primary" />}
@@ -1325,11 +1289,9 @@ function ModelRow({
             {model.local_path}
           </p>
         )}
-        {model.compatibility &&
-          roleLabel === "expert" &&
-          !model.compatibility.expert_role_accepted && (
-            <p className="mt-2 text-xs text-destructive">{model.compatibility.detail}</p>
-          )}
+        {model.compatibility && !model.compatibility.chat_role_accepted && (
+          <p className="mt-2 text-xs text-destructive">{model.compatibility.detail}</p>
+        )}
       </button>
 
       {downloading && (
@@ -1340,11 +1302,9 @@ function ModelRow({
       )}
 
       <div className="mt-3 flex justify-end gap-2">
-        {((roleLabel === "chat" && model.compatibility?.chat_role_accepted) ||
-          (roleLabel === "expert" && model.compatibility?.expert_role_accepted)) &&
-        !roleActive ? (
+        {model.compatibility?.chat_role_accepted && !roleActive ? (
           <Button variant="outline" size="sm" onClick={onActivate} disabled={activating}>
-            {activating ? "Activating" : roleLabel === "chat" ? "Use for chat" : "Use for expert compression"}
+            {activating ? "Activating" : "Use for chat"}
           </Button>
         ) : null}
         {downloading ? (

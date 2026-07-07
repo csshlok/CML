@@ -628,18 +628,14 @@ async function ensureBackend() {
         resourcesRoot: rootDir,
         pythonRuntime: path.join(rootDir, ".venv"),
         backendPython: path.join(rootDir, ".venv", "Scripts", "python.exe"),
-        expertPython: path.join(rootDir, ".venv-lora", "Scripts", "python.exe"),
         playwrightRoot: process.env.PLAYWRIGHT_BROWSERS_PATH || "",
       }
     : resolvePackagedHelperPaths(process.resourcesPath);
   const pythonCommand = isDev
     ? (await pathExists(helperPaths.backendPython) ? helperPaths.backendPython : "python")
     : helperPaths.backendPython;
-  const expertPythonCommand = isDev
-    ? (await pathExists(helperPaths.expertPython) ? helperPaths.expertPython : pythonCommand)
-    : helperPaths.expertPython;
-  if (!isDev && (!(await pathExists(pythonCommand)) || !(await pathExists(expertPythonCommand)))) {
-    throw new Error("Packaged helper runtime is missing required Python executables.");
+  if (!isDev && !(await pathExists(pythonCommand))) {
+    throw new Error("Packaged helper runtime is missing the backend Python executable.");
   }
   writeDesktopRuntimeLog(`starting backend; mode=${backendMode} dataDir=${dataDir}`);
   const backendArgs = ["-s", "-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", String(port)];
@@ -660,7 +656,6 @@ async function ensureBackend() {
             CML_DATABASE_PATH: databasePath,
             CML_STARTUP_STATUS_PATH: startupStatusPath,
             CML_VAULT_LOCK_OVERRIDE: vaultLockOverrideOnce ? "open_anyway" : "",
-            CML_LORA_RUNTIME_PYTHON: expertPythonCommand,
             PLAYWRIGHT_BROWSERS_PATH: helperPaths.playwrightRoot,
             PYTHONNOUSERSITE: "1",
           }
@@ -712,7 +707,6 @@ async function verifyPackagedRuntime() {
     helperRoots: [
       helperPaths.backendRoot,
       helperPaths.pythonRuntime,
-      helperPaths.expertRuntime,
       helperPaths.playwrightRoot,
     ],
     writableRoots: defaultWritableRoots({

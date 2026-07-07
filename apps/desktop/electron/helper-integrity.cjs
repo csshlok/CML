@@ -71,9 +71,7 @@ function resolvePackagedHelperPaths(resourcesRoot) {
     resourcesRoot,
     backendRoot: path.join(resourcesRoot, "backend"),
     pythonRuntime: path.join(resourcesRoot, "python-runtime"),
-    expertRuntime: path.join(resourcesRoot, "expert-python-runtime"),
     backendPython: path.join(resourcesRoot, "python-runtime", "python.exe"),
-    expertPython: path.join(resourcesRoot, "expert-python-runtime", "python.exe"),
     playwrightRoot: path.join(resourcesRoot, "ms-playwright"),
     helperManifest: path.join(resourcesRoot, HELPER_MANIFEST_NAME),
   };
@@ -150,7 +148,6 @@ function buildBackendChildEnv({
     CML_DATABASE_PATH: databasePath,
     CML_STARTUP_STATUS_PATH: startupStatusPath,
     CML_VAULT_LOCK_OVERRIDE: vaultLockOverride || "",
-    CML_LORA_RUNTIME_PYTHON: helperPaths.expertPython,
     PLAYWRIGHT_BROWSERS_PATH: helperPaths.playwrightRoot,
     PYTHONPATH: helperPaths.resourcesRoot,
     PYTHONHOME: helperPaths.pythonRuntime,
@@ -159,8 +156,6 @@ function buildBackendChildEnv({
   env.PATH = [
     helperPaths.pythonRuntime,
     path.join(helperPaths.pythonRuntime, "Scripts"),
-    helperPaths.expertRuntime,
-    path.join(helperPaths.expertRuntime, "Scripts"),
     env.SystemRoot,
     path.join(env.SystemRoot, "System32"),
     path.join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0"),
