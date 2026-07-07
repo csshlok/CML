@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 MIN_VAULT_PASSPHRASE_LENGTH = 12
+SOURCE_STATE_VALUES = {"waiting", "processing", "indexed", "failed"}
 
 
 def _blank_to_none(value: str | None) -> str | None:
@@ -44,7 +45,8 @@ class ClusterUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = None
     color: str | None = None
-    expert_status: str | None = None
+    index_status: str | None = None
+    profile_status: str | None = None
 
 
 class ClusterMergeRequest(BaseModel):
@@ -57,7 +59,13 @@ class ClusterRead(BaseModel):
     name: str
     description: str
     color: str
-    expert_status: str
+    index_status: str = "empty"
+    profile_status: str = "missing"
+    cluster_summary: str = ""
+    cluster_glossary: str = "[]"
+    profile_updated_at: str | None = None
+    profile_source_hash: str = ""
+    indexed_source_count: int = 0
     created_at: str
     updated_at: str
 
@@ -70,71 +78,6 @@ class ClusterSuggestionRead(BaseModel):
     suggested_cluster_name: str
     confidence: float
     reason: str
-
-
-class ClusterExpertJobRead(BaseModel):
-    id: str
-    cluster_id: str
-    vault_id: str
-    action: str
-    status: str
-    detail: str
-    failure_code: str = ""
-    artifact_path: str | None = None
-    hardware_tier: str = ""
-    created_at: str
-    updated_at: str
-
-
-class ExpertArtifactRead(BaseModel):
-    id: str
-    cluster_id: str
-    vault_id: str
-    job_id: str | None = None
-    artifact_type: str
-    status: str
-    local_path: str | None = None
-    base_model: str
-    hardware_tier: str
-    quality_score: float | None = None
-    dataset_hash: str = ""
-    training_config_hash: str = ""
-    metrics_json: str = "{}"
-    active: bool = False
-    rolled_back_at: str | None = None
-    deleted_at: str | None = None
-    created_at: str
-    updated_at: str
-
-
-class ExpertGraduationContractRead(BaseModel):
-    supported_statuses: list[str]
-    minimum_sources: int
-    minimum_unique_sources: int = 0
-    minimum_estimated_tokens: int = 0
-    minimum_validation_records: int = 0
-    minimum_quality_score: float
-    minimum_quality_delta: float = 0
-    maximum_duplicate_ratio: float = 0
-    required_artifact_files: list[str]
-    failure_codes: list[str]
-    graduation_gate: str = ""
-    rollback_behavior: str
-
-
-class ExpertStatusRead(BaseModel):
-    cluster_id: str
-    expert_status: str
-    user_status: str
-    searchable: bool
-    trained: bool
-    stale: bool
-    active_artifact_id: str | None = None
-    active_dataset_hash: str | None = None
-    current_dataset_hash: str | None = None
-    runtime_load: dict = {}
-    failure_code: str = ""
-    detail: str = ""
 
 
 class SourceCreate(BaseModel):
@@ -204,6 +147,20 @@ class SourceUpdate(BaseModel):
     @classmethod
     def normalize_cluster_id(cls, value: str | None) -> str | None:
         return _blank_to_none(value)
+
+    @field_validator("state")
+    @classmethod
+    def validate_state(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip().lower()
+        if normalized == "extracting":
+            normalized = "processing"
+        if normalized == "needs-review":
+            normalized = "failed"
+        if normalized not in SOURCE_STATE_VALUES:
+            raise ValueError(f"Unsupported source state: {value}")
+        return normalized
 
 
 class SourceRead(BaseModel):
@@ -282,8 +239,10 @@ class BridgeStatus(BaseModel):
     allowed_vault_ids: list[str] = []
     allowed_cluster_ids: list[str] = []
     allow_raw_snippets: bool = False
-    allow_style_profile: bool = False
-    allow_expert_calls: bool = False
+    allow_cluster_profile: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("allow_cluster_profile", "allow_style_profile"),
+    )
     bridge_token: str = ""
     approval_requests_pending: int = 0
     last_refreshed_at: str | None = None
@@ -294,8 +253,10 @@ class BridgeSettingsUpdate(BaseModel):
     allowed_vault_ids: list[str] | None = None
     allowed_cluster_ids: list[str] | None = None
     allow_raw_snippets: bool | None = None
-    allow_style_profile: bool | None = None
-    allow_expert_calls: bool | None = None
+    allow_cluster_profile: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices("allow_cluster_profile", "allow_style_profile"),
+    )
     rotate_token: bool | None = None
 
 
@@ -314,16 +275,15 @@ class BridgeContextResponse(BaseModel):
     query: str
     selected_clusters: list[ClusterRead]
     source_snippets: list[SourceRead]
+    citations: list[dict] = []
     warnings: list[str]
     packet_text: str | None = None
     expansion_handles: list[str] = []
     memory_items: list[dict] = []
     working_memory: dict = {}
-    expert_digest: dict = {}
-    expert_used: bool = False
-    expert_mode: str = "not_eligible"
+    cluster_profile: dict = {}
     retrieval_authority: bool = True
-    token_ledger: dict = {}
+    token_estimate: dict = {}
     bundle_status: dict = {}
 
 
@@ -437,8 +397,10 @@ class BridgeClientCreate(BaseModel):
     allowed_vault_ids: list[str] = []
     allowed_cluster_ids: list[str] = []
     allow_raw_snippets: bool = False
-    allow_style_profile: bool = False
-    allow_expert_calls: bool = False
+    allow_cluster_profile: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("allow_cluster_profile", "allow_style_profile"),
+    )
 
 
 class BridgeClientUpdate(BaseModel):
@@ -447,8 +409,10 @@ class BridgeClientUpdate(BaseModel):
     allowed_vault_ids: list[str] | None = None
     allowed_cluster_ids: list[str] | None = None
     allow_raw_snippets: bool | None = None
-    allow_style_profile: bool | None = None
-    allow_expert_calls: bool | None = None
+    allow_cluster_profile: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices("allow_cluster_profile", "allow_style_profile"),
+    )
     rotate_token: bool | None = None
 
 
@@ -461,8 +425,10 @@ class BridgeClientCreateResponse(BaseModel):
     allowed_vault_ids: list[str] = []
     allowed_cluster_ids: list[str] = []
     allow_raw_snippets: bool = False
-    allow_style_profile: bool = False
-    allow_expert_calls: bool = False
+    allow_cluster_profile: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("allow_cluster_profile", "allow_style_profile"),
+    )
     approval_request_id: str | None = None
     approved_at: str | None = None
     revoked_at: str | None = None
@@ -488,8 +454,10 @@ class BridgeClientRead(BaseModel):
     allowed_vault_ids: list[str] = []
     allowed_cluster_ids: list[str] = []
     allow_raw_snippets: bool = False
-    allow_style_profile: bool = False
-    allow_expert_calls: bool = False
+    allow_cluster_profile: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("allow_cluster_profile", "allow_style_profile"),
+    )
     approval_request_id: str | None = None
     approved_at: str | None = None
     revoked_at: str | None = None
@@ -512,8 +480,10 @@ class BridgeApprovalRequestCreate(BaseModel):
     requested_vault_ids: list[str] = []
     requested_cluster_ids: list[str] = []
     allow_raw_snippets: bool = False
-    allow_style_profile: bool = False
-    allow_expert_calls: bool = False
+    allow_cluster_profile: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("allow_cluster_profile", "allow_style_profile"),
+    )
     executable_path: str | None = Field(default=None, max_length=2048)
 
 
@@ -543,8 +513,10 @@ class BridgeApprovalRequestRead(BaseModel):
     requested_vault_ids: list[str] = []
     requested_cluster_ids: list[str] = []
     allow_raw_snippets: bool = False
-    allow_style_profile: bool = False
-    allow_expert_calls: bool = False
+    allow_cluster_profile: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("allow_cluster_profile", "allow_style_profile"),
+    )
     executable_path_claim: str = ""
     observed_executable_path: str = ""
     publisher_name: str = ""
@@ -565,8 +537,10 @@ class BridgeApprovalDecision(BaseModel):
     allowed_vault_ids: list[str] | None = None
     allowed_cluster_ids: list[str] | None = None
     allow_raw_snippets: bool | None = None
-    allow_style_profile: bool | None = None
-    allow_expert_calls: bool | None = None
+    allow_cluster_profile: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices("allow_cluster_profile", "allow_style_profile"),
+    )
     detail: str | None = Field(default=None, max_length=300)
 
 
@@ -663,12 +637,8 @@ class ChatCoverageLedger(BaseModel):
     budget_diagnostics: dict = {}
     budget_applied: bool = False
     partial_failure_mode: str = "none"
-    expert_route_mode: str = "not_eligible"
-    expert_assist_attempted: bool = False
-    expert_assist_used: bool = False
-    expert_digest_tokens_estimate: int = 0
     retrieval_authority: bool = True
-    token_ledger: dict = {}
+    token_estimate: dict = {}
     bundle_status: dict = {}
 
 
@@ -686,7 +656,7 @@ class ChatContextResponse(BaseModel):
     runtime_state: str | None = None
     warnings: list[str]
     memory_status: str | None = None
-    expert_digest: dict = {}
+    cluster_profile: dict = {}
 
 
 class ChatSessionCreate(BaseModel):
@@ -771,7 +741,6 @@ class ModelCompatibilityRead(BaseModel):
     status: str
     accepted: bool
     chat_role_accepted: bool = False
-    expert_role_accepted: bool = False
     accepted_roles: list[str] = []
     family: str
     family_name: str
@@ -782,7 +751,7 @@ class ModelCompatibilityRead(BaseModel):
     runtime_dependencies: dict
     hardware: dict
     reasons: list[str]
-    pairing_detail: str = ""
+    selection_detail: str = ""
     replacement_recommendation: dict = {}
     detail: str
 
@@ -804,7 +773,6 @@ class ModelRead(BaseModel):
     integrity: ModelIntegrityRead | None = None
     active: bool = False
     active_chat: bool = False
-    active_expert: bool = False
     compatibility: ModelCompatibilityRead | None = None
     source_kind: str = "default_choice"
 
@@ -826,24 +794,16 @@ class ModelRecommendationRead(BaseModel):
     hardware: dict
     recommended_model_id: str
     recommended_chat_model_id: str = ""
-    recommended_expert_model_id: str = ""
-    recommended_expert_family: str = ""
-    recommended_pair_id: str = ""
     chat_fit_type: str = ""
-    expert_runtime_fit_type: str = ""
-    expert_training_fit_type: str = ""
     chat_estimated_tok_per_sec: float | None = None
-    expert_estimated_tok_per_sec: float | None = None
     evidence_level: str = "none"
     confidence: str = "low"
     warnings: list[str] = []
     reasons: list[str] = []
     fallback_low_spec: dict = {}
     fallback_fastest: dict = {}
-    active_pair: dict = {}
+    active_chat_setup: dict = {}
     chat_recommendation: dict = {}
-    expert_recommendation: dict = {}
-    pair_recommendation: dict = {}
     models: list[ModelRead]
     detected_compatible_models: list[dict] = []
     detected_compatible_model_count: int = 0
@@ -860,7 +820,6 @@ class ModelRecommendationRead(BaseModel):
 
 class ModelRecommendationMeasurementWrite(BaseModel):
     model_id: str | None = None
-    pair_id: str | None = None
     score: float | None = None
     estimated_tok_per_sec: float | None = None
     startup_seconds: float | None = None
@@ -871,10 +830,7 @@ class ModelRecommendationMeasurementWrite(BaseModel):
 
 class ModelRecommendationMeasurementRunRequest(BaseModel):
     model_id: str | None = None
-    pair_id: str | None = None
     prompt: str = "Reply with a short sentence confirming the runtime is working."
-    adapter_path: str | None = None
-    base_model: str | None = None
     max_new_tokens: int | None = None
 
 
@@ -981,15 +937,6 @@ class HardwareStatusRead(BaseModel):
     hardware_tier: str
     training_supported: bool
     detail: str
-
-
-class LoraTrainerStatusRead(BaseModel):
-    available: bool
-    packages: dict
-    llamafactory_cli: str | None = None
-    trainer_command_configured: bool
-    test_trainer_enabled: bool
-    issues: list[str]
 
 
 class LocalFolderScanRequest(BaseModel):

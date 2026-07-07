@@ -88,7 +88,13 @@ def init_db() -> None:
                 name TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
                 color TEXT NOT NULL DEFAULT 'sage',
-                expert_status TEXT NOT NULL DEFAULT 'setting-up',
+                index_status TEXT NOT NULL DEFAULT 'empty',
+                profile_status TEXT NOT NULL DEFAULT 'missing',
+                cluster_summary TEXT NOT NULL DEFAULT '',
+                cluster_glossary TEXT NOT NULL DEFAULT '[]',
+                profile_updated_at TEXT,
+                profile_source_hash TEXT NOT NULL DEFAULT '',
+                indexed_source_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
@@ -165,7 +171,6 @@ def init_db() -> None:
                 allowed_cluster_ids TEXT NOT NULL DEFAULT '[]',
                 allow_raw_snippets INTEGER NOT NULL DEFAULT 0,
                 allow_style_profile INTEGER NOT NULL DEFAULT 0,
-                allow_expert_calls INTEGER NOT NULL DEFAULT 0,
                 bridge_token TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -189,7 +194,6 @@ def init_db() -> None:
                 allowed_cluster_ids TEXT NOT NULL DEFAULT '[]',
                 allow_raw_snippets INTEGER NOT NULL DEFAULT 0,
                 allow_style_profile INTEGER NOT NULL DEFAULT 0,
-                allow_expert_calls INTEGER NOT NULL DEFAULT 0,
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 approval_request_id TEXT,
                 approved_at TEXT,
@@ -252,45 +256,6 @@ def init_db() -> None:
                 byte_count INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (scope_type, scope_id, bucket)
-            );
-
-            CREATE TABLE IF NOT EXISTS cluster_expert_jobs (
-                id TEXT PRIMARY KEY,
-                cluster_id TEXT NOT NULL,
-                vault_id TEXT NOT NULL,
-                action TEXT NOT NULL,
-                status TEXT NOT NULL,
-                detail TEXT NOT NULL DEFAULT '',
-                failure_code TEXT NOT NULL DEFAULT '',
-                artifact_path TEXT,
-                hardware_tier TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,
-                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS expert_artifacts (
-                id TEXT PRIMARY KEY,
-                cluster_id TEXT NOT NULL,
-                vault_id TEXT NOT NULL,
-                job_id TEXT,
-                artifact_type TEXT NOT NULL,
-                status TEXT NOT NULL,
-                local_path TEXT,
-                base_model TEXT NOT NULL DEFAULT '',
-                hardware_tier TEXT NOT NULL DEFAULT '',
-                quality_score REAL,
-                dataset_hash TEXT NOT NULL DEFAULT '',
-                training_config_hash TEXT NOT NULL DEFAULT '',
-                metrics_json TEXT NOT NULL DEFAULT '{}',
-                active INTEGER NOT NULL DEFAULT 0,
-                rolled_back_at TEXT,
-                deleted_at TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,
-                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS vault_lock_audit (
@@ -751,7 +716,6 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_reconciliation_items_run ON reconciliation_items(run_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_reconciliation_items_import ON reconciliation_items(import_id, result, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_extension_captures_vault ON extension_captures(vault_id, created_at);
-            CREATE INDEX IF NOT EXISTS idx_expert_artifacts_cluster ON expert_artifacts(cluster_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_analysis_evidence_packets_job ON analysis_evidence_packets(job_id);
             CREATE INDEX IF NOT EXISTS idx_analysis_evidence_packets_vault ON analysis_evidence_packets(vault_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_memory_items_scope ON memory_items(vault_id, cluster_id, status, updated_at);
@@ -804,6 +768,13 @@ def init_db() -> None:
         _add_column_if_missing(conn, "retrieval_snapshots", "derived_state_epoch", "INTEGER NOT NULL DEFAULT 1")
         _add_column_if_missing(conn, "chat_sessions", "memory_status", "TEXT NOT NULL DEFAULT 'idle'")
         _add_column_if_missing(conn, "chat_sessions", "memory_updated_at", "TEXT")
+        _add_column_if_missing(conn, "clusters", "index_status", "TEXT NOT NULL DEFAULT 'empty'")
+        _add_column_if_missing(conn, "clusters", "profile_status", "TEXT NOT NULL DEFAULT 'missing'")
+        _add_column_if_missing(conn, "clusters", "cluster_summary", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "clusters", "cluster_glossary", "TEXT NOT NULL DEFAULT '[]'")
+        _add_column_if_missing(conn, "clusters", "profile_updated_at", "TEXT")
+        _add_column_if_missing(conn, "clusters", "profile_source_hash", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "clusters", "indexed_source_count", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "bridge_settings", "bridge_token", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "bridge_requests", "client_id", "TEXT")
         _add_column_if_missing(conn, "bridge_requests", "decision", "TEXT NOT NULL DEFAULT 'allowed'")
@@ -845,20 +816,16 @@ def init_db() -> None:
         _add_column_if_missing(conn, "app_jobs", "status_detail", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "app_jobs", "started_at", "TEXT")
         _add_column_if_missing(conn, "app_jobs", "completed_at", "TEXT")
-        _add_column_if_missing(conn, "cluster_expert_jobs", "failure_code", "TEXT NOT NULL DEFAULT ''")
-        _add_column_if_missing(conn, "cluster_expert_jobs", "artifact_path", "TEXT")
-        _add_column_if_missing(conn, "cluster_expert_jobs", "hardware_tier", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "extension_clients", "allowed_vault_ids", "TEXT NOT NULL DEFAULT '[]'")
-        _add_column_if_missing(conn, "expert_artifacts", "dataset_hash", "TEXT NOT NULL DEFAULT ''")
-        _add_column_if_missing(conn, "expert_artifacts", "training_config_hash", "TEXT NOT NULL DEFAULT ''")
-        _add_column_if_missing(conn, "expert_artifacts", "metrics_json", "TEXT NOT NULL DEFAULT '{}'")
-        _add_column_if_missing(conn, "expert_artifacts", "active", "INTEGER NOT NULL DEFAULT 0")
-        _add_column_if_missing(conn, "expert_artifacts", "rolled_back_at", "TEXT")
-        _add_column_if_missing(conn, "expert_artifacts", "deleted_at", "TEXT")
         _ensure_vault_security_metadata_schema(conn)
         _ensure_encrypted_content_schema(conn)
         _ensure_derived_state_schema(conn)
         _ensure_quarantine_schema(conn)
+        _rebuild_clusters_table_without_expert_status(conn)
+        _rebuild_bridge_settings_without_allow_expert_calls(conn)
+        _rebuild_bridge_clients_without_allow_expert_calls(conn)
+        _drop_legacy_expert_tables(conn)
+        _backfill_cluster_rag_lifecycle(conn)
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS bridge_approval_requests (
@@ -924,8 +891,10 @@ def init_db() -> None:
                 ON source_quarantine_records(vault_id, validation_status, parser_status, updated_at);
             CREATE INDEX IF NOT EXISTS idx_sources_checksum
                 ON sources(vault_id, checksum);
-            CREATE INDEX IF NOT EXISTS idx_expert_artifacts_active
-                ON expert_artifacts(cluster_id, active, deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_sources_cluster_state
+                ON sources(cluster_id, state, deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_sources_vault_state
+                ON sources(vault_id, state, deleted_at);
             CREATE INDEX IF NOT EXISTS idx_query_evidence_cache_fingerprint
                 ON query_evidence_cache(vault_id, query_fingerprint, invalidated_at);
             CREATE INDEX IF NOT EXISTS idx_cluster_merge_artifacts_target
@@ -942,13 +911,260 @@ def init_db() -> None:
         )
 
 
+def _backfill_cluster_rag_lifecycle(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        UPDATE clusters
+        SET index_status = CASE
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM sources
+                    WHERE sources.cluster_id = clusters.id
+                      AND sources.deleted_at IS NULL
+                ) THEN 'empty'
+                WHEN EXISTS (
+                    SELECT 1 FROM sources
+                    WHERE sources.cluster_id = clusters.id
+                      AND sources.deleted_at IS NULL
+                      AND sources.state = 'failed'
+                ) THEN 'error'
+                WHEN EXISTS (
+                    SELECT 1 FROM sources
+                    WHERE sources.cluster_id = clusters.id
+                      AND sources.deleted_at IS NULL
+                      AND sources.state IN ('waiting', 'processing')
+                ) THEN 'indexing'
+                WHEN EXISTS (
+                    SELECT 1 FROM sources
+                    WHERE sources.cluster_id = clusters.id
+                      AND sources.deleted_at IS NULL
+                      AND sources.state = 'indexed'
+                ) THEN 'ready'
+                ELSE index_status
+            END,
+            profile_status = CASE
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM sources
+                    WHERE sources.cluster_id = clusters.id
+                      AND sources.deleted_at IS NULL
+                ) THEN 'missing'
+                WHEN EXISTS (
+                    SELECT 1 FROM sources
+                    WHERE sources.cluster_id = clusters.id
+                      AND sources.deleted_at IS NULL
+                      AND sources.state = 'failed'
+                ) THEN 'error'
+                WHEN EXISTS (
+                    SELECT 1 FROM sources
+                    WHERE sources.cluster_id = clusters.id
+                      AND sources.deleted_at IS NULL
+                      AND sources.state IN ('waiting', 'processing')
+                ) THEN CASE
+                    WHEN EXISTS (
+                        SELECT 1 FROM sources
+                        WHERE sources.cluster_id = clusters.id
+                          AND sources.deleted_at IS NULL
+                          AND sources.state = 'indexed'
+                    ) THEN 'stale'
+                    ELSE 'refreshing'
+                END
+                WHEN EXISTS (
+                    SELECT 1 FROM sources
+                    WHERE sources.cluster_id = clusters.id
+                      AND sources.deleted_at IS NULL
+                      AND sources.state = 'indexed'
+                ) THEN CASE
+                    WHEN COALESCE(cluster_summary, '') = '' AND COALESCE(cluster_glossary, '[]') = '[]' THEN 'missing'
+                    ELSE 'ready'
+                END
+                ELSE profile_status
+            END,
+            indexed_source_count = COALESCE((
+                SELECT COUNT(*) FROM sources
+                WHERE sources.cluster_id = clusters.id
+                  AND sources.deleted_at IS NULL
+                  AND sources.state = 'indexed'
+            ), 0)
+        """
+    )
+
+
+def _rebuild_clusters_table_without_expert_status(conn: sqlite3.Connection) -> None:
+    if not _table_has_column(conn, "clusters", "expert_status"):
+        return
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("DROP TABLE IF EXISTS clusters_new")
+        conn.execute(
+            """
+            CREATE TABLE clusters_new (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                color TEXT NOT NULL DEFAULT 'sage',
+                index_status TEXT NOT NULL DEFAULT 'empty',
+                profile_status TEXT NOT NULL DEFAULT 'missing',
+                cluster_summary TEXT NOT NULL DEFAULT '',
+                cluster_glossary TEXT NOT NULL DEFAULT '[]',
+                profile_updated_at TEXT,
+                profile_source_hash TEXT NOT NULL DEFAULT '',
+                indexed_source_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO clusters_new (
+                id, vault_id, name, description, color, index_status, profile_status,
+                cluster_summary, cluster_glossary, profile_updated_at, profile_source_hash,
+                indexed_source_count, created_at, updated_at
+            )
+            SELECT
+                id,
+                vault_id,
+                name,
+                description,
+                color,
+                COALESCE(index_status, 'empty'),
+                COALESCE(profile_status, 'missing'),
+                COALESCE(cluster_summary, ''),
+                COALESCE(cluster_glossary, '[]'),
+                profile_updated_at,
+                COALESCE(profile_source_hash, ''),
+                COALESCE(indexed_source_count, 0),
+                created_at,
+                updated_at
+            FROM clusters
+            """
+        )
+        conn.execute("DROP TABLE clusters")
+        conn.execute("ALTER TABLE clusters_new RENAME TO clusters")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _rebuild_bridge_settings_without_allow_expert_calls(conn: sqlite3.Connection) -> None:
+    if not _table_has_column(conn, "bridge_settings", "allow_expert_calls"):
+        return
+    conn.execute("ALTER TABLE bridge_settings RENAME TO bridge_settings_legacy_expert_calls")
+    conn.execute(
+        """
+        CREATE TABLE bridge_settings (
+            id TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            allowed_vault_ids TEXT NOT NULL DEFAULT '[]',
+            allowed_cluster_ids TEXT NOT NULL DEFAULT '[]',
+            allow_raw_snippets INTEGER NOT NULL DEFAULT 0,
+            allow_style_profile INTEGER NOT NULL DEFAULT 0,
+            bridge_token TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO bridge_settings (
+            id, enabled, allowed_vault_ids, allowed_cluster_ids, allow_raw_snippets,
+            allow_style_profile, bridge_token, created_at, updated_at
+        )
+        SELECT
+            id,
+            enabled,
+            allowed_vault_ids,
+            allowed_cluster_ids,
+            allow_raw_snippets,
+            allow_style_profile,
+            bridge_token,
+            created_at,
+            updated_at
+        FROM bridge_settings_legacy_expert_calls
+        """
+    )
+    conn.execute("DROP TABLE bridge_settings_legacy_expert_calls")
+
+
+def _rebuild_bridge_clients_without_allow_expert_calls(conn: sqlite3.Connection) -> None:
+    if not _table_has_column(conn, "bridge_clients", "allow_expert_calls"):
+        return
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("DROP TABLE IF EXISTS bridge_clients_new")
+        conn.execute(
+            """
+            CREATE TABLE bridge_clients_new (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                token_hash TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                approval_vault_id TEXT,
+                allowed_vault_ids TEXT NOT NULL DEFAULT '[]',
+                allowed_cluster_ids TEXT NOT NULL DEFAULT '[]',
+                allow_raw_snippets INTEGER NOT NULL DEFAULT 0,
+                allow_style_profile INTEGER NOT NULL DEFAULT 0,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                approval_request_id TEXT,
+                approved_at TEXT,
+                revoked_at TEXT,
+                last_request_at TEXT,
+                request_count_total INTEGER NOT NULL DEFAULT 0,
+                response_bytes_total INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (approval_vault_id) REFERENCES vaults(id) ON DELETE SET NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO bridge_clients_new (
+                id, name, token_hash, enabled, approval_vault_id, allowed_vault_ids,
+                allowed_cluster_ids, allow_raw_snippets, allow_style_profile, metadata_json,
+                approval_request_id, approved_at, revoked_at, last_request_at,
+                request_count_total, response_bytes_total, created_at, updated_at
+            )
+            SELECT
+                id,
+                name,
+                token_hash,
+                enabled,
+                approval_vault_id,
+                allowed_vault_ids,
+                allowed_cluster_ids,
+                allow_raw_snippets,
+                allow_style_profile,
+                metadata_json,
+                approval_request_id,
+                approved_at,
+                revoked_at,
+                last_request_at,
+                request_count_total,
+                response_bytes_total,
+                created_at,
+                updated_at
+            FROM bridge_clients
+            """
+        )
+        conn.execute("DROP TABLE bridge_clients")
+        conn.execute("ALTER TABLE bridge_clients_new RENAME TO bridge_clients")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _drop_legacy_expert_tables(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS cluster_expert_jobs")
+    conn.execute("DROP TABLE IF EXISTS expert_artifacts")
+    conn.execute("DROP INDEX IF EXISTS idx_expert_artifacts_cluster")
+    conn.execute("DROP INDEX IF EXISTS idx_expert_artifacts_active")
+
+
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
     if not IDENTIFIER_RE.fullmatch(table) or not IDENTIFIER_RE.fullmatch(column):
         raise ValueError("Unsafe database identifier")
-    columns = {
-        row["name"]
-        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-    }
+    columns = _table_columns(conn, table)
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
@@ -956,12 +1172,37 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, de
 def _add_column_if_missing_if_table_exists(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
     if not IDENTIFIER_RE.fullmatch(table):
         raise ValueError("Unsafe database identifier")
-    exists = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table,),
-    ).fetchone()
-    if exists:
+    if _table_exists(conn, table):
         _add_column_if_missing(conn, table, column, definition)
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    if not IDENTIFIER_RE.fullmatch(table):
+        raise ValueError("Unsafe database identifier")
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not IDENTIFIER_RE.fullmatch(table):
+        raise ValueError("Unsafe database identifier")
+    if not _table_exists(conn, table):
+        return set()
+    return {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+
+
+def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    if not IDENTIFIER_RE.fullmatch(column):
+        raise ValueError("Unsafe database identifier")
+    return column in _table_columns(conn, table)
 
 
 def _ensure_vault_security_metadata_schema(conn: sqlite3.Connection) -> None:

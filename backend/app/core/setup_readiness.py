@@ -2,8 +2,6 @@ from backend.app.core.config import get_settings
 from backend.app.core.embeddings import embedding_status
 from backend.app.core.model_registry import (
     active_chat_model_status,
-    active_expert_model_status,
-    active_model_pair_status,
     discover_installed_models,
     model_integrity_manifest_status,
     model_recommendations,
@@ -21,23 +19,13 @@ def first_run_readiness() -> dict:
     installed_models = [model for model in list_models() if model.get("installed")]
     discovered = discover_installed_models(max_results=8)
     active_chat_model = active_chat_model_status()
-    active_expert_model = active_expert_model_status()
-    active_pair = active_model_pair_status()
     recommendation = model_recommendations()
     recommended_setup = {
         "recommended_chat_model_id": recommendation.get("recommended_chat_model_id", ""),
-        "recommended_expert_model_id": recommendation.get("recommended_expert_model_id", ""),
-        "recommended_pair_id": recommendation.get("recommended_pair_id", ""),
         "detail": recommendation.get("detail", ""),
     }
     if not recommended_setup["recommended_chat_model_id"] and active_chat_model:
         recommended_setup["recommended_chat_model_id"] = str(active_chat_model.get("id") or "")
-    if not recommended_setup["recommended_expert_model_id"] and active_expert_model:
-        recommended_setup["recommended_expert_model_id"] = str(active_expert_model.get("id") or "")
-    if not recommended_setup["recommended_pair_id"] and active_pair.get("accepted"):
-        recommended_setup["recommended_pair_id"] = str(active_pair.get("pair_id") or "")
-        if not recommended_setup["detail"]:
-            recommended_setup["detail"] = str(active_pair.get("detail") or "")
     checks = [
         {
             "id": "vault_path",
@@ -70,22 +58,6 @@ def first_run_readiness() -> dict:
                 active_chat_model.get("compatibility", {}).get("detail", "")
                 if active_chat_model
                 else "No accepted chat model is configured."
-            ),
-        },
-        {
-            "id": "expert_model",
-            "ok": bool(active_expert_model and active_expert_model.get("compatibility", {}).get("expert_role_accepted")),
-            "detail": (
-                active_expert_model.get("compatibility", {}).get("detail", "")
-                if active_expert_model
-                else "No accepted expert-compression runtime is configured."
-            ),
-        },
-        {
-            "id": "approved_model_pair",
-            "ok": bool(active_pair.get("accepted")),
-            "detail": (
-                str(active_pair.get("detail") or "")
             ),
         },
         {

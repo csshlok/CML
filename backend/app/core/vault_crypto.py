@@ -82,7 +82,6 @@ class VaultSubkeys:
     database_key: bytes
     blob_key: bytes
     metadata_key: bytes
-    lora_artifact_key: bytes
 
 
 @dataclass(frozen=True)
@@ -249,7 +248,6 @@ def derive_vault_subkeys(material: VaultKeyMaterial) -> VaultSubkeys:
         database_key=_hkdf(material.master_key, b"cml-vault-database-key-v1"),
         blob_key=_hkdf(material.master_key, b"cml-vault-blob-key-v1"),
         metadata_key=_hkdf(material.master_key, b"cml-vault-metadata-key-v1"),
-        lora_artifact_key=_hkdf(material.master_key, b"cml-vault-lora-artifact-key-v1"),
     )
 
 

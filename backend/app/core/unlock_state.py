@@ -39,13 +39,12 @@ API_LOCKED_SAFE_SUFFIXES = (
     "/system/preflight",
     "/system/hardware",
     "/system/ocr",
-    "/system/lora-trainer",
     "/system/unlock",
     "/models",
     "/jobs/status",
     "/extension/status",
 )
-VAULT_BOUND_JOB_SCOPES = {"vault", "source", "chat", "vector_index", "expert"}
+VAULT_BOUND_JOB_SCOPES = {"vault", "source", "chat", "vector_index", "cluster"}
 
 
 @dataclass

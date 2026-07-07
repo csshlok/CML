@@ -78,9 +78,11 @@ def update_source_content_fields(conn, *, vault_id: str, source_id: str, updates
     return sanitized
 
 
-def source_from_encrypted_row(conn, row) -> dict:
+def source_from_encrypted_row(conn, row, *, include_content: bool = True) -> dict:
     source = dict_from_row(row)
     if not is_vault_secured(conn, source["vault_id"]):
+        return source
+    if not include_content:
         return source
     for field in SOURCE_TEXT_FIELDS:
         encrypted = get_encrypted_text(
@@ -90,9 +92,30 @@ def source_from_encrypted_row(conn, row) -> dict:
             entity_id=source["id"],
             field_name=field,
         )
-        if encrypted:
-            source[field] = encrypted
+    if encrypted:
+        source[field] = encrypted
     return source
+
+
+def load_source_content_fields(
+    conn,
+    *,
+    vault_id: str,
+    source_id: str,
+    fields: tuple[str, ...] = SOURCE_TEXT_FIELDS,
+) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not is_vault_secured(conn, vault_id):
+        return values
+    for field in fields:
+        values[field] = get_encrypted_text(
+            conn,
+            vault_id=vault_id,
+            entity_type="source",
+            entity_id=source_id,
+            field_name=field,
+        )
+    return values
 
 
 def page_from_encrypted_row(conn, row) -> dict:

@@ -84,19 +84,6 @@ def storage_accounting(vault_id: str | None = None) -> dict:
             """,
             snapshot_params,
         ).fetchone()
-        artifact_clause = "WHERE deleted_at IS NULL"
-        artifact_params: list[str] = []
-        if vault_id:
-            artifact_clause += " AND vault_id = ?"
-            artifact_params.append(vault_id)
-        artifact_row = conn.execute(
-            f"""
-            SELECT COUNT(*) AS count, COALESCE(SUM(LENGTH(local_path)), 0) AS path_bytes
-            FROM expert_artifacts
-            {artifact_clause}
-            """,
-            artifact_params,
-        ).fetchone()
         external_clause = "WHERE deleted_at IS NULL AND source_type IN ('external_transcript', 'external_artifact', 'mcp_external_turn', 'mcp_artifact')"
         external_params: list[str] = []
         if vault_id:
@@ -169,10 +156,6 @@ def storage_accounting(vault_id: str | None = None) -> dict:
         "external_captures": {
             "count": int(external_row["count"] or 0),
             "text_bytes": int(external_row["text_bytes"] or 0),
-        },
-        "expert_artifacts": {
-            "count": int(artifact_row["count"] or 0),
-            "path_bytes": int(artifact_row["path_bytes"] or 0),
         },
         "estimate": True,
     }
