@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   Clock3,
   FileText,
-  Gauge,
   MessageSquare,
   MoreHorizontal,
   Plus,
@@ -16,21 +15,15 @@ import {
 import {
   type Cluster,
   type Source,
-  expertLabel,
+  clusterLifecycleLabel,
 } from "@/lib/mockStore";
 import { Button } from "@/components/ui/button";
 import {
   createChatSession,
   getCluster,
-  getClusterExpertStatus,
   listChatSessions,
-  listClusterExpertArtifacts,
-  listClusterExpertJobs,
   listSources,
   type ChatSessionRecord,
-  type ClusterExpertJobRecord,
-  type ClusterExpertStatusRecord,
-  type ExpertArtifactRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 
@@ -39,7 +32,7 @@ export const Route = createFileRoute("/_app/clusters/$clusterId")({
   component: ClusterDetail,
 });
 
-const tabs = ["Overview", "Sources", "Chats", "Expert", "Memory profile", "Map"] as const;
+const tabs = ["Overview", "Sources", "Chats", "Memory profile", "Map"] as const;
 
 function ClusterDetail() {
   const { clusterId } = Route.useParams();
@@ -48,9 +41,6 @@ function ClusterDetail() {
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
   const [backendVaultId, setBackendVaultId] = useState<string | null>(null);
-  const [expertJobs, setExpertJobs] = useState<ClusterExpertJobRecord[]>([]);
-  const [expertArtifacts, setExpertArtifacts] = useState<ExpertArtifactRecord[]>([]);
-  const [expertStatus, setExpertStatus] = useState<ClusterExpertStatusRecord | null>(null);
   const [activeTab, setActiveTab] = useState<(typeof tabs)[number]>("Overview");
   const [mounted, setMounted] = useState(false);
 
@@ -68,28 +58,21 @@ function ClusterDetail() {
       try {
         const clusterRow = await getCluster(clusterId);
         const nextCluster = clusterFromRecord(clusterRow);
-        const [sourceRows, chatRows, jobRows, artifactRows, statusRow] = await Promise.all([
+        const [sourceRows, chatRows] = await Promise.all([
           listSources(clusterRow.vault_id),
           listChatSessions(clusterRow.vault_id),
-          listClusterExpertJobs(clusterRow.id).catch(() => []),
-          listClusterExpertArtifacts(clusterRow.id).catch(() => []),
-          getClusterExpertStatus(clusterRow.id).catch(() => null),
         ]);
         if (cancelled) return;
         setBackendVaultId(clusterRow.vault_id);
         setBackendCluster(nextCluster);
         setBackendSources(sourceRows.map(sourceFromRecord));
         setBackendChats(chatRows.filter((chat) => chat.scope_cluster_id === clusterRow.id));
-        setExpertJobs(jobRows);
-        setExpertArtifacts(artifactRows);
-        setExpertStatus(statusRow);
       } catch {
         if (!cancelled) {
           setBackendCluster(null);
           setBackendVaultId(null);
           setBackendSources([]);
           setBackendChats([]);
-          setExpertStatus(null);
         }
       }
     }
@@ -216,22 +199,13 @@ function ClusterDetail() {
 
         {activeTab === "Sources" && <ClusterSourcesPanel sources={clusterSources} />}
         {activeTab === "Chats" && <ClusterChatsPanel chats={clusterChats} />}
-        {activeTab === "Expert" && (
-          <ClusterExpertPanel
-            cluster={cluster}
-            status={expertStatus}
-            artifacts={expertArtifacts}
-            jobs={expertJobs}
-            sourceCount={clusterSources.length}
-          />
-        )}
         {activeTab === "Memory profile" && (
-          <ClusterMemoryProfile cluster={cluster} sources={clusterSources} artifacts={expertArtifacts} jobs={expertJobs} />
+          <ClusterMemoryProfile cluster={cluster} sources={clusterSources} />
         )}
         {activeTab === "Map" && <ClusterPointMap cluster={cluster} sources={clusterSources} />}
       </main>
 
-      <ClusterDetailRail cluster={cluster} sources={clusterSources} jobs={expertJobs} artifacts={expertArtifacts} />
+      <ClusterDetailRail cluster={cluster} sources={clusterSources} />
     </div>
   );
 }
@@ -284,10 +258,10 @@ function LearningStatus({ cluster, sourceCount }: { cluster: Cluster; sourceCoun
         <StatusItem icon={<FileText className="h-6 w-6" />} label="Memory profile" value={sourceCount > 0 ? "Ready" : "Empty"} meta={`Updated ${formatDate(cluster.lastActive)}`} />
         <StatusItem icon={<span className="h-7 w-7 rounded-full border-4 border-primary border-r-muted" />} label="Coverage" value={`${sourceCount} sources`} meta={`${sourceCount} linked sources`} />
         <StatusItem icon={<Clock3 className="h-6 w-6" />} label="Last updated" value={formatDate(cluster.lastActive)} meta="Automatic sync on" />
-        <StatusItem icon={<Clock3 className="h-6 w-6" />} label="Expert compression" value={expertLabel[cluster.expert]} meta="Grounded bundle status" />
+        <StatusItem icon={<Clock3 className="h-6 w-6" />} label="Cluster profile" value={clusterLifecycleLabel[cluster.lifecycle]} meta="Grounded retrieval status" />
       </div>
-      {cluster.expert === "training-running" && (
-        <div className="mt-4 text-xs text-muted-foreground">A grounded expert-compression training pass is running in the background.</div>
+      {cluster.lifecycle === "indexing" && (
+        <div className="mt-4 text-xs text-muted-foreground">A cluster maintenance pass is running in the background.</div>
       )}
     </section>
   );
@@ -431,152 +405,12 @@ function ClusterChatsPanel({ chats }: { chats: Array<ChatSessionRecord | { id: s
   );
 }
 
-function ClusterExpertPanel({
-  cluster,
-  status,
-  artifacts,
-  jobs,
-  sourceCount,
-}: {
-  cluster: Cluster;
-  status: ClusterExpertStatusRecord | null;
-  artifacts: ExpertArtifactRecord[];
-  jobs: ClusterExpertJobRecord[];
-  sourceCount: number;
-}) {
-  const activeArtifact = artifacts.find((artifact) => artifact.active);
-  const latestJob = jobs[0];
-  const runtimeReady = Boolean(status?.runtime_load?.available);
-  return (
-    <section className="mt-7">
-      <div className="flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <h2 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Cluster expert</h2>
-          <p className="mt-2 max-w-2xl break-words text-sm text-muted-foreground">
-            Retrieval stays available before and after training. Expert compression is optional and only rewrites retrieved evidence after bundle graduation passes.
-          </p>
-        </div>
-        <span className="max-w-full break-words rounded-full border border-border bg-card px-3 py-1 text-sm">
-          {status?.user_status || "Searchable"}
-        </span>
-      </div>
-
-      <div className="mt-5 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-        <section className="rounded-md border border-border bg-card p-5">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold">Graduation state</h3>
-              <p className="mt-2 break-words text-sm leading-6 text-muted-foreground">
-                {status?.detail || "This cluster can answer through retrieval while expert compression training remains optional."}
-              </p>
-            </div>
-            <Gauge className="h-5 w-5 text-muted-foreground" />
-          </div>
-          <div className="mt-6 grid gap-4 md:grid-cols-4">
-            <Metric value={sourceCount.toLocaleString()} label="Sources" />
-            <Metric value={status?.searchable ? "Yes" : "No"} label="Retrieval" />
-            <Metric value={status?.trained ? "Yes" : "No"} label="Trained" />
-            <Metric value={status?.stale ? "Yes" : "No"} label="Stale" />
-          </div>
-          <div className="mt-6 grid gap-3 text-xs text-muted-foreground">
-            <HashRow label="Active dataset" value={status?.active_dataset_hash} />
-            <HashRow label="Current dataset" value={status?.current_dataset_hash} />
-            <HashRow label="Active artifact" value={status?.active_artifact_id || activeArtifact?.id} />
-          </div>
-        </section>
-
-        <section className="rounded-md border border-border bg-card p-5">
-          <h3 className="text-sm font-semibold">Runtime load</h3>
-          <div className="mt-4 flex items-center gap-2 text-sm">
-            <span className={`h-2 w-2 rounded-full ${runtimeReady ? "bg-primary" : "bg-muted-foreground"}`} />
-            <span>{runtimeReady ? "Expert-compression runtime ready" : "Runtime smoke still required"}</span>
-          </div>
-          <p className="mt-3 break-words text-sm leading-6 text-muted-foreground">
-            {status?.runtime_load?.detail || "Connect a real local inference runtime and run the expert-compression smoke before public expert-ready claims."}
-          </p>
-          {status?.failure_code && (
-            <p className="mt-4 break-words rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-              Failure: {status.failure_code}
-            </p>
-          )}
-        </section>
-      </div>
-
-      <div className="mt-4 grid gap-4 xl:grid-cols-2">
-        <ExpertList title="Recent jobs" empty="No expert jobs yet.">
-          {jobs.slice(0, 5).map((job) => (
-            <ExpertListRow
-              key={job.id}
-              title={`${job.action} / ${job.status}`}
-              detail={job.failure_code || job.detail || job.hardware_tier || "Queued by backend"}
-              meta={formatDate(job.updated_at)}
-            />
-          ))}
-        </ExpertList>
-        <ExpertList title="Adapter artifacts" empty="No adapter artifacts yet.">
-          {artifacts.slice(0, 5).map((artifact) => (
-            <ExpertListRow
-              key={artifact.id}
-              title={`${artifact.status}${artifact.active ? " / active" : ""}`}
-              detail={artifact.local_path || artifact.base_model || "No local path recorded"}
-              meta={artifact.quality_score == null ? "No score" : `${artifact.quality_score.toFixed(1)} score`}
-            />
-          ))}
-        </ExpertList>
-      </div>
-
-      {latestJob?.failure_code && (
-        <p className="mt-4 break-words text-xs text-muted-foreground">
-          Latest blocked gate: {latestJob.failure_code}. Keep the cluster retrieval-backed until this is cleared.
-        </p>
-      )}
-    </section>
-  );
-}
-
-function HashRow({ label, value }: { label: string; value?: string | null }) {
-  return (
-    <div className="grid grid-cols-1 gap-1 sm:grid-cols-[112px_minmax(0,1fr)] sm:gap-3">
-      <span>{label}</span>
-      <span className="break-all font-mono text-[11px] text-foreground">{value || "Not available"}</span>
-    </div>
-  );
-}
-
-function ExpertList({ title, empty, children }: { title: string; empty: string; children: ReactNode }) {
-  const hasChildren = Array.isArray(children) ? children.length > 0 : Boolean(children);
-  return (
-    <section className="rounded-md border border-border bg-card">
-      <h3 className="px-4 pt-4 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{title}</h3>
-      <div className="mt-4 divide-y divide-border">
-        {hasChildren ? children : <div className="px-4 py-10 text-sm text-muted-foreground">{empty}</div>}
-      </div>
-    </section>
-  );
-}
-
-function ExpertListRow({ title, detail, meta }: { title: string; detail: string; meta: string }) {
-  return (
-    <div className="grid grid-cols-1 gap-2 px-4 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_120px] sm:gap-4">
-      <span className="min-w-0">
-        <span className="block break-words font-medium">{title}</span>
-        <span className="mt-1 block break-words text-xs text-muted-foreground">{detail}</span>
-      </span>
-      <span className="text-xs text-muted-foreground sm:text-right">{meta}</span>
-    </div>
-  );
-}
-
 function ClusterMemoryProfile({
   cluster,
   sources,
-  artifacts,
-  jobs,
 }: {
   cluster: Cluster;
   sources: Source[];
-  artifacts: ExpertArtifactRecord[];
-  jobs: ClusterExpertJobRecord[];
 }) {
   return (
     <section className="mt-7">
@@ -591,8 +425,8 @@ function ClusterMemoryProfile({
           </p>
           <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-3">
             <Metric value={sources.length.toLocaleString()} label="Sources" />
-            <Metric value={artifacts.length.toLocaleString()} label="Artifacts" />
-            <Metric value={jobs.length.toLocaleString()} label="Jobs" />
+            <Metric value={compactNumber(sources.length * 64)} label="Memories" />
+            <Metric value={formatDate(cluster.lastActive)} label="Updated" />
           </div>
         </section>
         <section className="rounded-md border border-border bg-card p-5">
@@ -704,13 +538,9 @@ function ClusterPointMap({ cluster, sources }: { cluster: Cluster; sources: Sour
 function ClusterDetailRail({
   cluster,
   sources,
-  jobs,
-  artifacts,
 }: {
   cluster: Cluster;
   sources: Source[];
-  jobs: ClusterExpertJobRecord[];
-  artifacts: ExpertArtifactRecord[];
 }) {
   return (
     <aside className="border-t border-border bg-card/35 px-4 py-6 sm:px-6 xl:border-l xl:border-t-0 xl:overflow-y-auto">
@@ -758,11 +588,6 @@ function ClusterDetailRail({
         <p className="mt-2 break-words text-xs text-muted-foreground">Last updated {formatDate(cluster.lastActive)}</p>
         <Button variant="outline" className="mt-4 w-full">View profile</Button>
       </section>
-      {(jobs.length > 0 || artifacts.length > 0) && (
-        <p className="mt-4 break-words text-xs text-muted-foreground">
-          {jobs.length} jobs / {artifacts.length} artifacts tracked for this cluster.
-        </p>
-      )}
     </aside>
   );
 }

@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import type { Cluster, ExpertStatus } from "@/lib/mockStore";
+import type { Cluster, ClusterLifecycleStatus } from "@/lib/mockStore";
 
 export function ClusterDot({ tint, size = 8 }: { tint: Cluster["tint"]; size?: number }) {
   return (
@@ -29,11 +29,11 @@ export function ClusterChip({ cluster, asLink = true }: { cluster: Cluster; asLi
   );
 }
 
-export function ExpertBadge({ status }: { status: ExpertStatus }) {
+export function ClusterStatusBadge({ status }: { status: ClusterLifecycleStatus }) {
   const color =
-    status === "expert-ready" || status === "searchable"
+    status === "searchable"
       ? "var(--status-ready)"
-      : status === "expert-stale"
+      : status === "profile-stale"
       ? "var(--status-learning)"
       : status === "issue"
       ? "var(--status-issue)"
@@ -42,12 +42,11 @@ export function ExpertBadge({ status }: { status: ExpertStatus }) {
       : "var(--status-learning)";
   const label = {
     searchable: "Searchable",
-    "retrieval-only": "Retrieval-only mode",
-    "setting-up": "Setting up",
-    "training-pending": "Preparing expert compression",
-    "training-running": "Training cluster compressor",
-    "expert-ready": "Expert compression ready",
-    "expert-stale": "Expert needs update",
+    "retrieval-only": "Retrieval-only",
+    empty: "Empty cluster",
+    queued: "Queued",
+    indexing: "Indexing",
+    "profile-stale": "Profile stale",
     paused: "Paused",
     issue: "Issue",
   }[status];

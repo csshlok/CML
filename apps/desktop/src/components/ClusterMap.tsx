@@ -9,8 +9,8 @@ import {
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ExpertBadge } from "@/components/ClusterChip";
-import { expertLabel, useStore, type Cluster, type Source } from "@/lib/mockStore";
+import { ClusterStatusBadge } from "@/components/ClusterChip";
+import { clusterLifecycleLabel, useStore, type Cluster, type Source } from "@/lib/mockStore";
 
 type Point = { x: number; y: number };
 
@@ -56,6 +56,26 @@ export function ClusterMap({
   const [manualPositions, setManualPositions] = useState<Record<string, Point>>({});
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(focusClusterId ?? null);
 
+  const sourceGroups = useMemo(() => {
+    const counts = new Map<string, number>();
+    const byCluster = new Map<string, Source[]>();
+    const unclustered: Source[] = [];
+    for (const source of sources) {
+      if (!source.clusterId) {
+        unclustered.push(source);
+        continue;
+      }
+      counts.set(source.clusterId, (counts.get(source.clusterId) ?? 0) + 1);
+      const clusterSources = byCluster.get(source.clusterId);
+      if (clusterSources) {
+        clusterSources.push(source);
+      } else {
+        byCluster.set(source.clusterId, [source]);
+      }
+    }
+    return { counts, byCluster, unclustered };
+  }, [sources]);
+
   useEffect(() => {
     if (!containerRef.current) return;
     const ro = new ResizeObserver(([entry]) => {
@@ -73,7 +93,7 @@ export function ClusterMap({
 
     return clusters.map((cluster, index) => {
       const seed = layoutSeeds[index % layoutSeeds.length];
-      const count = sources.filter((source) => source.clusterId === cluster.id).length;
+      const count = sourceGroups.counts.get(cluster.id) ?? 0;
       const basePoint = {
         x: marginX + seed.x * usableW,
         y: marginY + seed.y * usableH,
@@ -85,14 +105,12 @@ export function ClusterMap({
         radius: 34 + Math.min(44, Math.sqrt(Math.max(1, count)) * 14),
       };
     });
-  }, [clusters, manualPositions, size.h, size.w, sources]);
+  }, [clusters, manualPositions, size.h, size.w, sourceGroups.counts]);
 
   const selectedCluster =
     selectedClusterId ? clusters.find((cluster) => cluster.id === selectedClusterId) ?? null : null;
-  const selectedSources = selectedCluster
-    ? sources.filter((source) => source.clusterId === selectedCluster.id)
-    : [];
-  const looseSources = sources.filter((source) => !source.clusterId);
+  const selectedSources = selectedCluster ? (sourceGroups.byCluster.get(selectedCluster.id) ?? []) : [];
+  const looseSources = sourceGroups.unclustered;
 
   const sourcePoints = useMemo(() => {
     if (!selectedCluster) return [];
@@ -201,7 +219,7 @@ export function ClusterMap({
                     style={{
                       background: tintHex[cluster.tint],
                       animation:
-                        cluster.expert === "training-running" ? "cml-pulse-glow 3.2s ease-in-out infinite" : undefined,
+                        cluster.lifecycle === "indexing" ? "cml-pulse-glow 3.2s ease-in-out infinite" : undefined,
                     }}
                   />
                   <span
@@ -403,11 +421,11 @@ function ClusterDetailPanel({ cluster, sources }: { cluster: Cluster; sources: S
     "Built retrieval memory for this cluster",
     "Generated first-pass summary and tags",
     indexedCount > 0 ? `Indexed ${indexedCount} connected sources` : "Waiting for indexed sources",
-    cluster.expert === "training-running"
-      ? "Expert-compression training pass in progress"
-      : cluster.expert === "expert-ready"
-      ? "Expert compression is ready for grounded bundle use"
-      : "Retrieval remains available while expert compression updates",
+    cluster.lifecycle === "indexing"
+      ? "Cluster indexing and profile refresh are in progress"
+      : cluster.lifecycle === "searchable"
+      ? "Retrieval and cached profile metadata are ready"
+      : "Retrieval remains available while the cached cluster profile catches up",
   ];
 
   return (
@@ -418,18 +436,18 @@ function ClusterDetailPanel({ cluster, sources }: { cluster: Cluster; sources: S
             <div className="break-words text-sm font-semibold">{cluster.name}</div>
             <div className="text-xs text-muted-foreground">{sources.length} connected data points</div>
           </div>
-          <ExpertBadge status={cluster.expert} />
+          <ClusterStatusBadge status={cluster.lifecycle} />
         </div>
       </div>
       <div className="h-[calc(100%-57px)] overflow-y-auto p-4">
         <section className="rounded-md border border-border bg-card p-3">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Zap className="h-4 w-4 text-muted-foreground" />
-            {expertLabel[cluster.expert]}
+            {clusterLifecycleLabel[cluster.lifecycle]}
           </div>
           <p className="mt-2 text-xs leading-5 text-muted-foreground">
-            Retrieval remains the authority for facts and citations. Expert compression only rewrites
-            retrieved evidence into a smaller cluster-aware packet.
+            Retrieval remains the authority for facts and citations. The cached cluster profile only
+            helps summarize the cluster and does not replace retrieved evidence.
           </p>
         </section>
 
@@ -446,9 +464,9 @@ function ClusterDetailPanel({ cluster, sources }: { cluster: Cluster; sources: S
         </section>
 
         <section className="mt-5">
-          <div className="text-xs font-medium text-muted-foreground">Expert controls</div>
+          <div className="text-xs font-medium text-muted-foreground">Cluster controls</div>
           <div className="mt-3 rounded-md border border-dashed border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
-            Retrain, pause, rollback, and expert-compression settings appear here after the training queue is implemented.
+            Index refresh, profile rebuild, and retrieval maintenance controls appear here after the cluster maintenance queue is implemented.
           </div>
         </section>
       </div>

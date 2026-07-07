@@ -1,7 +1,6 @@
 import { createFileRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { Check, FileText, Grid2X2, List, MoreHorizontal, Plus, RefreshCw, X } from "lucide-react";
-import { ExpertBadge } from "@/components/ClusterChip";
 import { Button } from "@/components/ui/button";
 import {
   createCluster,
@@ -398,7 +397,7 @@ function clusterLastActivity(cluster: Cluster, sources: Source[]) {
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
   if (!source) return "No activity";
   if (source.state === "failed") return "Needs review";
-  if (source.state === "extracting") return "In progress";
+  if (source.state === "processing") return "In progress";
   return formatDate(source.updatedAt);
 }
 
