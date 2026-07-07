@@ -4,9 +4,8 @@ import time
 from typing import Any
 
 from backend.app.core.database import utc_now
-from backend.app.core.expert_runtime import run_adapter_runtime_smoke
 from backend.app.core.llm_runtime import LLMRuntimeError, generate_direct_answer, runtime_status
-from backend.app.core.model_recommender.benchmark_store import record_model_measurement, record_pair_measurement
+from backend.app.core.model_recommender.benchmark_store import record_model_measurement
 
 
 def run_chat_measurement(*, model_id: str, prompt: str) -> dict[str, Any]:
@@ -40,46 +39,5 @@ def run_chat_measurement(*, model_id: str, prompt: str) -> dict[str, Any]:
         "record": record,
         "measured_at": measured_at,
     }
-
-
-def run_pair_measurement(
-    *,
-    pair_id: str,
-    prompt: str,
-    adapter_path: str,
-    base_model: str,
-    max_new_tokens: int | None = None,
-) -> dict[str, Any]:
-    chat_measurement = None
-    chat_runtime = runtime_status()
-    if chat_runtime.get("available"):
-        try:
-            chat_measurement = run_chat_measurement(model_id=pair_id, prompt=prompt)
-        except RuntimeError:
-            chat_measurement = None
-    smoke = run_adapter_runtime_smoke(
-        adapter_path=adapter_path,
-        base_model=base_model,
-        prompt=prompt,
-        max_new_tokens=max_new_tokens,
-    )
-    measured_at = utc_now()
-    record = record_pair_measurement(
-        pair_id,
-        runtime_success=bool(smoke.get("ok")),
-        training_success=None,
-        chat_tok_per_sec=(chat_measurement or {}).get("estimated_tok_per_sec"),
-        measured_at=measured_at,
-    )
-    return {
-        "kind": "approved_pair",
-        "pair_id": pair_id,
-        "chat_measurement": chat_measurement,
-        "expert_runtime_smoke": smoke,
-        "record": record,
-        "measured_at": measured_at,
-    }
-
-
 def _rough_token_count(text: str) -> int:
     return max(1, len([part for part in str(text or "").split() if part.strip()]))

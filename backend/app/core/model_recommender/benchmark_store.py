@@ -19,49 +19,19 @@ _CACHE: dict[str, Any] = {
 def load_internal_benchmark_bundle() -> dict[str, Any]:
     bundle_path = _bundle_path()
     if bundle_path is None or not bundle_path.exists():
-        return {
-            "version": "",
-            "models": {},
-            "pairs": {},
-            "current_sources": {},
-            "frozen_sources": {},
-            "cml_internal_sources": {},
-        }
+        return _empty_bundle()
     try:
         mtime = bundle_path.stat().st_mtime
     except OSError:
-        return {
-            "version": "",
-            "models": {},
-            "pairs": {},
-            "current_sources": {},
-            "frozen_sources": {},
-            "cml_internal_sources": {},
-        }
+        return _empty_bundle()
     with _CACHE_LOCK:
         if _CACHE["path"] == str(bundle_path) and _CACHE["mtime"] == mtime:
             return dict(_CACHE["payload"])
     try:
         payload = json.loads(bundle_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {
-            "version": "",
-            "models": {},
-            "pairs": {},
-            "current_sources": {},
-            "frozen_sources": {},
-            "cml_internal_sources": {},
-        }
-    if not isinstance(payload, dict):
-        payload = {}
-    normalized = {
-        "version": str(payload.get("version") or ""),
-        "models": dict(payload.get("models") or {}),
-        "pairs": dict(payload.get("pairs") or {}),
-        "current_sources": dict(payload.get("current_sources") or {}),
-        "frozen_sources": dict(payload.get("frozen_sources") or {}),
-        "cml_internal_sources": dict(payload.get("cml_internal_sources") or {}),
-    }
+        return _empty_bundle()
+    normalized = _normalize_bundle(payload)
     with _CACHE_LOCK:
         _CACHE["path"] = str(bundle_path)
         _CACHE["mtime"] = mtime
@@ -74,6 +44,27 @@ def invalidate_internal_benchmark_bundle_cache() -> None:
         _CACHE["path"] = None
         _CACHE["mtime"] = None
         _CACHE["payload"] = {}
+
+
+def _empty_bundle() -> dict[str, Any]:
+    return {
+        "version": "",
+        "models": {},
+        "current_sources": {},
+        "frozen_sources": {},
+        "cml_internal_sources": {},
+    }
+
+
+def _normalize_bundle(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return _empty_bundle()
+    normalized = _empty_bundle()
+    normalized["version"] = str(payload.get("version") or "")
+    for key in ("models", "current_sources", "frozen_sources", "cml_internal_sources"):
+        value = payload.get(key) or {}
+        normalized[key] = dict(value) if isinstance(value, dict) else {}
+    return normalized
 
 
 def record_model_measurement(
@@ -106,34 +97,6 @@ def record_model_measurement(
         payload["version"] = "local-measured-v1"
     _write_bundle(payload)
     return current
-
-
-def record_pair_measurement(
-    pair_id: str,
-    *,
-    runtime_success: bool | None = None,
-    training_success: bool | None = None,
-    chat_tok_per_sec: float | None = None,
-    measured_at: str,
-) -> dict[str, Any]:
-    payload = load_internal_benchmark_bundle()
-    pairs = dict(payload.get("pairs") or {})
-    current = dict(pairs.get(pair_id) or {})
-    if runtime_success is not None:
-        current["runtime_success"] = bool(runtime_success)
-    if training_success is not None:
-        current["training_success"] = bool(training_success)
-    if chat_tok_per_sec is not None:
-        current["chat_tok_per_sec"] = float(chat_tok_per_sec)
-    current["measured_at"] = str(measured_at)
-    pairs[pair_id] = current
-    payload["pairs"] = pairs
-    if not payload.get("version"):
-        payload["version"] = "local-measured-v1"
-    _write_bundle(payload)
-    return current
-
-
 def _bundle_path() -> Path | None:
     explicit = os.environ.get("CML_MODEL_RECOMMENDER_BENCHMARK_BUNDLE")
     if explicit and explicit.strip():
@@ -146,5 +109,5 @@ def _write_bundle(payload: dict[str, Any]) -> None:
     if bundle_path is None:
         return
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
-    bundle_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    bundle_path.write_text(json.dumps(_normalize_bundle(payload), indent=2), encoding="utf-8")
     invalidate_internal_benchmark_bundle_cache()

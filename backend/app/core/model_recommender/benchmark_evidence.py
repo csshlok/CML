@@ -297,7 +297,7 @@ def _best_variant_match(
                     "detail": f"Interpolated from approved {nearest.family_line} models on the same family line.",
                     "bundle_version": bundle_version,
                 }
-        nearest_family = next((spec for spec in family_specs if spec.expert_runtime_supported is False), None)
+        nearest_family = family_specs[0] if family_specs else None
         if nearest_family and _size_ratio_within_limit(param_guess, nearest_family.parameter_count_total_b):
             return {
                 "score": nearest_family.benchmark.score,
