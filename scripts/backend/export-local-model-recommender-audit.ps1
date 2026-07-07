@@ -11,13 +11,13 @@ $payload = @"
 import json
 from backend.app.core.hardware import hardware_status
 from backend.app.core.llm_runtime import runtime_status
-from backend.app.core.model_registry import active_model_pair_status, list_models, model_recommendations
+from backend.app.core.model_registry import active_chat_setup_status, list_models, model_recommendations
 from backend.app.core.model_recommender.diagnostics import export_recommendation_diagnostics
 
 result = {
     "hardware": hardware_status(),
     "runtime": runtime_status(),
-    "active_pair": active_model_pair_status(),
+    "active_chat_setup": active_chat_setup_status(),
     "models": list_models(),
     "recommendations": model_recommendations(refresh=$refreshLiteral),
     "diagnostics": export_recommendation_diagnostics(refresh=$refreshLiteral),

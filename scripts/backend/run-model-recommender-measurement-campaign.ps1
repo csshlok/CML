@@ -4,10 +4,6 @@ param(
   [Parameter(Mandatory = $false)]
   [string]$Prompt = "Reply with a short sentence confirming the runtime is working.",
   [Parameter(Mandatory = $false)]
-  [string]$AdapterPath = "",
-  [Parameter(Mandatory = $false)]
-  [string]$BaseModel = "",
-  [Parameter(Mandatory = $false)]
   [int]$MaxNewTokens = 48,
   [Parameter(Mandatory = $false)]
   [string]$OutputPath = "",
@@ -15,8 +11,6 @@ param(
   [string]$ApiToken = $env:CML_API_TOKEN,
   [Parameter(Mandatory = $false)]
   [switch]$SkipChatMeasurement,
-  [Parameter(Mandatory = $false)]
-  [switch]$SkipPairMeasurement,
   [Parameter(Mandatory = $false)]
   [switch]$Refresh
 )
@@ -33,7 +27,6 @@ $campaign = @{
   generated_at = [DateTime]::UtcNow.ToString("o")
   recommendation = $recommendation
   chat_measurement = $null
-  pair_measurement = $null
 }
 
 if (-not $SkipChatMeasurement) {
@@ -44,23 +37,6 @@ if (-not $SkipChatMeasurement) {
       prompt = $Prompt
     } | ConvertTo-Json -Depth 4
     $campaign.chat_measurement = Invoke-RestMethod -Method Post -Uri "$BaseUrl/models/recommendations/measurements/run" -Headers $headers -ContentType "application/json" -Body $chatBody
-  }
-}
-
-if (-not $SkipPairMeasurement) {
-  $pairId = [string]$recommendation.recommended_pair_id
-  if ($pairId) {
-    if (-not $AdapterPath -or -not $BaseModel) {
-      throw "Pair measurement requires -AdapterPath and -BaseModel."
-    }
-    $pairBody = @{
-      pair_id = $pairId
-      prompt = $Prompt
-      adapter_path = $AdapterPath
-      base_model = $BaseModel
-      max_new_tokens = $MaxNewTokens
-    } | ConvertTo-Json -Depth 4
-    $campaign.pair_measurement = Invoke-RestMethod -Method Post -Uri "$BaseUrl/models/recommendations/measurements/run" -Headers $headers -ContentType "application/json" -Body $pairBody
   }
 }
 

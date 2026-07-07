@@ -44,7 +44,7 @@ class ModelRecommenderTests(unittest.TestCase):
         model_type: str,
         repo_hint: str,
     ) -> Path:
-        model_root = Path(self.tmp.name) / "expert-models"
+        model_root = Path(self.tmp.name) / "imported-models"
         model_dir = model_root / model_name
         model_dir.mkdir(parents=True, exist_ok=True)
         payload = {"model_type": model_type, "_name_or_path": repo_hint}
@@ -52,7 +52,7 @@ class ModelRecommenderTests(unittest.TestCase):
         (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
         return model_dir
 
-    def _import_expert_checkpoint(
+    def _import_chat_checkpoint(
         self,
         model_name: str,
         *,
@@ -130,26 +130,6 @@ class ModelRecommenderTests(unittest.TestCase):
         self.assertEqual(fit["fit_type"], "cannot_run")
         self.assertTrue(any("disk" in warning.lower() for warning in fit["warnings"]))
 
-    def test_expert_fit_blocks_when_no_avx2_support(self) -> None:
-        from backend.app.core.model_recommender.fit import estimate_expert_fit
-
-        profile = {
-            "ram_usable_bytes": 24 * 1024**3,
-            "training_supported": False,
-            "hardware_tier": "cpu_high_spec",
-        }
-        candidate = {
-            "family": "qwen",
-            "local_path": "C:\\model",
-            "parameter_count_total_b": 4.0,
-            "minimum_expert_tier": "cpu_minimum_spec",
-            "compatibility": {"expert_role_accepted": True},
-        }
-        fit = estimate_expert_fit(profile, candidate)
-        self.assertFalse(fit["training_feasible"])
-        self.assertEqual(fit["training_fit_type"], "blocked")
-        self.assertTrue(any("avx2" in warning.lower() for warning in fit["warnings"]))
-
     def test_speed_estimate_marks_shared_memory_apu_as_degraded(self) -> None:
         from backend.app.core.model_recommender.speed import estimate_chat_speed
 
@@ -175,17 +155,6 @@ class ModelRecommenderTests(unittest.TestCase):
         self.assertIn("notes", speed)
         self.assertTrue(any("shared-memory" in note.lower() for note in speed["notes"]))
 
-    def test_pair_gate_rejects_supported_pair_on_unsupported_tier(self) -> None:
-        from backend.app.core.model_recommender.pairing import resolve_pair_recommendation
-
-        pair = resolve_pair_recommendation(
-            {"hardware_tier": "cpu_minimum_spec"},
-            {"id": "gemma-3-12b-it-q4_k_m"},
-            {"id": "gemma-local", "family": "gemma"},
-        )
-        self.assertFalse(pair["accepted"])
-        self.assertIn("hardware", pair["detail"].lower())
-
     def test_explanations_include_evidence_and_limiting_factor(self) -> None:
         from backend.app.core.model_recommender.explanations import build_chat_reasons
 
@@ -198,159 +167,6 @@ class ModelRecommenderTests(unittest.TestCase):
         self.assertTrue(any("base_model" in reason for reason in reasons))
         self.assertTrue(any("cpu-first fallback" in reason.lower() for reason in reasons))
 
-    def test_diagnostics_export_includes_bundle_and_recommendation_snapshot(self) -> None:
-        from backend.app.core.model_recommender.benchmark_store import invalidate_internal_benchmark_bundle_cache
-        from backend.app.core.model_recommender.diagnostics import export_recommendation_diagnostics
-
-        bundle_path = Path(self.tmp.name) / "benchmarks.json"
-        bundle_path.write_text(
-            json.dumps({"version": "diag-v1", "models": {}, "pairs": {}, "current_sources": {}, "frozen_sources": {}}),
-            encoding="utf-8",
-        )
-        os.environ["CML_MODEL_RECOMMENDER_BENCHMARK_BUNDLE"] = str(bundle_path)
-        invalidate_internal_benchmark_bundle_cache()
-
-        with patch(
-            "backend.app.core.model_recommender.diagnostics.build_model_recommendations",
-            return_value={
-                "catalog_version": "cml-recommender-v1",
-                "benchmark_bundle_version": "diag-v1",
-                "hardware": {"hardware_tier": "cpu_minimum_spec"},
-                "recommended_chat_model_id": "qwen3-4b-q4_k_m",
-                "chat_recommendation": {
-                    "id": "qwen3-4b-q4_k_m",
-                    "name": "Qwen3 4B Q4_K_M",
-                    "fit": {"fit_type": "cpu_only", "feasible": True, "required_gib": 5.2, "warnings": []},
-                    "speed": {"estimated_tok_per_sec": 2.1, "thresholds": {"acceptable_for_chat": False}, "notes": []},
-                },
-                "expert_recommendation": {},
-                "pair_recommendation": {},
-                "candidate_table": [],
-            },
-        ):
-            payload = export_recommendation_diagnostics()
-
-        self.assertEqual(payload["benchmark_bundle"]["version"], "diag-v1")
-        self.assertEqual(payload["recommendation"]["recommended_chat_model_id"], "qwen3-4b-q4_k_m")
-        self.assertIn("generated_at", payload)
-        self.assertIn("fit_speed_report", payload)
-        self.assertEqual(payload["fit_speed_report"]["recommended_chat"]["estimated_speed_band"], "degraded")
-        self.assertIn("calibration_summary", payload)
-
-    def test_diagnostics_export_reports_speed_and_fit_mismatch_rates_from_measurements(self) -> None:
-        from backend.app.core.model_recommender.benchmark_store import invalidate_internal_benchmark_bundle_cache
-        from backend.app.core.model_recommender.diagnostics import export_recommendation_diagnostics
-
-        bundle_path = Path(self.tmp.name) / "benchmarks-calibration.json"
-        bundle_path.write_text(
-            json.dumps(
-                {
-                    "version": "diag-v2",
-                    "models": {
-                        "qwen3-4b-q4_k_m": {
-                            "estimated_tok_per_sec": 7.5,
-                            "runtime_success": True,
-                            "measured_at": "2026-06-20T00:00:00Z",
-                        },
-                        "phi-4-mini-instruct-q4_k_m": {
-                            "estimated_tok_per_sec": 0.9,
-                            "runtime_success": False,
-                            "measured_at": "2026-06-20T00:00:00Z",
-                        },
-                    },
-                    "pairs": {
-                        "pair-qwen3-4b-qwen": {
-                            "runtime_success": True,
-                            "training_success": True,
-                            "chat_tok_per_sec": 7.2,
-                            "measured_at": "2026-06-20T00:00:00Z",
-                        }
-                    },
-                    "current_sources": {},
-                    "frozen_sources": {},
-                }
-            ),
-            encoding="utf-8",
-        )
-        os.environ["CML_MODEL_RECOMMENDER_BENCHMARK_BUNDLE"] = str(bundle_path)
-        invalidate_internal_benchmark_bundle_cache()
-
-        recommendation = {
-            "catalog_version": "cml-recommender-v1",
-            "benchmark_bundle_version": "diag-v2",
-            "hardware": {
-                "hardware_tier": "cpu_minimum_spec",
-                "detection_confidence": "high",
-                "runtime_backend": "llama_cpp_compatible",
-            },
-            "recommended_chat_model_id": "qwen3-4b-q4_k_m",
-            "recommended_pair_id": "pair-qwen3-4b-qwen",
-            "chat_recommendation": {
-                "id": "qwen3-4b-q4_k_m",
-                "name": "Qwen3 4B Q4_K_M",
-                "fit": {"fit_type": "cpu_only", "feasible": True, "required_gib": 5.2, "warnings": []},
-                "speed": {"estimated_tok_per_sec": 4.5, "thresholds": {"acceptable_for_chat": True}, "notes": []},
-            },
-            "expert_recommendation": {},
-            "pair_recommendation": {"pair_id": "pair-qwen3-4b-qwen", "accepted": True},
-            "candidate_table": [
-                {
-                    "candidate_id": "qwen3-4b-q4_k_m",
-                    "role": "chat",
-                    "fit_type": "cpu_only",
-                    "estimated_tok_per_sec": 4.5,
-                },
-                {
-                    "candidate_id": "phi-4-mini-instruct-q4_k_m",
-                    "role": "chat",
-                    "fit_type": "cpu_only",
-                    "estimated_tok_per_sec": 2.4,
-                },
-            ],
-        }
-
-        with patch("backend.app.core.model_recommender.diagnostics.build_model_recommendations", return_value=recommendation):
-            payload = export_recommendation_diagnostics()
-
-        calibration = payload["calibration_summary"]
-        self.assertEqual(calibration["measured_model_count"], 2)
-        self.assertEqual(calibration["measured_pair_count"], 1)
-        self.assertEqual(calibration["speed_band_match_rate"], 0.5)
-        self.assertEqual(calibration["fit_mismatch_rate"], 0.5)
-        self.assertEqual(calibration["recommended_pair_calibration"]["measured_speed_band"], "acceptable")
-
-    def test_benchmark_store_can_record_model_and_pair_measurements(self) -> None:
-        from backend.app.core.model_recommender.benchmark_store import (
-            load_internal_benchmark_bundle,
-            record_model_measurement,
-            record_pair_measurement,
-        )
-
-        model_record = record_model_measurement(
-            "qwen3-4b-q4_k_m",
-            score=87.5,
-            estimated_tok_per_sec=8.4,
-            startup_seconds=3.2,
-            runtime_success=True,
-            training_success=False,
-            measured_at="2026-06-20T00:00:00Z",
-        )
-        pair_record = record_pair_measurement(
-            "pair-qwen3-4b-qwen",
-            runtime_success=True,
-            training_success=True,
-            chat_tok_per_sec=8.4,
-            measured_at="2026-06-20T00:00:00Z",
-        )
-        payload = load_internal_benchmark_bundle()
-
-        self.assertEqual(model_record["score"], 87.5)
-        self.assertTrue(pair_record["runtime_success"])
-        self.assertIn("qwen3-4b-q4_k_m", payload["models"])
-        self.assertIn("pair-qwen3-4b-qwen", payload["pairs"])
-        self.assertIn("current_sources", payload)
-        self.assertIn("frozen_sources", payload)
-
     def test_benchmark_evidence_demotes_frozen_only_exact_match_when_newer_current_lineage_exists(self) -> None:
         from backend.app.core.model_recommender.benchmark_evidence import resolve_benchmark_evidence
         from backend.app.core.model_recommender.benchmark_store import invalidate_internal_benchmark_bundle_cache
@@ -361,7 +177,6 @@ class ModelRecommenderTests(unittest.TestCase):
                 {
                     "version": "layered-v1",
                     "models": {},
-                    "pairs": {},
                     "current_sources": {
                         "qwen3-8b-base-public": {
                             "name": "Qwen3 8B Base Public",
@@ -416,7 +231,6 @@ class ModelRecommenderTests(unittest.TestCase):
                 {
                     "version": "mismatch-v1",
                     "models": {},
-                    "pairs": {},
                     "current_sources": {
                         "qwen3-4b-q4_k_m": {
                             "name": "Qwen3 4B Q4_K_M",
@@ -449,30 +263,7 @@ class ModelRecommenderTests(unittest.TestCase):
         self.assertEqual(evidence["source"], "self_reported")
         self.assertNotIn("base_model", evidence["detail"].lower())
 
-    def test_every_approved_pair_accepts_at_minimum_tier_and_rejects_below_floor(self) -> None:
-        from backend.app.core.model_recommender.catalog import approved_pairs, tier_rank
-        from backend.app.core.model_recommender.pairing import resolve_pair_recommendation
-
-        tiers = ["unsupported", "cpu_minimum_spec", "cpu_high_spec", "gpu_or_high_spec_candidate"]
-        tier_by_rank = {tier_rank(tier): tier for tier in tiers}
-        for spec in approved_pairs():
-            accepted = resolve_pair_recommendation(
-                {"hardware_tier": spec.minimum_hardware_tier},
-                {"id": spec.chat_model_id},
-                {"id": f"{spec.expert_family}-expert", "family": spec.expert_family},
-            )
-            self.assertTrue(accepted["accepted"], spec.pair_id)
-            minimum_rank = tier_rank(spec.minimum_hardware_tier)
-            if minimum_rank > 0:
-                lower_tier = tier_by_rank[minimum_rank - 1]
-                rejected = resolve_pair_recommendation(
-                    {"hardware_tier": lower_tier},
-                    {"id": spec.chat_model_id},
-                    {"id": f"{spec.expert_family}-expert", "family": spec.expert_family},
-                )
-                self.assertFalse(rejected["accepted"], f"{spec.pair_id}:{lower_tier}")
-
-    def test_measurement_route_records_model_and_pair_measurements(self) -> None:
+    def test_measurement_route_records_model_measurements_only(self) -> None:
         import backend.app.main as main_module
         from backend.app.core.config import get_settings
         from backend.app.core.model_recommender.benchmark_store import load_internal_benchmark_bundle
@@ -490,23 +281,11 @@ class ModelRecommenderTests(unittest.TestCase):
                     "measured_at": "2026-06-20T00:00:00Z",
                 },
             )
-            pair_response = client.post(
-                "/api/v1/models/recommendations/measurements",
-                json={
-                    "pair_id": "pair-qwen3-4b-qwen",
-                    "estimated_tok_per_sec": 7.8,
-                    "runtime_success": True,
-                    "training_success": True,
-                    "measured_at": "2026-06-20T00:00:00Z",
-                },
-            )
         finally:
             client.close()
         payload = load_internal_benchmark_bundle()
         self.assertEqual(model_response.status_code, 200)
-        self.assertEqual(pair_response.status_code, 200)
         self.assertIn("qwen3-4b-q4_k_m", payload["models"])
-        self.assertIn("pair-qwen3-4b-qwen", payload["pairs"])
 
     def test_measurement_script_targets_recommendation_measurement_route(self) -> None:
         script = (Path(__file__).resolve().parents[2] / "scripts" / "backend" / "record-model-recommender-measurement.ps1").read_text(encoding="utf-8")
@@ -522,7 +301,7 @@ class ModelRecommenderTests(unittest.TestCase):
         self.assertIn("CML_API_TOKEN", script)
         self.assertIn("x-cml-api-token", script)
         self.assertIn("/models/recommendations/measurements/run", script)
-        self.assertIn("adapter_path", script.lower())
+        self.assertIn("model_id", script.lower())
 
     def test_diagnostics_export_script_targets_preview_route_and_output_write(self) -> None:
         script = (Path(__file__).resolve().parents[2] / "scripts" / "backend" / "export-model-recommender-diagnostics.ps1").read_text(encoding="utf-8")
@@ -567,8 +346,7 @@ class ModelRecommenderTests(unittest.TestCase):
                 "local_path": "",
                 "source_kind": "default_choice",
                 "active_chat": False,
-                "active_expert": False,
-                "compatibility": {"chat_role_accepted": True, "expert_role_accepted": False},
+                "compatibility": {"chat_role_accepted": True},
             }
         ]
         second_models = [
@@ -580,16 +358,12 @@ class ModelRecommenderTests(unittest.TestCase):
                 "local_path": "",
                 "source_kind": "default_choice",
                 "active_chat": False,
-                "active_expert": False,
-                "compatibility": {"chat_role_accepted": True, "expert_role_accepted": False},
+                "compatibility": {"chat_role_accepted": True},
             }
         ]
         with patch("backend.app.core.model_recommender.service.build_hardware_profile", return_value=profile), patch(
             "backend.app.core.model_recommender.service.discover_installed_models",
             return_value=empty_detected,
-        ), patch(
-            "backend.app.core.model_recommender.service.active_model_pair_status",
-            return_value={"accepted": False, "detail": "", "chat_model_id": "", "expert_model_id": ""},
         ), patch("backend.app.core.model_recommender.service.list_models", side_effect=[first_models, first_models, second_models]):
             first = build_model_recommendations(refresh=True)
             cached = build_model_recommendations()
@@ -621,34 +395,6 @@ class ModelRecommenderTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["kind"], "chat_model")
         self.assertIn("qwen3-4b-q4_k_m", payload["models"])
-
-    def test_measurement_run_route_records_pair_runtime_measurement(self) -> None:
-        import backend.app.main as main_module
-        from backend.app.core.config import get_settings
-        from backend.app.core.model_recommender.benchmark_store import load_internal_benchmark_bundle
-
-        get_settings.cache_clear()
-        client = TestClient(main_module.app)
-        with patch("backend.app.core.model_recommender.measurement.runtime_status", return_value={"available": False}), patch(
-            "backend.app.core.model_recommender.measurement.run_adapter_runtime_smoke",
-            return_value={"ok": True, "response_text": "expert ok"},
-        ):
-            try:
-                response = client.post(
-                    "/api/v1/models/recommendations/measurements/run",
-                    json={
-                        "pair_id": "pair-qwen3-4b-qwen",
-                        "adapter_path": "C:\\adapter",
-                        "base_model": "Qwen/Qwen3-4B",
-                        "prompt": "test",
-                    },
-                )
-            finally:
-                client.close()
-        payload = load_internal_benchmark_bundle()
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["kind"], "approved_pair")
-        self.assertIn("pair-qwen3-4b-qwen", payload["pairs"])
 
     def test_diagnostics_preview_route_uses_hardware_override_for_selected_machine_report(self) -> None:
         import backend.app.main as main_module
@@ -690,29 +436,28 @@ class ModelRecommenderTests(unittest.TestCase):
     def test_recommendation_fixture_matrix_covers_representative_machine_classes(self) -> None:
         from backend.app.core.model_recommender.service import build_model_recommendations
 
-        self._import_expert_checkpoint("Qwen Expert", model_type="qwen2", repo_hint="Qwen/Qwen3-4B")
-        self._import_expert_checkpoint("Phi Expert", model_type="phi3", repo_hint="microsoft/Phi-4-mini-instruct")
-        self._import_expert_checkpoint("Gemma Expert", model_type="gemma3", repo_hint="google/gemma-3-4b-it")
+        self._import_chat_checkpoint("Qwen Chat", model_type="qwen2", repo_hint="Qwen/Qwen3-4B")
+        self._import_chat_checkpoint("Phi Chat", model_type="phi3", repo_hint="microsoft/Phi-4-mini-instruct")
+        self._import_chat_checkpoint("Gemma Chat", model_type="gemma3", repo_hint="google/gemma-3-4b-it")
 
         fixture_root = Path(__file__).resolve().parent / "fixtures" / "model_recommender_profiles"
         expectations = {
-            "cpu-8gb-no-gpu": {"allowed_pairs": {"pair-qwen3-4b-qwen", "pair-gemma3-4b-gemma", "pair-phi4-phi"}, "blocked_training": False},
-            "cpu-16gb-no-gpu": {"allowed_pairs": {"pair-qwen3-8b-qwen"}, "blocked_training": False},
-            "nvidia-8gb": {"allowed_pairs": {"pair-qwen3-8b-qwen", "pair-qwen3-4b-qwen", "pair-gemma3-4b-gemma"}, "blocked_training": False},
-            "nvidia-16gb": {"allowed_pairs": {"pair-qwen3-8b-qwen", "pair-gemma3-12b-gemma"}, "blocked_training": False},
-            "nvidia-24gb": {"allowed_pairs": {"pair-gemma3-12b-gemma", "pair-qwen3-8b-qwen"}, "blocked_training": False},
-            "runtime-missing-no-avx2": {"allowed_pairs": {"pair-qwen3-4b-qwen", "pair-gemma3-4b-gemma", "pair-phi4-phi"}, "blocked_training": True},
+            "cpu-8gb-no-gpu": {"allowed_models": {"qwen3-4b-q4_k_m", "gemma-3-4b-it-q4_k_m", "phi-4-mini-instruct-q4_k_m"}, "low_confidence": False},
+            "cpu-16gb-no-gpu": {"allowed_models": {"qwen3-8b-q4_k_m"}, "low_confidence": False},
+            "nvidia-8gb": {"allowed_models": {"qwen3-8b-q4_k_m", "qwen3-4b-q4_k_m", "gemma-3-4b-it-q4_k_m"}, "low_confidence": False},
+            "nvidia-16gb": {"allowed_models": {"qwen3-8b-q4_k_m", "gemma-3-12b-it-q4_k_m"}, "low_confidence": False},
+            "nvidia-24gb": {"allowed_models": {"gemma-3-12b-it-q4_k_m", "qwen3-8b-q4_k_m"}, "low_confidence": False},
+            "runtime-missing-no-avx2": {"allowed_models": {"qwen3-4b-q4_k_m", "gemma-3-4b-it-q4_k_m", "phi-4-mini-instruct-q4_k_m"}, "low_confidence": True},
         }
 
         for fixture_path in sorted(fixture_root.glob("*.json")):
             profile = json.loads(fixture_path.read_text(encoding="utf-8"))
             result = build_model_recommendations(hardware_profile_override=profile)
             expectation = expectations[fixture_path.stem]
-            self.assertIn(result["recommended_pair_id"], expectation["allowed_pairs"], fixture_path.stem)
+            self.assertIn(result["recommended_chat_model_id"], expectation["allowed_models"], fixture_path.stem)
             self.assertTrue(result["recommended_chat_model_id"], fixture_path.stem)
             self.assertIn(result["chat_fit_type"], {"full_gpu", "partial_offload", "cpu_only"}, fixture_path.stem)
-            if expectation["blocked_training"]:
-                self.assertEqual(result["expert_training_fit_type"], "blocked", fixture_path.stem)
+            if expectation["low_confidence"]:
                 self.assertEqual(result["confidence"], "low", fixture_path.stem)
 
     def test_matrix_script_targets_preview_route_and_iterates_json_profiles(self) -> None:
@@ -724,10 +469,10 @@ class ModelRecommenderTests(unittest.TestCase):
         self.assertIn("Get-ChildItem", script)
         self.assertIn("*.json", script)
 
-    def test_expert_only_import_is_not_ranked_as_chat_recommendation(self) -> None:
+    def test_imported_checkpoint_can_participate_in_chat_recommendation(self) -> None:
         from backend.app.core.model_recommender.service import build_model_recommendations
 
-        self._import_expert_checkpoint("Qwen Expert", model_type="qwen2", repo_hint="Qwen/Qwen3-4B")
+        self._import_chat_checkpoint("Qwen Chat", model_type="qwen2", repo_hint="Qwen/Qwen3-4B")
         profile = {
             "os": "Windows",
             "architecture": "AMD64",
@@ -753,8 +498,8 @@ class ModelRecommenderTests(unittest.TestCase):
 
         result = build_model_recommendations(hardware_profile_override=profile)
 
-        self.assertNotEqual(result["recommended_chat_model_id"], "custom-qwen-expert")
-        self.assertEqual(result["recommended_pair_id"], "pair-qwen3-4b-qwen")
+        self.assertTrue(result["recommended_chat_model_id"])
+        self.assertIn("recommended_chat_model_id", result)
 
     def test_measurement_campaign_script_runs_recommendation_measurement_and_diagnostics_flow(self) -> None:
         script = (Path(__file__).resolve().parents[2] / "scripts" / "backend" / "run-model-recommender-measurement-campaign.ps1").read_text(encoding="utf-8")
@@ -765,7 +510,6 @@ class ModelRecommenderTests(unittest.TestCase):
         self.assertIn("/models/recommendations/measurements/run", script)
         self.assertIn("/models/recommendations/diagnostics?refresh=true", script)
         self.assertIn("recommended_chat_model_id", script)
-        self.assertIn("recommended_pair_id", script)
 
     def test_local_audit_script_exports_direct_backend_recommender_state(self) -> None:
         script = (Path(__file__).resolve().parents[2] / "scripts" / "backend" / "export-local-model-recommender-audit.ps1").read_text(encoding="utf-8")

@@ -31,9 +31,7 @@ foreach ($profilePath in Get-ChildItem -Path $ProfilesDir -Filter *.json | Sort-
     fixture = $profilePath.BaseName
     hardware_tier = $result.hardware.hardware_tier
     recommended_chat_model_id = $result.recommendation.recommended_chat_model_id
-    recommended_pair_id = $result.recommendation.recommended_pair_id
     chat_fit_type = $result.recommendation.chat_fit_type
-    expert_training_fit_type = $result.recommendation.expert_training_fit_type
     confidence = $result.recommendation.confidence
     speed_band_match_rate = $result.calibration_summary.speed_band_match_rate
     fit_mismatch_rate = $result.calibration_summary.fit_mismatch_rate

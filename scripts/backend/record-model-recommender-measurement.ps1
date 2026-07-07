@@ -4,8 +4,6 @@ param(
   [Parameter(Mandatory = $false)]
   [string]$ModelId = "",
   [Parameter(Mandatory = $false)]
-  [string]$PairId = "",
-  [Parameter(Mandatory = $false)]
   [double]$Score = 0,
   [Parameter(Mandatory = $false)]
   [double]$EstimatedTokPerSec = 0,
@@ -19,20 +17,15 @@ param(
   [Nullable[bool]]$TrainingSuccess = $null
 )
 
-if (-not $ModelId -and -not $PairId) {
-  throw "Provide -ModelId or -PairId."
+if (-not $ModelId) {
+  throw "Provide -ModelId."
 }
 
 $payload = @{
   measured_at = [DateTime]::UtcNow.ToString("o")
 }
 
-if ($ModelId) {
-  $payload.model_id = $ModelId
-}
-if ($PairId) {
-  $payload.pair_id = $PairId
-}
+$payload.model_id = $ModelId
 if ($Score -ne 0) {
   $payload.score = $Score
 }
