@@ -65,7 +65,7 @@ class VaultCryptoPhase1Tests(unittest.TestCase):
         material = vault_crypto.unlock_vault_with_passphrase("vault-crypto", "correct horse battery staple")
         subkeys = vault_crypto.derive_vault_subkeys(material)
         self.assertEqual(len(subkeys.database_key), 32)
-        self.assertEqual(len({subkeys.database_key, subkeys.blob_key, subkeys.metadata_key, subkeys.lora_artifact_key}), 4)
+        self.assertEqual(len({subkeys.database_key, subkeys.blob_key, subkeys.metadata_key}), 3)
 
     def test_wrong_passphrase_does_not_unlock_or_leak_secret(self) -> None:
         from backend.app.core import vault_crypto

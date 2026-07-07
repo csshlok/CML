@@ -83,8 +83,8 @@ class BenchmarkMatrixTests(unittest.TestCase):
             )
             conn.execute(
                 """
-                INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
-                VALUES ('cluster-1', 'vault-1', 'Research', 'Benchmarks', 'sage', 'training_ready', ?, ?)
+                INSERT INTO clusters (id, vault_id, name, description, color, created_at, updated_at)
+                VALUES ('cluster-1', 'vault-1', 'Research', 'Benchmarks', 'sage', ?, ?)
                 """,
                 (now, now),
             )

@@ -1028,7 +1028,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertIn("retrieval_snapshots", accounting)
         self.assertIn("analysis_evidence_packets", accounting)
         self.assertIn("external_captures", accounting)
-        self.assertIn("expert_artifacts", accounting)
+        self.assertNotIn("expert_artifacts", accounting)
 
     def test_diagnostic_bundle_includes_policy_and_storage_accounting(self) -> None:
         from zipfile import ZipFile
@@ -1205,15 +1205,15 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
             )
             conn.execute(
                 """
-                INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
-                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', 'retrieval_ready', ?, ?)
+                INSERT INTO clusters (id, vault_id, name, description, color, created_at, updated_at)
+                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', ?, ?)
                 """,
                 (now, now),
             )
             conn.execute(
                 """
-                INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
-                VALUES ('cluster-2', 'vault-1', 'Private', '', 'sage', 'retrieval_ready', ?, ?)
+                INSERT INTO clusters (id, vault_id, name, description, color, created_at, updated_at)
+                VALUES ('cluster-2', 'vault-1', 'Private', '', 'sage', ?, ?)
                 """,
                 (now, now),
             )
@@ -1753,15 +1753,15 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
             )
             conn.execute(
                 """
-                INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
-                VALUES ('cluster-source', 'vault-1', 'Source', '', 'sage', 'retrieval_ready', ?, ?)
+                INSERT INTO clusters (id, vault_id, name, description, color, created_at, updated_at)
+                VALUES ('cluster-source', 'vault-1', 'Source', '', 'sage', ?, ?)
                 """,
                 (now, now),
             )
             conn.execute(
                 """
-                INSERT INTO clusters (id, vault_id, name, description, color, expert_status, created_at, updated_at)
-                VALUES ('cluster-target', 'vault-1', 'Target', '', 'amber', 'retrieval_ready', ?, ?)
+                INSERT INTO clusters (id, vault_id, name, description, color, created_at, updated_at)
+                VALUES ('cluster-target', 'vault-1', 'Target', '', 'amber', ?, ?)
                 """,
                 (now, now),
             )

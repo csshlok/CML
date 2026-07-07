@@ -31,9 +31,9 @@ class ClusterBundleTests(unittest.TestCase):
             conn.execute(
                 """
                 INSERT INTO clusters (
-                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                    id, vault_id, name, description, color, created_at, updated_at
                 )
-                VALUES ('cluster-1', 'vault-1', 'Research', 'Cluster summary', 'sage', 'expert_compression_ready', ?, ?)
+                VALUES ('cluster-1', 'vault-1', 'Research', 'Cluster summary', 'sage', ?, ?)
                 """,
                 (now, now),
             )
@@ -67,7 +67,7 @@ class ClusterBundleTests(unittest.TestCase):
             os.environ.pop(key, None)
         self.tmp.cleanup()
 
-    def test_bundle_returns_retrieval_evidence_without_expert_when_no_ready_adapter(self) -> None:
+    def test_bundle_returns_retrieval_evidence_with_rag_only_contract(self) -> None:
         from backend.app.core.cluster_bundle import build_cluster_bundle_context
 
         with patch(
@@ -91,183 +91,44 @@ class ClusterBundleTests(unittest.TestCase):
                 vault_id="vault-1",
                 query="what changed",
                 cluster_id="cluster-1",
-                allow_expert_compression=False,
             )
 
         self.assertTrue(bundle["retrieval_authority"])
         self.assertEqual(len(bundle["citations"]), 1)
-        self.assertFalse(bundle["expert_digest"]["used"])
-        self.assertEqual(bundle["expert_digest"]["mode"], "disabled")
-        self.assertIn("behavior_profile", bundle["cluster_profile"])
+        self.assertNotIn("expert_digest", bundle)
+        self.assertIn("answer_contract", bundle["cluster_profile"])
         self.assertEqual(
-            bundle["cluster_profile"]["behavior_profile"]["reasoning_order"],
-            ["evidence", "interpretation", "conclusion"],
+            bundle["cluster_profile"]["answer_contract"]["voice"],
+            "Research local-context",
         )
+        self.assertGreater(bundle["token_estimate"]["total_tokens"], 0)
 
-    def test_bundle_calls_expert_only_when_evidence_exists(self) -> None:
+    def test_bundle_uses_persisted_cluster_summary_and_glossary(self) -> None:
         from backend.app.core.cluster_bundle import build_cluster_bundle_context
-
-        with patch(
-            "backend.app.core.cluster_bundle.semantic_search",
-            return_value={
-                "results": [
-                    {
-                        "source_id": "source-1",
-                        "source_title": "Roadmap Note",
-                        "cluster_id": "cluster-1",
-                        "chunk_id": "chunk-1",
-                        "snippet": "Roadmap Note explains the bundle migration in plain terms.",
-                        "score": 0.92,
-                        "trust_tier": "trusted_local",
-                        "source_type": "note",
-                    }
-                ]
-            },
-        ), patch(
-            "backend.app.core.cluster_bundle.run_cluster_expert_compression",
-            return_value={
-                "ok": True,
-                "artifact_id": "artifact-1",
-                "digest": "Bundle migration keeps retrieval as authority.",
-                "local_terms": ["bundle"],
-                "reasoning_hints": ["ground claims first"],
-                "uncertainties": [],
-                "unsupported_claims": [],
-                "behavior_profile": {
-                    "voice": "Research local-expert",
-                    "terminology_shift": ["bundle"],
-                    "style_markers": ["grounded", "concrete"],
-                    "reasoning_order": ["evidence", "interpretation", "conclusion"],
-                    "framing_rules": ["prefer practical takeaways"],
-                    "refusal_style": "state missing evidence explicitly",
-                    "practicality_bias": "practical",
-                },
-            },
-        ):
-            from backend.app.core.database import connect, utc_now
-
-            with connect() as conn:
-                now = utc_now()
-                conn.execute(
-                    """
-                    INSERT INTO expert_artifacts (
-                        id, cluster_id, vault_id, job_id, artifact_type, status, local_path, base_model,
-                        hardware_tier, quality_score, dataset_hash, training_config_hash, metrics_json,
-                        active, rolled_back_at, deleted_at, created_at, updated_at
-                    )
-                    VALUES (?, ?, ?, NULL, 'lora_adapter', 'ready', 'C:/tmp/adapter', 'base-model',
-                            'gpu', 90.0, 'hash', 'cfg', '{}', 1, NULL, NULL, ?, ?)
-                    """,
-                    ("artifact-1", "cluster-1", "vault-1", now, now),
-                )
-
-            bundle = build_cluster_bundle_context(
-                vault_id="vault-1",
-                query="what changed",
-                cluster_id="cluster-1",
-            )
-
-        self.assertTrue(bundle["expert_digest"]["used"])
-        self.assertEqual(bundle["expert_digest"]["artifact_id"], "artifact-1")
-        self.assertGreater(bundle["token_ledger"]["expert_digest_tokens_estimate"], 0)
-        self.assertEqual(bundle["expert_digest"]["mode"], "retrieval_grounded_behavior")
-        self.assertEqual(
-            bundle["expert_digest"]["behavior_profile"]["reasoning_order"],
-            ["evidence", "interpretation", "conclusion"],
-        )
-
-    def test_bundle_rejects_unsupported_source_claims_from_expert_digest(self) -> None:
-        from backend.app.core.cluster_bundle import build_cluster_bundle_context
-
-        with patch(
-            "backend.app.core.cluster_bundle.semantic_search",
-            return_value={
-                "results": [
-                    {
-                        "source_id": "source-1",
-                        "source_title": "Roadmap Note",
-                        "cluster_id": "cluster-1",
-                        "chunk_id": "chunk-1",
-                        "snippet": "Roadmap Note explains the bundle migration in plain terms.",
-                        "score": 0.92,
-                        "trust_tier": "trusted_local",
-                        "source_type": "note",
-                    }
-                ]
-            },
-        ), patch(
-            "backend.app.core.cluster_bundle.run_cluster_expert_compression",
-            return_value={
-                "ok": False,
-                "mode": "unsupported_claims",
-                "detail": "unsupported source title",
-                "warnings": ["Expert digest failed grounding validation."],
-            },
-        ):
-            from backend.app.core.database import connect, utc_now
-
-            with connect() as conn:
-                now = utc_now()
-                conn.execute(
-                    """
-                    INSERT INTO expert_artifacts (
-                        id, cluster_id, vault_id, job_id, artifact_type, status, local_path, base_model,
-                        hardware_tier, quality_score, dataset_hash, training_config_hash, metrics_json,
-                        active, rolled_back_at, deleted_at, created_at, updated_at
-                    )
-                    VALUES (?, ?, ?, NULL, 'lora_adapter', 'ready', 'C:/tmp/adapter', 'base-model',
-                            'gpu', 90.0, 'hash', 'cfg', '{}', 1, NULL, NULL, ?, ?)
-                    """,
-                    ("artifact-1", "cluster-1", "vault-1", now, now),
-                )
-
-            bundle = build_cluster_bundle_context(
-                vault_id="vault-1",
-                query="what changed",
-                cluster_id="cluster-1",
-            )
-
-        self.assertFalse(bundle["expert_digest"]["used"])
-        self.assertEqual(bundle["expert_digest"]["mode"], "unsupported_claims")
-        self.assertTrue(bundle["warnings"])
-
-    def test_runtime_compression_rejects_empty_evidence(self) -> None:
-        from backend.app.core.expert_runtime import run_cluster_expert_compression
-        from backend.app.core.database import connect
+        from backend.app.core.database import connect, utc_now
 
         with connect() as conn:
-            result = run_cluster_expert_compression(
-                conn,
-                cluster_id="cluster-1",
-                prompt="compress",
-                citations=[],
+            conn.execute(
+                """
+                UPDATE clusters
+                SET cluster_summary = ?, cluster_glossary = ?, updated_at = ?
+                WHERE id = 'cluster-1'
+                """,
+                ("Persisted summary", '["bundle", "migration"]', utc_now()),
             )
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["mode"], "no_evidence")
+        with patch(
+            "backend.app.core.cluster_bundle.semantic_search",
+            return_value={"results": []},
+        ):
+            bundle = build_cluster_bundle_context(
+                vault_id="vault-1",
+                query="what changed",
+                cluster_id="cluster-1",
+            )
 
-    def test_runtime_compression_prompt_and_validation(self) -> None:
-        from backend.app.core.expert_runtime import build_expert_compression_prompt, _unsupported_claims_against_evidence
-
-        prompt = build_expert_compression_prompt(
-            prompt="summarize this",
-            citations=[{"source_title": "Roadmap Note", "snippet": "Roadmap Note explains the bundle migration."}],
-            cluster_profile={
-                "local_terms": ["bundle"],
-                "style_profile": "plain",
-                "answer_contract": {"voice": "local-expert"},
-                "behavior_profile": {"reasoning_order": ["evidence", "interpretation", "conclusion"]},
-            },
-        )
-        unsupported = _unsupported_claims_against_evidence(
-            "Roadmap Note says Berlin shipped 2028.",
-            [{"source_title": "Roadmap Note", "snippet": "Roadmap Note explains the bundle migration."}],
-            cluster_profile={"local_terms": ["bundle"]},
-        )
-
-        self.assertIn("Authority: Use only the evidence below.", prompt)
-        self.assertIn("behavior_profile", prompt)
-        self.assertTrue(any("Berlin" in item or "2028" in item for item in unsupported))
+        self.assertEqual(bundle["cluster_profile"]["summary"], "Persisted summary")
+        self.assertEqual(bundle["cluster_profile"]["local_terms"], ["bundle", "migration"])
 
     def test_bundle_expanded_analysis_uses_analysis_packets(self) -> None:
         from backend.app.core.cluster_bundle import build_cluster_bundle_context
@@ -302,7 +163,6 @@ class ClusterBundleTests(unittest.TestCase):
                 query="expanded analysis indexed source scope",
                 cluster_id="cluster-1",
                 token_budget=12,
-                allow_expert_compression=False,
                 mode="expanded_analysis",
             )
 
@@ -349,7 +209,6 @@ class ClusterBundleTests(unittest.TestCase):
                 query="complete analysis indexed source scope",
                 cluster_id="cluster-1",
                 token_budget=99,
-                allow_expert_compression=False,
                 mode="complete_analysis",
             )
 

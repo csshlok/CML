@@ -101,7 +101,7 @@ class BrowserIngestionPhase7Tests(unittest.TestCase):
         security = {
             "provenance": "browser_derived",
             "trust_tier": "low_trust_web",
-            "security_labels": ["external_web", "browser_derived", "low_trust", "lora_excluded"],
+            "security_labels": ["external_web", "browser_derived", "low_trust", "external_untrusted"],
             "browser_isolation": {"isolated_worker": True, "request_budget": 80},
             "final_url": "https://example.com/app",
         }
@@ -115,7 +115,7 @@ class BrowserIngestionPhase7Tests(unittest.TestCase):
         self.assertEqual(source["trust_tier"], "low_trust_web")
         labels = json.loads(source["security_labels"])
         self.assertIn("browser_derived", labels)
-        self.assertIn("lora_excluded", labels)
+        self.assertIn("external_untrusted", labels)
         self.assertIn("browser_derived", source["tags"])
 
 

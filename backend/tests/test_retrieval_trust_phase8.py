@@ -398,7 +398,7 @@ class RetrievalTrustPhase8Tests(unittest.TestCase):
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (json.dumps(["browser_derived", "low_trust", "lora_excluded"]), utc_now(), source_id),
+                (json.dumps(["browser_derived", "low_trust", "external_untrusted"]), utc_now(), source_id),
             )
 
 
