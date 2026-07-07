@@ -60,9 +60,9 @@ with connect() as conn:
         conn.execute(
             """
             INSERT OR IGNORE INTO clusters (
-                id, vault_id, name, description, color, expert_status, created_at, updated_at
+                id, vault_id, name, description, color, index_status, profile_status, created_at, updated_at
             )
-            VALUES (?, 'vault-context', ?, '', 'sage', 'retrieval_ready', ?, ?)
+            VALUES (?, 'vault-context', ?, '', 'sage', 'ready', 'ready', ?, ?)
             """,
             (cluster_id, f"Context Layer {index}", now, now),
         )

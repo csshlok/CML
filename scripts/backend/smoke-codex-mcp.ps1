@@ -42,7 +42,7 @@ def fake_http_json(path, method="GET", payload=None, headers=None, request_id=No
             "review_required": False,
             "trust_tier": "external_capture",
             "reasons": ["explicit_artifact_capture"],
-            "security_labels": ["lora_excluded"],
+            "security_labels": ["external_untrusted"],
             "warnings": [],
         }
     if "/bridge/reviews/" in path and method == "POST":

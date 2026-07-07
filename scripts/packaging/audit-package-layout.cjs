@@ -21,7 +21,6 @@ async function main() {
     helperRoots: [
       helperPaths.backendRoot,
       helperPaths.pythonRuntime,
-      helperPaths.expertRuntime,
       helperPaths.playwrightRoot,
     ],
     writableRoots: defaultWritableRoots({

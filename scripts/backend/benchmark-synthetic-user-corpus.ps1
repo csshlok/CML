@@ -76,9 +76,9 @@ try:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO clusters (
-                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                    id, vault_id, name, description, color, index_status, profile_status, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, 'sage', 'retrieval_ready', ?, ?)
+                VALUES (?, ?, ?, ?, 'sage', 'ready', 'ready', ?, ?)
                 """,
                 (
                     f"cluster-synthetic-{cluster_index:02d}",

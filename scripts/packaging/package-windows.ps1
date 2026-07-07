@@ -18,7 +18,6 @@ $desktopPackageJsonPath = Join-Path $desktopDir "package.json"
 $backendDir = Join-Path $repoRoot "backend"
 $stagingDir = Join-Path $desktopDir "packaging\backend"
 $runtimeDir = Join-Path $desktopDir "packaging\python-runtime"
-$expertRuntimeDir = Join-Path $desktopDir "packaging\expert-python-runtime"
 $playwrightBrowserDir = Join-Path $desktopDir "packaging\ms-playwright"
 $packagingRoot = Join-Path $desktopDir "packaging"
 $releaseDir = Join-Path $desktopDir "release"
@@ -52,11 +51,6 @@ $backendRuntimePackages = @(
   "ocrmypdf==17.5.0",
   "playwright==1.60.0"
 )
-$expertRuntimePackages = @(
-  "torch==2.12.0",
-  "transformers==5.6.0",
-  "peft==0.18.1"
-)
 $embeddingRuntimePackages = @(
   "sentence-transformers==5.5.1"
 )
@@ -68,7 +62,7 @@ if ($IncludeEmbeddingRuntime) {
 $script:PackageStartedAt = Get-Date
 $script:PackagePhaseStartedAt = $script:PackageStartedAt
 $script:PackagePhaseIndex = 0
-$script:PackagePhaseCount = 10
+$script:PackagePhaseCount = 9
 if ($Release) {
   $script:PackagePhaseCount += 1
 }
@@ -284,7 +278,6 @@ Complete-PackagePhase $outputDirPath
 if ($Release) {
   Start-PackagePhase "Clear release caches" "Release builds rebuild helper runtimes from scratch."
   Reset-StagedPath $runtimeDir
-  Reset-StagedPath $expertRuntimeDir
   Reset-StagedPath $playwrightBrowserDir
   if (-not $SkipOcrRuntimeDownload) {
     Reset-StagedPath (Join-Path $backendDir "bin\ocr")
@@ -436,43 +429,6 @@ if ($IncludeEmbeddingRuntime) {
   Complete-PackagePhase "sentence-transformers packaged with backend runtime"
 }
 
-$expertRuntimePython = Join-Path $expertRuntimeDir "python.exe"
-$expertRuntimeStampPath = Join-Path $expertRuntimeDir ".cml-runtime-stamp"
-$expertRuntimeFingerprint = Get-StringFingerprint @(
-  "expert-runtime-v4",
-  "base_python_root=$basePythonRoot",
-  "prune=docs-tests-pip",
-  "dependency_policy=pinned",
-  ($expertRuntimePackages -join "`n")
-)
-$expertRuntimeReady = $false
-if (-not $Release) {
-  $expertRuntimeReady = Test-StagedRuntime `
-    -RuntimeDir $expertRuntimeDir `
-    -StampPath $expertRuntimeStampPath `
-    -ExpectedFingerprint $expertRuntimeFingerprint `
-    -RequiredPaths @(
-      $expertRuntimePython,
-      (Join-Path $expertRuntimeDir "Lib\site-packages\torch"),
-      (Join-Path $expertRuntimeDir "Lib\site-packages\transformers"),
-      (Join-Path $expertRuntimeDir "Lib\site-packages\peft")
-    )
-}
-
-Start-PackagePhase "Expert Python runtime" "Fingerprint: $($expertRuntimeFingerprint.Substring(0, 12)); packages: $($expertRuntimePackages.Count)"
-if ($expertRuntimeReady) {
-  Write-PackageDetail "Cache hit: $expertRuntimeDir"
-} else {
-  Write-PackageDetail "Cache miss; copying base Python runtime."
-  Copy-PortablePythonRuntime $basePythonRoot $expertRuntimeDir
-  Write-PackageDetail "Installing expert Python packages."
-  & $expertRuntimePython -I -m pip install --upgrade pip
-  & $expertRuntimePython -I -m pip install --upgrade @expertRuntimePackages
-  Optimize-PortablePythonRuntime $expertRuntimeDir
-  Write-StagedRuntimeStamp $expertRuntimeStampPath $expertRuntimeFingerprint
-}
-Complete-PackagePhase $expertRuntimeDir
-
 Start-PackagePhase "Helper integrity manifest" "Generating helper-manifest.json for packaged resources."
 node $helperManifestScript
 Complete-PackagePhase (Join-Path $packagingRoot "helper-manifest.json")
@@ -510,11 +466,6 @@ New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
     {
       "from": "packaging/python-runtime",
       "to": "python-runtime",
-      "filter": ["**/*"]
-    },
-    {
-      "from": "packaging/expert-python-runtime",
-      "to": "expert-python-runtime",
       "filter": ["**/*"]
     },
     {

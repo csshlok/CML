@@ -31,7 +31,6 @@ async function buildManifest() {
     await addEntry(entries, "backend-security", relativePath);
   }
   await collectRuntimeEntries(entries, "python-runtime", "python-runtime");
-  await collectRuntimeEntries(entries, "expert-runtime", "expert-python-runtime");
   await collectEntries(entries, "ocr-tools", path.join("backend", "bin", "ocr"), new Set([".exe", ".dll", ".traineddata", ".json"]));
   await collectEntries(entries, "browser-runtime", "ms-playwright", new Set([".exe", ".dll"]));
   return {
