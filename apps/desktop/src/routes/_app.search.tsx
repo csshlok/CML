@@ -2,12 +2,15 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type ComponentType, type DragEvent } from "react";
 import {
   ArrowUpDown,
+  Clapperboard,
   ExternalLink,
+  FileCode2,
   FileText,
   Folder,
   FolderOpen,
   Image,
   Link as LinkIcon,
+  Mic,
   NotebookText,
   Plus,
   Search,
@@ -668,6 +671,11 @@ const sourceIcon: Record<SourceType, ComponentType<{ className?: string }>> = {
   link: LinkIcon,
   note: NotebookText,
   image: Image,
+  audio: Mic,
+  video: Clapperboard,
+  code: FileCode2,
+  external_transcript: Mic,
+  external_artifact: FileText,
 };
 
 function imageSrc(value?: string) {

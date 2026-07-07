@@ -2,14 +2,17 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type DragEvent } from "react";
 import {
   CheckCircle2,
+  Clapperboard,
   ClipboardPaste,
   ExternalLink,
   File,
+  FileCode2,
   FilePlus2,
   FileText,
   FolderPlus,
   Image,
   Link2,
+  Mic,
   MoreHorizontal,
   Plus,
   RefreshCw,
@@ -57,6 +60,11 @@ const typeIcon = {
   link: Link2,
   note: File,
   image: Image,
+  audio: Mic,
+  video: Clapperboard,
+  code: FileCode2,
+  external_transcript: Mic,
+  external_artifact: FileText,
 };
 
 function SourcesView() {
@@ -117,7 +125,7 @@ function SourcesView() {
     const query = q.trim().toLowerCase();
     if (!query) return sources;
     return sources.filter((source) =>
-      `${source.title} ${source.summary} ${source.preview} ${source.tags.join(" ")}`
+      `${source.title} ${source.summary} ${source.tags.join(" ")} ${source.type}`
         .toLowerCase()
         .includes(query),
     );
@@ -257,7 +265,7 @@ function SourcesView() {
       setIngestMessage("Create or open a library before reindexing sources.");
       return;
     }
-    await updateBackendSource(source.id, { state: "extracting" });
+    await updateBackendSource(source.id, { state: "processing" });
     await refreshBackendSources();
   }
 
@@ -542,7 +550,7 @@ function SourceInspector({
         <InspectorRow label="Pages" value={pageEstimate(source)} icon={<FileText className="h-4 w-4" />} />
         <InspectorRow
           label="OCR status"
-          value={source.state === "extracting" ? "In progress" : source.state === "failed" ? "Needs review" : "Completed"}
+          value={source.state === "processing" ? "In progress" : source.state === "failed" ? "Needs review" : "Completed"}
           icon={<RefreshCw className="h-4 w-4" />}
         />
         <InspectorRow
@@ -638,18 +646,20 @@ function fileExt(title: string) {
 
 function sourceTypeLabel(source: Source) {
   if (source.type === "file") return fileExt(source.title);
+  if (source.type === "external_transcript") return "Transcript";
+  if (source.type === "external_artifact") return "Artifact";
   return source.type[0].toUpperCase() + source.type.slice(1);
 }
 
 function pageEstimate(source: Source) {
-  if (source.type === "link" || source.type === "image") return "-";
+  if (source.type === "link" || source.type === "image" || source.type === "audio" || source.type === "video") return "-";
   const text = source.preview || source.summary || "";
   return Math.max(1, Math.round(text.length / 900)).toString();
 }
 
 function lastIndexed(source: Source) {
   if (source.state === "failed") return "Needs review";
-  if (source.state === "extracting") return "In progress";
+  if (source.state === "processing") return "In progress";
   return formatDate(source.updatedAt);
 }
 
