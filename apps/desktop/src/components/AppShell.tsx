@@ -342,7 +342,15 @@ export function AppShell() {
           <span className={`h-2 w-2 rounded-full ${backend.status === "online" ? "bg-[var(--status-ready)]" : "bg-[var(--status-muted)]"}`} />
           <span className="min-w-0 break-all">{vaultPath ?? "No active library"}</span>
           <span>/</span>
-          <span>{backend.status === "online" ? "Backend online" : backend.status === "checking" ? "Checking backend" : "Backend offline"}</span>
+          <span>
+            {backend.status === "online"
+              ? "Backend online"
+              : backend.status === "degraded"
+                ? "Backend reachable"
+                : backend.status === "checking"
+                  ? "Checking backend"
+                  : "Backend offline"}
+          </span>
           <span>/</span>
           <span>{jobs?.running ? `${jobs.running} job running` : jobs?.queued ? `${jobs.queued} queued` : "Jobs idle"}</span>
         </div>

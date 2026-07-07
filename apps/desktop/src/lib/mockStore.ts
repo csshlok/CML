@@ -8,24 +8,27 @@ export type ClusterTint =
   | "lavender"
   | "terracotta";
 
-export type ExpertStatus =
+export type ClusterLifecycleStatus =
   | "searchable"
   | "retrieval-only"
-  | "setting-up"
-  | "training-pending"
-  | "training-running"
-  | "expert-ready"
-  | "expert-stale"
+  | "empty"
+  | "queued"
+  | "indexing"
+  | "profile-stale"
   | "paused"
   | "issue";
 
-export type SourceType = "file" | "link" | "note" | "image";
-export type SourceState =
-  | "waiting"
-  | "extracting"
-  | "indexed"
-  | "needs-review"
-  | "failed";
+export type SourceType =
+  | "file"
+  | "link"
+  | "note"
+  | "image"
+  | "audio"
+  | "video"
+  | "code"
+  | "external_transcript"
+  | "external_artifact";
+export type SourceState = "waiting" | "processing" | "indexed" | "failed";
 
 export interface Source {
   id: string;
@@ -48,7 +51,7 @@ export interface Cluster {
   name: string;
   tint: ClusterTint;
   description: string;
-  expert: ExpertStatus;
+  lifecycle: ClusterLifecycleStatus;
   lastActive: string;
   summary: string;
   styleProfile: string;
@@ -113,6 +116,10 @@ interface State {
 
 const now = () => new Date().toISOString();
 const uid = () => Math.random().toString(36).slice(2, 10);
+const SEED_NOW = "2026-01-01T00:00:00.000Z";
+const seedTime = (offsetMinutes = 0) =>
+  new Date(Date.parse(SEED_NOW) + offsetMinutes * 60_000).toISOString();
+const seedId = (prefix: string, index: number) => `${prefix}-${String(index).padStart(2, "0")}`;
 
 const seedClusters: Cluster[] = [
   {
@@ -120,8 +127,8 @@ const seedClusters: Cluster[] = [
     name: "Design Research",
     tint: "sage",
     description: "Notes, case studies, and inspiration on product design.",
-    expert: "expert-ready",
-    lastActive: now(),
+    lifecycle: "searchable",
+    lastActive: seedTime(1),
     summary: "A calm research space for interface principles, case studies, and visual systems.",
     styleProfile: "Measured, observational, reference-heavy.",
   },
@@ -130,8 +137,8 @@ const seedClusters: Cluster[] = [
     name: "Product Strategy",
     tint: "terracotta",
     description: "Roadmaps, positioning, GTM, and market insights.",
-    expert: "expert-ready",
-    lastActive: now(),
+    lifecycle: "searchable",
+    lastActive: seedTime(2),
     summary: "Positioning notes, decision frameworks, and product-market signals.",
     styleProfile: "Direct, decision-oriented, concise.",
   },
@@ -140,8 +147,8 @@ const seedClusters: Cluster[] = [
     name: "Health & Longevity",
     tint: "sky",
     description: "Books, papers, and personal notes on health.",
-    expert: "expert-ready",
-    lastActive: now(),
+    lifecycle: "searchable",
+    lastActive: seedTime(3),
     summary: "Health research, sleep notes, supplements, and longevity reading.",
     styleProfile: "Careful, evidence-first, practical.",
   },
@@ -150,8 +157,8 @@ const seedClusters: Cluster[] = [
     name: "Travel Japan 2025",
     tint: "lavender",
     description: "Plans, places, learnings from our Japan trip.",
-    expert: "expert-stale",
-    lastActive: now(),
+    lifecycle: "profile-stale",
+    lastActive: seedTime(4),
     summary: "Kyoto cafes, Tokyo logistics, shrine notes, and travel planning.",
     styleProfile: "Personal, compact, itinerary-aware.",
   },
@@ -160,8 +167,8 @@ const seedClusters: Cluster[] = [
     name: "Meeting Notes",
     tint: "sand",
     description: "Internal syncs, decisions, and action items.",
-    expert: "training-running",
-    lastActive: now(),
+    lifecycle: "indexing",
+    lastActive: seedTime(5),
     summary: "Weekly planning, product decisions, and follow-up tasks.",
     styleProfile: "Action-oriented, crisp, chronological.",
   },
@@ -173,7 +180,7 @@ const seedSources: Source[] = [
   ["IDEO - Field Guide to Human Centered Design.pdf", "file", "c-design", "indexed"],
   ["Editorial Grids - notes.md", "note", "c-design", "indexed"],
   ["nngroup.com/articles/chunking", "link", "c-design", "indexed"],
-  ["Calm Tech principles.txt", "note", "c-design", "needs-review"],
+  ["Calm Tech principles.txt", "note", "c-design", "failed"],
   ["North Star Metric framework.md", "note", "c-strategy", "indexed"],
   ["Amplitude - Product Analytics Guide.pdf", "file", "c-strategy", "indexed"],
   ["Market positioning teardown.html", "link", "c-strategy", "indexed"],
@@ -186,17 +193,17 @@ const seedSources: Source[] = [
   ["Tokyo neighborhoods.png", "image", "c-travel", "indexed"],
   ["Q2 Planning Decisions.md", "note", "c-meetings", "indexed"],
   ["Weekly sync transcript.txt", "file", "c-meetings", "indexed"],
-  ["Action items - May 27.md", "note", "c-meetings", "needs-review"],
+  ["Action items - May 27.md", "note", "c-meetings", "failed"],
   ["screenshot-2026-05-12.png", "image", null, "waiting"],
   ["voice-note-product-idea.m4a", "file", null, "waiting"],
   ["broken-link.html", "link", null, "failed"],
-].map(([title, type, clusterId, state]) => ({
-  id: uid(),
+].map(([title, type, clusterId, state], index) => ({
+  id: seedId("source", index + 1),
   title: title as string,
   type: type as SourceType,
   clusterId: clusterId as string | null,
   state: state as SourceState,
-  updatedAt: now(),
+  updatedAt: seedTime(20 + index),
   preview: "A short extracted preview from this source appears here with enough context for quick triage.",
   summary: "A short auto-generated summary of this source.",
   tags: [],
@@ -214,16 +221,16 @@ const seedChats: Chat[] = [
     id: "chat-welcome",
     title: "Getting started",
     scopeClusterId: null,
-    updatedAt: now(),
+    updatedAt: seedTime(60),
     saved: true,
     messages: [
       {
-        id: uid(),
+        id: seedId("message", 1),
         role: "user",
         content: "What style do my design notes lean toward?",
       },
       {
-        id: uid(),
+        id: seedId("message", 2),
         role: "assistant",
         content:
           "Your design notes lean toward calm, editorial interfaces - restrained color, generous spacing, and type-led hierarchy. There's a recurring emphasis on chunking and reading rhythm.",
@@ -240,11 +247,11 @@ const seedChats: Chat[] = [
     id: "chat-strategy",
     title: "North Star Metric",
     scopeClusterId: "c-strategy",
-    updatedAt: now(),
+    updatedAt: seedTime(61),
     saved: true,
     messages: [
       {
-        id: uid(),
+        id: seedId("message", 3),
         role: "user",
         content: "Summarize the strongest product strategy notes.",
       },
@@ -254,11 +261,11 @@ const seedChats: Chat[] = [
     id: "chat-health",
     title: "Sleep protocol",
     scopeClusterId: "c-health",
-    updatedAt: now(),
+    updatedAt: seedTime(62),
     saved: true,
     messages: [
       {
-        id: uid(),
+        id: seedId("message", 4),
         role: "user",
         content: "What are the practical sleep takeaways?",
       },
@@ -287,7 +294,7 @@ export const useStore = create<State>((set, get) => ({
       name: c.name,
       tint,
       description: c.description ?? "",
-      expert: c.expert ?? "setting-up",
+      lifecycle: c.lifecycle ?? "empty",
       lastActive: now(),
       summary: c.summary ?? "",
       styleProfile: c.styleProfile ?? "",
@@ -329,7 +336,7 @@ export const useStore = create<State>((set, get) => ({
   reindexSource: (id) =>
     set({
       sources: get().sources.map((s) =>
-        s.id === id ? { ...s, state: "extracting", updatedAt: now() } : s,
+        s.id === id ? { ...s, state: "processing", updatedAt: now() } : s,
       ),
     }),
 
@@ -405,23 +412,21 @@ export const useStore = create<State>((set, get) => ({
 
 export const tintVar = (t: ClusterTint) => `var(--cluster-${t})`;
 
-export const expertLabel: Record<ExpertStatus, string> = {
+export const clusterLifecycleLabel: Record<ClusterLifecycleStatus, string> = {
   searchable: "Searchable",
-  "retrieval-only": "Retrieval-only mode",
-  "setting-up": "Setting up",
-  "training-pending": "Preparing expert compression",
-  "training-running": "Training cluster compressor",
-  "expert-ready": "Expert compression ready",
-  "expert-stale": "Expert needs update",
+  "retrieval-only": "Retrieval-only",
+  empty: "Empty cluster",
+  queued: "Queued",
+  indexing: "Indexing",
+  "profile-stale": "Profile stale",
   paused: "Paused",
   issue: "Issue",
 };
 
 export const sourceStateLabel: Record<SourceState, string> = {
   waiting: "Waiting",
-  extracting: "Extracting",
+  processing: "Processing",
   indexed: "Indexed",
-  "needs-review": "Needs review",
   failed: "Failed",
 };
 

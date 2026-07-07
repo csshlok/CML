@@ -49,11 +49,11 @@ export function HomeView() {
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
   const [query, setQuery] = useState("");
   const [figmaExporting, setFigmaExporting] = useState(false);
+  const [canExportToFigma, setCanExportToFigma] = useState(false);
 
-  const canExportToFigma =
-    import.meta.env.DEV &&
-    typeof window !== "undefined" &&
-    !(window as Window & { cmlDesktop?: unknown }).cmlDesktop;
+  useEffect(() => {
+    setCanExportToFigma(import.meta.env.DEV && !window.cmlDesktop);
+  }, []);
 
   async function exportHomeScreenToFigma() {
     setFigmaExporting(true);
@@ -466,7 +466,7 @@ function QuickAction({
 
 function sourceStateText(source: Source) {
   if (source.state === "indexed") return "Indexed";
-  if (source.state === "extracting") return "Processing";
+  if (source.state === "processing") return "Processing";
   if (source.state === "failed") return "Needs review";
   return "Waiting";
 }

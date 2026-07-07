@@ -42,7 +42,6 @@ export function useBackendHealth() {
     let cancelled = false;
 
     async function check() {
-      let degradedCandidateSeen = false;
       const token = await getBackendToken();
       for (const candidate of BACKEND_CANDIDATES) {
         const probe = await probeBackend(candidate, token);
@@ -55,14 +54,15 @@ export function useBackendHealth() {
           return;
         }
         if (probe.status === "degraded" && candidate === CONFIGURED_BACKEND_URL) {
-          degradedCandidateSeen = true;
+          resolvedBackendUrl = candidate;
           if (!cancelled) {
             setUrl(candidate);
             setStatus("degraded");
           }
+          return;
         }
       }
-      if (!cancelled && !degradedCandidateSeen) setStatus("offline");
+      if (!cancelled) setStatus("offline");
     }
 
     check();
@@ -109,6 +109,10 @@ async function getBackendUrl() {
       resolvedBackendUrl = candidate;
       return candidate;
     }
+    if (probe.status === "degraded" && candidate === CONFIGURED_BACKEND_URL) {
+      resolvedBackendUrl = candidate;
+      return candidate;
+    }
   }
   return CONFIGURED_BACKEND_URL;
 }
@@ -128,8 +132,7 @@ export type BridgeStatus = {
   allowed_vault_ids: string[];
   allowed_cluster_ids: string[];
   allow_raw_snippets: boolean;
-  allow_style_profile: boolean;
-  allow_expert_calls: boolean;
+  allow_cluster_profile: boolean;
   bridge_token: string;
   approval_requests_pending: number;
   last_refreshed_at?: string | null;
@@ -161,8 +164,7 @@ export type BridgeClientRecord = {
   allowed_vault_ids: string[];
   allowed_cluster_ids: string[];
   allow_raw_snippets: boolean;
-  allow_style_profile: boolean;
-  allow_expert_calls: boolean;
+  allow_cluster_profile: boolean;
   approval_request_id?: string | null;
   approved_at?: string | null;
   revoked_at?: string | null;
@@ -192,8 +194,7 @@ export type BridgeApprovalRequest = {
   requested_vault_ids: string[];
   requested_cluster_ids: string[];
   allow_raw_snippets: boolean;
-  allow_style_profile: boolean;
-  allow_expert_calls: boolean;
+  allow_cluster_profile: boolean;
   executable_path_claim: string;
   observed_executable_path: string;
   publisher_name: string;
@@ -315,7 +316,13 @@ export type ClusterRecord = {
   name: string;
   description: string;
   color: string;
-  expert_status: string;
+  index_status: string;
+  profile_status: string;
+  cluster_summary: string;
+  cluster_glossary: string;
+  profile_updated_at?: string | null;
+  profile_source_hash?: string;
+  indexed_source_count?: number;
   created_at: string;
   updated_at: string;
 };
@@ -328,77 +335,6 @@ export type ClusterSuggestionRecord = {
   suggested_cluster_name: string;
   confidence: number;
   reason: string;
-};
-
-export type ClusterExpertJobRecord = {
-  id: string;
-  cluster_id: string;
-  vault_id: string;
-  action: string;
-  status: string;
-  detail: string;
-  failure_code: string;
-  artifact_path: string | null;
-  hardware_tier: string;
-  created_at: string;
-  updated_at: string;
-};
-
-export type ExpertArtifactRecord = {
-  id: string;
-  cluster_id: string;
-  vault_id: string;
-  job_id: string | null;
-  artifact_type: string;
-  status: string;
-  local_path: string | null;
-  base_model: string;
-  hardware_tier: string;
-  quality_score: number | null;
-  dataset_hash: string;
-  training_config_hash: string;
-  metrics_json: string;
-  active: boolean;
-  rolled_back_at: string | null;
-  deleted_at: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-export type ExpertGraduationContractRecord = {
-  supported_statuses: string[];
-  minimum_sources: number;
-  minimum_unique_sources: number;
-  minimum_estimated_tokens: number;
-  minimum_validation_records: number;
-  minimum_quality_score: number;
-  minimum_quality_delta: number;
-  maximum_duplicate_ratio: number;
-  required_artifact_files: string[];
-  failure_codes: string[];
-  graduation_gate: string;
-  rollback_behavior: string;
-};
-
-export type ClusterExpertStatusRecord = {
-  cluster_id: string;
-  expert_status: string;
-  user_status: string;
-  searchable: boolean;
-  trained: boolean;
-  stale: boolean;
-  active_artifact_id: string | null;
-  active_dataset_hash: string | null;
-  current_dataset_hash: string | null;
-  runtime_load: {
-    available?: boolean;
-    runtime?: string;
-    base_model?: string;
-    adapter_path?: string;
-    detail?: string;
-  };
-  failure_code: string;
-  detail: string;
 };
 
 export type AppJobRecord = {
@@ -542,9 +478,6 @@ export type ChatContextResponse = {
     synthesis_guard_mode?: string;
     budget_applied?: boolean;
     partial_failure_mode?: string;
-    expert_route_mode?: string;
-    expert_assist_attempted?: boolean;
-    expert_assist_used?: boolean;
   } | null;
   attachments_stored: Array<{
     source_id: string;
@@ -662,7 +595,6 @@ export type ModelCompatibilityRecord = {
   status: "accepted" | "rejected";
   accepted: boolean;
   chat_role_accepted: boolean;
-  expert_role_accepted: boolean;
   accepted_roles: string[];
   family: string;
   family_name: string;
@@ -673,7 +605,7 @@ export type ModelCompatibilityRecord = {
   runtime_dependencies: Record<string, unknown>;
   hardware: Record<string, unknown>;
   reasons: string[];
-  pairing_detail: string;
+  selection_detail: string;
   detail: string;
 };
 
@@ -693,7 +625,6 @@ export type LocalModelRecord = {
   download: ModelDownloadState | null;
   active: boolean;
   active_chat: boolean;
-  active_expert: boolean;
   compatibility: ModelCompatibilityRecord | null;
   source_kind: string;
 };
@@ -702,14 +633,8 @@ export type ModelRecommendationsRecord = {
   hardware: Record<string, unknown>;
   recommended_model_id: string;
   recommended_chat_model_id: string;
-  recommended_expert_model_id: string;
-  recommended_expert_family: string;
-  recommended_pair_id: string;
   chat_fit_type: string;
-  expert_runtime_fit_type: string;
-  expert_training_fit_type: string;
   chat_estimated_tok_per_sec?: number | null;
-  expert_estimated_tok_per_sec?: number | null;
   evidence_level: string;
   confidence: string;
   warnings: string[];
@@ -724,7 +649,7 @@ export type ModelRecommendationsRecord = {
     name?: string;
     detail?: string;
   };
-  active_pair: Record<string, unknown>;
+  active_chat_setup: Record<string, unknown>;
   chat_recommendation: {
     id?: string;
     name?: string;
@@ -747,34 +672,6 @@ export type ModelRecommendationsRecord = {
       confidence?: number;
       updated_at?: string;
     };
-  };
-  expert_recommendation: {
-    id?: string;
-    name?: string;
-    family?: string;
-    summary?: string;
-    expert_score?: number;
-    reasons?: string[];
-    expert_fit?: {
-      runtime_fit_type?: string;
-      runtime_feasible?: boolean;
-      training_fit_type?: string;
-      training_feasible?: boolean;
-      warnings?: string[];
-    };
-    evidence?: {
-      source?: string;
-      confidence?: number;
-      updated_at?: string;
-    };
-  };
-  pair_recommendation: {
-    pair_id?: string;
-    accepted?: boolean;
-    detail?: string;
-    minimum_hardware_tier?: string;
-    chat_model_id?: string;
-    expert_family?: string;
   };
   models: LocalModelRecord[];
   detected_compatible_models: DiscoveredInstalledModelRecord[];
@@ -1100,8 +997,7 @@ export async function approveBridgeApprovalRequest(
     allowed_vault_ids?: string[];
     allowed_cluster_ids?: string[];
     allow_raw_snippets?: boolean;
-    allow_style_profile?: boolean;
-    allow_expert_calls?: boolean;
+    allow_cluster_profile?: boolean;
     detail?: string;
   } = {},
 ) {
@@ -1178,8 +1074,7 @@ export async function createBridgeClient(payload: {
   allowed_vault_ids?: string[];
   allowed_cluster_ids?: string[];
   allow_raw_snippets?: boolean;
-  allow_style_profile?: boolean;
-  allow_expert_calls?: boolean;
+  allow_cluster_profile?: boolean;
 }) {
   return request<BridgeClientCreateResponse>("/api/v1/bridge/clients", {
     method: "POST",
@@ -1197,8 +1092,7 @@ export async function updateBridgeClient(
       | "allowed_vault_ids"
       | "allowed_cluster_ids"
       | "allow_raw_snippets"
-      | "allow_style_profile"
-      | "allow_expert_calls"
+      | "allow_cluster_profile"
     >
   > & { rotate_token?: boolean },
 ) {
@@ -1225,8 +1119,7 @@ export async function updateBridgeSettings(
       | "allowed_vault_ids"
       | "allowed_cluster_ids"
       | "allow_raw_snippets"
-      | "allow_style_profile"
-      | "allow_expert_calls"
+      | "allow_cluster_profile"
       | "bridge_token"
     >
   > & { rotate_token?: boolean },
@@ -1289,69 +1182,11 @@ export async function getCluster(id: string) {
 
 export async function updateCluster(
   id: string,
-  payload: Partial<Pick<ClusterRecord, "name" | "description" | "color" | "expert_status">>,
+  payload: Partial<Pick<ClusterRecord, "name" | "description" | "color" | "index_status" | "profile_status">>,
 ) {
   return request<ClusterRecord>(`/api/v1/clusters/${encodeURIComponent(id)}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
-  });
-}
-
-export async function listClusterExpertJobs(clusterId: string) {
-  return request<ClusterExpertJobRecord[]>(
-    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/jobs`,
-  );
-}
-
-export async function listClusterExpertArtifacts(clusterId: string) {
-  return request<ExpertArtifactRecord[]>(
-    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/artifacts`,
-  );
-}
-
-export async function getClusterExpertContract(clusterId: string) {
-  return request<ExpertGraduationContractRecord>(
-    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/contract`,
-  );
-}
-
-export async function getClusterExpertStatus(clusterId: string) {
-  return request<ClusterExpertStatusRecord>(
-    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/status`,
-  );
-}
-
-export async function activateClusterExpertArtifact(clusterId: string, artifactId: string) {
-  return request<ExpertArtifactRecord>(
-    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/artifacts/${encodeURIComponent(artifactId)}/activate`,
-    { method: "POST" },
-  );
-}
-
-export async function rollbackClusterExpert(clusterId: string) {
-  return request<ExpertArtifactRecord>(
-    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/rollback`,
-    { method: "POST" },
-  );
-}
-
-export async function deleteClusterExpertArtifact(clusterId: string, artifactId: string) {
-  return request<void>(
-    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/artifacts/${encodeURIComponent(artifactId)}`,
-    { method: "DELETE" },
-  );
-}
-
-export async function retrainClusterExpert(clusterId: string) {
-  return request<ClusterExpertJobRecord>(
-    `/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/retrain`,
-    { method: "POST" },
-  );
-}
-
-export async function pauseClusterExpert(clusterId: string) {
-  return request<ClusterRecord>(`/api/v1/clusters/${encodeURIComponent(clusterId)}/expert/pause`, {
-    method: "POST",
   });
 }
 
@@ -1725,7 +1560,7 @@ export async function importLocalModel(payload: { path: string; name?: string | 
   });
 }
 
-export async function activateLocalModel(modelId: string, role: "chat" | "expert" | "pair" = "chat") {
+export async function activateLocalModel(modelId: string, role: "chat" = "chat") {
   return request<LocalModelRecord>(`/api/v1/models/${encodeURIComponent(modelId)}/activate`, {
     method: "POST",
     body: JSON.stringify({ role }),
