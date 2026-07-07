@@ -21,8 +21,8 @@ from backend.app.core.model_registry import (
     start_model_download,
 )
 from backend.app.core.model_recommender.diagnostics import export_recommendation_diagnostics
-from backend.app.core.model_recommender.benchmark_store import record_model_measurement, record_pair_measurement
-from backend.app.core.model_recommender.measurement import run_chat_measurement, run_pair_measurement
+from backend.app.core.model_recommender.benchmark_store import record_model_measurement
+from backend.app.core.model_recommender.measurement import run_chat_measurement
 from backend.app.schemas import (
     EmbeddingRuntimeConfigure,
     EmbeddingRuntimeStatus,
@@ -83,18 +83,7 @@ def record_model_recommendation_measurement(payload: ModelRecommendationMeasurem
                 measured_at=payload.measured_at,
             ),
         }
-    if payload.pair_id:
-        return {
-            "kind": "pair",
-            "record": record_pair_measurement(
-                payload.pair_id,
-                runtime_success=payload.runtime_success,
-                training_success=payload.training_success,
-                chat_tok_per_sec=payload.estimated_tok_per_sec,
-                measured_at=payload.measured_at,
-            ),
-        }
-    raise HTTPException(status_code=400, detail="model_id or pair_id is required.")
+    raise HTTPException(status_code=400, detail="model_id is required.")
 
 
 @router.post("/recommendations/measurements/run")
@@ -102,19 +91,9 @@ def run_model_recommendation_measurement(payload: ModelRecommendationMeasurement
     try:
         if payload.model_id:
             return run_chat_measurement(model_id=payload.model_id, prompt=payload.prompt)
-        if payload.pair_id:
-            if not payload.adapter_path or not payload.base_model:
-                raise HTTPException(status_code=400, detail="adapter_path and base_model are required for pair measurements.")
-            return run_pair_measurement(
-                pair_id=payload.pair_id,
-                prompt=payload.prompt,
-                adapter_path=payload.adapter_path,
-                base_model=payload.base_model,
-                max_new_tokens=payload.max_new_tokens,
-            )
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    raise HTTPException(status_code=400, detail="model_id or pair_id is required.")
+    raise HTTPException(status_code=400, detail="model_id is required.")
 
 
 @router.get("/discover", response_model=InstalledModelDiscoveryRead)

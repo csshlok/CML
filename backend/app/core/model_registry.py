@@ -14,7 +14,6 @@ import threading
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import utc_now
-from backend.app.core.expert_runtime import _is_transformers_model_dir, runtime_dependency_status
 from backend.app.core import hardware as hardware_module
 from backend.app.core.network_security import validate_huggingface_url
 
@@ -110,7 +109,7 @@ APPROVED_MODEL_FAMILIES: tuple[ApprovedModelFamily, ...] = (
         model_type_prefixes=("llama",),
         architecture_keywords=("llama",),
         minimum_hardware_tier="cpu_minimum_spec",
-        detail="Accepted when a local Llama Transformers checkpoint is present and expert runtime dependencies are available.",
+        detail="Accepted when a local Llama Transformers checkpoint is present and passes the chat compatibility checks.",
     ),
     ApprovedModelFamily(
         id="qwen",
@@ -119,7 +118,7 @@ APPROVED_MODEL_FAMILIES: tuple[ApprovedModelFamily, ...] = (
         model_type_prefixes=("qwen",),
         architecture_keywords=("qwen",),
         minimum_hardware_tier="cpu_minimum_spec",
-        detail="Accepted when a local Qwen Transformers checkpoint is present and expert runtime dependencies are available.",
+        detail="Accepted when a local Qwen Transformers checkpoint is present and passes the chat compatibility checks.",
     ),
     ApprovedModelFamily(
         id="phi",
@@ -128,7 +127,7 @@ APPROVED_MODEL_FAMILIES: tuple[ApprovedModelFamily, ...] = (
         model_type_prefixes=("phi",),
         architecture_keywords=("phi",),
         minimum_hardware_tier="cpu_minimum_spec",
-        detail="Accepted when a local Phi Transformers checkpoint is present and expert runtime dependencies are available.",
+        detail="Accepted when a local Phi Transformers checkpoint is present and passes the chat compatibility checks.",
     ),
     ApprovedModelFamily(
         id="gemma",
@@ -137,7 +136,7 @@ APPROVED_MODEL_FAMILIES: tuple[ApprovedModelFamily, ...] = (
         model_type_prefixes=("gemma",),
         architecture_keywords=("gemma",),
         minimum_hardware_tier="cpu_minimum_spec",
-        detail="Accepted when a local Gemma Transformers checkpoint is present and expert runtime dependencies are available.",
+        detail="Accepted when a local Gemma Transformers checkpoint is present and passes the chat compatibility checks.",
     ),
 )
 
@@ -158,6 +157,7 @@ MODEL_SCAN_SKIP_DIRS = {
     "tmp",
     "venv",
 }
+MODEL_CONFIG_FILES = ("config.json", "tokenizer_config.json", "tokenizer.json")
 
 
 def models_dir() -> Path:
@@ -225,9 +225,8 @@ def imported_model_statuses() -> list[dict[str, Any]]:
                 "local_path": local_path,
                 "download": None,
                 "integrity": {"status": "imported", "sha256": None, "expected_sha256": None},
-                "active": state.get("active_chat_model_id") == model_id or state.get("active_expert_model_id") == model_id,
+                "active": state.get("active_chat_model_id") == model_id,
                 "active_chat": state.get("active_chat_model_id") == model_id,
-                "active_expert": state.get("active_expert_model_id") == model_id,
                 "compatibility": compatibility,
                 "source_kind": "custom_import",
             }
@@ -261,9 +260,8 @@ def model_status(model_id: str) -> dict[str, Any]:
             "local_path": str(resolved_local_path) if resolved_local_path else state_installed_path,
             "download": state,
             "integrity": _model_integrity_status(model, resolved_local_path),
-            "active": registry.get("active_chat_model_id") == model_id or registry.get("active_expert_model_id") == model_id,
+            "active": registry.get("active_chat_model_id") == model_id,
             "active_chat": registry.get("active_chat_model_id") == model_id,
-            "active_expert": registry.get("active_expert_model_id") == model_id,
             "compatibility": _default_model_compatibility(model, resolved_local_path),
             "source_kind": "default_choice",
         }
@@ -287,37 +285,27 @@ def registry_state() -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"active_chat_model_id": "", "active_expert_model_id": ""}
+        return {"active_chat_model_id": ""}
     if not isinstance(payload, dict):
-        return {"active_chat_model_id": "", "active_expert_model_id": ""}
+        return {"active_chat_model_id": ""}
     legacy_active = str(payload.get("active_model_id") or "")
     payload.setdefault("active_chat_model_id", legacy_active)
-    payload.setdefault("active_expert_model_id", legacy_active)
     return payload
 
 
 def set_active_model(model_id: str, role: str = "chat") -> dict[str, Any]:
-    if not any(item["id"] == model_id for item in list_models()):
+    rows = list_models()
+    if not any(item["id"] == model_id for item in rows):
         raise KeyError(model_id)
-    row = next(item for item in list_models() if item["id"] == model_id)
+    row = next(item for item in rows if item["id"] == model_id)
     compatibility = row.get("compatibility") or {}
     role = (role or "chat").strip().lower()
     state = registry_state()
-    if role == "chat":
-        if not compatibility.get("chat_role_accepted"):
-            raise ValueError("Model is not accepted for the chat role.")
-        state["active_chat_model_id"] = model_id
-    elif role == "expert":
-        if not compatibility.get("expert_role_accepted"):
-            raise ValueError("Model is not accepted for the expert role.")
-        state["active_expert_model_id"] = model_id
-    elif role == "pair":
-        if not compatibility.get("chat_role_accepted") or not compatibility.get("expert_role_accepted"):
-            raise ValueError("Model is not accepted for both chat and expert roles.")
-        state["active_chat_model_id"] = model_id
-        state["active_expert_model_id"] = model_id
-    else:
+    if role != "chat":
         raise ValueError("Unknown model activation role.")
+    if not compatibility.get("chat_role_accepted"):
+        raise ValueError("Model is not accepted for the chat role.")
+    state["active_chat_model_id"] = model_id
     state["updated_at"] = utc_now()
     registry_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
     for row in list_models():
@@ -344,15 +332,8 @@ def active_chat_model_status() -> dict[str, Any] | None:
     return next((item for item in list_models() if item["id"] == active_model_id), None)
 
 
-def active_expert_model_status() -> dict[str, Any] | None:
-    active_model_id = str(registry_state().get("active_expert_model_id") or "")
-    if not active_model_id:
-        return None
-    return next((item for item in list_models() if item["id"] == active_model_id), None)
-
-
 def active_model_status() -> dict[str, Any] | None:
-    return active_expert_model_status() or active_chat_model_status()
+    return active_chat_model_status()
 
 
 def model_recommendations(*, refresh: bool = False) -> dict[str, Any]:
@@ -361,31 +342,21 @@ def model_recommendations(*, refresh: bool = False) -> dict[str, Any]:
     return build_model_recommendations(refresh=refresh)
 
 
-def active_model_pair_status() -> dict[str, Any]:
+def active_chat_setup_status() -> dict[str, Any]:
     chat_model = active_chat_model_status()
-    expert_model = active_expert_model_status()
     chat_ok = bool(chat_model and (chat_model.get("compatibility") or {}).get("chat_role_accepted"))
-    expert_ok = bool(expert_model and (expert_model.get("compatibility") or {}).get("expert_role_accepted"))
-    if not chat_ok or not expert_ok:
+    if not chat_ok:
         return {
             "accepted": False,
             "chat_model_id": chat_model.get("id") if chat_model else "",
-            "expert_model_id": expert_model.get("id") if expert_model else "",
-            "detail": "Select an accepted chat model and an accepted expert-compression runtime to complete dual-runtime setup.",
+            "detail": "Select an accepted chat model to complete local RAG setup.",
             "reasons": [],
-            "pair_id": "",
         }
-    from backend.app.core.model_recommender.hardware_profile import build_hardware_profile
-    from backend.app.core.model_recommender.pairing import resolve_pair_recommendation
-
-    pair = resolve_pair_recommendation(build_hardware_profile(), chat_model, expert_model)
     return {
-        "accepted": bool(pair.get("accepted")),
+        "accepted": True,
         "chat_model_id": chat_model.get("id") if chat_model else "",
-        "expert_model_id": expert_model.get("id") if expert_model else "",
-        "detail": str(pair.get("detail") or ""),
-        "reasons": list(pair.get("reasons") or []),
-        "pair_id": str(pair.get("pair_id") or ""),
+        "detail": "RAG-only mode uses a single accepted chat model.",
+        "reasons": [],
     }
 
 
@@ -508,13 +479,25 @@ def _model_to_dict(model: LocalModel) -> dict[str, Any]:
     return info
 
 
+def _is_transformers_model_dir(path: Path) -> bool:
+    return path.is_dir() and any((path / name).exists() for name in MODEL_CONFIG_FILES)
+
+
+def _runtime_dependency_status() -> dict[str, Any]:
+    return {
+        "available": True,
+        "state": "not_required",
+        "runtime": "rag_only",
+        "detail": "RAG-only mode uses a single chat runtime and does not require a second model runtime.",
+    }
+
+
 def _missing_model_compatibility(family_id: str, notes: str = "") -> dict[str, Any]:
     family = approved_family(family_id)
     return {
         "status": "rejected",
         "accepted": False,
         "chat_role_accepted": False,
-        "expert_role_accepted": False,
         "accepted_roles": [],
         "family": family_id,
         "family_name": family.name if family else family_id,
@@ -522,13 +505,13 @@ def _missing_model_compatibility(family_id: str, notes: str = "") -> dict[str, A
         "architecture": "",
         "registered_family": family_id,
         "local_path": "",
-        "runtime_dependencies": runtime_dependency_status(),
+        "runtime_dependencies": _runtime_dependency_status(),
         "hardware": hardware_module.hardware_status(),
         "reasons": [
-            "No compatible local Transformers checkpoint is installed for this model family."
+            "No compatible local model is installed for this family."
         ],
-        "pairing_detail": "A separate approved expert-compression runtime is required for expert workflows.",
-        "detail": notes or "Install or import a compatible local Transformers checkpoint to enable expert-compression features.",
+        "selection_detail": "RAG-only mode uses a single local chat model.",
+        "detail": notes or "Install or import a compatible local model to enable local chat.",
     }
 
 
@@ -544,7 +527,6 @@ def _default_model_compatibility(model: LocalModel, local_path: Path | None) -> 
         "status": "accepted",
         "accepted": True,
         "chat_role_accepted": True,
-        "expert_role_accepted": False,
         "accepted_roles": ["chat"],
         "family": model.family,
         "family_name": family.name if family else model.family,
@@ -552,11 +534,11 @@ def _default_model_compatibility(model: LocalModel, local_path: Path | None) -> 
         "architecture": "",
         "registered_family": model.family,
         "local_path": str(local_path),
-        "runtime_dependencies": runtime_dependency_status(),
+        "runtime_dependencies": _runtime_dependency_status(),
         "hardware": hardware,
         "reasons": [],
-        "pairing_detail": "Accepted for chat. Pair this with an approved expert-compression runtime for expert workflows.",
-        "detail": "Accepted local chat runtime model. A separate approved expert-compression runtime is still required for expert workflows.",
+        "selection_detail": "Accepted for RAG-only local chat.",
+        "detail": "Accepted local chat runtime model for RAG-only mode.",
     }
 
 
@@ -567,7 +549,7 @@ def model_compatibility_report(
     include_replacement_recommendation: bool = True,
 ) -> dict[str, Any]:
     target = Path(model_path) if str(model_path).strip() else Path("")
-    runtime = runtime_dependency_status()
+    runtime = _runtime_dependency_status()
     hardware = hardware_module.hardware_status()
     reasons: list[str] = []
     config = _read_transformers_config(target)
@@ -583,26 +565,23 @@ def model_compatibility_report(
     elif not target.is_dir():
         reasons.append("Model path must point to a local Transformers checkpoint directory.")
     elif not _is_transformers_model_dir(target):
-        reasons.append("Checkpoint directory is missing config/tokenizer files required by the expert runtime.")
+        reasons.append("Checkpoint directory is missing config/tokenizer files required by the local runtime.")
     if not family:
         reasons.append("Model family is not in the approved Qwen/Phi/Gemma set.")
-    if not _runtime_ready(runtime):
-        reasons.append("Expert runtime dependencies are not available.")
     if family and not _hardware_supports_family(family, hardware):
         reasons.append(f"Current hardware tier does not satisfy the minimum contract for the {family.name} family.")
 
-    expert_role_accepted = not reasons
-    accepted_roles = ["expert"] if expert_role_accepted else []
+    chat_role_accepted = not reasons
+    accepted_roles = ["chat"] if chat_role_accepted else []
     replacement_recommendation = (
         _replacement_recommendation_for_current_hardware(family_id=family.id if family else "")
         if include_replacement_recommendation
         else {}
     )
     return {
-        "status": "accepted" if expert_role_accepted else "rejected",
-        "accepted": expert_role_accepted,
-        "chat_role_accepted": False,
-        "expert_role_accepted": expert_role_accepted,
+        "status": "accepted" if chat_role_accepted else "rejected",
+        "accepted": chat_role_accepted,
+        "chat_role_accepted": chat_role_accepted,
         "accepted_roles": accepted_roles,
         "family": family.id if family else "",
         "family_name": family.name if family else "",
@@ -613,15 +592,15 @@ def model_compatibility_report(
         "runtime_dependencies": runtime,
         "hardware": hardware,
         "reasons": reasons,
-        "pairing_detail": (
-            "Accepted for the expert role. Pair this checkpoint with any accepted chat runtime model; retrieval remains the citation authority."
-            if expert_role_accepted and family
-            else "Rejected for the expert role."
+        "selection_detail": (
+            "Accepted for the chat role in RAG-only mode."
+            if chat_role_accepted and family
+            else "Rejected for the chat role."
         ),
-        "replacement_recommendation": replacement_recommendation if not expert_role_accepted else {},
+        "replacement_recommendation": replacement_recommendation if not chat_role_accepted else {},
         "detail": (
-            f"Accepted local {family.name} checkpoint for Vault and LoRA expert runtime."
-            if expert_role_accepted and family
+            f"Accepted local {family.name} checkpoint for Vault RAG chat."
+            if chat_role_accepted and family
             else "; ".join(reasons)
         ),
     }
@@ -633,19 +612,14 @@ def _replacement_recommendation_for_current_hardware(*, family_id: str = "") -> 
     except Exception:
         return {}
     recommended_chat = recommendation.get("recommended_chat_model_id") or ""
-    recommended_pair = recommendation.get("recommended_pair_id") or ""
-    recommended_expert_family = recommendation.get("recommended_expert_family") or ""
     chat_choice = recommendation.get("chat_recommendation") or {}
-    if family_id and family_id == recommended_expert_family:
+    if family_id and family_id == (chat_choice.get("family") or ""):
         return {
             "recommended_chat_model_id": recommended_chat,
-            "recommended_pair_id": recommended_pair,
-            "detail": "This device is better aligned with the currently recommended approved pair for the same expert family.",
+            "detail": "This device is better aligned with the currently recommended chat model for the same family line.",
         }
     return {
         "recommended_chat_model_id": recommended_chat,
-        "recommended_pair_id": recommended_pair,
-        "recommended_expert_family": recommended_expert_family,
         "recommended_chat_summary": chat_choice.get("summary", ""),
         "detail": recommendation.get("detail", ""),
     }
@@ -678,30 +652,26 @@ def import_model_checkpoint(source_path: str | Path, *, name: str | None = None)
     }
     (destination / "cml-model.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     invalidate_model_discovery_cache()
-    if not active_expert_model_status():
-        set_active_model(model_id, role="expert")
     return next(item for item in imported_model_statuses() if item["id"] == model_id)
 
 
-def preferred_expert_base_model() -> dict[str, Any] | None:
-    active = active_expert_model_status()
-    if active and (active.get("compatibility") or {}).get("accepted"):
-        return active
+def preferred_chat_base_model() -> dict[str, Any] | None:
+    active_chat = active_chat_model_status()
+    if active_chat and (active_chat.get("compatibility") or {}).get("chat_role_accepted"):
+        return active_chat
 
     for item in imported_model_statuses():
-        if (item.get("compatibility") or {}).get("accepted"):
+        if (item.get("compatibility") or {}).get("chat_role_accepted"):
             return item
 
-    from backend.app.core.expert_runtime import local_model_search_roots
-
-    for root in local_model_search_roots():
+    for root in installed_model_scan_roots():
         if not root.exists():
             continue
         for candidate in sorted(root.glob("*")):
             if not candidate.is_dir():
                 continue
             compatibility = model_compatibility_report(candidate, include_replacement_recommendation=False)
-            if compatibility.get("accepted"):
+            if compatibility.get("chat_role_accepted"):
                 return {
                     "id": candidate.name,
                     "name": candidate.name,
@@ -818,10 +788,6 @@ def installed_model_scan_roots() -> list[Path]:
         text = raw.strip()
         if text:
             roots.append(Path(text).expanduser())
-
-    from backend.app.core.expert_runtime import local_model_search_roots
-
-    roots.extend(local_model_search_roots())
 
     home = Path.home()
     user_profile = Path(os.environ.get("USERPROFILE", str(home)))

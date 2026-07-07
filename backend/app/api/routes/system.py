@@ -1,7 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.hardware import hardware_status
-from backend.app.core.lora_training import trainer_dependency_status
 from backend.app.core.migration_planner import (
     MigrationPreflightError,
     begin_planned_migration,
@@ -34,7 +33,6 @@ from backend.app.schemas import (
     DiskPreflightRequest,
     DiskPreflightResponse,
     HardwareStatusRead,
-    LoraTrainerStatusRead,
     OCRRuntimeStatusRead,
     SensitiveActionVerifyRead,
     SensitiveActionVerifyRequest,
@@ -278,11 +276,6 @@ def run_security_migration_staging_gc(
 @router.get("/hardware", response_model=HardwareStatusRead)
 def get_hardware_status() -> dict:
     return hardware_status()
-
-
-@router.get("/lora-trainer", response_model=LoraTrainerStatusRead)
-def get_lora_trainer_status() -> dict:
-    return trainer_dependency_status()
 
 
 @router.get("/ocr", response_model=OCRRuntimeStatusRead)
