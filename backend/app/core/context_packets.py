@@ -5,11 +5,12 @@ def build_bridge_context_packet(
     selected_clusters: list[dict],
     source_snippets: list[dict],
     warnings: list[str],
+    citations: list[dict] | None = None,
     memory_items: list[dict] | None = None,
     working_memory: dict | None = None,
     retrieval_authority: bool = True,
-    expert_digest: dict | None = None,
-    token_ledger: dict | None = None,
+    cluster_profile: dict | None = None,
+    token_estimate: dict | None = None,
     bundle_status: dict | None = None,
 ) -> dict:
     evidence = [
@@ -27,13 +28,14 @@ def build_bridge_context_packet(
         context_request_id=context_request_id,
         selected_clusters=selected_clusters,
         evidence=evidence,
+        citations=citations or [],
         warnings=warnings,
         memory_items=memory_items or [],
         working_memory=working_memory or {},
         source_count=len(source_snippets),
         retrieval_authority=retrieval_authority,
-        expert_digest=expert_digest or {},
-        token_ledger=token_ledger or {},
+        cluster_profile=cluster_profile or {},
+        token_estimate=token_estimate or {},
         bundle_status=bundle_status or {},
     )
 
@@ -43,16 +45,17 @@ def build_chat_context_packet(
     query: str,
     context_request_id: str | None = None,
     clusters_used: list[dict],
-    citations: list[dict],
     warnings: list[str],
+    citations: list[dict] | None = None,
     recent_turns: list[dict] | None = None,
     memory_items: list[dict] | None = None,
     working_memory: dict | None = None,
     retrieval_authority: bool = True,
-    expert_digest: dict | None = None,
-    token_ledger: dict | None = None,
+    cluster_profile: dict | None = None,
+    token_estimate: dict | None = None,
     bundle_status: dict | None = None,
 ) -> dict:
+    normalized_citations = citations or []
     evidence = [
         {
             "handle": _chat_handle_for_citation(citation, index),
@@ -61,20 +64,21 @@ def build_chat_context_packet(
             "source_type": str(citation.get("source_type") or "unknown").strip() or "unknown",
             "snippet": " ".join(str(citation.get("snippet") or "").split()),
         }
-        for index, citation in enumerate(citations, start=1)
+        for index, citation in enumerate(normalized_citations, start=1)
     ]
     packet = _packet_dict(
         query=query,
         context_request_id=context_request_id,
         selected_clusters=clusters_used,
         evidence=evidence,
+        citations=normalized_citations,
         warnings=warnings,
         memory_items=memory_items or [],
         working_memory=working_memory or {},
-        source_count=len(citations),
+        source_count=len(normalized_citations),
         retrieval_authority=retrieval_authority,
-        expert_digest=expert_digest or {},
-        token_ledger=token_ledger or {},
+        cluster_profile=cluster_profile or {},
+        token_estimate=token_estimate or {},
         bundle_status=bundle_status or {},
     )
     if recent_turns:
@@ -98,8 +102,8 @@ def render_context_packet(packet: dict) -> str:
     working_memory = packet.get("working_memory") or {}
     recent_turns = packet.get("recent_turns") or []
     retrieval_authority = bool(packet.get("retrieval_authority", True))
-    expert_digest = packet.get("expert_digest") or {}
-    token_ledger = packet.get("token_ledger") or {}
+    cluster_profile = packet.get("cluster_profile") or {}
+    token_estimate = packet.get("token_estimate") or {}
     lines = [
         "CML Context Packet",
         "",
@@ -114,20 +118,28 @@ def render_context_packet(packet: dict) -> str:
         f"- Cluster scope: {', '.join(_cluster_label(cluster) for cluster in clusters) if clusters else 'No cluster scope selected.'}",
         f"- Evidence items: {len(evidence)}",
         "",
-        "Working Memory",
+        "Cluster Profile",
     ]
+    summary = str(cluster_profile.get("summary") or "").strip()
+    lines.append(f"- Summary: {summary or 'No cluster summary is available yet.'}")
+    local_terms = ", ".join(str(item).strip() for item in cluster_profile.get("local_terms") or [] if str(item).strip())
+    lines.append(f"- Local terms: {local_terms or 'None cached.'}")
+    style_profile = str(cluster_profile.get("style_profile") or "").strip()
+    if style_profile:
+        lines.append(f"- Style: {style_profile}")
+    reasoning_patterns = [str(item).strip() for item in cluster_profile.get("reasoning_patterns") or [] if str(item).strip()]
+    if reasoning_patterns:
+        lines.append(f"- Reasoning: {'; '.join(reasoning_patterns)}")
+    lines.extend(["", "Working Memory"])
     working_summary = str(working_memory.get("summary") or "").strip()
-    if working_summary:
-        lines.append(f"- {working_summary}")
-    else:
-        lines.append("- No working-memory summary is available yet.")
+    lines.append(f"- {working_summary or 'No working-memory summary is available yet.'}")
     if memory_items:
         lines.extend(["", "Distilled Memory"])
         for item in memory_items[:8]:
             kind = str(item.get("kind") or "fact").strip()
-            summary = str(item.get("summary") or item.get("text") or "").strip()
-            if summary:
-                lines.append(f"- [{kind}] {summary}")
+            summary_text = str(item.get("summary") or item.get("text") or "").strip()
+            if summary_text:
+                lines.append(f"- [{kind}] {summary_text}")
     lines.extend(["", "Relevant Evidence"])
     if evidence:
         for item in evidence:
@@ -147,74 +159,26 @@ def render_context_packet(packet: dict) -> str:
             lines.append(f"- [{item['handle']}] {item['title']}")
     else:
         lines.append("- No citations available.")
-    lines.extend(
-        [
-            "",
-            "Authority",
-            f"- Retrieval authority: {'yes' if retrieval_authority else 'no'}",
-            "- Facts and citations come from retrieved evidence.",
-            "",
-        ]
-    )
-    if expert_digest:
-        lines.extend(
-            [
-                "Cluster Expert Digest",
-                f"- Used: {'yes' if bool(expert_digest.get('used')) else 'no'}",
-                f"- Mode: {str(expert_digest.get('mode') or 'not_eligible')}",
-            ]
-        )
-        digest_text = str(expert_digest.get("text") or "").strip()
-        if digest_text:
-            lines.append(f"- Digest: {digest_text}")
-        behavior_profile = expert_digest.get("behavior_profile") or {}
-        if behavior_profile:
-            voice = str(behavior_profile.get("voice") or "").strip()
-            if voice:
-                lines.append(f"- Voice: {voice}")
-            terminology = ", ".join(
-                str(item) for item in behavior_profile.get("terminology_shift") or [] if str(item).strip()
-            )
-            if terminology:
-                lines.append(f"- Terminology shift: {terminology}")
-            reasoning = " -> ".join(
-                str(item) for item in behavior_profile.get("reasoning_order") or [] if str(item).strip()
-            )
-            if reasoning:
-                lines.append(f"- Reasoning order: {reasoning}")
-            framing = "; ".join(
-                str(item) for item in behavior_profile.get("framing_rules") or [] if str(item).strip()
-            )
-            if framing:
-                lines.append(f"- Framing rules: {framing}")
-    if token_ledger:
+    lines.extend(["", "Authority", f"- Retrieval authority: {'yes' if retrieval_authority else 'no'}", "- Facts and citations come from retrieved evidence."])
+    if token_estimate:
         lines.extend(
             [
                 "",
-                "Token Savings",
-                f"- Raw scope estimate: {int(token_ledger.get('raw_scope_tokens_estimate') or 0)}",
-                f"- Retrieved packet estimate: {int(token_ledger.get('retrieved_tokens_estimate') or 0)}",
-                f"- Expert digest estimate: {int(token_ledger.get('expert_digest_tokens_estimate') or 0)}",
-                f"- Savings vs raw scope: {int(token_ledger.get('estimated_tokens_saved_vs_raw_scope') or 0)}",
-                f"- Savings vs retrieval only: {int(token_ledger.get('estimated_tokens_saved_vs_retrieval_only') or 0)}",
+                "Token Estimate",
+                f"- Citations: {int(token_estimate.get('citations_tokens') or 0)}",
+                f"- Memory: {int(token_estimate.get('memory_tokens') or 0)}",
+                f"- Profile: {int(token_estimate.get('profile_tokens') or 0)}",
+                f"- Total: {int(token_estimate.get('total_tokens') or 0)}",
             ]
         )
-    lines.extend(
-        [
-            "",
-            "Trust And Limits",
-            f"- Warning count: {len(warnings)}",
-        ]
-    )
+    lines.extend(["", "Trust And Limits", f"- Warning count: {len(warnings)}"])
     if warnings:
-        for warning in warnings:
-            lines.append(f"- {warning}")
+        lines.extend(f"- {warning}" for warning in warnings)
     else:
         lines.append("- No warnings reported.")
     lines.extend(["", "Expansion Handles"])
     if evidence:
-        for item in evidence:
-            lines.append(f"- {item['handle']}")
+        lines.extend(f"- {item['handle']}" for item in evidence)
     else:
         lines.append("- No expansion handles are available because no evidence was returned.")
     return "\n".join(lines)
@@ -239,13 +203,14 @@ def _packet_dict(
     context_request_id: str | None,
     selected_clusters: list[dict],
     evidence: list[dict],
+    citations: list[dict],
     warnings: list[str],
     memory_items: list[dict],
     working_memory: dict,
     source_count: int,
     retrieval_authority: bool,
-    expert_digest: dict,
-    token_ledger: dict,
+    cluster_profile: dict,
+    token_estimate: dict,
     bundle_status: dict,
 ) -> dict:
     return {
@@ -253,13 +218,14 @@ def _packet_dict(
         "context_request_id": context_request_id,
         "selected_clusters": selected_clusters,
         "evidence": evidence,
+        "citations": citations,
         "warnings": warnings,
         "memory_items": memory_items,
         "working_memory": working_memory,
         "source_count": source_count,
         "retrieval_authority": retrieval_authority,
-        "expert_digest": expert_digest,
-        "token_ledger": token_ledger,
+        "cluster_profile": cluster_profile,
+        "token_estimate": token_estimate,
         "bundle_status": bundle_status,
     }
 

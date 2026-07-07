@@ -18,13 +18,12 @@ from backend.app.core.embeddings import (
     require_embeddings_available,
     reindex_source_chunks,
 )
-from backend.app.core.expert_evaluation import adapter_route_away_category
 from backend.app.core.encrypted_storage import (
     delete_source_encrypted_content,
     source_from_encrypted_row,
     store_source_content_fields,
 )
-from backend.app.core.expert_lifecycle import mark_cluster_needs_update
+from backend.app.core.cluster_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path
 from backend.app.core.llm_runtime import (
     LLMRuntimeError,
@@ -390,7 +389,7 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
         "runtime_state": context["runtime_state"],
         "warnings": warnings,
         "memory_status": "indexing" if payload.persist else None,
-        "expert_digest": context.get("expert_digest") or {},
+        "cluster_profile": context.get("cluster_profile") or {},
     }
 
 
@@ -425,7 +424,7 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                 "intent": context["intent"],
                 "runtime_state": context["runtime_state"],
                 "warnings": warnings,
-                "expert_digest": context.get("expert_digest") or {},
+                "cluster_profile": context.get("cluster_profile") or {},
             })
             if context["intent"] == "general_chat" and context["runtime_state"] == "ready":
                 try:
@@ -474,7 +473,6 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                         prompt=active_payload.prompt,
                         citations=synthesis_citations,
                         clusters_used=clusters_used,
-                        expert_assist=context.get("expert_assist"),
                         recent_turns=context.get("recent_turns"),
                         memory_items=context.get("memory_items"),
                         working_memory=context.get("working_memory"),
@@ -484,17 +482,9 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                         yield _sse("token", {"text": chunk})
                     warnings.append("Answered by streaming local model runtime.")
                 except LLMRuntimeError as exc:
-                    fallback = _build_expert_extract_answer(
-                        active_payload.prompt,
-                        citations,
-                        expert_assist=context.get("expert_assist"),
-                    )
+                    fallback = _build_extract_answer(active_payload.prompt, citations)
                     warnings.append(f"Using retrieval draft fallback because local streaming is unavailable: {exc}")
-                    context["coverage_ledger"]["partial_failure_mode"] = (
-                        "runtime_unavailable_expert_extract_fallback"
-                        if context.get("expert_assist")
-                        else "runtime_unavailable_extract_fallback"
-                    )
+                    context["coverage_ledger"]["partial_failure_mode"] = "runtime_unavailable_extract_fallback"
                     for chunk in _chunk_text(fallback):
                         answer_parts.append(chunk)
                         yield _sse("token", {"text": chunk})
@@ -528,7 +518,7 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                 "runtime_state": context["runtime_state"],
                 "warnings": warnings,
                 "memory_status": "indexing" if payload.persist else None,
-                "expert_digest": context.get("expert_digest") or {},
+                "cluster_profile": context.get("cluster_profile") or {},
             })
         except Exception as exc:
             if generation and not generation_completed:
@@ -602,7 +592,6 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         query=payload.prompt,
         cluster_id=payload.cluster_id,
         token_budget=effective_limit,
-        allow_expert_compression=True,
         mode=bundle_mode,
         search_func=semantic_search,
     )
@@ -682,24 +671,6 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     working_memory = budget_plan["working_memory"]
     citations = synthesis_citations or candidate_citations[: max(1, min(4, len(candidate_citations)))]
     synthesis_guard = analyze_synthesis_readiness(payload.prompt, synthesis_citations)
-    if bundle is not None:
-        bundle_digest = bundle.get("expert_digest") or {}
-        expert_assist = {
-            "mode": str(bundle_digest.get("mode") or "not_eligible"),
-            "attempted": str(bundle_digest.get("mode") or "not_eligible") not in {"not_eligible", "disabled", "expert_not_ready", "expert_compression_pending", "retrieval_routed", "not_cluster_scoped"},
-            "used": bool(bundle_digest.get("used")),
-            "text": str(bundle_digest.get("text") or "").strip() or None,
-            "detail": "; ".join(str(item) for item in bundle_digest.get("warnings") or [] if str(item).strip()),
-        }
-    else:
-        expert_assist = {
-            "mode": "not_eligible",
-            "attempted": False,
-            "used": False,
-            "text": None,
-            "detail": "",
-        }
-
     warnings = []
     if payload.complete_analysis:
         warnings.append(
@@ -773,12 +744,8 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "synthesis_guard_mode": synthesis_guard["mode"],
         "budget_applied": bool(budget_plan["budget_applied"]),
         "partial_failure_mode": "none",
-        "expert_route_mode": expert_assist["mode"],
-        "expert_assist_attempted": bool(expert_assist["attempted"]),
-        "expert_assist_used": bool(expert_assist["used"]),
-        "expert_digest_tokens_estimate": int(((bundle or {}).get("token_ledger") or {}).get("expert_digest_tokens_estimate") or 0),
         "retrieval_authority": bool((bundle or {}).get("retrieval_authority", True)),
-        "token_ledger": (bundle or {}).get("token_ledger") or {},
+        "token_estimate": (bundle or {}).get("token_estimate") or {},
         "bundle_status": (bundle or {}).get("bundle_status") or {},
     }
     if budget_plan["budget_applied"]:
@@ -791,18 +758,6 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         )
     if memory_items:
         warnings.append(f"Included {len(memory_items)} distilled memory item(s) in the grounded context packet.")
-    if expert_assist["used"]:
-        warnings.append(
-            "A verified expert-compression digest was used as a reasoning aid. Retrieval citations still remain the authority."
-        )
-    elif expert_assist["attempted"] and expert_assist["detail"]:
-        warnings.append(
-            f"Expert compression was unavailable, so this answer stayed retrieval-first: {expert_assist['detail']}"
-        )
-    elif expert_assist["mode"] == "expert_compression_pending" and expert_assist["detail"]:
-        warnings.append(
-            f"Cluster expert compression is pending, so this answer stayed retrieval-first: {expert_assist['detail']}"
-        )
     if not citations:
         warnings.append("No semantic citations were found.")
         if runtime["state"] == "ready":
@@ -847,7 +802,6 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
                 prompt=payload.prompt,
                 citations=synthesis_citations,
                 clusters_used=clusters_used,
-                expert_assist=expert_assist["text"],
                 recent_turns=recent_turns,
                 memory_items=memory_items,
                 working_memory=working_memory,
@@ -856,17 +810,9 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
             answer = result.text
             warnings.append(f"Answered by local model runtime: {result.provider} / {result.model}.")
         except LLMRuntimeError as exc:
-            answer = _build_expert_extract_answer(
-                payload.prompt,
-                citations,
-                expert_assist=expert_assist["text"],
-            )
+            answer = _build_extract_answer(payload.prompt, citations)
             warnings.append(f"Using retrieval draft fallback because local synthesis is unavailable: {exc}")
-            coverage_ledger["partial_failure_mode"] = (
-                "runtime_unavailable_expert_extract_fallback"
-                if expert_assist["used"]
-                else "runtime_unavailable_extract_fallback"
-            )
+            coverage_ledger["partial_failure_mode"] = "runtime_unavailable_extract_fallback"
     else:
         answer = _build_extract_answer(payload.prompt, citations)
 
@@ -880,8 +826,7 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "intent": intent,
         "runtime_state": runtime["state"],
         "warnings": warnings,
-        "expert_assist": expert_assist["text"],
-        "expert_digest": (bundle or {}).get("expert_digest") or {},
+        "cluster_profile": (bundle or {}).get("cluster_profile") or {},
         "supported_claims": synthesis_guard["supported_claims"],
         "memory_items": memory_items,
         "working_memory": working_memory,
@@ -1101,7 +1046,6 @@ def _grounded_answer_kwargs(
     prompt: str,
     citations: list[dict],
     clusters_used: list[dict],
-    expert_assist: str | None = None,
     recent_turns: list[dict[str, str]] | None = None,
     memory_items: list[dict] | None = None,
     working_memory: dict | None = None,
@@ -1112,8 +1056,6 @@ def _grounded_answer_kwargs(
         "citations": citations,
         "clusters_used": clusters_used,
     }
-    if expert_assist:
-        payload["expert_assist"] = expert_assist
     if recent_turns:
         payload["recent_turns"] = recent_turns
     if memory_items:
@@ -1524,17 +1466,6 @@ def _build_extract_answer(prompt: str, citations: list[dict]) -> str:
     return lead + "\n\n" + "\n".join(points)
 
 
-def _build_expert_extract_answer(prompt: str, citations: list[dict], *, expert_assist: str | None) -> str:
-    base = _build_extract_answer(prompt, citations)
-    if not expert_assist:
-        return base
-    return (
-        f"{base}\n\n"
-        "Cluster expert draft (reasoning aid only; verify it against the cited evidence):\n"
-        f"{expert_assist}"
-    )
-
-
 def _estimate_tokens(text: str) -> int:
     cleaned = " ".join(str(text or "").split())
     if not cleaned:
@@ -1561,77 +1492,6 @@ def _apply_synthesis_token_budget(
         token_budget=token_budget,
         cluster_descriptions=[f"{cluster['cluster_name']} {cluster['reason']}" for cluster in clusters_used],
     )
-
-
-def _maybe_run_cluster_expert_assist(*, payload: ChatContextRequest, intent: str, citations: list[dict]) -> dict:
-    if intent != "cluster_question" or not payload.cluster_id or not citations:
-        return {
-            "mode": "not_eligible",
-            "attempted": False,
-            "used": False,
-            "text": None,
-            "detail": "",
-        }
-    blocked_category = _adapter_route_away_category(payload.prompt, citations)
-    if blocked_category is not None:
-        return {
-            "mode": "retrieval_routed",
-            "attempted": False,
-            "used": False,
-            "text": None,
-            "detail": f"Prompt category '{blocked_category}' is retrieval-routed and cannot use cluster expert assist.",
-        }
-    with connect() as conn:
-        cluster = conn.execute(
-            """
-            SELECT id, expert_status
-            FROM clusters
-            WHERE id = ? AND vault_id = ?
-            """,
-            (payload.cluster_id, payload.vault_id),
-        ).fetchone()
-        if cluster is None:
-            return {
-                "mode": "cluster_missing",
-                "attempted": False,
-                "used": False,
-                "text": None,
-                "detail": "",
-            }
-        active_artifact = conn.execute(
-            """
-            SELECT id
-            FROM expert_artifacts
-            WHERE cluster_id = ? AND active = 1 AND status = 'ready' AND deleted_at IS NULL
-            LIMIT 1
-            """,
-            (payload.cluster_id,),
-        ).fetchone()
-    non_runnable_statuses = {"setting-up", "training_pending", "training_running", "training_failed", "hardware_unsupported"}
-    if active_artifact is None or str(cluster["expert_status"] or "") in non_runnable_statuses:
-        return {
-            "mode": "expert_not_ready",
-            "attempted": False,
-            "used": False,
-            "text": None,
-            "detail": "",
-        }
-    return {
-        "mode": "expert_compression_pending",
-        "attempted": False,
-        "used": False,
-        "text": None,
-        "detail": (
-            "Prompt-only cluster adapter generation is disabled until retrieval-grounded "
-            "expert compression is available."
-        ),
-    }
-
-
-def _adapter_route_away_category(prompt: str, citations: list[dict] | None = None) -> str | None:
-    return adapter_route_away_category(prompt, citations)
-
-
 def _retrieved_context_requires_strict_grounding(citations: list[dict]) -> bool:
     snippets = [
         " ".join(str(item.get("snippet") or "").split())

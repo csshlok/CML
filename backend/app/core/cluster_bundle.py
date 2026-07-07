@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import json
 import re
 from uuid import uuid4
 
@@ -8,8 +9,6 @@ from backend.app.api.routes.search import semantic_search
 from backend.app.core.analysis_packets import build_analysis_packets
 from backend.app.core.context_memory import get_context_memory
 from backend.app.core.database import connect, dict_from_row
-from backend.app.core.expert_evaluation import adapter_route_away_category
-from backend.app.core.expert_runtime import run_cluster_expert_compression
 from backend.app.schemas import SemanticSearchRequest
 
 
@@ -19,7 +18,6 @@ def build_cluster_bundle_context(
     query: str,
     cluster_id: str | None = None,
     token_budget: int | None = None,
-    allow_expert_compression: bool = True,
     mode: str = "context",
     search_func=None,
 ) -> dict:
@@ -37,64 +35,13 @@ def build_cluster_bundle_context(
         cluster_id=cluster_id,
         evidence=evidence_payload["evidence"],
     )
-    expert_eligibility = should_use_expert_compression(
-        vault_id=vault_id,
-        cluster_id=cluster_id,
-        query=query,
-        citations=evidence_payload["citations"],
-        evidence=evidence_payload["evidence"],
-        allow_expert_compression=allow_expert_compression,
-    )
-    expert_digest = {
-        "used": False,
-        "mode": str(expert_eligibility.get("mode") or "not_eligible"),
-        "text": "",
-        "artifact_id": None,
-        "warnings": list(expert_eligibility.get("warnings") or []),
-        "local_terms": [],
-        "reasoning_hints": [],
-        "uncertainties": [],
-        "unsupported_claims": [],
-        "behavior_profile": dict(cluster_profile.get("behavior_profile") or _empty_behavior_profile()),
-    }
-    if expert_eligibility.get("eligible"):
-        with connect() as conn:
-            runtime_result = run_cluster_expert_compression(
-                conn,
-                cluster_id=str(cluster_id),
-                prompt=query,
-                citations=evidence_payload["citations"],
-                cluster_profile=cluster_profile,
-            )
-        if runtime_result.get("ok"):
-            expert_digest = {
-                "used": True,
-                "mode": "retrieval_grounded_behavior",
-                "text": str(runtime_result.get("digest") or "").strip(),
-                "artifact_id": runtime_result.get("artifact_id"),
-                "warnings": list(runtime_result.get("warnings") or []),
-                "local_terms": list(runtime_result.get("local_terms") or []),
-                "reasoning_hints": list(runtime_result.get("reasoning_hints") or []),
-                "uncertainties": list(runtime_result.get("uncertainties") or []),
-                "unsupported_claims": list(runtime_result.get("unsupported_claims") or []),
-                "behavior_profile": dict(
-                    runtime_result.get("behavior_profile")
-                    or cluster_profile.get("behavior_profile")
-                    or _empty_behavior_profile()
-                ),
-            }
-        else:
-            expert_digest["warnings"].append(str(runtime_result.get("detail") or "Expert compression unavailable.").strip())
-            expert_digest["mode"] = str(runtime_result.get("mode") or "fallback_retrieval_only")
-
-    token_ledger = estimate_bundle_token_savings(
+    token_estimate = estimate_bundle_tokens(
         query=query,
         evidence=evidence_payload["evidence"],
-        expert_digest=expert_digest,
-        raw_scope_text=evidence_payload.get("raw_scope_text") or "",
+        cluster_profile=cluster_profile,
+        memory_items=evidence_payload["memory_items"],
     )
     warnings = list(evidence_payload.get("warnings") or [])
-    warnings.extend(item for item in expert_digest["warnings"] if item)
     return {
         "bundle_id": f"cluster:{cluster_id or 'vault'}:{context_request_id}",
         "context_request_id": context_request_id,
@@ -107,19 +54,11 @@ def build_cluster_bundle_context(
         "memory_items": evidence_payload["memory_items"],
         "working_memory": evidence_payload["working_memory"],
         "cluster_profile": cluster_profile,
-        "expert_digest": expert_digest,
-        "token_ledger": token_ledger,
+        "token_estimate": token_estimate,
         "warnings": warnings,
         "source_snippets": evidence_payload["source_snippets"],
         "bundle_status": {
             "mode": mode,
-            "expert_eligible": bool(expert_eligibility.get("eligible")),
-            "expert_mode": expert_digest["mode"],
-            "behavior_profile_available": bool(
-                (expert_digest.get("behavior_profile") or {}).get("style_markers")
-                or (expert_digest.get("behavior_profile") or {}).get("reasoning_order")
-                or (expert_digest.get("behavior_profile") or {}).get("framing_rules")
-            ),
             "cluster_id": cluster_id,
             "sources_considered": int(evidence_payload.get("sources_considered") or len(evidence_payload["citations"])),
             "sources_analyzed": int(evidence_payload.get("sources_analyzed") or len(evidence_payload["citations"])),
@@ -398,27 +337,36 @@ def build_cluster_profile(*, vault_id: str, cluster_id: str | None, evidence: li
     if cluster_id:
         with connect() as conn:
             row = conn.execute(
-                "SELECT name, description FROM clusters WHERE id = ? AND vault_id = ?",
+                "SELECT name, description, cluster_summary, cluster_glossary FROM clusters WHERE id = ? AND vault_id = ?",
                 (cluster_id, vault_id),
             ).fetchone()
         if row is not None:
             cluster_name = str(row["name"] or "").strip()
-            summary = str(row["description"] or "").strip()
+            summary = str(row["cluster_summary"] or "").strip() or str(row["description"] or "").strip()
+            glossary = str(row["cluster_glossary"] or "").strip()
+            if glossary:
+                try:
+                    parsed = json.loads(glossary)
+                except Exception:
+                    parsed = []
+                if isinstance(parsed, list):
+                    local_terms = [str(item).strip() for item in parsed if str(item).strip()]
             if summary:
                 style_profile = f"Preserve the cluster's local framing from {row['name']}."
-    token_counts: OrderedDict[str, None] = OrderedDict()
-    for item in evidence:
-        title = str(item.get("title") or "")
-        for token in re.findall(r"\b[A-Za-z][A-Za-z0-9_-]{3,}\b", title):
-            lower = token.lower()
-            if lower in {"source", "note", "page", "chunk"}:
-                continue
-            token_counts.setdefault(token, None)
+    if not local_terms:
+        token_counts: OrderedDict[str, None] = OrderedDict()
+        for item in evidence:
+            title = str(item.get("title") or "")
+            for token in re.findall(r"\b[A-Za-z][A-Za-z0-9_-]{3,}\b", title):
+                lower = token.lower()
+                if lower in {"source", "note", "page", "chunk"}:
+                    continue
+                token_counts.setdefault(token, None)
+                if len(token_counts) >= 8:
+                    break
             if len(token_counts) >= 8:
                 break
-        if len(token_counts) >= 8:
-            break
-    local_terms = list(token_counts.keys())
+        local_terms = list(token_counts.keys())
     if evidence:
         reasoning_patterns.append("Ground claims in retrieved evidence before synthesis.")
         reasoning_patterns.append("Prefer evidence, then interpretation, then conclusion.")
@@ -443,82 +391,31 @@ def build_cluster_profile(*, vault_id: str, cluster_id: str | None, evidence: li
     }
 
 
-def should_use_expert_compression(
-    *,
-    vault_id: str,
-    cluster_id: str | None,
-    query: str,
-    citations: list[dict],
-    evidence: list[dict],
-    allow_expert_compression: bool,
-) -> dict:
-    if not allow_expert_compression:
-        return {"eligible": False, "mode": "disabled", "warnings": []}
-    if not cluster_id:
-        return {"eligible": False, "mode": "not_cluster_scoped", "warnings": []}
-    if not evidence:
-        return {"eligible": False, "mode": "no_evidence", "warnings": []}
-    blocked_category = adapter_route_away_category(query, citations)
-    if blocked_category is not None:
-        return {
-            "eligible": False,
-            "mode": "retrieval_routed",
-            "warnings": [f"Expert compression disabled for retrieval-routed category '{blocked_category}'."],
-        }
-    with connect() as conn:
-        cluster = conn.execute(
-            "SELECT expert_status FROM clusters WHERE id = ? AND vault_id = ?",
-            (cluster_id, vault_id),
-        ).fetchone()
-        artifact = conn.execute(
-            """
-            SELECT id
-            FROM expert_artifacts
-            WHERE cluster_id = ? AND active = 1 AND status = 'ready' AND deleted_at IS NULL
-            LIMIT 1
-            """,
-            (cluster_id,),
-        ).fetchone()
-    if cluster is None:
-        return {"eligible": False, "mode": "cluster_missing", "warnings": []}
-    expert_status = str(cluster["expert_status"] or "").strip()
-    if artifact is not None and expert_status in {"training_ready", "ready", "expert_stale", "needs-update"}:
-        return {
-            "eligible": False,
-            "mode": "expert_compression_pending",
-            "warnings": [
-                "Prompt-only cluster adapter generation is disabled until retrieval-grounded expert compression is available."
-            ],
-        }
-    if artifact is None or expert_status in {
-        "setting-up",
-        "training_pending",
-        "training_running",
-        "training_failed",
-        "hardware_unsupported",
-        "expert_stale",
-    } or expert_status != "expert_compression_ready":
-        return {"eligible": False, "mode": "expert_not_ready", "warnings": []}
-    return {"eligible": True, "mode": "eligible", "warnings": []}
-
-
-def estimate_bundle_token_savings(*, query: str, evidence: list[dict], expert_digest: dict, raw_scope_text: str) -> dict:
-    raw_scope_tokens = _estimate_tokens(raw_scope_text)
-    retrieved_text = "\n".join(str(item.get("snippet") or "") for item in evidence)
-    retrieved_tokens = _estimate_tokens(retrieved_text)
-    digest_text = str(expert_digest.get("text") or "").strip()
-    digest_tokens = _estimate_tokens(digest_text)
-    packet_text = "\n".join(
-        part for part in [query, retrieved_text, digest_text] if part
+def estimate_bundle_tokens(*, query: str, evidence: list[dict], cluster_profile: dict, memory_items: list[dict]) -> dict:
+    citations_text = "\n".join(str(item.get("snippet") or "") for item in evidence)
+    profile_text = "\n".join(
+        part
+        for part in [
+            str(cluster_profile.get("summary") or "").strip(),
+            str(cluster_profile.get("style_profile") or "").strip(),
+            "\n".join(str(item).strip() for item in cluster_profile.get("local_terms") or [] if str(item).strip()),
+            "\n".join(str(item).strip() for item in cluster_profile.get("reasoning_patterns") or [] if str(item).strip()),
+        ]
+        if part
     )
-    packet_tokens = _estimate_tokens(packet_text)
+    memory_text = "\n".join(
+        str(item.get("summary") or item.get("text") or "").strip()
+        for item in memory_items
+        if str(item.get("summary") or item.get("text") or "").strip()
+    )
+    citations_tokens = _estimate_tokens(citations_text)
+    profile_tokens = _estimate_tokens(profile_text)
+    memory_tokens = _estimate_tokens(memory_text)
     return {
-        "raw_scope_tokens_estimate": raw_scope_tokens,
-        "retrieved_tokens_estimate": retrieved_tokens,
-        "packet_tokens_estimate": packet_tokens,
-        "expert_digest_tokens_estimate": digest_tokens,
-        "estimated_tokens_saved_vs_raw_scope": max(0, raw_scope_tokens - packet_tokens),
-        "estimated_tokens_saved_vs_retrieval_only": max(0, retrieved_tokens - digest_tokens),
+        "citations_tokens": citations_tokens,
+        "memory_tokens": memory_tokens,
+        "profile_tokens": profile_tokens,
+        "total_tokens": _estimate_tokens(query) + citations_tokens + memory_tokens + profile_tokens,
     }
 
 
@@ -550,7 +447,7 @@ def _build_behavior_profile(
 ) -> dict:
     profile = _empty_behavior_profile()
     if cluster_name:
-        profile["voice"] = f"{cluster_name} local-expert"
+        profile["voice"] = f"{cluster_name} local-context"
     if local_terms:
         profile["terminology_shift"] = local_terms[:4]
     if summary:

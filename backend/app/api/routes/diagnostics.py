@@ -103,7 +103,6 @@ def _database_summary() -> dict:
         "vault_lock_audit",
         "integration_imports",
         "extension_captures",
-        "expert_artifacts",
         "encrypted_content",
     ]
     summary = {}
