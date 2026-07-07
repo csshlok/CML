@@ -111,3 +111,5 @@ docs/MODEL_RECOMMENDER_IMPLEMENTATION_PLAN.md
 docs/WHICHLLM_REVERSE_ENGINEERING_PLAN.md
 sample_lora_vault
 sample_new
+artifacts/
+.playwright-cli
