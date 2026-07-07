@@ -35,34 +35,6 @@ def score_chat_candidate(candidate: dict[str, Any], fit: dict[str, Any], speed: 
     speed_score = _speed_score(float(speed.get("estimated_tok_per_sec") or 0.0), str(fit.get("fit_type") or "cannot_run"))
     fit_penalty = _FIT_PENALTIES.get(str(fit.get("fit_type") or "cannot_run"), -100.0)
     return max(0.0, min(100.0, quality_core + speed_score + fit_penalty))
-
-
-def score_expert_candidate(candidate: dict[str, Any], fit: dict[str, Any], evidence: dict[str, Any]) -> float:
-    benchmark_score = float(evidence.get("score") or 0.0) * 0.58
-    compatibility = candidate.get("compatibility") or {}
-    base = benchmark_score + (10.0 if compatibility.get("expert_role_accepted") else -40.0)
-    if fit.get("runtime_feasible"):
-        base += 12.0
-    if fit.get("training_feasible"):
-        base += 14.0
-    if not fit.get("runtime_feasible"):
-        base -= 12.0
-    if not fit.get("training_feasible"):
-        base -= 10.0
-    return max(0.0, min(100.0, base))
-
-
-def score_pair_candidate(chat_choice: dict[str, Any], expert_choice: dict[str, Any], pair: dict[str, Any]) -> float:
-    base = float(chat_choice.get("score") or 0.0) * 0.58 + float(expert_choice.get("expert_score") or 0.0) * 0.42
-    if not pair.get("accepted"):
-        base -= 35.0
-    if pair.get("reasons"):
-        base -= 6.0 * len(pair.get("reasons") or [])
-    if pair.get("minimum_hardware_tier") == "gpu_or_high_spec_candidate":
-        base -= 2.5
-    return max(0.0, min(100.0, base))
-
-
 def _speed_score(tok_per_sec: float, fit_type: str) -> float:
     required = 8.0 if fit_type == "full_gpu" else (4.0 if fit_type == "partial_offload" else 1.5)
     if tok_per_sec <= 0:

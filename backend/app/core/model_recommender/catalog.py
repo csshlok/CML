@@ -31,25 +31,11 @@ class CatalogModelSpec:
     estimated_weight_bytes: int
     benchmark: CatalogBenchmark
     minimum_chat_tier: str
-    minimum_expert_tier: str
     windows_supported: bool
     llama_cpp_supported: bool
-    expert_runtime_supported: bool
-    expert_training_supported: bool
     benchmark_keys: tuple[str, ...]
     release_date: str
     source_kind: str
-
-
-@dataclass(frozen=True)
-class ApprovedPairSpec:
-    pair_id: str
-    chat_model_id: str
-    expert_family: str
-    minimum_hardware_tier: str
-    status: str
-    reason: str
-    notes: str = ""
 
 
 _CATALOG_SPECS: dict[str, CatalogModelSpec] = {
@@ -69,11 +55,8 @@ _CATALOG_SPECS: dict[str, CatalogModelSpec] = {
         estimated_weight_bytes=int(2.5 * 1024**3),
         benchmark=CatalogBenchmark(score=73.0, source="direct", confidence=0.88, updated_at="2026-06-20"),
         minimum_chat_tier="cpu_minimum_spec",
-        minimum_expert_tier="cpu_minimum_spec",
         windows_supported=True,
         llama_cpp_supported=True,
-        expert_runtime_supported=False,
-        expert_training_supported=False,
         benchmark_keys=("qwen3-4b", "qwen3-4b-q4_k_m"),
         release_date="2025-01-01",
         source_kind="default_choice",
@@ -94,11 +77,8 @@ _CATALOG_SPECS: dict[str, CatalogModelSpec] = {
         estimated_weight_bytes=int(2.5 * 1024**3),
         benchmark=CatalogBenchmark(score=68.0, source="direct", confidence=0.84, updated_at="2026-06-20"),
         minimum_chat_tier="cpu_minimum_spec",
-        minimum_expert_tier="cpu_minimum_spec",
         windows_supported=True,
         llama_cpp_supported=True,
-        expert_runtime_supported=False,
-        expert_training_supported=False,
         benchmark_keys=("phi-4-mini", "phi-4-mini-instruct"),
         release_date="2025-01-01",
         source_kind="default_choice",
@@ -119,11 +99,8 @@ _CATALOG_SPECS: dict[str, CatalogModelSpec] = {
         estimated_weight_bytes=int(4.8 * 1024**3),
         benchmark=CatalogBenchmark(score=80.0, source="direct", confidence=0.9, updated_at="2026-06-20"),
         minimum_chat_tier="cpu_high_spec",
-        minimum_expert_tier="cpu_high_spec",
         windows_supported=True,
         llama_cpp_supported=True,
-        expert_runtime_supported=False,
-        expert_training_supported=False,
         benchmark_keys=("qwen3-8b", "qwen3-8b-q4_k_m"),
         release_date="2025-01-01",
         source_kind="default_choice",
@@ -144,11 +121,8 @@ _CATALOG_SPECS: dict[str, CatalogModelSpec] = {
         estimated_weight_bytes=int(2.5 * 1024**3),
         benchmark=CatalogBenchmark(score=70.0, source="direct", confidence=0.84, updated_at="2026-06-20"),
         minimum_chat_tier="cpu_minimum_spec",
-        minimum_expert_tier="cpu_minimum_spec",
         windows_supported=True,
         llama_cpp_supported=True,
-        expert_runtime_supported=False,
-        expert_training_supported=False,
         benchmark_keys=("gemma-3-4b", "gemma3-4b"),
         release_date="2025-01-01",
         source_kind="default_choice",
@@ -169,59 +143,13 @@ _CATALOG_SPECS: dict[str, CatalogModelSpec] = {
         estimated_weight_bytes=int(6.9 * 1024**3),
         benchmark=CatalogBenchmark(score=83.0, source="direct", confidence=0.88, updated_at="2026-06-20"),
         minimum_chat_tier="gpu_or_high_spec_candidate",
-        minimum_expert_tier="gpu_or_high_spec_candidate",
         windows_supported=True,
         llama_cpp_supported=True,
-        expert_runtime_supported=False,
-        expert_training_supported=False,
         benchmark_keys=("gemma-3-12b", "gemma3-12b"),
         release_date="2025-01-01",
         source_kind="default_choice",
     ),
 }
-
-_APPROVED_PAIRS: tuple[ApprovedPairSpec, ...] = (
-    ApprovedPairSpec(
-        pair_id="pair-qwen3-4b-qwen",
-        chat_model_id="qwen3-4b-q4_k_m",
-        expert_family="qwen",
-        minimum_hardware_tier="cpu_minimum_spec",
-        status="approved",
-        reason="Balanced default pair for 8 GB-class Windows setups.",
-    ),
-    ApprovedPairSpec(
-        pair_id="pair-phi4-phi",
-        chat_model_id="phi-4-mini-instruct-q4_k_m",
-        expert_family="phi",
-        minimum_hardware_tier="cpu_minimum_spec",
-        status="approved",
-        reason="Fallback pair for weaker CPUs and RAM-constrained systems.",
-    ),
-    ApprovedPairSpec(
-        pair_id="pair-qwen3-8b-qwen",
-        chat_model_id="qwen3-8b-q4_k_m",
-        expert_family="qwen",
-        minimum_hardware_tier="cpu_high_spec",
-        status="approved",
-        reason="Higher-quality pair when the machine can sustain the larger chat runtime.",
-    ),
-    ApprovedPairSpec(
-        pair_id="pair-gemma3-4b-gemma",
-        chat_model_id="gemma-3-4b-it-q4_k_m",
-        expert_family="gemma",
-        minimum_hardware_tier="cpu_minimum_spec",
-        status="approved",
-        reason="Alternate approved pair for Gemma-family expert-compression runtimes.",
-    ),
-    ApprovedPairSpec(
-        pair_id="pair-gemma3-12b-gemma",
-        chat_model_id="gemma-3-12b-it-q4_k_m",
-        expert_family="gemma",
-        minimum_hardware_tier="gpu_or_high_spec_candidate",
-        status="approved",
-        reason="Quality-first Gemma pair for higher-spec devices.",
-    ),
-)
 
 _HARDWARE_TIER_RANK = {
     "unsupported": 0,
@@ -234,11 +162,6 @@ _HARDWARE_TIER_RANK = {
 
 def catalog_specs() -> dict[str, CatalogModelSpec]:
     return dict(_CATALOG_SPECS)
-
-
-def approved_pairs() -> tuple[ApprovedPairSpec, ...]:
-    return _APPROVED_PAIRS
-
 
 def tier_rank(tier: str) -> int:
     return _HARDWARE_TIER_RANK.get(str(tier or "unknown"), 0)
@@ -271,7 +194,6 @@ def default_catalog_models() -> list[dict[str, Any]]:
                 "download_bytes": spec.download_bytes,
                 "estimated_weight_bytes": spec.estimated_weight_bytes,
                 "minimum_chat_tier": spec.minimum_chat_tier,
-                "minimum_expert_tier": spec.minimum_expert_tier,
                 "benchmark_keys": list(spec.benchmark_keys),
                 "release_date": spec.release_date,
                 "source_kind": spec.source_kind,

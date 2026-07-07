@@ -87,6 +87,4 @@ def _threshold_flags(estimate: float) -> dict[str, bool]:
         "acceptable_for_chat": estimate >= 4.0,
         "degraded_but_usable": estimate >= 1.5,
         "too_slow_for_default_chat": 0.0 < estimate < 1.5,
-        "expert_runtime_acceptable": estimate >= 2.0,
-        "expert_training_acceptable": estimate >= 1.0,
     }

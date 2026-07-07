@@ -28,11 +28,9 @@ def build_input_fingerprint(
             "family": row.get("family", ""),
             "installed": bool(row.get("installed")),
             "active_chat": bool(row.get("active_chat")),
-            "active_expert": bool(row.get("active_expert")),
             "source_kind": row.get("source_kind", ""),
             "compatibility": {
                 "chat": bool((row.get("compatibility") or {}).get("chat_role_accepted")),
-                "expert": bool((row.get("compatibility") or {}).get("expert_role_accepted")),
                 "family": (row.get("compatibility") or {}).get("family", ""),
             },
         }

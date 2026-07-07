@@ -32,7 +32,6 @@ def export_recommendation_diagnostics(
 def build_fit_speed_report(recommendation: dict[str, Any]) -> dict[str, Any]:
     candidate_rows = list(recommendation.get("candidate_table") or [])
     chat_rows = [row for row in candidate_rows if row.get("role") == "chat"]
-    expert_rows = [row for row in candidate_rows if row.get("role") == "expert"]
     return {
         "machine_profile": {
             "hardware_tier": str((recommendation.get("hardware") or {}).get("hardware_tier") or ""),
@@ -40,17 +39,12 @@ def build_fit_speed_report(recommendation: dict[str, Any]) -> dict[str, Any]:
             "runtime_backend": str((recommendation.get("hardware") or {}).get("runtime_backend") or ""),
         },
         "recommended_chat": _candidate_fit_speed_row(recommendation.get("chat_recommendation") or {}, role="chat"),
-        "recommended_expert": _candidate_fit_speed_row(recommendation.get("expert_recommendation") or {}, role="expert"),
         "chat_candidates": chat_rows,
-        "expert_candidates": expert_rows,
     }
 
 
 def build_calibration_summary(recommendation: dict[str, Any], benchmark_bundle: dict[str, Any]) -> dict[str, Any]:
     model_measurements = benchmark_bundle.get("models") or {}
-    pair_measurements = benchmark_bundle.get("pairs") or {}
-    chat_recommendation = recommendation.get("chat_recommendation") or {}
-    pair_recommendation = recommendation.get("pair_recommendation") or {}
     candidate_rows = list(recommendation.get("candidate_table") or [])
 
     model_rows: list[dict[str, Any]] = []
@@ -97,55 +91,22 @@ def build_calibration_summary(recommendation: dict[str, Any], benchmark_bundle: 
             }
         )
 
-    pair_row = None
-    recommended_pair_id = str(pair_recommendation.get("pair_id") or recommendation.get("recommended_pair_id") or "")
-    if recommended_pair_id:
-        pair_measurement = pair_measurements.get(recommended_pair_id)
-        if isinstance(pair_measurement, dict):
-            pair_row = {
-                "pair_id": recommended_pair_id,
-                "predicted_accepted": bool(pair_recommendation.get("accepted")),
-                "runtime_success": pair_measurement.get("runtime_success"),
-                "training_success": pair_measurement.get("training_success"),
-                "estimated_chat_tok_per_sec": _coerce_float((chat_recommendation.get("speed") or {}).get("estimated_tok_per_sec")),
-                "measured_chat_tok_per_sec": _coerce_float(pair_measurement.get("chat_tok_per_sec")),
-                "estimated_speed_band": _speed_band(_coerce_float((chat_recommendation.get("speed") or {}).get("estimated_tok_per_sec"))),
-                "measured_speed_band": _speed_band(_coerce_float(pair_measurement.get("chat_tok_per_sec"))),
-                "measured_at": str(pair_measurement.get("measured_at") or ""),
-            }
-
     comparable_speed_count = speed_band_matches + speed_band_mismatches
     comparable_fit_count = fit_matches + fit_mismatches
     return {
         "measured_model_count": len(model_rows),
-        "measured_pair_count": len(pair_measurements),
         "recommended_chat_model_id": str(recommendation.get("recommended_chat_model_id") or ""),
-        "recommended_pair_id": recommended_pair_id,
         "speed_band_match_rate": _safe_rate(speed_band_matches, comparable_speed_count),
         "speed_band_mismatch_rate": _safe_rate(speed_band_mismatches, comparable_speed_count),
         "fit_match_rate": _safe_rate(fit_matches, comparable_fit_count),
         "fit_mismatch_rate": _safe_rate(fit_mismatches, comparable_fit_count),
         "model_calibration_rows": model_rows,
-        "recommended_pair_calibration": pair_row,
     }
 
 
 def _candidate_fit_speed_row(candidate: dict[str, Any], *, role: str) -> dict[str, Any]:
     if not candidate:
         return {}
-    if role == "expert":
-        expert_fit = candidate.get("expert_fit") or {}
-        return {
-            "candidate_id": str(candidate.get("id") or ""),
-            "name": str(candidate.get("name") or ""),
-            "fit_type": str(expert_fit.get("runtime_fit_type") or ""),
-            "training_fit_type": str(expert_fit.get("training_fit_type") or ""),
-            "runtime_feasible": bool(expert_fit.get("runtime_feasible")),
-            "training_feasible": bool(expert_fit.get("training_feasible")),
-            "required_runtime_gib": expert_fit.get("runtime_required_gib"),
-            "required_training_gib": expert_fit.get("training_required_gib"),
-            "warnings": list(expert_fit.get("warnings") or []),
-        }
     fit = candidate.get("fit") or {}
     speed = candidate.get("speed") or {}
     return {
