@@ -213,8 +213,7 @@ function BridgeView() {
         allowed_vault_ids: status?.allowed_vault_ids ?? [],
         allowed_cluster_ids: status?.allowed_cluster_ids ?? [],
         allow_raw_snippets: Boolean(status?.allow_raw_snippets),
-        allow_style_profile: Boolean(status?.allow_style_profile),
-        allow_expert_calls: Boolean(status?.allow_expert_calls),
+        allow_cluster_profile: Boolean(status?.allow_cluster_profile),
       });
       setClientToken(created.token);
       setClientName("Local MCP client");
@@ -483,7 +482,7 @@ function BridgeView() {
           <BridgeCard
             icon={<ExternalLink className="h-4 w-4" />}
             title="MCP"
-            body="Expose tools such as list_clusters, get_cluster_context, and ask_cluster_expert."
+            body="Expose tools such as list_clusters and get_cluster_context."
           />
           <BridgeCard
             icon={<Terminal className="h-4 w-4" />}
@@ -576,18 +575,11 @@ function BridgeView() {
               onChange={(checked) => void patchSettings({ allow_raw_snippets: checked })}
             />
             <PermissionRow
-              label="Style profiles"
-              detail="Allow clients to request cluster style context when available."
-              checked={Boolean(status?.allow_style_profile)}
+              label="Cluster profiles"
+              detail="Allow clients to request derived cluster profile context when available."
+              checked={Boolean(status?.allow_cluster_profile)}
               disabled={!status || saving}
-              onChange={(checked) => void patchSettings({ allow_style_profile: checked })}
-            />
-            <PermissionRow
-              label="Local experts"
-              detail="Allow clients to request expert compression after the expert lifecycle is implemented."
-              checked={Boolean(status?.allow_expert_calls)}
-              disabled={!status || saving}
-              onChange={(checked) => void patchSettings({ allow_expert_calls: checked })}
+              onChange={(checked) => void patchSettings({ allow_cluster_profile: checked })}
             />
           </div>
         </section>

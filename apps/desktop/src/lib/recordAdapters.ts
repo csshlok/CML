@@ -1,4 +1,4 @@
-import type { Cluster, ClusterTint, ExpertStatus, Source, SourceState, SourceType } from "@/lib/mockStore";
+import type { Cluster, ClusterLifecycleStatus, ClusterTint, Source, SourceState, SourceType } from "@/lib/mockStore";
 import type { ClusterRecord, SourceRecord } from "@/lib/backend";
 
 export function sourceFromRecord(record: SourceRecord): Source {
@@ -25,33 +25,41 @@ export function clusterFromRecord(record: ClusterRecord): Cluster {
     name: record.name,
     tint: normalizeTint(record.color),
     description: record.description,
-    expert: normalizeExpertStatus(record.expert_status),
+    lifecycle: normalizeClusterLifecycle(record.index_status, record.profile_status),
     lastActive: record.updated_at,
-    summary: record.description,
-    styleProfile: "Style profile pending",
+    summary: record.cluster_summary || record.description,
+    styleProfile: record.profile_status === "ready" ? "Profile cached" : "Profile refresh pending",
   };
 }
 
 export function sourceStateText(state: SourceState) {
   const labels: Record<SourceState, string> = {
     waiting: "Waiting",
-    extracting: "Extracting",
+    processing: "Processing",
     indexed: "Indexed",
-    "needs-review": "Needs review",
     failed: "Failed",
   };
   return labels[state];
 }
 
 function normalizeSourceType(value: string): SourceType {
-  return value === "file" || value === "link" || value === "note" || value === "image" ? value : "file";
+  return value === "file" ||
+    value === "link" ||
+    value === "note" ||
+    value === "image" ||
+    value === "audio" ||
+    value === "video" ||
+    value === "code" ||
+    value === "external_transcript" ||
+    value === "external_artifact"
+    ? value
+    : "file";
 }
 
 function normalizeSourceState(value: string): SourceState {
   return value === "waiting" ||
-    value === "extracting" ||
+    value === "processing" ||
     value === "indexed" ||
-    value === "needs-review" ||
     value === "failed"
     ? value
     : "waiting";
@@ -68,14 +76,11 @@ export function normalizeTint(value: string): ClusterTint {
     : "sage";
 }
 
-function normalizeExpertStatus(value: string): ExpertStatus {
-  if (value === "retrieval_ready" || value === "searchable") return "searchable";
-  if (value === "retrieval_only") return "retrieval-only";
-  if (value === "training_pending" || value === "expert_training_pending") return "training-pending";
-  if (value === "training_running" || value === "expert_training_running" || value === "learning") return "training-running";
-  if (value === "training_ready" || value === "expert_compression_ready" || value === "ready") return "expert-ready";
-  if (value === "needs-update" || value === "expert_stale" || value === "rollback_ready") return "expert-stale";
-  if (value === "training_failed" || value === "hardware_unsupported" || value === "issue") return "issue";
-  if (value === "paused") return "paused";
-  return "setting-up";
+function normalizeClusterLifecycle(indexStatus: string, profileStatus: string): ClusterLifecycleStatus {
+  if (indexStatus === "error" || profileStatus === "error") return "issue";
+  if (indexStatus === "indexing") return "indexing";
+  if (indexStatus === "empty") return "empty";
+  if (profileStatus === "stale" || profileStatus === "refreshing") return "profile-stale";
+  if (indexStatus === "ready") return "searchable";
+  return "retrieval-only";
 }

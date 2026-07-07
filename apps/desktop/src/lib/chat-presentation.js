@@ -51,8 +51,6 @@ export function describePartialFailure(mode) {
       return "Evidence support was weak, so Vault stayed extractive instead of synthesizing.";
     case "runtime_unavailable_extract_fallback":
       return "Grounded synthesis runtime was unavailable, so Vault returned a retrieval-only fallback.";
-    case "runtime_unavailable_expert_extract_fallback":
-      return "Grounded synthesis runtime was unavailable, so Vault returned an expert-assisted retrieval fallback.";
     case "general_chat_runtime_unavailable":
       return "Direct chat runtime was unavailable.";
     default:
