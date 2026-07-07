@@ -519,13 +519,14 @@ def _format_context_packet(data: dict, *, raw_text: str) -> str:
         query=str(data.get("query") or ""),
         context_request_id=str(data.get("context_request_id") or "") or None,
         selected_clusters=[item for item in data.get("selected_clusters") or [] if isinstance(item, dict)],
+        citations=[item for item in data.get("citations") or [] if isinstance(item, dict)],
         source_snippets=[item for item in data.get("source_snippets") or [] if isinstance(item, dict)],
         warnings=[str(item).strip() for item in data.get("warnings") or [] if str(item).strip()],
         memory_items=[item for item in data.get("memory_items") or [] if isinstance(item, dict)],
         working_memory=data.get("working_memory") or {},
         retrieval_authority=bool(data.get("retrieval_authority", True)),
-        expert_digest=data.get("expert_digest") or {},
-        token_ledger=data.get("token_ledger") or {},
+        cluster_profile=data.get("cluster_profile") or {},
+        token_estimate=data.get("token_estimate") or {},
         bundle_status=data.get("bundle_status") or {},
     )
     telemetry = packet_telemetry(packet, raw_text=raw_text)

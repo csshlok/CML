@@ -105,7 +105,6 @@ def update_bridge_settings(payload: BridgeSettingsUpdate) -> dict:
                 allowed_cluster_ids = ?,
                 allow_raw_snippets = ?,
                 allow_style_profile = ?,
-                allow_expert_calls = ?,
                 bridge_token = ?,
                 updated_at = ?
             WHERE id = 'default'
@@ -115,8 +114,7 @@ def update_bridge_settings(payload: BridgeSettingsUpdate) -> dict:
                 json.dumps(next_settings["allowed_vault_ids"]),
                 json.dumps(next_settings["allowed_cluster_ids"]),
                 1 if next_settings["allow_raw_snippets"] else 0,
-                1 if next_settings["allow_style_profile"] else 0,
-                1 if next_settings["allow_expert_calls"] else 0,
+                1 if next_settings["allow_cluster_profile"] else 0,
                 next_settings["bridge_token"],
                 now,
             ),
@@ -162,8 +160,7 @@ def create_bridge_approval_request(payload: BridgeApprovalRequestCreate, request
             "requested_vault_ids": requested_vault_ids,
             "requested_cluster_ids": requested_cluster_ids,
             "allow_raw_snippets": bool(payload.allow_raw_snippets),
-            "allow_style_profile": bool(payload.allow_style_profile),
-            "allow_expert_calls": bool(payload.allow_expert_calls),
+            "allow_cluster_profile": bool(payload.allow_cluster_profile),
             "executable_path_claim": identity["executable_path_claim"],
             "observed_executable_path": identity["observed_executable_path"],
             "publisher_name": identity["publisher_name"],
@@ -356,15 +353,10 @@ def approve_bridge_approval_request(request_id: str, payload: BridgeApprovalDeci
             if payload.allow_raw_snippets is not None
             else bool(details["allow_raw_snippets"])
         )
-        allow_style_profile = (
-            bool(payload.allow_style_profile)
-            if payload.allow_style_profile is not None
-            else bool(details["allow_style_profile"])
-        )
-        allow_expert_calls = (
-            bool(payload.allow_expert_calls)
-            if payload.allow_expert_calls is not None
-            else bool(details["allow_expert_calls"])
+        allow_cluster_profile = (
+            bool(payload.allow_cluster_profile)
+            if payload.allow_cluster_profile is not None
+            else bool(details["allow_cluster_profile"])
         )
         client_id = f"bridge-client-{uuid4()}"
         metadata = {
@@ -385,8 +377,7 @@ def approve_bridge_approval_request(request_id: str, payload: BridgeApprovalDeci
             "allowed_vault_ids": json.dumps(_existing_vault_ids(conn, allowed_vault_ids)),
             "allowed_cluster_ids": json.dumps(_existing_cluster_ids(conn, allowed_cluster_ids)),
             "allow_raw_snippets": 1 if allow_raw_snippets else 0,
-            "allow_style_profile": 1 if allow_style_profile else 0,
-            "allow_expert_calls": 1 if allow_expert_calls else 0,
+            "allow_style_profile": 1 if allow_cluster_profile else 0,
             "metadata_json": store_secure_json(
                 conn,
                 vault_id=row["vault_id"],
@@ -409,13 +400,13 @@ def approve_bridge_approval_request(request_id: str, payload: BridgeApprovalDeci
             """
             INSERT INTO bridge_clients (
                 id, name, token_hash, enabled, approval_vault_id, allowed_vault_ids,
-                allowed_cluster_ids, allow_raw_snippets, allow_style_profile, allow_expert_calls,
+                allowed_cluster_ids, allow_raw_snippets, allow_style_profile,
                 metadata_json, approval_request_id, approved_at, revoked_at, last_request_at,
                 request_count_total, response_bytes_total, created_at, updated_at
             )
             VALUES (
                 :id, :name, :token_hash, :enabled, :approval_vault_id, :allowed_vault_ids,
-                :allowed_cluster_ids, :allow_raw_snippets, :allow_style_profile, :allow_expert_calls,
+                :allowed_cluster_ids, :allow_raw_snippets, :allow_style_profile,
                 :metadata_json, :approval_request_id, :approved_at, :revoked_at, :last_request_at,
                 :request_count_total, :response_bytes_total, :created_at, :updated_at
             )
@@ -567,16 +558,14 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
 
     sensitive_categories = sensitive_query_categories(payload.query)
     context_request_id = payload.context_request_id or f"bridge-context-{uuid4()}"
-    allow_expert_calls = bool(permissions["allow_expert_calls"])
     bundle = build_cluster_bundle_context(
         vault_id=vault_id,
         query=payload.query,
         cluster_id=payload.cluster_id,
         token_budget=payload.limit,
-        allow_expert_compression=allow_expert_calls,
         mode=payload.mode,
     )
-    exposed_expert_digest = (bundle.get("expert_digest") or {}) if allow_expert_calls else {}
+    exposed_cluster_profile = (bundle.get("cluster_profile") or {}) if bool(permissions["allow_cluster_profile"]) else {}
     warnings = list(bundle.get("warnings") or [])
     if sensitive_categories:
         warnings.append("Sensitive query categories detected: " + ", ".join(sensitive_categories) + ".")
@@ -608,13 +597,14 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
         query=payload.query,
         context_request_id=context_request_id,
         selected_clusters=[item for item in bundle.get("selected_clusters") or [] if isinstance(item, dict)],
+        citations=[item for item in bundle.get("citations") or [] if isinstance(item, dict)],
         source_snippets=ordered_sources,
         warnings=warnings,
         memory_items=[item for item in bundle.get("memory_items") or [] if isinstance(item, dict)],
         working_memory=bundle.get("working_memory") or {},
         retrieval_authority=bool(bundle.get("retrieval_authority", True)),
-        expert_digest=exposed_expert_digest,
-        token_ledger=bundle.get("token_ledger") or {},
+        cluster_profile=exposed_cluster_profile,
+        token_estimate=bundle.get("token_estimate") or {},
         bundle_status=bundle.get("bundle_status") or {},
     )
     packet_text = render_context_packet(packet)
@@ -623,16 +613,15 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
         "query": payload.query,
         "selected_clusters": [item for item in bundle.get("selected_clusters") or [] if isinstance(item, dict)],
         "source_snippets": ordered_sources,
+        "citations": [item for item in bundle.get("citations") or [] if isinstance(item, dict)],
         "warnings": warnings,
         "packet_text": packet_text,
         "expansion_handles": [item["handle"] for item in packet["evidence"]],
         "memory_items": [item for item in bundle.get("memory_items") or [] if isinstance(item, dict)],
         "working_memory": bundle.get("working_memory") or {},
-        "expert_digest": exposed_expert_digest,
-        "expert_used": bool(exposed_expert_digest.get("used")),
-        "expert_mode": str(exposed_expert_digest.get("mode") or ("disabled" if not allow_expert_calls else "not_eligible")),
+        "cluster_profile": exposed_cluster_profile,
         "retrieval_authority": bool(bundle.get("retrieval_authority", True)),
-        "token_ledger": bundle.get("token_ledger") or {},
+        "token_estimate": bundle.get("token_estimate") or {},
         "bundle_status": bundle.get("bundle_status") or {},
     }
     response_bytes = len(json.dumps(response, ensure_ascii=False).encode("utf-8"))
@@ -970,8 +959,7 @@ def create_bridge_client(payload: BridgeClientCreate) -> dict:
             "allowed_vault_ids": json.dumps(existing_vault_ids),
             "allowed_cluster_ids": json.dumps(existing_cluster_ids),
             "allow_raw_snippets": 1 if payload.allow_raw_snippets else 0,
-            "allow_style_profile": 1 if payload.allow_style_profile else 0,
-            "allow_expert_calls": 1 if payload.allow_expert_calls else 0,
+            "allow_style_profile": 1 if payload.allow_cluster_profile else 0,
             "metadata_json": "{}",
             "approval_request_id": None,
             "approved_at": now,
@@ -986,13 +974,13 @@ def create_bridge_client(payload: BridgeClientCreate) -> dict:
             """
             INSERT INTO bridge_clients (
                 id, name, token_hash, enabled, approval_vault_id, allowed_vault_ids, allowed_cluster_ids,
-                allow_raw_snippets, allow_style_profile, allow_expert_calls, metadata_json,
+                allow_raw_snippets, allow_style_profile, metadata_json,
                 approval_request_id, approved_at, revoked_at, last_request_at,
                 request_count_total, response_bytes_total, created_at, updated_at
             )
             VALUES (
                 :id, :name, :token_hash, :enabled, :approval_vault_id, :allowed_vault_ids, :allowed_cluster_ids,
-                :allow_raw_snippets, :allow_style_profile, :allow_expert_calls, :metadata_json,
+                :allow_raw_snippets, :allow_style_profile, :metadata_json,
                 :approval_request_id, :approved_at, :revoked_at, :last_request_at,
                 :request_count_total, :response_bytes_total, :created_at, :updated_at
             )
@@ -1045,8 +1033,7 @@ def update_bridge_client(client_id: str, payload: BridgeClientUpdate) -> dict:
             "allowed_vault_ids",
             "allowed_cluster_ids",
             "allow_raw_snippets",
-            "allow_style_profile",
-            "allow_expert_calls",
+            "allow_cluster_profile",
         ):
             if key in updates and updates[key] is not None:
                 value = updates[key]
@@ -1054,9 +1041,12 @@ def update_bridge_client(client_id: str, payload: BridgeClientUpdate) -> dict:
                     value = json.dumps(_existing_vault_ids(conn, value))
                 elif key == "allowed_cluster_ids":
                     value = json.dumps(_existing_cluster_ids(conn, value))
-                elif key in {"enabled", "allow_raw_snippets", "allow_style_profile", "allow_expert_calls"}:
+                elif key in {"enabled", "allow_raw_snippets", "allow_cluster_profile"}:
                     value = 1 if value else 0
-                current[key] = value
+                if key == "allow_cluster_profile":
+                    current["allow_style_profile"] = value
+                else:
+                    current[key] = value
         candidate_approval_vault_id = _bridge_client_anchor_vault_id(
             conn,
             allowed_vault_ids=_json_list(current.get("allowed_vault_ids")),
@@ -1080,7 +1070,6 @@ def update_bridge_client(client_id: str, payload: BridgeClientUpdate) -> dict:
                 allowed_cluster_ids = :allowed_cluster_ids,
                 allow_raw_snippets = :allow_raw_snippets,
                 allow_style_profile = :allow_style_profile,
-                allow_expert_calls = :allow_expert_calls,
                 updated_at = :updated_at
             WHERE id = :id
             """,
@@ -1188,9 +1177,9 @@ def _ensure_bridge_settings(conn) -> None:
         """
         INSERT INTO bridge_settings (
             id, enabled, allowed_vault_ids, allowed_cluster_ids, allow_raw_snippets,
-            allow_style_profile, allow_expert_calls, bridge_token, created_at, updated_at
+            allow_style_profile, bridge_token, created_at, updated_at
         )
-        VALUES ('default', 0, '[]', '[]', 0, 0, 0, ?, ?, ?)
+        VALUES ('default', 0, '[]', '[]', 0, 0, ?, ?, ?)
         """,
         (secrets.token_urlsafe(24), now, now),
     )
@@ -1229,8 +1218,7 @@ def _get_bridge_settings(conn=None) -> dict:
         "allowed_vault_ids": allowed_vault_ids,
         "allowed_cluster_ids": allowed_cluster_ids,
         "allow_raw_snippets": bool(row["allow_raw_snippets"]),
-        "allow_style_profile": bool(row["allow_style_profile"]),
-        "allow_expert_calls": bool(row["allow_expert_calls"]),
+        "allow_cluster_profile": bool(row["allow_style_profile"]),
         "bridge_token": row["bridge_token"] or "",
     }
 
@@ -1352,8 +1340,7 @@ def _bridge_client_from_mapping(client: dict, *, metadata: dict | None = None) -
         "allowed_vault_ids": _json_list(client.get("allowed_vault_ids")),
         "allowed_cluster_ids": _json_list(client.get("allowed_cluster_ids")),
         "allow_raw_snippets": bool(client.get("allow_raw_snippets")),
-        "allow_style_profile": bool(client.get("allow_style_profile")),
-        "allow_expert_calls": bool(client.get("allow_expert_calls")),
+        "allow_cluster_profile": bool(client.get("allow_style_profile")),
         "approval_request_id": client.get("approval_request_id"),
         "approved_at": client.get("approved_at"),
         "revoked_at": client.get("revoked_at"),
@@ -1475,8 +1462,9 @@ def _approval_request_from_row(conn, row) -> dict:
         "requested_vault_ids": [str(item) for item in details.get("requested_vault_ids") or []],
         "requested_cluster_ids": [str(item) for item in details.get("requested_cluster_ids") or []],
         "allow_raw_snippets": bool(details.get("allow_raw_snippets")),
-        "allow_style_profile": bool(details.get("allow_style_profile")),
-        "allow_expert_calls": bool(details.get("allow_expert_calls")),
+        "allow_cluster_profile": bool(
+            details.get("allow_cluster_profile", details.get("allow_style_profile"))
+        ),
         "executable_path_claim": str(details.get("executable_path_claim") or ""),
         "observed_executable_path": str(details.get("observed_executable_path") or ""),
         "publisher_name": str(details.get("publisher_name") or ""),

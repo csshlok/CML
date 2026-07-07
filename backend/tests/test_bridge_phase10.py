@@ -36,9 +36,9 @@ class BridgePhase10Tests(unittest.TestCase):
             conn.execute(
                 """
                 INSERT INTO clusters (
-                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                    id, vault_id, name, description, color, created_at, updated_at
                 )
-                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', 'searchable', ?, ?)
+                VALUES ('cluster-1', 'vault-1', 'Research', '', 'sage', ?, ?)
                 """,
                 (now, now),
             )
@@ -80,6 +80,22 @@ class BridgePhase10Tests(unittest.TestCase):
 
         self.assertEqual(public.status_code, 200)
         self.assertEqual(admin.status_code, 401)
+
+    def test_bridge_settings_accept_legacy_style_profile_alias_and_return_cluster_profile_field(self) -> None:
+        client = self._client()
+        try:
+            response = client.patch(
+                "/api/v1/bridge/settings",
+                headers={"x-cml-api-token": "local-api-token"},
+                json={"enabled": True, "allow_style_profile": True},
+            )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["allow_cluster_profile"])
+        self.assertNotIn("allow_style_profile", payload)
 
     def test_bridge_approval_request_round_trip_delivers_token_once(self) -> None:
         from backend.app.api.routes.bridge import (
@@ -235,46 +251,49 @@ class BridgePhase10Tests(unittest.TestCase):
 
         self.assertIn("cluster scoped bridge lookup content", expanded["text"])
 
-    def test_bridge_context_omits_expert_digest_when_client_expert_calls_are_disabled(self) -> None:
+    def test_bridge_context_exposes_cluster_profile_when_cluster_profiles_are_enabled(self) -> None:
         from backend.app.api.routes.bridge import build_context, create_bridge_client, update_bridge_settings
         from backend.app.schemas import BridgeClientCreate, BridgeContextRequest, BridgeSettingsUpdate
 
         update_bridge_settings(BridgeSettingsUpdate(enabled=True))
         client = create_bridge_client(
             BridgeClientCreate(
-                name="No expert client",
+                name="Profile client",
                 allowed_cluster_ids=["cluster-1"],
-                allow_expert_calls=False,
+                allow_cluster_profile=True,
             )
         )
 
         with patch(
             "backend.app.api.routes.bridge.build_cluster_bundle_context",
             return_value={
+                "context_request_id": "ctx-1",
+                "query": "cluster scoped bridge lookup",
                 "selected_clusters": [{"id": "cluster-1", "name": "Research"}],
                 "source_snippets": [],
+                "citations": [],
                 "memory_items": [],
                 "working_memory": {},
                 "retrieval_authority": True,
-                "expert_digest": {"used": True, "mode": "retrieval_grounded_compression", "text": "hidden digest"},
-                "token_ledger": {"expert_digest_tokens_estimate": 12},
+                "cluster_profile": {"summary": "Persisted profile"},
+                "token_estimate": {"total_tokens": 12},
                 "bundle_status": {"mode": "context"},
                 "warnings": [],
+                "expansion_handles": [],
             },
         ):
             response = build_context(
                 BridgeContextRequest(
                     cluster_id="cluster-1",
                     query="cluster scoped bridge lookup",
-                    client_name="No expert client",
+                    client_name="No profile client",
                 ),
                 x_cml_bridge_token=client["token"],
             )
 
-        self.assertEqual(response["expert_digest"], {})
-        self.assertFalse(response["expert_used"])
-        self.assertEqual(response["expert_mode"], "disabled")
-        self.assertNotIn("Cluster Expert Digest", response["packet_text"])
+        self.assertEqual(response["cluster_profile"], {"summary": "Persisted profile"})
+        self.assertEqual(response["token_estimate"], {"total_tokens": 12})
+        self.assertIn("Cluster Profile", response["packet_text"])
 
     def test_cluster_scoped_client_can_list_clusters_without_explicit_vault_scope(self) -> None:
         from backend.app.api.routes.bridge import create_bridge_client, list_bridge_clusters, update_bridge_settings
@@ -295,6 +314,7 @@ class BridgePhase10Tests(unittest.TestCase):
 
     def test_cluster_scoped_manual_client_is_anchored_to_single_vault(self) -> None:
         from backend.app.api.routes.bridge import create_bridge_client, list_bridge_clients, update_bridge_settings
+        from backend.app.core.database import connect
         from backend.app.schemas import BridgeClientCreate, BridgeSettingsUpdate
 
         update_bridge_settings(BridgeSettingsUpdate(enabled=True))
@@ -306,8 +326,15 @@ class BridgePhase10Tests(unittest.TestCase):
         )
         listed = list_bridge_clients()
 
+        with connect() as conn:
+            columns = {
+                item["name"]
+                for item in conn.execute("PRAGMA table_info(bridge_clients)").fetchall()
+            }
+
         self.assertEqual(client["approval_vault_id"], "vault-1")
         self.assertEqual(listed[0]["approval_vault_id"], "vault-1")
+        self.assertNotIn("allow_expert_calls", columns)
 
     def test_bridge_context_returns_contract_vault_not_found_for_missing_vault(self) -> None:
         from fastapi import HTTPException

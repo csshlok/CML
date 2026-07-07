@@ -230,7 +230,7 @@ class BridgeMCPTests(unittest.TestCase):
             "review_required": False,
             "trust_tier": "external_capture",
             "reasons": ["explicit_artifact_capture"],
-            "security_labels": ["lora_excluded"],
+            "security_labels": ["external_untrusted"],
             "warnings": [],
         }
 
