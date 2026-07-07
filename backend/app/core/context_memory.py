@@ -278,17 +278,17 @@ def apply_bridge_quality_to_source(conn, *, source_id: str, quality_state: str, 
     labels.discard("review_needed")
     labels.discard("ungrounded_external")
     labels.discard("partial_external")
-    labels.discard("lora_excluded")
+    labels.discard("external_untrusted")
     trust_tier = source.get("trust_tier") or "external_capture"
     if quality_state in {"ungrounded", "unknown"}:
         trust_tier = "low_trust_web"
-        labels.update({"review_needed", "ungrounded_external", "lora_excluded"})
+        labels.update({"review_needed", "ungrounded_external", "external_untrusted"})
     elif quality_state == "partially_grounded":
         trust_tier = "external_capture"
-        labels.update({"review_needed", "partial_external", "lora_excluded"})
+        labels.update({"review_needed", "partial_external", "external_untrusted"})
     elif quality_state == "user_artifact":
         trust_tier = "external_capture"
-        labels.add("lora_excluded")
+        labels.add("external_untrusted")
     else:
         trust_tier = "external_capture"
     conn.execute(
@@ -328,7 +328,7 @@ def set_bridge_writeback_review_approval(
     labels.discard("ungrounded_external")
     labels.discard("partial_external")
     if approved:
-        labels.discard("lora_excluded")
+        labels.discard("external_untrusted")
         trust_tier = "trusted_reviewed"
     else:
         quality_state = str(review["quality_state"] or "")

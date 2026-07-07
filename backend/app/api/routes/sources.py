@@ -15,7 +15,7 @@ from backend.app.core.encrypted_storage import (
     store_source_content_fields,
     update_source_content_fields,
 )
-from backend.app.core.expert_lifecycle import mark_cluster_needs_update
+from backend.app.core.cluster_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_text_from_url_with_security, link_extraction_diagnostics
 from backend.app.core.memory_card import generate_tags, summarize_text
 from backend.app.core.network_security import strip_url_credentials
@@ -43,6 +43,7 @@ def list_sources(
     cluster_id: str | None = None,
     limit: int = 500,
     offset: int = 0,
+    include_content: bool = False,
 ) -> list[dict]:
     clauses: list[str] = []
     params: list[object] = []
@@ -63,7 +64,7 @@ def list_sources(
             f"SELECT * FROM sources {where} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
             [*params, safe_limit, safe_offset],
         ).fetchall()
-        return [source_from_row(row, conn=conn) for row in rows]
+        return [source_from_row(row, conn=conn, include_content=include_content) for row in rows]
 
 
 @router.post("", response_model=SourceRead)
@@ -691,12 +692,15 @@ def delete_source(source_id: str) -> None:
         invalidate_caches_for_source(source_id, conn=conn)
 
 
-def source_from_row(row, conn=None) -> dict:
+def source_from_row(row, conn=None, *, include_content: bool = True) -> dict:
     if conn is not None:
-        source = source_from_encrypted_row(conn, row)
+        source = source_from_encrypted_row(conn, row, include_content=include_content)
     else:
         with connect() as local_conn:
-            source = source_from_encrypted_row(local_conn, row)
+            source = source_from_encrypted_row(local_conn, row, include_content=include_content)
+    if not include_content:
+        source["raw_text"] = ""
+        source["extracted_text"] = ""
     raw_tags = source.get("tags") or "[]"
     try:
         tags = json.loads(raw_tags)

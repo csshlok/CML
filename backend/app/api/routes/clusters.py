@@ -3,27 +3,18 @@ import json
 
 from fastapi import APIRouter, HTTPException
 
+from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.cluster_suggestions import suggest_source_cluster_moves
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.expert_lifecycle import (
-    activation_guard_report,
-    create_expert_job,
-    expert_status_report,
-    latest_expert_jobs,
-)
-from backend.app.core.lora_training import graduation_contract, verify_adapter_artifact
+from backend.app.core.cluster_lifecycle import mark_cluster_needs_update, refresh_cluster_profile
 from backend.app.core.retrieval_cache import invalidate_caches_for_source
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
     ClusterCreate,
-    ClusterExpertJobRead,
     ClusterMergeRequest,
     ClusterRead,
     ClusterSuggestionRead,
     ClusterUpdate,
-    ExpertArtifactRead,
-    ExpertGraduationContractRead,
-    ExpertStatusRead,
 )
 
 router = APIRouter(prefix="/clusters", tags=["clusters"])
@@ -60,7 +51,10 @@ def create_cluster(payload: ClusterCreate) -> dict:
         "name": payload.name,
         "description": payload.description,
         "color": payload.color,
-        "expert_status": "setting-up",
+        "index_status": "empty",
+        "profile_status": "missing",
+        "cluster_summary": "",
+        "cluster_glossary": "[]",
         "created_at": now,
         "updated_at": now,
     }
@@ -71,10 +65,12 @@ def create_cluster(payload: ClusterCreate) -> dict:
         conn.execute(
             """
             INSERT INTO clusters (
-                id, vault_id, name, description, color, expert_status, created_at, updated_at
+                id, vault_id, name, description, color, index_status, profile_status,
+                cluster_summary, cluster_glossary, created_at, updated_at
             )
             VALUES (
-                :id, :vault_id, :name, :description, :color, :expert_status, :created_at, :updated_at
+                :id, :vault_id, :name, :description, :color, :index_status, :profile_status,
+                :cluster_summary, :cluster_glossary, :created_at, :updated_at
             )
             """,
             cluster,
@@ -109,7 +105,7 @@ def update_cluster(cluster_id: str, payload: ClusterUpdate) -> dict:
     updates["updated_at"] = utc_now()
     assignments = build_update_assignments(
         updates,
-        {"name", "description", "color", "expert_status", "updated_at"},
+        {"name", "description", "color", "index_status", "profile_status", "updated_at"},
     )
     params = {"id": cluster_id, **updates}
     with connect() as conn:
@@ -119,200 +115,6 @@ def update_cluster(cluster_id: str, payload: ClusterUpdate) -> dict:
         conn.execute(f"UPDATE clusters SET {assignments} WHERE id = :id", params)
         row = conn.execute("SELECT * FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
     return dict_from_row(row)
-
-
-@router.get("/{cluster_id}/expert/jobs", response_model=list[ClusterExpertJobRead])
-def list_expert_jobs(cluster_id: str) -> list[dict]:
-    with connect() as conn:
-        existing = conn.execute("SELECT id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Cluster not found")
-        return latest_expert_jobs(conn, cluster_id)
-
-
-@router.get("/{cluster_id}/expert/contract", response_model=ExpertGraduationContractRead)
-def get_expert_graduation_contract(cluster_id: str) -> dict:
-    with connect() as conn:
-        existing = conn.execute("SELECT id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Cluster not found")
-    return graduation_contract()
-
-
-@router.get("/{cluster_id}/expert/status", response_model=ExpertStatusRead)
-def get_expert_status(cluster_id: str) -> dict:
-    with connect() as conn:
-        try:
-            return expert_status_report(conn, cluster_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Cluster not found") from None
-
-
-@router.get("/{cluster_id}/expert/artifacts", response_model=list[ExpertArtifactRead])
-def list_expert_artifacts(cluster_id: str) -> list[dict]:
-    with connect() as conn:
-        existing = conn.execute("SELECT id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Cluster not found")
-        rows = conn.execute(
-            """
-            SELECT * FROM expert_artifacts
-            WHERE cluster_id = ? AND deleted_at IS NULL
-            ORDER BY updated_at DESC
-            LIMIT 25
-            """,
-            (cluster_id,),
-        ).fetchall()
-        return [dict_from_row(row) for row in rows]
-
-
-@router.post("/{cluster_id}/expert/retrain", response_model=ClusterExpertJobRead)
-def queue_expert_retrain(cluster_id: str) -> dict:
-    with connect() as conn:
-        cluster = conn.execute("SELECT id, vault_id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
-        if cluster is None:
-            raise HTTPException(status_code=404, detail="Cluster not found")
-        return create_expert_job(
-            conn,
-            cluster_id=cluster_id,
-            vault_id=cluster["vault_id"],
-            action="retrain",
-            detail="Manual expert-compression training pass queued.",
-        )
-
-
-@router.post("/{cluster_id}/expert/artifacts/{artifact_id}/activate", response_model=ExpertArtifactRead)
-def activate_expert_artifact(cluster_id: str, artifact_id: str) -> dict:
-    now = utc_now()
-    with connect() as conn:
-        cluster = conn.execute(
-            "SELECT id FROM clusters WHERE id = ?",
-            (cluster_id,),
-        ).fetchone()
-        if cluster is None:
-            raise HTTPException(status_code=404, detail="Cluster not found")
-        row = conn.execute(
-            """
-            SELECT * FROM expert_artifacts
-            WHERE id = ? AND cluster_id = ? AND status = 'ready' AND deleted_at IS NULL
-            """,
-            (artifact_id, cluster_id),
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Ready artifact not found")
-        artifact = dict_from_row(row)
-        try:
-            verify_adapter_artifact(artifact["local_path"])
-        except Exception as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        current_dataset_hash = str((expert_status_report(conn, cluster_id) or {}).get("current_dataset_hash") or "")
-        guard = activation_guard_report(
-            artifact,
-            current_dataset_hash=current_dataset_hash,
-            require_current_dataset_match=True,
-        )
-        if not guard["ok"]:
-            conn.execute(
-                "UPDATE clusters SET expert_status = 'expert_stale', updated_at = ? WHERE id = ?",
-                (now, cluster_id),
-            )
-            raise HTTPException(status_code=409, detail=str(guard["detail"] or guard["failure_code"] or "Artifact cannot be activated"))
-        conn.execute("UPDATE expert_artifacts SET active = 0, updated_at = ? WHERE cluster_id = ?", (now, cluster_id))
-        conn.execute(
-            "UPDATE expert_artifacts SET active = 1, rolled_back_at = NULL, updated_at = ? WHERE id = ?",
-            (now, artifact_id),
-        )
-        conn.execute(
-            "UPDATE clusters SET expert_status = 'expert_compression_ready', updated_at = ? WHERE id = ?",
-            (now, cluster_id),
-        )
-        updated = conn.execute("SELECT * FROM expert_artifacts WHERE id = ?", (artifact_id,)).fetchone()
-    return dict_from_row(updated)
-
-
-@router.post("/{cluster_id}/expert/rollback", response_model=ExpertArtifactRead)
-def rollback_expert_artifact(cluster_id: str) -> dict:
-    now = utc_now()
-    with connect() as conn:
-        cluster = conn.execute("SELECT id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
-        if cluster is None:
-            raise HTTPException(status_code=404, detail="Cluster not found")
-        active = conn.execute(
-            "SELECT id FROM expert_artifacts WHERE cluster_id = ? AND active = 1 AND deleted_at IS NULL",
-            (cluster_id,),
-        ).fetchone()
-        if active is not None:
-            conn.execute(
-                "UPDATE expert_artifacts SET active = 0, rolled_back_at = ?, updated_at = ? WHERE id = ?",
-                (now, now, active["id"]),
-            )
-        replacement = conn.execute(
-            """
-            SELECT * FROM expert_artifacts
-            WHERE cluster_id = ? AND status = 'ready' AND deleted_at IS NULL
-              AND (? IS NULL OR id != ?)
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            (cluster_id, active["id"] if active else None, active["id"] if active else None),
-        ).fetchone()
-        if replacement is None:
-            conn.execute(
-                "UPDATE clusters SET expert_status = 'rollback_ready', updated_at = ? WHERE id = ?",
-                (now, cluster_id),
-            )
-            raise HTTPException(status_code=409, detail="No previous ready adapter is available for rollback")
-        replacement_artifact = dict_from_row(replacement)
-        current_dataset_hash = str((expert_status_report(conn, cluster_id) or {}).get("current_dataset_hash") or "")
-        guard = activation_guard_report(
-            replacement_artifact,
-            current_dataset_hash=current_dataset_hash,
-            require_current_dataset_match=True,
-        )
-        if not guard["ok"]:
-            conn.execute(
-                "UPDATE clusters SET expert_status = 'expert_stale', updated_at = ? WHERE id = ?",
-                (now, cluster_id),
-            )
-            raise HTTPException(status_code=409, detail=str(guard["detail"] or guard["failure_code"] or "Artifact cannot be rolled back"))
-        conn.execute("UPDATE expert_artifacts SET active = 1, rolled_back_at = NULL, updated_at = ? WHERE id = ?", (now, replacement["id"]))
-        conn.execute(
-            "UPDATE clusters SET expert_status = 'expert_compression_ready', updated_at = ? WHERE id = ?",
-            (now, cluster_id),
-        )
-        updated = conn.execute("SELECT * FROM expert_artifacts WHERE id = ?", (replacement["id"],)).fetchone()
-    return dict_from_row(updated)
-
-
-@router.delete("/{cluster_id}/expert/artifacts/{artifact_id}", status_code=204)
-def delete_expert_artifact(cluster_id: str, artifact_id: str) -> None:
-    now = utc_now()
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT active FROM expert_artifacts WHERE id = ? AND cluster_id = ? AND deleted_at IS NULL",
-            (artifact_id, cluster_id),
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Artifact not found")
-        if int(row["active"] or 0) == 1:
-            raise HTTPException(status_code=409, detail="Active adapter must be rolled back before deletion")
-        conn.execute(
-            "UPDATE expert_artifacts SET deleted_at = ?, updated_at = ? WHERE id = ?",
-            (now, now, artifact_id),
-        )
-
-
-@router.post("/{cluster_id}/expert/pause", response_model=ClusterRead)
-def pause_expert(cluster_id: str) -> dict:
-    with connect() as conn:
-        cluster = conn.execute("SELECT id FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
-        if cluster is None:
-            raise HTTPException(status_code=404, detail="Cluster not found")
-        conn.execute(
-            "UPDATE clusters SET expert_status = 'paused', updated_at = ? WHERE id = ?",
-            (utc_now(), cluster_id),
-        )
-    return get_cluster(cluster_id)
 
 
 @router.post("/{cluster_id}/merge", response_model=ClusterRead)
@@ -371,13 +173,33 @@ def merge_cluster(cluster_id: str, payload: ClusterMergeRequest) -> dict:
         )
         for source_id in moved_sources:
             invalidate_caches_for_source(source_id, conn=conn)
-        conn.execute(
-            "UPDATE clusters SET expert_status = 'expert_stale', updated_at = ? WHERE id = ?",
-            (now, payload.target_cluster_id),
-        )
+        mark_cluster_needs_update(conn, payload.target_cluster_id, "Cluster sources changed after a merge.")
         conn.execute("DELETE FROM clusters WHERE id = ?", (cluster_id,))
         row = conn.execute("SELECT * FROM clusters WHERE id = ?", (payload.target_cluster_id,)).fetchone()
     return dict_from_row(row)
+
+
+@router.post("/{cluster_id}/refresh-profile", response_model=ClusterRead)
+def refresh_cluster_profile_now(cluster_id: str) -> dict:
+    now = utc_now()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        conn.execute(
+            "UPDATE clusters SET profile_status = 'refreshing', updated_at = ? WHERE id = ?",
+            (now, cluster_id),
+        )
+        enqueue_job(
+            conn,
+            job_type="refresh_cluster_profile",
+            payload={"cluster_id": cluster_id, "vault_id": row["vault_id"]},
+            dedupe_key=f"refresh-cluster-profile:{cluster_id}",
+            scope_id=cluster_id,
+            user_initiated=True,
+        )
+        refreshed = conn.execute("SELECT * FROM clusters WHERE id = ?", (cluster_id,)).fetchone()
+    return dict_from_row(refreshed)
 
 
 @router.get("/{cluster_id}/merge-artifacts")
@@ -435,9 +257,10 @@ def rollback_cluster_merge_artifact(artifact_id: str) -> dict:
             conn.execute(
                 """
                 INSERT INTO clusters (
-                    id, vault_id, name, description, color, expert_status, created_at, updated_at
+                    id, vault_id, name, description, color, index_status, profile_status,
+                    cluster_summary, cluster_glossary, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_cluster_id,
@@ -445,7 +268,10 @@ def rollback_cluster_merge_artifact(artifact_id: str) -> dict:
                     str(source_snapshot.get("name") or "Restored cluster"),
                     str(source_snapshot.get("description") or ""),
                     str(source_snapshot.get("color") or "sage"),
-                    "expert_stale",
+                    "ready",
+                    "stale",
+                    "",
+                    "[]",
                     str(source_snapshot.get("created_at") or now),
                     now,
                 ),
@@ -472,10 +298,9 @@ def rollback_cluster_merge_artifact(artifact_id: str) -> dict:
                 """,
                 (source_cluster_id, now, chat_id, artifact["vault_id"]),
             )
-        conn.execute(
-            "UPDATE clusters SET expert_status = 'expert_stale', updated_at = ? WHERE id IN (?, ?)",
-            (now, source_cluster_id, artifact["target_cluster_id"]),
-        )
+        mark_cluster_needs_update(conn, source_cluster_id, "Cluster merge rollback restored sources.")
+        mark_cluster_needs_update(conn, artifact["target_cluster_id"], "Cluster merge rollback removed sources.")
+        refresh_cluster_profile(conn, source_cluster_id)
         conn.execute(
             "UPDATE cluster_merge_artifacts SET rolled_back_at = ? WHERE id = ?",
             (now, artifact_id),

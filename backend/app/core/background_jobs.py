@@ -3,7 +3,6 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from uuid import uuid4
 
 from backend.app.core.database import connect, dict_from_row, utc_now
@@ -14,30 +13,11 @@ from backend.app.core.encrypted_storage import (
     plaintext_column_for_text,
     update_source_content_fields,
 )
-from backend.app.core.expert_contract import EXPERT_OBJECTIVE_VERSION
-from backend.app.core.expert_lifecycle import mark_cluster_needs_update
-from backend.app.core.config import get_settings
-from backend.app.core.expert_runtime import runtime_adapter_load_plan
-from backend.app.core.model_registry import preferred_expert_base_model
+from backend.app.core.cluster_lifecycle import mark_cluster_needs_update, refresh_cluster_profile
 from backend.app.core.vector_maintenance import vector_repair_plan
 from backend.app.core.context_memory import rebuild_chat_session_memory, rebuild_source_memory
 from backend.app.core.analysis_packets import build_analysis_packets
-from backend.app.core.training_dataset import build_cluster_dataset, write_cluster_training_dataset
 from backend.app.core.unlock_state import should_pause_vault_job
-from backend.app.core.expert_evaluation import (
-    EVALUATION_CATEGORIES,
-    build_expert_evaluation_plan,
-    run_live_expert_benchmark,
-)
-from backend.app.core.lora_training import (
-    LoraTrainerMissingError,
-    adapter_validation_report,
-    benchmark_eligibility_report,
-    dataset_graduation_report,
-    new_artifact_dir,
-    run_lora_training_process,
-    training_config,
-)
 
 
 JOB_POLL_SECONDS = 1.0
@@ -106,6 +86,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         cancellable=False,
         preemptable=False,
         timeout_seconds=300,
+        soft_timeout_seconds=None,
+        timeout_action="defer",
+    ),
+    "refresh_cluster_profile": JobPolicy(
+        priority="normal",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="cluster",
+        concurrency_group="cluster_profile",
+        resource_cost="light",
+        can_run_during_synthesis=True,
+        user_visible=False,
+        user_initiated=False,
+        cancellable=False,
+        preemptable=False,
+        timeout_seconds=180,
         soft_timeout_seconds=None,
         timeout_action="defer",
     ),
@@ -210,23 +207,6 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         timeout_seconds=1800,
         soft_timeout_seconds=300,
         timeout_action="defer",
-    ),
-    "train_cluster_adapter": JobPolicy(
-        priority="low",
-        idempotency_class="reconcile_required",
-        restart_policy="manual_review",
-        dependency_failure_policy="manual_review",
-        write_scope="expert",
-        concurrency_group="adapter_training",
-        resource_cost="heavy",
-        can_run_during_synthesis=False,
-        user_visible=True,
-        user_initiated=True,
-        cancellable=True,
-        preemptable=False,
-        timeout_seconds=7200,
-        soft_timeout_seconds=1800,
-        timeout_action="escalate",
     ),
 }
 
@@ -552,6 +532,8 @@ def _run_claimed_job(job: dict) -> None:
             _run_reindex_source(payload)
         elif job["job_type"] == "chat_transcript_memory":
             _run_chat_transcript_memory(payload)
+        elif job["job_type"] == "refresh_cluster_profile":
+            _run_refresh_cluster_profile(payload)
         elif job["job_type"] == "ocr_source":
             _run_ocr_source(payload, job["id"])
         elif job["job_type"] == "expanded_analysis":
@@ -564,8 +546,6 @@ def _run_claimed_job(job: dict) -> None:
             _run_vector_reconcile_incremental(payload)
         elif job["job_type"] == "integration_refresh":
             _run_integration_refresh(payload)
-        elif job["job_type"] == "train_cluster_adapter":
-            _run_train_cluster_adapter(payload)
         else:
             raise ValueError(f"Unsupported job type: {job['job_type']}")
     except Exception as exc:
@@ -618,6 +598,14 @@ def _run_chat_transcript_memory(payload: dict) -> None:
             "UPDATE chat_sessions SET memory_status = 'indexed', memory_updated_at = ? WHERE id = ?",
             (utc_now(), session_id),
         )
+
+
+def _run_refresh_cluster_profile(payload: dict) -> None:
+    cluster_id = str(payload.get("cluster_id") or "")
+    if not cluster_id:
+        return
+    with connect() as conn:
+        refresh_cluster_profile(conn, cluster_id)
 
 
 def _run_ocr_source(payload: dict, job_id: str) -> None:
@@ -866,498 +854,6 @@ def _run_integration_refresh(payload: dict) -> None:
         tombstone_missing=True,
         trigger_source="watch_refresh",
     )
-
-
-def _run_train_cluster_adapter(payload: dict) -> None:
-    from backend.app.core.hardware import hardware_status
-
-    cluster_id = str(payload.get("cluster_id") or "")
-    vault_id = str(payload.get("vault_id") or "")
-    expert_job_id = str(payload.get("expert_job_id") or "")
-
-    hardware = hardware_status()
-    now = utc_now()
-
-    with connect() as conn:
-        if hardware["training_supported"] is not True:
-            conn.execute(
-                """
-                UPDATE clusters
-                SET expert_status = 'hardware_unsupported',
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (now, cluster_id),
-            )
-
-            if expert_job_id:
-                conn.execute(
-                    """
-                    UPDATE cluster_expert_jobs
-                    SET status = 'manual_review',
-                        failure_code = 'hardware_unsupported',
-                        detail = ?,
-                        hardware_tier = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        hardware["detail"],
-                        hardware["hardware_tier"],
-                        now,
-                        expert_job_id,
-                    ),
-                )
-
-            conn.commit()
-            raise RuntimeError(hardware["detail"])
-
-        conn.execute(
-            """
-            UPDATE clusters
-            SET expert_status = 'training_running',
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (now, cluster_id),
-        )
-        if expert_job_id:
-            conn.execute(
-                """
-                UPDATE cluster_expert_jobs
-                SET status = 'running',
-                    detail = 'LoRA adapter training is running.',
-                    hardware_tier = ?,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (hardware["hardware_tier"], now, expert_job_id),
-            )
-
-        dataset = build_cluster_dataset(cluster_id)
-        train_source_target = int(get_settings().lora_train_source_target or 0)
-        validation_source_target = int(get_settings().lora_validation_source_target or 0)
-        if (train_source_target > 0) != (validation_source_target > 0):
-            raise RuntimeError(
-                "CML_LORA_TRAIN_SOURCE_TARGET and CML_LORA_VALIDATION_SOURCE_TARGET must both be set for exact source splits."
-            )
-        if train_source_target > 0 and validation_source_target > 0:
-            dataset["train_source_target"] = train_source_target
-            dataset["validation_source_target"] = validation_source_target
-        dataset_gate = dataset_graduation_report(dataset)
-        if not dataset_gate["passes"]:
-            _mark_expert_training_failed(
-                conn,
-                cluster_id=cluster_id,
-                expert_job_id=expert_job_id,
-                failure_code="insufficient_dataset",
-                detail=f"Cluster does not meet LoRA graduation dataset gates: {dataset_gate}",
-                hardware_tier=hardware["hardware_tier"],
-            )
-            raise RuntimeError("Cluster does not meet LoRA graduation dataset gates.")
-
-        artifact_dir = new_artifact_dir(cluster_id)
-        dataset_manifest = write_cluster_training_dataset(dataset, artifact_dir / "dataset")
-        dataset_gate = dataset_graduation_report(dataset, validation_count=int(dataset_manifest["validation_count"]))
-        if not dataset_gate["passes"]:
-            _mark_expert_training_failed(
-                conn,
-                cluster_id=cluster_id,
-                expert_job_id=expert_job_id,
-                failure_code="insufficient_dataset",
-                detail=f"Cluster does not meet LoRA graduation validation gates: {dataset_gate}",
-                hardware_tier=hardware["hardware_tier"],
-            )
-            raise RuntimeError("Cluster does not meet LoRA graduation validation gates.")
-        benchmark_gate = benchmark_eligibility_report(dataset_manifest)
-        if not benchmark_gate["passes"]:
-            _mark_expert_training_failed(
-                conn,
-                cluster_id=cluster_id,
-                expert_job_id=expert_job_id,
-                failure_code="insufficient_benchmark_diversity",
-                detail=f"Cluster does not meet benchmark-eligibility diversity gates: {benchmark_gate}",
-                hardware_tier=hardware["hardware_tier"],
-            )
-            raise RuntimeError("Cluster does not meet benchmark-eligibility diversity gates.")
-        preferred_model = preferred_expert_base_model()
-        if preferred_model is None:
-            _mark_expert_training_failed(
-                conn,
-                cluster_id=cluster_id,
-                expert_job_id=expert_job_id,
-                failure_code="runtime_load_failed",
-                detail="No accepted local base model is active for expert training.",
-                hardware_tier=hardware["hardware_tier"],
-            )
-            raise RuntimeError("No accepted local base model is active for expert training.")
-        config = training_config(
-            base_model=str(preferred_model.get("local_path") or preferred_model.get("id") or get_settings().llm_model),
-            dataset_hash=dataset["dataset_hash"],
-        )
-        config["expert_objective_version"] = EXPERT_OBJECTIVE_VERSION
-
-        try:
-            train_result = run_lora_training_process(
-                dataset_manifest=dataset_manifest,
-                output_dir=artifact_dir,
-                config=config,
-            )
-        except LoraTrainerMissingError as exc:
-            _mark_expert_training_failed(
-                conn,
-                cluster_id=cluster_id,
-                expert_job_id=expert_job_id,
-                failure_code="trainer_missing",
-                detail=str(exc),
-                hardware_tier=hardware["hardware_tier"],
-            )
-            raise
-        except Exception as exc:
-            _mark_expert_training_failed(
-                conn,
-                cluster_id=cluster_id,
-                expert_job_id=expert_job_id,
-                failure_code="trainer_failed",
-                detail=str(exc),
-                hardware_tier=hardware["hardware_tier"],
-            )
-            raise
-
-        adapter_validation = adapter_validation_report(train_result["adapter_path"])
-        if not adapter_validation["valid"]:
-            _mark_expert_training_failed(
-                conn,
-                cluster_id=cluster_id,
-                expert_job_id=expert_job_id,
-                failure_code="adapter_invalid",
-                detail=f"Adapter artifact validation failed: {adapter_validation['errors']}",
-                hardware_tier=hardware["hardware_tier"],
-            )
-            raise RuntimeError("Adapter artifact validation failed.")
-
-        runtime_load = runtime_adapter_load_plan(
-            adapter_path=train_result["adapter_path"],
-            base_model=config["base_model"],
-        )
-        if not runtime_load["available"]:
-            _mark_expert_training_failed(
-                conn,
-                cluster_id=cluster_id,
-                expert_job_id=expert_job_id,
-                failure_code="runtime_load_failed",
-                detail=runtime_load["detail"],
-                hardware_tier=hardware["hardware_tier"],
-            )
-            raise RuntimeError("Adapter runtime load contract is unavailable.")
-
-        current_dataset = build_cluster_dataset(cluster_id)
-        if str(current_dataset.get("dataset_hash") or "") != str(dataset.get("dataset_hash") or ""):
-            _mark_expert_dataset_changed(
-                conn,
-                cluster_id=cluster_id,
-                expert_job_id=expert_job_id,
-                detail="Cluster sources changed before the adapter could be activated. Queue a fresh retrain pass.",
-                hardware_tier=hardware["hardware_tier"],
-            )
-            raise RuntimeError("Cluster sources changed before adapter activation.")
-
-        benchmark_case_limit = int(get_settings().lora_benchmark_case_limit or 0)
-        evaluation_plan = build_expert_evaluation_plan(
-            dataset,
-            max_cases=(
-                max(len(EVALUATION_CATEGORIES), benchmark_case_limit)
-                if benchmark_case_limit > 0
-                else max(len(EVALUATION_CATEGORIES), len(list(dataset.get("documents") or [])))
-            ),
-        )
-        wrong_adapter_row = conn.execute(
-            """
-            SELECT local_path, base_model
-            FROM expert_artifacts
-            WHERE cluster_id != ?
-              AND artifact_type = 'lora_adapter'
-              AND status = 'ready'
-              AND deleted_at IS NULL
-              AND COALESCE(local_path, '') != ''
-              AND local_path != ?
-            ORDER BY active DESC, updated_at DESC, created_at DESC
-            LIMIT 1
-            """,
-            (cluster_id, train_result["adapter_path"]),
-        ).fetchone()
-        benchmark_run = run_live_expert_benchmark(
-            dataset,
-            adapter_path=train_result["adapter_path"],
-            base_model=config["base_model"],
-            wrong_adapter_path=(str(wrong_adapter_row["local_path"]) if wrong_adapter_row else None),
-            wrong_adapter_base_model=(str(wrong_adapter_row["base_model"]) if wrong_adapter_row else None),
-            evaluation_plan=evaluation_plan,
-        )
-        benchmark_report = benchmark_run["benchmark_report"]
-        bundle_summary = dict(benchmark_report.get("bundle_benchmark_summary") or {})
-        overall_scores = dict(benchmark_report.get("overall") or {})
-        metrics = {
-            "retrieval_only_score": overall_scores.get("retrieval_only_score"),
-            "adapter_score": overall_scores.get("adapter_score"),
-            "bundle_with_expert_score": bundle_summary.get("bundle_with_expert_score"),
-            "retrieval_only_full_score": bundle_summary.get("retrieval_only_full_score"),
-            "retrieval_only_small_score": bundle_summary.get("retrieval_only_small_score"),
-            "quality_delta": overall_scores.get("quality_delta"),
-            "minimum_quality_delta": overall_scores.get("minimum_quality_delta"),
-            "validation_count": int(dataset_manifest["validation_count"]),
-            "adapter_dir_exists": True,
-            "adapter_valid": True,
-        }
-        metrics["expert_objective_version"] = EXPERT_OBJECTIVE_VERSION
-        metrics["training_record_types"] = list(dataset_manifest.get("training_record_types") or [])
-        metrics["requires_retrieved_evidence"] = bool(dataset_manifest.get("requires_retrieved_evidence"))
-        metrics["dataset_gate"] = dataset_gate
-        metrics["benchmark_gate"] = benchmark_gate
-        metrics["adapter_validation"] = adapter_validation
-        metrics["runtime_load"] = runtime_load
-        metrics["evaluation_plan"] = {
-            "case_count": benchmark_run["evaluation_plan"]["case_count"],
-            "categories": benchmark_run["evaluation_plan"]["categories"],
-            "dataset_hash": benchmark_run["evaluation_plan"].get("dataset_hash"),
-        }
-        metrics["bundle_benchmark_summary"] = bundle_summary
-        metrics["bundle_release_gate"] = dict(benchmark_report.get("bundle_release_gate") or {})
-        metrics["bundle_readiness"] = dict(benchmark_report.get("bundle_readiness") or {})
-        metrics["bundle_mode_coverage"] = dict(benchmark_report.get("bundle_mode_coverage") or {})
-        metrics["bundle_benchmark_modes"] = dict(benchmark_report.get("bundle_benchmark_modes") or {})
-        metrics["live_runtime_batch"] = benchmark_run["runtime"]
-        metrics["retrieval_case_scores"] = benchmark_run["retrieval_case_scores"]
-        metrics["retrieval_small_case_scores"] = benchmark_run.get("retrieval_small_case_scores") or []
-        metrics["adapter_case_scores"] = benchmark_run["adapter_case_scores"]
-        metrics["benchmark_report"] = benchmark_report
-        metrics["mode_case_outputs"] = dict(benchmark_report.get("mode_case_outputs") or {})
-        metrics["bundle_case_outputs"] = dict(benchmark_report.get("bundle_case_outputs") or {})
-        benchmark_artifact_path = _write_adapter_benchmark_report(
-            train_result["adapter_path"],
-            payload={
-                "status": benchmark_report.get("status"),
-                "passes": benchmark_report.get("passes"),
-                "adapter_path": train_result["adapter_path"],
-                "base_model": config["base_model"],
-                "dataset_hash": dataset.get("dataset_hash"),
-                "created_at": now,
-                "metadata": {
-                    "expert_objective_version": EXPERT_OBJECTIVE_VERSION,
-                    "training_record_types": list(dataset_manifest.get("training_record_types") or []),
-                    "requires_retrieved_evidence": bool(dataset_manifest.get("requires_retrieved_evidence")),
-                },
-                "metrics": metrics,
-                "benchmark_run": benchmark_run,
-            },
-        )
-        metrics["post_training_benchmark_path"] = benchmark_artifact_path
-        metrics["bundle_benchmark_hash"] = content_hash(json.dumps(benchmark_report, sort_keys=True))
-        min_quality = get_settings().lora_min_quality_score
-        skip_quality_gate = bool(get_settings().lora_skip_quality_gate)
-        benchmark_failed = not bool(benchmark_report.get("passes"))
-        graduated_score = float(bundle_summary.get("bundle_with_expert_score") or 0.0)
-        metrics["quality_gate"] = {
-            "skipped": skip_quality_gate,
-            "benchmark_failed": benchmark_failed,
-            "graduated_score": graduated_score,
-            "minimum_quality_score": min_quality,
-        }
-        quality_gate_failed = benchmark_failed or graduated_score < min_quality
-        if quality_gate_failed and not skip_quality_gate:
-            _mark_expert_training_failed(
-                conn,
-                cluster_id=cluster_id,
-                expert_job_id=expert_job_id,
-                failure_code="quality_gate_failed",
-                detail=f"Adapter did not pass quality gate: {metrics}",
-                hardware_tier=hardware["hardware_tier"],
-                artifact_path=benchmark_artifact_path,
-            )
-            raise RuntimeError("Adapter did not pass the LoRA quality gate.")
-        completion_detail = (
-            "LoRA adapter trained and activated. "
-            f"Expert-compression bundle score={graduated_score}, gate={benchmark_report.get('bundle_release_gate') or benchmark_report.get('gate_report')}"
-        )
-        if quality_gate_failed and skip_quality_gate:
-            completion_detail += " Quality gate bypassed for diagnostic run."
-
-        artifact_id = f"artifact-{uuid4()}"
-        conn.execute(
-            """
-            UPDATE expert_artifacts
-            SET active = 0,
-                updated_at = ?
-            WHERE cluster_id = ? AND active = 1
-            """,
-            (now, cluster_id),
-        )
-
-        conn.execute(
-            """
-            INSERT INTO expert_artifacts (
-                id,
-                cluster_id,
-                vault_id,
-                job_id,
-                artifact_type,
-                status,
-                local_path,
-                base_model,
-                hardware_tier,
-                quality_score,
-                dataset_hash,
-                training_config_hash,
-                metrics_json,
-                active,
-                created_at,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                artifact_id,
-                cluster_id,
-                vault_id,
-                expert_job_id or None,
-                "lora_adapter",
-                "ready",
-                train_result["adapter_path"],
-                config["base_model"],
-                hardware["hardware_tier"],
-                graduated_score,
-                dataset["dataset_hash"],
-                config["training_config_hash"],
-                json.dumps(metrics, separators=(",", ":")),
-                1,
-                now,
-                now,
-            ),
-        )
-
-        if expert_job_id:
-            conn.execute(
-                """
-                UPDATE cluster_expert_jobs
-                SET status = ?,
-                    detail = ?,
-                    artifact_path = ?,
-                    hardware_tier = ?,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    "completed",
-                    completion_detail,
-                    benchmark_artifact_path,
-                    hardware["hardware_tier"],
-                    now,
-                    expert_job_id,
-                ),
-            )
-
-        conn.execute(
-            """
-            UPDATE clusters
-            SET expert_status = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                "expert_compression_ready",
-                now,
-                cluster_id,
-            ),
-        )
-
-
-def _mark_expert_training_failed(
-    conn,
-    *,
-    cluster_id: str,
-    expert_job_id: str,
-    failure_code: str,
-    detail: str,
-    hardware_tier: str,
-    artifact_path: str | None = None,
-) -> None:
-    now = utc_now()
-    conn.execute(
-        """
-        UPDATE clusters
-        SET expert_status = 'training_failed',
-            updated_at = ?
-        WHERE id = ?
-        """,
-        (now, cluster_id),
-    )
-    if expert_job_id:
-        conn.execute(
-            """
-            UPDATE cluster_expert_jobs
-            SET status = 'failed',
-                failure_code = ?,
-                detail = ?,
-                artifact_path = COALESCE(?, artifact_path),
-                hardware_tier = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (failure_code, detail[:1000], artifact_path, hardware_tier, now, expert_job_id),
-    )
-    conn.commit()
-
-
-def _write_adapter_benchmark_report(adapter_path: str, *, payload: dict) -> str:
-    report_path = Path(adapter_path) / "post-training-benchmark.json"
-    report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return str(report_path)
-
-
-def _mark_expert_dataset_changed(
-    conn,
-    *,
-    cluster_id: str,
-    expert_job_id: str,
-    detail: str,
-    hardware_tier: str,
-) -> None:
-    now = utc_now()
-    active_ready = conn.execute(
-        """
-        SELECT id
-        FROM expert_artifacts
-        WHERE cluster_id = ? AND active = 1 AND status = 'ready' AND deleted_at IS NULL
-        LIMIT 1
-        """,
-        (cluster_id,),
-    ).fetchone()
-    next_status = "expert_stale" if active_ready is not None else "training_failed"
-    conn.execute(
-        """
-        UPDATE clusters
-        SET expert_status = ?,
-            updated_at = ?
-        WHERE id = ?
-        """,
-        (next_status, now, cluster_id),
-    )
-    if expert_job_id:
-        conn.execute(
-            """
-            UPDATE cluster_expert_jobs
-            SET status = 'failed',
-                failure_code = 'dataset_changed',
-                detail = ?,
-                hardware_tier = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (detail[:1000], hardware_tier, now, expert_job_id),
-        )
-    conn.commit()
-
-
 def _mark_job_failed_or_retry(job: dict, error: str) -> None:
     with connect() as conn:
         current = conn.execute(
@@ -1449,8 +945,6 @@ def _default_scope_id(write_scope: str, payload: dict) -> str | None:
     if write_scope == "chat":
         return _optional_string(payload.get("session_id"))
     if write_scope == "cluster":
-        return _optional_string(payload.get("cluster_id"))
-    if write_scope == "expert":
         return _optional_string(payload.get("cluster_id"))
     if write_scope == "vault":
         return _optional_string(payload.get("vault_id"))

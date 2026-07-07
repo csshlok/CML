@@ -27,7 +27,7 @@ from backend.app.api.routes.sources import _create_source_record, delete_source
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.embeddings import require_embeddings_available
 from backend.app.core.encrypted_storage import update_source_content_fields
-from backend.app.core.expert_lifecycle import mark_cluster_needs_update
+from backend.app.core.cluster_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_pages_from_path
 from backend.app.core.memory_card import generate_tags, summarize_text
 from backend.app.core.retrieval_cache import invalidate_caches_for_source

@@ -46,7 +46,7 @@ def browser_derived_security(final_url: str) -> dict:
     return {
         "provenance": "browser_derived",
         "trust_tier": "low_trust_web",
-        "security_labels": ["external_web", "browser_derived", "low_trust", "lora_excluded"],
+        "security_labels": ["external_web", "browser_derived", "low_trust", "external_untrusted"],
         "browser_isolation": browser_ingestion_diagnostics(),
         "final_url": strip_url_credentials(final_url),
     }

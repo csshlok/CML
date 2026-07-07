@@ -71,10 +71,12 @@ def assign_or_create_cluster(conn, *, vault_id: str, title: str, text: str) -> s
     conn.execute(
         """
         INSERT INTO clusters (
-            id, vault_id, name, description, color, expert_status, created_at, updated_at
+            id, vault_id, name, description, color, index_status, profile_status,
+            cluster_summary, cluster_glossary, created_at, updated_at
         )
         VALUES (
-            :id, :vault_id, :name, :description, :color, 'setting-up', :created_at, :updated_at
+            :id, :vault_id, :name, :description, :color, 'empty', 'missing',
+            '', '[]', :created_at, :updated_at
         )
         """,
         {
