@@ -337,6 +337,92 @@ export type ClusterSuggestionRecord = {
   reason: string;
 };
 
+export type ProjectSnapshotRecord = {
+  id: string;
+  project_id: string;
+  source_manifest_hash: string;
+  git_commit: string | null;
+  branch: string | null;
+  dirty_working_tree: boolean;
+  extractor_version: string;
+  eligible_count: number;
+  ignored_count: number;
+  generated_count: number;
+  parsed_count: number;
+  failed_count: number;
+  structure_status: string;
+  retrieval_status: string;
+  interpretation_status: string;
+  activated_at: string | null;
+  created_at: string;
+};
+
+export type ProjectRecord = {
+  id: string;
+  vault_id: string;
+  name: string;
+  root_path: string;
+  root_fingerprint: string;
+  primary_cluster_id: string;
+  repository_kind: "git" | "folder" | string;
+  git_remote_fingerprint: string | null;
+  default_branch: string | null;
+  indexed_commit: string | null;
+  working_tree_dirty: boolean;
+  changed_file_count: number;
+  status: string;
+  structure_status: string;
+  retrieval_status: string;
+  interpretation_status: string;
+  active_snapshot_id: string | null;
+  active_snapshot: ProjectSnapshotRecord | null;
+  brief: string;
+  languages: Record<string, number>;
+  workspace_count: number;
+  entrypoints: string[];
+  source_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProjectGraphNode = {
+  id: string;
+  qualified_id: string;
+  kind: string;
+  language: string;
+  label: string;
+  relative_path: string;
+  start_line: number | null;
+  end_line: number | null;
+  signature: string;
+  source_id: string | null;
+};
+
+export type ProjectGraphEdge = {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+  confidence: string;
+  evidence_source_id: string | null;
+  source_line: number | null;
+};
+
+export type ProjectGraphView = {
+  version: number;
+  project_id: string;
+  snapshot_id: string;
+  indexed_commit: string | null;
+  mode: "graph" | "tree";
+  query: string;
+  root: string;
+  nodes: ProjectGraphNode[];
+  edges: ProjectGraphEdge[];
+  truncated: boolean;
+  limits: { max_nodes: number; max_depth: number };
+  warnings: string[];
+};
+
 export type AppJobRecord = {
   id: string;
   job_type: string;
@@ -518,6 +604,7 @@ export type ChatSessionRecord = {
   vault_id: string;
   title: string;
   scope_cluster_id: string | null;
+  scope_project_id: string | null;
   saved: boolean;
   memory_status: string;
   memory_updated_at: string | null;
@@ -627,6 +714,34 @@ export type LocalModelRecord = {
   active_chat: boolean;
   compatibility: ModelCompatibilityRecord | null;
   source_kind: string;
+};
+
+export type ClusterMergeArtifact = {
+  id: string;
+  vault_id: string;
+  source_cluster_id: string;
+  target_cluster_id: string;
+  moved_source_ids: string[];
+  moved_chat_session_ids: string[];
+  reversible: boolean;
+  rolled_back_at: string | null;
+  created_at: string;
+};
+
+export type SourceStatsRecord = {
+  source_id: string;
+  page_count: number;
+  chunk_count: number;
+  size_bytes: number | null;
+};
+
+export type ReindexQueueResult = {
+  status: string;
+  job_id?: string;
+  source_id?: string;
+  vault_id?: string;
+  sources_matched?: number;
+  jobs_queued?: number;
 };
 
 export type ModelRecommendationsRecord = {
@@ -1190,6 +1305,59 @@ export async function updateCluster(
   });
 }
 
+export async function listProjects(vaultId?: string) {
+  const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
+  return request<ProjectRecord[]>(`/api/v1/projects${query}`);
+}
+
+export async function getProject(id: string) {
+  return request<ProjectRecord>(`/api/v1/projects/${encodeURIComponent(id)}`);
+}
+
+export async function getProjectGraphView(
+  id: string,
+  options: {
+    mode: "graph" | "tree";
+    query?: string;
+    root?: string;
+    maxDepth?: number;
+    maxNodes?: number;
+  },
+) {
+  const params = new URLSearchParams({ mode: options.mode });
+  if (options.query) params.set("q", options.query);
+  if (options.root) params.set("root", options.root);
+  if (options.maxDepth) params.set("max_depth", String(options.maxDepth));
+  if (options.maxNodes) params.set("max_nodes", String(options.maxNodes));
+  return request<ProjectGraphView>(
+    `/api/v1/projects/${encodeURIComponent(id)}/graph/view?${params.toString()}`,
+  );
+}
+
+export async function synchronizeProject(id: string) {
+  return request<{ project: ProjectRecord; run: Record<string, unknown>; snapshot_id: string }>(
+    `/api/v1/projects/${encodeURIComponent(id)}/sync`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+export async function reindexProject(id: string, layer: "structure" | "retrieval" | "interpretation" | "full") {
+  return request<{ project: ProjectRecord; queued_jobs?: number; layer?: string }>(
+    `/api/v1/projects/${encodeURIComponent(id)}/reindex`,
+    { method: "POST", body: JSON.stringify({ layer }) },
+  );
+}
+
+export async function deleteVault(
+  id: string,
+  payload: { confirmation_name: string; passphrase?: string | null },
+) {
+  await request<void>(`/api/v1/vaults/${encodeURIComponent(id)}/delete`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function mergeClusterInto(sourceClusterId: string, targetClusterId: string) {
   return request<ClusterRecord>(`/api/v1/clusters/${encodeURIComponent(sourceClusterId)}/merge`, {
     method: "POST",
@@ -1203,11 +1371,15 @@ export async function listClusterSuggestions(vaultId: string, limit = 12) {
   );
 }
 
-export async function listSources(vaultId?: string, options: { limit?: number; offset?: number } = {}) {
+export async function listSources(
+  vaultId?: string,
+  options: { limit?: number; offset?: number; clusterId?: string } = {},
+) {
   const params = new URLSearchParams();
   if (vaultId) params.set("vault_id", vaultId);
   if (options.limit) params.set("limit", String(options.limit));
   if (options.offset) params.set("offset", String(options.offset));
+  if (options.clusterId) params.set("cluster_id", options.clusterId);
   const query = params.size ? `?${params.toString()}` : "";
   return request<SourceRecord[]>(`/api/v1/sources${query}`);
 }
@@ -1284,8 +1456,61 @@ export async function updateSource(
   });
 }
 
-export async function listSourcePages(sourceId: string) {
-  return request<SourcePageRecord[]>(`/api/v1/sources/${encodeURIComponent(sourceId)}/pages`);
+export async function listSourcePages(sourceId: string, options: { limit?: number; offset?: number } = {}) {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.offset !== undefined) params.set("offset", String(options.offset));
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<SourcePageRecord[]>(
+    `/api/v1/sources/${encodeURIComponent(sourceId)}/pages${suffix}`,
+  );
+}
+
+export async function listClusterMergeArtifacts(clusterId: string) {
+  return request<{ cluster_id: string; items: ClusterMergeArtifact[] }>(
+    `/api/v1/clusters/${encodeURIComponent(clusterId)}/merge-artifacts`,
+  );
+}
+
+export async function rollbackClusterMerge(artifactId: string) {
+  return request<ClusterRecord>(
+    `/api/v1/clusters/merge-artifacts/${encodeURIComponent(artifactId)}/rollback`,
+    { method: "POST" },
+  );
+}
+
+export async function deleteCluster(clusterId: string) {
+  await request<void>(`/api/v1/clusters/${encodeURIComponent(clusterId)}`, { method: "DELETE" });
+}
+
+export async function countSources(vaultId?: string, clusterId?: string) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (clusterId) params.set("cluster_id", clusterId);
+  const query = params.size ? `?${params.toString()}` : "";
+  return request<{ total: number }>(`/api/v1/sources/count${query}`);
+}
+
+export type SourceClusterCountRecord = {
+  cluster_id: string | null;
+  state: SourceRecord["state"];
+  total: number;
+};
+
+export async function sourceCountsByCluster(vaultId: string) {
+  return request<{ items: SourceClusterCountRecord[] }>(
+    `/api/v1/sources/counts-by-cluster?vault_id=${encodeURIComponent(vaultId)}`,
+  );
+}
+
+export async function getSourceStats(sourceId: string) {
+  return request<SourceStatsRecord>(`/api/v1/sources/${encodeURIComponent(sourceId)}/stats`);
+}
+
+export async function reindexSource(sourceId: string) {
+  return request<ReindexQueueResult>(`/api/v1/sources/${encodeURIComponent(sourceId)}/reindex`, {
+    method: "POST",
+  });
 }
 
 export async function deleteSource(id: string) {
@@ -1305,7 +1530,7 @@ export async function semanticSearch(payload: {
 }
 
 export async function reindexVaultSearch(vaultId: string) {
-  return request<{ vault_id: string; sources_indexed: number; chunks_indexed: number }>(
+  return request<ReindexQueueResult>(
     `/api/v1/search/reindex/${encodeURIComponent(vaultId)}`,
     { method: "POST" },
   );
@@ -1449,6 +1674,7 @@ export async function createChatSession(payload: {
   vault_id: string;
   title?: string | null;
   scope_cluster_id?: string | null;
+  scope_project_id?: string | null;
 }) {
   return request<ChatSessionRecord>("/api/v1/chat/sessions", {
     method: "POST",
@@ -1466,7 +1692,7 @@ export async function getChatTimeline(id: string) {
 
 export async function updateChatSession(
   id: string,
-  payload: Partial<Pick<ChatSessionRecord, "title" | "scope_cluster_id" | "saved">>,
+  payload: Partial<Pick<ChatSessionRecord, "title" | "scope_cluster_id" | "scope_project_id" | "saved">>,
 ) {
   return request<ChatSessionRecord>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`, {
     method: "PATCH",
@@ -1861,6 +2087,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${backendUrl}${apiPath(path)}`, {
     ...init,
     headers,
+    signal: init?.signal ?? AbortSignal.timeout(30_000),
   });
   if (!response.ok) {
     let detail = "";
