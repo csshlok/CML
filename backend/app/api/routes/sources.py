@@ -67,6 +67,46 @@ def list_sources(
         return [source_from_row(row, conn=conn, include_content=include_content) for row in rows]
 
 
+@router.get("/count")
+def count_sources(vault_id: str | None = None, cluster_id: str | None = None) -> dict:
+    clauses = ["deleted_at IS NULL"]
+    params: list[object] = []
+    if vault_id:
+        clauses.append("vault_id = ?")
+        params.append(vault_id)
+    if cluster_id:
+        clauses.append("cluster_id = ?")
+        params.append(cluster_id)
+    with connect() as conn:
+        _validate_source_list_filters(conn, vault_id=vault_id, cluster_id=cluster_id)
+        row = conn.execute(
+            f"SELECT COUNT(*) AS total FROM sources WHERE {' AND '.join(clauses)}",
+            params,
+        ).fetchone()
+    return {"total": int(row["total"] or 0)}
+
+
+@router.get("/counts-by-cluster")
+def source_counts_by_cluster(vault_id: str) -> dict:
+    with connect() as conn:
+        _validate_source_list_filters(conn, vault_id=vault_id, cluster_id=None)
+        rows = conn.execute(
+            """
+            SELECT cluster_id, state, COUNT(*) AS total
+            FROM sources
+            WHERE vault_id = ? AND deleted_at IS NULL
+            GROUP BY cluster_id, state
+            """,
+            (vault_id,),
+        ).fetchall()
+    return {
+        "items": [
+            {"cluster_id": row["cluster_id"], "state": row["state"], "total": int(row["total"] or 0)}
+            for row in rows
+        ]
+    }
+
+
 @router.post("", response_model=SourceRead)
 def create_source(payload: SourceCreate) -> dict:
     return _create_source_record(payload, page_texts=[payload.raw_text] if payload.raw_text else None)
@@ -511,7 +551,9 @@ def get_source(source_id: str) -> dict:
 
 
 @router.get("/{source_id}/pages", response_model=list[SourcePageRead])
-def list_source_pages(source_id: str) -> list[dict]:
+def list_source_pages(source_id: str, limit: int = 20, offset: int = 0) -> list[dict]:
+    safe_limit = max(1, min(int(limit), 100))
+    safe_offset = max(0, int(offset))
     with connect() as conn:
         source = conn.execute(
             "SELECT id FROM sources WHERE id = ? AND deleted_at IS NULL",
@@ -524,10 +566,76 @@ def list_source_pages(source_id: str) -> list[dict]:
             SELECT * FROM source_pages
             WHERE source_id = ?
             ORDER BY page_number ASC
+            LIMIT ? OFFSET ?
             """,
-            (source_id,),
+            (source_id, safe_limit, safe_offset),
         ).fetchall()
         return [page_from_encrypted_row(conn, row) for row in rows]
+
+
+@router.get("/{source_id}/stats")
+def get_source_stats(source_id: str) -> dict:
+    with connect() as conn:
+        source = conn.execute(
+            """
+            SELECT id, original_path
+            FROM sources
+            WHERE id = ? AND deleted_at IS NULL
+            """,
+            (source_id,),
+        ).fetchone()
+        if source is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        counts = conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM source_pages WHERE source_id = ?) AS page_count,
+                (SELECT COUNT(*) FROM source_chunks WHERE source_id = ?) AS chunk_count
+            """,
+            (source_id, source_id),
+        ).fetchone()
+    size_bytes = None
+    original_path = str(source["original_path"] or "")
+    if original_path:
+        try:
+            path = Path(original_path)
+            if path.is_file() and not path.is_symlink():
+                size_bytes = path.stat().st_size
+        except OSError:
+            size_bytes = None
+    return {
+        "source_id": source_id,
+        "page_count": int(counts["page_count"] or 0),
+        "chunk_count": int(counts["chunk_count"] or 0),
+        "size_bytes": size_bytes,
+    }
+
+
+@router.post("/{source_id}/reindex")
+def reindex_source(source_id: str) -> dict:
+    try:
+        require_embeddings_available("Source reindexing")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    with connect() as conn:
+        source = conn.execute(
+            """
+            SELECT id FROM sources
+            WHERE id = ? AND state = 'indexed' AND deleted_at IS NULL
+            """,
+            (source_id,),
+        ).fetchone()
+        if source is None:
+            raise HTTPException(status_code=409, detail="Only indexed sources can be reindexed.")
+        job = enqueue_job(
+            conn,
+            job_type="reindex_source",
+            payload={"source_id": source_id},
+            dedupe_key=f"reindex-source:{source_id}",
+            scope_id=source_id,
+            user_initiated=True,
+        )
+    return {"source_id": source_id, "job_id": job["id"], "status": job["status"]}
 
 
 @router.patch("/{source_id}", response_model=SourceRead)

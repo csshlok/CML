@@ -6,7 +6,8 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.sql import build_update_assignments
-from backend.app.schemas import VaultCreate, VaultRead, VaultUpdate
+from backend.app.core.unlock_state import verify_sensitive_action
+from backend.app.schemas import VaultCreate, VaultDeleteRequest, VaultRead, VaultUpdate
 
 router = APIRouter(prefix="/vaults", tags=["vaults"])
 
@@ -77,6 +78,31 @@ def update_vault(vault_id: str, payload: VaultUpdate) -> dict:
 
 @router.delete("/{vault_id}", status_code=204)
 def delete_vault(vault_id: str) -> None:
+    raise HTTPException(
+        status_code=405,
+        detail="Vault deletion requires name confirmation and the full passphrase.",
+    )
+
+
+@router.post("/{vault_id}/delete", status_code=204)
+def delete_vault_with_confirmation(vault_id: str, payload: VaultDeleteRequest) -> None:
+    with connect() as conn:
+        vault = conn.execute("SELECT id, name FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+        if vault is None:
+            raise HTTPException(status_code=404, detail="Vault not found")
+        if payload.confirmation_name.strip() != str(vault["name"]):
+            raise HTTPException(status_code=400, detail="Library name confirmation does not match.")
+        secured = conn.execute(
+            "SELECT 1 FROM vault_security_metadata WHERE vault_id = ?",
+            (vault_id,),
+        ).fetchone()
+    if secured is not None:
+        if not payload.passphrase:
+            raise HTTPException(status_code=403, detail="Full passphrase is required.")
+        try:
+            verify_sensitive_action(vault_id, payload.passphrase)
+        except Exception as exc:
+            raise HTTPException(status_code=403, detail="Passphrase verification failed.") from exc
     with connect() as conn:
         result = conn.execute("DELETE FROM vaults WHERE id = ?", (vault_id,))
         if result.rowcount == 0:

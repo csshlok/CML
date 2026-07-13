@@ -92,8 +92,8 @@ def source_from_encrypted_row(conn, row, *, include_content: bool = True) -> dic
             entity_id=source["id"],
             field_name=field,
         )
-    if encrypted:
-        source[field] = encrypted
+        if encrypted:
+            source[field] = encrypted
     return source
 
 

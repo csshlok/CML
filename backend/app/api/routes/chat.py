@@ -93,13 +93,20 @@ def create_chat_session(payload: ChatSessionCreate) -> dict:
     now = utc_now()
     with connect() as conn:
         _ensure_vault(conn, payload.vault_id)
-        if payload.scope_cluster_id:
-            _ensure_cluster(conn, payload.scope_cluster_id, payload.vault_id)
+        scope_cluster_id = payload.scope_cluster_id
+        if payload.scope_project_id:
+            project = _ensure_project(conn, payload.scope_project_id, payload.vault_id)
+            if scope_cluster_id and scope_cluster_id != project["primary_cluster_id"]:
+                raise HTTPException(status_code=409, detail="Project chat scope must use the project's primary cluster")
+            scope_cluster_id = project["primary_cluster_id"]
+        if scope_cluster_id:
+            _ensure_cluster(conn, scope_cluster_id, payload.vault_id)
         session = {
             "id": f"chat-{uuid4()}",
             "vault_id": payload.vault_id,
             "title": payload.title or "New chat",
-            "scope_cluster_id": payload.scope_cluster_id,
+            "scope_cluster_id": scope_cluster_id,
+            "scope_project_id": payload.scope_project_id,
             "saved": 0,
             "memory_status": "idle",
             "memory_updated_at": None,
@@ -109,10 +116,10 @@ def create_chat_session(payload: ChatSessionCreate) -> dict:
         conn.execute(
             """
             INSERT INTO chat_sessions (
-                id, vault_id, title, scope_cluster_id, saved, memory_status, memory_updated_at, created_at, updated_at
+                id, vault_id, title, scope_cluster_id, scope_project_id, saved, memory_status, memory_updated_at, created_at, updated_at
             )
             VALUES (
-                :id, :vault_id, :title, :scope_cluster_id, :saved, :memory_status,
+                :id, :vault_id, :title, :scope_cluster_id, :scope_project_id, :saved, :memory_status,
                 :memory_updated_at, :created_at, :updated_at
             )
             """,
@@ -243,9 +250,14 @@ def update_chat_session(session_id: str, payload: ChatSessionUpdate) -> dict:
             raise HTTPException(status_code=404, detail="Chat session not found")
         if updates.get("scope_cluster_id"):
             _ensure_cluster(conn, updates["scope_cluster_id"], existing["vault_id"])
+        if updates.get("scope_project_id"):
+            project = _ensure_project(conn, updates["scope_project_id"], existing["vault_id"])
+            if updates.get("scope_cluster_id") and updates["scope_cluster_id"] != project["primary_cluster_id"]:
+                raise HTTPException(status_code=409, detail="Project chat scope must use the project's primary cluster")
+            updates["scope_cluster_id"] = project["primary_cluster_id"]
         assignments = build_update_assignments(
             updates,
-            {"title", "scope_cluster_id", "saved", "updated_at"},
+            {"title", "scope_cluster_id", "scope_project_id", "saved", "updated_at"},
         )
         conn.execute(
             f"UPDATE chat_sessions SET {assignments} WHERE id = :id",
@@ -337,10 +349,12 @@ def update_chat_message(message_id: str, payload: ChatMessageUpdate) -> dict:
 
 @router.post("/context", response_model=ChatContextResponse)
 def build_chat_context(payload: ChatContextRequest) -> dict:
+    payload = _resolve_project_chat_scope(payload)
     generation = _start_chat_generation(
         vault_id=payload.vault_id,
         session_id=payload.session_id,
         cluster_id=payload.cluster_id,
+        project_id=payload.project_id,
         prompt=payload.prompt,
         attachments=payload.attachments,
     ) if payload.persist else None
@@ -395,6 +409,7 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
 
 @router.post("/context/stream")
 def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
+    payload = _resolve_project_chat_scope(payload)
     def events():
         generation = None
         generation_completed = False
@@ -404,6 +419,7 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                     vault_id=payload.vault_id,
                     session_id=payload.session_id,
                     cluster_id=payload.cluster_id,
+                    project_id=payload.project_id,
                     prompt=payload.prompt,
                     attachments=payload.attachments,
                 )
@@ -1548,6 +1564,7 @@ def _start_chat_generation(
     session_id: str | None,
     cluster_id: str | None,
     prompt: str,
+    project_id: str | None = None,
     attachments: list | None = None,
 ) -> dict:
     now = utc_now()
@@ -1561,12 +1578,12 @@ def _start_chat_generation(
             conn.execute(
                 """
                 INSERT INTO chat_sessions (
-                    id, vault_id, title, scope_cluster_id, saved, memory_status, memory_updated_at,
+                    id, vault_id, title, scope_cluster_id, scope_project_id, saved, memory_status, memory_updated_at,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, 0, 'idle', NULL, ?, ?)
+                VALUES (?, ?, ?, ?, ?, 0, 'idle', NULL, ?, ?)
                 """,
-                (session_id, vault_id, title, cluster_id, now, now),
+                (session_id, vault_id, title, cluster_id, project_id, now, now),
             )
         else:
             session = conn.execute(
@@ -1958,6 +1975,37 @@ def _ensure_cluster(conn, cluster_id: str, vault_id: str) -> None:
     ).fetchone()
     if cluster is None:
         raise HTTPException(status_code=404, detail="Cluster not found")
+
+
+def _ensure_project(conn, project_id: str, vault_id: str):
+    project = conn.execute(
+        "SELECT id, primary_cluster_id FROM projects WHERE id = ? AND vault_id = ? AND deleted_at IS NULL",
+        (project_id, vault_id),
+    ).fetchone()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+def _resolve_project_chat_scope(payload: ChatContextRequest) -> ChatContextRequest:
+    project_id = payload.project_id
+    cluster_id = payload.cluster_id
+    with connect() as conn:
+        if payload.session_id:
+            session = conn.execute(
+                "SELECT scope_project_id, scope_cluster_id FROM chat_sessions WHERE id = ? AND vault_id = ?",
+                (payload.session_id, payload.vault_id),
+            ).fetchone()
+            if session:
+                project_id = project_id or session["scope_project_id"]
+                cluster_id = cluster_id or session["scope_cluster_id"]
+        if project_id:
+            project = _ensure_project(conn, project_id, payload.vault_id)
+            primary_cluster_id = project["primary_cluster_id"]
+            if cluster_id and cluster_id != primary_cluster_id:
+                raise HTTPException(status_code=409, detail="Project context cannot be widened to another cluster")
+            cluster_id = primary_cluster_id
+    return payload.model_copy(update={"project_id": project_id, "cluster_id": cluster_id})
 
 
 def _session_from_row(row, messages: list[dict]) -> dict:
