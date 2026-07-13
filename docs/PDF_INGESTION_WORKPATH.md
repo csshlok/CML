@@ -10,7 +10,7 @@ Public V1 PDF ingestion must work across three common document shapes:
 2. scanned/image-only PDFs
 3. table-heavy PDFs
 
-The ingestion pipeline should preserve enough structure for retrieval, memory extraction, and expert training without breaking the current `sources -> source_pages -> source_chunks` model.
+The ingestion pipeline should preserve enough structure for retrieval and memory extraction without breaking the current `sources -> source_pages -> source_chunks` model.
 
 ## Decisions
 
@@ -18,7 +18,7 @@ The ingestion pipeline should preserve enough structure for retrieval, memory ex
 - Keep OCR as the fallback for scanned/image-only PDFs; OCR is not being replaced.
 - Add table-aware extraction for table-heavy PDFs.
 - Store extracted table structure as normalized JSON.
-- Generate canonical text from extracted tables for embeddings, retrieval, and expert training.
+- Generate canonical text from extracted tables for embeddings, retrieval, and memory extraction.
 - Prefer a Camelot-first prototype for text-based table extraction in the packaged Python stack.
 - Treat Tabula/Java as a secondary fallback only if Camelot coverage is not good enough to justify staying Python-only.
 - Do not train experts on raw JSON blobs; train on canonical text generated from structured tables while keeping the JSON for exact grounding.
@@ -128,7 +128,7 @@ Primary repo areas:
 
 Exit criteria:
 
-- Table data participates in semantic retrieval and expert training without forcing models to parse raw JSON.
+- Table data participates in semantic retrieval without forcing models to parse raw JSON.
 
 ### 5. Retrieval And Citation Integration
 
@@ -153,7 +153,7 @@ Exit criteria:
 Deliverables:
 
 - Let distilled-memory extraction read canonical table text.
-- Let cluster expert datasets include canonical table text.
+- Let cluster profiles and context packets include canonical table text when relevant.
 - Keep structured JSON available for exact grounding and future tool-style access.
 
 Primary repo areas:
@@ -164,7 +164,7 @@ Primary repo areas:
 
 Exit criteria:
 
-- Cluster experts can learn from table-derived content, and later context packets can cite the original table evidence.
+- Context packets can use table-derived content while citing the original table evidence.
 
 ### 7. Evaluation
 

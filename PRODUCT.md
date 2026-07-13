@@ -10,7 +10,9 @@ CML is for general second-brain users who want a private local memory workspace 
 
 ## Product Purpose
 
-CML exists to turn a local vault of personal material into a usable context system. It ingests and indexes user-owned sources, clusters related material, exposes search, chat, map, and timeline views over the same vault, and can train verified local cluster experts when the machine and model setup support it. Success means the user can trust the app to keep data local, explain what is happening in plain language, and make retrieval, organization, and setup feel clear instead of technical.
+CML exists to turn a local vault of personal material into a usable context system. It ingests and indexes user-owned sources, clusters related material, and exposes search, chat, map, and timeline views over the same vault. Success means the user can trust the app to keep data local, explain what is happening in plain language, and make retrieval, organization, and setup feel clear instead of technical.
+
+Odin extends that same context system to local code projects. Developers can register a repository from an IDE terminal, then ask project-scoped questions and reuse grounded code context across clusters and conversations without turning CML into a full repository browser.
 
 ## Brand Personality
 
@@ -30,7 +32,7 @@ The voice should guide the user through setup, privacy, and recovery-sensitive m
 
 - Keep the vault as the center of gravity. Search, chat, clusters, map, and timeline should feel like different views over one local memory system.
 - Guide before exposing internals. Use user-facing language by default and reveal runtime, database, or model details only when the user asks for them.
-- Be honest about local AI cost and readiness. Setup, model imports, memory search, and expert training must explain size, time, privacy, and degraded states plainly.
+- Be honest about local AI cost and readiness. Setup, model imports, indexing, and memory search must explain size, time, privacy, and degraded states plainly.
 - Favor calm precision over spectacle. The interface should feel trustworthy for daily use, with clear hierarchy, low noise, and strong affordance consistency.
 - Scale without collapsing. The experience and underlying behavior should remain understandable and efficient whether a vault has a handful of clusters or thousands of organized artifacts.
 

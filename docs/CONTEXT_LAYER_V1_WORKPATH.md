@@ -39,7 +39,7 @@ Deliverables:
 - Desktop-visible `Save to CML` flow for outside conversations/artifacts.
 - Bridge page/operator flow that is not limited to token/client administration.
 - Extension capture package with pairing, vault/cluster selection, and visible capture history.
-- Shortcut or command-palette action for quick capture.
+- A redesigned global capture flow may return later; the previous sidebar, command-palette, and keyboard entry points are intentionally removed for now.
 
 Primary repo areas:
 
@@ -454,7 +454,7 @@ Deliverables:
   - local LLM or extraction-based verification when deterministic checks are insufficient
 - Store raw external transcripts for audit/history without automatically trusting them.
 - Mark ungrounded or unknown external answers as low-trust or review-needed.
-- Exclude ungrounded or unknown external answers from normal synthesis, distilled-memory extraction, and cluster-expert training unless explicitly approved.
+- Exclude ungrounded or unknown external answers from normal synthesis and distilled-memory extraction unless explicitly approved.
 - Add user/operator review path to promote, downgrade, or delete captured external answers.
 - Add regression tests for hallucinated external answers, ignored context packets, unsupported claims, and approved promotion.
 
@@ -512,7 +512,7 @@ Completed:
 8. Chat-model hardening foundation with supported-claim extraction and contradiction-aware degradation
 9. Dynamic evidence budgeting
 10. Capture UX
-   Current state: desktop has the quick-capture sidebar button, command-palette actions, keyboard shortcut, Bridge save/review surfaces, extension pairing/scope/audit/history flows, a packaged MV3 browser extension with page capture, selected-text capture, PDF-url capture, downloaded-file upload, and screenshot upload, plus a live loopback HTTP smoke for the extension-only status/capture/upload contract and a live Chromium popup smoke for the browser UI import/status/upload path.
+   Current state: the global desktop quick-capture surface is deferred pending redesign. Bridge save/review surfaces, extension pairing/scope/audit/history flows, a packaged MV3 browser extension with page capture, selected-text capture, PDF-url capture, downloaded-file upload, and screenshot upload remain available, with live loopback HTTP and Chromium popup smoke coverage for the extension contracts.
 
 Still open:
 

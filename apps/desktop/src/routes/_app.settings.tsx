@@ -8,6 +8,7 @@ import {
   Download,
   FileText,
   Folder,
+  HeartPulse,
   Layers,
   Lock,
   MessageSquare,
@@ -29,8 +30,10 @@ import {
   cancelModelDownload,
   cancelEmbeddingDownload,
   configureEmbeddingRuntime,
+  createVaultBackup,
   createDiagnosticBundle,
   createVault,
+  deleteVault,
   discoverInstalledModels,
   enforceChatEvidenceRetention,
   getChatEvidenceRetentionPolicy,
@@ -47,11 +50,13 @@ import {
   getModelRuntimeStatus,
   getOCRRuntimeStatus,
   pruneQueryCache,
+  reindexVaultSearch,
   listLocalModels,
   listIntegrationImports,
   listIntegrationReconciliationItems,
   listIntegrationReconciliationRuns,
   listVaults,
+  listProjects,
   refreshIntegrationImport,
   retryIntegrationReconciliationItem,
   startModelDownload,
@@ -60,6 +65,7 @@ import {
   updateIntegrationImport,
   updateUnlockSettings,
   updateVault,
+  useBackendHealth,
   type ChatEvidenceRetentionPolicy,
   type ChatEvidenceRetentionResult,
   type EmbeddingRuntimeStatus,
@@ -73,11 +79,20 @@ import {
   type ModelRecommendationsRecord,
   type ModelRuntimeStatus,
   type OCRRuntimeStatusRead,
+  type ProjectRecord,
   type ReconciliationItemPage,
   type ReconciliationRunRecord,
   type UnlockStatusRead,
   type VaultRecord,
 } from "@/lib/backend";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export const Route = createFileRoute("/_app/settings")({
   head: () => ({ meta: [{ title: "Settings" }] }),
@@ -86,10 +101,12 @@ export const Route = createFileRoute("/_app/settings")({
 
 const settingsSections = [
   { id: "profile", label: "Profile", icon: UserRound },
+  { id: "health", label: "Health", icon: HeartPulse },
   { id: "storage", label: "Library storage", icon: Database },
   { id: "models", label: "Local models", icon: TerminalSquare },
-  { id: "embeddings", label: "Embeddings", icon: Layers },
+  { id: "embeddings", label: "Memory search", icon: Layers },
   { id: "ocr", label: "OCR", icon: Settings2 },
+  { id: "odin", label: "Code projects", icon: Folder },
   { id: "diagnostics", label: "Diagnostics", icon: Activity },
   { id: "privacy", label: "Privacy", icon: Lock },
   { id: "advanced", label: "Advanced", icon: SlidersHorizontal },
@@ -97,6 +114,8 @@ const settingsSections = [
 
 function SettingsView() {
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
+  const backendHealth = useBackendHealth();
+  const [mounted, setMounted] = useState(false);
   const [activeSection, setActiveSection] = useState("models");
   const [backendVault, setBackendVault] = useState<VaultRecord | null>(null);
   const [pathDraft, setPathDraft] = useState("");
@@ -109,6 +128,7 @@ function SettingsView() {
   const [ocrRuntime, setOcrRuntime] = useState<OCRRuntimeStatusRead | null>(null);
   const [hardware, setHardware] = useState<HardwareStatusRead | null>(null);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [integrationImports, setIntegrationImports] = useState<IntegrationImportRecord[]>([]);
   const [reconciliationRunsByImport, setReconciliationRunsByImport] = useState<Record<string, ReconciliationRunRecord[]>>({});
   const [reconciliationItemsByRun, setReconciliationItemsByRun] = useState<Record<string, ReconciliationItemPage>>({});
@@ -126,6 +146,8 @@ function SettingsView() {
   const [retentionBusy, setRetentionBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [healthLoadError, setHealthLoadError] = useState<string | null>(null);
+  const [healthCheckedAt, setHealthCheckedAt] = useState<Date | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [modelDownload, setModelDownload] = useState<LocalModelRecord["download"] | null>(null);
   const [modelDownloadRoot, setModelDownloadRoot] = useState("");
@@ -135,9 +157,16 @@ function SettingsView() {
   const [customModelReport, setCustomModelReport] = useState<ModelCompatibilityRecord | null>(null);
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredInstalledModelRecord[]>([]);
   const [discoveringModels, setDiscoveringModels] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteNameDraft, setDeleteNameDraft] = useState("");
+  const [deletePassphrase, setDeletePassphrase] = useState("");
 
   const activeModelDownload = useMemo(() => selectVisibleModelDownload(models, modelDownload), [modelDownload, models]);
   const modelDownloadActive = isActiveModelDownloadStatus(activeModelDownload?.status);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -146,6 +175,7 @@ function SettingsView() {
       try {
         const currentUnlock = await getUnlockStatus();
         if (cancelled) return;
+        setHealthLoadError(null);
         setUnlockStatus(currentUnlock);
         if (currentUnlock.secured_vault_count > 0 && currentUnlock.state !== "ready") {
           const vaultRows = await listVaults();
@@ -153,6 +183,7 @@ function SettingsView() {
           const firstVault = vaultRows[0] ?? null;
           setBackendVault(firstVault);
           if (firstVault) setPathDraft(firstVault.path);
+          setHealthCheckedAt(new Date());
           setStatusMessage(currentUnlock.message || "Library is locked. Unlock it from Privacy settings.");
           return;
         }
@@ -187,7 +218,9 @@ function SettingsView() {
         if (firstVault) {
           setPathDraft(firstVault.path);
         }
-        const importRows = firstVault ? await listIntegrationImports(firstVault.id) : [];
+        const [importRows, projectRows] = firstVault
+          ? await Promise.all([listIntegrationImports(firstVault.id), listProjects(firstVault.id)])
+          : [[], []];
         if (cancelled) return;
         setModels(modelRows);
         setModelRecommendations(recommendations);
@@ -201,9 +234,14 @@ function SettingsView() {
         setJobs(jobStatus);
         setRetentionPolicy(evidencePolicy);
         setIntegrationImports(importRows);
+        setProjects(projectRows);
+        setHealthCheckedAt(new Date());
       } catch (error) {
         if (!cancelled) {
-          setStatusMessage(error instanceof Error ? error.message : "Settings backend unavailable.");
+          const message = error instanceof Error ? error.message : "Vault settings are unavailable. Check Health and try again.";
+          setHealthLoadError(message);
+          setHealthCheckedAt(new Date());
+          setStatusMessage(message);
         }
       }
     }
@@ -645,12 +683,90 @@ function SettingsView() {
     }
   }
 
+  async function testRuntimeConnection() {
+    setSaving(true);
+    try {
+      const nextRuntime = await getModelRuntimeStatus();
+      setRuntime(nextRuntime);
+      setStatusMessage(
+        nextRuntime.available
+          ? `Connected to the local synthesis runtime at ${nextRuntime.base_url}.`
+          : "The configured synthesis runtime is not responding.",
+      );
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Runtime connection test failed.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function rebuildEmbeddings() {
+    if (!backendVault) return;
+    setSaving(true);
+    try {
+      const result = await reindexVaultSearch(backendVault.id);
+      setStatusMessage(`Queued ${result.jobs_queued ?? 0} source reindex jobs.`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not queue embedding rebuild.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function createBackup() {
+    setSaving(true);
+    try {
+      await createVaultBackup();
+      setStatusMessage("Created a local vault backup.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not create a vault backup.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function renameVault(name: string) {
+    if (!backendVault || !name.trim()) return;
+    setSaving(true);
+    try {
+      const updated = await updateVault(backendVault.id, { name: name.trim() });
+      setBackendVault(updated);
+      setStatusMessage("Library name updated.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not rename the library.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteCurrentVault() {
+    if (!backendVault) return;
+    setSaving(true);
+    try {
+      await deleteVault(backendVault.id, {
+        confirmation_name: deleteNameDraft.trim(),
+        passphrase: deletePassphrase || null,
+      });
+      await window.cmlDesktop?.clearActiveVaultFolder?.();
+      window.location.assign("/onboarding");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not delete the library.");
+      setSaving(false);
+    }
+  }
+
   const suggestedModel = models[0];
   const activeChatModel = models.find((model) => model.active_chat) ?? null;
   const recommendedChatModelId = modelRecommendations?.recommended_chat_model_id ?? "";
   const recommendedChatSummary = modelRecommendations?.chat_recommendation?.summary ?? "";
   const recommendedChatSpeed = modelRecommendations?.chat_estimated_tok_per_sec;
   const showSection = (...sections: string[]) => sections.includes(activeSection);
+  const coreHealthReady =
+    backendHealth.status === "online" &&
+    Boolean(backendVault) &&
+    unlockStatus?.ready === true &&
+    embeddingRuntime?.available === true &&
+    !healthLoadError;
 
   return (
     <div className="vault-page-wash grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[205px_1fr_326px]">
@@ -709,7 +825,7 @@ function SettingsView() {
 
         <div className="mt-7 space-y-4">
           {activeSection === "profile" ? (
-            <ProfileSettings vaultPath={backendVault?.path ?? ""} />
+            <ProfileSettings vault={backendVault} saving={saving} onRename={renameVault} />
           ) : (
             <>
           {statusMessage && (
@@ -718,18 +834,138 @@ function SettingsView() {
             </div>
           )}
 
+          {showSection("health") && (
+            <>
+              <SettingsCard
+                icon={<HeartPulse className="h-4 w-4" />}
+                title="System health"
+                description="Live checks for this library and its local services. Values refresh every six seconds."
+                status={backendHealth.status === "checking" ? "Checking" : coreHealthReady ? "Core services ready" : "Needs attention"}
+                statusTone={coreHealthReady ? "ready" : "issue"}
+              >
+                <div className="mt-5 divide-y divide-border rounded-md border border-border bg-background">
+                  <HealthStatusRow
+                    icon={<Server className="h-4 w-4" />}
+                    label="Vault service"
+                    value={backendHealthLabel(backendHealth.status)}
+                    detail={backendHealth.url}
+                    tone={backendHealth.status === "online" ? "ready" : backendHealth.status === "checking" ? "neutral" : "issue"}
+                  />
+                  <HealthStatusRow
+                    icon={<ShieldCheck className="h-4 w-4" />}
+                    label="Library"
+                    value={backendVault ? unlockStatus?.ready ? "Ready" : unlockStatus?.state ? formatHealthLabel(unlockStatus.state) : "Checking" : "Not configured"}
+                    detail={backendVault?.path ?? unlockStatus?.message ?? "Create a library to store and index sources."}
+                    tone={backendVault && unlockStatus?.ready ? "ready" : "warning"}
+                  />
+                  <HealthStatusRow
+                    icon={<Database className="h-4 w-4" />}
+                    label="Library database"
+                    value={healthLoadError ? "Check failed" : backendVault ? "Responding" : "No library"}
+                    detail={healthLoadError ?? (healthCheckedAt ? `Metadata query completed ${formatHealthTime(healthCheckedAt)}.` : "Waiting for the first metadata query.")}
+                    tone={healthLoadError ? "issue" : backendVault ? "ready" : "warning"}
+                  />
+                  <HealthStatusRow
+                    icon={<Layers className="h-4 w-4" />}
+                    label="Memory search"
+                    value={embeddingRuntime?.available ? "Ready" : embeddingRuntime?.setup_required ? "Setup required" : "Unavailable"}
+                    detail={embeddingRuntime?.detail ?? "Waiting for the embedding runtime check."}
+                    tone={embeddingRuntime?.available ? "ready" : "warning"}
+                  />
+                  <HealthStatusRow
+                    icon={<MessageSquare className="h-4 w-4" />}
+                    label="Local chat"
+                    value={runtime?.available ? "Ready" : "Unavailable"}
+                    detail={runtime?.detail ?? "Waiting for the local model runtime check."}
+                    tone={runtime?.available ? "ready" : "warning"}
+                  />
+                  <HealthStatusRow
+                    icon={<FileText className="h-4 w-4" />}
+                    label="Tasks"
+                    value={jobHealthLabel(jobs)}
+                    detail={jobHealthDetail(jobs)}
+                    tone={(jobs?.failed ?? 0) > 0 ? "issue" : (jobs?.running ?? 0) + (jobs?.queued ?? 0) > 0 ? "neutral" : "ready"}
+                  />
+                  <HealthStatusRow
+                    icon={<Settings2 className="h-4 w-4" />}
+                    label="OCR"
+                    value={ocrRuntime?.available ? "Available" : "Optional setup"}
+                    detail={ocrRuntime?.detail ?? "Waiting for the OCR capability check."}
+                    tone={ocrRuntime?.available ? "ready" : "neutral"}
+                  />
+                </div>
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Last checked: {healthCheckedAt ? formatHealthTime(healthCheckedAt) : "waiting for first check"}
+                </p>
+              </SettingsCard>
+
+              <SettingsCard
+                icon={<TerminalSquare className="h-4 w-4" />}
+                title="Device capability"
+                description="Read directly from this device."
+                status={hardware ? formatHealthLabel(hardware.hardware_tier) : "Checking"}
+                statusTone={hardware ? "ready" : "issue"}
+              >
+                <div className="mt-5 grid gap-px overflow-hidden rounded-md border border-border bg-border sm:grid-cols-2">
+                  <HealthMetric label="System" value={hardware ? `${hardware.os} / ${hardware.machine}` : "Checking…"} />
+                  <HealthMetric label="CPU" value={hardware ? `${hardware.cpu_count} logical cores${hardware.avx2 === null ? "" : hardware.avx2 ? " / AVX2" : " / No AVX2"}` : "Checking…"} />
+                  <HealthMetric label="Memory" value={hardware?.total_memory_bytes ? `${Math.round(hardware.total_memory_bytes / 1024 / 1024 / 1024)} GB` : "Not reported"} />
+                  <HealthMetric label="Processor" value={hardware?.processor || "Not reported"} />
+                </div>
+                {hardware?.detail ? <p className="mt-3 break-words text-xs text-muted-foreground">{hardware.detail}</p> : null}
+              </SettingsCard>
+            </>
+          )}
+
+          {showSection("odin") && (
+            <SettingsCard
+              icon={<Folder className="h-4 w-4" />}
+              title="Odin code projects"
+              description="Code projects available in this library. Odin reads and indexes them without changing repository files."
+              status={projects.length ? `${projects.length} registered` : "None"}
+              statusTone={projects.some((project) => project.status === "issue") ? "issue" : "ready"}
+            >
+              <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm">
+                <div className="font-medium">Add a project from your IDE</div>
+                <code className="mt-2 block overflow-x-auto rounded bg-card px-3 py-2 text-xs text-muted-foreground">
+                  odin project add . --name &quot;My Project&quot;
+                </code>
+              </div>
+              <div className="mt-4 divide-y divide-border rounded-md border border-border bg-background">
+                {projects.length ? projects.map((project) => (
+                  <div key={project.id} className="px-3 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-medium">{project.name}</span>
+                      <span className="text-xs capitalize text-muted-foreground">{project.status}</span>
+                    </div>
+                    <div className="mt-1 truncate text-xs text-muted-foreground" title={project.root_path}>
+                      {project.root_path}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {project.source_count.toLocaleString()} files / Code map {formatHealthLabel(project.structure_status)} / Search {formatHealthLabel(project.retrieval_status)}
+                    </div>
+                  </div>
+                )) : (
+                  <div className="px-3 py-4 text-sm text-muted-foreground">No code projects are registered in this library.</div>
+                )}
+              </div>
+            </SettingsCard>
+          )}
+
           {showSection("models") && (
           <SettingsCard
             icon={<TerminalSquare className="h-4 w-4" />}
-            title="Synthesis runtime"
-            description="Endpoint used for responses and tool execution."
+            title="Local model connection"
+            description="Vault uses this address to reach the local model that writes answers."
             status={runtime?.available ? "Ready" : "Missing"}
             statusTone={runtime?.available ? "ready" : "issue"}
           >
-            <label className="mt-5 block text-sm font-medium">Endpoint (required)</label>
+            <label className="mt-5 block text-sm font-medium">Connection address</label>
             <div className="mt-2 flex gap-2">
               <Input value={runtime?.base_url ?? "http://localhost:11434"} readOnly />
-              <Button variant="outline" className="gap-2">Test <Play className="h-4 w-4" /></Button>
+              <Button variant="outline" className="gap-2" disabled={saving} onClick={() => void testRuntimeConnection()}>
+                Test <Play className="h-4 w-4" />
+              </Button>
             </div>
           </SettingsCard>
           )}
@@ -739,7 +975,7 @@ function SettingsView() {
           <SettingsCard
             icon={<MessageSquare className="h-4 w-4" />}
             title="Local chat model"
-            description="RAG-only mode uses one local synthesis model."
+            description="Vault uses one local model to write answers from your sources."
             status={activeChatModel ? "Configured" : "Required"}
             statusTone={activeChatModel ? "ready" : "issue"}
           >
@@ -751,10 +987,10 @@ function SettingsView() {
                 </span>
               </div>
               <div className="mt-2 text-foreground">
-                {recommendedChatSummary || "A recommendation will appear after CML checks this device's memory, CPU, and local runtime."}
+                {recommendedChatSummary || "A recommendation will appear after Vault checks which models this device can run comfortably."}
               </div>
               <div className="mt-1 text-xs text-muted-foreground">
-                {modelRecommendations?.detail ?? "CML keeps the recommendation conservative so the local runtime stays usable."}
+                {modelRecommendations?.detail ?? "Recommendations favor responsive everyday use over the largest possible model."}
               </div>
               {(recommendedChatSpeed || modelRecommendations?.evidence_level || modelRecommendations?.chat_fit_type) && (
                 <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
@@ -774,14 +1010,14 @@ function SettingsView() {
                 ? `Active model: ${activeChatModel.name}. Retrieval remains the citation source.`
                 : "Pick one accepted chat model. Retrieval remains the citation source."}
             </div>
-            <label className="mt-5 block text-sm font-medium">LLM download location</label>
+            <label className="mt-5 block text-sm font-medium">Local model download location</label>
             <div className="mt-2 flex flex-wrap gap-2">
               <Input
                 value={modelDownloadRoot}
                 onChange={(event) => setModelDownloadRoot(event.target.value)}
                 placeholder="Choose where downloaded GGUF chat models should be stored"
               />
-              <Button variant="outline" onClick={() => void chooseModelDownloadFolder()} disabled={!desktop?.selectModelFolder}>
+              <Button variant="outline" onClick={() => void chooseModelDownloadFolder()} disabled={!mounted || !desktop?.selectModelFolder}>
                 <Folder className="h-4 w-4" />
                 Browse
               </Button>
@@ -925,14 +1161,14 @@ function SettingsView() {
           {showSection("embeddings") && (
           <SettingsCard
             icon={<Layers className="h-4 w-4" />}
-            title="Embedding model"
-            description="Model used to create vector embeddings for semantic search."
+            title="Memory search model"
+            description="The local model Vault uses to find related ideas and sources."
             status={embeddingRuntime?.available ? "Ready" : "Required"}
             statusTone={embeddingRuntime?.available ? "ready" : "issue"}
           >
             {!embeddingRuntime?.available && (
               <div className="mt-5 rounded-md border border-[var(--status-learning)]/35 bg-[var(--status-learning)]/10 px-3 py-2 text-sm">
-                Semantic search, clustering, retrieval chat, Bridge retrieval, and new indexing are blocked until this local model test passes.
+                Search, clustering, source-grounded chat, Bridge, and new indexing stay unavailable until this memory-search model passes its check.
               </div>
             )}
             <label className="mt-5 block text-sm font-medium">Model path (required)</label>
@@ -942,7 +1178,7 @@ function SettingsView() {
                 onChange={(event) => setEmbeddingCacheDraft(event.target.value)}
                 placeholder="C:\\AI_Models\\all-MiniLM-L6-v2"
               />
-              <Button variant="outline" onClick={() => void chooseEmbeddingFolder()} disabled={!desktop?.selectEmbeddingFolder}>
+              <Button variant="outline" onClick={() => void chooseEmbeddingFolder()} disabled={!mounted || !desktop?.selectEmbeddingFolder}>
                 Browse
               </Button>
               <Button variant="outline" onClick={() => void saveEmbeddingRuntime()} disabled={saving || !embeddingCacheDraft.trim()}>
@@ -1004,7 +1240,7 @@ function SettingsView() {
             description="Manage local data and model storage."
           >
             <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
-              Disk usage is not exposed by the backend yet. Library storage is configured at{" "}
+              Storage usage is not available yet. This library is stored at{" "}
               <span className="text-foreground">{pathDraft || "No library selected"}</span>.
             </div>
           </SettingsCard>
@@ -1280,20 +1516,6 @@ function SettingsView() {
       </main>
 
       <aside className="hidden overflow-y-auto border-l border-border bg-card/35 px-6 py-9 xl:block">
-        <h2 className="text-lg font-semibold">Device readiness</h2>
-        <div className="mt-7 space-y-6">
-          <ReadinessRow label="CPU" value={hardware?.avx2 ? "AVX2" : "Unknown"} meta={hardware?.processor ?? "Capability check"} />
-          <ReadinessRow
-            label="RAM"
-            value={hardware?.total_memory_bytes ? `${Math.round(hardware.total_memory_bytes / 1024 / 1024 / 1024)} GB` : "Unknown"}
-            meta="Available locally"
-          />
-          <ReadinessRow label="GPU" value="Optional" meta={hardware?.detail ?? "No dedicated GPU check yet"} />
-          <ReadinessRow label="Backend" value="Online" meta={runtime?.base_url ?? "Loopback runtime not detected"} />
-          <ReadinessRow label="Model runtime" value={runtime?.available ? "Ready" : "Missing"} meta={runtime?.available ? "Local runtime ready." : "Start a model server to chat."} warning={!runtime?.available} />
-        </div>
-
-        <div className="my-8 h-px bg-border" />
         <h3 className="text-sm font-semibold">Storage location</h3>
         <div className="mt-4 flex items-center gap-2">
           <Input value={pathDraft} onChange={(event) => setPathDraft(event.target.value)} />
@@ -1314,17 +1536,50 @@ function SettingsView() {
         <div className="my-8 h-px bg-border" />
         <h3 className="text-sm font-semibold">Quick actions</h3>
         <div className="mt-4 space-y-2">
-          <SideAction icon={<Folder className="h-4 w-4" />} label="Open data folder" />
-          <SideAction icon={<Layers className="h-4 w-4" />} label="Rebuild embeddings" />
-          <SideAction icon={<MessageSquare className="h-4 w-4" />} label="Clear chat history" />
+          <SideAction
+            icon={<Folder className="h-4 w-4" />}
+            label="Show data folder"
+            disabled={!backendVault}
+            onClick={() => {
+              if (backendVault) return window.cmlDesktop?.showItemInFolder(backendVault.path);
+            }}
+          />
+          <SideAction icon={<Layers className="h-4 w-4" />} label="Rebuild embeddings" disabled={saving || !backendVault} onClick={() => void rebuildEmbeddings()} />
+          <SideAction icon={<Database className="h-4 w-4" />} label="Create local backup" disabled={saving || !backendVault} onClick={() => void createBackup()} />
+          <SideAction icon={<Lock className="h-4 w-4" />} label="Delete library…" disabled={saving || !backendVault} onClick={() => {
+            setDeleteNameDraft("");
+            setDeletePassphrase("");
+            setDeleteDialogOpen(true);
+          }} />
         </div>
 
         <div className="my-8 h-px bg-border" />
         <h3 className="text-sm font-semibold">Need help?</h3>
-        <button className="mt-4 flex items-center gap-2 text-sm text-primary" type="button">
-          Vault docs <ChevronRight className="h-4 w-4" />
-        </button>
+        <div className="mt-4 text-sm leading-6 text-muted-foreground">
+          Local setup and recovery guidance is available in the repository documentation.
+        </div>
       </aside>
+
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete this library?</DialogTitle>
+            <DialogDescription>
+              This removes the library database records. Original source files remain in their current locations. Enter the exact library name and, for a secured library, the full passphrase.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Input value={deleteNameDraft} onChange={(event) => setDeleteNameDraft(event.target.value)} placeholder={backendVault?.name ?? "Library name"} />
+            <Input type="password" value={deletePassphrase} onChange={(event) => setDeletePassphrase(event.target.value)} placeholder="Full library passphrase" />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
+            <Button variant="destructive" disabled={saving || deleteNameDraft.trim() !== backendVault?.name} onClick={() => void deleteCurrentVault()}>
+              Delete library
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1346,16 +1601,16 @@ function SettingsCard({
 }) {
   return (
     <section className="vault-card p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex gap-4">
-          <span className="mt-0.5 text-muted-foreground">{icon}</span>
-          <div>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex min-w-0 flex-1 gap-4">
+          <span className="mt-0.5 shrink-0 text-muted-foreground">{icon}</span>
+          <div className="min-w-0">
             <h2 className="text-sm font-semibold">{title}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+            <p className="mt-1 break-words text-sm text-muted-foreground">{description}</p>
           </div>
         </div>
         {status && (
-          <span className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground">
             <span
               className="h-2 w-2 rounded-full"
               style={{ background: statusTone === "ready" ? "var(--status-ready)" : "var(--status-learning)" }}
@@ -1446,8 +1701,17 @@ function formatBytes(value: number) {
   return `${Math.round(mib)} MB`;
 }
 
-function ProfileSettings({ vaultPath }: { vaultPath: string }) {
-  const displayName = vaultPath ? vaultName(vaultPath) : "Local profile";
+function ProfileSettings({
+  vault,
+  saving,
+  onRename,
+}: {
+  vault: VaultRecord | null;
+  saving: boolean;
+  onRename: (name: string) => Promise<void>;
+}) {
+  const vaultPath = vault?.path ?? "";
+  const [displayName, setDisplayName] = useState(vault?.name ?? (vaultPath ? vaultName(vaultPath) : "Local profile"));
   return (
     <>
       <section className="vault-card p-5">
@@ -1463,7 +1727,6 @@ function ProfileSettings({ vaultPath }: { vaultPath: string }) {
               Local profile
             </div>
           </div>
-          <Button variant="outline">Change photo</Button>
         </div>
       </section>
 
@@ -1473,19 +1736,10 @@ function ProfileSettings({ vaultPath }: { vaultPath: string }) {
           This name appears in the sidebar, diagnostics, and local chat transcripts.
         </p>
         <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
-          <Input value={displayName} readOnly />
-          <Button variant="outline">Save</Button>
-        </div>
-      </section>
-
-      <section className="vault-card p-5">
-        <h2 className="text-sm font-semibold">Sign-in methods</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Vault can remember your account identity without syncing private vault data.
-        </p>
-        <div className="mt-5 divide-y divide-border border-y border-border">
-          <ProfileMethod label="Local library" value={vaultPath || "No library selected"} status={vaultPath ? "Connected" : "Not set"} />
-          <ProfileMethod label="Google OAuth" value="Optional account connection" status="Not connected" />
+          <Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+          <Button variant="outline" disabled={saving || !vault || !displayName.trim()} onClick={() => void onRename(displayName)}>
+            Save
+          </Button>
         </div>
       </section>
 
@@ -1513,16 +1767,6 @@ function vaultName(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
-function ProfileMethod({ label, value, status }: { label: string; value: string; status: string }) {
-  return (
-    <div className="grid gap-2 py-3 text-sm md:grid-cols-[160px_1fr_120px]">
-      <span className="font-medium">{label}</span>
-      <span className="text-muted-foreground">{value}</span>
-      <span className="text-primary">{status}</span>
-    </div>
-  );
-}
-
 function RuntimeRow({ label, value, meta }: { label: string; value: string; meta?: string }) {
   return (
     <div className="mt-5 grid grid-cols-[1fr_120px_80px] items-center gap-4 text-sm">
@@ -1536,39 +1780,91 @@ function RuntimeRow({ label, value, meta }: { label: string; value: string; meta
   );
 }
 
-function ReadinessRow({
+type HealthTone = "ready" | "warning" | "issue" | "neutral";
+
+function HealthStatusRow({
+  icon,
   label,
   value,
-  meta,
-  warning,
+  detail,
+  tone,
 }: {
+  icon: ReactNode;
   label: string;
   value: string;
-  meta: string;
-  warning?: boolean;
+  detail: string;
+  tone: HealthTone;
 }) {
+  const color =
+    tone === "ready"
+      ? "var(--status-ready)"
+      : tone === "issue" || tone === "warning"
+        ? "var(--status-learning)"
+        : "var(--muted-foreground)";
+
   return (
-    <div className="grid grid-cols-[72px_1fr] gap-5 text-sm">
-      <span className="font-medium text-muted-foreground">{label}</span>
-      <span>
-        <span className="flex items-center gap-3">
-          <span
-            className="h-2 w-2 rounded-full"
-            style={{ background: warning ? "var(--status-learning)" : "var(--status-ready)" }}
-          />
-          <span className="font-medium">{value}</span>
+    <div className="grid min-w-0 gap-2 px-4 py-3 text-sm sm:grid-cols-[minmax(0,180px)_minmax(0,1fr)] sm:gap-5">
+      <span className="flex min-w-0 items-center gap-3 font-medium">
+        <span className="shrink-0 text-muted-foreground">{icon}</span>
+        <span className="break-words">{label}</span>
+      </span>
+      <span className="min-w-0 sm:text-right">
+        <span className="inline-flex max-w-full items-center gap-2 font-medium">
+          <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: color }} />
+          <span className="break-words">{value}</span>
         </span>
-        <span className="mt-1 block text-xs text-muted-foreground">{meta}</span>
+        <span className="mt-1 block break-words text-xs text-muted-foreground">{detail}</span>
       </span>
     </div>
   );
 }
 
-function SideAction({ icon, label }: { icon: ReactNode; label: string }) {
+function HealthMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 bg-background px-4 py-3">
+      <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{label}</div>
+      <div className="mt-1 break-words text-sm font-medium">{value}</div>
+    </div>
+  );
+}
+
+function backendHealthLabel(status: "checking" | "online" | "degraded" | "offline") {
+  if (status === "online") return "Online";
+  if (status === "degraded") return "Reachable, identity check failed";
+  if (status === "offline") return "Offline";
+  return "Checking";
+}
+
+function formatHealthLabel(value: string) {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function formatHealthTime(value: Date) {
+  return value.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+}
+
+function jobHealthLabel(jobs: JobQueueStatus | null) {
+  if (!jobs) return "Checking";
+  if (jobs.running > 0) return `${jobs.running} running`;
+  if (jobs.queued > 0) return `${jobs.queued} queued`;
+  if (jobs.failed > 0) return `${jobs.failed} failed`;
+  return "Idle";
+}
+
+function jobHealthDetail(jobs: JobQueueStatus | null) {
+  if (!jobs) return "Waiting for the queue status check.";
+  return `${jobs.queued} queued / ${jobs.running} running / ${jobs.failed} failed / ${jobs.blocked_by_dependency} blocked`;
+}
+
+function SideAction({ icon, label, onClick, disabled = false }: { icon: ReactNode; label: string; onClick: () => void | Promise<unknown>; disabled?: boolean }) {
   return (
     <button
       type="button"
-      className="flex w-full items-center gap-3 rounded-md border border-border bg-background px-3 py-2 text-left text-sm hover:bg-accent/45"
+      onClick={() => void onClick()}
+      disabled={disabled}
+      className="flex w-full items-center gap-3 rounded-md border border-border bg-background px-3 py-2 text-left text-sm hover:bg-accent/45 disabled:cursor-not-allowed disabled:opacity-50"
     >
       {icon}
       <span className="flex-1">{label}</span>

@@ -59,14 +59,13 @@ Required onboarding steps:
 5. Let user confirm or rename clusters.
 6. Open the memory board with the new sources and clusters available.
 
-Onboarding should avoid technical language like embeddings, LoRA, vector index, or fine-tuning unless the user opens advanced details.
+Onboarding should avoid technical language like embeddings or vector indexes unless the user opens advanced details.
 
 Preferred user-facing terms:
 
 - "Vault" instead of database.
 - "Cluster" or "Space" instead of embedding group.
-- "Local expert" instead of LoRA adapter.
-- "Learning" instead of fine-tuning in normal UI.
+- "Local chat model" instead of runtime or provider terminology.
 - "Ready", "Learning", "Needs update", "Issue" instead of internal statuses.
 
 ## 5. Chat Experience
@@ -287,7 +286,7 @@ Required controls:
 - Choose allowed clusters.
 - Allow or block raw source snippets.
 - Allow or block style profile access.
-- Allow or block cluster expert calls.
+- Allow or block cluster profile context.
 - View recent context requests.
 
 Bridge status labels:
@@ -342,7 +341,7 @@ Required visible errors:
 - OCR failed.
 - Indexing failed.
 - Local model unavailable.
-- Expert training failed.
+- Project indexing failed.
 - Vault path unavailable.
 - Disk space low.
 - Context Bridge failed to start.
@@ -382,7 +381,7 @@ V1 UI is successful when:
 - Timeline view.
 - Calendar-based memory view.
 - Browser extension capture.
-- Floating quick capture window.
+- Deferred: redesign the removed global capture flow before considering a floating capture window.
 - Voice note capture.
 - Full 3D globe mode.
 - Multi-cluster comparison mode.

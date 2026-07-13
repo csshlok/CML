@@ -26,6 +26,11 @@ class VaultUpdate(BaseModel):
     path: str | None = Field(default=None, min_length=1)
 
 
+class VaultDeleteRequest(BaseModel):
+    confirmation_name: str = Field(min_length=1, max_length=120)
+    passphrase: str | None = None
+
+
 class VaultRead(BaseModel):
     id: str
     name: str
@@ -78,6 +83,91 @@ class ClusterSuggestionRead(BaseModel):
     suggested_cluster_name: str
     confidence: float
     reason: str
+
+
+class ProjectCreate(BaseModel):
+    vault_id: str
+    root_path: str = Field(min_length=1)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    sync: bool = True
+
+
+class ProjectUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class ProjectSnapshotRead(BaseModel):
+    id: str
+    project_id: str
+    source_manifest_hash: str
+    git_commit: str | None = None
+    branch: str | None = None
+    dirty_working_tree: bool = False
+    extractor_version: str
+    eligible_count: int = 0
+    ignored_count: int = 0
+    generated_count: int = 0
+    parsed_count: int = 0
+    failed_count: int = 0
+    structure_status: str
+    retrieval_status: str
+    interpretation_status: str
+    activated_at: str | None = None
+    created_at: str
+
+
+class ProjectRead(BaseModel):
+    id: str
+    vault_id: str
+    name: str
+    root_path: str
+    root_fingerprint: str
+    primary_cluster_id: str
+    repository_kind: str
+    git_remote_fingerprint: str | None = None
+    default_branch: str | None = None
+    indexed_commit: str | None = None
+    working_tree_dirty: bool = False
+    changed_file_count: int = 0
+    status: str
+    structure_status: str
+    retrieval_status: str
+    interpretation_status: str
+    active_snapshot_id: str | None = None
+    active_snapshot: ProjectSnapshotRead | None = None
+    brief: str
+    languages: dict[str, int]
+    workspace_count: int = 0
+    entrypoints: list[str]
+    source_count: int = 0
+    created_at: str
+    updated_at: str
+
+
+class ProjectSyncResponse(BaseModel):
+    project: ProjectRead
+    run: dict
+    snapshot_id: str
+
+
+class ProjectReindexRequest(BaseModel):
+    layer: str = "full"
+
+
+class ProjectLinkCreate(BaseModel):
+    cluster_id: str
+
+
+class ProjectLinkRead(BaseModel):
+    project_id: str
+    cluster_id: str
+    cluster_name: str
+    role: str
+    created_at: str
+
+
+class ProjectRemoveRequest(BaseModel):
+    confirmation_name: str = Field(min_length=1, max_length=120)
 
 
 class SourceCreate(BaseModel):
@@ -264,10 +354,14 @@ class BridgeContextRequest(BaseModel):
     vault_id: str | None = None
     query: str = Field(min_length=1)
     cluster_id: str | None = None
+    project_id: str | None = None
     mode: str = "context"
     client_name: str = "unknown"
     limit: int = Field(default=5, ge=1, le=12)
     context_request_id: str | None = None
+    include_graph: bool = False
+    graph_mode: str = Field(default="graph", pattern="^(graph|tree)$")
+    graph_max_nodes: int = Field(default=120, ge=10, le=300)
 
 
 class BridgeContextResponse(BaseModel):
@@ -285,6 +379,7 @@ class BridgeContextResponse(BaseModel):
     retrieval_authority: bool = True
     token_estimate: dict = {}
     bundle_status: dict = {}
+    graph_context: dict | None = None
 
 
 class BridgeContextExpandRequest(BaseModel):
@@ -585,6 +680,7 @@ class ChatContextRequest(BaseModel):
     vault_id: str
     prompt: str = Field(min_length=1)
     cluster_id: str | None = None
+    project_id: str | None = None
     session_id: str | None = None
     persist: bool = True
     limit: int = Field(default=6, ge=1, le=12)
@@ -592,7 +688,7 @@ class ChatContextRequest(BaseModel):
     complete_analysis: bool = False
     attachments: list[ChatAttachmentInput] = Field(default_factory=list)
 
-    @field_validator("cluster_id", "session_id", mode="before")
+    @field_validator("cluster_id", "project_id", "session_id", mode="before")
     @classmethod
     def normalize_optional_ids(cls, value: str | None) -> str | None:
         return _blank_to_none(value)
@@ -663,8 +759,9 @@ class ChatSessionCreate(BaseModel):
     vault_id: str
     title: str | None = Field(default=None, min_length=1, max_length=160)
     scope_cluster_id: str | None = None
+    scope_project_id: str | None = None
 
-    @field_validator("scope_cluster_id", mode="before")
+    @field_validator("scope_cluster_id", "scope_project_id", mode="before")
     @classmethod
     def normalize_scope_cluster_id(cls, value: str | None) -> str | None:
         return _blank_to_none(value)
@@ -673,9 +770,10 @@ class ChatSessionCreate(BaseModel):
 class ChatSessionUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=160)
     scope_cluster_id: str | None = None
+    scope_project_id: str | None = None
     saved: bool | None = None
 
-    @field_validator("scope_cluster_id", mode="before")
+    @field_validator("scope_cluster_id", "scope_project_id", mode="before")
     @classmethod
     def normalize_scope_cluster_id(cls, value: str | None) -> str | None:
         return _blank_to_none(value)
@@ -704,6 +802,7 @@ class ChatSessionRead(BaseModel):
     vault_id: str
     title: str
     scope_cluster_id: str | None
+    scope_project_id: str | None = None
     saved: bool
     memory_status: str = "idle"
     memory_updated_at: str | None = None

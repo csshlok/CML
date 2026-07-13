@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException
 
-from backend.app.core.database import connect, dict_from_row
-from backend.app.core.embeddings import embed_text, reindex_source_chunks, require_embeddings_available
+from backend.app.core.background_jobs import enqueue_job
+from backend.app.core.database import connect
+from backend.app.core.embeddings import embed_text, require_embeddings_available
 from backend.app.core.retrieval_scoring import (
     compare_source_classes,
     export_benchmark_report,
@@ -168,19 +169,29 @@ def reindex_vault(vault_id: str) -> dict:
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT * FROM sources
+            SELECT id FROM sources
             WHERE vault_id = ? AND state = 'indexed' AND deleted_at IS NULL
             """,
             (vault_id,),
         ).fetchall()
-        chunk_count = 0
+        queued = 0
         for row in rows:
-            chunk_count += reindex_source_chunks(conn, dict_from_row(row))
+            job = enqueue_job(
+                conn,
+                job_type="reindex_source",
+                payload={"source_id": row["id"]},
+                dedupe_key=f"reindex-source:{row['id']}",
+                scope_id=row["id"],
+                user_initiated=True,
+            )
+            if job["status"] in {"queued", "blocked_by_dependency", "running"}:
+                queued += 1
 
     return {
         "vault_id": vault_id,
-        "sources_indexed": len(rows),
-        "chunks_indexed": chunk_count,
+        "sources_matched": len(rows),
+        "jobs_queued": queued,
+        "status": "queued",
     }
 
 

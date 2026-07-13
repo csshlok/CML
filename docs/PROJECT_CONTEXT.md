@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-07-07
+Last updated: 2026-07-13
 
 ## Operating Rule
 
@@ -34,6 +34,12 @@ CML is not just a vault UI. It is a context-management layer between the user an
 - First-class external surfaces: Bridge, MCP, local HTTP API, CLI.
 - Local-first privacy remains a release requirement.
 - Security boundary remains a release requirement: vault unlock, encryption, Bridge approval, parser/browser isolation, renderer hardening, and package integrity.
+
+Odin currently provides project registration, idempotent sync, snapshots, project-backed clusters, source reconciliation, structural nodes/edges, possible-relationship records, bounded graph queries and graph/tree exports, project-scoped chat/context, optional Bridge graph packets, CLI CRUD/explain/path/context/graph/tree commands, and the primary desktop project workspace. Its inline graph/tree component is mounted only after an explicit project-scoped visualization request. It never writes to the registered repository.
+
+Odin architecture, UI exploration, and benchmark notes are local working documents and are intentionally ignored by Git. Current repository truth is captured here and in the implemented code under `backend/app/core/projects.py`, `backend/app/core/project_graph.py`, `backend/app/api/routes/projects.py`, and the desktop project workspace.
+
+Odin is not release-complete. Scoped CLI device authentication, asynchronous cancellable sync with fully atomic staging, broad tree-sitter language coverage, interpretation briefs, and several secondary UI surfaces remain open gates.
 
 ## Current Architecture
 
@@ -102,6 +108,19 @@ The LoRA-to-RAG migration is complete in live code:
 - model recommender live path is chat-only
 - LoRA runtime, training, and proof modules are removed
 
+The July 13 UI integrity pass also completed:
+
+- Home now uses one main column, with Quick Actions above the prompt and Activity below Suggested Clusters
+- Suggested Cluster counts and progress come from real indexed sources and cannot overflow their cards
+- Settings includes a live Health section backed by backend, library, database, embedding, model, job, OCR, and hardware checks
+- production Map no longer exposes seeded demo data
+- Chat no longer fabricates a cluster count when no library is open
+- unimplemented Google sign-in surfaces were removed; onboarding now explains the local profile directly
+- production routes no longer depend on seeded state; the mock vault store remains available as a guarded development and interaction-test fixture
+- the reusable UI primitive inventory and its required packages are retained for feature work even when individual primitives are not mounted today
+- stale LoRA runtime code and dependencies with no live product role were removed
+- secured-source hydration now restores every encrypted content field for authorized in-memory readers while keeping plaintext database columns empty
+
 Authoritative migration record:
 
 - `docs/LORA_TO_RAG_MIGRATION_PLAN.md`
@@ -117,6 +136,16 @@ Latest repo-backed validation that already passed:
 - backend regression slice: `127 passed`
 - synthetic mixed-corpus benchmark: passed
 - retrieval benchmark at `500` sources: passed
+- Odin targeted tests: `6 passed`
+- desktop production typecheck/build: passed on 2026-07-13
+- Electron behavior tests: `37 passed`
+- encrypted storage regression tests: `7 passed`
+- complete backend suite: `471 passed`, `3 skipped` on 2026-07-13
+- root `pytest` discovery is scoped to `backend/tests` so packaged runtimes, releases, and local comparison clones are not collected
+- npm dependency audit: `0 vulnerabilities` after compatible lockfile updates
+- primary Electron routes: no visible overflow at the supported 1024 px minimum and at 1440 px
+- Odin structural benchmark on this repo: ready, 353 files, 3,740 nodes, 7,498 authoritative edges; 2.47 s median cold wall time
+- Graphify 0.9.13 pinned comparison: completed; see the benchmark document
 
 ## Current Token Reduction Story
 
@@ -141,7 +170,6 @@ Reduction now comes from:
 ## Current Caveats
 
 - If no local synthesis runtime is configured, chat falls back to retrieval-draft output. That is expected and not a RAG failure.
-- Some older design and release docs outside this brief still contain LoRA-era language and need follow-up cleanup.
 - Clean-VM and full packaged release validation remain release tasks, separate from the migration itself.
 
 ## Current Progress
@@ -154,9 +182,12 @@ Reduction now comes from:
 | Model recommender migration | Complete for live path | Chat-only live path is in place; no expert-role dependency remains. |
 | Token reduction | Complete for RAG V1 | Packet shaping and cache reuse are producing measurable reduction. |
 | Release hardening | In progress | Packaging, security, and clean-machine proof remain release work. |
+| Odin project context | Foundation implemented, release gates open | Structural graph, retrieval integration, CLI commands, and core UI are live; auth/jobs/coverage/supporting UI remain. |
+| UI truth and copy | Current pass complete | Hardcoded health/demo/count surfaces removed; active app copy uses user-facing language by default. |
 
 ## Immediate Next Steps
 
-1. Continue pruning stale LoRA-era wording from secondary docs.
-2. Keep validation focused on release hardening, not migration recovery.
-3. Treat `docs/LORA_TO_RAG_MIGRATION_PLAN.md` as the migration archive and this file as the live operating brief.
+1. Complete Odin CLI device authentication and scoped authorization.
+2. Move Odin sync to cancellable background jobs with atomic candidate activation.
+3. Expand deterministic parser coverage and finish supporting project UI surfaces.
+4. Continue release hardening, accessibility QA, and clean-machine proof.

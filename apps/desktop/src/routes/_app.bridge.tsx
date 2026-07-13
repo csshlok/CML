@@ -452,6 +452,7 @@ function BridgeView() {
           <div className="flex items-center gap-2 rounded-md border border-border bg-card p-3 lg:shrink-0">
             <div className="flex items-center gap-3">
               <Switch
+                aria-label="Enable Bridge"
                 checked={Boolean(status?.enabled)}
                 disabled={!status || saving}
                 onCheckedChange={(checked) => void patchSettings({ enabled: checked })}
@@ -576,7 +577,7 @@ function BridgeView() {
             />
             <PermissionRow
               label="Cluster profiles"
-              detail="Allow clients to request derived cluster profile context when available."
+              detail="Allow clients to request cluster summaries and related context when available."
               checked={Boolean(status?.allow_cluster_profile)}
               disabled={!status || saving}
               onChange={(checked) => void patchSettings({ allow_cluster_profile: checked })}
@@ -712,7 +713,7 @@ function BridgeView() {
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-                    <Switch checked={client.enabled} disabled={saving} onCheckedChange={(enabled) => void toggleExtensionClient(client, enabled)} />
+                    <Switch aria-label={`${client.enabled ? "Disable" : "Enable"} ${client.name}`} checked={client.enabled} disabled={saving} onCheckedChange={(enabled) => void toggleExtensionClient(client, enabled)} />
                     <Button
                       variant="outline"
                       size="sm"
@@ -802,7 +803,7 @@ function BridgeView() {
                 Save external context
               </div>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                Paste an external answer or a full prompt-response pair and store it directly in Vault. For faster everyday saves, use Quick save from the sidebar, command palette, or Ctrl/Cmd Shift S.
+                Paste an external answer or a full prompt-response pair and store it directly in Vault.
               </p>
             </div>
             <div className="flex flex-wrap gap-2 lg:justify-end">
@@ -1017,6 +1018,7 @@ function BridgeView() {
                   </div>
                   <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                     <Switch
+                      aria-label={`${client.enabled ? "Disable" : "Enable"} ${client.name}`}
                       checked={client.enabled}
                       disabled={saving}
                       onCheckedChange={(enabled) => void patchClient(client, { enabled })}
@@ -1108,7 +1110,7 @@ function BridgeView() {
                 Saved captures
               </div>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                Recent external transcripts and artifacts stored through Bridge, including quick-capture saves from the desktop shell.
+                Recent external transcripts and artifacts stored through Bridge.
               </p>
             </div>
             <div className="text-xs text-muted-foreground">{captures.length} recent</div>
@@ -1287,7 +1289,7 @@ function PermissionRow({
         <div className="text-sm font-medium">{label}</div>
         <div className="mt-0.5 break-words text-xs text-muted-foreground">{detail}</div>
       </div>
-      <Switch checked={checked} disabled={disabled} onCheckedChange={onChange} />
+      <Switch aria-label={label} checked={checked} disabled={disabled} onCheckedChange={onChange} />
     </div>
   );
 }

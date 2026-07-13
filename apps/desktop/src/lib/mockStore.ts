@@ -1,5 +1,13 @@
 import { create } from "zustand";
 
+/**
+ * Development and interaction-test fixtures only.
+ *
+ * Production routes must load records through `lib/backend.ts`. This store remains available for
+ * isolated component work, story-like states, screenshots, and feature prototyping where a live
+ * vault would make iteration unnecessarily slow or destructive.
+ */
+
 export type ClusterTint =
   | "sage"
   | "sand"

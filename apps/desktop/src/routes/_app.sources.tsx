@@ -26,18 +26,24 @@ import {
   sourceStateLabel,
   type Cluster,
   type Source,
-} from "@/lib/mockStore";
+} from "@/lib/domain";
 import {
   createSourceFromPath,
   createSourceFromText,
   createSourceFromUrl,
+  countSources,
   deleteSource as deleteBackendSource,
+  getSourceStats,
   listClusters,
   listSourcePages,
   listSources,
+  listProjects,
   listVaults,
-  updateSource as updateBackendSource,
+  reindexSource,
+  synchronizeProject,
+  type ProjectRecord,
   type SourcePageRecord,
+  type SourceStatsRecord,
   type VaultRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
@@ -68,9 +74,11 @@ const typeIcon = {
 };
 
 function SourcesView() {
+  const pageSize = 25;
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<Source | null>(null);
   const [selectedPages, setSelectedPages] = useState<SourcePageRecord[]>([]);
+  const [selectedStats, setSelectedStats] = useState<SourceStatsRecord | null>(null);
   const [vault, setActiveVault] = useState<VaultRecord | null>(null);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
@@ -84,6 +92,10 @@ function SourcesView() {
   const [linkUrl, setLinkUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [sourceTotal, setSourceTotal] = useState(0);
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [view, setView] = useState<"sources" | "projects">("sources");
 
   async function refreshBackendSources() {
     setLoading(true);
@@ -95,18 +107,25 @@ function SourcesView() {
       if (!activeVault) {
         setBackendSources([]);
         setBackendClusters([]);
+        setProjects([]);
         return;
       }
-      const [sourceRows, clusterRows] = await Promise.all([
-        listSources(activeVault.id),
+      const [sourceRows, clusterRows, count, projectRows] = await Promise.all([
+        listSources(activeVault.id, { limit: pageSize, offset: pageIndex * pageSize }),
         listClusters(activeVault.id),
+        countSources(activeVault.id),
+        listProjects(activeVault.id),
       ]);
       const mappedSources = sourceRows.map(sourceFromRecord);
       setBackendSources(mappedSources);
       setBackendClusters(clusterRows.map(clusterFromRecord));
-      setSelected((current) => current ?? mappedSources[0] ?? null);
+      setSourceTotal(count.total);
+      setProjects(projectRows);
+      setSelected((current) =>
+        mappedSources.find((source) => source.id === current?.id) ?? mappedSources[0] ?? null,
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load backend sources.");
+      setError(err instanceof Error ? err.message : "Vault could not load your sources.");
       setActiveVault(null);
     } finally {
       setLoading(false);
@@ -115,7 +134,7 @@ function SourcesView() {
 
   useEffect(() => {
     void refreshBackendSources();
-  }, []);
+  }, [pageIndex]);
 
   const usingBackend = Boolean(vault);
   const sources = usingBackend ? backendSources : [];
@@ -144,10 +163,19 @@ function SourcesView() {
         return;
       }
       try {
-        const pages = await listSourcePages(inspectorSource.id);
-        if (!cancelled) setSelectedPages(pages);
+        const [pages, stats] = await Promise.all([
+          listSourcePages(inspectorSource.id, { limit: 2 }),
+          getSourceStats(inspectorSource.id),
+        ]);
+        if (!cancelled) {
+          setSelectedPages(pages);
+          setSelectedStats(stats);
+        }
       } catch {
-        if (!cancelled) setSelectedPages([]);
+        if (!cancelled) {
+          setSelectedPages([]);
+          setSelectedStats(null);
+        }
       }
     }
     void loadPages();
@@ -207,31 +235,40 @@ function SourcesView() {
   }
 
   async function handleAddFolder() {
-    if (!vault || !window.cmlDesktop?.selectSourceFolders || !window.cmlDesktop?.listSupportedFiles) {
+    if (!vault || !window.cmlDesktop?.selectSourceFolders || !window.cmlDesktop?.scanSupportedFiles) {
       setIngestMessage("Folder import is available in the desktop app after a library is created.");
       return;
     }
     const folders = await window.cmlDesktop.selectSourceFolders();
-    const paths = await window.cmlDesktop.listSupportedFiles(folders);
-    await importFilePaths(paths);
+    const report = await window.cmlDesktop.scanSupportedFiles(folders);
+    await importFilePaths(report.files, report.truncated ? report.limit : null);
   }
 
-  async function importFilePaths(paths: string[]) {
+  async function importFilePaths(paths: string[], truncatedAt: number | null = null) {
     if (!vault || paths.length === 0) return;
     setIngestMessage(`Importing ${paths.length} file${paths.length === 1 ? "" : "s"}...`);
     const failures: string[] = [];
     let imported = 0;
-    for (const path of paths) {
-      try {
-        await createSourceFromPath({ vault_id: vault.id, path });
-        imported += 1;
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : "Import failed";
-        failures.push(`${fileNameFromPath(path)}: ${reason}`);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(4, paths.length) }, async () => {
+      while (cursor < paths.length) {
+        const path = paths[cursor];
+        cursor += 1;
+        try {
+          await createSourceFromPath({ vault_id: vault.id, path });
+          imported += 1;
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "Import failed";
+          failures.push(`${fileNameFromPath(path)}: ${reason}`);
+        }
       }
-    }
+    });
+    await Promise.all(workers);
     await refreshBackendSources();
-    setIngestMessage(formatImportResult(imported, failures));
+    const limitNotice = truncatedAt
+      ? ` Folder scanning stopped at the ${truncatedAt.toLocaleString()}-file safety limit; import remaining files in a second batch.`
+      : "";
+    setIngestMessage(`${formatImportResult(imported, failures)}${limitNotice}`);
   }
 
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
@@ -250,14 +287,15 @@ function SourcesView() {
     event.preventDefault();
     setDragActive(false);
     const droppedPaths = window.cmlDesktop?.getDroppedFilePaths?.(event.dataTransfer.files) ?? [];
-    const paths = window.cmlDesktop?.listSupportedFiles
-      ? await window.cmlDesktop.listSupportedFiles(droppedPaths)
-      : droppedPaths;
+    const report = window.cmlDesktop?.scanSupportedFiles
+      ? await window.cmlDesktop.scanSupportedFiles(droppedPaths)
+      : { files: droppedPaths, truncated: false, limit: 0 };
+    const paths = report.files;
     if (paths.length === 0) {
       setIngestMessage("Drop import is available in the desktop app.");
       return;
     }
-    await importFilePaths(paths);
+    await importFilePaths(paths, report.truncated ? report.limit : null);
   }
 
   async function handleReindexSource(source: Source) {
@@ -265,8 +303,16 @@ function SourcesView() {
       setIngestMessage("Create or open a library before reindexing sources.");
       return;
     }
-    await updateBackendSource(source.id, { state: "processing" });
-    await refreshBackendSources();
+    try {
+      const result = await reindexSource(source.id);
+      setIngestMessage(
+        result.status === "running"
+          ? `Reindexing “${source.title}” now.`
+          : `Queued “${source.title}” for reindexing.`,
+      );
+    } catch (error) {
+      setIngestMessage(error instanceof Error ? error.message : "Could not queue reindexing.");
+    }
   }
 
   async function handleRemoveSource(source: Source) {
@@ -298,6 +344,18 @@ function SourcesView() {
             Files, links, notes, images, and transcripts stored locally.
           </p>
           <div className="mt-9 flex flex-wrap items-center gap-2">
+            <div className="flex rounded-md border border-border bg-card p-0.5">
+              {(["sources", "projects"] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => setView(option)}
+                  className={`rounded px-3 py-2 text-xs font-medium capitalize ${view === option ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
             <div className="relative mr-auto min-w-0 flex-[1_1_240px] sm:max-w-sm">
               <Input
                 aria-label="Search sources"
@@ -320,12 +378,15 @@ function SourcesView() {
             <Button variant="outline" onClick={() => void handleAddFolder()} disabled={!vault}>
               <FolderPlus className="h-4 w-4" /> Import folder
             </Button>
+            <Button variant="outline" onClick={() => setIngestMessage('Run `odin project add . --name "My Project"` in your IDE. CML will not modify the repository.')} disabled={!vault}>
+              <FileCode2 className="h-4 w-4" /> Add code project
+            </Button>
           </div>
         </header>
 
         {error && (
           <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive break-words">
-            Using local mock data because the backend could not be reached: {error}
+            Vault could not load your sources: {error}
           </div>
         )}
         {ingestMessage && (
@@ -337,6 +398,29 @@ function SourcesView() {
         {loading ? (
           <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">
             Loading sources...
+          </div>
+        ) : view === "projects" ? (
+          <div className="divide-y divide-border rounded-md border border-border bg-card">
+            {projects.length ? projects.map((project) => (
+              <div key={project.id} className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold">{project.name}</span>
+                    <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">Project</span>
+                  </div>
+                  <div className="mt-1 break-all text-xs text-muted-foreground" title={project.root_path}>{fileNameFromPath(project.root_path)}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {Object.keys(project.languages)[0] || "Code"} · {project.source_count.toLocaleString()} sources · {project.structure_status}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => void synchronizeProject(project.id).then(() => refreshBackendSources())}>
+                    <RefreshCw className="h-3.5 w-3.5" /> Synchronize
+                  </Button>
+                  <Button size="sm" onClick={() => window.location.assign(`/clusters/${project.primary_cluster_id}`)}>Open</Button>
+                </div>
+              </div>
+            )) : <div className="px-4 py-10 text-center text-sm text-muted-foreground">No code projects are registered.</div>}
           </div>
         ) : filtered.length === 0 ? (
           <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">
@@ -354,7 +438,7 @@ function SourcesView() {
                   </th>
                   <th className="px-3 py-3 font-normal">Name</th>
                   <th className="px-3 py-3 font-normal">Type</th>
-                  <th className="px-3 py-3 font-normal">Pages</th>
+                  <th className="px-3 py-3 font-normal">State</th>
                   <th className="px-3 py-3 font-normal">Cluster</th>
                   <th className="px-3 py-3 font-normal">Status</th>
                   <th className="px-3 py-3 font-normal">Last indexed</th>
@@ -368,11 +452,20 @@ function SourcesView() {
                   return (
                     <tr
                       key={source.id}
+                      tabIndex={0}
+                      aria-label={`Open ${source.title}`}
+                      aria-selected={inspectorSource?.id === source.id}
                       className={
-                        "cursor-pointer border-b border-border hover:bg-card/70 " +
+                        "cursor-pointer border-b border-border hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset " +
                         (inspectorSource?.id === source.id ? "bg-card/80" : "")
                       }
                       onClick={() => setSelected(source)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSelected(source);
+                        }
+                      }}
                     >
                       <td className="px-2 py-5">
                         <span className="block h-4 w-4 rounded border border-border bg-background" />
@@ -392,7 +485,7 @@ function SourcesView() {
                         </div>
                       </td>
                       <td className="px-3 py-5 text-muted-foreground">{sourceTypeLabel(source)}</td>
-                      <td className="px-3 py-5 text-muted-foreground">{pageEstimate(source)}</td>
+                      <td className="px-3 py-5 text-muted-foreground">{sourceStateLabel[source.state]}</td>
                       <td className="px-3 py-5">
                         {cluster ? (
                           <span className="inline-flex max-w-40 items-center gap-1.5">
@@ -418,13 +511,31 @@ function SourcesView() {
           </div>
         )}
         <div className="mt-8 flex flex-col gap-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-          <span>{filtered.length} sources</span>
+          <span>
+            Showing {filtered.length} of {sourceTotal.toLocaleString()} sources
+          </span>
           <div className="flex items-center gap-4">
-            <button type="button" className="text-muted-foreground">Prev</button>
-            <span className="rounded-md border border-border bg-card px-4 py-2 text-foreground">1</span>
-            <button type="button" className="text-muted-foreground">Next</button>
+            <button
+              type="button"
+              className="text-muted-foreground disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={() => setPageIndex((current) => Math.max(0, current - 1))}
+              disabled={pageIndex === 0}
+            >
+              Prev
+            </button>
+            <span className="rounded-md border border-border bg-card px-4 py-2 text-foreground">
+              {pageIndex + 1}
+            </span>
+            <button
+              type="button"
+              className="text-muted-foreground disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={() => setPageIndex((current) => current + 1)}
+              disabled={(pageIndex + 1) * pageSize >= sourceTotal}
+            >
+              Next
+            </button>
           </div>
-          <span className="rounded-md border border-border bg-card px-4 py-2">25</span>
+          <span className="rounded-md border border-border bg-card px-4 py-2">{pageSize} / page</span>
         </div>
       </main>
 
@@ -432,6 +543,12 @@ function SourcesView() {
         source={inspectorSource}
         cluster={inspectorCluster}
         pages={selectedPages}
+        stats={selectedStats}
+        onOpen={async (source) => {
+          if (source.localPath) return (await window.cmlDesktop?.openPath(source.localPath)) ?? false;
+          if (source.url) return (await window.cmlDesktop?.openExternal(source.url)) ?? false;
+          return false;
+        }}
         onReindex={handleReindexSource}
         onRemove={handleRemoveSource}
       />
@@ -499,12 +616,16 @@ function SourceInspector({
   source,
   cluster,
   pages,
+  stats,
+  onOpen,
   onReindex,
   onRemove,
 }: {
   source: Source | null;
   cluster?: Cluster;
   pages: SourcePageRecord[];
+  stats: SourceStatsRecord | null;
+  onOpen: (source: Source) => Promise<boolean | undefined>;
   onReindex: (source: Source) => Promise<void>;
   onRemove: (source: Source) => Promise<void>;
 }) {
@@ -527,7 +648,7 @@ function SourceInspector({
           <div className="min-w-0">
             <h2 className="break-words text-lg font-semibold">{source.title}</h2>
             <div className="mt-2 text-sm text-muted-foreground">
-              {sourceTypeLabel(source)} <span className="px-1">/</span> {fileSizeEstimate(source)}
+              {sourceTypeLabel(source)} <span className="px-1">/</span> {formatFileSize(stats?.size_bytes)}
             </div>
           </div>
         </div>
@@ -547,7 +668,7 @@ function SourceInspector({
       </section>
 
       <section className="mt-7 space-y-4 text-sm">
-        <InspectorRow label="Pages" value={pageEstimate(source)} icon={<FileText className="h-4 w-4" />} />
+        <InspectorRow label="Pages" value={stats ? stats.page_count.toLocaleString() : "—"} icon={<FileText className="h-4 w-4" />} />
         <InspectorRow
           label="OCR status"
           value={source.state === "processing" ? "In progress" : source.state === "failed" ? "Needs review" : "Completed"}
@@ -555,7 +676,7 @@ function SourceInspector({
         />
         <InspectorRow
           label="Embeddings"
-          value={`${Math.max(1, Math.round((source.preview || source.summary || source.title).length / 8)).toLocaleString()} chunks`}
+          value={stats ? `${stats.chunk_count.toLocaleString()} chunks` : "—"}
           icon={<CheckCircle2 className="h-4 w-4" />}
         />
         <InspectorRow
@@ -584,7 +705,12 @@ function SourceInspector({
       <section className="mt-8">
         <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Actions</div>
         <div className="mt-4 space-y-2">
-          <Button variant="outline" className="w-full justify-start gap-2">
+          <Button
+            variant="outline"
+            className="w-full justify-start gap-2"
+            disabled={!source.localPath && !source.url}
+            onClick={() => void onOpen(source)}
+          >
             <ExternalLink className="h-4 w-4" /> Open
           </Button>
           <Button
@@ -651,12 +777,6 @@ function sourceTypeLabel(source: Source) {
   return source.type[0].toUpperCase() + source.type.slice(1);
 }
 
-function pageEstimate(source: Source) {
-  if (source.type === "link" || source.type === "image" || source.type === "audio" || source.type === "video") return "-";
-  const text = source.preview || source.summary || "";
-  return Math.max(1, Math.round(text.length / 900)).toString();
-}
-
 function lastIndexed(source: Source) {
   if (source.state === "failed") return "Needs review";
   if (source.state === "processing") return "In progress";
@@ -674,9 +794,12 @@ function formatDate(value: string) {
   }).format(timestamp);
 }
 
-function fileSizeEstimate(source: Source) {
-  const size = Math.max(1, Math.round((source.preview || source.summary || source.title).length / 80));
-  return `${size}.${source.title.length % 9} MB`;
+function formatFileSize(value?: number | null) {
+  if (value === null || value === undefined) return "Size unavailable";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
 function formatImportResult(imported: number, failures: string[]) {

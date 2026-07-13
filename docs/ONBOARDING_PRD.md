@@ -26,7 +26,7 @@ The user should finish onboarding knowing three things:
 ## Non-Goals
 
 - Do not build a marketing landing page.
-- Do not ask users to understand vectors, LoRA, fine-tuning, or embedding internals.
+- Do not ask users to understand vectors or embedding internals.
 - Do not ingest files in pre-vault mode.
 - Do not require synthesis model setup before the user can enter Vault, unless the final V1 policy changes. Embeddings are compulsory; synthesis runtime can be configured during onboarding or later with a visible runtime state.
 - Do not bundle multi-GB LLM weights inside the installer.
@@ -264,8 +264,7 @@ Avoid in default UI:
 
 - embeddings
 - vectors
-- LoRA
-- fine-tuning
+- model-provider internals
 - schema
 - backend
 - database

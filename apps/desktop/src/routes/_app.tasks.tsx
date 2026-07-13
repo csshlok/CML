@@ -72,7 +72,7 @@ function TasksView() {
     }
   }
 
-  const activeJob = selected ?? rows[0] ?? null;
+  const activeJob = rows.find((job) => job.id === selected?.id) ?? rows[0] ?? null;
 
   return (
     <div className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto bg-background xl:grid-cols-[minmax(0,1fr)_320px] xl:overflow-hidden">
@@ -91,7 +91,7 @@ function TasksView() {
           <div className="mt-6 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
             <div className="relative min-w-0 max-w-xl">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input className="pl-9" placeholder="Search jobs..." value={query} onChange={(event) => setQuery(event.target.value)} />
+              <Input aria-label="Search tasks" className="pl-9" placeholder="Search tasks..." value={query} onChange={(event) => setQuery(event.target.value)} />
             </div>
             <div className="flex flex-wrap gap-1">
               {(["running", "queued", "failed", "completed", "maintenance"] as const).map((item) => (

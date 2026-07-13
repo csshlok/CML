@@ -2,34 +2,28 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowRight,
-  CheckCircle2,
   Copy,
-  Database,
   FileText,
   Image as ImageIcon,
   Loader2,
   Mail,
-  MessageSquare,
   Mic,
   Plus,
   Search,
   Send,
   Settings2,
-  ShieldCheck,
   Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import type { Cluster, Source } from "@/lib/mockStore";
+import type { Cluster, Source } from "@/lib/domain";
 import {
   createChatSession,
-  getJobStatus,
   listChatSessions,
   listClusters,
   listSources,
   listVaults,
   type ChatSessionRecord,
-  type JobQueueStatus,
   type VaultRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
@@ -40,13 +34,13 @@ export const Route = createFileRoute("/_app/home")({
   component: HomeView,
 });
 
-export function HomeView() {
+function HomeView() {
   const navigate = useNavigate();
   const [vault, setVault] = useState<VaultRecord | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [chats, setChats] = useState<ChatSessionRecord[]>([]);
-  const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const [query, setQuery] = useState("");
   const [figmaExporting, setFigmaExporting] = useState(false);
   const [canExportToFigma, setCanExportToFigma] = useState(false);
@@ -77,11 +71,10 @@ export function HomeView() {
 
     async function load() {
       try {
+        setLoadError(false);
         const vaultRows = await listVaults();
         const activeVault = vaultRows[0] ?? null;
-        const jobRows = await getJobStatus().catch(() => null);
         if (cancelled) return;
-        setJobs(jobRows);
         if (!activeVault) return;
         const [sourceRows, clusterRows, chatRows] = await Promise.all([
           listSources(activeVault.id),
@@ -98,6 +91,7 @@ export function HomeView() {
           setSources([]);
           setClusters([]);
           setChats([]);
+          setLoadError(true);
         }
       }
     }
@@ -120,7 +114,17 @@ export function HomeView() {
 
   const unsorted = sources.filter((source) => !source.clusterId).slice(0, 4);
   const indexedCount = sources.filter((source) => source.state === "indexed").length;
-  const activeJobs = (jobs?.running ?? 0) + (jobs?.queued ?? 0);
+  const clusterMetrics = useMemo(() => {
+    const metrics = new Map<string, { total: number; indexed: number }>();
+    for (const source of sources) {
+      if (!source.clusterId) continue;
+      const current = metrics.get(source.clusterId) ?? { total: 0, indexed: 0 };
+      current.total += 1;
+      if (source.state === "indexed") current.indexed += 1;
+      metrics.set(source.clusterId, current);
+    }
+    return metrics;
+  }, [sources]);
 
   const activityItems = [
     ...recentSources.slice(0, 3).map((source) => ({
@@ -148,8 +152,8 @@ export function HomeView() {
   }
 
   return (
-    <div className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_326px] xl:overflow-hidden">
-      <main className="min-w-0 px-4 py-6 sm:px-8 sm:py-10 xl:overflow-y-auto">
+    <div className="vault-page-wash h-full overflow-y-auto">
+      <main className="mx-auto w-full max-w-[1440px] min-w-0 px-4 py-6 sm:px-8 sm:py-10">
         <header className="flex flex-wrap items-start justify-between gap-6">
           <div className="min-w-0">
             <h1 className="page-title break-words">Mind</h1>
@@ -176,14 +180,51 @@ export function HomeView() {
               </Button>
             )}
 
-            <Button variant="outline" className="gap-2">
-              <Settings2 className="h-4 w-4" /> Filters
+            <Button variant="outline" className="gap-2" asChild>
+              <Link to="/search"><Settings2 className="h-4 w-4" /> Search filters</Link>
             </Button>
           </div>
         </header>
 
-        <section className="mt-16 rounded-md border border-border bg-card p-3">
+        {loadError ? (
+          <div className="mt-6 rounded-md border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+            Vault could not load your library. Check Settings → Health, then try again.
+          </div>
+        ) : null}
+
+        <section className="mt-10 overflow-hidden rounded-md border border-border bg-border">
+          <h2 className="sr-only">Quick actions</h2>
+          <div className="grid gap-px sm:grid-cols-2 xl:grid-cols-4">
+            <QuickAction
+              icon={<FileText className="h-4 w-4" />}
+              title="Add source"
+              detail="Import files, links, or notes"
+              href="/sources"
+            />
+            <QuickAction
+              icon={<Plus className="h-4 w-4" />}
+              title="New cluster"
+              detail="Organize related memories"
+              href="/clusters"
+            />
+            <QuickAction
+              icon={<Search className="h-4 w-4" />}
+              title="Run analysis"
+              detail="Ask Vault to analyze a topic"
+              href="/chat"
+            />
+            <QuickAction
+              icon={<Mail className="h-4 w-4" />}
+              title="Open inbox"
+              detail="Review unprocessed sources"
+              href="/sources"
+            />
+          </div>
+        </section>
+
+        <section className="mt-4 rounded-md border border-border bg-card p-3">
           <Textarea
+            aria-label="Ask or search your memory"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Ask anything or search your memory..."
@@ -196,8 +237,8 @@ export function HomeView() {
             }}
           />
           <div className="flex flex-wrap items-center gap-3 px-1 pb-1">
-            <Button variant="outline" className="gap-2">
-              <Settings2 className="h-4 w-4" /> All sources
+            <Button variant="outline" className="gap-2" asChild>
+              <Link to="/sources"><Settings2 className="h-4 w-4" /> Browse sources</Link>
             </Button>
             <span className="ml-auto text-xs text-muted-foreground">Ctrl Enter to send</span>
             <Button size="icon" aria-label="Send prompt" onClick={() => void startChat()}>
@@ -236,7 +277,8 @@ export function HomeView() {
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
             {clusters.slice(0, 4).map((cluster) => {
-              const count = sources.filter((source) => source.clusterId === cluster.id).length;
+              const metrics = clusterMetrics.get(cluster.id) ?? { total: 0, indexed: 0 };
+              const progress = metrics.total > 0 ? Math.round((metrics.indexed / metrics.total) * 100) : 0;
               return (
                 <Link
                   key={cluster.id}
@@ -254,15 +296,14 @@ export function HomeView() {
                         {cluster.name}
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">
-                        {count} sources <span className="px-1">/</span> {Math.max(64, count * 64)}{" "}
-                        memories
+                        {metrics.total} sources <span className="px-1">/</span> {metrics.indexed} indexed
                       </div>
                     </div>
                   </div>
-                  <div className="mt-4 h-1 rounded-full bg-muted">
+                  <div className="mt-4 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${cluster.name} indexing progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
                     <span
                       className="block h-full rounded-full bg-[var(--cluster-accent)]"
-                      style={{ width: `${Math.max(18, count * 18)}%` }}
+                      style={{ width: `${progress}%` }}
                     />
                   </div>
                 </Link>
@@ -270,75 +311,15 @@ export function HomeView() {
             })}
           </div>
         </section>
-      </main>
 
-      <aside className="border-t border-border bg-card/35 px-4 py-6 xl:block xl:overflow-y-auto xl:border-l xl:border-t-0 xl:px-6 xl:py-8">
-        <section className="rounded-md border border-border bg-background p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h2 className="text-lg font-medium">Today's health</h2>
-              <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
-                <span className="h-2.5 w-2.5 rounded-full bg-[var(--status-ready)]" />
-                Good
-              </div>
-            </div>
-            <div className="h-10 w-10 rounded-full border-4 border-[var(--status-ready)]/80 border-r-muted" />
-          </div>
-          <div className="mt-6 space-y-4 border-t border-border pt-5">
-            <HealthRow icon={<ShieldCheck className="h-4 w-4" />} label="Vault" value="Healthy" />
-            <HealthRow icon={<Database className="h-4 w-4" />} label="Database" value="Healthy" />
-            <HealthRow
-              icon={<CheckCircle2 className="h-4 w-4" />}
-              label="Embeddings"
-              value="Healthy"
-            />
-            <HealthRow icon={<MessageSquare className="h-4 w-4" />} label="Model" value="Ready" />
-            <HealthRow
-              icon={<FileText className="h-4 w-4" />}
-              label="Jobs"
-              value={`${activeJobs} running`}
-            />
-          </div>
-        </section>
-
-        <section className="mt-4 rounded-md border border-border bg-background p-4">
-          <h2 className="text-lg font-medium">Quick actions</h2>
-          <div className="mt-4 space-y-4">
-            <QuickAction
-              icon={<FileText className="h-4 w-4" />}
-              title="Add source"
-              detail="Import files, links, or notes"
-              href="/sources"
-            />
-            <QuickAction
-              icon={<Plus className="h-4 w-4" />}
-              title="New cluster"
-              detail="Organize related memories"
-              href="/clusters"
-            />
-            <QuickAction
-              icon={<Search className="h-4 w-4" />}
-              title="Run analysis"
-              detail="Ask Vault to analyze a topic"
-              href="/chat"
-            />
-            <QuickAction
-              icon={<Mail className="h-4 w-4" />}
-              title="Open inbox"
-              detail="Review unprocessed sources"
-              href="/sources"
-            />
-          </div>
-        </section>
-
-        <section className="mt-4 rounded-md border border-border bg-background p-4">
+        <section className="mt-4 rounded-md border border-border bg-card p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-lg font-medium">Activity</h2>
-            <Link to="/activity" className="text-sm text-primary">
+            <Link to="/timeline" className="text-sm text-primary">
               View all
             </Link>
           </div>
-          <div className="mt-5 space-y-4 border-l border-border pl-4">
+          <div className="mt-5 grid gap-x-8 gap-y-5 border-l border-border pl-4 md:grid-cols-2">
             {activityItems.map((item) => (
               <div key={item.id} className="relative text-sm">
                 <span className="absolute -left-[18px] top-1.5 h-2 w-2 rounded-full bg-[var(--cluster-sage)]" />
@@ -351,7 +332,7 @@ export function HomeView() {
             )}
           </div>
         </section>
-      </aside>
+      </main>
     </div>
   );
 }
@@ -427,18 +408,6 @@ function UnsortedRow({ source, index }: { source: Source; index: number }) {
   );
 }
 
-function HealthRow({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
-  return (
-    <div className="flex items-start justify-between gap-3 text-sm">
-      <span className="flex min-w-0 items-center gap-3 break-words text-muted-foreground">
-        {icon}
-        {label}
-      </span>
-      <span className="break-words text-right text-primary">{value}</span>
-    </div>
-  );
-}
-
 function QuickAction({
   icon,
   title,
@@ -451,15 +420,15 @@ function QuickAction({
   href: "/sources" | "/clusters" | "/chat";
 }) {
   return (
-    <Link to={href} className="flex items-start gap-3 rounded-md p-1.5 hover:bg-accent/45">
-      <span className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-primary">
+    <Link to={href} className="flex min-h-20 items-center gap-3 bg-card p-4 hover:bg-accent/45">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted text-primary">
         {icon}
       </span>
       <span className="min-w-0 flex-1">
         <span className="block break-words text-sm font-medium">{title}</span>
         <span className="block break-words text-xs text-muted-foreground">{detail}</span>
       </span>
-      <ArrowRight className="h-4 w-4 text-muted-foreground" />
+      <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
     </Link>
   );
 }

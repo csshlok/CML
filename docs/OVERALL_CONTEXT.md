@@ -1,6 +1,6 @@
 # Overall Context
 
-Last updated: 2026-07-07
+Last updated: 2026-07-13
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
@@ -18,6 +18,7 @@ The live architecture is now RAG-only:
 - retrieval is the evidence authority
 - clusters are retrieval scopes with cached profile metadata
 - chat and Bridge share a retrieval-first packet contract
+- Odin can append bounded, snapshot-proven graph/tree context for explicit internal or external requests without exposing a permanent graph UI
 - token reduction comes from packet shaping and cache reuse, not adapter compression
 - desktop setup and packaged runtime no longer expect a second expert runtime
 
@@ -58,6 +59,10 @@ Live isolated validation passed:
 Broader regression validation passed:
 
 - focused backend regression slice: `127 passed`
+- Electron behavior tests: `37 passed`
+- Complete backend suite: `471 passed`, `3 skipped`
+- npm dependency audit: `0 vulnerabilities`
+- desktop typecheck and production build passed after the July 13 cleanup
 
 Scale and token-reduction validation passed:
 
@@ -91,8 +96,27 @@ The migration is complete, but some release work remains:
 
 - clean-machine packaged validation
 - broader release hardening and security proof
-- continued pruning of LoRA-era wording from secondary docs and release artifacts
 - optional local synthesis runtime setup for richer final chat answers
+
+## July 13 Product Integrity Pass
+
+The desktop UI and repository were audited for false, stale, and developer-facing surfaces.
+
+Changes that now define current behavior:
+
+- Home no longer has a health/quick-action/activity right rail; Quick Actions lead into the prompt and Activity follows Suggested Clusters.
+- Cluster progress uses real indexed-source ratios and all shared progress components clamp values to `0–100`.
+- Settings Health shows live service, library, database, memory-search, local-chat, task, OCR, and hardware results.
+- The Map route no longer accepts or substitutes seeded demo content.
+- Chat no longer shows a fabricated cluster count when no library is open.
+- Onboarding no longer advertises an unimplemented Google account flow.
+- Production routes no longer consume seeded state or mock reply generation. The mock vault store is retained as an explicit development fixture, protected by a test that prevents production route/component imports.
+- The reusable UI primitive inventory is retained for future feature work; only obsolete product-specific code remains deleted.
+- A shared encrypted-source hydration bug was fixed so authorized search, memory, and report paths receive all decrypted fields without restoring plaintext database storage.
+- README and live interface copy now address users directly and reserve backend/runtime terminology for advanced settings and diagnostics.
+- Historical UI audit, ingestion-reference, and packaging-investigation documents are retained with status notices so their evidence remains available without being mistaken for current implementation truth.
+
+The Odin architecture/UI/benchmark drafts remain useful local working notes but are intentionally ignored by Git. Implemented Odin behavior and release status must stay summarized in `PROJECT_CONTEXT.md`.
 
 Important distinction:
 
@@ -101,14 +125,4 @@ Important distinction:
 
 ## Historical Note
 
-Older long-form notes in this repo may still mention:
-
-- LoRA experts
-- expert compression
-- adapter graduation
-- expert runtime packaging
-- expert-only onboarding/setup
-
-Those references are historical unless a document has been explicitly updated after the 2026-07-07 RAG migration completion pass.
-
-When a historical note conflicts with `docs/PROJECT_CONTEXT.md`, the project context document is authoritative.
+The completed migration record remains in `docs/LORA_TO_RAG_MIGRATION_PLAN.md`. Security audit/build records may also retain LoRA references where they document historical threat analysis. Neither is a live product contract. When an archive conflicts with `docs/PROJECT_CONTEXT.md`, the project context document is authoritative.

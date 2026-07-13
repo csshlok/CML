@@ -1,4 +1,4 @@
-import type { Cluster, ClusterLifecycleStatus, ClusterTint, Source, SourceState, SourceType } from "@/lib/mockStore";
+import type { Cluster, ClusterLifecycleStatus, ClusterTint, Source, SourceState, SourceType } from "@/lib/domain";
 import type { ClusterRecord, SourceRecord } from "@/lib/backend";
 
 export function sourceFromRecord(record: SourceRecord): Source {

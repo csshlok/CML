@@ -109,6 +109,9 @@ release-alt
 UI_audit_brief
 docs/MODEL_RECOMMENDER_IMPLEMENTATION_PLAN.md
 docs/WHICHLLM_REVERSE_ENGINEERING_PLAN.md
+docs/PROJECT_GRAPH_ARCHITECTURE.md
+docs/PROJECT_GRAPH_UI.md
+docs/ODIN_GRAPHIFY_BENCHMARK.md
 sample_lora_vault
 sample_new
 artifacts/

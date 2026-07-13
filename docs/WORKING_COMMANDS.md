@@ -95,6 +95,45 @@ Build the production renderer bundle:
 npm run build
 ```
 
+### 3.1 Odin Project Commands
+
+Odin is the Project Graph command surface. Packaged builds expose `odin`; from a source checkout,
+the `odin.ps1` wrapper runs the same CLI:
+
+```powershell
+.\odin.ps1 auth status
+.\odin.ps1 project add . --name "My Project"
+.\odin.ps1 project list
+.\odin.ps1 project status .
+.\odin.ps1 project sync .
+.\odin.ps1 project reindex . --layer retrieval
+.\odin.ps1 project link . --cluster "Research"
+.\odin.ps1 project explain . register_project
+.\odin.ps1 project path . register_project build_structure_graph
+.\odin.ps1 project graph . --query "project indexing" --depth 2 --format markdown
+.\odin.ps1 project tree . --root "backend/app" --format markdown
+.\odin.ps1 context "How does project indexing work?" --project .
+.\odin.ps1 project remove .
+```
+
+For direct CLI development, use the module form:
+
+```powershell
+.\.venv\Scripts\python.exe -m backend.app.odin_cli project list
+```
+
+Odin uses `ODIN_BACKEND_URL` and `ODIN_API_TOKEN`, with the existing `CML_BACKEND_URL` and
+`CML_API_TOKEN` variables as fallbacks. Removing an Odin project deletes only CML's imported
+index and never modifies the repository working tree.
+
+Run the isolated Odin benchmark:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.backend.benchmark_odin_project . .tmp\benchmark\odin --retrieval
+```
+
+The current CLI pairing command is specified but not release-ready. Development commands still require the desktop-managed local API token.
+
 ## 4. Windows Packaging And Rebuilds
 
 The Windows packaging entry point is:
@@ -364,31 +403,6 @@ Run the real-PDF retrieval benchmark:
 
 ```powershell
 .\scripts\backend\benchmark-real-vault-retrieval.ps1 -MaxFiles 50 -QueryCount 20 -TopK 10
-```
-
-Run the LoRA scaffold smoke:
-
-```powershell
-.\scripts\backend\smoke-lora-expert.ps1 -AllowTestTrainer
-```
-
-Run a real LoRA trainer smoke:
-
-```powershell
-$env:CML_LORA_TRAINER_COMMAND = ".\.venv-lora\Scripts\llamafactory-cli.exe train {config_path}"
-$env:CML_LORA_MODEL_DIRS = "<your local HF model root>"
-$env:CML_LLM_MODEL = "Qwen2.5-3B-Instruct"
-$env:CML_LORA_TRAINING_MAX_STEPS = "1"
-$env:CML_LORA_TRAINING_CUTOFF_LEN = "512"
-.\scripts\backend\smoke-lora-expert.ps1 -RuntimeMaxNewTokens 8 -BenchmarkMaxNewTokens 8 -AllowBenchmarkFailure
-```
-
-Run the local adapter smoke:
-
-```powershell
-$env:CML_LORA_MODEL_DIRS = "<your local HF model root>"
-$env:CML_LORA_RUNTIME_PYTHON = "<your CML checkout>\.venv-lora\Scripts\python.exe"
-.\scripts\backend\smoke-lora-runtime.ps1 -AdapterPath <adapter-dir> -BaseModel Qwen2.5-3B-Instruct
 ```
 
 Run the release-proof wrapper for the new parser/benchmark/extension surfaces:

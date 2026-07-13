@@ -578,6 +578,39 @@ def _run_reindex_source(payload: dict) -> None:
         reindex_source_chunks(conn, source)
         mark_cluster_needs_update(conn, source.get("cluster_id"), "Source was indexed in the background.")
         rebuild_source_memory(conn, source_id=source_id)
+        _refresh_project_retrieval_status(conn, source_id)
+
+
+def _refresh_project_retrieval_status(conn, source_id: str) -> None:
+    project_rows = conn.execute(
+        "SELECT project_id FROM project_sources WHERE source_id = ?",
+        (source_id,),
+    ).fetchall()
+    for row in project_rows:
+        project_id = row["project_id"]
+        missing = conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM project_sources ps
+            JOIN sources s ON s.id = ps.source_id
+            WHERE ps.project_id = ? AND s.deleted_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM source_chunks sc WHERE sc.source_id = ps.source_id)
+            """,
+            (project_id,),
+        ).fetchone()["total"]
+        if int(missing or 0) == 0:
+            now = utc_now()
+            conn.execute(
+                "UPDATE projects SET retrieval_status = 'ready', updated_at = ? WHERE id = ?",
+                (now, project_id),
+            )
+            conn.execute(
+                """
+                UPDATE project_snapshots SET retrieval_status = 'ready'
+                WHERE id = (SELECT active_snapshot_id FROM projects WHERE id = ?)
+                """,
+                (project_id,),
+            )
 
 
 def _run_chat_transcript_memory(payload: dict) -> None:

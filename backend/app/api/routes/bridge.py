@@ -29,6 +29,7 @@ from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.cluster_bundle import build_cluster_bundle_context
 from backend.app.core.context_packets import build_bridge_context_packet, render_context_packet
+from backend.app.core.project_graph import GraphQueryError, graph_view, graph_view_markdown
 from backend.app.core.embeddings import content_hash
 from backend.app.core.encrypted_storage import (
     chunk_from_encrypted_row,
@@ -524,6 +525,22 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
     settings, client_permissions, auth_mode = _authorize_bridge_runtime_token(x_cml_bridge_token)
     permissions = client_permissions or settings
 
+    if payload.project_id:
+        with connect() as conn:
+            project = conn.execute(
+                "SELECT vault_id, primary_cluster_id FROM projects WHERE id = ? AND deleted_at IS NULL",
+                (payload.project_id,),
+            ).fetchone()
+        if project is None:
+            raise HTTPException(status_code=404, detail="project_not_found")
+        if payload.vault_id and payload.vault_id != project["vault_id"]:
+            raise HTTPException(status_code=409, detail="project_vault_mismatch")
+        if payload.cluster_id and payload.cluster_id != project["primary_cluster_id"]:
+            raise HTTPException(status_code=409, detail="project_scope_mismatch")
+        payload = payload.model_copy(
+            update={"vault_id": project["vault_id"], "cluster_id": project["primary_cluster_id"]}
+        )
+
     with connect() as conn:
         if payload.cluster_id and permissions["allowed_cluster_ids"] and payload.cluster_id not in permissions["allowed_cluster_ids"]:
             _log_bridge_request(payload, mode_suffix="cluster_not_allowed", client_id=client_permissions["id"] if client_permissions else None)
@@ -608,6 +625,19 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
         bundle_status=bundle.get("bundle_status") or {},
     )
     packet_text = render_context_packet(packet)
+    graph_context = None
+    if payload.project_id and payload.include_graph:
+        try:
+            graph_context = graph_view(
+                payload.project_id,
+                mode=payload.graph_mode,
+                query=payload.query,
+                max_nodes=payload.graph_max_nodes,
+                max_depth=2,
+            )
+            packet_text += "\n\n" + graph_view_markdown(graph_context)
+        except GraphQueryError as exc:
+            warnings.append(f"Odin graph context unavailable: {exc}")
     response = {
         "context_request_id": context_request_id,
         "query": payload.query,
@@ -623,6 +653,7 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
         "retrieval_authority": bool(bundle.get("retrieval_authority", True)),
         "token_estimate": bundle.get("token_estimate") or {},
         "bundle_status": bundle.get("bundle_status") or {},
+        "graph_context": graph_context,
     }
     response_bytes = len(json.dumps(response, ensure_ascii=False).encode("utf-8"))
     with connect() as conn:

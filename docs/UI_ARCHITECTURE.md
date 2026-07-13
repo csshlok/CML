@@ -1,12 +1,14 @@
 # CML UI Architecture
 
-Last updated: 2026-06-26
+Last updated: 2026-07-13
 
 ## Purpose
 
 This document is the source of truth for CML's user interface architecture. It defines the product feel, visual language, color system, layout rules, navigation model, tab requirements, component contracts, responsive behavior, and interaction states for the desktop app.
 
 Use this document when designing, reviewing, or implementing UI. `docs/UI_PRD.md` explains product requirements; this file explains the concrete interface system that should be built.
+
+The Odin project workspace stays centered on a concise brief and evidence-grounded questions. Graph and tree output appear only after an explicit request rather than as a permanent repository browser.
 
 ## Product Feeling
 
@@ -17,7 +19,7 @@ The user should feel:
 - Their personal material is organized into living spaces.
 - The app is private, local, and trustworthy.
 - Search, chat, clusters, and map are different views of the same memory system.
-- Models, embeddings, jobs, OCR, and expert-compression runtime details are hidden behind plain language unless the user opens advanced details.
+- Models, embeddings, jobs, and OCR runtime details are hidden behind plain language unless the user opens advanced details.
 - The interface is quiet enough for daily use but dense enough for power users.
 
 The desired references are:
@@ -44,8 +46,6 @@ Use user-facing language by default.
 | Database | Vault storage | SQLite database |
 | Embeddings | Memory search | Embedding model |
 | Vector index | Search index | Vector index |
-| LoRA adapter / expert runtime | Expert compression | Adapter / runtime |
-| Fine-tuning | Learning | Training |
 | Model runtime | Local chat | Runtime endpoint |
 | MCP/API | Bridge connection | MCP/API |
 | Background job | Task | Job |
@@ -69,25 +69,21 @@ Avoid default-path labels:
 - vectors
 - schema
 - backend
-- LoRA
-- fine-tune
-- LoRA
 - database
 - token
 - JSON-RPC
 
-Cluster/expert status language must distinguish:
+Cluster status language must distinguish:
 
 - `Searchable`
 - `Retrieval-only mode`
-- `Preparing expert compression`
-- `Training cluster compressor`
-- `Expert compression ready`
-- `Expert needs update`
-- `Expert compression unavailable on this device`
+- `Indexing`
+- `Needs update`
+- `Paused`
+- `Needs attention`
 
 Technical labels are acceptable in Settings, diagnostics, Bridge setup, and expandable detail panels.
-User-facing surfaces must not imply that an adapter memorizes the cluster or acts as factual authority by itself.
+User-facing surfaces must not imply that a model memorizes the cluster or acts as factual authority by itself.
 
 ## App Shell Architecture
 
@@ -97,7 +93,7 @@ The desktop app uses a persistent shell:
 - Main content area: active tab workspace.
 - Optional right panel: contextual inspector for selected cluster, source, map item, job, activity, readiness state, or settings summary.
 - Footer/status strip: vault path, backend state, job state, privacy/local indicator, keyboard hints.
-- Command palette: global actions, navigation, source/cluster lookup, future quick capture.
+- Command palette: global actions, navigation, and source/cluster lookup. Global capture is deferred pending redesign.
 
 Current routes:
 
@@ -382,10 +378,8 @@ Status mapping:
 - Bridge off: Muted.
 - Bridge running: Ready.
 - Bridge client connected: Info/Ready.
-- Expert retrieval-ready: Ready with neutral text; do not imply trained adapter.
-- Expert training-running: Learning.
-- Expert training-failed: Issue.
-- Expert rollback-ready: Warning/info.
+- Project indexing queued/running: Learning/warning.
+- Project indexing failed: Issue.
 
 ### Cluster Palette
 
@@ -871,31 +865,12 @@ Chats tab:
 - Recent prompts.
 - Start cluster chat.
 
-Expert tab:
-
-- User-facing expert status.
-- Retrieval-backed availability.
-- Learning/training state.
-- Metrics if available.
-- Dataset count.
-- Last trained.
-- Active adapter version.
-- Rollback state.
-- Retrain action.
-- Advanced logs behind disclosure.
-
 Map tab:
 
 - Cluster-local source graph.
 - Similarity/source spokes.
 - Hover previews.
 - Correction suggestions.
-
-Copy rules:
-
-- If no real adapter is active, say `Searchable now. Local expert not trained yet.`
-- Do not say `trained` for retrieval-ready clusters.
-- Use `Learning` only for actual training/running state.
 
 ## Map
 
@@ -1419,7 +1394,7 @@ Required visible errors:
 - Indexing failed.
 - Embedding setup unavailable.
 - Local chat model unavailable.
-- Expert training failed.
+- Project indexing failed.
 - Bridge denied request.
 - Startup repair needed.
 
@@ -1489,7 +1464,7 @@ Follow these rules when editing UI:
 - Add empty/error/loading states at the same time as happy path UI.
 - Do not introduce a purple/blue AI-gradient default.
 - Do not make Chat the first screen after onboarding.
-- Do not call local experts `trained` unless a verified active adapter exists.
+- Do not call content indexed, searchable, or ready unless a real backend state supports the claim.
 - Keep Bridge permissions and privacy visible.
 - Keep backend degraded/auth states explicit.
 - Add route-level QA notes when a tab gains new setup, diagnostic, or destructive behavior.
@@ -1608,7 +1583,7 @@ Interactions:
 - Source selection opens inspector and preserves list scroll.
 - Cluster chip opens cluster detail or filters by cluster depending on local context.
 - Suggested correction rows allow `Accept` and `Dismiss`.
-- Accepting a cluster suggestion moves the source, marks affected experts stale, and updates counts.
+- Accepting a cluster suggestion moves the source, refreshes affected cluster profiles, and updates counts.
 - Dismissing a suggestion records the decision and removes the item from the visible queue.
 
 Required states:
@@ -1617,46 +1592,6 @@ Required states:
 - No results: show active query/filter and a clear reset action.
 - Memory search unavailable: show setup path and block semantic claims.
 - Index stale: show reindex action and affected count when available.
-
-### Cluster Expert Workflow
-
-Goal: keep every cluster searchable while making trained-local-expert state honest.
-
-Lifecycle:
-
-- `Searchable now`: retrieval-backed cluster context is available, but no verified active adapter exists.
-- `Learning`: training or refresh work is queued/running.
-- `Ready`: a verified active adapter exists and matches the current dataset hash.
-- `Needs update`: an adapter exists but source changes made it stale.
-- `Paused`: user paused learning.
-- `Issue`: training/runtime/quality/hardware failed.
-
-Interactions:
-
-- `Retrain` queues a local expert job after hardware and dataset gates.
-- `Pause` stops future automatic learning and keeps retrieval available.
-- `Activate` switches to a selected valid adapter and deactivates the previous one.
-- `Rollback` restores the latest valid prior adapter.
-- `Delete` soft-deletes a non-active adapter after confirmation.
-- Source edits/deletions update dataset hash and mark active adapter stale.
-
-Expert tab must show:
-
-- User status.
-- Retrieval availability.
-- Trained yes/no.
-- Stale yes/no.
-- Source count and dataset hash.
-- Active artifact ID and path if available.
-- Runtime load readiness.
-- Recent jobs and artifacts.
-- Failure code/detail when blocked.
-
-Copy constraints:
-
-- Retrieval-only clusters say `Searchable now. Local expert not trained yet.`
-- Stale adapters say `Needs update`; do not say `Ready`.
-- Runtime load plan is not the same as live runtime smoke. Public claims need live smoke.
 
 ### Chat And Context Workflow
 
@@ -1907,8 +1842,8 @@ Titles:
 
 - Page title: cluster name.
 - Back link: `Back to clusters`.
-- Tabs: `Overview`, `Sources`, `Chats`, `Expert`, `Memory profile`, `Map`.
-- Sections: `Summary`, `Top memories`, `Recent sources`, `Recent chats`, `Learning status`, `Cluster expert`, `Graduation state`, `Runtime load`, `Recent jobs`, `Adapter artifacts`.
+- Tabs: `Overview`, `Sources`, `Chats`, `Memory profile`, `Map`.
+- Sections: `Summary`, `Top memories`, `Recent sources`, `Recent chats`, `Search status`, and recent tasks.
 
 Buttons:
 
@@ -1920,11 +1855,6 @@ Buttons:
 | `View all memories` | Routes to Sources/Mind filtered to cluster. |
 | `View all sources` | Routes to Sources filtered to cluster. |
 | `View all chats` | Routes to Chat list. |
-| `Retrain` | Queues local expert training. |
-| `Pause` | Pauses expert learning. |
-| `Activate` | Activates selected adapter. |
-| `Rollback` | Restores previous valid adapter. |
-| `Delete adapter` | Soft-deletes non-active adapter after confirmation. |
 | `View profile` | Opens Memory profile tab. |
 
 ### Map
@@ -2125,4 +2055,4 @@ The UI is public-V1 ready only when:
 - Empty, loading, degraded, and failure states are complete.
 - Dark mode and narrow desktop QA pass.
 - Clean packaged Windows visual QA passes.
-- No UI says a cluster expert is trained before verified LoRA adapter graduation.
+- No UI claims a model learned or indexed content unless a real backend state supports that claim.

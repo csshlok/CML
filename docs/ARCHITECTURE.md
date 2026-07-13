@@ -9,13 +9,20 @@ Electron is the first desktop shell choice because Node is already available in 
 ## Workspaces
 
 - `apps/desktop`: Electron + React desktop app.
-- `backend`: local Python service for vault indexing, clustering, retrieval, expert training, model orchestration, and Context Bridge.
+- `backend`: local Python service for vault indexing, clustering, retrieval, model orchestration, Odin project context, and Context Bridge.
 - `docs`: product, UI, project context, and architecture documents.
 - `UI-ref`: preserved UI reference material outside the production workspace.
 
 Key architecture references:
 
-- [JOB_AND_MAINTENANCE_ARCHITECTURE.md](JOB_AND_MAINTENANCE_ARCHITECTURE.md) defines the target background job taxonomy, scheduler rules, dependency model, and startup recovery state transitions for ingestion, indexing, diagnostics, cleanup, merge repair, and future expert training.
+- [JOB_AND_MAINTENANCE_ARCHITECTURE.md](JOB_AND_MAINTENANCE_ARCHITECTURE.md) defines the target background job taxonomy, scheduler rules, dependency model, and startup recovery state transitions for ingestion, indexing, diagnostics, cleanup, and merge repair. Its legacy expert-training rows are historical and not part of the live RAG-only product.
+- Odin project context is implemented through `backend/app/core/projects.py`, `backend/app/core/project_graph.py`, `backend/app/api/routes/projects.py`, and the desktop project workspace. Scoped authentication, asynchronous sync lifecycle, broader parser coverage, and supporting UI remain release work.
+
+## Odin Project Context
+
+Odin adds a project layer without creating a separate knowledge store. `projects` own a primary cluster, project sources remain ordinary encrypted/retrievable CML sources, and completed `project_snapshots` identify the structural graph queried by chat and CLI. `code_nodes` and `code_edges` store deterministic structure with source/line evidence; unresolved relationships stay in `relationship_suggestions` and are excluded from authoritative traversal.
+
+Project chat persists `scope_project_id` and resolves it to the project's primary cluster before retrieval. Bridge context accepts `project_id`, and the authenticated project API exposes summary, node, neighbor, bounded path, and context operations.
 
 ## Runtime Shape
 

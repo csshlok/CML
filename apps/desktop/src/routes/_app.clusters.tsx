@@ -1,19 +1,20 @@
 import { createFileRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { Check, FileText, Grid2X2, List, MoreHorizontal, Plus, RefreshCw, X } from "lucide-react";
+import { Check, Code2, FileText, MoreHorizontal, Plus, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   createCluster,
   listClusterSuggestions,
   listClusters,
+  listProjects,
   listSources,
   listVaults,
-  reindexVaultSearch,
+  sourceCountsByCluster,
   updateSource,
   type ClusterSuggestionRecord,
   type VaultRecord,
 } from "@/lib/backend";
-import type { Cluster, ClusterTint, Source } from "@/lib/mockStore";
+import type { Cluster, ClusterTint, Source } from "@/lib/domain";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 
 export const Route = createFileRoute("/_app/clusters")({
@@ -33,6 +34,8 @@ function ClustersList() {
   const [mounted, setMounted] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
+  const [sourceCountRows, setSourceCountRows] = useState<Array<{ cluster_id: string | null; state: string; total: number }>>([]);
+  const [projectClusterIds, setProjectClusterIds] = useState<Set<string>>(new Set());
 
   async function loadData() {
     setLoading(true);
@@ -41,17 +44,23 @@ function ClustersList() {
       const activeVault = vaults[0] ?? null;
       setBackendVault(activeVault);
       if (!activeVault) return;
-      await reindexVaultSearch(activeVault.id).catch(() => undefined);
-      const [clusterRows, sourceRows, suggestionRows] = await Promise.all([
+      const [clusterRows, sourceRows, suggestionRows, countResult, projectRows] = await Promise.all([
         listClusters(activeVault.id),
-        listSources(activeVault.id),
+        listSources(activeVault.id, { limit: 200 }),
         listClusterSuggestions(activeVault.id),
+        sourceCountsByCluster(activeVault.id),
+        listProjects(activeVault.id),
       ]);
       const mappedClusters = clusterRows.map(clusterFromRecord);
       setBackendClusters(mappedClusters);
       setSelectedClusterId((current) => current ?? mappedClusters[0]?.id ?? null);
       setBackendSources(sourceRows.map(sourceFromRecord));
       setSuggestions(suggestionRows);
+      setSourceCountRows(countResult.items);
+      setProjectClusterIds(new Set(projectRows.map((project) => project.primary_cluster_id)));
+      setMessage(null);
+    } catch {
+      setMessage("Vault could not load your clusters. Check Settings → Health, then try again.");
     } finally {
       setLoading(false);
     }
@@ -69,20 +78,28 @@ function ClustersList() {
   );
   const sourceCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const source of sources) {
-      if (source.clusterId) counts.set(source.clusterId, (counts.get(source.clusterId) ?? 0) + 1);
+    for (const row of sourceCountRows) {
+      if (row.cluster_id) counts.set(row.cluster_id, (counts.get(row.cluster_id) ?? 0) + row.total);
     }
     return counts;
-  }, [sources]);
-  const unclusteredCount = sources.filter((source) => !source.clusterId).length;
+  }, [sourceCountRows]);
+  const indexedCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of sourceCountRows) {
+      if (row.cluster_id && row.state === "indexed") counts.set(row.cluster_id, row.total);
+    }
+    return counts;
+  }, [sourceCountRows]);
   const selectedCluster = clusters.find((cluster) => cluster.id === selectedClusterId) ?? clusters[0] ?? null;
   const selectedSources = selectedCluster
     ? sources.filter((source) => source.clusterId === selectedCluster.id)
     : [];
-  const totalMemories = clusters.reduce((sum, cluster) => sum + memoryCount(cluster, sourceCounts.get(cluster.id) ?? 0), 0);
-  const selectedMemoryCount = selectedCluster
-    ? memoryCount(selectedCluster, sourceCounts.get(selectedCluster.id) ?? 0)
-    : 0;
+  const selectedCountRows = selectedCluster
+    ? sourceCountRows.filter((row) => row.cluster_id === selectedCluster.id)
+    : [];
+  const selectedIndexedCount = selectedCountRows.find((row) => row.state === "indexed")?.total ?? 0;
+  const selectedProcessingCount = selectedCountRows.find((row) => row.state === "processing")?.total ?? 0;
+  const selectedFailedCount = selectedCountRows.find((row) => row.state === "failed")?.total ?? 0;
 
   if (pathname !== "/clusters") return <Outlet />;
 
@@ -129,14 +146,6 @@ function ClustersList() {
             <Button onClick={() => void handleNewCluster()}>
               <Plus className="h-4 w-4" /> New cluster
             </Button>
-            <div className="flex rounded-md border border-border bg-card p-1">
-              <button className="rounded px-2 py-1 text-muted-foreground" type="button" aria-label="List view">
-                <List className="h-4 w-4" />
-              </button>
-              <button className="rounded bg-muted px-2 py-1 text-foreground" type="button" aria-label="Grid view">
-                <Grid2X2 className="h-4 w-4" />
-              </button>
-            </div>
           </div>
         </div>
 
@@ -152,7 +161,7 @@ function ClustersList() {
                 <div className="grid grid-cols-[minmax(0,1fr)_96px_96px_140px_32px] border-b border-border px-2 pb-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   <span>Name</span>
                   <span>Sources</span>
-                  <span>Memories</span>
+                  <span>Indexed</span>
                   <span>Last activity</span>
                   <span />
                 </div>
@@ -172,7 +181,14 @@ function ClustersList() {
                         <div className="flex min-w-0 items-center gap-4">
                           <ClusterDocument tint={cluster.tint} />
                           <div className="min-w-0">
-                            <div className="break-words text-sm font-semibold">{cluster.name}</div>
+                            <div className="flex flex-wrap items-center gap-2 break-words text-sm font-semibold">
+                              {cluster.name}
+                              {projectClusterIds.has(cluster.id) && (
+                                <span className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+                                  <Code2 className="h-3 w-3" /> Project
+                                </span>
+                              )}
+                            </div>
                             <p className="mt-1 line-clamp-2 break-words text-sm text-muted-foreground">
                               {cluster.summary || cluster.description || "No summary yet."}
                             </p>
@@ -180,7 +196,7 @@ function ClustersList() {
                         </div>
                         <span className="text-sm tabular-nums text-muted-foreground">{count}</span>
                         <span className="text-sm tabular-nums text-muted-foreground">
-                          {memoryCount(cluster, count).toLocaleString()}
+                          {(indexedCounts.get(cluster.id) ?? 0).toLocaleString()}
                         </span>
                         <span className="break-words text-sm text-muted-foreground">{clusterLastActivity(cluster, sources)}</span>
                         <MoreHorizontal className="h-4 w-4 justify-self-end text-muted-foreground" />
@@ -217,19 +233,26 @@ function ClustersList() {
                       <div className="flex min-w-0 items-center gap-3">
                         <FileText className="h-4 w-4 text-[var(--cluster-accent)]" />
                         <div className="min-w-0">
-                          <div className="break-words text-sm font-semibold">{cluster.name}</div>
+                          <div className="flex flex-wrap items-center gap-2 break-words text-sm font-semibold">
+                            {cluster.name}
+                            {projectClusterIds.has(cluster.id) && (
+                              <span className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+                                <Code2 className="h-3 w-3" /> Project
+                              </span>
+                            )}
+                          </div>
                           <div className="mt-1 break-words text-xs text-muted-foreground">
                             {count} sources <span className="px-1.5">/</span>{" "}
-                            {memoryCount(cluster, count).toLocaleString()} memories
+                            {(indexedCounts.get(cluster.id) ?? 0).toLocaleString()} indexed
                           </div>
                         </div>
                       </div>
                       <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
                     </div>
                     <div className="my-4 h-px bg-border" />
-                    <div className="text-xs text-muted-foreground">Top memory</div>
+                    <div className="text-xs text-muted-foreground">Most recent source</div>
                     <div className="mt-2 line-clamp-2 break-words text-sm font-medium">
-                      {topSource?.title || "No indexed memory yet"}
+                      {topSource?.title || "No source yet"}
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       <span className="rounded border border-border px-1.5 py-0.5">
@@ -303,9 +326,9 @@ function ClustersList() {
                 </p>
                 <div className="mt-8 grid grid-cols-2 gap-y-6">
                   <InspectorMetric label="Sources" value={sourceCounts.get(selectedCluster.id) ?? 0} />
-                  <InspectorMetric label="Memories" value={selectedMemoryCount} />
-                  <InspectorMetric label="Embeddings" value={selectedMemoryCount * 8} compact />
-                  <InspectorMetric label="Size" value={`${Math.max(1, Math.round(selectedMemoryCount / 180))}.${selectedMemoryCount % 9} GB`} />
+                  <InspectorMetric label="Indexed" value={selectedIndexedCount} />
+                  <InspectorMetric label="Processing" value={selectedProcessingCount} />
+                  <InspectorMetric label="Needs review" value={selectedFailedCount} />
                 </div>
                 <div className="my-8 h-px bg-border" />
                 <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Activity</div>
@@ -333,7 +356,7 @@ function ClustersList() {
                       <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-issue)]" />
                       <span className="min-w-0">
                         <span className="line-clamp-2 break-words font-medium">{source.title}</span>
-                        <span className="mt-1 block break-words text-xs text-muted-foreground">{source.type.toUpperCase()} / {Math.max(1, Math.round((source.preview || source.summary || "").length / 120))} memories</span>
+                        <span className="mt-1 block break-words text-xs text-muted-foreground">{source.type.toUpperCase()} / {source.state === "indexed" ? "Indexed" : source.state === "processing" ? "Processing" : source.state === "failed" ? "Needs review" : "Waiting"}</span>
                       </span>
                     </Link>
                   ))}
@@ -362,14 +385,11 @@ function ClusterDocument({ tint }: { tint: ClusterTint }) {
 function InspectorMetric({
   label,
   value,
-  compact,
 }: {
   label: string;
   value: number | string;
-  compact?: boolean;
 }) {
-  const display =
-    typeof value === "number" ? (compact ? compactNumber(value) : value.toLocaleString()) : value;
+  const display = typeof value === "number" ? value.toLocaleString() : value;
   return (
     <div className="min-w-0">
       <div className="break-words text-xl font-semibold tabular-nums">{display}</div>
@@ -385,10 +405,6 @@ function suggestionKey(suggestion: ClusterSuggestionRecord) {
 function nextTint(index: number) {
   const tints: ClusterTint[] = ["sage", "sand", "sky", "blush", "lavender", "terracotta"];
   return tints[index % tints.length];
-}
-
-function memoryCount(cluster: Cluster, sourceCount: number) {
-  return Math.max(sourceCount * 64, Math.round((cluster.summary?.length ?? cluster.description?.length ?? 42) * 3.4));
 }
 
 function clusterLastActivity(cluster: Cluster, sources: Source[]) {
@@ -410,9 +426,4 @@ function formatDate(value: string) {
     hour: "numeric",
     minute: "2-digit",
   }).format(timestamp);
-}
-
-function compactNumber(value: number) {
-  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
-  return value.toLocaleString();
 }

@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 from backend.app.core.database import connect, utc_now
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
 
 class MigrationError(RuntimeError):
@@ -338,6 +338,190 @@ def _migration_007_reconciliation_logs(conn) -> None:
     )
 
 
+def _migration_008_project_graph(conn) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            root_path TEXT NOT NULL,
+            root_fingerprint TEXT NOT NULL,
+            primary_cluster_id TEXT NOT NULL,
+            repository_kind TEXT NOT NULL DEFAULT 'folder',
+            git_remote_fingerprint TEXT,
+            default_branch TEXT,
+            indexed_commit TEXT,
+            working_tree_dirty INTEGER NOT NULL DEFAULT 0,
+            changed_file_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'registered',
+            structure_status TEXT NOT NULL DEFAULT 'waiting',
+            retrieval_status TEXT NOT NULL DEFAULT 'waiting',
+            interpretation_status TEXT NOT NULL DEFAULT 'unavailable',
+            active_snapshot_id TEXT,
+            brief TEXT NOT NULL DEFAULT '',
+            languages_json TEXT NOT NULL DEFAULT '{}',
+            workspace_count INTEGER NOT NULL DEFAULT 0,
+            entrypoints_json TEXT NOT NULL DEFAULT '[]',
+            deleted_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+            FOREIGN KEY (primary_cluster_id) REFERENCES clusters(id) ON DELETE RESTRICT,
+            UNIQUE(vault_id, root_fingerprint)
+        );
+        CREATE TABLE IF NOT EXISTS project_snapshots (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            source_manifest_hash TEXT NOT NULL,
+            git_commit TEXT,
+            branch TEXT,
+            dirty_working_tree INTEGER NOT NULL DEFAULT 0,
+            extractor_version TEXT NOT NULL,
+            eligible_count INTEGER NOT NULL DEFAULT 0,
+            ignored_count INTEGER NOT NULL DEFAULT 0,
+            generated_count INTEGER NOT NULL DEFAULT 0,
+            parsed_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            structure_status TEXT NOT NULL DEFAULT 'waiting',
+            retrieval_status TEXT NOT NULL DEFAULT 'waiting',
+            interpretation_status TEXT NOT NULL DEFAULT 'unavailable',
+            manifest_json TEXT NOT NULL DEFAULT '{}',
+            activated_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS project_index_runs (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            snapshot_id TEXT,
+            trigger_source TEXT NOT NULL,
+            status TEXT NOT NULL,
+            phase TEXT NOT NULL DEFAULT 'discovery',
+            eligible_total INTEGER NOT NULL DEFAULT 0,
+            completed_count INTEGER NOT NULL DEFAULT 0,
+            skipped_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            cancellation_requested INTEGER NOT NULL DEFAULT 0,
+            failure_category TEXT NOT NULL DEFAULT '',
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (snapshot_id) REFERENCES project_snapshots(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS project_sources (
+            project_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            file_role TEXT NOT NULL DEFAULT 'source',
+            content_hash TEXT NOT NULL,
+            discovered_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, source_id),
+            UNIQUE (project_id, relative_path),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS project_cluster_links (
+            project_id TEXT NOT NULL,
+            cluster_id TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('primary', 'linked')),
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, cluster_id),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS code_nodes (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            snapshot_id TEXT NOT NULL,
+            source_id TEXT,
+            qualified_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            language TEXT NOT NULL DEFAULT '',
+            display_label TEXT NOT NULL,
+            relative_path TEXT NOT NULL DEFAULT '',
+            start_line INTEGER,
+            start_column INTEGER,
+            end_line INTEGER,
+            end_column INTEGER,
+            signature TEXT NOT NULL DEFAULT '',
+            extraction_method TEXT NOT NULL,
+            extractor_version TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (snapshot_id) REFERENCES project_snapshots(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
+            UNIQUE(snapshot_id, qualified_id)
+        );
+        CREATE TABLE IF NOT EXISTS code_edges (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            snapshot_id TEXT NOT NULL,
+            source_node_id TEXT NOT NULL,
+            target_node_id TEXT NOT NULL,
+            edge_type TEXT NOT NULL,
+            evidence_source_id TEXT,
+            source_line INTEGER,
+            extraction_method TEXT NOT NULL,
+            confidence_class TEXT NOT NULL DEFAULT 'extracted',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (snapshot_id) REFERENCES project_snapshots(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_node_id) REFERENCES code_nodes(id) ON DELETE CASCADE,
+            FOREIGN KEY (target_node_id) REFERENCES code_nodes(id) ON DELETE CASCADE,
+            FOREIGN KEY (evidence_source_id) REFERENCES sources(id) ON DELETE CASCADE,
+            UNIQUE(snapshot_id, source_node_id, target_node_id, edge_type, source_line)
+        );
+        CREATE TABLE IF NOT EXISTS relationship_suggestions (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            snapshot_id TEXT NOT NULL,
+            source_node_id TEXT,
+            target_node_id TEXT,
+            suggested_type TEXT NOT NULL,
+            score REAL NOT NULL,
+            reason TEXT NOT NULL,
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            review_state TEXT NOT NULL DEFAULT 'pending',
+            extractor_version TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (snapshot_id) REFERENCES project_snapshots(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_node_id) REFERENCES code_nodes(id) ON DELETE CASCADE,
+            FOREIGN KEY (target_node_id) REFERENCES code_nodes(id) ON DELETE CASCADE
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_vault_name
+            ON projects(vault_id, lower(name)) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_projects_primary_cluster
+            ON projects(primary_cluster_id) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_project_sources_source ON project_sources(source_id);
+        CREATE INDEX IF NOT EXISTS idx_project_snapshots_project
+            ON project_snapshots(project_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_project_runs_project
+            ON project_index_runs(project_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_code_nodes_lookup
+            ON code_nodes(project_id, snapshot_id, kind, qualified_id);
+        CREATE INDEX IF NOT EXISTS idx_code_edges_source
+            ON code_edges(project_id, snapshot_id, source_node_id, edge_type);
+        CREATE INDEX IF NOT EXISTS idx_code_edges_target
+            ON code_edges(project_id, snapshot_id, target_node_id, edge_type);
+        """
+    )
+
+
+def _migration_009_project_chat_scope(conn) -> None:
+    _add_column_if_missing(conn, "chat_sessions", "scope_project_id", "TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_project ON chat_sessions(scope_project_id, updated_at DESC)"
+    )
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migration_001_baseline,
     2: _migration_002_vault_security_metadata,
@@ -346,6 +530,8 @@ MIGRATIONS: dict[int, Migration] = {
     5: _migration_005_quarantine_records,
     6: _migration_006_bridge_approvals,
     7: _migration_007_reconciliation_logs,
+    8: _migration_008_project_graph,
+    9: _migration_009_project_chat_scope,
 }
 
 

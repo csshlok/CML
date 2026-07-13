@@ -1,6 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { TimelineRoute } from "./_app.timeline";
+import { createFileRoute, Navigate } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/_app/activity")({
-  component: TimelineRoute,
+  component: () => <Navigate to="/timeline" replace />,
 });

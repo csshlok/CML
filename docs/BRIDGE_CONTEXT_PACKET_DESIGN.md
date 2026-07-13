@@ -59,7 +59,7 @@ Completed:
   - `Citations`
   - `Trust And Limits`
   - `Expansion Handles`
-  - `Cluster Expert Digest`
+  - `Cluster Profile`
   - `Authority`
   - `Token Savings`
 - Packet telemetry includes:
@@ -127,7 +127,7 @@ The original problem statement still stands:
 
 ## Bundle Contract
 
-The current packet contract is the retrieval-grounded cluster expert bundle, not a standalone adapter response.
+The current packet contract is a retrieval-grounded context bundle, not a standalone model response.
 
 Current packet/API bundle fields:
 
@@ -143,7 +143,7 @@ Authority rules:
 
 - Facts and citations come from retrieved evidence.
 - Expert digest is a non-authoritative compression layer only.
-- Expansion handles must always resolve back to source/chunk/page evidence, not adapter-only text.
+- Expansion handles must always resolve back to source, chunk, or page evidence.
 
 ## Remaining Gaps
 

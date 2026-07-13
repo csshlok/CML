@@ -5,33 +5,6 @@ declare module "@/lib/bridge-presentation.js" {
   export function describeBridgeReviewDecision(review: Record<string, unknown>, approved: boolean): string;
 }
 
-declare module "@/lib/quick-capture.js" {
-  import type { BridgeArtifactCapturePayload, BridgeExternalTurnPayload } from "@/lib/backend";
-
-  export type QuickCaptureMode = "artifact" | "turn";
-  export type QuickCaptureDraft = {
-    mode: QuickCaptureMode;
-    vaultId: string;
-    clusterId: string;
-    clientName: string;
-    title: string;
-    prompt: string;
-    response: string;
-  };
-
-  export function createQuickCaptureDraft(mode?: QuickCaptureMode): QuickCaptureDraft;
-  export function applyClipboardTextToDraft(
-    draft: QuickCaptureDraft,
-    clipboardText: string,
-  ): QuickCaptureDraft;
-  export function canSubmitQuickCapture(draft: QuickCaptureDraft): boolean;
-  export function buildQuickCaptureSubmission(
-    draft: QuickCaptureDraft,
-  ):
-    | { kind: "turn"; payload: BridgeExternalTurnPayload }
-    | { kind: "artifact"; payload: BridgeArtifactCapturePayload };
-}
-
 declare module "@/lib/chat-presentation" {
   export function analysisModeLabel(intent: string, coverageLedger?: Record<string, unknown> | null): string;
   export function describeCoverage(coverageLedger?: Record<string, unknown> | null): string | null;
@@ -58,4 +31,11 @@ declare module "@/lib/extension-presentation.js" {
     allowedVaultIds: string[],
     vaultNamesById: Map<string, string>,
   ): string;
+}
+
+declare module "d3-force-3d" {
+  export function forceCollide<Node = unknown>(radius?: number | ((node: Node) => number)): {
+    radius(value: number | ((node: Node) => number)): unknown;
+    strength(value: number): unknown;
+  };
 }

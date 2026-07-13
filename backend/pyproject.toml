@@ -22,6 +22,9 @@ embeddings = [
   "sentence-transformers==5.5.1"
 ]
 
+[project.scripts]
+odin = "app.odin_cli:main"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

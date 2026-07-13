@@ -239,6 +239,7 @@ function ChatIndex() {
             )}
             <div className="rounded-md border border-border bg-card/95 p-4">
               <Textarea
+                aria-label="Ask across your vault"
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
                 placeholder="Ask across your vault..."
@@ -281,7 +282,7 @@ function ChatIndex() {
                   </SelectContent>
                 </Select>
                 <span className="text-xs text-muted-foreground">
-                  {backendReady ? "Semantic retrieval ready" : "Create a vault to chat"}
+                  {backendReady ? "Your library is ready" : "Create a library to start chatting"}
                 </span>
                 <Button
                   className="gap-2 sm:ml-auto"
@@ -329,7 +330,7 @@ function ChatIndex() {
         <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Active memory</h3>
         <div className="mt-5 grid grid-cols-2 gap-5">
           <Metric value={backendReady ? String(backendChats.length) : "0"} label="Chats" />
-          <Metric value={backendReady ? String(backendClusters.length) : "5"} label="Clusters" />
+          <Metric value={backendReady ? String(backendClusters.length) : "0"} label="Clusters" />
           <Metric value={attachments.length.toString()} label="Attachments" />
           <Metric value={backendReady ? "Ready" : "No vault"} label="Status" />
         </div>

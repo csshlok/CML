@@ -11,8 +11,7 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { createChatSession, listClusters, listSources, listVaults, type ClusterRecord, type SourceRecord } from "@/lib/backend";
-import { useQuickCaptureDialog } from "@/lib/quick-capture-store";
-import { MessageSquare, Layers, Files, Globe2, Settings, Plus, Link2, FolderOpen, Cable, ClipboardPaste, Save } from "lucide-react";
+import { MessageSquare, Layers, Files, Globe2, Settings, Plus, Link2, FolderOpen, Cable } from "lucide-react";
 
 interface PaletteState {
   open: boolean;
@@ -33,7 +32,6 @@ export function CommandPalette({
   onOpenChange: (v: boolean) => void;
 }) {
   const navigate = useNavigate();
-  const { openDialog: openQuickCapture } = useQuickCaptureDialog();
   const [clusters, setClusters] = useState<ClusterRecord[]>([]);
   const [sources, setSources] = useState<SourceRecord[]>([]);
 
@@ -106,16 +104,6 @@ export function CommandPalette({
           </CommandItem>
           <CommandItem onSelect={() => go(() => navigate({ to: "/sources" }))}>
             <Link2 className="mr-2 h-4 w-4" /> Add link
-          </CommandItem>
-          <CommandItem
-            onSelect={() =>
-              go(() => openQuickCapture({ mode: "artifact", seedFromClipboard: true }))
-            }
-          >
-            <ClipboardPaste className="mr-2 h-4 w-4" /> Save clipboard to Vault
-          </CommandItem>
-          <CommandItem onSelect={() => go(() => openQuickCapture({ mode: "turn" }))}>
-            <Save className="mr-2 h-4 w-4" /> Save prompt + response
           </CommandItem>
           <CommandItem onSelect={() => go(() => navigate({ to: "/settings" }))}>
             <FolderOpen className="mr-2 h-4 w-4" /> Open vault
