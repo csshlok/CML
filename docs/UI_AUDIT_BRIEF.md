@@ -1,5 +1,8 @@
 # CML UI Audit Brief
 
+> Historical design inventory retained as a reference for future UI work. Current routes and
+> `docs/UI_ARCHITECTURE.md` are authoritative when this brief differs from the implemented app.
+
 Last updated: 2026-06-08
 
 ## Purpose

@@ -4,7 +4,7 @@ Last updated: 2026-05-30
 
 ## Purpose
 
-Vault needs one scheduler model for ingestion, indexing, chat memory, diagnostics, cleanup, merge repair, vector reconciliation, and future expert training. The current backend has a simple FIFO `app_jobs` worker for `reindex_source` and `chat_transcript_memory`. That is enough for early development, but it is not enough for production maintenance.
+Vault needs one scheduler model for ingestion, indexing, chat memory, diagnostics, cleanup, merge repair, vector reconciliation, and Odin project sync. The backend uses the `app_jobs` queue for bounded background work and exposes queue state in Tasks and Health.
 
 This document defines the target V1 job taxonomy and scheduler rules before more background systems are added.
 
@@ -29,7 +29,7 @@ Current implemented job types:
 
 | Job type | Current behavior |
 | --- | --- |
-| `reindex_source` | Rebuilds local source chunks/embeddings for one source and marks the cluster expert stale. |
+| `reindex_source` | Rebuilds local source chunks and embeddings for one source and refreshes affected cluster profile state. |
 | `chat_transcript_memory` | Converts a chat session into indexed transcript memory sources. |
 
 ## Target Job Record
@@ -68,7 +68,7 @@ The scheduler needs these fields either stored on the job row or resolved from a
 | `cluster` | One cluster's records or membership. | Conflicts with same cluster `scope_id`; may block expert jobs. |
 | `source` | One source item, pages, chunks, or extraction state. | Conflicts with same source `scope_id`. |
 | `vector_index` | Vector store/index writes. | Single writer for V1. |
-| `expert` | Expert artifacts/training records. | One expert job per cluster/vault. |
+| `project` | Odin project snapshots, parsing, and index publication. | One write job per project. |
 | `chat` | Chat sessions/messages/snapshots/transcript memory. | Conflicts with same chat `scope_id` when mutating. |
 | `system` | App settings, tokens, logs, diagnostics, maintenance state. | Conflicts by `concurrency_group`. |
 | `none` | Read-only or external-only. | No write lock. |

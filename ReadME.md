@@ -5,7 +5,7 @@
 <h1 align="center">CML</h1>
 
 <p align="center">
-  <em>We are building a local-first context management layer for grounded chat, retrieval, and reusable AI context packets.</em>
+  <em>A private Windows workspace that turns local files and code projects into searchable, reusable AI context.</em>
 </p>
 
 <p align="center">
@@ -19,33 +19,34 @@
 
 ## What CML Is
 
-CML turns a local vault of files, notes, links, screenshots, PDFs, transcripts, and synced folders into reusable AI context.
+CML powers the Vault desktop app. Vault turns local files, notes, links, screenshots, PDFs, transcripts, synced folders, and code projects into searchable context for local AI.
 
-We are not trying to build "just another file uploader for chat." The point of CML is to:
+Use Vault to:
 
-- keep long-lived context outside the model
-- retrieve grounded evidence with citations
-- distill working memory and reusable memory from the vault
-- return compact context packets instead of replaying raw history every turn
-- let the desktop app, Bridge, MCP clients, and local tools all consume the same context layer
+- keep useful context across conversations
+- find answers grounded in your own sources, with citations
+- organize related material into clusters
+- ask questions about an indexed code project with Odin
+- share only approved local context with Bridge, MCP clients, and command-line tools
 
 The live architecture is now RAG-only. The old LoRA cluster-expert path has been removed from the product code.
 
 ## Quick Navigation
 
 - [What CML Is](#what-cml-is)
-- [Current State](#current-state)
+- [What You Can Do](#what-you-can-do)
 - [Architecture At A Glance](#architecture-at-a-glance)
+- [Using Vault](#using-vault)
 - [Quick Start](#quick-start)
-- [Developer Workflow](#developer-workflow)
+- [Contributor Checks](#contributor-checks)
 - [Bridge And External Tooling](#bridge-and-external-tooling)
 - [Token Reduction](#token-reduction)
 - [Packaging](#packaging)
 - [Important Docs](#important-docs)
 
-## Current State
+## What You Can Do
 
-What is live in the repo right now:
+The current app supports:
 
 - Electron desktop app in `apps/desktop`
 - FastAPI backend in `backend`
@@ -80,7 +81,7 @@ Core rule:
 - retrieval owns evidence
 - models synthesize from packets, not from hidden app memory
 
-## Why We Built It This Way
+## How The Design Helps
 
 Most AI workflows break down in the same places:
 
@@ -89,7 +90,7 @@ Most AI workflows break down in the same places:
 - external tools cannot safely reuse local context
 - "retrieval" often stops at loose snippets with weak structure
 
-We are trying to solve those problems with a local system that is inspectable and reversible:
+Vault addresses those problems with a local system that is inspectable and reversible:
 
 - grounded retrieval
 - working memory and distilled memory
@@ -97,7 +98,26 @@ We are trying to solve those problems with a local system that is inspectable an
 - explicit trust boundaries
 - shared internal and external context surfaces
 
+## Using Vault
+
+1. Create a library and choose where it should live on your device.
+2. Set up Memory Search so Vault can find related passages locally.
+3. Add files, folders, links, notes, screenshots, or transcripts from Sources.
+4. Review indexing progress in Tasks or Settings → Health.
+5. Ask a question from Home or Chat. Open a citation to inspect the supporting source.
+6. Use Clusters, Map, and Timeline to explore related material.
+
+For a code project, open PowerShell in the project folder and run:
+
+```powershell
+.\odin.ps1 project add . --name "My Project"
+```
+
+Odin creates a searchable project index without modifying repository files. Use `project sync`, `project show`, `project graph`, or `project tree` when the project changes or when you need a structural view.
+
 ## Quick Start
+
+Vault is currently pre-release, so the repository is the supported installation path.
 
 ### Prerequisites
 
@@ -118,7 +138,7 @@ npm install
 
 Copy `.env.example` to `.env` and adjust only what you actually need. The backend already has sensible local defaults for normal development.
 
-Important settings you will usually care about:
+Settings commonly used for local development:
 
 - `CML_API_PREFIX`
 - `CML_DATABASE_PATH`
@@ -184,7 +204,7 @@ Vault list:
 curl -H "x-cml-api-token: dev-token" http://127.0.0.1:7343/api/v1/vaults
 ```
 
-## Developer Workflow
+## Contributor Checks
 
 ### Desktop build
 
@@ -235,7 +255,7 @@ npx tsc --project apps/desktop/tsconfig.json --noEmit
 
 ## Bridge And External Tooling
 
-We expose local context to external tools through:
+Vault exposes approved local context to external tools through:
 
 - Bridge HTTP API
 - MCP server
@@ -325,26 +345,25 @@ Retrieval and packet docs:
 - [docs/RETRIEVAL_BENCHMARKS.md](docs/RETRIEVAL_BENCHMARKS.md)
 - [docs/TURBOVEC_INTEGRATION_PLAN.md](docs/TURBOVEC_INTEGRATION_PLAN.md)
 
-## Release Posture
+## Release Status
 
-We are still pre-release.
+Vault is currently pre-release.
 
 The migration to RAG is complete, but release hardening still remains:
 
 - clean-machine package validation
 - broader release proof
-- continued docs cleanup for older LoRA-era wording
 - normal local synthesis runtime setup on target machines
 
-We keep the bar conservative on purpose. If the release-quality bar is not met, we slip the release instead of pretending the repo is ready.
+The installer will not be presented as release-ready until those checks pass.
 
 ## Notes
 
 - Public V1 target is Windows-only.
-- We do not bundle model weights in the first installer.
-- We do not do silent full-device scanning in V1.
+- The first installer does not bundle model weights.
+- Vault does not silently scan the entire device.
 - Hash embeddings are for development and benchmark fallback, not the intended production setup path.
 
 ## License
 
-This repository still needs an explicit top-level license file if you want the public repo surface to look complete.
+No top-level license has been selected yet. Treat the source as all-rights-reserved until a license file is added.

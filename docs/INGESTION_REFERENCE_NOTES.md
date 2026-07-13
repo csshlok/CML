@@ -1,5 +1,8 @@
 # Ingestion Reference Notes
 
+> Historical product research retained for feature planning. This records an observed reference
+> workflow; it does not describe the current implementation or promise every listed integration.
+
 Source reviewed: `t:\csshl\m2-res_480p.mp4`
 
 Date reviewed: 2026-05-27

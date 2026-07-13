@@ -2,6 +2,8 @@
 
 Last updated: 2026-06-17
 
+> Implementation status (2026-07-13): Public V1 is retrieval- and evidence-grounded. Historical migration details live in `LORA_TO_RAG_MIGRATION_PLAN.md`; this document describes only the current product.
+
 ## 1. Executive Summary
 
 CML is a Windows-first local desktop product for turning personal files, links, notes, screenshots, transcripts, and synced folders into reusable AI context.
@@ -64,7 +66,7 @@ CML solves that by giving the user a local vault that can:
 - index and cluster them
 - extract durable memory and working memory
 - serve compact evidence packets to internal chat and external tools
-- keep a per-cluster expert lifecycle for deeper specialization
+- keep cluster profiles and retrieval state inspectable
 
 If CML works, the user stops treating every AI interaction as stateless and starts treating their personal context as reusable infrastructure.
 
@@ -77,7 +79,7 @@ Current AI workflows break down in four ways:
 3. External tools cannot safely reuse a private local corpus.
 4. Retrieval-only systems often return loose snippets without a durable memory layer or inspectable packet structure.
 
-CML must fix those failures without requiring the user to understand embeddings, vector databases, MCP internals, or LoRA training.
+CML must fix those failures without requiring the user to understand embeddings, vector databases, or MCP internals.
 
 ## 4. Target User
 
@@ -123,7 +125,7 @@ V1 is not optimized for:
 - Cluster: a user-visible grouping of related context
 - Memory: distilled reusable facts, decisions, constraints, and working summaries
 - Context packet: a compact, expandable delivery format for chat and Bridge
-- Cluster expert: a per-cluster expert lifecycle with retrieval-backed use now and verified LoRA graduation as the public-quality target
+- Code project: an Odin-managed repository index with a concise brief, searchable evidence, and on-demand graph or tree output
 
 ### 6.3 Surfaces
 
@@ -333,25 +335,9 @@ The product must:
 
 - detect hardware capability
 - recommend approved chat and embedding configurations
-- distinguish chat runtime requirements from expert runtime requirements
+- distinguish optional local chat setup from required memory-search setup
 - reject incompatible imported models with explicit reasons
 - avoid pretending full local chat works when no synthesis runtime is configured
-
-### 10.11 Cluster Experts
-
-The product must maintain a per-cluster expert lifecycle with:
-
-- dataset/export readiness
-- job state
-- runtime validation
-- artifact activation
-- rollback
-- status reporting in UI and API
-
-Important product rule:
-
-- public-facing "trained expert" claims require verified graduation and quality proof
-- retrieval-backed operation before that is allowed, but it is not the final marketing claim
 
 ## 11. UX Requirements
 
@@ -439,15 +425,14 @@ The product must:
 - first-run readiness success
 - large-vault ingestion and query latency targets
 - hostile-evidence downgrade accuracy
-- verified expert quality delta over retrieval-only baseline
+- grounded-answer quality against representative vault questions
 
 ## 15. Risks
 
-1. Verified LoRA quality may lag far behind the broader product.
-2. Packaging a Python-heavy desktop product with OCR and local runtimes is operationally expensive.
-3. Search, chat, and memory quality can drift if product claims outrun current evidence.
-4. UI trust can be damaged by hardcoded or misleading health states.
-5. External access increases privacy expectations and review burden.
+1. Packaging a Python-heavy desktop product with OCR and local runtimes is operationally expensive.
+2. Search, chat, and memory quality can drift if product claims outrun current evidence.
+3. UI trust can be damaged by hardcoded or misleading health states.
+4. External access increases privacy expectations and review burden.
 
 ## 16. Mitigations
 

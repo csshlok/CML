@@ -1,5 +1,8 @@
 # Packaging Investigation
 
+> Historical investigation record. Verify current packaging behavior against the scripts and
+> `docs/PROJECT_CONTEXT.md` before treating a status or blocker below as current.
+
 Last updated: 2026-06-14
 
 ## Scope
