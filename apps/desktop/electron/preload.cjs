@@ -20,6 +20,7 @@ window.addEventListener("DOMContentLoaded", () => {
 contextBridge.exposeInMainWorld("cmlDesktop", {
   platform: process.platform,
   openPath: (targetPath) => ipcRenderer.invoke("cml:open-path", targetPath),
+  openExternal: (url) => ipcRenderer.invoke("cml:open-external", url),
   selectSourceFiles: () => ipcRenderer.invoke("cml:select-source-files"),
   selectSourceFolders: () => ipcRenderer.invoke("cml:select-source-folders"),
   selectEmbeddingFolder: () => ipcRenderer.invoke("cml:select-embedding-folder"),
@@ -27,6 +28,7 @@ contextBridge.exposeInMainWorld("cmlDesktop", {
   selectVaultFolder: () => ipcRenderer.invoke("cml:select-vault-folder"),
   prepareActiveVaultFolder: (targetPath) => ipcRenderer.invoke("cml:prepare-active-vault-folder", targetPath),
   setActiveVaultFolder: (targetPath) => ipcRenderer.invoke("cml:set-active-vault-folder", targetPath),
+  clearActiveVaultFolder: () => ipcRenderer.invoke("cml:clear-active-vault-folder"),
   selectCoverImage: () => ipcRenderer.invoke("cml:select-cover-image"),
   getBackendUrl: () => ipcRenderer.invoke("cml:get-backend-url"),
   getBackendToken: () => ipcRenderer.invoke("cml:get-backend-token"),
@@ -44,10 +46,11 @@ contextBridge.exposeInMainWorld("cmlDesktop", {
     };
   },
   copyText: (value) => ipcRenderer.invoke("cml:copy-text", value),
-  readClipboardText: () => ipcRenderer.invoke("cml:read-clipboard-text"),
   retryStartup: () => ipcRenderer.invoke("cml:retry-startup"),
   openVaultAnyway: () => ipcRenderer.invoke("cml:open-vault-anyway"),
   listSupportedFiles: (targetPaths) => ipcRenderer.invoke("cml:list-supported-files", targetPaths),
+  scanSupportedFiles: (targetPaths, limit) =>
+    ipcRenderer.invoke("cml:scan-supported-files", targetPaths, limit),
   getDroppedFilePaths: (files) =>
     Array.from(files)
       .map((file) => webUtils.getPathForFile(file))

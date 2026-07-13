@@ -444,6 +444,17 @@ if (!gotSingleInstanceLock) {
 
 if (gotSingleInstanceLock) {
   app.whenReady().then(() => {
+    ipcMain.handle("cml:open-external", async (_event, rawUrl) => {
+      try {
+        const url = new URL(String(rawUrl));
+        if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+        await shell.openExternal(url.toString());
+        return true;
+      } catch {
+        return false;
+      }
+    });
+
     ipcMain.handle("cml:open-path", async (_event, targetPath) => {
       if (!(await isSafeOpenPath(targetPath))) return false;
       const error = await shell.openPath(targetPath);
@@ -524,6 +535,19 @@ if (gotSingleInstanceLock) {
       return files.slice(0, 500);
     });
 
+    ipcMain.handle("cml:scan-supported-files", async (_event, targetPaths, requestedLimit = 5000) => {
+      if (!Array.isArray(targetPaths)) return { files: [], truncated: false, limit: 0 };
+      const limit = Math.max(1, Math.min(Number(requestedLimit) || 5000, 10000));
+      const files = [];
+      const state = { truncated: false };
+      for (const targetPath of targetPaths) {
+        if (typeof targetPath !== "string" || targetPath.length === 0) continue;
+        await collectSupportedFiles(targetPath, files, limit, state);
+        if (state.truncated) break;
+      }
+      return { files, truncated: state.truncated, limit };
+    });
+
     ipcMain.handle("cml:select-cover-image", async () => {
       const result = await dialog.showOpenDialog({
         title: "Choose card image",
@@ -548,7 +572,6 @@ if (gotSingleInstanceLock) {
       clipboard.writeText(typeof value === "string" ? value : String(value ?? ""));
       return true;
     });
-    ipcMain.handle("cml:read-clipboard-text", async () => clipboard.readText());
     ipcMain.handle("cml:retry-startup", async () => {
       writeDesktopRuntimeLog("manual startup retry requested");
       app.relaunch();
@@ -581,6 +604,12 @@ if (gotSingleInstanceLock) {
     ipcMain.handle("cml:set-active-vault-folder", async (_event, targetPath) => {
       if (typeof targetPath !== "string" || targetPath.trim().length === 0) return null;
       await commitActiveVaultPath(targetPath);
+      return backendUrl;
+    });
+    ipcMain.handle("cml:clear-active-vault-folder", async () => {
+      pendingActiveVaultPath = null;
+      await clearActiveVaultPath();
+      await restartBackend();
       return backendUrl;
     });
     ipcMain.handle("cml:prepare-active-vault-folder", async (_event, targetPath) => {
@@ -1149,7 +1178,7 @@ async function pathExists(targetPath) {
   }
 }
 
-async function collectSupportedFiles(targetPath, files) {
+async function collectSupportedFiles(targetPath, files, maxFiles = 500, state = null) {
   let stat;
   try {
     stat = await fs.lstat(targetPath);
@@ -1160,7 +1189,8 @@ async function collectSupportedFiles(targetPath, files) {
 
   if (stat.isFile()) {
     if (supportedSourceExtensions.has(path.extname(targetPath).toLowerCase())) {
-      files.push(targetPath);
+      if (files.length < maxFiles) files.push(targetPath);
+      else if (state) state.truncated = true;
     }
     return;
   }
@@ -1177,9 +1207,12 @@ async function collectSupportedFiles(targetPath, files) {
   }
 
   for (const entry of entries) {
-    if (files.length >= 500) return;
+    if (files.length >= maxFiles) {
+      if (state) state.truncated = true;
+      return;
+    }
     if (entry.name.startsWith(".") && entry.name !== ".obsidian") continue;
-    await collectSupportedFiles(path.join(targetPath, entry.name), files);
+    await collectSupportedFiles(path.join(targetPath, entry.name), files, maxFiles, state);
   }
 }
 
