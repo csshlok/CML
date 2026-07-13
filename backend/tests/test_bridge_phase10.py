@@ -295,6 +295,42 @@ class BridgePhase10Tests(unittest.TestCase):
         self.assertEqual(response["token_estimate"], {"total_tokens": 12})
         self.assertIn("Cluster Profile", response["packet_text"])
 
+    def test_project_bridge_context_includes_graph_only_when_requested(self) -> None:
+        from backend.app.api.routes.bridge import build_context, create_bridge_client, update_bridge_settings
+        from backend.app.core.projects import register_project
+        from backend.app.schemas import BridgeClientCreate, BridgeContextRequest, BridgeSettingsUpdate
+
+        repo = Path(self.tmp.name) / "bridge-project"
+        repo.mkdir()
+        (repo / "main.py").write_text("from auth import login\nlogin()\n", encoding="utf-8")
+        (repo / "auth.py").write_text("def login():\n    return True\n", encoding="utf-8")
+        project = register_project(vault_id="vault-1", root_path=str(repo), name="Bridge project", sync=True)
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True))
+        client = create_bridge_client(
+            BridgeClientCreate(name="Graph client", allowed_vault_ids=["vault-1"])
+        )
+        bundle = {
+            "selected_clusters": [], "source_snippets": [], "citations": [], "memory_items": [],
+            "working_memory": {}, "retrieval_authority": True, "cluster_profile": {},
+            "token_estimate": {}, "bundle_status": {}, "warnings": [],
+        }
+        with patch("backend.app.api.routes.bridge.build_cluster_bundle_context", return_value=bundle):
+            ordinary = build_context(
+                BridgeContextRequest(project_id=project["id"], query="explain login"),
+                x_cml_bridge_token=client["token"],
+            )
+            visual = build_context(
+                BridgeContextRequest(
+                    project_id=project["id"], query="show login graph", include_graph=True,
+                    graph_mode="graph", graph_max_nodes=20,
+                ),
+                x_cml_bridge_token=client["token"],
+            )
+
+        self.assertIsNone(ordinary["graph_context"])
+        self.assertIsNotNone(visual["graph_context"])
+        self.assertIn("# Odin Graph Context", visual["packet_text"])
+
     def test_cluster_scoped_client_can_list_clusters_without_explicit_vault_scope(self) -> None:
         from backend.app.api.routes.bridge import create_bridge_client, list_bridge_clusters, update_bridge_settings
         from backend.app.schemas import BridgeClientCreate, BridgeSettingsUpdate

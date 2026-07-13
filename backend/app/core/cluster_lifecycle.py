@@ -78,28 +78,18 @@ def refresh_cluster_profile(conn, cluster_id: str) -> dict[str, str]:
         profile_source_hash = ""
         indexed_source_count = 0
     else:
-        sources = conn.execute(
+        source_metadata = conn.execute(
             """
-            SELECT id, vault_id, checksum, updated_at, title, summary, extracted_text, raw_text
+            SELECT id, vault_id, checksum, updated_at
             FROM sources
             WHERE cluster_id = ? AND deleted_at IS NULL AND state = 'indexed'
             ORDER BY updated_at DESC, created_at DESC
             """,
             (cluster_id,),
         ).fetchall()
-        source_rows: list[dict] = []
-        for source in sources:
-            source_row = dict_from_row(source)
-            encrypted_fields = load_source_content_fields(
-                conn,
-                vault_id=str(source_row["vault_id"]),
-                source_id=str(source_row["id"]),
-                fields=("summary", "extracted_text", "raw_text"),
-            )
-            source_row.update({key: value for key, value in encrypted_fields.items() if value})
-            source_rows.append(source_row)
-        indexed_source_count = len(source_rows)
-        profile_source_hash = _compute_profile_source_hash(source_rows)
+        metadata_rows = [dict_from_row(source) for source in source_metadata]
+        indexed_source_count = len(metadata_rows)
+        profile_source_hash = _compute_profile_source_hash(metadata_rows)
         previous_hash = str(row["profile_source_hash"] or "")
         previous_summary = str(row["cluster_summary"] or "")
         previous_glossary = str(row["cluster_glossary"] or "[]")
@@ -120,6 +110,27 @@ def refresh_cluster_profile(conn, cluster_id: str) -> dict[str, str]:
             profile_status = "ready"
             profile_updated_at = previous_updated_at or utc_now()
         else:
+            sources = conn.execute(
+                """
+                SELECT id, vault_id, checksum, updated_at, title, summary, extracted_text, raw_text
+                FROM sources
+                WHERE cluster_id = ? AND deleted_at IS NULL AND state = 'indexed'
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 50
+                """,
+                (cluster_id,),
+            ).fetchall()
+            source_rows: list[dict] = []
+            for source in sources:
+                source_row = dict_from_row(source)
+                encrypted_fields = load_source_content_fields(
+                    conn,
+                    vault_id=str(source_row["vault_id"]),
+                    source_id=str(source_row["id"]),
+                    fields=("summary", "extracted_text", "raw_text"),
+                )
+                source_row.update({key: value for key, value in encrypted_fields.items() if value})
+                source_rows.append(source_row)
             summary = _build_cluster_summary(
                 cluster_name=str(row["name"] or "").strip(),
                 description=str(row["description"] or "").strip(),
