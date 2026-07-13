@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState, type ComponentType, type DragEvent } from "react";
+import { useDeferredValue, useEffect, useMemo, useState, type ComponentType, type DragEvent } from "react";
 import {
   ArrowUpDown,
   Clapperboard,
@@ -29,7 +29,7 @@ import {
   type Cluster,
   type Source,
   type SourceType,
-} from "@/lib/mockStore";
+} from "@/lib/domain";
 import {
   createSourceFromPath,
   createSourceFromText,
@@ -37,7 +37,6 @@ import {
   listClusters,
   listSources,
   listVaults,
-  reindexVaultSearch,
   semanticSearch,
   updateSource,
   type VaultRecord,
@@ -47,6 +46,7 @@ import { clusterFromRecord, sourceFromRecord, sourceStateText } from "@/lib/reco
 type FilterType = "all" | "note" | "link" | "file" | "image" | "unclustered";
 type SortMode = "newest" | "oldest" | "alphabetical";
 type AddMode = "note" | "link" | null;
+const PAGE_SIZE = 50;
 
 export const Route = createFileRoute("/_app/search")({
   head: () => ({ meta: [{ title: "Mind" }] }),
@@ -71,6 +71,7 @@ function MindView() {
   const [dragActive, setDragActive] = useState(false);
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [semanticRanks, setSemanticRanks] = useState<Map<string, number>>(new Map());
+  const [page, setPage] = useState(1);
 
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
 
@@ -80,7 +81,6 @@ function MindView() {
       const activeVault = vaults[0] ?? null;
       if (!activeVault) return;
       setBackendVault(activeVault);
-      void reindexVaultSearch(activeVault.id).catch(() => undefined);
       const [clusterRows, sourceRows] = await Promise.all([
         listClusters(activeVault.id),
         listSources(activeVault.id),
@@ -132,9 +132,11 @@ function MindView() {
 
   const sources = !mounted ? [] : backendReady ? backendSources : [];
   const clusters = !mounted ? [] : backendReady ? backendClusters : [];
+  const deferredQuery = useDeferredValue(query);
+  const clusterById = useMemo(() => new Map(clusters.map((cluster) => [cluster.id, cluster])), [clusters]);
 
   const visibleSources = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
+    const normalizedQuery = deferredQuery.trim().toLowerCase();
     const semanticActive = backendReady && normalizedQuery.length >= 3 && semanticRanks.size > 0;
     return sources
       .filter((source) => {
@@ -155,7 +157,12 @@ function MindView() {
         const dateB = new Date(b.updatedAt).getTime();
         return sortMode === "newest" ? dateB - dateA : dateA - dateB;
       });
-  }, [backendReady, filter, query, semanticRanks, sortMode, sources]);
+  }, [backendReady, deferredQuery, filter, semanticRanks, sortMode, sources]);
+
+  const totalPages = Math.max(1, Math.ceil(visibleSources.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageStart = (currentPage - 1) * PAGE_SIZE;
+  const pageSources = visibleSources.slice(pageStart, pageStart + PAGE_SIZE);
 
   const unclusteredCount = sources.filter((source) => !source.clusterId).length;
   const needsReviewCount = sources.filter((source) => source.state !== "indexed").length;
@@ -167,28 +174,37 @@ function MindView() {
   }
 
   async function addFolder() {
-    if (!vault || !desktop?.selectSourceFolders || !desktop?.listSupportedFiles) return;
+    if (!vault || !desktop?.selectSourceFolders || !desktop?.scanSupportedFiles) return;
     const folders = await desktop.selectSourceFolders();
-    const paths = await desktop.listSupportedFiles(folders);
-    await importFilePaths(paths);
+    const report = await desktop.scanSupportedFiles(folders);
+    await importFilePaths(report.files, report.truncated ? report.limit : null);
   }
 
-  async function importFilePaths(paths: string[]) {
+  async function importFilePaths(paths: string[], truncatedAt: number | null = null) {
     if (!vault || paths.length === 0) return;
     setImportMessage(`Importing ${paths.length} document${paths.length === 1 ? "" : "s"}...`);
     const failures: string[] = [];
     let imported = 0;
-    for (const path of paths) {
-      try {
-        await createSourceFromPath({ vault_id: vault.id, path });
-        imported += 1;
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : "Import failed";
-        failures.push(`${fileNameFromPath(path)}: ${reason}`);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(4, paths.length) }, async () => {
+      while (cursor < paths.length) {
+        const path = paths[cursor];
+        cursor += 1;
+        try {
+          await createSourceFromPath({ vault_id: vault.id, path });
+          imported += 1;
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "Import failed";
+          failures.push(`${fileNameFromPath(path)}: ${reason}`);
+        }
       }
-    }
+    });
+    await Promise.all(workers);
     await loadVaultData();
-    setImportMessage(formatImportResult(imported, failures));
+    const limitNotice = truncatedAt
+      ? ` Folder scanning stopped at the ${truncatedAt.toLocaleString()}-file safety limit.`
+      : "";
+    setImportMessage(`${formatImportResult(imported, failures)}${limitNotice}`);
   }
 
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
@@ -207,8 +223,10 @@ function MindView() {
     event.preventDefault();
     setDragActive(false);
     const droppedPaths = desktop?.getDroppedFilePaths?.(event.dataTransfer.files) ?? [];
-    const paths = desktop?.listSupportedFiles ? await desktop.listSupportedFiles(droppedPaths) : droppedPaths;
-    await importFilePaths(paths);
+    const report = desktop?.scanSupportedFiles
+      ? await desktop.scanSupportedFiles(droppedPaths)
+      : { files: droppedPaths, truncated: false, limit: 0 };
+    await importFilePaths(report.files, report.truncated ? report.limit : null);
   }
 
   async function submitNote() {
@@ -300,14 +318,21 @@ function MindView() {
                 aria-label="Search sources, tags, and summaries"
                 placeholder="Search sources, tags, summaries..."
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setPage(1);
+                }}
                 className="h-10 rounded-md pl-9"
               />
             </div>
             <select
               className="h-10 rounded-md border border-input bg-background px-3 text-sm"
               value={filter}
-              onChange={(event) => setFilter(event.target.value as FilterType)}
+              onChange={(event) => {
+                setFilter(event.target.value as FilterType);
+                setPage(1);
+              }}
+              aria-label="Filter sources by type"
             >
               <option value="all">All types</option>
               <option value="note">Notes</option>
@@ -319,7 +344,11 @@ function MindView() {
             <select
               className="h-10 rounded-md border border-input bg-background px-3 text-sm"
               value={sortMode}
-              onChange={(event) => setSortMode(event.target.value as SortMode)}
+              onChange={(event) => {
+                setSortMode(event.target.value as SortMode);
+                setPage(1);
+              }}
+              aria-label="Sort sources"
             >
               <option value="newest">Newest first</option>
               <option value="oldest">Oldest first</option>
@@ -347,17 +376,22 @@ function MindView() {
           )}
           <div className="mb-4 flex flex-col gap-2 text-sm sm:flex-row sm:items-center sm:justify-between">
             <div className="text-muted-foreground">
-              {visibleSources.length} shown from {sources.length} sources
+              {visibleSources.length === 0
+                ? `0 shown from ${sources.length} sources`
+                : `${pageStart + 1}-${Math.min(pageStart + PAGE_SIZE, visibleSources.length)} of ${visibleSources.length} shown from ${sources.length} sources`}
             </div>
-            <Button variant="ghost" size="sm" className="gap-2" onClick={() => setSortMode(sortMode === "newest" ? "oldest" : "newest")}>
+            <Button variant="ghost" size="sm" className="gap-2" onClick={() => {
+              setSortMode(sortMode === "newest" ? "oldest" : "newest");
+              setPage(1);
+            }}>
               <ArrowUpDown className="h-4 w-4" />
               {sortMode === "newest" ? "Newest first" : sortMode === "oldest" ? "Oldest first" : "Alphabetical"}
             </Button>
           </div>
 
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            {visibleSources.map((source) => {
-              const cluster = clusters.find((item) => item.id === source.clusterId);
+            {pageSources.map((source) => {
+              const cluster = source.clusterId ? clusterById.get(source.clusterId) : undefined;
               return (
                 <MemoryCard
                   key={source.id}
@@ -369,6 +403,18 @@ function MindView() {
             })}
           </div>
 
+          {visibleSources.length > PAGE_SIZE && (
+            <nav className="mt-5 flex items-center justify-between border-t border-border pt-4" aria-label="Mind results pages">
+              <Button variant="outline" size="sm" disabled={currentPage === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
+                Previous
+              </Button>
+              <span className="text-sm text-muted-foreground">Page {currentPage} of {totalPages}</span>
+              <Button variant="outline" size="sm" disabled={currentPage === totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>
+                Next
+              </Button>
+            </nav>
+          )}
+
           {visibleSources.length === 0 && (
             <div className="rounded-md border border-dashed border-border bg-card p-8 text-sm">
               <div className="font-medium">No sources match this view</div>
@@ -376,10 +422,16 @@ function MindView() {
                 Adjust the search or filters, or add a source to this library.
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => setQuery("")}>
+                <Button variant="outline" size="sm" onClick={() => {
+                  setQuery("");
+                  setPage(1);
+                }}>
                   Clear search
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => setFilter("all")}>
+                <Button variant="outline" size="sm" onClick={() => {
+                  setFilter("all");
+                  setPage(1);
+                }}>
                   Show all types
                 </Button>
               </div>
@@ -425,7 +477,7 @@ function MindView() {
 
       <SourceDetailDialog
         source={selectedSource}
-        cluster={selectedSource ? clusters.find((item) => item.id === selectedSource.clusterId) : undefined}
+        cluster={selectedSource?.clusterId ? clusterById.get(selectedSource.clusterId) : undefined}
         onOpenChange={(open) => !open && setSelectedSource(null)}
         onCoverImageChange={updateCardImage}
       />
