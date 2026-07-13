@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { type DragEvent, useEffect, useRef, useState } from "react";
-import type { ChatMessage, Cluster, Source } from "@/lib/mockStore";
+import type { ChatMessage, Cluster, Source } from "@/lib/domain";
 import {
   deleteChatSession,
   getModelRuntimeStatus,
@@ -10,7 +10,6 @@ import {
   listClusters,
   listSources,
   listVaults,
-  reindexVaultSearch,
   streamChatContext,
   updateChatMessage,
   updateChatSession,
@@ -39,6 +38,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ClusterChip, ClusterDot } from "@/components/ClusterChip";
+import {
+  detectProjectVisualizationRequest,
+  ProjectGraphArtifact,
+} from "@/components/ProjectGraphArtifact";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Bookmark,
@@ -104,7 +107,6 @@ function ChatView() {
       const activeVault = vaults[0] ?? null;
       setVaultRecord(activeVault);
       if (!activeVault) return;
-      await reindexVaultSearch(activeVault.id).catch(() => undefined);
       const [clusterRows, sourceRows, chatRows] = await Promise.all([
         listClusters(activeVault.id),
         listSources(activeVault.id),
@@ -203,6 +205,7 @@ function ChatView() {
   const activeClusters = backendClusters;
   const activeSources = backendSources;
   const messages = backendMessages;
+  const projectId = backendSession.scope_project_id ?? null;
   const scopeClusterId = backendSession.scope_cluster_id ?? null;
   const saved = backendSession.saved;
 
@@ -222,6 +225,13 @@ function ChatView() {
   const latestPartialFailureText = describePartialFailure(latestPartialFailure);
   const latestCoverageSummary = describeCoverage(latestCoverage);
   const latestAnalysisLabel = analysisModeLabel(latestIntent, latestCoverage);
+  const latestVisualizationRequest = projectId
+    ? [...messages]
+        .reverse()
+        .filter((message) => message.role === "user")
+        .map((message) => detectProjectVisualizationRequest(message.content))
+        .find((request) => request !== null) ?? null
+    : null;
 
   const setScope = async (val: string) => {
     const nextScope = val === "global" ? null : val;
@@ -279,7 +289,7 @@ function ChatView() {
         ? `\n\nAttachments:\n${selectedAttachments.map((path) => `- ${fileNameFromPath(path)}`).join("\n")}`
         : "";
     if (!backendReady || !vault || !backendSession) {
-      setLastError("Open a backend vault before sending chat messages.");
+      setLastError("Open a library before sending a message.");
       return;
     }
     const userMsg = { id: crypto.randomUUID(), role: "user" as const, content: prompt + attachmentNote };
@@ -649,10 +659,10 @@ function ChatView() {
               Delete
             </Button>
             <span className="break-words rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-              {backendReady ? "Semantic context" : "Backend unavailable"}
+              {backendReady ? "Library sources" : "Library unavailable"}
             </span>
             <span className="break-words rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-              {runtime?.available ? `LLM ${runtime.state ?? runtime.provider}` : "LLM offline"}
+              {runtime?.available ? `Local model ${runtime.state ?? "ready"}` : "Local model unavailable"}
             </span>
             {backendSession && (
               <span className="break-words rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
@@ -700,6 +710,9 @@ function ChatView() {
                       <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-foreground/40 align-middle" />
                     </p>
                   </div>
+                )}
+                {projectId && latestVisualizationRequest && (
+                  <ProjectGraphArtifact projectId={projectId} request={latestVisualizationRequest} />
                 )}
               </div>
               <div ref={endRef} />
@@ -777,7 +790,7 @@ function ChatView() {
           )}
           {backendReady && runtime && !runtime.available && (
             <div className="mx-auto mb-2 max-w-3xl break-words rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-              Local LLM is offline. General chat is degraded until a local model runtime is running.
+              Vault can still find relevant sources, but it needs a local chat model to write a full answer. Set one up in Settings.
             </div>
           )}
           {latestPartialFailureText && !streaming && (
@@ -812,6 +825,7 @@ function ChatView() {
               <Paperclip className="h-4 w-4" />
             </Button>
             <Textarea
+              aria-label={scope ? `Ask ${scope.name}` : "Ask your vault"}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder={scope ? `Ask ${scope.name}...` : "Ask your vault..."}

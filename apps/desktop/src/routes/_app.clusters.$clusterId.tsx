@@ -5,27 +5,50 @@ import {
   ArrowRight,
   CheckCircle2,
   Clock3,
+  Code2,
   FileText,
+  GitBranch,
   MessageSquare,
   MoreHorizontal,
   Plus,
+  RefreshCw,
   Search,
+  Send,
   X,
 } from "lucide-react";
 import {
   type Cluster,
   type Source,
   clusterLifecycleLabel,
-} from "@/lib/mockStore";
+} from "@/lib/domain";
 import { Button } from "@/components/ui/button";
 import {
   createChatSession,
   getCluster,
+  listClusterMergeArtifacts,
+  listClusters,
   listChatSessions,
+  listProjects,
   listSources,
+  mergeClusterInto,
+  rollbackClusterMerge,
+  synchronizeProject,
+  updateCluster,
+  type ClusterMergeArtifact,
   type ChatSessionRecord,
+  type ProjectRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export const Route = createFileRoute("/_app/clusters/$clusterId")({
   head: () => ({ meta: [{ title: "Cluster" }] }),
@@ -43,6 +66,14 @@ function ClusterDetail() {
   const [backendVaultId, setBackendVaultId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<(typeof tabs)[number]>("Overview");
   const [mounted, setMounted] = useState(false);
+  const [peerClusters, setPeerClusters] = useState<Cluster[]>([]);
+  const [mergeArtifacts, setMergeArtifacts] = useState<ClusterMergeArtifact[]>([]);
+  const [manageOpen, setManageOpen] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [mergeTargetId, setMergeTargetId] = useState("");
+  const [manageMessage, setManageMessage] = useState<string | null>(null);
+  const [manageBusy, setManageBusy] = useState(false);
+  const [backendProject, setBackendProject] = useState<ProjectRecord | null>(null);
 
   const cluster = backendCluster;
   const activeSources = !mounted ? [] : backendSources;
@@ -58,21 +89,31 @@ function ClusterDetail() {
       try {
         const clusterRow = await getCluster(clusterId);
         const nextCluster = clusterFromRecord(clusterRow);
-        const [sourceRows, chatRows] = await Promise.all([
-          listSources(clusterRow.vault_id),
+        const [sourceRows, chatRows, clusterRows, artifacts, projectRows] = await Promise.all([
+          listSources(clusterRow.vault_id, { clusterId: clusterRow.id, limit: 1000 }),
           listChatSessions(clusterRow.vault_id),
+          listClusters(clusterRow.vault_id),
+          listClusterMergeArtifacts(clusterRow.id),
+          listProjects(clusterRow.vault_id),
         ]);
         if (cancelled) return;
         setBackendVaultId(clusterRow.vault_id);
         setBackendCluster(nextCluster);
         setBackendSources(sourceRows.map(sourceFromRecord));
         setBackendChats(chatRows.filter((chat) => chat.scope_cluster_id === clusterRow.id));
+        setPeerClusters(
+          clusterRows.filter((item) => item.id !== clusterRow.id).map(clusterFromRecord),
+        );
+        setMergeArtifacts(artifacts.items);
+        setBackendProject(projectRows.find((project) => project.primary_cluster_id === clusterRow.id) ?? null);
+        setNameDraft(nextCluster.name);
       } catch {
         if (!cancelled) {
           setBackendCluster(null);
           setBackendVaultId(null);
           setBackendSources([]);
           setBackendChats([]);
+          setBackendProject(null);
         }
       }
     }
@@ -114,6 +155,59 @@ function ClusterDetail() {
     navigate({ to: "/chat" });
   }
 
+  if (backendProject && backendVaultId) {
+    return (
+      <ProjectWorkspace
+        project={backendProject}
+        vaultId={backendVaultId}
+        onProjectChange={setBackendProject}
+      />
+    );
+  }
+  const clusterIdForActions = cluster.id;
+  const clusterNameForActions = cluster.name;
+
+  async function saveClusterName() {
+    const name = nameDraft.trim();
+    if (!name || name === clusterNameForActions) return;
+    setManageBusy(true);
+    setManageMessage(null);
+    try {
+      const updated = await updateCluster(clusterIdForActions, { name });
+      setBackendCluster(clusterFromRecord(updated));
+      setManageMessage("Cluster name updated.");
+    } catch (error) {
+      setManageMessage(error instanceof Error ? error.message : "Could not rename this cluster.");
+    } finally {
+      setManageBusy(false);
+    }
+  }
+
+  async function mergeCluster() {
+    if (!mergeTargetId) return;
+    setManageBusy(true);
+    setManageMessage(null);
+    try {
+      await mergeClusterInto(clusterIdForActions, mergeTargetId);
+      navigate({ to: "/clusters/$clusterId", params: { clusterId: mergeTargetId } });
+    } catch (error) {
+      setManageMessage(error instanceof Error ? error.message : "Could not merge this cluster.");
+      setManageBusy(false);
+    }
+  }
+
+  async function rollbackMerge(artifactId: string) {
+    setManageBusy(true);
+    setManageMessage(null);
+    try {
+      const restored = await rollbackClusterMerge(artifactId);
+      navigate({ to: "/clusters/$clusterId", params: { clusterId: restored.id } });
+    } catch (error) {
+      setManageMessage(error instanceof Error ? error.message : "Could not restore the merged cluster.");
+      setManageBusy(false);
+    }
+  }
+
   return (
     <div className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_326px] xl:overflow-hidden">
       <main className="min-w-0 px-4 py-6 sm:px-6 lg:px-9 xl:overflow-y-auto">
@@ -135,11 +229,13 @@ function ClusterDetail() {
               <MessageSquare className="h-4 w-4" />
               Chat with cluster
             </Button>
-            <Button variant="outline" className="gap-2">
-              <Plus className="h-4 w-4" />
-              Add source
+            <Button variant="outline" className="gap-2" asChild>
+              <Link to="/sources">
+                <Plus className="h-4 w-4" />
+                Add source
+              </Link>
             </Button>
-            <Button variant="outline" size="icon" aria-label="More cluster actions">
+            <Button variant="outline" size="icon" aria-label="More cluster actions" onClick={() => setManageOpen(true)}>
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </div>
@@ -170,18 +266,18 @@ function ClusterDetail() {
 
             <div className="mt-8 grid gap-4 xl:grid-cols-2">
               <ReferenceTable
-                title="Top memories"
-                columns={["Memory", "Source", "Last seen"]}
+                title="Key source summaries"
+                columns={["Summary", "Source", "Last seen"]}
                 rows={topMemories}
-                action="View all memories"
+                action="View all sources"
               />
               <ReferenceTable
                 title="Recent sources"
-                columns={["Source", "Added", "Memories"]}
+                columns={["Source", "Added", "State"]}
                 rows={clusterSources.slice(0, 5).map((source) => [
                   source.title,
                   formatDate(source.updatedAt),
-                  String(memoryEstimate(source)),
+                  sourceStateLabel(source.state),
                 ])}
                 action={`View all ${clusterSources.length} sources`}
                 fileIcons
@@ -205,7 +301,66 @@ function ClusterDetail() {
         {activeTab === "Map" && <ClusterPointMap cluster={cluster} sources={clusterSources} />}
       </main>
 
-      <ClusterDetailRail cluster={cluster} sources={clusterSources} />
+      <ClusterDetailRail cluster={cluster} sources={clusterSources} onViewProfile={() => setActiveTab("Memory profile")} />
+
+      <Dialog open={manageOpen} onOpenChange={setManageOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Manage cluster</DialogTitle>
+            <DialogDescription>
+              Rename this cluster, merge it into another cluster, or restore a recent merge.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-5">
+            <div>
+              <label className="text-sm font-medium" htmlFor="cluster-name">Cluster name</label>
+              <div className="mt-2 flex gap-2">
+                <Input id="cluster-name" value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} />
+                <Button variant="outline" disabled={manageBusy || !nameDraft.trim()} onClick={() => void saveClusterName()}>
+                  Save
+                </Button>
+              </div>
+            </div>
+            <div>
+              <label className="text-sm font-medium" htmlFor="merge-target">Merge into</label>
+              <select
+                id="merge-target"
+                className="mt-2 h-9 w-full rounded-md border border-input bg-card px-3 text-sm"
+                value={mergeTargetId}
+                onChange={(event) => setMergeTargetId(event.target.value)}
+              >
+                <option value="">Choose a target cluster</option>
+                {peerClusters.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                Sources and scoped chats move to the target. CML keeps a reversible merge record.
+              </p>
+              <Button className="mt-3" disabled={manageBusy || !mergeTargetId} onClick={() => void mergeCluster()}>
+                Merge cluster
+              </Button>
+            </div>
+            {mergeArtifacts.some((item) => item.reversible && !item.rolled_back_at) && (
+              <div>
+                <div className="text-sm font-medium">Recent reversible merges</div>
+                <div className="mt-2 space-y-2">
+                  {mergeArtifacts.filter((item) => item.reversible && !item.rolled_back_at).map((item) => (
+                    <div key={item.id} className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm">
+                      <span>{item.moved_source_ids.length} sources · {formatDate(item.created_at)}</span>
+                      <Button size="sm" variant="outline" disabled={manageBusy} onClick={() => void rollbackMerge(item.id)}>
+                        Restore
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {manageMessage && <p className="text-sm text-muted-foreground">{manageMessage}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setManageOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -294,7 +449,7 @@ function RecentSources({ sources }: { sources: Source[] }) {
               </span>
               <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-center text-xs text-muted-foreground">{source.type.toUpperCase()}</span>
               <span className="text-muted-foreground">{formatDate(source.updatedAt)}</span>
-              <span className="text-right text-xs text-muted-foreground">{memoryEstimate(source)} memories</span>
+              <span className="text-right text-xs text-muted-foreground">{sourceStateLabel(source.state)}</span>
             </div>
           ))}
           {sources.length === 0 && (
@@ -425,7 +580,7 @@ function ClusterMemoryProfile({
           </p>
           <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-3">
             <Metric value={sources.length.toLocaleString()} label="Sources" />
-            <Metric value={compactNumber(sources.length * 64)} label="Memories" />
+            <Metric value={sources.filter((source) => source.state === "indexed").length.toLocaleString()} label="Indexed" />
             <Metric value={formatDate(cluster.lastActive)} label="Updated" />
           </div>
         </section>
@@ -538,9 +693,11 @@ function ClusterPointMap({ cluster, sources }: { cluster: Cluster; sources: Sour
 function ClusterDetailRail({
   cluster,
   sources,
+  onViewProfile,
 }: {
   cluster: Cluster;
   sources: Source[];
+  onViewProfile: () => void;
 }) {
   return (
     <aside className="border-t border-border bg-card/35 px-4 py-6 sm:px-6 xl:border-l xl:border-t-0 xl:overflow-y-auto">
@@ -548,7 +705,7 @@ function ClusterDetailRail({
         <h2 className="text-sm font-semibold">Cluster details</h2>
         <X className="h-4 w-4 text-muted-foreground" />
       </div>
-      <MetricGrid className="mt-10" sources={sources.length} />
+      <MetricGrid className="mt-10" sources={sources} cluster={cluster} />
       <Divider />
       <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Activity</h3>
       <div className="mt-5 space-y-5 border-l border-border pl-4">
@@ -571,7 +728,7 @@ function ClusterDetailRail({
             <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-issue)]" />
             <div className="min-w-0">
               <div className="break-words leading-5">{source.title}</div>
-              <div className="mt-1 text-xs text-muted-foreground">{memoryEstimate(source)} memories</div>
+              <div className="mt-1 text-xs text-muted-foreground">{sourceStateLabel(source.state)}</div>
             </div>
           </div>
         ))}
@@ -586,19 +743,202 @@ function ClusterDetailRail({
           <span className="font-medium">Ready</span>
         </div>
         <p className="mt-2 break-words text-xs text-muted-foreground">Last updated {formatDate(cluster.lastActive)}</p>
-        <Button variant="outline" className="mt-4 w-full">View profile</Button>
+        <Button variant="outline" className="mt-4 w-full" onClick={onViewProfile}>View profile</Button>
       </section>
     </aside>
   );
 }
 
-function MetricGrid({ className = "", sources }: { className?: string; sources: number }) {
+function ProjectWorkspace({
+  project,
+  vaultId,
+  onProjectChange,
+}: {
+  project: ProjectRecord;
+  vaultId: string;
+  onProjectChange: (project: ProjectRecord) => void;
+}) {
+  const navigate = useNavigate();
+  const [question, setQuestion] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const languages = Object.keys(project.languages).slice(0, 4);
+  const commit = project.indexed_commit?.slice(0, 7) ?? null;
+  const questions = project.entrypoints.length > 0
+    ? [
+        `Explain what starts in ${project.entrypoints[0]}.`,
+        "What are the major areas of this project responsible for?",
+        "Where does authentication or request validation begin?",
+        "Show the architecture graph for this project.",
+      ]
+    : [
+        "What are the major areas of this project responsible for?",
+        "Explain the main request or application flow.",
+        "Which configuration controls the runtime?",
+        "Show the architecture graph for this project.",
+      ];
+
+  async function askProject(prompt = question) {
+    const normalized = prompt.trim();
+    if (!normalized) return;
+    const session = await createChatSession({
+      vault_id: vaultId,
+      title: `${project.name}: ${normalized.slice(0, 52)}`,
+      scope_cluster_id: project.primary_cluster_id,
+      scope_project_id: project.id,
+    });
+    window.sessionStorage.setItem(`cml.pendingPrompt.${session.id}`, normalized);
+    navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
+  }
+
+  async function synchronize() {
+    setSyncing(true);
+    setMessage(null);
+    try {
+      const result = await synchronizeProject(project.id);
+      onProjectChange(result.project);
+      setMessage(`Synchronized ${result.project.source_count.toLocaleString()} eligible files. Repository files were not changed.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Odin could not synchronize this project.");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  return (
+    <div className="vault-page-wash h-full overflow-y-auto">
+      <div className="mx-auto grid min-h-full max-w-[1500px] grid-cols-1 xl:grid-cols-[minmax(0,1fr)_310px]">
+        <main className="min-w-0 px-4 py-6 sm:px-7 sm:py-8 lg:px-10">
+          <Link to="/clusters" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="h-4 w-4" /> Back to clusters
+          </Link>
+
+          <header className="mt-7 flex flex-wrap items-start justify-between gap-5 border-b border-border pb-7">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-3">
+                <h1 className="page-title break-words">{project.name}</h1>
+                <span className="inline-flex items-center gap-1.5 rounded border border-border px-2 py-1 text-xs font-medium text-muted-foreground">
+                  <Code2 className="h-3.5 w-3.5" /> Project
+                </span>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+                {project.default_branch && <span className="inline-flex items-center gap-1"><GitBranch className="h-3.5 w-3.5" /> {project.default_branch}</span>}
+                {commit && <><span aria-hidden="true">·</span><span>indexed at {commit}</span></>}
+                <span aria-hidden="true">·</span>
+                <span>{project.source_count.toLocaleString()} files</span>
+              </div>
+            </div>
+            <Button onClick={() => void synchronize()} disabled={syncing}>
+              <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
+              {syncing ? "Synchronizing" : "Synchronize"}
+            </Button>
+          </header>
+
+          {message && <p className="mt-5 rounded border border-border bg-card px-3 py-2 text-sm text-muted-foreground">{message}</p>}
+
+          <section className="mt-8 max-w-3xl">
+            <h2 className="text-lg font-semibold">What this project is</h2>
+            <p className="mt-3 max-w-[72ch] text-sm leading-7 text-foreground/90">
+              {project.brief || "Odin has added this project. Sync it to build the first project overview."}
+            </p>
+            <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-sm text-muted-foreground">
+              {languages.length > 0 && <span>{languages.join(", ")}</span>}
+              {project.workspace_count > 0 && <span>{project.workspace_count} packages or workspaces</span>}
+              <span>{formatDate(project.updated_at)} last synchronized</span>
+            </div>
+          </section>
+
+          <section className="mt-10 max-w-4xl border-t border-border pt-8">
+            <div className="flex flex-wrap items-baseline justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">Ask this project</h2>
+                <p className="mt-1 text-sm text-muted-foreground">Scope stays limited to {project.name} and its indexed evidence.</p>
+              </div>
+              <span className="rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground">Scope: {project.name}</span>
+            </div>
+            <div className="mt-5 rounded-md border border-border bg-card p-3 focus-within:border-primary/60">
+              <Textarea
+                aria-label="Ask this project"
+                value={question}
+                onChange={(event) => setQuestion(event.target.value)}
+                placeholder="Ask how this project works, where something is defined, or what changed…"
+                className="min-h-28 resize-y border-0 bg-transparent p-2 shadow-none focus-visible:ring-0"
+                onKeyDown={(event) => {
+                  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") void askProject();
+                }}
+              />
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
+                <span className="text-xs text-muted-foreground">Ctrl + Enter to ask</span>
+                <Button size="sm" disabled={!question.trim()} onClick={() => void askProject()}>
+                  <Send className="h-4 w-4" /> Ask Odin
+                </Button>
+              </div>
+            </div>
+            <div className="mt-5 space-y-1">
+              {questions.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  className="block w-full rounded px-2 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-card hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => void askProject(suggestion)}
+                >
+                  {suggestion} <ArrowRight className="ml-1 inline h-3.5 w-3.5" />
+                </button>
+              ))}
+            </div>
+          </section>
+        </main>
+
+        <aside className="border-t border-border px-5 py-7 xl:border-l xl:border-t-0">
+          <h2 className="text-sm font-semibold">What CML knows</h2>
+          <div className="mt-5 divide-y divide-border border-y border-border">
+            <ProjectLayer label="Structure" value={project.structure_status} />
+            <ProjectLayer label="Search" value={project.retrieval_status} />
+            <ProjectLayer label="Project brief" value={project.interpretation_status === "unavailable" ? "Waiting for local model" : project.interpretation_status} />
+          </div>
+          <div className="mt-7">
+            <h3 className="text-sm font-medium">Freshness</h3>
+            <p className="mt-2 break-words text-sm leading-6 text-muted-foreground">
+              {commit ? `Indexed at ${commit}.` : `Indexed from the local folder on ${formatDate(project.updated_at)}.`}
+              {project.changed_file_count > 0 ? ` ${project.changed_file_count} newer working-tree changes.` : " Synchronize after changing the repository."}
+            </p>
+          </div>
+          {project.entrypoints.length > 0 && (
+            <div className="mt-7">
+              <h3 className="text-sm font-medium">Detected entry points</h3>
+              <ul className="mt-2 space-y-2 text-sm text-muted-foreground">
+                {project.entrypoints.slice(0, 6).map((entry) => <li key={entry} className="break-all font-mono text-xs">{entry}</li>)}
+              </ul>
+            </div>
+          )}
+          <p className="mt-8 text-xs leading-5 text-muted-foreground">
+            Odin reads eligible project files locally. It does not execute or modify repository code.
+          </p>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function ProjectLayer({ label, value }: { label: string; value: string }) {
+  const normalized = value.replaceAll("_", " ");
+  return (
+    <div className="flex items-center justify-between gap-4 py-3 text-sm">
+      <span>{label}</span>
+      <span className="text-right capitalize text-muted-foreground">{normalized}</span>
+    </div>
+  );
+}
+
+function MetricGrid({ className = "", sources, cluster }: { className?: string; sources: Source[]; cluster: Cluster }) {
+  const indexed = sources.filter((source) => source.state === "indexed").length;
+  const needsReview = sources.filter((source) => source.state === "failed").length;
   return (
     <div className={`grid grid-cols-2 gap-4 sm:grid-cols-4 ${className}`}>
-      <Metric value={sources.toLocaleString()} label="Sources" />
-      <Metric value={(sources * 64).toLocaleString()} label="Memories" />
-      <Metric value={compactNumber(sources * 512)} label="Embeddings" />
-      <Metric value={`${Math.max(1, Math.round(sources / 40))} MB`} label="Size" />
+      <Metric value={sources.length.toLocaleString()} label="Sources" />
+      <Metric value={indexed.toLocaleString()} label="Indexed" />
+      <Metric value={needsReview.toLocaleString()} label="Needs review" />
+      <Metric value={clusterLifecycleLabel[cluster.lifecycle]} label="Profile" />
     </div>
   );
 }
@@ -616,13 +956,11 @@ function Divider() {
   return <div className="my-8 h-px bg-border" />;
 }
 
-function memoryEstimate(source: Source) {
-  return Math.max(1, Math.round((source.preview || source.summary || source.title).length / 120));
-}
-
-function compactNumber(value: number) {
-  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
-  return value.toLocaleString();
+function sourceStateLabel(state: Source["state"]) {
+  if (state === "indexed") return "Indexed";
+  if (state === "processing") return "Processing";
+  if (state === "failed") return "Needs review";
+  return "Waiting";
 }
 
 function formatDate(value: string) {
