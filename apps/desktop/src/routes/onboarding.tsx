@@ -9,7 +9,6 @@ import {
   FolderOpen,
   HardDrive,
   Loader2,
-  Mail,
   PlugZap,
   ShieldCheck,
   Sparkles,
@@ -45,15 +44,13 @@ import {
   type VaultRecord,
 } from "@/lib/backend";
 import { cn } from "@/lib/utils";
-import { useStore } from "@/lib/mockStore";
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
-type SignupMethod = "email" | "google";
 type ModelChoice = "recommended" | "custom";
 type EmbeddingChoice = "recommended" | "existing";
 
 const steps = [
-  "Sign up",
+  "Privacy",
   "Name",
   "Library",
   "Welcome",
@@ -70,13 +67,11 @@ export const Route = createFileRoute("/onboarding")({
 
 function Onboarding() {
   const navigate = useNavigate();
-  const store = useStore();
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
   const shellRef = useRef<HTMLElement | null>(null);
+  const [mounted, setMounted] = useState(false);
 
   const [step, setStep] = useState<Step>(0);
-  const [signupMethod, setSignupMethod] = useState<SignupMethod>("email");
-  const [email, setEmail] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [vaultName, setVaultName] = useState("My Library");
   const [vaultPath, setVaultPath] = useState("");
@@ -123,10 +118,7 @@ function Onboarding() {
   }, [vaultPath]);
 
   const canContinue = useMemo(() => {
-    if (step === 0) {
-      if (signupMethod === "google") return true;
-      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
-    }
+    if (step === 0) return true;
     if (step === 1) return displayName.trim().length >= 2;
     if (step === 2) return vaultName.trim().length >= 2;
     if (step === 4) return vaultPath.trim().length > 0;
@@ -135,16 +127,18 @@ function Onboarding() {
     return true;
   }, [
     displayName,
-    email,
     embeddingRuntime?.available,
     models,
-    signupMethod,
     step,
     vaultName,
     vaultPath,
   ]);
 
-  const canExportToFigma = import.meta.env.DEV && !desktop;
+  const canExportToFigma = import.meta.env.DEV && mounted && !desktop;
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     if (step !== 5 && step !== 6) return;
@@ -330,7 +324,6 @@ function Onboarding() {
       const created = await createVaultWithRetry(vaultName.trim(), vaultPath.trim());
       await desktop?.setActiveVaultFolder?.(vaultPath.trim());
       setVault(created);
-      store.setVault(created.path);
       setMessage("Library folder is ready.");
       setStep(5);
     } catch (err) {
@@ -452,11 +445,6 @@ function Onboarding() {
   function next() {
     setError(null);
     setMessage(null);
-    if (step === 0 && signupMethod === "google") {
-      setMessage(
-        "Google OAuth is not connected in this local build; a local profile will be created.",
-      );
-    }
     setStep(Math.min(step + 1, 7) as Step);
   }
 
@@ -467,12 +455,9 @@ function Onboarding() {
   }
 
   function finish() {
-    store.completeSetup();
     if (typeof window !== "undefined") {
       window.localStorage.setItem("ctx.onboarded", "1");
       window.localStorage.setItem("ctx.userName", displayName.trim());
-      window.localStorage.setItem("ctx.userEmail", email.trim());
-      window.localStorage.setItem("ctx.signupMethod", signupMethod);
       window.localStorage.setItem("ctx.vaultName", vaultName.trim());
       window.localStorage.setItem("ctx.chatModelChoice", modelChoice);
       window.localStorage.setItem("ctx.chatModelId", selectedModelId);
@@ -560,35 +545,15 @@ function Onboarding() {
               <div key={step} className="vault-step-enter py-10">
                 {step === 0 && (
                   <SetupPanel
-                    icon={<Mail className="h-5 w-5" />}
-                    title="Sign up to Vault"
-                    sub="This creates a local profile for your device. Cloud accounts can be connected later."
+                    icon={<ShieldCheck className="h-5 w-5" />}
+                    title="Your library stays local"
+                    sub="Vault does not require an account. Your profile, sources, and search index stay on this device."
                   >
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <ChoiceButton
-                        selected={signupMethod === "email"}
-                        title="Email"
-                        description="Use an email for your local profile."
-                        onClick={() => setSignupMethod("email")}
-                      />
-                      <ChoiceButton
-                        selected={signupMethod === "google"}
-                        title="Google"
-                        description="Reserved for OAuth; local profile now."
-                        onClick={() => setSignupMethod("google")}
-                        mark="G"
-                      />
+                    <div className="mt-5 divide-y divide-border border-y border-border text-sm">
+                      <div className="flex items-center justify-between gap-4 py-3"><span>Account</span><span className="text-muted-foreground">Not required</span></div>
+                      <div className="flex items-center justify-between gap-4 py-3"><span>Cloud sync</span><span className="text-muted-foreground">Off</span></div>
+                      <div className="flex items-center justify-between gap-4 py-3"><span>Storage</span><span className="text-muted-foreground">Folder you choose</span></div>
                     </div>
-                    {signupMethod === "email" && (
-                      <Field label="Email">
-                        <Input
-                          value={email}
-                          onChange={(event) => setEmail(event.target.value)}
-                          placeholder="you@example.com"
-                          autoFocus
-                        />
-                      </Field>
-                    )}
                   </SetupPanel>
                 )}
 
@@ -661,7 +626,7 @@ function Onboarding() {
                           type="button"
                           variant="outline"
                           onClick={chooseVaultFolder}
-                          disabled={!desktop?.selectVaultFolder}
+                          disabled={!mounted || !desktop?.selectVaultFolder}
                         >
                           <FolderOpen className="h-4 w-4" />
                           Browse
@@ -697,7 +662,7 @@ function Onboarding() {
                   <SetupPanel
                     icon={<PlugZap className="h-5 w-5" />}
                     title="Choose the local chat model"
-                    sub="RAG-only mode uses one local runtime model. Retrieval remains the source of citations."
+                    sub="A local chat model writes answers from the sources Vault finds. Citations always come from your library."
                   >
                     <div className="grid gap-3 sm:grid-cols-2">
                       <ChoiceButton
@@ -720,7 +685,7 @@ function Onboarding() {
                           Downloaded runtime models power answer synthesis. Vault citations still
                           come from retrieval, not model memory.
                         </div>
-                        <Field label="LLM download location">
+                        <Field label="Local model download location">
                           <div className="flex flex-col gap-2 sm:flex-row">
                             <Input
                               value={modelDownloadRoot}
@@ -731,7 +696,7 @@ function Onboarding() {
                               type="button"
                               variant="outline"
                               onClick={() => void chooseModelDownloadFolder()}
-                              disabled={!desktop?.selectModelFolder}
+                              disabled={!mounted || !desktop?.selectModelFolder}
                             >
                               <FolderOpen className="h-4 w-4" />
                               Browse
@@ -843,7 +808,7 @@ function Onboarding() {
                               type="button"
                               variant="outline"
                               onClick={() => void chooseModelFolder()}
-                              disabled={!desktop?.selectModelFolder}
+                              disabled={!mounted || !desktop?.selectModelFolder}
                             >
                               <FolderOpen className="h-4 w-4" />
                               Browse
@@ -897,7 +862,7 @@ function Onboarding() {
 
                     <p className="text-xs text-muted-foreground">
                       You can continue after a chat model is installed, active, or downloading.
-                      Additional local chat checkpoints can be imported now or later from Settings.
+                      You can import more local chat models now or later from Settings.
                     </p>
                   </SetupPanel>
                 )}
@@ -944,7 +909,7 @@ function Onboarding() {
                           type="button"
                           variant="outline"
                           onClick={() => void chooseEmbeddingFolder()}
-                          disabled={!desktop?.selectEmbeddingFolder}
+                          disabled={!mounted || !desktop?.selectEmbeddingFolder}
                         >
                           <FolderOpen className="h-4 w-4" />
                           Browse

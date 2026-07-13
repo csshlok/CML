@@ -1,6 +1,5 @@
 import { Link, useNavigate, useRouterState, Outlet } from "@tanstack/react-router";
 import {
-  Activity,
   Boxes,
   CalendarDays,
   CheckSquare,
@@ -19,7 +18,6 @@ import {
   LockKeyhole,
 } from "lucide-react";
 import { CommandPalette, useCommandPalette } from "@/components/CommandPalette";
-import { QuickCaptureDialog } from "@/components/QuickCaptureDialog";
 import { BrandLogo } from "@/components/BrandLogo";
 import { useEffect, useState } from "react";
 import {
@@ -34,7 +32,6 @@ import {
   type JobQueueStatus,
   type VaultRecord,
 } from "@/lib/backend";
-import { useQuickCaptureDialog } from "@/lib/quick-capture-store";
 
 type NavItem = {
   to:
@@ -47,7 +44,6 @@ type NavItem = {
     | "/timeline"
     | "/bridge"
     | "/tasks"
-    | "/activity"
     | "/settings";
   label: string;
   icon: typeof Home;
@@ -64,7 +60,6 @@ const nav: NavItem[] = [
   { to: "/timeline", label: "Timeline", icon: CalendarDays },
   { to: "/bridge", label: "Bridge", icon: Link2 },
   { to: "/tasks", label: "Tasks", icon: CheckSquare, separated: true },
-  { to: "/activity", label: "Activity", icon: Activity },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
@@ -72,7 +67,6 @@ export function AppShell() {
   const pathname = useRouterState({ select: (r) => r.location.pathname });
   const navigate = useNavigate();
   const { open: openPalette, setOpen } = useCommandPalette();
-  const { openDialog: openQuickCapture } = useQuickCaptureDialog();
   const backend = useBackendHealth();
   const [vault, setVault] = useState<VaultRecord | null>(null);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
@@ -102,14 +96,10 @@ export function AppShell() {
         e.preventDefault();
         navigate({ to: "/settings" });
       }
-      if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        openQuickCapture({ mode: "artifact", seedFromClipboard: true });
-      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [navigate, openQuickCapture, setOpen]);
+  }, [navigate, setOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -216,7 +206,7 @@ export function AppShell() {
         <aside className="vault-sidebar flex flex-col">
           <div className="px-4 pb-2 pt-4">
             <div className="panel-section-title mb-2">Vault</div>
-            <button className="flex w-full items-start gap-2 text-left text-[12px] text-[var(--text-primary)] hover:text-[var(--primary)]">
+            <button className="flex min-h-7 w-full items-start gap-2 text-left text-[12px] text-[var(--text-primary)] hover:text-[var(--primary)]">
               <FolderOpen className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
               <span className="min-w-0 flex-1 break-all">{vaultPath ?? "Choose library"}</span>
             </button>
@@ -231,15 +221,6 @@ export function AppShell() {
               <Search className="h-3.5 w-3.5" strokeWidth={1.5} />
               <span className="min-w-0 flex-1">Search</span>
               <span className="text-[11px] text-[var(--text-subtle)]">⌘K</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => openQuickCapture({ mode: "artifact", seedFromClipboard: true })}
-              className="mt-2 flex h-8 w-full items-center gap-2 rounded-md border border-[var(--border-input)] bg-[var(--bg-card)] px-3 text-left text-[13px] text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-            >
-              <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-              <span className="min-w-0 flex-1">Quick save to Vault</span>
-              <span className="text-[11px] text-[var(--text-subtle)]">Ctrl/Cmd Shift S</span>
             </button>
           </div>
 
@@ -344,22 +325,20 @@ export function AppShell() {
           <span>/</span>
           <span>
             {backend.status === "online"
-              ? "Backend online"
+              ? "Library service available"
               : backend.status === "degraded"
-                ? "Backend reachable"
+                ? "Library service needs attention"
                 : backend.status === "checking"
-                  ? "Checking backend"
-                  : "Backend offline"}
+                  ? "Checking library service"
+                  : "Library service unavailable"}
           </span>
           <span>/</span>
-          <span>{jobs?.running ? `${jobs.running} job running` : jobs?.queued ? `${jobs.queued} queued` : "Jobs idle"}</span>
+          <span>{jobs?.running ? `${jobs.running} task running` : jobs?.queued ? `${jobs.queued} queued` : "Tasks idle"}</span>
         </div>
         <div className="hidden items-center gap-2 md:flex">
           <span>Ctrl/Cmd K commands</span>
           <span>/</span>
           <span>Ctrl/Cmd N new chat</span>
-          <span>/</span>
-          <span>Ctrl/Cmd Shift S quick save</span>
           <span>/</span>
           <LockKeyhole className="h-3 w-3" strokeWidth={1.5} />
           <span>All data stays on your device</span>
@@ -367,7 +346,6 @@ export function AppShell() {
       </footer>
 
       <CommandPalette open={openPalette} onOpenChange={setOpen} />
-      <QuickCaptureDialog />
     </div>
   );
 }
