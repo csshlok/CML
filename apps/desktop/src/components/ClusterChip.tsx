@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import type { Cluster, ClusterLifecycleStatus } from "@/lib/mockStore";
+import type { Cluster, ClusterLifecycleStatus } from "@/lib/domain";
 
 export function ClusterDot({ tint, size = 8 }: { tint: Cluster["tint"]; size?: number }) {
   return (
