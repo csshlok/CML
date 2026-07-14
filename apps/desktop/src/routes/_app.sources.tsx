@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type DragEvent } from "react";
 import {
   CheckCircle2,
@@ -412,12 +412,15 @@ function SourcesView() {
                   <div className="mt-1 text-xs text-muted-foreground">
                     {Object.keys(project.languages)[0] || "Code"} · {project.source_count.toLocaleString()} sources · {project.structure_status}
                   </div>
+                  <p className="mt-2 line-clamp-2 max-w-3xl text-xs leading-5 text-muted-foreground">{project.brief || "Synchronize this project to build its local overview."}</p>
+                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground"><span>{project.changed_file_count ? `${project.changed_file_count} newer working-tree changes` : "No newer changes reported"}</span>{project.entrypoints.slice(0, 2).map((entry) => <span key={entry} className="max-w-64 truncate font-mono" title={entry}>{entry}</span>)}{project.active_snapshot?.failed_count ? <span>{project.active_snapshot.failed_count} files need attention</span> : null}</div>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button variant="outline" size="sm" onClick={() => void synchronizeProject(project.id).then(() => refreshBackendSources())}>
                     <RefreshCw className="h-3.5 w-3.5" /> Synchronize
                   </Button>
-                  <Button size="sm" onClick={() => window.location.assign(`/clusters/${project.primary_cluster_id}`)}>Open</Button>
+                  <Button size="sm" asChild><Link to="/projects/$projectId" params={{ projectId: project.id }}>Open</Link></Button>
+                  {project.active_run_id && <Button variant="outline" size="sm" asChild><Link to="/tasks">View task</Link></Button>}
                 </div>
               </div>
             )) : <div className="px-4 py-10 text-center text-sm text-muted-foreground">No code projects are registered.</div>}

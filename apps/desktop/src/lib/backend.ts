@@ -354,7 +354,37 @@ export type ProjectSnapshotRecord = {
   retrieval_status: string;
   interpretation_status: string;
   activated_at: string | null;
+  manifest_activated_at: string | null;
+  structure_activated_at: string | null;
+  retrieval_activated_at: string | null;
   created_at: string;
+};
+
+export type ProjectIndexRunRecord = {
+  id: string;
+  project_id: string;
+  snapshot_id: string | null;
+  job_id: string | null;
+  trigger_source: string;
+  status: "queued" | "running" | "succeeded" | "partial" | "failed" | "cancelled" | string;
+  phase: string;
+  eligible_total: number;
+  completed_count: number;
+  skipped_count: number;
+  failed_count: number;
+  phase_completed_count: number;
+  phase_total_count: number;
+  cancellation_requested: boolean;
+  cancellation_requested_at: string | null;
+  heartbeat_at: string | null;
+  queued_at: string | null;
+  activation_outcome: string;
+  failure_category: string;
+  detail_json: string;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type ProjectRecord = {
@@ -375,6 +405,11 @@ export type ProjectRecord = {
   retrieval_status: string;
   interpretation_status: string;
   active_snapshot_id: string | null;
+  active_manifest_snapshot_id: string | null;
+  active_structure_snapshot_id: string | null;
+  active_retrieval_snapshot_id: string | null;
+  candidate_snapshot_id: string | null;
+  active_run_id: string | null;
   active_snapshot: ProjectSnapshotRecord | null;
   brief: string;
   languages: Record<string, number>;
@@ -383,6 +418,34 @@ export type ProjectRecord = {
   source_count: number;
   created_at: string;
   updated_at: string;
+};
+
+export type CliPairingChallenge = {
+  id: string;
+  status: string;
+  requester_name: string;
+  executable_fingerprint: string;
+  requested_scopes: string[];
+  client_id: string | null;
+  created_at: string;
+  expires_at: string;
+  approved_at: string | null;
+  denied_at: string | null;
+  consumed_at: string | null;
+};
+
+export type CliClientRecord = {
+  id: string;
+  display_name: string;
+  executable_fingerprint: string;
+  credential_version: number;
+  scopes: string[];
+  allowed_vault_ids: string[];
+  created_at: string;
+  last_used_at: string | null;
+  rotated_at: string | null;
+  revoked_at: string | null;
+  requires_pairing?: boolean;
 };
 
 export type ProjectGraphNode = {
@@ -525,6 +588,12 @@ export type ChatContextResponse = {
     page_id?: string | null;
     page_number?: number | null;
     state?: string;
+    relative_path?: string | null;
+    line_start?: number | null;
+    line_end?: number | null;
+    symbol?: string | null;
+    project_snapshot_id?: string | null;
+    indexed_commit?: string | null;
   }>;
   coverage_ledger: {
     sources_considered: number;
@@ -1335,17 +1404,106 @@ export async function getProjectGraphView(
 }
 
 export async function synchronizeProject(id: string) {
-  return request<{ project: ProjectRecord; run: Record<string, unknown>; snapshot_id: string }>(
+  return request<{
+    project: ProjectRecord;
+    run: ProjectIndexRunRecord;
+    snapshot_id: string | null;
+    job_id: string | null;
+    queued: boolean;
+  }>(
     `/api/v1/projects/${encodeURIComponent(id)}/sync`,
     { method: "POST", body: JSON.stringify({}) },
   );
 }
 
+export async function listCliPairingChallenges() {
+  return request<CliPairingChallenge[]>("/api/v1/cli-auth/pairing-challenges?status=pending&limit=20");
+}
+
+export async function approveCliPairingChallenge(id: string, scopes: string[], allowedVaultIds: string[]) {
+  return request<CliClientRecord>(`/api/v1/cli-auth/pairing-challenges/${encodeURIComponent(id)}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ scopes, allowed_vault_ids: allowedVaultIds }),
+  });
+}
+
+export async function denyCliPairingChallenge(id: string) {
+  return request<{ id: string; status: string }>(
+    `/api/v1/cli-auth/pairing-challenges/${encodeURIComponent(id)}/deny`,
+    { method: "POST" },
+  );
+}
+
+export async function listCliClients() {
+  return request<CliClientRecord[]>("/api/v1/cli-auth/clients");
+}
+
+export async function revokeCliClient(id: string) {
+  return request<CliClientRecord>(`/api/v1/cli-auth/clients/${encodeURIComponent(id)}/revoke`, { method: "POST" });
+}
+
+export async function rotateCliClient(id: string) {
+  return request<CliClientRecord>(`/api/v1/cli-auth/clients/${encodeURIComponent(id)}/rotate`, { method: "POST" });
+}
+
+export async function listProjectRuns(id: string, limit = 50, offset = 0) {
+  return request<ProjectIndexRunRecord[]>(
+    `/api/v1/projects/${encodeURIComponent(id)}/runs?limit=${limit}&offset=${offset}`,
+  );
+}
+
+export async function getProjectRun(id: string, runId: string) {
+  return request<ProjectIndexRunRecord>(
+    `/api/v1/projects/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`,
+  );
+}
+
 export async function reindexProject(id: string, layer: "structure" | "retrieval" | "interpretation" | "full") {
-  return request<{ project: ProjectRecord; queued_jobs?: number; layer?: string }>(
+  return request<{ project: ProjectRecord; run?: ProjectIndexRunRecord; queued_jobs?: number; layer?: string }>(
     `/api/v1/projects/${encodeURIComponent(id)}/reindex`,
     { method: "POST", body: JSON.stringify({ layer }) },
   );
+}
+
+export async function cancelProjectRun(id: string) {
+  return request<ProjectIndexRunRecord>(`/api/v1/projects/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+}
+
+export async function updateProject(id: string, payload: { name?: string; root_path?: string }) {
+  return request<ProjectRecord>(`/api/v1/projects/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function removeProject(id: string, confirmationName: string) {
+  await request<void>(`/api/v1/projects/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    body: JSON.stringify({ confirmation_name: confirmationName }),
+  });
+}
+
+export type ProjectLinkRecord = {
+  project_id: string;
+  cluster_id: string;
+  role: "primary" | "linked" | string;
+  cluster_name: string;
+  created_at: string;
+};
+
+export async function listProjectLinks(id: string) {
+  return request<ProjectLinkRecord[]>(`/api/v1/projects/${encodeURIComponent(id)}/links`);
+}
+
+export async function linkProjectCluster(id: string, clusterId: string) {
+  return request<ProjectLinkRecord>(`/api/v1/projects/${encodeURIComponent(id)}/links`, {
+    method: "POST",
+    body: JSON.stringify({ cluster_id: clusterId }),
+  });
+}
+
+export async function unlinkProjectCluster(id: string, clusterId: string) {
+  await request<void>(`/api/v1/projects/${encodeURIComponent(id)}/links/${encodeURIComponent(clusterId)}`, { method: "DELETE" });
 }
 
 export async function deleteVault(

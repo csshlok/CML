@@ -1,14 +1,20 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Clock3, Pause, Play, RotateCcw, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   cancelJob,
+  cancelProjectRun,
   getJobStatus,
+  listProjectRuns,
+  listProjects,
+  reindexProject,
   runJobsOnce,
   type AppJobRecord,
   type JobQueueStatus,
+  type ProjectIndexRunRecord,
+  type ProjectRecord,
 } from "@/lib/backend";
 
 export const Route = createFileRoute("/_app/tasks")({
@@ -17,6 +23,7 @@ export const Route = createFileRoute("/_app/tasks")({
 });
 
 type TaskFilter = "running" | "queued" | "failed" | "completed" | "maintenance";
+type ProjectTask = { project: ProjectRecord; run: ProjectIndexRunRecord };
 
 function TasksView() {
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
@@ -24,11 +31,14 @@ function TasksView() {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<AppJobRecord | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [projectTasks, setProjectTasks] = useState<ProjectTask[]>([]);
 
   async function load() {
     try {
-      const status = await getJobStatus();
+      const [status, projects] = await Promise.all([getJobStatus(), listProjects()]);
+      const runGroups = await Promise.all(projects.slice(0, 100).map(async (project) => ({ project, runs: await listProjectRuns(project.id, 8) })));
       setJobs(status);
+      setProjectTasks(runGroups.flatMap(({ project, runs }) => runs.map((run) => ({ project, run }))).sort((a, b) => b.run.updated_at.localeCompare(a.run.updated_at)));
       setSelected((current) => current ?? status.running_jobs[0] ?? status.latest[0] ?? null);
     } catch {
       setJobs(null);
@@ -50,6 +60,11 @@ function TasksView() {
       .filter((job) => matchesFilter(job, filter))
       .filter((job) => !normalized || `${job.job_type} ${job.status} ${job.write_scope ?? ""}`.toLowerCase().includes(normalized));
   }, [filter, jobs, query]);
+  const visibleProjectTasks = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return projectTasks.filter(({ project, run }) => matchesProjectFilter(run, filter))
+      .filter(({ project, run }) => !normalized || `${project.name} ${run.phase} ${run.status} ${run.trigger_source}`.toLowerCase().includes(normalized));
+  }, [filter, projectTasks, query]);
 
   async function runOnce() {
     try {
@@ -116,6 +131,32 @@ function TasksView() {
           </div>
         )}
 
+        {visibleProjectTasks.length > 0 && (
+          <section className="mt-6">
+            <div className="mb-3 flex flex-wrap items-end justify-between gap-2"><div><h2 className="text-sm font-semibold">Project indexing</h2><p className="mt-1 text-xs text-muted-foreground">Each synchronization is grouped separately from its discovery, structure, search, activation, and cleanup phases.</p></div></div>
+            <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-card">
+              {visibleProjectTasks.slice(0, 20).map(({ project, run }) => {
+                const detail = parseRunDetail(run.detail_json);
+                const total = run.phase_total_count || run.eligible_total;
+                const complete = run.phase_completed_count || run.completed_count;
+                return (
+                  <details key={run.id} className="group px-4 py-3">
+                    <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                      <div className="min-w-0"><div className="flex items-center gap-2 text-sm font-medium">{statusIcon(run.status)}<span className="truncate">{project.name}</span></div><div className="mt-1 text-xs text-muted-foreground">{run.phase.replaceAll("_", " ")} · {complete.toLocaleString()} / {total.toLocaleString()} · {formatDate(run.updated_at)}</div></div>
+                      <span className="text-xs capitalize text-muted-foreground">{run.status.replaceAll("_", " ")}</span>
+                    </summary>
+                    <div className="mt-4 grid gap-4 border-t border-border pt-4 text-xs text-muted-foreground sm:grid-cols-2">
+                      <div className="space-y-2"><Meta label="Triggered by" value={run.trigger_source.replaceAll("_", " ")} /><Meta label="Heartbeat" value={run.heartbeat_at ? formatDate(run.heartbeat_at) : "not reported"} /><Meta label="Skipped" value={run.skipped_count.toLocaleString()} /><Meta label="Failed" value={run.failed_count.toLocaleString()} /></div>
+                      <div><div className="font-medium text-foreground">Persisted phases</div><ul className="mt-2 space-y-1">{Object.keys(detail).filter((key) => key.endsWith("_job_id")).map((key) => <li key={key}>{key.replace("_job_id", "").replaceAll("_", " ")}</li>)}{Object.keys(detail).filter((key) => key.endsWith("_job_id")).length === 0 && <li>No child phase IDs were reported.</li>}</ul></div>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2"><Button variant="outline" size="sm" asChild><Link to="/projects/$projectId" params={{ projectId: project.id }}>Open project</Link></Button>{["queued", "running"].includes(run.status) && <Button variant="outline" size="sm" onClick={() => void cancelProjectRun(project.id).then(load)}>Cancel</Button>}{["failed", "partial", "cancelled"].includes(run.status) && <Button variant="outline" size="sm" onClick={() => void reindexProject(project.id, run.phase.includes("retrieval") ? "retrieval" : "structure").then(load)}>Retry failed layer</Button>}</div>
+                  </details>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         <section className="mt-6 overflow-hidden rounded-md border border-border bg-card">
           <div className="overflow-x-auto">
             <div className="min-w-[720px]">
@@ -146,7 +187,7 @@ function TasksView() {
                       <span className="capitalize">{job.status.replace(/_/g, " ")}</span>
                     </span>
                     <span className="font-mono text-xs text-muted-foreground">{formatEstimate(job)}</span>
-                    <span className="text-right text-xs text-muted-foreground">{job.cancellable ? "Cancel" : "-"}</span>
+                    <span className="text-right text-xs text-muted-foreground">{job.cancellable && ["queued", "running", "blocked_by_dependency"].includes(job.status) ? "Cancel" : "-"}</span>
                   </button>
                 ))}
                 {rows.length === 0 && (
@@ -259,4 +300,21 @@ function formatDate(value: string) {
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
+}
+
+function matchesProjectFilter(run: ProjectIndexRunRecord, filter: TaskFilter) {
+  if (filter === "running") return run.status === "running";
+  if (filter === "queued") return run.status === "queued";
+  if (filter === "failed") return ["failed", "partial", "interrupted"].includes(run.status);
+  if (filter === "completed") return ["succeeded", "cancelled"].includes(run.status);
+  return false;
+}
+
+function parseRunDetail(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
 }

@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
   activateLocalModel,
+  approveCliPairingChallenge,
   cancelModelDownload,
   cancelEmbeddingDownload,
   configureEmbeddingRuntime,
@@ -34,6 +35,7 @@ import {
   createDiagnosticBundle,
   createVault,
   deleteVault,
+  denyCliPairingChallenge,
   discoverInstalledModels,
   enforceChatEvidenceRetention,
   getChatEvidenceRetentionPolicy,
@@ -55,10 +57,14 @@ import {
   listIntegrationImports,
   listIntegrationReconciliationItems,
   listIntegrationReconciliationRuns,
+  listCliClients,
+  listCliPairingChallenges,
   listVaults,
   listProjects,
   refreshIntegrationImport,
+  revokeCliClient,
   retryIntegrationReconciliationItem,
+  rotateCliClient,
   startModelDownload,
   startEmbeddingDownload,
   unlockVaultWithPassphrase,
@@ -71,6 +77,8 @@ import {
   type EmbeddingRuntimeStatus,
   type EmbeddingModelDownloadState,
   type HardwareStatusRead,
+  type CliClientRecord,
+  type CliPairingChallenge,
   type IntegrationImportRecord,
   type JobQueueStatus,
   type DiscoveredInstalledModelRecord,
@@ -95,6 +103,9 @@ import {
 } from "@/components/ui/dialog";
 
 export const Route = createFileRoute("/_app/settings")({
+  validateSearch: (search: Record<string, unknown>): { section?: string } => ({
+    section: typeof search.section === "string" ? search.section : undefined,
+  }),
   head: () => ({ meta: [{ title: "Settings" }] }),
   component: SettingsView,
 });
@@ -113,10 +124,11 @@ const settingsSections = [
 ] as const;
 
 function SettingsView() {
+  const { section } = Route.useSearch();
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
   const backendHealth = useBackendHealth();
   const [mounted, setMounted] = useState(false);
-  const [activeSection, setActiveSection] = useState("models");
+  const [activeSection, setActiveSection] = useState(section ?? "models");
   const [backendVault, setBackendVault] = useState<VaultRecord | null>(null);
   const [pathDraft, setPathDraft] = useState("");
   const [models, setModels] = useState<LocalModelRecord[]>([]);
@@ -129,6 +141,10 @@ function SettingsView() {
   const [hardware, setHardware] = useState<HardwareStatusRead | null>(null);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [cliPairings, setCliPairings] = useState<CliPairingChallenge[]>([]);
+  const [cliClients, setCliClients] = useState<CliClientRecord[]>([]);
+  const [cliAccessBusyId, setCliAccessBusyId] = useState<string | null>(null);
+  const [cliAccessError, setCliAccessError] = useState<string | null>(null);
   const [integrationImports, setIntegrationImports] = useState<IntegrationImportRecord[]>([]);
   const [reconciliationRunsByImport, setReconciliationRunsByImport] = useState<Record<string, ReconciliationRunRecord[]>>({});
   const [reconciliationItemsByRun, setReconciliationItemsByRun] = useState<Record<string, ReconciliationItemPage>>({});
@@ -167,6 +183,29 @@ function SettingsView() {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== "odin" || !backendVault) return;
+    let cancelled = false;
+    async function refreshCliAccess() {
+      try {
+        const [pairings, clients] = await Promise.all([listCliPairingChallenges(), listCliClients()]);
+        if (!cancelled) {
+          setCliPairings(pairings);
+          setCliClients(clients);
+          setCliAccessError(null);
+        }
+      } catch (error) {
+        if (!cancelled) setCliAccessError(error instanceof Error ? error.message : "Command-line access could not be loaded.");
+      }
+    }
+    void refreshCliAccess();
+    const timer = window.setInterval(() => void refreshCliAccess(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeSection, backendVault]);
 
   useEffect(() => {
     let cancelled = false;
@@ -755,6 +794,46 @@ function SettingsView() {
     }
   }
 
+  async function decideCliPairing(challenge: CliPairingChallenge, approve: boolean) {
+    if (!backendVault) return;
+    setCliAccessBusyId(challenge.id);
+    setCliAccessError(null);
+    try {
+      if (approve) {
+        await approveCliPairingChallenge(challenge.id, challenge.requested_scopes, [backendVault.id]);
+        setStatusMessage(`${challenge.requester_name} can now access this library through Odin.`);
+      } else {
+        await denyCliPairingChallenge(challenge.id);
+        setStatusMessage("The Odin access request was denied.");
+      }
+      setCliPairings(await listCliPairingChallenges());
+      setCliClients(await listCliClients());
+    } catch (error) {
+      setCliAccessError(error instanceof Error ? error.message : "The access request could not be updated.");
+    } finally {
+      setCliAccessBusyId(null);
+    }
+  }
+
+  async function updateCliClient(client: CliClientRecord, action: "revoke" | "rotate") {
+    setCliAccessBusyId(client.id);
+    setCliAccessError(null);
+    try {
+      if (action === "revoke") {
+        await revokeCliClient(client.id);
+        setStatusMessage(`${client.display_name} no longer has access to this library.`);
+      } else {
+        await rotateCliClient(client.id);
+        setStatusMessage(`${client.display_name} must pair again before its next Odin command.`);
+      }
+      setCliClients(await listCliClients());
+    } catch (error) {
+      setCliAccessError(error instanceof Error ? error.message : "Command-line access could not be updated.");
+    } finally {
+      setCliAccessBusyId(null);
+    }
+  }
+
   const suggestedModel = models[0];
   const activeChatModel = models.find((model) => model.active_chat) ?? null;
   const recommendedChatModelId = modelRecommendations?.recommended_chat_model_id ?? "";
@@ -917,7 +996,7 @@ function SettingsView() {
             </>
           )}
 
-          {showSection("odin") && (
+          {showSection("odin") && (<>
             <SettingsCard
               icon={<Folder className="h-4 w-4" />}
               title="Odin code projects"
@@ -950,7 +1029,84 @@ function SettingsView() {
                 )}
               </div>
             </SettingsCard>
-          )}
+
+            <SettingsCard
+              icon={<ShieldCheck className="h-4 w-4" />}
+              title="Odin command-line access"
+              description="Approve this computer before Odin can read or update code-project context in this library. Credentials stay protected by Windows."
+              status={cliPairings.length ? `${cliPairings.length} waiting` : `${cliClients.filter((client) => !client.revoked_at).length} connected`}
+              statusTone={cliPairings.length ? "issue" : "ready"}
+            >
+              {cliAccessError ? (
+                <div role="alert" className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {cliAccessError}
+                </div>
+              ) : null}
+
+              <div className="mt-5">
+                <div className="text-sm font-medium">Waiting for approval</div>
+                <div className="mt-2 divide-y divide-border rounded-md border border-border bg-background">
+                  {cliPairings.length ? cliPairings.map((challenge) => (
+                    <div key={challenge.id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-3">
+                      <div className="min-w-0">
+                        <div className="font-medium">{challenge.requester_name}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          Requested {challenge.requested_scopes.length} permissions / expires {new Date(challenge.expires_at).toLocaleTimeString()}
+                        </div>
+                        <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground" title={challenge.executable_fingerprint}>
+                          App identity {challenge.executable_fingerprint.slice(0, 16)}
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button variant="outline" onClick={() => void decideCliPairing(challenge, false)} disabled={cliAccessBusyId === challenge.id}>
+                          Deny
+                        </Button>
+                        <Button onClick={() => void decideCliPairing(challenge, true)} disabled={cliAccessBusyId === challenge.id || !backendVault}>
+                          Approve for this library
+                        </Button>
+                      </div>
+                    </div>
+                  )) : (
+                    <div className="px-3 py-4 text-sm text-muted-foreground">
+                      Run <code className="text-foreground">odin auth pair</code> in PowerShell to request access.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-5">
+                <div className="text-sm font-medium">Connected clients</div>
+                <div className="mt-2 divide-y divide-border rounded-md border border-border bg-background">
+                  {cliClients.length ? cliClients.map((client) => (
+                    <div key={client.id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">{client.display_name}</span>
+                          <span className="text-xs text-muted-foreground">{client.revoked_at ? "Revoked" : "Connected"}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {client.last_used_at ? `Last used ${new Date(client.last_used_at).toLocaleString()}` : "Not used yet"}
+                          {` / ${client.scopes.length} permissions`}
+                        </div>
+                      </div>
+                      {!client.revoked_at ? (
+                        <div className="flex gap-2">
+                          <Button variant="outline" onClick={() => void updateCliClient(client, "rotate")} disabled={cliAccessBusyId === client.id}>
+                            Require pairing again
+                          </Button>
+                          <Button variant="outline" onClick={() => void updateCliClient(client, "revoke")} disabled={cliAccessBusyId === client.id}>
+                            Revoke
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
+                  )) : (
+                    <div className="px-3 py-4 text-sm text-muted-foreground">No computers have been approved for Odin yet.</div>
+                  )}
+                </div>
+              </div>
+            </SettingsCard>
+          </>)}
 
           {showSection("models") && (
           <SettingsCard
