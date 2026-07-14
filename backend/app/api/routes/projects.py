@@ -1,10 +1,11 @@
 import re
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from backend.app.core.cluster_bundle import build_cluster_bundle_context
+from backend.app.core.database import connect
 from backend.app.core.project_graph import (
     GraphQueryError,
     find_nodes,
@@ -19,6 +20,7 @@ from backend.app.core.projects import (
     ProjectError,
     cancel_project_run,
     get_project,
+    get_project_run,
     link_project,
     list_project_links,
     list_project_runs,
@@ -32,6 +34,7 @@ from backend.app.core.projects import (
 )
 from backend.app.schemas import (
     ProjectCreate,
+    ProjectIndexRunRead,
     ProjectLinkCreate,
     ProjectLinkRead,
     ProjectRead,
@@ -42,7 +45,30 @@ from backend.app.schemas import (
 )
 
 
-router = APIRouter(prefix="/projects", tags=["projects"])
+def _enforce_cli_project_vault(request: Request, project_id: str | None = None) -> None:
+    context = getattr(request.state, "cli_auth", None)
+    if not context or not project_id:
+        return
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT vault_id FROM projects WHERE id = ? AND deleted_at IS NULL",
+            (project_id,),
+        ).fetchone()
+    if row is not None and row["vault_id"] not in context["allowed_vault_ids"]:
+        raise HTTPException(status_code=403, detail="CLI client is not approved for this vault")
+
+
+def _enforce_cli_vault(request: Request, vault_id: str) -> None:
+    context = getattr(request.state, "cli_auth", None)
+    if context and vault_id not in context["allowed_vault_ids"]:
+        raise HTTPException(status_code=403, detail="CLI client is not approved for this vault")
+
+
+router = APIRouter(
+    prefix="/projects",
+    tags=["projects"],
+    dependencies=[Depends(_enforce_cli_project_vault)],
+)
 
 
 class ProjectContextRequest(BaseModel):
@@ -52,12 +78,19 @@ class ProjectContextRequest(BaseModel):
 
 
 @router.get("", response_model=list[ProjectRead])
-def project_list(vault_id: str | None = None, limit: int = 200, offset: int = 0) -> list[dict]:
-    return list_projects(vault_id=vault_id, limit=limit, offset=offset)
+def project_list(request: Request, vault_id: str | None = None, limit: int = 200, offset: int = 0) -> list[dict]:
+    context = getattr(request.state, "cli_auth", None)
+    if vault_id:
+        _enforce_cli_vault(request, vault_id)
+    rows = list_projects(vault_id=vault_id, limit=limit, offset=offset)
+    if context and not vault_id:
+        rows = [row for row in rows if row["vault_id"] in context["allowed_vault_ids"]]
+    return rows
 
 
 @router.post("", response_model=ProjectRead)
-def project_create(payload: ProjectCreate) -> dict:
+def project_create(payload: ProjectCreate, request: Request) -> dict:
+    _enforce_cli_vault(request, payload.vault_id)
     try:
         return register_project(
             vault_id=payload.vault_id,
@@ -80,14 +113,14 @@ def project_get(project_id: str) -> dict:
 @router.patch("/{project_id}", response_model=ProjectRead)
 def project_update(project_id: str, payload: ProjectUpdate) -> dict:
     try:
-        return update_project(project_id, name=payload.name)
+        return update_project(project_id, name=payload.name, root_path=payload.root_path)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except ProjectError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post("/{project_id}/sync", response_model=ProjectSyncResponse)
+@router.post("/{project_id}/sync", response_model=ProjectSyncResponse, status_code=202)
 def project_sync(project_id: str) -> dict:
     try:
         return sync_project(project_id)
@@ -97,7 +130,7 @@ def project_sync(project_id: str) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/{project_id}/reindex")
+@router.post("/{project_id}/reindex", status_code=202)
 def project_reindex(project_id: str, payload: ProjectReindexRequest) -> dict:
     try:
         return reindex_project(project_id, layer=payload.layer)
@@ -146,13 +179,25 @@ def project_unlink(project_id: str, cluster_id: str) -> Response:
     return Response(status_code=204)
 
 
-@router.get("/{project_id}/runs")
+@router.get("/{project_id}/runs", response_model=list[ProjectIndexRunRead])
 def project_runs(project_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
     try:
         get_project(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     return list_project_runs(project_id, limit=limit, offset=offset)
+
+
+@router.get("/{project_id}/runs/{run_id}", response_model=ProjectIndexRunRead)
+def project_run(project_id: str, run_id: str) -> dict:
+    try:
+        get_project(project_id)
+        run = get_project_run(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project run not found") from exc
+    if run["project_id"] != project_id:
+        raise HTTPException(status_code=404, detail="Project run not found")
+    return run
 
 
 @router.delete("/{project_id}", status_code=204)

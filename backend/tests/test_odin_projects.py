@@ -4,6 +4,17 @@ import unittest
 from pathlib import Path
 
 
+def _register_project(**kwargs):
+    from backend.app.core.background_jobs import run_due_jobs_once
+    from backend.app.core.projects import get_project, register_project
+
+    project = register_project(**kwargs)
+    if kwargs.get("sync", True):
+        run_due_jobs_once(limit=20)
+        project = get_project(project["id"])
+    return project
+
+
 class OdinProjectTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -52,8 +63,8 @@ class OdinProjectTests(unittest.TestCase):
         from backend.app.core.database import connect
         from backend.app.core.projects import register_project
 
-        first = register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
-        second = register_project(vault_id="vault-odin", root_path=str(self.repo), name="Different", sync=False)
+        first = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        second = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Different", sync=False)
 
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(first["source_count"], 3)
@@ -78,12 +89,17 @@ class OdinProjectTests(unittest.TestCase):
         from backend.app.core.database import connect
         from backend.app.core.projects import register_project, sync_project
 
-        project = register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
         (self.repo / "src" / "auth.ts").unlink()
         (self.repo / "src" / "main.ts").write_text("export const start = () => 'updated';\n", encoding="utf-8")
         (self.repo / "src" / "routes.ts").write_text("export const routes = [];\n", encoding="utf-8")
 
-        result = sync_project(project["id"])
+        queued = sync_project(project["id"])
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.projects import get_project, get_project_run
+
+        run_due_jobs_once(limit=20)
+        result = {"run": get_project_run(queued["run"]["id"]), "project": get_project(project["id"])}
 
         self.assertEqual(result["run"]["status"], "succeeded")
         self.assertEqual(result["project"]["source_count"], 3)
@@ -94,11 +110,195 @@ class OdinProjectTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(deleted["deleted_at"])
 
+    def test_sync_populates_release_snapshot_and_run_contracts(self) -> None:
+        from backend.app.core.database import connect
+        from backend.app.core.projects import register_project
+
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+
+        self.assertEqual(project["active_manifest_snapshot_id"], project["active_snapshot_id"])
+        self.assertEqual(project["active_structure_snapshot_id"], project["active_snapshot_id"])
+        self.assertEqual(project["active_retrieval_snapshot_id"], project["active_snapshot_id"])
+        self.assertIsNone(project["candidate_snapshot_id"])
+        self.assertIsNone(project["active_run_id"])
+        self.assertEqual(project["active_snapshot"]["manifest_activated_at"], project["active_snapshot"]["activated_at"])
+        self.assertLessEqual(project["active_snapshot"]["structure_activated_at"], project["active_snapshot"]["activated_at"])
+        with connect() as conn:
+            memberships = conn.execute(
+                """
+                SELECT pss.relative_path, pss.stage_status, s.project_snapshot_id, s.activation_state
+                FROM project_snapshot_sources pss
+                JOIN sources s ON s.id = pss.source_id
+                WHERE pss.snapshot_id = ?
+                ORDER BY pss.relative_path
+                """,
+                (project["active_snapshot_id"],),
+            ).fetchall()
+            run = conn.execute(
+                "SELECT * FROM project_index_runs WHERE project_id = ? ORDER BY created_at DESC LIMIT 1",
+                (project["id"],),
+            ).fetchone()
+        self.assertEqual([row["relative_path"] for row in memberships], ["package.json", "src/auth.ts", "src/main.ts"])
+        self.assertTrue(all(row["stage_status"] == "active" for row in memberships))
+        self.assertTrue(all(row["project_snapshot_id"] == project["active_snapshot_id"] for row in memberships))
+        self.assertTrue(all(row["activation_state"] == "active" for row in memberships))
+        self.assertEqual(run["activation_outcome"], "activated")
+        self.assertEqual(run["phase_completed_count"], 3)
+        self.assertEqual(run["phase_total_count"], 3)
+        self.assertIsNotNone(run["heartbeat_at"])
+
+    def test_sync_is_queued_deduplicated_and_cancellable_without_replacing_active_snapshot(self) -> None:
+        from backend.app.core.projects import cancel_project_run, sync_project
+
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        original_snapshot = project["active_snapshot_id"]
+
+        first = sync_project(project["id"])
+        second = sync_project(project["id"])
+
+        self.assertTrue(first["queued"])
+        self.assertEqual(first["job_id"], second["job_id"])
+        self.assertEqual(first["run"]["id"], second["run"]["id"])
+        cancelled = cancel_project_run(project["id"])
+        self.assertEqual(cancelled["status"], "cancelled")
+        current = __import__("backend.app.core.projects", fromlist=["get_project"]).get_project(project["id"])
+        self.assertEqual(current["active_snapshot_id"], original_snapshot)
+        self.assertIsNone(current["candidate_snapshot_id"])
+
+    def test_reconnect_moves_registration_without_touching_repository_files(self) -> None:
+        from backend.app.core.projects import update_project
+
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        replacement = self.root / "moved-project"
+        replacement.mkdir()
+        marker = replacement / "README.md"
+        marker.write_text("replacement root", encoding="utf-8")
+
+        updated = update_project(project["id"], root_path=str(replacement))
+
+        self.assertEqual(Path(updated["root_path"]), replacement.resolve())
+        self.assertEqual(updated["status"], "stale")
+        self.assertEqual(marker.read_text(encoding="utf-8"), "replacement root")
+        self.assertEqual(updated["active_snapshot_id"], project["active_snapshot_id"])
+
+    def test_failed_candidate_keeps_the_previous_snapshot_readable(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.projects import get_project, get_project_run, sync_project
+
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        original_snapshot = project["active_snapshot_id"]
+        queued = sync_project(project["id"])
+        with patch("backend.app.core.projects.discover_project", side_effect=RuntimeError("forced candidate failure")):
+            run_due_jobs_once(limit=20)
+
+        current = get_project(project["id"])
+        run = get_project_run(queued["run"]["id"])
+        self.assertEqual(run["status"], "failed")
+        self.assertEqual(current["active_snapshot_id"], original_snapshot)
+        self.assertIsNone(current["candidate_snapshot_id"])
+
+    def test_phased_indexing_isolates_candidate_sources_until_atomic_retrieval_activation(self) -> None:
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect
+        from backend.app.core.projects import get_project, get_project_run, sync_project
+
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        old_manifest = project["active_manifest_snapshot_id"]
+        old_structure = project["active_structure_snapshot_id"]
+        old_retrieval = project["active_retrieval_snapshot_id"]
+        (self.repo / "src" / "main.ts").write_text("export const start = () => 'candidate';\n", encoding="utf-8")
+        queued = sync_project(project["id"])
+
+        self.assertEqual(run_due_jobs_once(limit=1), 1)  # discovery
+        discovered = get_project(project["id"])
+        candidate = discovered["candidate_snapshot_id"]
+        self.assertEqual(discovered["active_manifest_snapshot_id"], old_manifest)
+        self.assertEqual(discovered["active_structure_snapshot_id"], old_structure)
+        self.assertEqual(discovered["active_retrieval_snapshot_id"], old_retrieval)
+        with connect() as conn:
+            candidate_source = conn.execute(
+                """
+                SELECT s.cluster_id, s.state, s.activation_state, pss.intended_action
+                FROM project_snapshot_sources pss JOIN sources s ON s.id = pss.source_id
+                WHERE pss.snapshot_id = ? AND pss.relative_path = 'src/main.ts'
+                """, (candidate,),
+            ).fetchone()
+            active_membership = conn.execute(
+                "SELECT content_hash FROM project_sources WHERE project_id = ? AND relative_path = 'src/main.ts'",
+                (project["id"],),
+            ).fetchone()
+        self.assertEqual(candidate_source["intended_action"], "replace")
+        self.assertIsNone(candidate_source["cluster_id"])
+        self.assertEqual(candidate_source["state"], "staging")
+        self.assertEqual(candidate_source["activation_state"], "candidate")
+        self.assertNotEqual(active_membership["content_hash"], __import__("hashlib").sha256(b"export const start = () => 'candidate';\n").hexdigest())
+
+        self.assertEqual(run_due_jobs_once(limit=1), 1)  # structure
+        structured = get_project(project["id"])
+        self.assertEqual(structured["active_manifest_snapshot_id"], candidate)
+        self.assertEqual(structured["active_structure_snapshot_id"], candidate)
+        self.assertEqual(structured["active_retrieval_snapshot_id"], old_retrieval)
+
+        self.assertEqual(run_due_jobs_once(limit=1), 1)  # retrieval staging
+        staged = get_project(project["id"])
+        self.assertEqual(staged["active_retrieval_snapshot_id"], old_retrieval)
+        with connect() as conn:
+            still_old = conn.execute(
+                "SELECT source_id FROM project_sources WHERE project_id = ? AND relative_path = 'src/main.ts'",
+                (project["id"],),
+            ).fetchone()["source_id"]
+            candidate_id = conn.execute(
+                "SELECT source_id FROM project_snapshot_sources WHERE snapshot_id = ? AND relative_path = 'src/main.ts'",
+                (candidate,),
+            ).fetchone()["source_id"]
+        self.assertNotEqual(still_old, candidate_id)
+
+        self.assertEqual(run_due_jobs_once(limit=1), 1)  # activation
+        activated = get_project(project["id"])
+        self.assertEqual(activated["active_retrieval_snapshot_id"], candidate)
+        self.assertIsNone(activated["candidate_snapshot_id"])
+        self.assertEqual(get_project_run(queued["run"]["id"])["status"], "succeeded")
+        with connect() as conn:
+            active_id = conn.execute(
+                "SELECT source_id FROM project_sources WHERE project_id = ? AND relative_path = 'src/main.ts'",
+                (project["id"],),
+            ).fetchone()["source_id"]
+        self.assertEqual(active_id, candidate_id)
+
+    def test_project_job_recovery_requeues_staging_and_verifies_committed_activation(self) -> None:
+        from backend.app.core.background_jobs import recover_interrupted_jobs, run_due_jobs_once
+        from backend.app.core.database import connect
+        from backend.app.core.projects import register_project, sync_project
+
+        project = register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=False)
+        queued = sync_project(project["id"])
+        with connect() as conn:
+            conn.execute("UPDATE app_jobs SET status = 'running' WHERE id = ?", (queued["job_id"],))
+        recovered = recover_interrupted_jobs()
+        self.assertEqual(recovered["queued"], 1)
+        with connect() as conn:
+            self.assertEqual(conn.execute("SELECT status FROM app_jobs WHERE id = ?", (queued["job_id"],)).fetchone()["status"], "queued")
+
+        run_due_jobs_once(limit=20)
+        with connect() as conn:
+            activation = conn.execute(
+                "SELECT id FROM app_jobs WHERE job_type = 'project_snapshot_activate' AND payload LIKE ?",
+                (f'%"run_id":"{queued["run"]["id"]}"%',),
+            ).fetchone()
+            conn.execute("UPDATE app_jobs SET status = 'running', completed_at = NULL WHERE id = ?", (activation["id"],))
+        recover_interrupted_jobs()
+        with connect() as conn:
+            recovered_activation = conn.execute("SELECT status, status_detail FROM app_jobs WHERE id = ?", (activation["id"],)).fetchone()
+        self.assertEqual(recovered_activation["status"], "succeeded")
+        self.assertIn("verified", recovered_activation["status_detail"].lower())
+
     def test_remove_deletes_only_cml_records(self) -> None:
         from backend.app.core.database import connect
         from backend.app.core.projects import register_project, remove_project
 
-        project = register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
         remove_project(project["id"], confirmation_name="Sample")
 
         self.assertTrue((self.repo / "src" / "main.ts").exists())
@@ -116,7 +316,7 @@ class OdinProjectTests(unittest.TestCase):
         from backend.app.core.project_graph import shortest_path
         from backend.app.core.projects import register_project
 
-        project = register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
         result = shortest_path(project["id"], "start", "authorize")
 
         self.assertEqual(result["status"], "found")
@@ -128,7 +328,7 @@ class OdinProjectTests(unittest.TestCase):
         from backend.app.core.projects import register_project
         from backend.app.schemas import ChatSessionCreate
 
-        project = register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=False)
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=False)
         session = create_chat_session(
             ChatSessionCreate(vault_id="vault-odin", scope_project_id=project["id"])
         )
@@ -140,7 +340,7 @@ class OdinProjectTests(unittest.TestCase):
         from backend.app.core.project_graph import graph_view, graph_view_markdown
         from backend.app.core.projects import register_project
 
-        project = register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
         view = graph_view(project["id"], mode="graph", query="authorize", max_depth=2, max_nodes=20)
 
         self.assertLessEqual(len(view["nodes"]), 20)
@@ -154,7 +354,7 @@ class OdinProjectTests(unittest.TestCase):
         from backend.app.core.project_graph import graph_view
         from backend.app.core.projects import register_project
 
-        project = register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
         view = graph_view(project["id"], mode="tree", root="src", max_nodes=30)
 
         kinds = {node["kind"] for node in view["nodes"]}

@@ -55,6 +55,51 @@ class JobPolicy:
 
 
 JOB_REGISTRY: dict[str, JobPolicy] = {
+    "project_discover": JobPolicy(
+        priority="high",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="project",
+        concurrency_group="project_index",
+        resource_cost="heavy",
+        can_run_during_synthesis=False,
+        user_visible=True,
+        user_initiated=True,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=3600,
+        soft_timeout_seconds=600,
+        timeout_action="defer",
+    ),
+    "project_structure_index": JobPolicy(
+        priority="high", idempotency_class="idempotent", restart_policy="requeue",
+        dependency_failure_policy="cancel", write_scope="project", concurrency_group="project_index",
+        resource_cost="heavy", can_run_during_synthesis=False, user_visible=True,
+        user_initiated=True, cancellable=True, preemptable=False, timeout_seconds=3600,
+        soft_timeout_seconds=600, timeout_action="defer",
+    ),
+    "project_retrieval_stage": JobPolicy(
+        priority="high", idempotency_class="idempotent", restart_policy="requeue",
+        dependency_failure_policy="cancel", write_scope="project", concurrency_group="project_index",
+        resource_cost="heavy", can_run_during_synthesis=False, user_visible=True,
+        user_initiated=True, cancellable=True, preemptable=False, timeout_seconds=3600,
+        soft_timeout_seconds=600, timeout_action="defer",
+    ),
+    "project_snapshot_activate": JobPolicy(
+        priority="high", idempotency_class="reconcile_required", restart_policy="reconcile_then_retry",
+        dependency_failure_policy="manual_review", write_scope="project", concurrency_group="project_index",
+        resource_cost="light", can_run_during_synthesis=False, user_visible=True,
+        user_initiated=True, cancellable=False, preemptable=False, timeout_seconds=120,
+        soft_timeout_seconds=None, timeout_action="escalate",
+    ),
+    "project_candidate_cleanup": JobPolicy(
+        priority="normal", idempotency_class="idempotent", restart_policy="requeue",
+        dependency_failure_policy="cancel", write_scope="project", concurrency_group="project_index",
+        resource_cost="light", can_run_during_synthesis=True, user_visible=False,
+        user_initiated=False, cancellable=False, preemptable=False, timeout_seconds=300,
+        soft_timeout_seconds=None, timeout_action="defer",
+    ),
     "reindex_source": JobPolicy(
         priority="high",
         idempotency_class="idempotent",
@@ -314,7 +359,29 @@ def recover_interrupted_jobs() -> dict[str, int]:
         for row in rows:
             job = dict_from_row(row)
             restart_policy = job.get("restart_policy") or _job_policy(job["job_type"]).restart_policy
-            if restart_policy == "requeue":
+            if restart_policy == "reconcile_then_retry" and job["job_type"] == "project_snapshot_activate":
+                payload = _decode_payload(job.get("payload") or "{}")
+                project = conn.execute(
+                    "SELECT active_retrieval_snapshot_id, candidate_snapshot_id FROM projects WHERE id = ?",
+                    (str(payload.get("project_id") or ""),),
+                ).fetchone()
+                activated = (
+                    project is not None
+                    and project["active_retrieval_snapshot_id"] == payload.get("candidate_snapshot_id")
+                    and project["candidate_snapshot_id"] is None
+                )
+                if activated:
+                    conn.execute(
+                        "UPDATE app_jobs SET status = 'succeeded', status_detail = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+                        ("Activation commit verified after backend restart.", now, now, job["id"]),
+                    )
+                    continue
+                conn.execute(
+                    "UPDATE app_jobs SET status = 'queued', status_detail = ?, started_at = NULL, updated_at = ? WHERE id = ?",
+                    ("Activation was not committed; queued for an idempotent retry.", now, job["id"]),
+                )
+                counts["queued"] += 1
+            elif restart_policy in {"requeue", "reconcile_then_retry"}:
                 conn.execute(
                     """
                     UPDATE app_jobs
@@ -365,9 +432,13 @@ def run_due_jobs_once(limit: int = 5) -> int:
     for _ in range(limit):
         job = _claim_next_job()
         if job is None:
-            break
+            _refresh_blocked_dependencies()
+            job = _claim_next_job()
+            if job is None:
+                break
         _run_claimed_job(job)
         processed += 1
+        _refresh_blocked_dependencies()
     return processed
 
 
@@ -528,7 +599,12 @@ def _run_claimed_job(job: dict) -> None:
         return
     try:
         payload = _decode_payload(job["payload"])
-        if job["job_type"] == "reindex_source":
+        if job["job_type"] in {
+            "project_discover", "project_structure_index", "project_retrieval_stage",
+            "project_snapshot_activate", "project_candidate_cleanup",
+        }:
+            _run_project_phase(job["job_type"], payload, job["id"])
+        elif job["job_type"] == "reindex_source":
             _run_reindex_source(payload)
         elif job["job_type"] == "chat_transcript_memory":
             _run_chat_transcript_memory(payload)
@@ -579,6 +655,22 @@ def _run_reindex_source(payload: dict) -> None:
         mark_cluster_needs_update(conn, source.get("cluster_id"), "Source was indexed in the background.")
         rebuild_source_memory(conn, source_id=source_id)
         _refresh_project_retrieval_status(conn, source_id)
+
+
+def _run_project_phase(job_type: str, payload: dict, job_id: str) -> None:
+    from backend.app.core import project_indexing
+
+    function = {
+        "project_discover": project_indexing.discover_candidate,
+        "project_structure_index": project_indexing.index_candidate_structure,
+        "project_retrieval_stage": project_indexing.stage_candidate_retrieval,
+        "project_snapshot_activate": project_indexing.activate_candidate,
+        "project_candidate_cleanup": project_indexing.cleanup_candidate,
+    }[job_type]
+    function(
+        project_id=str(payload["project_id"]), run_id=str(payload["run_id"]),
+        snapshot_id=str(payload["candidate_snapshot_id"]), job_id=job_id,
+    )
 
 
 def _refresh_project_retrieval_status(conn, source_id: str) -> None:
@@ -906,6 +998,48 @@ def _mark_job_failed_or_retry(job: dict, error: str) -> None:
             """,
             (status, error[:500], error[:500], completed_at, utc_now(), job["id"]),
         )
+        if status == "failed" and job.get("job_type", "").startswith("project_"):
+            payload = _decode_payload(job.get("payload") or "{}")
+            run_id = str(payload.get("run_id") or "")
+            project_id = str(payload.get("project_id") or "")
+            snapshot_id = str(payload.get("candidate_snapshot_id") or "")
+            if run_id and project_id:
+                now = utc_now()
+                conn.execute(
+                    """
+                    UPDATE project_index_runs SET status = 'failed', failure_category = ?,
+                        activation_outcome = 'not_activated', finished_at = ?, heartbeat_at = ?, updated_at = ?
+                    WHERE id = ? AND status != 'cancelled'
+                    """,
+                    (job["job_type"], now, now, now, run_id),
+                )
+                conn.execute(
+                    """
+                    UPDATE projects SET active_run_id = NULL, candidate_snapshot_id = NULL,
+                        status = CASE
+                            WHEN active_snapshot_id IS NULL THEN 'issue'
+                            WHEN structure_status = 'partial' OR retrieval_status = 'partial' THEN 'partial'
+                            ELSE 'ready'
+                        END,
+                        updated_at = ? WHERE id = ?
+                    """,
+                    (now, project_id),
+                )
+                active = conn.execute(
+                    """
+                    SELECT 1 FROM projects WHERE id = ? AND ? IN (
+                        active_snapshot_id, active_manifest_snapshot_id,
+                        active_structure_snapshot_id, active_retrieval_snapshot_id
+                    )
+                    """,
+                    (project_id, snapshot_id),
+                ).fetchone() if snapshot_id else None
+                if snapshot_id and active is None:
+                    enqueue_job(
+                        conn, job_type="project_candidate_cleanup",
+                        payload={"project_id": project_id, "run_id": run_id, "candidate_snapshot_id": snapshot_id},
+                        dedupe_key=f"project-cleanup:{snapshot_id}", scope_id=project_id,
+                    )
 
 
 def _decode_payload(raw: str) -> dict:
