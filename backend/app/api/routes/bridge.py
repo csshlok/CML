@@ -1781,6 +1781,7 @@ def _expand_bridge_handle(conn, *, vault_id: str, handle: str, allow_raw_snippet
             FROM source_chunks chunks
             JOIN sources ON sources.id = chunks.source_id
             WHERE chunks.id = ? AND chunks.vault_id = ? AND sources.deleted_at IS NULL
+              AND sources.activation_state = 'active' AND chunks.activation_state = 'active'
             """,
             (identifier, vault_id),
         ).fetchone()

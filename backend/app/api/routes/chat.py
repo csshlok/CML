@@ -2076,10 +2076,19 @@ def _snapshot_citations_for_messages(conn, message_ids: list[str]) -> dict[str, 
             sources.provenance AS source_provenance,
             sources.trust_tier AS source_trust_tier,
             sources.security_labels AS source_security_labels,
-            chunks.indexed_at AS chunk_indexed_at
+            sources.original_path AS source_original_path,
+            sources.project_snapshot_id AS project_snapshot_id,
+            chunks.indexed_at AS chunk_indexed_at,
+            chunks.chunk_meta_json AS chunk_meta_json,
+            project_membership.relative_path AS project_relative_path,
+            project_snapshots.git_commit AS indexed_commit
         FROM retrieval_snapshot_items items
         LEFT JOIN sources ON sources.id = items.source_id
         LEFT JOIN source_chunks chunks ON chunks.id = items.chunk_id
+        LEFT JOIN project_snapshots ON project_snapshots.id = sources.project_snapshot_id
+        LEFT JOIN project_snapshot_sources project_membership
+          ON project_membership.snapshot_id = sources.project_snapshot_id
+         AND project_membership.source_id = sources.id
         WHERE items.snapshot_id IN ({item_placeholders})
         ORDER BY items.item_rank ASC
         """,
@@ -2087,6 +2096,10 @@ def _snapshot_citations_for_messages(conn, message_ids: list[str]) -> dict[str, 
     ).fetchall()
     citations_by_snapshot_id: dict[str, list[dict]] = {snapshot_id: [] for snapshot_id in snapshot_ids}
     for row in rows:
+        try:
+            chunk_meta = json.loads(row["chunk_meta_json"] or "{}")
+        except (TypeError, ValueError):
+            chunk_meta = {}
         state = "current"
         if row["source_id"] is None or row["source_deleted_at"]:
             state = "source_deleted"
@@ -2115,6 +2128,12 @@ def _snapshot_citations_for_messages(conn, message_ids: list[str]) -> dict[str, 
                     }
                 ),
                 "state": state,
+                "relative_path": row["project_relative_path"],
+                "line_start": chunk_meta.get("line_start"),
+                "line_end": chunk_meta.get("line_end"),
+                "symbol": chunk_meta.get("symbol"),
+                "project_snapshot_id": row["project_snapshot_id"],
+                "indexed_commit": row["indexed_commit"],
             }
         )
     citations_by_message_id: dict[str, list[dict]] = {}

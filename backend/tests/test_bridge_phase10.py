@@ -305,6 +305,8 @@ class BridgePhase10Tests(unittest.TestCase):
         (repo / "main.py").write_text("from auth import login\nlogin()\n", encoding="utf-8")
         (repo / "auth.py").write_text("def login():\n    return True\n", encoding="utf-8")
         project = register_project(vault_id="vault-1", root_path=str(repo), name="Bridge project", sync=True)
+        from backend.app.core.background_jobs import run_due_jobs_once
+        run_due_jobs_once(limit=20)
         update_bridge_settings(BridgeSettingsUpdate(enabled=True))
         client = create_bridge_client(
             BridgeClientCreate(name="Graph client", allowed_vault_ids=["vault-1"])

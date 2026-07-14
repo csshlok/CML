@@ -34,7 +34,7 @@ class GraphQueryError(ValueError):
 def graph_summary(project_id: str) -> dict:
     with connect() as conn:
         project = _active_project(conn, project_id)
-        snapshot_id = project["active_snapshot_id"]
+        snapshot_id = _structure_snapshot_id(project)
         node_rows = conn.execute(
             "SELECT kind, COUNT(*) AS total FROM code_nodes WHERE project_id = ? AND snapshot_id = ? GROUP BY kind",
             (project_id, snapshot_id),
@@ -80,7 +80,7 @@ def find_nodes(project_id: str, query: str, *, kinds: list[str] | None = None, l
     bounded_limit = max(1, min(int(limit), 100))
     with connect() as conn:
         project = _active_project(conn, project_id)
-        params: list[object] = [project_id, project["active_snapshot_id"], f"%{needle}%", f"%{needle}%"]
+        params: list[object] = [project_id, _structure_snapshot_id(project), f"%{needle}%", f"%{needle}%"]
         kind_clause = ""
         if kinds:
             allowed = [kind.strip() for kind in kinds if kind.strip()]
@@ -117,7 +117,7 @@ def node_neighbors(
     bounded_limit = max(1, min(int(limit), 300))
     with connect() as conn:
         project = _active_project(conn, project_id)
-        node = _node(conn, project_id, project["active_snapshot_id"], node_id)
+        node = _node(conn, project_id, _structure_snapshot_id(project), node_id)
         placeholders = ",".join("?" for _ in allowed_edges)
         rows = conn.execute(
             f"""
@@ -133,7 +133,7 @@ def node_neighbors(
               AND e.confidence_class IN ('extracted', 'user_confirmed')
             ORDER BY e.edge_type, n.display_label LIMIT ?
             """,
-            [node_id, project_id, project["active_snapshot_id"], node_id, node_id, *allowed_edges, bounded_limit],
+            [node_id, project_id, _structure_snapshot_id(project), node_id, node_id, *allowed_edges, bounded_limit],
         ).fetchall()
         return {"node": node, "neighbors": [dict_from_row(row) for row in rows]}
 
@@ -156,7 +156,7 @@ def shortest_path(
     allowed_edges = sorted(DEFAULT_PATH_EDGES) if not edge_types else _allowed_edges(edge_types)
     with connect() as conn:
         project = _active_project(conn, project_id)
-        snapshot_id = project["active_snapshot_id"]
+        snapshot_id = _structure_snapshot_id(project)
         source = _resolve_unique_node(conn, project_id, snapshot_id, source_query)
         target = _resolve_unique_node(conn, project_id, snapshot_id, target_query)
         if source["id"] == target["id"]:
@@ -269,7 +269,7 @@ def graph_view(
     depth_limit = max(1, min(int(max_depth), 4))
     with connect() as conn:
         project = _active_project(conn, project_id)
-        snapshot_id = project["active_snapshot_id"]
+        snapshot_id = _structure_snapshot_id(project)
         if normalized_mode == "tree":
             nodes, edges, truncated = _tree_projection(
                 conn, project_id, snapshot_id, query=query, root=root, max_nodes=node_limit
@@ -613,9 +613,13 @@ def _active_project(conn, project_id: str):
     ).fetchone()
     if row is None:
         raise KeyError(project_id)
-    if not row["active_snapshot_id"]:
+    if not (row["active_structure_snapshot_id"] or row["active_snapshot_id"]):
         raise GraphQueryError("Project has no active snapshot.")
     return row
+
+
+def _structure_snapshot_id(project) -> str:
+    return str(project["active_structure_snapshot_id"] or project["active_snapshot_id"])
 
 
 def _node(conn, project_id: str, snapshot_id: str, node_id: str) -> dict:
