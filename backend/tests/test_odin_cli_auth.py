@@ -1,0 +1,218 @@
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+
+class OdinCliAuthTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.root = Path(self.tmp.name)
+        self.data_dir = self.root / "data"
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        (self.repo / "main.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+        os.environ["CML_DATABASE_PATH"] = str(self.data_dir / "test.sqlite3")
+        os.environ["CML_DATA_DIR"] = str(self.data_dir)
+        os.environ["CML_API_TOKEN"] = "desktop-token-that-is-long-enough-for-tests"
+        os.environ["CML_EMBEDDING_PROVIDER"] = "hash"
+        os.environ["CML_ALLOW_HASH_EMBEDDINGS"] = "1"
+        from backend.app.core.config import get_settings
+
+        get_settings.cache_clear()
+        from backend.app.core.database import connect, init_db, utc_now
+        from backend.app.core.migrations import run_migrations
+
+        init_db()
+        run_migrations()
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-a", "Vault A", str(self.data_dir / "a"), now, now),
+            )
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-b", "Vault B", str(self.data_dir / "b"), now, now),
+            )
+
+    def tearDown(self) -> None:
+        from backend.app.core.config import get_settings
+
+        get_settings.cache_clear()
+        for key in (
+            "CML_DATABASE_PATH",
+            "CML_DATA_DIR",
+            "CML_API_TOKEN",
+            "CML_EMBEDDING_PROVIDER",
+            "CML_ALLOW_HASH_EMBEDDINGS",
+        ):
+            os.environ.pop(key, None)
+        self.tmp.cleanup()
+
+    def _paired_session(self, *, scopes: list[str], vault_ids: list[str]) -> tuple[dict, dict, str]:
+        import secrets
+
+        from backend.app.core.cli_auth import (
+            approve_pairing,
+            consume_pairing,
+            create_pairing_challenge,
+            create_session,
+            token_hash,
+        )
+        from backend.app.core.runtime_identity import BACKEND_INSTANCE_ID
+
+        verifier = secrets.token_urlsafe(40)
+        challenge = create_pairing_challenge(
+            verifier_hash=token_hash(verifier),
+            requested_scopes=scopes,
+            requester_name="VS Code Odin",
+            executable_fingerprint="a" * 64,
+            runtime_instance_id=BACKEND_INSTANCE_ID,
+        )
+        client = approve_pairing(challenge["id"], scopes=scopes, allowed_vault_ids=vault_ids)
+        consumed = consume_pairing(challenge["id"], verifier)
+        session = create_session(
+            client_id=client["id"],
+            credential=consumed["credential"],
+            executable_fingerprint="a" * 64,
+        )
+        return client, consumed, session["session_token"]
+
+    def test_pairing_credential_is_single_use_and_only_hashes_are_persisted(self) -> None:
+        from backend.app.core.cli_auth import CliAuthError, authenticate_session, consume_pairing
+        from backend.app.core.database import connect
+
+        client, consumed, session_token = self._paired_session(
+            scopes=["project:read", "context:read"],
+            vault_ids=["vault-a"],
+        )
+        context = authenticate_session(session_token)
+
+        self.assertEqual(context["client_id"], client["id"])
+        self.assertEqual(context["allowed_vault_ids"], {"vault-a"})
+        with connect() as conn:
+            client_row = conn.execute("SELECT * FROM cli_clients WHERE id = ?", (client["id"],)).fetchone()
+            session_row = conn.execute("SELECT * FROM cli_sessions WHERE client_id = ?", (client["id"],)).fetchone()
+            challenge_row = conn.execute(
+                "SELECT * FROM cli_pairing_challenges WHERE client_id = ?", (client["id"],)
+            ).fetchone()
+        self.assertNotIn(consumed["credential"], tuple(str(value) for value in client_row))
+        self.assertNotEqual(session_row["token_hash"], session_token)
+        with self.assertRaises(CliAuthError) as replay:
+            consume_pairing(challenge_row["id"], "wrong-verifier-value-that-is-long-enough")
+        self.assertIn(replay.exception.code, {"invalid_pairing_verifier", "pairing_already_consumed"})
+
+    def test_revocation_and_rotation_invalidate_existing_sessions(self) -> None:
+        from backend.app.core.cli_auth import authenticate_session, revoke_client, rotate_client
+
+        client, _consumed, session_token = self._paired_session(
+            scopes=["project:read"],
+            vault_ids=["vault-a"],
+        )
+        self.assertIsNotNone(authenticate_session(session_token))
+        rotated = rotate_client(client["id"])
+        self.assertTrue(rotated["requires_pairing"])
+        self.assertIsNone(authenticate_session(session_token))
+
+        other, _consumed, other_token = self._paired_session(
+            scopes=["project:read"],
+            vault_ids=["vault-a"],
+        )
+        revoke_client(other["id"])
+        self.assertIsNone(authenticate_session(other_token))
+
+    def test_session_exchange_rejects_an_executable_fingerprint_mismatch(self) -> None:
+        from backend.app.core.cli_auth import CliAuthError, create_session
+
+        client, consumed, _session_token = self._paired_session(
+            scopes=["project:read"], vault_ids=["vault-a"]
+        )
+        with self.assertRaises(CliAuthError) as mismatch:
+            create_session(
+                client_id=client["id"],
+                credential=consumed["credential"],
+                executable_fingerprint="b" * 64,
+            )
+        self.assertEqual(mismatch.exception.code, "executable_fingerprint_mismatch")
+
+    def test_pairing_rejects_wrong_backend_and_unrequested_scope(self) -> None:
+        import secrets
+
+        from backend.app.core.cli_auth import (
+            CliAuthError,
+            approve_pairing,
+            create_pairing_challenge,
+            token_hash,
+        )
+        from backend.app.core.runtime_identity import BACKEND_INSTANCE_ID
+
+        verifier = secrets.token_urlsafe(40)
+        with self.assertRaises(CliAuthError) as identity_error:
+            create_pairing_challenge(
+                verifier_hash=token_hash(verifier),
+                requested_scopes=["project:read"],
+                requester_name="Odin",
+                executable_fingerprint="b" * 64,
+                runtime_instance_id="wrong-instance",
+            )
+        self.assertEqual(identity_error.exception.code, "backend_identity_mismatch")
+
+        challenge = create_pairing_challenge(
+            verifier_hash=token_hash(verifier),
+            requested_scopes=["project:read"],
+            requester_name="Odin",
+            executable_fingerprint="b" * 64,
+            runtime_instance_id=BACKEND_INSTANCE_ID,
+        )
+        with self.assertRaises(CliAuthError) as scope_error:
+            approve_pairing(
+                challenge["id"],
+                scopes=["project:read", "project:write"],
+                allowed_vault_ids=["vault-a"],
+            )
+        self.assertEqual(scope_error.exception.code, "scope_not_requested")
+
+    def test_middleware_enforces_scope_endpoint_allowlist_and_vault_boundary(self) -> None:
+        from backend.app.api.routes import cli_auth, projects
+        from backend.app.core.auth import LocalApiAuthMiddleware
+        from backend.app.core.projects import register_project
+
+        project_a = register_project(vault_id="vault-a", root_path=str(self.repo), name="A", sync=False)
+        second_repo = self.root / "repo-b"
+        second_repo.mkdir()
+        (second_repo / "main.py").write_text("value = 2\n", encoding="utf-8")
+        project_b = register_project(vault_id="vault-b", root_path=str(second_repo), name="B", sync=False)
+        _client, _consumed, session_token = self._paired_session(
+            scopes=["project:read"],
+            vault_ids=["vault-a"],
+        )
+
+        app = FastAPI()
+        app.add_middleware(LocalApiAuthMiddleware)
+        app.include_router(projects.router, prefix="/api/v1")
+        app.include_router(cli_auth.router, prefix="/api/v1")
+        client = TestClient(app)
+        headers = {"Authorization": f"Bearer {session_token}"}
+
+        allowed = client.get(f"/api/v1/projects/{project_a['id']}", headers=headers)
+        denied_scope = client.post(f"/api/v1/projects/{project_a['id']}/sync", headers=headers, json={})
+        denied_vault = client.get(f"/api/v1/projects/{project_b['id']}", headers=headers)
+        denied_surface = client.get("/api/v1/vaults", headers=headers)
+        visible = client.get("/api/v1/projects", headers=headers)
+        me = client.get("/api/v1/cli-auth/me", headers=headers)
+
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(denied_scope.status_code, 403)
+        self.assertEqual(denied_vault.status_code, 403)
+        self.assertEqual(denied_surface.status_code, 403)
+        self.assertEqual([row["id"] for row in visible.json()], [project_a["id"]])
+        self.assertEqual(me.status_code, 200)
+        self.assertEqual(me.json()["allowed_vault_ids"], ["vault-a"])
+
+
+if __name__ == "__main__":
+    unittest.main()

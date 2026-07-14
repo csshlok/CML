@@ -16,6 +16,7 @@ from backend.app.core.startup_repair import startup_repair_summary
 from backend.app.core.startup_status import read_startup_status, startup_status_staleness, validate_startup_phase_registry
 from backend.app.core.config import get_settings
 from backend.app.core.database import connect, dict_from_row
+from backend.app.core.runtime_identity import backend_runtime_identity
 from backend.app.core.storage_accounting import storage_accounting
 from backend.app.core.unlock_state import (
     RepairRequiredError,
@@ -61,6 +62,7 @@ def get_backend_identity() -> dict:
         "data_dir": str(settings.data_dir),
         "database_path": str(settings.database_path),
         "authenticated": bool(settings.api_token),
+        **backend_runtime_identity(),
     }
 
 

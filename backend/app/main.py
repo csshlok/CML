@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.api.routes import bridge, chat, clusters, diagnostics, extension, integrations, jobs, models, projects, search, sources, system, vaults
+from backend.app.api.routes import bridge, chat, cli_auth, clusters, diagnostics, extension, integrations, jobs, models, projects, search, sources, system, vaults
 from backend.app.core.auth import LocalApiAuthMiddleware
 from backend.app.core.background_jobs import enqueue_startup_reconciliation_jobs, start_background_worker
 from backend.app.core.config import get_settings
@@ -122,6 +122,7 @@ def health() -> dict[str, str]:
 app.include_router(vaults.router, prefix=settings.api_prefix)
 app.include_router(clusters.router, prefix=settings.api_prefix)
 app.include_router(projects.router, prefix=settings.api_prefix)
+app.include_router(cli_auth.router, prefix=settings.api_prefix)
 app.include_router(sources.router, prefix=settings.api_prefix)
 app.include_router(search.router, prefix=settings.api_prefix)
 app.include_router(chat.router, prefix=settings.api_prefix)
