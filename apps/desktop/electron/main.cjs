@@ -14,6 +14,12 @@ const {
   verifyHelperManifest,
 } = require("./helper-integrity.cjs");
 const { createTokenStore, getOrCreateToken } = require("./token-store.cjs");
+const {
+  createRuntimeDescriptor,
+  removeRuntimeDescriptor,
+  runtimeDescriptorPath,
+  writeRuntimeDescriptor,
+} = require("./runtime-descriptor.cjs");
 
 const isDev = !app.isPackaged;
 const devUrl = process.env.CML_DESKTOP_DEV_URL || "http://127.0.0.1:5173";
@@ -30,6 +36,7 @@ let backendStdoutStream = null;
 let backendStderrStream = null;
 let rendererReadyPath = null;
 let pendingActiveVaultPath = null;
+let odinRuntimeDescriptorPath = null;
 const startupRepairLogoMarkup = `
   <img
     src="data:image/png;base64,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"
@@ -638,7 +645,10 @@ async function ensureBackend() {
   const explicitBackend = process.env.VITE_CML_BACKEND_URL || process.env.CML_BACKEND_URL;
   const token = await getBackendApiToken();
   const existing = explicitBackend ? await findExistingCurrentBackend(token) : null;
-  if (existing) return existing;
+  if (existing) {
+    await publishOdinRuntimeDescriptor(existing, token);
+    return existing;
+  }
   if (app.isPackaged) {
     await verifyPackagedRuntime();
   }
@@ -712,8 +722,25 @@ async function ensureBackend() {
   backendProcess.unref();
   const startedUrl = `http://127.0.0.1:${port}`;
   await waitForBackend(startedUrl, token, backendWaitTimeoutMs, backendLogPaths, backendProcess);
+  await publishOdinRuntimeDescriptor(startedUrl, token);
   writeDesktopRuntimeLog(`backend ready after ${Date.now() - backendStartedAt}ms at ${startedUrl}`);
   return startedUrl;
+}
+
+async function publishOdinRuntimeDescriptor(url, token) {
+  const identity = await httpJson(`${url}${apiPrefix}/system/backend-identity`, 2000, token);
+  if (!identity || identity.service !== "cml-backend" || identity.api_prefix !== apiPrefix || !identity.instance_id) {
+    throw new Error("The backend identity could not be verified for Odin discovery.");
+  }
+  const descriptor = createRuntimeDescriptor({
+    backendUrl: url,
+    apiPrefix,
+    backendInstanceId: identity.instance_id,
+    backendPid: backendProcess?.pid ?? null,
+    desktopPid: process.pid,
+  });
+  odinRuntimeDescriptorPath = runtimeDescriptorPath(path.join(app.getPath("appData"), "Vault"));
+  await writeRuntimeDescriptor(odinRuntimeDescriptorPath, descriptor);
 }
 
 async function verifyPackagedRuntime() {
@@ -752,6 +779,7 @@ async function verifyPackagedRuntime() {
 }
 
 async function restartBackend() {
+  if (odinRuntimeDescriptorPath) await removeRuntimeDescriptor(odinRuntimeDescriptorPath);
   if (backendProcess && !backendProcess.killed) {
     backendProcess.kill();
   }
@@ -1252,6 +1280,13 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  if (odinRuntimeDescriptorPath) {
+    try {
+      fsSync.rmSync(odinRuntimeDescriptorPath, { force: true });
+    } catch {
+      // Expiry and PID validation still reject a descriptor that cannot be removed during shutdown.
+    }
+  }
   if (rendererServer) {
     rendererServer.close();
   }
