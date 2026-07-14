@@ -991,7 +991,7 @@ function Onboarding() {
                   <SetupPanel
                     icon={<Check className="h-5 w-5" />}
                     title="Welcome to Vault"
-                    sub="Your library is ready. Add sources from the Mind workspace, or start with chat when you want to ask across everything."
+                    sub="Your library is ready. Add sources from the Sources workspace, or start with chat when you want to ask across everything."
                   >
                     <div className="grid gap-3 sm:grid-cols-2">
                       <SummaryRow label="Profile" value={displayName.trim() || "Local user"} />

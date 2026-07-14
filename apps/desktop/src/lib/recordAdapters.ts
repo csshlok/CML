@@ -28,8 +28,20 @@ export function clusterFromRecord(record: ClusterRecord): Cluster {
     lifecycle: normalizeClusterLifecycle(record.index_status, record.profile_status),
     lastActive: record.updated_at,
     summary: record.cluster_summary || record.description,
+    glossary: parseGlossary(record.cluster_glossary),
     styleProfile: record.profile_status === "ready" ? "Profile cached" : "Profile refresh pending",
   };
+}
+
+function parseGlossary(value: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value || "[]");
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim())
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 export function sourceStateText(state: SourceState) {

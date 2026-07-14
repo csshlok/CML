@@ -324,6 +324,15 @@ function ClustersList() {
                 <p className="mt-10 break-words text-sm leading-6 text-muted-foreground">
                   {selectedCluster.summary || selectedCluster.description || "A private local memory space."}
                 </p>
+                {selectedCluster.glossary.length > 0 && (
+                  <div className="mt-5 flex flex-wrap gap-2" aria-label="Key terms">
+                    {selectedCluster.glossary.slice(0, 8).map((term) => (
+                      <span key={term} className="rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">
+                        {term}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="mt-8 grid grid-cols-2 gap-y-6">
                   <InspectorMetric label="Sources" value={sourceCounts.get(selectedCluster.id) ?? 0} />
                   <InspectorMetric label="Indexed" value={selectedIndexedCount} />

@@ -49,11 +49,11 @@ type AddMode = "note" | "link" | null;
 const PAGE_SIZE = 50;
 
 export const Route = createFileRoute("/_app/search")({
-  head: () => ({ meta: [{ title: "Mind" }] }),
-  component: MindView,
+  head: () => ({ meta: [{ title: "Search" }] }),
+  component: SearchView,
 });
 
-function MindView() {
+function SearchView() {
   const [vault, setBackendVault] = useState<VaultRecord | null>(null);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
@@ -285,7 +285,7 @@ function MindView() {
         <div className="border-b border-border bg-background px-4 py-5 sm:px-6">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
             <div className="min-w-0">
-              <h1 className="page-title">Mind</h1>
+              <h1 className="page-title">Search</h1>
               <p className="mt-1 max-w-xl text-sm leading-6 text-muted-foreground">
                 Search saved sources, review unclustered items, and open the context you need.
               </p>
@@ -404,7 +404,7 @@ function MindView() {
           </div>
 
           {visibleSources.length > PAGE_SIZE && (
-            <nav className="mt-5 flex items-center justify-between border-t border-border pt-4" aria-label="Mind results pages">
+            <nav className="mt-5 flex items-center justify-between border-t border-border pt-4" aria-label="Search results pages">
               <Button variant="outline" size="sm" disabled={currentPage === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
                 Previous
               </Button>

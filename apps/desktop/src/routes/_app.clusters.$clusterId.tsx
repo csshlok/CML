@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, Navigate, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
@@ -29,6 +29,7 @@ import {
   listClusters,
   listChatSessions,
   listProjects,
+  listProjectLinks,
   listSources,
   mergeClusterInto,
   rollbackClusterMerge,
@@ -74,6 +75,7 @@ function ClusterDetail() {
   const [manageMessage, setManageMessage] = useState<string | null>(null);
   const [manageBusy, setManageBusy] = useState(false);
   const [backendProject, setBackendProject] = useState<ProjectRecord | null>(null);
+  const [linkedProjects, setLinkedProjects] = useState<ProjectRecord[]>([]);
 
   const cluster = backendCluster;
   const activeSources = !mounted ? [] : backendSources;
@@ -106,6 +108,8 @@ function ClusterDetail() {
         );
         setMergeArtifacts(artifacts.items);
         setBackendProject(projectRows.find((project) => project.primary_cluster_id === clusterRow.id) ?? null);
+        const linked = await Promise.all(projectRows.map(async (project) => ({ project, links: await listProjectLinks(project.id) })));
+        if (!cancelled) setLinkedProjects(linked.filter(({ links }) => links.some((link) => link.cluster_id === clusterRow.id && link.role === "linked")).map(({ project }) => project));
         setNameDraft(nextCluster.name);
       } catch {
         if (!cancelled) {
@@ -114,6 +118,7 @@ function ClusterDetail() {
           setBackendSources([]);
           setBackendChats([]);
           setBackendProject(null);
+          setLinkedProjects([]);
         }
       }
     }
@@ -156,13 +161,7 @@ function ClusterDetail() {
   }
 
   if (backendProject && backendVaultId) {
-    return (
-      <ProjectWorkspace
-        project={backendProject}
-        vaultId={backendVaultId}
-        onProjectChange={setBackendProject}
-      />
-    );
+    return <Navigate to="/projects/$projectId" params={{ projectId: backendProject.id }} replace />;
   }
   const clusterIdForActions = cluster.id;
   const clusterNameForActions = cluster.name;
@@ -263,6 +262,21 @@ function ClusterDetail() {
             <p className="mt-4 max-w-3xl break-words text-sm leading-7">
               {cluster.summary || cluster.description || "This memory space is ready for sources, chats, and local context."}
             </p>
+
+            {cluster.glossary.length > 0 && (
+              <div className="mt-6 max-w-3xl">
+                <h3 className="text-sm font-medium">Key terms</h3>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {cluster.glossary.map((term) => (
+                    <span key={term} className="rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground">
+                      {term}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {linkedProjects.length > 0 && <section className="mt-8"><h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Linked projects</h3><div className="mt-3 divide-y divide-border rounded-md border border-border bg-card">{linkedProjects.map((project) => <div key={project.id} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"><div className="min-w-0"><div className="font-medium">{project.name}</div><p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{project.brief || `${project.source_count.toLocaleString()} indexed project files.`}</p><div className="mt-1 text-xs text-muted-foreground">{project.changed_file_count ? `${project.changed_file_count} newer changes` : "Index current with registered folder"}</div></div><div className="flex shrink-0 gap-2"><Button variant="outline" size="sm" onClick={() => void createChatSession({ vault_id: project.vault_id, title: `${project.name} chat`, scope_cluster_id: project.primary_cluster_id, scope_project_id: project.id }).then((session) => navigate({ to: "/chat/$chatId", params: { chatId: session.id } }))}>Ask with project</Button><Button size="sm" asChild><Link to="/projects/$projectId" params={{ projectId: project.id }}>Open project</Link></Button></div></div>)}</div></section>}
 
             <div className="mt-8 grid gap-4 xl:grid-cols-2">
               <ReferenceTable

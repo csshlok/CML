@@ -4,11 +4,11 @@ import {
   CalendarDays,
   CheckSquare,
   ChevronDown,
+  Code2,
   FolderOpen,
   Globe,
   Home,
   Layers,
-  LayoutGrid,
   Link2,
   MessageSquare,
   Search,
@@ -39,6 +39,7 @@ type NavItem = {
     | "/chat"
     | "/search"
     | "/sources"
+    | "/projects"
     | "/clusters"
     | "/map"
     | "/timeline"
@@ -53,8 +54,9 @@ type NavItem = {
 const nav: NavItem[] = [
   { to: "/home", label: "Home", icon: Home },
   { to: "/chat", label: "Chat", icon: MessageSquare },
-  { to: "/search", label: "Mind", icon: LayoutGrid },
+  { to: "/search", label: "Search", icon: Search },
   { to: "/sources", label: "Sources", icon: Layers },
+  { to: "/projects", label: "Projects", icon: Code2 },
   { to: "/clusters", label: "Clusters", icon: Boxes },
   { to: "/map", label: "Map", icon: Globe },
   { to: "/timeline", label: "Timeline", icon: CalendarDays },

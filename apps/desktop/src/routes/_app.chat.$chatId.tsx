@@ -413,6 +413,12 @@ function ChatView() {
             pageNumber: citation.page_number,
             state: citation.state,
             title: citation.source_title,
+            relativePath: citation.relative_path,
+            lineStart: citation.line_start,
+            lineEnd: citation.line_end,
+            symbol: citation.symbol,
+            projectSnapshotId: citation.project_snapshot_id,
+            indexedCommit: citation.indexed_commit,
           })),
           useful: null,
         } satisfies ChatMessage;
@@ -698,6 +704,7 @@ function ChatView() {
                     onSaved={() => void toggleBackendMessageSaved(m.id, Boolean(m.saved))}
                     onRegenerate={() => regenerateFromMessage(m.id)}
                     onOpenSources={() => navigate({ to: "/sources" })}
+                    onAskEvidence={(prompt) => setInput(prompt)}
                   />
                 ))}
                 {streaming && (
@@ -897,6 +904,12 @@ function messageFromRecord(record: ChatMessageRecord): ChatMessage {
       pageNumber: citation.page_number,
       state: citation.state,
       title: citation.source_title,
+      relativePath: citation.relative_path,
+      lineStart: citation.line_start,
+      lineEnd: citation.line_end,
+      symbol: citation.symbol,
+      projectSnapshotId: citation.project_snapshot_id,
+      indexedCommit: citation.indexed_commit,
     })),
     useful: record.useful,
     saved: record.saved,
@@ -924,6 +937,7 @@ function Message({
   onSaved,
   onRegenerate,
   onOpenSources,
+  onAskEvidence,
 }: {
   msg: ChatMessage;
   clusters: Cluster[];
@@ -932,6 +946,7 @@ function Message({
   onSaved: () => void;
   onRegenerate: () => void;
   onOpenSources: () => void;
+  onAskEvidence: (prompt: string) => void;
 }) {
   if (msg.role === "user") {
     return (
@@ -998,6 +1013,9 @@ function Message({
                 </PopoverTrigger>
                 <PopoverContent className="w-80 max-w-[calc(100vw-2rem)] text-xs">
                   <div className="mb-1 break-words font-medium">{title}</div>
+                  {cit.relativePath && <div className="mb-2 break-all font-mono text-[11px] text-muted-foreground">{cit.relativePath}{cit.lineStart ? `:${cit.lineStart}${cit.lineEnd && cit.lineEnd !== cit.lineStart ? `-${cit.lineEnd}` : ""}` : ""}</div>}
+                  {cit.symbol && <div className="mb-2 text-muted-foreground">Symbol: <span className="font-mono text-foreground">{cit.symbol}</span></div>}
+                  {(cit.projectSnapshotId || cit.indexedCommit) && <div className="mb-2 text-muted-foreground">Indexed {cit.indexedCommit ? `at ${cit.indexedCommit.slice(0, 8)}` : "snapshot"}{cit.projectSnapshotId ? ` · ${cit.projectSnapshotId.slice(-8)}` : ""}</div>}
                   {cit.pageNumber ? (
                     <div className="mb-2 text-muted-foreground">Page {cit.pageNumber}</div>
                   ) : null}
@@ -1017,6 +1035,12 @@ function Message({
                       >
                         Open file
                       </Button>
+                    )}
+                    {cit.relativePath && (
+                      <Button variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={() => void window.cmlDesktop?.copyText(`${cit.relativePath}${cit.lineStart ? `:${cit.lineStart}` : ""}`)}>Copy path</Button>
+                    )}
+                    {cit.relativePath && (
+                      <Button variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={() => onAskEvidence(`Explain ${cit.symbol ? `${cit.symbol} in ` : "the evidence in "}${cit.relativePath}${cit.lineStart ? ` around line ${cit.lineStart}` : ""}.`)}>Ask about this</Button>
                     )}
                     {s?.localPath && (
                       <Button

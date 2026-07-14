@@ -53,6 +53,7 @@ export interface Cluster {
   lifecycle: ClusterLifecycleStatus;
   lastActive: string;
   summary: string;
+  glossary: string[];
   styleProfile: string;
 }
 
@@ -62,6 +63,12 @@ export interface CitationRef {
   pageNumber?: number | null;
   state?: string;
   title?: string;
+  relativePath?: string | null;
+  lineStart?: number | null;
+  lineEnd?: number | null;
+  symbol?: string | null;
+  projectSnapshotId?: string | null;
+  indexedCommit?: string | null;
 }
 
 export interface ChatMessage {
