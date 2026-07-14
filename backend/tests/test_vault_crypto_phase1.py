@@ -308,7 +308,7 @@ class VaultCryptoPhase1Tests(unittest.TestCase):
         self.assertIsNotNone(encrypted_table)
         self.assertIsNotNone(derived_table)
         self.assertIsNotNone(quarantine_table)
-        self.assertEqual(version, 9)
+        self.assertEqual(version, 10)
         self.assertEqual(migration["status"], "succeeded")
         self.assertEqual(encrypted_migration["status"], "succeeded")
         self.assertEqual(derived_migration["status"], "succeeded")

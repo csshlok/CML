@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 from backend.app.core.database import connect, utc_now
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 class MigrationError(RuntimeError):
@@ -522,6 +522,195 @@ def _migration_009_project_chat_scope(conn) -> None:
     )
 
 
+def _migration_010_odin_release_contracts(conn) -> None:
+    for column, definition in (
+        ("active_manifest_snapshot_id", "TEXT"),
+        ("active_structure_snapshot_id", "TEXT"),
+        ("active_retrieval_snapshot_id", "TEXT"),
+        ("candidate_snapshot_id", "TEXT"),
+        ("active_run_id", "TEXT"),
+    ):
+        _add_column_if_missing(conn, "projects", column, definition)
+    for column, definition in (
+        ("manifest_activated_at", "TEXT"),
+        ("structure_activated_at", "TEXT"),
+        ("retrieval_activated_at", "TEXT"),
+    ):
+        _add_column_if_missing(conn, "project_snapshots", column, definition)
+    for column, definition in (
+        ("cancellation_requested_at", "TEXT"),
+        ("heartbeat_at", "TEXT"),
+        ("queued_at", "TEXT"),
+        ("job_id", "TEXT"),
+        ("phase_completed_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("phase_total_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("activation_outcome", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        _add_column_if_missing(conn, "project_index_runs", column, definition)
+    for table, column, definition in (
+        ("sources", "project_id", "TEXT"),
+        ("sources", "project_snapshot_id", "TEXT"),
+        ("sources", "activation_state", "TEXT NOT NULL DEFAULT 'active'"),
+        ("source_chunks", "project_id", "TEXT"),
+        ("source_chunks", "project_snapshot_id", "TEXT"),
+        ("source_chunks", "activation_state", "TEXT NOT NULL DEFAULT 'active'"),
+    ):
+        _add_column_if_missing(conn, table, column, definition)
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS project_snapshot_sources (
+            snapshot_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            source_id TEXT,
+            prior_source_id TEXT,
+            relative_path TEXT NOT NULL,
+            file_role TEXT NOT NULL DEFAULT 'source',
+            language TEXT NOT NULL DEFAULT '',
+            byte_size INTEGER NOT NULL DEFAULT 0,
+            content_hash TEXT NOT NULL,
+            resolved_path_hash TEXT NOT NULL DEFAULT '',
+            exclusion_decision TEXT NOT NULL DEFAULT 'included',
+            intended_action TEXT NOT NULL DEFAULT 'unchanged',
+            stage_status TEXT NOT NULL DEFAULT 'discovered',
+            parser_status TEXT NOT NULL DEFAULT 'waiting',
+            retrieval_status TEXT NOT NULL DEFAULT 'waiting',
+            error_category TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (snapshot_id, relative_path),
+            FOREIGN KEY (snapshot_id) REFERENCES project_snapshots(id) ON DELETE CASCADE,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL,
+            FOREIGN KEY (prior_source_id) REFERENCES sources(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS cli_clients (
+            id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            executable_fingerprint TEXT NOT NULL,
+            credential_hash TEXT NOT NULL,
+            credential_version INTEGER NOT NULL DEFAULT 1,
+            scopes_json TEXT NOT NULL DEFAULT '[]',
+            allowed_vault_ids_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            last_used_at TEXT,
+            rotated_at TEXT,
+            revoked_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS cli_pairing_challenges (
+            id TEXT PRIMARY KEY,
+            client_id TEXT,
+            verifier_hash TEXT NOT NULL,
+            requested_scopes_json TEXT NOT NULL DEFAULT '[]',
+            requester_name TEXT NOT NULL DEFAULT '',
+            executable_fingerprint TEXT NOT NULL DEFAULT '',
+            runtime_instance_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            failed_attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_polled_at TEXT,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            approved_at TEXT,
+            denied_at TEXT,
+            consumed_at TEXT,
+            FOREIGN KEY (client_id) REFERENCES cli_clients(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS cli_sessions (
+            id TEXT PRIMARY KEY,
+            client_id TEXT NOT NULL,
+            token_hash TEXT NOT NULL,
+            session_version INTEGER NOT NULL DEFAULT 1,
+            issued_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            last_used_at TEXT,
+            revoked_at TEXT,
+            FOREIGN KEY (client_id) REFERENCES cli_clients(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS cli_auth_audit (
+            id TEXT PRIMARY KEY,
+            client_id TEXT,
+            challenge_id TEXT,
+            event_type TEXT NOT NULL,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (client_id) REFERENCES cli_clients(id) ON DELETE SET NULL,
+            FOREIGN KEY (challenge_id) REFERENCES cli_pairing_challenges(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_snapshot_sources_project
+            ON project_snapshot_sources(project_id, snapshot_id, relative_path);
+        CREATE INDEX IF NOT EXISTS idx_project_snapshot_sources_source
+            ON project_snapshot_sources(source_id);
+        CREATE INDEX IF NOT EXISTS idx_project_runs_job ON project_index_runs(job_id);
+        CREATE INDEX IF NOT EXISTS idx_project_runs_active
+            ON project_index_runs(project_id, status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_sources_project_snapshot
+            ON sources(project_id, project_snapshot_id, activation_state);
+        CREATE INDEX IF NOT EXISTS idx_source_chunks_project_snapshot
+            ON source_chunks(project_id, project_snapshot_id, activation_state);
+        CREATE INDEX IF NOT EXISTS idx_cli_clients_active
+            ON cli_clients(revoked_at, last_used_at DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cli_sessions_token_hash ON cli_sessions(token_hash);
+        CREATE INDEX IF NOT EXISTS idx_cli_sessions_client
+            ON cli_sessions(client_id, expires_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_cli_pairing_status
+            ON cli_pairing_challenges(status, expires_at);
+        CREATE INDEX IF NOT EXISTS idx_cli_auth_audit_client
+            ON cli_auth_audit(client_id, created_at DESC);
+        """
+    )
+    for column, definition in (
+        ("resolved_path_hash", "TEXT NOT NULL DEFAULT ''"),
+        ("exclusion_decision", "TEXT NOT NULL DEFAULT 'included'"),
+        ("parser_status", "TEXT NOT NULL DEFAULT 'waiting'"),
+        ("retrieval_status", "TEXT NOT NULL DEFAULT 'waiting'"),
+    ):
+        _add_column_if_missing(conn, "project_snapshot_sources", column, definition)
+    _add_column_if_missing(conn, "cli_pairing_challenges", "client_id", "TEXT")
+    _add_column_if_missing(conn, "cli_pairing_challenges", "failed_attempt_count", "INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing(conn, "cli_pairing_challenges", "last_polled_at", "TEXT")
+    conn.execute(
+        """
+        UPDATE projects
+        SET active_manifest_snapshot_id = COALESCE(active_manifest_snapshot_id, active_snapshot_id),
+            active_structure_snapshot_id = COALESCE(active_structure_snapshot_id, active_snapshot_id),
+            active_retrieval_snapshot_id = COALESCE(active_retrieval_snapshot_id, active_snapshot_id)
+        WHERE active_snapshot_id IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        UPDATE project_snapshots
+        SET manifest_activated_at = COALESCE(manifest_activated_at, activated_at),
+            structure_activated_at = CASE
+                WHEN structure_status IN ('ready', 'partial')
+                THEN COALESCE(structure_activated_at, activated_at)
+                ELSE structure_activated_at
+            END,
+            retrieval_activated_at = CASE
+                WHEN retrieval_status IN ('ready', 'partial')
+                THEN COALESCE(retrieval_activated_at, activated_at)
+                ELSE retrieval_activated_at
+            END
+        WHERE activated_at IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO project_snapshot_sources (
+            snapshot_id, project_id, source_id, prior_source_id, relative_path, file_role,
+            language, byte_size, content_hash, intended_action, stage_status,
+            error_category, created_at, updated_at
+        )
+        SELECT p.active_snapshot_id, ps.project_id, ps.source_id, ps.source_id,
+               ps.relative_path, ps.file_role, '', 0, ps.content_hash,
+               'unchanged', 'active', '', ps.discovered_at, ps.updated_at
+        FROM project_sources ps
+        JOIN projects p ON p.id = ps.project_id
+        WHERE p.active_snapshot_id IS NOT NULL
+        """
+    )
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migration_001_baseline,
     2: _migration_002_vault_security_metadata,
@@ -532,6 +721,7 @@ MIGRATIONS: dict[int, Migration] = {
     7: _migration_007_reconciliation_logs,
     8: _migration_008_project_graph,
     9: _migration_009_project_chat_scope,
+    10: _migration_010_odin_release_contracts,
 }
 
 

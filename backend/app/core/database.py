@@ -404,6 +404,9 @@ def init_db() -> None:
                 normalization_version TEXT NOT NULL DEFAULT 'norm-v1',
                 extraction_version TEXT NOT NULL DEFAULT 'extract-v1',
                 derived_state_epoch INTEGER NOT NULL DEFAULT 1,
+                project_id TEXT,
+                project_snapshot_id TEXT,
+                activation_state TEXT NOT NULL DEFAULT 'active',
                 indexed_at TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
@@ -635,6 +638,11 @@ def init_db() -> None:
                 retrieval_status TEXT NOT NULL DEFAULT 'waiting',
                 interpretation_status TEXT NOT NULL DEFAULT 'unavailable',
                 active_snapshot_id TEXT,
+                active_manifest_snapshot_id TEXT,
+                active_structure_snapshot_id TEXT,
+                active_retrieval_snapshot_id TEXT,
+                candidate_snapshot_id TEXT,
+                active_run_id TEXT,
                 brief TEXT NOT NULL DEFAULT '',
                 languages_json TEXT NOT NULL DEFAULT '{}',
                 workspace_count INTEGER NOT NULL DEFAULT 0,
@@ -665,6 +673,9 @@ def init_db() -> None:
                 interpretation_status TEXT NOT NULL DEFAULT 'unavailable',
                 manifest_json TEXT NOT NULL DEFAULT '{}',
                 activated_at TEXT,
+                manifest_activated_at TEXT,
+                structure_activated_at TEXT,
+                retrieval_activated_at TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
             );
@@ -681,6 +692,13 @@ def init_db() -> None:
                 skipped_count INTEGER NOT NULL DEFAULT 0,
                 failed_count INTEGER NOT NULL DEFAULT 0,
                 cancellation_requested INTEGER NOT NULL DEFAULT 0,
+                cancellation_requested_at TEXT,
+                heartbeat_at TEXT,
+                queued_at TEXT,
+                job_id TEXT,
+                phase_completed_count INTEGER NOT NULL DEFAULT 0,
+                phase_total_count INTEGER NOT NULL DEFAULT 0,
+                activation_outcome TEXT NOT NULL DEFAULT '',
                 failure_category TEXT NOT NULL DEFAULT '',
                 detail_json TEXT NOT NULL DEFAULT '{}',
                 started_at TEXT NOT NULL,
@@ -705,6 +723,32 @@ def init_db() -> None:
                 FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS project_snapshot_sources (
+                snapshot_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                source_id TEXT,
+                prior_source_id TEXT,
+                relative_path TEXT NOT NULL,
+                file_role TEXT NOT NULL DEFAULT 'source',
+                language TEXT NOT NULL DEFAULT '',
+                byte_size INTEGER NOT NULL DEFAULT 0,
+                content_hash TEXT NOT NULL,
+                resolved_path_hash TEXT NOT NULL DEFAULT '',
+                exclusion_decision TEXT NOT NULL DEFAULT 'included',
+                intended_action TEXT NOT NULL DEFAULT 'unchanged',
+                stage_status TEXT NOT NULL DEFAULT 'discovered',
+                parser_status TEXT NOT NULL DEFAULT 'waiting',
+                retrieval_status TEXT NOT NULL DEFAULT 'waiting',
+                error_category TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (snapshot_id, relative_path),
+                FOREIGN KEY (snapshot_id) REFERENCES project_snapshots(id) ON DELETE CASCADE,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL,
+                FOREIGN KEY (prior_source_id) REFERENCES sources(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS project_cluster_links (
                 project_id TEXT NOT NULL,
                 cluster_id TEXT NOT NULL,
@@ -713,6 +757,62 @@ def init_db() -> None:
                 PRIMARY KEY (project_id, cluster_id),
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
                 FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS cli_clients (
+                id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                executable_fingerprint TEXT NOT NULL,
+                credential_hash TEXT NOT NULL,
+                credential_version INTEGER NOT NULL DEFAULT 1,
+                scopes_json TEXT NOT NULL DEFAULT '[]',
+                allowed_vault_ids_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                last_used_at TEXT,
+                rotated_at TEXT,
+                revoked_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS cli_pairing_challenges (
+                id TEXT PRIMARY KEY,
+                client_id TEXT,
+                verifier_hash TEXT NOT NULL,
+                requested_scopes_json TEXT NOT NULL DEFAULT '[]',
+                requester_name TEXT NOT NULL DEFAULT '',
+                executable_fingerprint TEXT NOT NULL DEFAULT '',
+                runtime_instance_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                failed_attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_polled_at TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                approved_at TEXT,
+                denied_at TEXT,
+                consumed_at TEXT,
+                FOREIGN KEY (client_id) REFERENCES cli_clients(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS cli_sessions (
+                id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                token_hash TEXT NOT NULL,
+                session_version INTEGER NOT NULL DEFAULT 1,
+                issued_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                last_used_at TEXT,
+                revoked_at TEXT,
+                FOREIGN KEY (client_id) REFERENCES cli_clients(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS cli_auth_audit (
+                id TEXT PRIMARY KEY,
+                client_id TEXT,
+                challenge_id TEXT,
+                event_type TEXT NOT NULL,
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (client_id) REFERENCES cli_clients(id) ON DELETE SET NULL,
+                FOREIGN KEY (challenge_id) REFERENCES cli_pairing_challenges(id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS code_nodes (
@@ -867,6 +967,20 @@ def init_db() -> None:
                 ON project_snapshots(project_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_project_runs_project
                 ON project_index_runs(project_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_project_snapshot_sources_project
+                ON project_snapshot_sources(project_id, snapshot_id, relative_path);
+            CREATE INDEX IF NOT EXISTS idx_project_snapshot_sources_source
+                ON project_snapshot_sources(source_id);
+            CREATE INDEX IF NOT EXISTS idx_cli_clients_active
+                ON cli_clients(revoked_at, last_used_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_cli_sessions_token_hash
+                ON cli_sessions(token_hash);
+            CREATE INDEX IF NOT EXISTS idx_cli_sessions_client
+                ON cli_sessions(client_id, expires_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_cli_pairing_status
+                ON cli_pairing_challenges(status, expires_at);
+            CREATE INDEX IF NOT EXISTS idx_cli_auth_audit_client
+                ON cli_auth_audit(client_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_code_nodes_lookup
                 ON code_nodes(project_id, snapshot_id, kind, qualified_id);
             CREATE INDEX IF NOT EXISTS idx_code_edges_source
@@ -926,6 +1040,9 @@ def init_db() -> None:
         _add_column_if_missing(conn, "sources", "cover_image_url", "TEXT")
         _add_column_if_missing(conn, "sources", "deleted_at", "TEXT")
         _add_column_if_missing(conn, "sources", "checksum", "TEXT")
+        _add_column_if_missing(conn, "sources", "project_id", "TEXT")
+        _add_column_if_missing(conn, "sources", "project_snapshot_id", "TEXT")
+        _add_column_if_missing(conn, "sources", "activation_state", "TEXT NOT NULL DEFAULT 'active'")
         _add_column_if_missing(conn, "source_chunks", "content_profile", "TEXT NOT NULL DEFAULT 'prose'")
         _add_column_if_missing(conn, "source_chunks", "chunk_strategy", "TEXT NOT NULL DEFAULT 'word_window'")
         _add_column_if_missing(conn, "source_chunks", "chunk_meta_json", "TEXT NOT NULL DEFAULT '{}'")
@@ -952,6 +1069,25 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_sessions_project ON chat_sessions(scope_project_id, updated_at DESC)"
         )
+        _add_column_if_missing(conn, "projects", "active_manifest_snapshot_id", "TEXT")
+        _add_column_if_missing(conn, "projects", "active_structure_snapshot_id", "TEXT")
+        _add_column_if_missing(conn, "projects", "active_retrieval_snapshot_id", "TEXT")
+        _add_column_if_missing(conn, "projects", "candidate_snapshot_id", "TEXT")
+        _add_column_if_missing(conn, "projects", "active_run_id", "TEXT")
+        _add_column_if_missing(conn, "project_snapshots", "manifest_activated_at", "TEXT")
+        _add_column_if_missing(conn, "project_snapshots", "structure_activated_at", "TEXT")
+        _add_column_if_missing(conn, "project_snapshots", "retrieval_activated_at", "TEXT")
+        _add_column_if_missing(conn, "project_index_runs", "cancellation_requested_at", "TEXT")
+        _add_column_if_missing(conn, "project_index_runs", "heartbeat_at", "TEXT")
+        _add_column_if_missing(conn, "project_index_runs", "queued_at", "TEXT")
+        _add_column_if_missing(conn, "project_index_runs", "job_id", "TEXT")
+        _add_column_if_missing(conn, "project_index_runs", "phase_completed_count", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "project_index_runs", "phase_total_count", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "project_index_runs", "activation_outcome", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "project_snapshot_sources", "resolved_path_hash", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "project_snapshot_sources", "exclusion_decision", "TEXT NOT NULL DEFAULT 'included'")
+        _add_column_if_missing(conn, "project_snapshot_sources", "parser_status", "TEXT NOT NULL DEFAULT 'waiting'")
+        _add_column_if_missing(conn, "project_snapshot_sources", "retrieval_status", "TEXT NOT NULL DEFAULT 'waiting'")
         _add_column_if_missing(conn, "clusters", "index_status", "TEXT NOT NULL DEFAULT 'empty'")
         _add_column_if_missing(conn, "clusters", "profile_status", "TEXT NOT NULL DEFAULT 'missing'")
         _add_column_if_missing(conn, "clusters", "cluster_summary", "TEXT NOT NULL DEFAULT ''")
@@ -979,7 +1115,18 @@ def init_db() -> None:
         _add_column_if_missing(conn, "source_chunks", "normalization_version", "TEXT NOT NULL DEFAULT 'norm-v1'")
         _add_column_if_missing(conn, "source_chunks", "extraction_version", "TEXT NOT NULL DEFAULT 'extract-v1'")
         _add_column_if_missing(conn, "source_chunks", "derived_state_epoch", "INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing(conn, "source_chunks", "project_id", "TEXT")
+        _add_column_if_missing(conn, "source_chunks", "project_snapshot_id", "TEXT")
+        _add_column_if_missing(conn, "source_chunks", "activation_state", "TEXT NOT NULL DEFAULT 'active'")
         _add_column_if_missing(conn, "source_chunks", "indexed_at", "TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sources_project_snapshot "
+            "ON sources(project_id, project_snapshot_id, activation_state)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_source_chunks_project_snapshot "
+            "ON source_chunks(project_id, project_snapshot_id, activation_state)"
+        )
         _add_column_if_missing(conn, "app_jobs", "priority", "TEXT NOT NULL DEFAULT 'normal'")
         _add_column_if_missing(conn, "app_jobs", "idempotency_class", "TEXT NOT NULL DEFAULT 'idempotent'")
         _add_column_if_missing(conn, "app_jobs", "restart_policy", "TEXT NOT NULL DEFAULT 'requeue'")

@@ -105,6 +105,7 @@ def chunk_eligibility_sql(alias: str, snapshot: dict) -> tuple[str, list]:
     prefix = f"{alias}." if alias else ""
     return (
         f"""
+        AND {prefix}activation_state = 'active'
         AND {prefix}embedding_model_id = ?
         AND {prefix}index_version = ?
         AND {prefix}normalization_version = ?

@@ -2509,9 +2509,9 @@ class SourcePageIndexingTests(unittest.TestCase):
             quarantine_table = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'source_quarantine_records'"
             ).fetchone()
-        self.assertEqual(row["version"], 9)
+        self.assertEqual(row["version"], 10)
         self.assertEqual(row["status"], "succeeded")
-        self.assertEqual(user_version, 9)
+        self.assertEqual(user_version, 10)
         self.assertIsNotNone(security_table)
         self.assertIsNotNone(encrypted_table)
         self.assertIsNotNone(derived_table)

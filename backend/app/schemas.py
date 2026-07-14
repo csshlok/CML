@@ -93,7 +93,8 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    root_path: str | None = Field(default=None, min_length=1)
 
 
 class ProjectSnapshotRead(BaseModel):
@@ -113,7 +114,37 @@ class ProjectSnapshotRead(BaseModel):
     retrieval_status: str
     interpretation_status: str
     activated_at: str | None = None
+    manifest_activated_at: str | None = None
+    structure_activated_at: str | None = None
+    retrieval_activated_at: str | None = None
     created_at: str
+
+
+class ProjectIndexRunRead(BaseModel):
+    id: str
+    project_id: str
+    snapshot_id: str | None = None
+    job_id: str | None = None
+    trigger_source: str
+    status: str
+    phase: str
+    eligible_total: int = 0
+    completed_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    phase_completed_count: int = 0
+    phase_total_count: int = 0
+    cancellation_requested: bool = False
+    cancellation_requested_at: str | None = None
+    heartbeat_at: str | None = None
+    queued_at: str | None = None
+    activation_outcome: str = ""
+    failure_category: str = ""
+    detail_json: str = "{}"
+    started_at: str | None = None
+    finished_at: str | None = None
+    created_at: str
+    updated_at: str
 
 
 class ProjectRead(BaseModel):
@@ -134,6 +165,11 @@ class ProjectRead(BaseModel):
     retrieval_status: str
     interpretation_status: str
     active_snapshot_id: str | None = None
+    active_manifest_snapshot_id: str | None = None
+    active_structure_snapshot_id: str | None = None
+    active_retrieval_snapshot_id: str | None = None
+    candidate_snapshot_id: str | None = None
+    active_run_id: str | None = None
     active_snapshot: ProjectSnapshotRead | None = None
     brief: str
     languages: dict[str, int]
@@ -146,8 +182,10 @@ class ProjectRead(BaseModel):
 
 class ProjectSyncResponse(BaseModel):
     project: ProjectRead
-    run: dict
-    snapshot_id: str
+    run: ProjectIndexRunRead
+    snapshot_id: str | None = None
+    job_id: str | None = None
+    queued: bool = False
 
 
 class ProjectReindexRequest(BaseModel):
@@ -707,6 +745,12 @@ class ChatCitation(BaseModel):
     trust_tier: str = "trusted_local"
     security_labels: str = "[]"
     low_trust: bool = False
+    relative_path: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    symbol: str | None = None
+    project_snapshot_id: str | None = None
+    indexed_commit: str | None = None
 
 
 class ChatClusterUse(BaseModel):

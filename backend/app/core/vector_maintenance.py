@@ -100,6 +100,7 @@ def vector_repair_plan(vault_id: str | None = None) -> dict:
             FROM sources
             WHERE sources.state = 'indexed'
               AND sources.deleted_at IS NULL
+              AND sources.activation_state = 'active'
               {vault_clause}
               AND NOT EXISTS (
                 SELECT 1 FROM source_chunks chunks WHERE chunks.source_id = sources.id
@@ -114,6 +115,9 @@ def vector_repair_plan(vault_id: str | None = None) -> dict:
             FROM sources
             JOIN source_chunks chunks ON chunks.source_id = sources.id
             WHERE sources.deleted_at IS NULL
+              AND sources.state = 'indexed'
+              AND sources.activation_state = 'active'
+              AND chunks.activation_state = 'active'
               {vault_clause}
               AND (
                 chunks.embedding = ''
