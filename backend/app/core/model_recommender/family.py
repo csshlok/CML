@@ -33,7 +33,7 @@ def normalize_family_name(value: str) -> str:
 
 def is_probably_derivative(value: str) -> bool:
     text = normalize_family_line(value)
-    return any(marker in text for marker in ("merge", "abliterated", "uncensored", "roleplay", "rp", "dpo", "sft"))
+    return bool(re.search(r"(?:^|[-_.])(merge|abliterated|uncensored|roleplay|rp|dpo|sft)(?:$|[-_.])", text))
 
 
 def guess_parameter_count_b(*values: str) -> float | None:

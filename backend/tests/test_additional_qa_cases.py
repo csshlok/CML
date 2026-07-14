@@ -229,6 +229,12 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn(evidence["source"], {"variant", "line_interp", "base_model"})
         self.assertGreater(float(evidence["confidence"]), 0.0)
 
+    def test_derivative_detection_does_not_match_random_path_substrings(self) -> None:
+        from backend.app.core.model_recommender.family import is_probably_derivative
+
+        self.assertFalse(is_probably_derivative("C:/temp/rpinsideword/Qwen3-8B-Instruct"))
+        self.assertTrue(is_probably_derivative("C:/models/Qwen3-8B-rp"))
+
     def test_benchmark_evidence_prefers_internal_measured_bundle(self) -> None:
         from backend.app.core.model_recommender.benchmark_evidence import resolve_benchmark_evidence
         from backend.app.core.model_recommender.benchmark_store import invalidate_internal_benchmark_bundle_cache

@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 ## Operating Rule
 
@@ -35,11 +35,11 @@ CML is not just a vault UI. It is a context-management layer between the user an
 - Local-first privacy remains a release requirement.
 - Security boundary remains a release requirement: vault unlock, encryption, Bridge approval, parser/browser isolation, renderer hardening, and package integrity.
 
-Odin currently provides project registration, idempotent sync, snapshots, project-backed clusters, source reconciliation, structural nodes/edges, possible-relationship records, bounded graph queries and graph/tree exports, project-scoped chat/context, optional Bridge graph packets, CLI CRUD/explain/path/context/graph/tree commands, and the primary desktop project workspace. Its inline graph/tree component is mounted only after an explicit project-scoped visualization request. It never writes to the registered repository.
+Odin is the project-context layer. It provides project registration, immutable candidate snapshots, asynchronous synchronization, independent structure and retrieval activation, project-backed clusters, source reconciliation, deterministic code nodes and authoritative edges, unresolved-relationship suggestions, bounded graph/tree/path queries, project-scoped chat and Bridge packets, CLI CRUD/explain/context/graph/tree commands, and a dedicated desktop project workspace. Graph and tree artifacts remain request-only. Odin reads eligible repository files locally and never executes or modifies repository code.
 
 Odin architecture, UI exploration, and benchmark notes are local working documents and are intentionally ignored by Git. Current repository truth is captured here and in the implemented code under `backend/app/core/projects.py`, `backend/app/core/project_graph.py`, `backend/app/api/routes/projects.py`, and the desktop project workspace.
 
-Odin is not release-complete. Scoped CLI device authentication, asynchronous cancellable sync with fully atomic staging, broad tree-sitter language coverage, interpretation briefs, and several secondary UI surfaces remain open gates.
+Odin's scoped implementation plan is complete. The CLI now pairs through a desktop-approved, Windows user-protected device credential; project sync is durable, cancellable, restart-reconciled, and retrieval-atomic; and pinned offline parsers cover Python, JSON, JavaScript/TypeScript/TSX, Go, Rust, Java, C#, C, and C++. Project interpretation/model-written briefs, cross-project retrieval, watch mode, remote repositories, and macOS/Linux credential helpers remain intentionally deferred.
 
 ## Current Architecture
 
@@ -121,6 +121,18 @@ The July 13 UI integrity pass also completed:
 - stale LoRA runtime code and dependencies with no live product role were removed
 - secured-source hydration now restores every encrypted content field for authorized in-memory readers while keeping plaintext database columns empty
 
+The Odin release implementation pass also completed:
+
+- schema version 10 adds scoped CLI clients, one-time pairing challenges, short-lived sessions, audit records, project-run progress, candidate membership, layer pointers, and snapshot-scoped retrieval activation
+- the desktop writes an atomic non-secret loopback runtime descriptor; the CLI credential helper stores the long-lived device credential with Windows user-bound protection and never accepts it as a command argument
+- pairing, scope enforcement, rotation, revocation, logout, and forget flows are implemented in the backend, CLI, Electron runtime, and Settings CLI Access surface
+- project discovery, structure, retrieval staging, activation, and cleanup run as persisted dependent jobs; ordinary search, chat, graph, source, vector-maintenance, and Bridge reads exclude candidate data
+- parser adapters use pinned grammar wheels packaged offline, preserve retrieval for unsupported/malformed files, record extractor provenance, and keep unresolved dynamic references non-authoritative
+- the canonical `/projects/$projectId` workspace includes live run progress, cancellation, layer health, freshness, scoped questions, settings, folder reconnection, cluster links, layer-specific reindex, run history, and exact-name removal
+- the primary navigation now exposes a `/projects` index with real project status, freshness, synchronization, and direct access to the canonical project workspace; the legacy "Mind" label is now the plain-language "Search" label
+- cluster summaries and generated glossary terms are visible in both the cluster overview and list inspector; project-backed primary clusters continue to redirect to their project workspace instead of exposing a mismatched vault map
+- Tasks groups project runs and their persisted phases; Sources shows bounded project summaries and indexing issues; ordinary clusters show linked projects; answer citations disclose relative paths, line spans, symbols, indexed snapshot/commit, and local file actions
+
 Authoritative migration record:
 
 - `docs/LORA_TO_RAG_MIGRATION_PLAN.md`
@@ -136,16 +148,21 @@ Latest repo-backed validation that already passed:
 - backend regression slice: `127 passed`
 - synthetic mixed-corpus benchmark: passed
 - retrieval benchmark at `500` sources: passed
-- Odin targeted tests: `6 passed`
+- Odin targeted backend tests: `43 passed`
 - desktop production typecheck/build: passed on 2026-07-13
-- Electron behavior tests: `37 passed`
+- Electron behavior tests: `42 passed`
 - encrypted storage regression tests: `7 passed`
-- complete backend suite: `471 passed`, `3 skipped` on 2026-07-13
+- complete backend suite: `497 passed`, `4 skipped` on 2026-07-13
 - root `pytest` discovery is scoped to `backend/tests` so packaged runtimes, releases, and local comparison clones are not collected
 - npm dependency audit: `0 vulnerabilities` after compatible lockfile updates
 - primary Electron routes: no visible overflow at the supported 1024 px minimum and at 1440 px
 - Odin structural benchmark on this repo: ready, 353 files, 3,740 nodes, 7,498 authoritative edges; 2.47 s median cold wall time
 - Graphify 0.9.13 pinned comparison: completed; see the benchmark document
+- Odin Tier A/B golden corpus: deterministic across three runs; all reviewed language fixtures pass
+- TypeScript/JavaScript structure extraction is Tree-sitter AST-based; the obsolete regex fallback has been removed and regression coverage includes nested functions, arrow functions, computed method names, re-exports, comments, and string literals
+- Odin 50,000-file discovery gate: `126.2 s`, `68.3 MiB` peak traced memory
+- Odin project/task/evidence UI: rendered against an isolated live backend at 1024 px with no page-level horizontal overflow or console errors; canonical cluster redirect and evidence follow-up actions passed
+- renderer HTML safety and packaged helper-layout audits: passed; helper manifest contains 245 verified entries with no writable-layout overlaps
 
 ## Current Token Reduction Story
 
@@ -182,12 +199,12 @@ Reduction now comes from:
 | Model recommender migration | Complete for live path | Chat-only live path is in place; no expert-role dependency remains. |
 | Token reduction | Complete for RAG V1 | Packet shaping and cache reuse are producing measurable reduction. |
 | Release hardening | In progress | Packaging, security, and clean-machine proof remain release work. |
-| Odin project context | Foundation implemented, release gates open | Structural graph, retrieval integration, CLI commands, and core UI are live; auth/jobs/coverage/supporting UI remain. |
+| Odin project context | Scoped implementation complete | Device auth, atomic jobs, Tier A/B parsers, project/tasks/evidence/settings UI, tests, and offline packaging pins are live. |
 | UI truth and copy | Current pass complete | Hardcoded health/demo/count surfaces removed; active app copy uses user-facing language by default. |
 
 ## Immediate Next Steps
 
-1. Complete Odin CLI device authentication and scoped authorization.
-2. Move Odin sync to cancellable background jobs with atomic candidate activation.
-3. Expand deterministic parser coverage and finish supporting project UI surfaces.
-4. Continue release hardening, accessibility QA, and clean-machine proof.
+1. Run the remaining general clean-machine and signed-installer release proof.
+2. Measure parser and indexing performance on representative external Tier B repositories in addition to the committed fixture corpus.
+3. Decide when project interpretation and deterministic multi-project retrieval are ready to leave the deferred list.
+4. Continue accessibility QA and packaged Windows account-separation validation.

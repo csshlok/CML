@@ -16,6 +16,8 @@ class LoraToRagPhase12Tests(unittest.TestCase):
         os.environ["CML_DATA_DIR"] = self.tmp.name
         os.environ["CML_MODELS_DIR"] = str(Path(self.tmp.name) / "models")
         os.environ["CML_ALLOW_UNAUTHENTICATED_API"] = "1"
+        os.environ["CML_EMBEDDING_PROVIDER"] = "hash"
+        os.environ["CML_ALLOW_HASH_EMBEDDINGS"] = "1"
         from backend.app.core.config import get_settings
         from backend.app.core.database import init_db
 
@@ -33,6 +35,8 @@ class LoraToRagPhase12Tests(unittest.TestCase):
             "CML_DATA_DIR",
             "CML_MODELS_DIR",
             "CML_ALLOW_UNAUTHENTICATED_API",
+            "CML_EMBEDDING_PROVIDER",
+            "CML_ALLOW_HASH_EMBEDDINGS",
             "CML_MODEL_SCAN_ROOTS",
             "CML_MODEL_RECOMMENDER_BENCHMARK_BUNDLE",
         ]:
