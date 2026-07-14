@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import secrets
+import subprocess
 import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -24,23 +29,28 @@ class OdinClientError(RuntimeError):
         self.exit_code = exit_code
 
 
+DEFAULT_CLI_SCOPES = ["cluster:link", "context:read", "project:read", "project:write", "source:read"]
+
+
 class OdinClient:
-    def __init__(self, backend_url: str, token: str):
+    def __init__(self, backend_url: str, token: str, *, api_prefix: str | None = None):
         self.backend_url = backend_url.rstrip("/")
         self.token = token
-        self.api_prefix = _normalize_api_prefix(os.getenv("ODIN_API_PREFIX") or os.getenv("CML_API_PREFIX"))
+        self.api_prefix = _normalize_api_prefix(api_prefix or os.getenv("ODIN_API_PREFIX") or os.getenv("CML_API_PREFIX"))
+        self.auth_context: dict | None = None
 
-    def request(self, method: str, path: str, payload: dict | None = None) -> object:
+    def request(self, method: str, path: str, payload: dict | None = None, *, headers: dict | None = None) -> object:
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
-        headers = {"Accept": "application/json"}
+        request_headers = {"Accept": "application/json"}
         if body is not None:
-            headers["Content-Type"] = "application/json"
+            request_headers["Content-Type"] = "application/json"
         if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
+            request_headers["Authorization"] = f"Bearer {self.token}"
+        request_headers.update(headers or {})
         request = Request(
             f"{self.backend_url}{self.api_prefix}/{path.lstrip('/')}",
             data=body,
-            headers=headers,
+            headers=request_headers,
             method=method,
         )
         try:
@@ -65,11 +75,27 @@ class OdinClient:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args(_normalize_global_args(sys.argv[1:]))
-    backend_url = args.backend or os.getenv("ODIN_BACKEND_URL") or os.getenv("CML_BACKEND_URL") or "http://127.0.0.1:7343"
-    token = args.token or os.getenv("ODIN_API_TOKEN") or os.getenv("CML_API_TOKEN") or ""
-    client = OdinClient(backend_url, token)
     try:
-        result = dispatch(client, args)
+        if args.command == "auth" and args.auth_command in {"logout", "forget"}:
+            result = _credential_helper("forget")
+            result["authenticated"] = False
+            result["client_registration_retained"] = True
+            if getattr(args, "json", False):
+                print(json.dumps({"version": 1, "result": result}, indent=2))
+            else:
+                print("Odin is signed out on this computer. You can revoke its retained client access in Vault Settings.")
+            return 0
+        descriptor = _load_runtime_descriptor(args.backend)
+        client = OdinClient(descriptor["backend_url"], "", api_prefix=descriptor["api_prefix"])
+        if args.command == "auth" and args.auth_command == "pair":
+            result = _pair(client, descriptor, as_json=getattr(args, "json", False))
+        else:
+            development_token = _development_token(args)
+            if development_token:
+                client.token = development_token
+            else:
+                _establish_cli_session(client, descriptor)
+            result = dispatch(client, args)
     except OdinClientError as exc:
         _print_error(str(exc), as_json=getattr(args, "json", False), exit_code=exc.exit_code)
         return exc.exit_code
@@ -104,6 +130,8 @@ def build_parser() -> argparse.ArgumentParser:
     auth_commands = auth.add_subparsers(dest="auth_command", required=True)
     auth_commands.add_parser("status", help="Verify the local backend session.")
     auth_commands.add_parser("pair", help="Pair Odin with CML Desktop.")
+    auth_commands.add_parser("logout", help="Remove this computer's stored Odin credential.")
+    auth_commands.add_parser("forget", help="Forget a stale local pairing without changing Vault access.")
 
     project = commands.add_parser("project", help="Register and maintain code projects.")
     project_commands = project.add_subparsers(dest="project_command", required=True)
@@ -113,6 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--name")
     add.add_argument("--vault-id")
     add.add_argument("--no-sync", action="store_true")
+    add.add_argument("--no-wait", action="store_true")
 
     listing = project_commands.add_parser("list", help="List registered projects.")
     listing.add_argument("--vault-id")
@@ -122,11 +151,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync = project_commands.add_parser("sync", help="Reconcile the current working tree.")
     _add_project_target(sync)
+    sync.add_argument("--no-wait", action="store_true")
 
     reindex = project_commands.add_parser("reindex", help="Rebuild selected Odin-derived data.")
     _add_project_target(reindex)
     reindex.add_argument("--layer", choices=("structure", "retrieval", "interpretation", "full"), default="full")
     reindex.add_argument("--full", action="store_true", help="Rebuild all currently implemented layers.")
+    reindex.add_argument("--no-wait", action="store_true")
 
     rename = project_commands.add_parser("rename", help="Rename a project and its primary cluster.")
     _add_project_target(rename)
@@ -187,12 +218,9 @@ def dispatch(client: OdinClient, args: argparse.Namespace) -> object:
     if args.command == "auth":
         if args.auth_command == "status":
             health = _health(client.backend_url)
-            vaults = client.request("GET", "vaults")
-            return {"authenticated": True, "backend": health, "vault_count": len(vaults or [])}
-        raise OdinClientError(
-            "Desktop pairing is not enabled in this foundation build. Use the desktop-managed CML_API_TOKEN for local development.",
-            EXIT_AUTHENTICATION,
-        )
+            me = client.auth_context or dict(client.request("GET", "cli-auth/me"))
+            return {"authenticated": True, "backend": health, "client": me, "vault_count": len(me.get("allowed_vault_ids", []))}
+        raise OdinClientError("Unknown Odin authentication command.", EXIT_INVALID_INPUT)
     if args.command == "context":
         project = _resolve_project(client, args.project_id, args.project)
         return client.request(
@@ -207,11 +235,15 @@ def dispatch(client: OdinClient, args: argparse.Namespace) -> object:
     if action == "add":
         root = _resolved_directory(args.path)
         vault_id = args.vault_id or _active_vault_id(client)
-        return client.request(
+        created = client.request(
             "POST",
             "projects",
             {"vault_id": vault_id, "root_path": str(root), "name": args.name, "sync": not args.no_sync},
         )
+        if args.no_sync or args.no_wait:
+            return created
+        runs = list(client.request("GET", f"projects/{created['id']}/runs?limit=1&offset=0") or [])
+        return _wait_for_project_run(client, dict(created), runs[0]) if runs else created
     if action == "list":
         return client.projects(args.vault_id)
 
@@ -220,10 +252,14 @@ def dispatch(client: OdinClient, args: argparse.Namespace) -> object:
     if action == "status":
         return client.request("GET", f"projects/{project_id}")
     if action == "sync":
-        return client.request("POST", f"projects/{project_id}/sync", {})
+        queued = dict(client.request("POST", f"projects/{project_id}/sync", {}))
+        return queued if args.no_wait else _wait_for_project_run(client, queued["project"], queued["run"])
     if action == "reindex":
         layer = "full" if args.full else args.layer
-        return client.request("POST", f"projects/{project_id}/reindex", {"layer": layer})
+        queued = dict(client.request("POST", f"projects/{project_id}/reindex", {"layer": layer}))
+        if args.no_wait or "run" not in queued:
+            return queued
+        return _wait_for_project_run(client, queued["project"], queued["run"])
     if action == "rename":
         return client.request("PATCH", f"projects/{project_id}", {"name": args.name})
     if action in {"link", "unlink"}:
@@ -276,6 +312,69 @@ def dispatch(client: OdinClient, args: argparse.Namespace) -> object:
         client.request("DELETE", f"projects/{project_id}", {"confirmation_name": project["name"]})
         return {"project_id": project_id, "removed": True, "repository_files_changed": False}
     raise OdinClientError("Unknown project command.", EXIT_INVALID_INPUT)
+
+
+def _wait_for_project_run(client: OdinClient, project: dict, run: dict) -> dict:
+    project_id = str(project["id"])
+    run_id = str(run["id"])
+    last_signature: tuple | None = None
+    try:
+        while True:
+            current = dict(client.request("GET", f"projects/{project_id}/runs/{run_id}"))
+            signature = (
+                current.get("status"), current.get("phase"),
+                current.get("phase_completed_count"), current.get("phase_total_count"),
+            )
+            if signature != last_signature:
+                _print_run_progress(current)
+                last_signature = signature
+            status = str(current.get("status") or "")
+            if status in {"succeeded", "partial", "failed", "cancelled"}:
+                refreshed = dict(client.request("GET", f"projects/{project_id}"))
+                if status == "failed":
+                    raise OdinClientError(
+                        f"Odin indexing failed during {current.get('phase') or 'indexing'}. The previous active index remains available.",
+                        EXIT_INTERNAL,
+                    )
+                if status == "cancelled":
+                    raise OdinClientError(
+                        "Odin indexing was cancelled. The previous active index remains available.",
+                        EXIT_CANCELLED,
+                    )
+                return {"project": refreshed, "run": current, "status": status}
+            time.sleep(max(0.1, float(os.getenv("ODIN_RUN_POLL_SECONDS", "0.5"))))
+    except KeyboardInterrupt as exc:
+        try:
+            cancelled = dict(client.request("POST", f"projects/{project_id}/cancel", {}))
+            active = project.get("active_snapshot_id") or "the previous snapshot"
+            raise OdinClientError(
+                f"Cancellation requested for {cancelled['id']}. {active} remains active.", EXIT_CANCELLED
+            ) from exc
+        except OdinClientError:
+            raise
+        except Exception as cancel_error:
+            raise OdinClientError(
+                "Odin was interrupted before cancellation could be confirmed. Check `odin project status`.",
+                EXIT_CANCELLED,
+            ) from cancel_error
+
+
+def _print_run_progress(run: dict) -> None:
+    event = {
+        "version": 1,
+        "type": "odin.project.progress",
+        "run_id": run.get("id"),
+        "status": run.get("status"),
+        "phase": run.get("phase"),
+        "completed": run.get("phase_completed_count", 0),
+        "total": run.get("phase_total_count", 0),
+    }
+    if sys.stderr.isatty():
+        total = int(event["total"] or 0)
+        progress = f" {event['completed']}/{total}" if total else ""
+        print(f"Odin: {event['phase']} / {event['status']}{progress}", file=sys.stderr)
+    else:
+        print(json.dumps(event, separators=(",", ":")), file=sys.stderr)
 
 
 def format_result(args: argparse.Namespace, result: object) -> str:
@@ -370,10 +469,10 @@ def _resolve_cluster_id(client: OdinClient, vault_id: str, name: str) -> str:
 
 
 def _active_vault_id(client: OdinClient) -> str:
-    vaults = list(client.request("GET", "vaults") or [])
-    if len(vaults) == 1:
-        return str(vaults[0]["id"])
-    if not vaults:
+    allowed = list((client.auth_context or {}).get("allowed_vault_ids", []))
+    if len(allowed) == 1:
+        return str(allowed[0])
+    if not allowed:
         raise OdinClientError("No vault is open. Create or open a vault in CML first.", EXIT_INVALID_INPUT)
     raise OdinClientError("More than one vault is available; pass --vault-id.", EXIT_INVALID_INPUT)
 
@@ -416,6 +515,146 @@ def _normalize_global_args(argv: list[str]) -> list[str]:
         remainder.append(argument)
         index += 1
     return [*globals_, *remainder]
+
+
+def _load_runtime_descriptor(explicit_backend: str | None = None) -> dict:
+    candidates: list[Path] = []
+    override = os.getenv("ODIN_RUNTIME_FILE")
+    if override:
+        candidates.append(Path(override).expanduser())
+    app_data = os.getenv("APPDATA")
+    if app_data:
+        candidates.append(Path(app_data) / "Vault" / "odin-runtime.json")
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            descriptor = json.loads(candidate.read_text(encoding="utf-8"))
+            _validate_runtime_descriptor(descriptor, explicit_backend=explicit_backend)
+            return descriptor
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            continue
+    raise OdinClientError("Vault Desktop is not available. Open Vault and retry.", EXIT_BACKEND_UNAVAILABLE)
+
+
+def _validate_runtime_descriptor(descriptor: dict, *, explicit_backend: str | None = None) -> None:
+    if int(descriptor["version"]) != 1:
+        raise ValueError("unsupported runtime descriptor")
+    backend_url = str(descriptor["backend_url"]).rstrip("/")
+    if not backend_url.startswith(("http://127.0.0.1:", "http://localhost:", "http://[::1]:")):
+        raise ValueError("backend is not loopback")
+    if explicit_backend and backend_url != explicit_backend.rstrip("/"):
+        raise ValueError("explicit backend does not match desktop runtime")
+    if datetime.fromisoformat(str(descriptor["expires_at"]).replace("Z", "+00:00")) <= datetime.now(UTC):
+        raise ValueError("runtime descriptor expired")
+    if not str(descriptor["backend_instance_id"]):
+        raise ValueError("backend identity missing")
+    desktop_pid = int(descriptor["desktop_pid"])
+    if desktop_pid <= 0 or not _process_exists(desktop_pid):
+        raise ValueError("desktop PID invalid")
+
+
+def _process_exists(process_id: int) -> bool:
+    try:
+        os.kill(process_id, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _development_token(args: argparse.Namespace) -> str:
+    token = args.token or os.getenv("ODIN_API_TOKEN") or os.getenv("CML_API_TOKEN") or ""
+    if not token:
+        return ""
+    if os.getenv("ODIN_ALLOW_DEVELOPMENT_TOKEN") != "1":
+        raise OdinClientError("Direct API tokens are disabled. Run `odin auth pair`.", EXIT_AUTHENTICATION)
+    return token
+
+
+def _pair(client: OdinClient, descriptor: dict, *, as_json: bool) -> dict:
+    verifier = secrets.token_urlsafe(48)
+    verifier_hash = hashlib.sha256(verifier.encode("utf-8")).hexdigest()
+    fingerprint = _executable_fingerprint()
+    challenge = dict(client.request("POST", "cli-auth/pairing-challenges", {
+        "verifier_hash": verifier_hash,
+        "requested_scopes": DEFAULT_CLI_SCOPES,
+        "requester_name": f"Odin CLI on {os.environ.get('COMPUTERNAME', 'this computer')}",
+        "executable_fingerprint": fingerprint,
+        "runtime_instance_id": descriptor["backend_instance_id"],
+    }))
+    if not as_json:
+        print("Approve this Odin request in Vault Settings. Waiting for up to five minutes...")
+    deadline = time.monotonic() + 300
+    interval = max(0.1, float(os.getenv("ODIN_PAIR_POLL_SECONDS", "1")))
+    while time.monotonic() < deadline:
+        status = dict(client.request(
+            "GET",
+            f"cli-auth/pairing-challenges/{challenge['id']}/status",
+            headers={"X-Odin-Pairing-Verifier": verifier},
+        ))
+        if status["status"] == "approved":
+            consumed = dict(client.request(
+                "POST", f"cli-auth/pairing-challenges/{challenge['id']}/consume", {"verifier": verifier}
+            ))
+            _credential_helper("store", client_id=consumed["client"]["id"], secret=consumed["credential"])
+            _establish_cli_session(client, descriptor)
+            return {"paired": True, "client": client.auth_context}
+        if status["status"] in {"denied", "expired"}:
+            raise OdinClientError(f"The Odin pairing request was {status['status']}.", EXIT_AUTHENTICATION)
+        time.sleep(interval)
+    raise OdinClientError("The Odin pairing request expired before it was approved.", EXIT_AUTHENTICATION)
+
+
+def _establish_cli_session(client: OdinClient, descriptor: dict) -> None:
+    stored = _credential_helper("read")
+    session = dict(client.request("POST", "cli-auth/sessions", {
+        "client_id": stored["client_id"],
+        "credential": stored["credential"],
+        "executable_fingerprint": _executable_fingerprint(),
+    }))
+    client.token = session["session_token"]
+    me = dict(client.request("GET", "cli-auth/me"))
+    if me.get("backend_instance_id") != descriptor["backend_instance_id"]:
+        client.token = ""
+        raise OdinClientError("Vault restarted while Odin was connecting. Retry the command.", EXIT_AUTHENTICATION)
+    client.auth_context = me
+
+
+def _credential_helper(command: str, *, client_id: str | None = None, secret: str | None = None) -> dict:
+    module = f"{__package__}.odin_credential_helper"
+    arguments = [sys.executable, "-m", module, command]
+    if client_id:
+        arguments.extend(["--client-id", client_id])
+    completed = subprocess.run(
+        arguments,
+        input=secret,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+    if completed.returncode != 0:
+        try:
+            message = json.loads(completed.stderr).get("error")
+        except (ValueError, AttributeError):
+            message = None
+        raise OdinClientError(message or "Odin could not access its Windows credential.", EXIT_AUTHENTICATION)
+    return dict(json.loads(completed.stdout))
+
+
+def _executable_fingerprint() -> str:
+    digest = hashlib.sha256()
+    executable = Path(sys.executable).resolve()
+    digest.update(str(executable).encode("utf-8"))
+    try:
+        stat = executable.stat()
+        digest.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode("ascii"))
+    except OSError:
+        pass
+    digest.update(Path(__file__).read_bytes())
+    return digest.hexdigest()
 
 
 def _http_error_detail(exc: HTTPError) -> str:
