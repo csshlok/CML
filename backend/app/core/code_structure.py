@@ -40,16 +40,26 @@ class FileStructure:
     exports: list[tuple[str, int]] = field(default_factory=list)
     package_dependencies: list[str] = field(default_factory=list)
     parse_error: str = ""
+    status: str = "parsed"
+    extractor_id: str = ""
+    extractor_version: str = ""
+    grammar_version: str = ""
+    warnings: list[dict] = field(default_factory=list)
+    unresolved_references: list[dict] = field(default_factory=list)
 
 
-def build_structure_graph(conn, *, project: dict, snapshot_id: str, files: list, now: str) -> dict:
-    source_by_path = {
-        str(row["relative_path"]): str(row["source_id"])
-        for row in conn.execute(
-            "SELECT relative_path, source_id FROM project_sources WHERE project_id = ?",
-            (project["id"],),
-        ).fetchall()
-    }
+def build_structure_graph(
+    conn, *, project: dict, snapshot_id: str, files: list, now: str,
+    source_by_path: dict[str, str] | None = None,
+) -> dict:
+    if source_by_path is None:
+        source_by_path = {
+            str(row["relative_path"]): str(row["source_id"])
+            for row in conn.execute(
+                "SELECT relative_path, source_id FROM project_sources WHERE project_id = ?",
+                (project["id"],),
+            ).fetchall()
+        }
     project_node = _insert_node(
         conn,
         project_id=project["id"],
@@ -68,6 +78,7 @@ def build_structure_graph(conn, *, project: dict, snapshot_id: str, files: list,
     file_nodes: dict[str, str] = {}
     structures: dict[str, FileStructure] = {}
     parse_failures: list[dict[str, str]] = []
+    file_results: list[dict] = []
     for item in files:
         file_node = _insert_node(
             conn,
@@ -82,6 +93,7 @@ def build_structure_graph(conn, *, project: dict, snapshot_id: str, files: list,
             signature=item.file_role,
             content_hash=item.content_hash,
             now=now,
+            extractor_version=STRUCTURE_EXTRACTOR_VERSION,
         )
         file_nodes[item.relative_path] = file_node
         _insert_edge(
@@ -97,7 +109,17 @@ def build_structure_graph(conn, *, project: dict, snapshot_id: str, files: list,
         )
         structure = extract_structure(item.relative_path, item.text, item.language, source_by_path.get(item.relative_path))
         structures[item.relative_path] = structure
-        if structure.parse_error:
+        file_results.append({
+            "path": item.relative_path,
+            "status": structure.status,
+            "error_category": structure.parse_error,
+            "warnings": structure.warnings,
+            "unresolved_reference_count": len(structure.unresolved_references),
+            "extractor_id": structure.extractor_id,
+            "extractor_version": structure.extractor_version,
+            "grammar_version": structure.grammar_version,
+        })
+        if structure.status == "failed":
             parse_failures.append({"path": item.relative_path, "category": structure.parse_error})
 
     symbol_nodes: dict[str, str] = {}
@@ -118,6 +140,7 @@ def build_structure_graph(conn, *, project: dict, snapshot_id: str, files: list,
                 signature=symbol.signature,
                 content_hash=_hash_text(f"{symbol.qualified_id}:{symbol.signature}"),
                 now=now,
+                extractor_version=structure.extractor_version or STRUCTURE_EXTRACTOR_VERSION,
                 start_line=symbol.start_line,
                 start_column=symbol.start_column,
                 end_line=symbol.end_line,
@@ -160,6 +183,7 @@ def build_structure_graph(conn, *, project: dict, snapshot_id: str, files: list,
                         signature=f"{route_method} {route_path}",
                         content_hash=_hash_text(route_key),
                         now=now,
+                        extractor_version=structure.extractor_version or STRUCTURE_EXTRACTOR_VERSION,
                         start_line=line,
                     )
                     route_nodes[route_key] = route_node
@@ -232,9 +256,26 @@ def build_structure_graph(conn, *, project: dict, snapshot_id: str, files: list,
                     signature="dependency",
                     content_hash=_hash_text(package_key),
                     now=now,
+                    extractor_version=structure.extractor_version or STRUCTURE_EXTRACTOR_VERSION,
                 )
                 package_nodes[package_key] = package_node
             _insert_edge(conn, project["id"], snapshot_id, file_node, package_node, "depends_on_package", source_id, 1, now)
+
+        for unresolved in structure.unresolved_references:
+            _insert_suggestion(
+                conn,
+                project_id=project["id"],
+                snapshot_id=snapshot_id,
+                source_node_id=file_node,
+                target_node_id=None,
+                suggested_type=str(unresolved.get("kind") or "unresolved_reference"),
+                score=0.0,
+                reason="The extractor found a reference that cannot be resolved authoritatively.",
+                evidence={"path": relative_path, **unresolved},
+                now=now,
+                extractor_version=structure.extractor_version or STRUCTURE_EXTRACTOR_VERSION,
+            )
+            suggestions += 1
 
     for relative_path, structure in structures.items():
         source_id = source_by_path.get(relative_path)
@@ -284,20 +325,17 @@ def build_structure_graph(conn, *, project: dict, snapshot_id: str, files: list,
         "suggestion_count": suggestions,
         "parse_failure_count": len(parse_failures),
         "parse_failures": parse_failures[:100],
+        "file_results": file_results,
+        "unsupported_count": sum(1 for item in file_results if item["status"] == "unsupported"),
+        "warning_count": sum(len(item["warnings"]) for item in file_results),
+        "unresolved_reference_count": sum(int(item["unresolved_reference_count"]) for item in file_results),
     }
 
 
 def extract_structure(relative_path: str, text: str, language: str, source_id: str | None) -> FileStructure:
-    suffix = Path(relative_path).suffix.lower()
-    if suffix == ".py":
-        return _extract_python(relative_path, text, source_id)
-    if suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}:
-        return _extract_typescript(relative_path, text, source_id, language)
-    if Path(relative_path).name.lower() == "package.json":
-        return _extract_package_json(relative_path, text)
-    if suffix == ".json":
-        return _extract_json_config(relative_path, text, source_id)
-    return FileStructure()
+    from backend.app.core.extractor_registry import extract_file_structure
+
+    return extract_file_structure(relative_path, text, language, source_id)
 
 
 def _extract_python(relative_path: str, text: str, source_id: str | None) -> FileStructure:
@@ -406,65 +444,6 @@ class _PythonCallVisitor(ast.NodeVisitor):
         return
 
 
-_TS_DECLARATION = re.compile(
-    r"\b(?P<export>export\s+)?(?:(?:async|declare|abstract|default)\s+)*(?P<kind>class|interface|function|type|enum)\s+(?P<name>[A-Za-z_$][\w$]*)"
-)
-_TS_ARROW = re.compile(r"\b(?:export\s+)?const\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>")
-_TS_IMPORT = re.compile(r"\bimport(?:[\s\S]*?from\s*)?[\"'](?P<path>[^\"']+)[\"']")
-_TS_EXPORT = re.compile(r"\bexport\s+\*\s+from\s+[\"'](?P<path>[^\"']+)[\"']")
-_TS_CALL = re.compile(r"(?<![\w$])(?P<name>[A-Za-z_$][\w$]*)\s*\(")
-_TS_EXTENDS = re.compile(r"\bextends\s+(?P<name>[A-Za-z_$][\w$]*)")
-_TS_IMPLEMENTS = re.compile(r"\bimplements\s+(?P<names>[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*)")
-_CALL_KEYWORDS = {"if", "for", "while", "switch", "catch", "function", "return", "new", "typeof"}
-
-
-def _extract_typescript(relative_path: str, text: str, source_id: str | None, language: str) -> FileStructure:
-    result = FileStructure()
-    module = _js_module(relative_path)
-    lines = text.splitlines()
-    for line_number, line in enumerate(lines, start=1):
-        for match in _TS_IMPORT.finditer(line):
-            result.imports.append((match.group("path"), line_number))
-        for match in _TS_EXPORT.finditer(line):
-            result.exports.append((match.group("path"), line_number))
-        declaration = _TS_DECLARATION.search(line)
-        arrow = _TS_ARROW.search(line) if declaration is None else None
-        if declaration or arrow:
-            name = (declaration or arrow).group("name")
-            raw_kind = declaration.group("kind") if declaration else "function"
-            kind = {"type": "schema", "interface": "interface"}.get(raw_kind, raw_kind)
-            qualified_id = _unique_symbol_id(result, f"js:{module}:{name}", line_number)
-            symbol = Symbol(
-                qualified_id=qualified_id,
-                kind=kind,
-                language=language,
-                label=name,
-                relative_path=relative_path,
-                source_id=source_id,
-                start_line=line_number,
-                start_column=(declaration or arrow).start("name"),
-                end_line=line_number,
-                signature=line.strip()[:400],
-            )
-            extends = _TS_EXTENDS.search(line)
-            if extends:
-                symbol.inherits.append((extends.group("name"), line_number))
-            implements = _TS_IMPLEMENTS.search(line)
-            if implements:
-                symbol.implements.extend((name.strip(), line_number) for name in implements.group("names").split(","))
-            result.symbols.append(symbol)
-    function_symbols = [symbol for symbol in result.symbols if symbol.kind in {"function", "method"}]
-    if function_symbols:
-        for line_number, line in enumerate(lines, start=1):
-            for match in _TS_CALL.finditer(line):
-                name = match.group("name")
-                if name not in _CALL_KEYWORDS:
-                    nearest = max((symbol for symbol in function_symbols if (symbol.start_line or 0) <= line_number), key=lambda item: item.start_line or 0, default=None)
-                    if nearest:
-                        nearest.calls.append((name, line_number))
-    return result
-
-
 def _extract_package_json(relative_path: str, text: str) -> FileStructure:
     result = FileStructure()
     try:
@@ -564,6 +543,7 @@ def _insert_node(
     start_column: int | None = None,
     end_line: int | None = None,
     end_column: int | None = None,
+    extractor_version: str = STRUCTURE_EXTRACTOR_VERSION,
 ) -> str:
     node_id = f"code-node-{uuid4()}"
     conn.execute(
@@ -577,7 +557,7 @@ def _insert_node(
         (
             node_id, project_id, snapshot_id, source_id, qualified_id, kind, language,
             label, relative_path, start_line, start_column, end_line, end_column,
-            signature, STRUCTURE_EXTRACTOR_VERSION, STRUCTURE_EXTRACTOR_VERSION, content_hash, now,
+            signature, extractor_version, extractor_version, content_hash, now,
         ),
     )
     return node_id
@@ -620,6 +600,7 @@ def _insert_suggestion(
     reason: str,
     evidence: dict,
     now: str,
+    extractor_version: str = STRUCTURE_EXTRACTOR_VERSION,
 ) -> None:
     conn.execute(
         """
@@ -631,7 +612,7 @@ def _insert_suggestion(
         (
             f"relationship-suggestion-{uuid4()}", project_id, snapshot_id, source_node_id,
             target_node_id, suggested_type, score, reason,
-            json.dumps(evidence, separators=(",", ":")), STRUCTURE_EXTRACTOR_VERSION, now, now,
+            json.dumps(evidence, separators=(",", ":")), extractor_version, now, now,
         ),
     )
 
@@ -671,10 +652,6 @@ def _python_module(relative_path: str) -> str:
     return path.removesuffix(".__init__")
 
 
-def _js_module(relative_path: str) -> str:
-    return str(Path(relative_path).with_suffix("")).replace("\\", "/")
-
-
 def _ast_name(node: ast.AST) -> str:
     if isinstance(node, ast.Name):
         return node.id
@@ -703,13 +680,13 @@ def _hash_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _unique_symbol_id(structure: FileStructure, base: str, line: int) -> str:
+def _unique_symbol_id(structure: FileStructure, base: str, line: int = 0) -> str:
     if all(symbol.qualified_id != base for symbol in structure.symbols):
         return base
-    candidate = f"{base}#L{line}"
-    suffix = 2
+    candidate = f"{base}#2"
+    suffix = 3
     existing = {symbol.qualified_id for symbol in structure.symbols}
     while candidate in existing:
-        candidate = f"{base}#L{line}-{suffix}"
+        candidate = f"{base}#{suffix}"
         suffix += 1
     return candidate

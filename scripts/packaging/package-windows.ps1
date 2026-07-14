@@ -49,6 +49,15 @@ $backendRuntimePackages = @(
   "python-docx==1.2.0",
   "PyMuPDF==1.26.7",
   "ocrmypdf==17.5.0",
+  "tree-sitter==0.26.0",
+  "tree-sitter-javascript==0.25.0",
+  "tree-sitter-typescript==0.23.2",
+  "tree-sitter-go==0.25.0",
+  "tree-sitter-rust==0.24.2",
+  "tree-sitter-java==0.23.5",
+  "tree-sitter-c-sharp==0.23.5",
+  "tree-sitter-c==0.24.2",
+  "tree-sitter-cpp==0.23.4",
   "playwright==1.60.0"
 )
 $embeddingRuntimePackages = @(
@@ -368,6 +377,8 @@ $backendRuntimeFingerprint = Get-StringFingerprint @(
 $backendRuntimeReady = $false
 if (-not $Release) {
   $backendRuntimeRequiredPaths = @($runtimePython)
+  $backendRuntimeRequiredPaths += (Join-Path $runtimeDir "Lib\site-packages\tree_sitter")
+  $backendRuntimeRequiredPaths += (Join-Path $runtimeDir "Lib\site-packages\tree_sitter_typescript")
   if ($IncludeEmbeddingRuntime) {
     $backendRuntimeRequiredPaths += (Join-Path $runtimeDir "Lib\site-packages\sentence_transformers")
   }

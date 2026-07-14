@@ -1,0 +1,13 @@
+{
+  "c/service.c": {"symbols": [["class", "Service"], ["function", "execute"]], "imports": ["helpers.h"]},
+  "cpp/service.cpp": {"symbols": [["class", "Service"], ["function", "execute"]], "imports": ["helpers.hpp"]},
+  "csharp/Service.cs": {"symbols": [["class", "Service"], ["method", "Execute"]], "imports": ["Vault.Helpers"]},
+  "go/service.go": {"symbols": [["type", "Service"], ["method", "Execute"]], "imports": ["fmt"]},
+  "java/Service.java": {"symbols": [["class", "Service"], ["method", "execute"]], "imports": ["vault.helpers.Runner"]},
+  "javascript/service.js": {"symbols": [["class", "Service"], ["method", "execute"]], "imports": ["./helpers.js"]},
+  "json/package.json": {"symbols": [], "imports": [], "packages": ["fixture-runtime"]},
+  "python/service.py": {"symbols": [["class", "Service"], ["method", "execute"]], "imports": [".helpers"]},
+  "rust/service.rs": {"symbols": [["class", "Service"], ["implementation", "Service"], ["function", "execute"]], "imports": ["crate::helpers::run"]},
+  "tsx/view.tsx": {"symbols": [["function", "View"]], "imports": ["react"]},
+  "typescript/service.ts": {"symbols": [["interface", "Runnable"], ["class", "Service"], ["method", "execute"]], "imports": ["./helpers"]}
+}
