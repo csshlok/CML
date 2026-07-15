@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: Desktop typecheck, shell tests, and build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  backend:
+    name: Backend ${{ matrix.tier }}
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        tier: [quick, integration, system, benchmark]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/pyproject.toml
+            requirements/contributors-backend.txt
+      - name: Install backend and test dependencies
+        run: >-
+          python -m pip install -e ./backend
+          pytest==9.0.3 pytest-timeout==2.4.0
+          psutil==7.2.2 httpx==0.28.1 requests==2.34.2
+          fpdf2==2.8.7 pillow==12.2.0
+      - name: Run ${{ matrix.tier }} suite
+        shell: pwsh
+        run: >-
+          ./scripts/backend/run-tests.ps1
+          -Tier ${{ matrix.tier }}
+          -Python python
+          -JunitPath test-results/backend-${{ matrix.tier }}.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-${{ matrix.tier }}-results
+          path: test-results/backend-${{ matrix.tier }}.xml
+          if-no-files-found: warn
+
+  odin-scale:
+    name: Odin scale gate
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install -e ./backend
+          pytest==9.0.3 pytest-timeout==2.4.0 psutil==7.2.2
+      - name: Run explicit scale suite
+        shell: pwsh
+        run: ./scripts/backend/run-tests.ps1 -Tier scale -Python python

@@ -1,6 +1,6 @@
 {
   "name": "cml",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "workspaces": [
     "apps/*"
@@ -11,6 +11,8 @@
     "dev:web": "npm run dev:web --workspace @cml/desktop",
     "build": "npm run build --workspace @cml/desktop",
     "lint": "npm run lint --workspace @cml/desktop",
+    "test:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\backend\\run-tests.ps1 -Tier quick",
+    "test:backend:full": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\backend\\run-tests.ps1 -Tier full",
     "package:win": "npm run package:win --workspace @cml/desktop",
     "security:renderer": "node scripts/security/audit-renderer-html-safety.mjs",
     "security:package": "node scripts/packaging/generate-helper-manifest.cjs && node scripts/packaging/audit-package-layout.cjs apps/desktop/packaging apps/desktop/packaging",

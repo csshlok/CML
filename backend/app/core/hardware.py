@@ -1,8 +1,10 @@
 import ctypes
+import json
 import os
 import platform
 import shutil
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 _GIB = 1024**3
@@ -135,9 +137,19 @@ def _hardware_detail(avx2: bool | None, tier: str) -> str:
 
 
 def _detect_gpus() -> list[dict]:
+    return [dict(item) for item in _detect_gpus_cached()]
+
+
+@lru_cache(maxsize=1)
+def _detect_gpus_cached() -> tuple[tuple[tuple[str, object], ...], ...]:
+    """Cache static GPU inventory and avoid repeating slow Windows device probes."""
+
     os_name = platform.system().lower()
     if os_name != "windows":
-        return []
+        return ()
+    nvidia_gpus = _detect_nvidia_gpus()
+    if nvidia_gpus:
+        return tuple(tuple(item.items()) for item in nvidia_gpus)
     command = [
         "powershell",
         "-NoProfile",
@@ -152,18 +164,15 @@ def _detect_gpus() -> list[dict]:
             "} | ConvertTo-Json -Depth 3"
         ),
     ]
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
-    except Exception:
-        return []
+    result = _run_probe(command, timeout=10)
+    if result is None:
+        return ()
     if result.returncode != 0 or not result.stdout.strip():
-        return []
+        return ()
     try:
-        import json
-
         payload = json.loads(result.stdout)
     except Exception:
-        return []
+        return ()
     entries = payload if isinstance(payload, list) else [payload]
     gpus = []
     seen = set()
@@ -191,7 +200,83 @@ def _detect_gpus() -> list[dict]:
                 "driver_confidence": "medium",
             }
         )
+    return tuple(tuple(item.items()) for item in gpus)
+
+
+def _detect_nvidia_gpus() -> list[dict]:
+    executable = shutil.which("nvidia-smi")
+    if not executable:
+        return []
+    result = _run_probe(
+        [
+            executable,
+            "--query-gpu=name,memory.total",
+            "--format=csv,noheader,nounits",
+        ],
+        timeout=5,
+    )
+    if result is None or result.returncode != 0:
+        return []
+    gpus = []
+    for line in result.stdout.splitlines():
+        name, separator, memory_mib = line.rpartition(",")
+        if not separator or not name.strip():
+            continue
+        try:
+            vram = max(0, int(float(memory_mib.strip())) * 1024**2)
+        except ValueError:
+            continue
+        normalized_name = name.strip()
+        gpus.append(
+            {
+                "vendor": "nvidia",
+                "name": normalized_name,
+                "vram_bytes": vram,
+                "usable_vram_bytes": vram,
+                "shared_memory": False,
+                "memory_bandwidth_gbps": _gpu_bandwidth_guess(normalized_name, vram),
+                "compute_capability": None,
+                "driver_confidence": "high",
+            }
+        )
     return gpus
+
+
+def _run_probe(command: list[str], *, timeout: int) -> subprocess.CompletedProcess[str] | None:
+    """Run a hardware probe without allowing a descendant to hold capture pipes open forever."""
+
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    process: subprocess.Popen[str] | None = None
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            creationflags=creationflags,
+        )
+        stdout, stderr = process.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    except subprocess.TimeoutExpired:
+        if process is not None:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                    check=False,
+                    creationflags=creationflags,
+                )
+            else:
+                process.kill()
+            try:
+                process.communicate(timeout=2)
+            except (subprocess.SubprocessError, OSError):
+                pass
+        return None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def _gpu_vendor(name: str) -> str:

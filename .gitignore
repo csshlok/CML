@@ -53,6 +53,7 @@ logs/
 *.local
 .tmp/
 tmp/
+tmp-data/
 .playwright-mcp/
 **/.playwright-mcp/
 .wrangler/

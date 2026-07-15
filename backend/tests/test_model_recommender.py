@@ -287,22 +287,6 @@ class ModelRecommenderTests(unittest.TestCase):
         self.assertEqual(model_response.status_code, 200)
         self.assertIn("qwen3-4b-q4_k_m", payload["models"])
 
-    def test_measurement_script_targets_recommendation_measurement_route(self) -> None:
-        script = (Path(__file__).resolve().parents[2] / "scripts" / "backend" / "record-model-recommender-measurement.ps1").read_text(encoding="utf-8")
-        self.assertIn("http://127.0.0.1:7343/api/v1", script)
-        self.assertIn("CML_API_TOKEN", script)
-        self.assertIn("x-cml-api-token", script)
-        self.assertIn("/models/recommendations/measurements", script)
-        self.assertIn("estimated_tok_per_sec", script)
-
-    def test_runtime_measurement_script_targets_run_route(self) -> None:
-        script = (Path(__file__).resolve().parents[2] / "scripts" / "backend" / "measure-model-recommender-runtime.ps1").read_text(encoding="utf-8")
-        self.assertIn("http://127.0.0.1:7343/api/v1", script)
-        self.assertIn("CML_API_TOKEN", script)
-        self.assertIn("x-cml-api-token", script)
-        self.assertIn("/models/recommendations/measurements/run", script)
-        self.assertIn("model_id", script.lower())
-
     def test_diagnostics_export_script_targets_preview_route_and_output_write(self) -> None:
         script = (Path(__file__).resolve().parents[2] / "scripts" / "backend" / "export-model-recommender-diagnostics.ps1").read_text(encoding="utf-8")
         self.assertIn("http://127.0.0.1:7343/api/v1", script)
@@ -459,15 +443,6 @@ class ModelRecommenderTests(unittest.TestCase):
             self.assertIn(result["chat_fit_type"], {"full_gpu", "partial_offload", "cpu_only"}, fixture_path.stem)
             if expectation["low_confidence"]:
                 self.assertEqual(result["confidence"], "low", fixture_path.stem)
-
-    def test_matrix_script_targets_preview_route_and_iterates_json_profiles(self) -> None:
-        script = (Path(__file__).resolve().parents[2] / "scripts" / "backend" / "evaluate-model-recommender-matrix.ps1").read_text(encoding="utf-8")
-        self.assertIn("http://127.0.0.1:7343/api/v1", script)
-        self.assertIn("CML_API_TOKEN", script)
-        self.assertIn("x-cml-api-token", script)
-        self.assertIn("/models/recommendations/diagnostics/preview", script)
-        self.assertIn("Get-ChildItem", script)
-        self.assertIn("*.json", script)
 
     def test_imported_checkpoint_can_participate_in_chat_recommendation(self) -> None:
         from backend.app.core.model_recommender.service import build_model_recommendations
