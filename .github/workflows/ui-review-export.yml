@@ -11,9 +11,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Create source archive
         run: |
-          tar --exclude=.git --exclude=node_modules --exclude=.venv -czf ../cml-source.tar.gz .
+          mkdir -p .artifacts
+          tar --exclude=.git --exclude=node_modules --exclude=.venv --exclude=.artifacts -czf .artifacts/cml-source.tar.gz .
       - uses: actions/upload-artifact@v4
         with:
           name: cml-source
-          path: ../cml-source.tar.gz
+          path: .artifacts/cml-source.tar.gz
           retention-days: 1
