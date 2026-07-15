@@ -1,0 +1,19 @@
+name: UI Review Export
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create source archive
+        run: |
+          tar --exclude=.git --exclude=node_modules --exclude=.venv -czf cml-source.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cml-source
+          path: cml-source.tar.gz
+          retention-days: 1
