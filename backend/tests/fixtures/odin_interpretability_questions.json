@@ -1,0 +1,66 @@
+{
+  "flask": [
+    {
+      "id": "routing",
+      "question": "Where does Flask register URL rules, and which routing object stores them?",
+      "required_fact_groups": [
+        ["add_url_rule"],
+        ["url_map"],
+        ["rule"],
+        ["sansio/app.py", "app.py"]
+      ]
+    },
+    {
+      "id": "contexts",
+      "question": "Which objects manage Flask request and application context, and how are they activated?",
+      "required_fact_groups": [
+        ["requestcontext", "request context"],
+        ["appcontext", "application context"],
+        ["contextvar", "context var"],
+        ["push", "pop"]
+      ]
+    },
+    {
+      "id": "cli",
+      "question": "Which module and primary class implement Flask's command-line integration?",
+      "required_fact_groups": [
+        ["flask/cli.py", "flask.cli"],
+        ["flaskgroup"],
+        ["click"],
+        ["main"]
+      ]
+    }
+  ],
+  "zustand": [
+    {
+      "id": "public_apis",
+      "question": "What are Zustand's primary public APIs for vanilla stores and React-bound stores, and where are they defined?",
+      "required_fact_groups": [
+        ["createstore"],
+        ["src/vanilla.ts", "vanilla.ts"],
+        ["usestore", "createimpl", "create"],
+        ["src/react.ts", "react.ts"]
+      ]
+    },
+    {
+      "id": "persistence",
+      "question": "Which Zustand middleware implements persistence, and what storage abstractions does it expose?",
+      "required_fact_groups": [
+        ["persist"],
+        ["persiststorage"],
+        ["createjsonstorage"],
+        ["middleware/persist.ts", "persist.ts"]
+      ]
+    },
+    {
+      "id": "selector_subscription",
+      "question": "How does subscribeWithSelector change the store subscription API?",
+      "required_fact_groups": [
+        ["subscribewithselector"],
+        ["selector"],
+        ["equality"],
+        ["listener"]
+      ]
+    }
+  ]
+}

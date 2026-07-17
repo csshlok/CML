@@ -113,7 +113,7 @@ def test_registry_has_unique_suffix_ownership_and_versions() -> None:
 def test_windows_package_pins_every_offline_grammar() -> None:
     package_script = (Path(__file__).parents[2] / "scripts" / "packaging" / "package-windows.ps1").read_text(encoding="utf-8")
     expected = {
-        "tree-sitter==0.26.0", "tree-sitter-javascript==0.25.0", "tree-sitter-typescript==0.23.2",
+        "tree-sitter==0.25.2", "tree-sitter-javascript==0.25.0", "tree-sitter-typescript==0.23.2",
         "tree-sitter-go==0.25.0", "tree-sitter-rust==0.24.2", "tree-sitter-java==0.23.5",
         "tree-sitter-c-sharp==0.23.5", "tree-sitter-c==0.24.2", "tree-sitter-cpp==0.23.4",
     }
