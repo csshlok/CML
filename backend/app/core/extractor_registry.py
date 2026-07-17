@@ -313,7 +313,7 @@ def _spec(language_id: str, display: str, suffixes: tuple[str, ...], grammar: st
 register(_spec("python", "Python", (".py",), "python-ast-runtime", ("class", "function", "method", "test")), _python_adapter)
 register(ExtractorSpec("json", "JSON", (".json",), ("package.json",), "json-adapter-v1", "stdlib-json", ("configuration_key", "package"), ("depends_on_package",), "unsupported"), _json_adapter)
 register(_spec("javascript", "JavaScript", (".js", ".jsx", ".mjs", ".cjs"), "tree-sitter-javascript-0.25.0", ("class", "function", "method", "exported_value")), _tree_sitter_adapter)
-register(_spec("typescript", "TypeScript", (".ts",), "tree-sitter-typescript-0.23.2", ("class", "interface", "schema", "enum", "function", "method", "exported_value")), _tree_sitter_adapter)
+register(_spec("typescript", "TypeScript", (".ts", ".mts", ".cts"), "tree-sitter-typescript-0.23.2", ("class", "interface", "schema", "enum", "function", "method", "exported_value")), _tree_sitter_adapter)
 register(_spec("tsx", "TSX", (".tsx",), "tree-sitter-typescript-0.23.2-tsx", ("class", "interface", "schema", "enum", "function", "method", "exported_value")), _tree_sitter_adapter)
 register(_spec("go", "Go", (".go",), "tree-sitter-go-0.25.0", ("function", "method", "type")), _tree_sitter_adapter)
 register(_spec("rust", "Rust", (".rs",), "tree-sitter-rust-0.24.2", ("function", "class", "enum", "interface", "implementation", "schema")), _tree_sitter_adapter)

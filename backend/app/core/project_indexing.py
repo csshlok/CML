@@ -25,11 +25,16 @@ def discover_candidate(*, project_id: str, run_id: str, snapshot_id: str, job_id
     _require_running(run_id, phase="discovery")
     project = get_project(project_id)
     root = normalize_root_path(project["root_path"])
-    discovery = discover_project(root, progress_callback=lambda count: _discovery_checkpoint(run_id, count))
+    discovery = discover_project(
+        root,
+        discovery_scope=project["discovery_scope"],
+        progress_callback=lambda count: _discovery_checkpoint(run_id, count),
+    )
     repository_kind, branch, commit, remote_fingerprint, dirty, changed_count = _git_metadata(root)
     now = utc_now()
     manifest = {
         "version": 2,
+        "discovery_scope": discovery.discovery_scope,
         "root_fingerprint": project["root_fingerprint"],
         "files": [{"path": item.relative_path, "hash": item.content_hash} for item in discovery.files],
         "excluded": {"ignored": discovery.ignored_count, "generated": discovery.generated_count, "failed": discovery.failed_count},
@@ -47,13 +52,13 @@ def discover_candidate(*, project_id: str, run_id: str, snapshot_id: str, job_id
         conn.execute(
             """
             INSERT INTO project_snapshots (
-                id, project_id, source_manifest_hash, git_commit, branch, dirty_working_tree,
+                id, project_id, discovery_scope, source_manifest_hash, git_commit, branch, dirty_working_tree,
                 extractor_version, eligible_count, ignored_count, generated_count, parsed_count,
                 failed_count, structure_status, retrieval_status, interpretation_status,
                 manifest_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'waiting', 'waiting', 'unavailable', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'waiting', 'waiting', 'unavailable', ?, ?)
             """,
-            (snapshot_id, project_id, discovery.manifest_hash, commit, branch, int(dirty), EXTRACTOR_VERSION,
+            (snapshot_id, project_id, discovery.discovery_scope, discovery.manifest_hash, commit, branch, int(dirty), EXTRACTOR_VERSION,
              len(discovery.files), discovery.ignored_count, discovery.generated_count, discovery.failed_count,
              json.dumps(manifest, separators=(",", ":")), now),
         )

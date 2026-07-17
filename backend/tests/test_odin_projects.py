@@ -85,6 +85,75 @@ class OdinProjectTests(unittest.TestCase):
         self.assertEqual(paths, {"package.json", "src/auth.ts", "src/main.ts"})
         self.assertGreaterEqual(node_count, 6)
 
+    def test_discovery_scope_filters_context_files_but_keeps_source_like_json(self) -> None:
+        from backend.app.core.projects import discover_project
+
+        (self.repo / "README.md").write_text("# Sample project\n", encoding="utf-8")
+        (self.repo / "settings.yaml").write_text("feature: true\n", encoding="utf-8")
+        (self.repo / "src" / "worker.mts").write_text("export const worker = true;\n", encoding="utf-8")
+        (self.repo / "src" / "compat.cjs").write_text("module.exports = {};\n", encoding="utf-8")
+
+        context = discover_project(self.repo, discovery_scope="context")
+        code = discover_project(self.repo, discovery_scope="code")
+
+        self.assertEqual(context.discovery_scope, "context")
+        self.assertEqual(code.discovery_scope, "code")
+        self.assertEqual(
+            {item.relative_path for item in code.files},
+            {"package.json", "src/auth.ts", "src/compat.cjs", "src/main.ts", "src/worker.mts"},
+        )
+        self.assertTrue({"README.md", "settings.yaml"} <= {item.relative_path for item in context.files})
+        self.assertNotEqual(context.manifest_hash, code.manifest_hash)
+
+    def test_discovery_normalizes_a_relative_project_root(self) -> None:
+        from backend.app.core.projects import discover_project
+
+        previous = Path.cwd()
+        try:
+            os.chdir(self.root)
+            result = discover_project(Path("sample-project"), discovery_scope="code")
+        finally:
+            os.chdir(previous)
+
+        self.assertEqual(
+            {item.relative_path for item in result.files},
+            {"package.json", "src/auth.ts", "src/main.ts"},
+        )
+
+    def test_scope_change_persists_and_activates_through_a_candidate_snapshot(self) -> None:
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.projects import get_project, register_project, sync_project
+
+        (self.repo / "README.md").write_text("# Sample project\n", encoding="utf-8")
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            discovery_scope="context",
+            sync=True,
+        )
+        prior_snapshot = project["active_snapshot_id"]
+        self.assertEqual(project["source_count"], 4)
+        self.assertEqual(project["active_snapshot"]["discovery_scope"], "context")
+
+        from backend.app.schemas import ProjectRead
+
+        serialized = ProjectRead.model_validate(project).model_dump()
+        self.assertEqual(serialized["active_snapshot"]["discovery_scope"], "context")
+
+        queued = sync_project(project["id"], discovery_scope="code")
+        pending = get_project(project["id"])
+        self.assertEqual(queued["project"]["discovery_scope"], "code")
+        self.assertEqual(pending["active_snapshot_id"], prior_snapshot)
+        self.assertEqual(pending["active_snapshot"]["discovery_scope"], "context")
+
+        run_due_jobs_once(limit=20)
+        activated = get_project(project["id"])
+        self.assertEqual(activated["discovery_scope"], "code")
+        self.assertEqual(activated["active_snapshot"]["discovery_scope"], "code")
+        self.assertEqual(activated["source_count"], 3)
+        self.assertNotEqual(activated["active_snapshot_id"], prior_snapshot)
+
     def test_sync_reconciles_modified_added_and_removed_files(self) -> None:
         from backend.app.core.database import connect
         from backend.app.core.projects import register_project, sync_project

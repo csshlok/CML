@@ -340,6 +340,7 @@ export type ClusterSuggestionRecord = {
 export type ProjectSnapshotRecord = {
   id: string;
   project_id: string;
+  discovery_scope: "context" | "code";
   source_manifest_hash: string;
   git_commit: string | null;
   branch: string | null;
@@ -393,6 +394,7 @@ export type ProjectRecord = {
   name: string;
   root_path: string;
   root_fingerprint: string;
+  discovery_scope: "context" | "code";
   primary_cluster_id: string;
   repository_kind: "git" | "folder" | string;
   git_remote_fingerprint: string | null;
@@ -1403,7 +1405,7 @@ export async function getProjectGraphView(
   );
 }
 
-export async function synchronizeProject(id: string) {
+export async function synchronizeProject(id: string, discoveryScope?: "context" | "code") {
   return request<{
     project: ProjectRecord;
     run: ProjectIndexRunRecord;
@@ -1412,7 +1414,10 @@ export async function synchronizeProject(id: string) {
     queued: boolean;
   }>(
     `/api/v1/projects/${encodeURIComponent(id)}/sync`,
-    { method: "POST", body: JSON.stringify({}) },
+    {
+      method: "POST",
+      body: JSON.stringify(discoveryScope ? { discovery_scope: discoveryScope } : {}),
+    },
   );
 }
 
@@ -1469,7 +1474,10 @@ export async function cancelProjectRun(id: string) {
   return request<ProjectIndexRunRecord>(`/api/v1/projects/${encodeURIComponent(id)}/cancel`, { method: "POST" });
 }
 
-export async function updateProject(id: string, payload: { name?: string; root_path?: string }) {
+export async function updateProject(
+  id: string,
+  payload: { name?: string; root_path?: string; discovery_scope?: "context" | "code" },
+) {
   return request<ProjectRecord>(`/api/v1/projects/${encodeURIComponent(id)}`, {
     method: "PATCH",
     body: JSON.stringify(payload),

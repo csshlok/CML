@@ -626,6 +626,7 @@ def init_db() -> None:
                 name TEXT NOT NULL,
                 root_path TEXT NOT NULL,
                 root_fingerprint TEXT NOT NULL,
+                discovery_scope TEXT NOT NULL DEFAULT 'context' CHECK (discovery_scope IN ('context', 'code')),
                 primary_cluster_id TEXT NOT NULL,
                 repository_kind TEXT NOT NULL DEFAULT 'folder',
                 git_remote_fingerprint TEXT,
@@ -658,6 +659,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS project_snapshots (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                discovery_scope TEXT NOT NULL DEFAULT 'context' CHECK (discovery_scope IN ('context', 'code')),
                 source_manifest_hash TEXT NOT NULL,
                 git_commit TEXT,
                 branch TEXT,
@@ -1074,9 +1076,21 @@ def init_db() -> None:
         _add_column_if_missing(conn, "projects", "active_retrieval_snapshot_id", "TEXT")
         _add_column_if_missing(conn, "projects", "candidate_snapshot_id", "TEXT")
         _add_column_if_missing(conn, "projects", "active_run_id", "TEXT")
+        _add_column_if_missing(
+            conn,
+            "projects",
+            "discovery_scope",
+            "TEXT NOT NULL DEFAULT 'context' CHECK (discovery_scope IN ('context', 'code'))",
+        )
         _add_column_if_missing(conn, "project_snapshots", "manifest_activated_at", "TEXT")
         _add_column_if_missing(conn, "project_snapshots", "structure_activated_at", "TEXT")
         _add_column_if_missing(conn, "project_snapshots", "retrieval_activated_at", "TEXT")
+        _add_column_if_missing(
+            conn,
+            "project_snapshots",
+            "discovery_scope",
+            "TEXT NOT NULL DEFAULT 'context' CHECK (discovery_scope IN ('context', 'code'))",
+        )
         _add_column_if_missing(conn, "project_index_runs", "cancellation_requested_at", "TEXT")
         _add_column_if_missing(conn, "project_index_runs", "heartbeat_at", "TEXT")
         _add_column_if_missing(conn, "project_index_runs", "queued_at", "TEXT")

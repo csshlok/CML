@@ -140,6 +140,10 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("path", nargs="?", default=".")
     add.add_argument("--name")
     add.add_argument("--vault-id")
+    add.add_argument(
+        "--scope", choices=("context", "code"), default="context",
+        help="Index code plus project context (default), or code files only.",
+    )
     add.add_argument("--no-sync", action="store_true")
     add.add_argument("--no-wait", action="store_true")
 
@@ -151,6 +155,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync = project_commands.add_parser("sync", help="Reconcile the current working tree.")
     _add_project_target(sync)
+    sync.add_argument(
+        "--scope", choices=("context", "code"),
+        help="Persist a new discovery scope before synchronizing.",
+    )
     sync.add_argument("--no-wait", action="store_true")
 
     reindex = project_commands.add_parser("reindex", help="Rebuild selected Odin-derived data.")
@@ -238,7 +246,13 @@ def dispatch(client: OdinClient, args: argparse.Namespace) -> object:
         created = client.request(
             "POST",
             "projects",
-            {"vault_id": vault_id, "root_path": str(root), "name": args.name, "sync": not args.no_sync},
+            {
+                "vault_id": vault_id,
+                "root_path": str(root),
+                "name": args.name,
+                "discovery_scope": args.scope,
+                "sync": not args.no_sync,
+            },
         )
         if args.no_sync or args.no_wait:
             return created
@@ -252,7 +266,8 @@ def dispatch(client: OdinClient, args: argparse.Namespace) -> object:
     if action == "status":
         return client.request("GET", f"projects/{project_id}")
     if action == "sync":
-        queued = dict(client.request("POST", f"projects/{project_id}/sync", {}))
+        body = {"discovery_scope": args.scope} if args.scope else {}
+        queued = dict(client.request("POST", f"projects/{project_id}/sync", body))
         return queued if args.no_wait else _wait_for_project_run(client, queued["project"], queued["run"])
     if action == "reindex":
         layer = "full" if args.full else args.layer
@@ -436,6 +451,7 @@ def _project_detail(project: dict) -> str:
         [
             f"{project['name']} · {project['status']}",
             f"Root: {project['root_path']}",
+            f"Scope: {project.get('discovery_scope', 'context')}",
             f"Snapshot: {commit} · {project.get('source_count', 0)} indexed files",
             f"Languages: {languages}",
             f"Structure: {project['structure_status']} · Search: {project['retrieval_status']} · Brief: {project['interpretation_status']}",

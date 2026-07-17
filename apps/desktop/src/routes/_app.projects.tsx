@@ -103,6 +103,7 @@ function ProjectsIndex() {
                     <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                       <span>{language}</span>
                       <span>{project.source_count.toLocaleString()} files</span>
+                      <span>{project.discovery_scope === "code" ? "Code only" : "Code and context"}</span>
                       {project.default_branch && <span className="inline-flex items-center gap-1"><GitBranch className="h-3 w-3" /> {project.default_branch}</span>}
                       <span>{freshness(project)}</span>
                     </div>

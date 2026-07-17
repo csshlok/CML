@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 from backend.app.core.database import connect, utc_now
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 class MigrationError(RuntimeError):
@@ -711,6 +711,27 @@ def _migration_010_odin_release_contracts(conn) -> None:
     )
 
 
+def _migration_011_project_discovery_scope(conn) -> None:
+    _add_column_if_missing(
+        conn,
+        "projects",
+        "discovery_scope",
+        "TEXT NOT NULL DEFAULT 'context' CHECK (discovery_scope IN ('context', 'code'))",
+    )
+    _add_column_if_missing(
+        conn,
+        "project_snapshots",
+        "discovery_scope",
+        "TEXT NOT NULL DEFAULT 'context' CHECK (discovery_scope IN ('context', 'code'))",
+    )
+    conn.execute(
+        "UPDATE projects SET discovery_scope = 'context' WHERE discovery_scope NOT IN ('context', 'code')"
+    )
+    conn.execute(
+        "UPDATE project_snapshots SET discovery_scope = 'context' WHERE discovery_scope NOT IN ('context', 'code')"
+    )
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migration_001_baseline,
     2: _migration_002_vault_security_metadata,
@@ -722,6 +743,7 @@ MIGRATIONS: dict[int, Migration] = {
     8: _migration_008_project_graph,
     9: _migration_009_project_chat_scope,
     10: _migration_010_odin_release_contracts,
+    11: _migration_011_project_discovery_scope,
 }
 
 

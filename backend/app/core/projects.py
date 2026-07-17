@@ -79,6 +79,7 @@ SUPPORTED_EXTENSIONS = {
     ".ini",
     ".java",
     ".js",
+    ".cjs",
     ".json",
     ".jsx",
     ".kt",
@@ -86,6 +87,8 @@ SUPPORTED_EXTENSIONS = {
     ".lua",
     ".md",
     ".mdx",
+    ".mjs",
+    ".mts",
     ".php",
     ".prisma",
     ".properties",
@@ -102,6 +105,7 @@ SUPPORTED_EXTENSIONS = {
     ".swift",
     ".toml",
     ".ts",
+    ".cts",
     ".tsx",
     ".txt",
     ".vue",
@@ -115,6 +119,14 @@ SUPPORTED_FILENAMES = {
     "makefile",
     "procfile",
     "rakefile",
+}
+DISCOVERY_SCOPES = frozenset({"context", "code"})
+CODE_EXTENSIONS = {
+    ".c", ".cc", ".clj", ".cljs", ".cpp", ".cs", ".dart", ".ex", ".exs",
+    ".go", ".graphql", ".gql", ".h", ".hpp", ".java", ".js", ".cjs", ".json", ".jsx",
+    ".kt", ".kts", ".lua", ".php", ".prisma", ".proto", ".ps1", ".py", ".rb",
+    ".rs", ".scala", ".sh", ".sql", ".svelte", ".swift", ".mjs", ".mts",
+    ".ts", ".cts", ".tsx", ".vue",
 }
 GENERATED_FILENAMES = {
     "bun.lock",
@@ -140,12 +152,15 @@ LANGUAGE_BY_EXTENSION = {
     ".html": "HTML",
     ".java": "Java",
     ".js": "JavaScript",
+    ".cjs": "JavaScript",
     ".jsx": "JavaScript",
     ".kt": "Kotlin",
     ".kts": "Kotlin",
     ".lua": "Lua",
     ".md": "Markdown",
     ".mdx": "Markdown",
+    ".mjs": "JavaScript",
+    ".mts": "TypeScript",
     ".php": "PHP",
     ".ps1": "PowerShell",
     ".py": "Python",
@@ -158,6 +173,7 @@ LANGUAGE_BY_EXTENSION = {
     ".svelte": "Svelte",
     ".swift": "Swift",
     ".ts": "TypeScript",
+    ".cts": "TypeScript",
     ".tsx": "TypeScript",
     ".vue": "Vue",
 }
@@ -198,6 +214,7 @@ class DiscoveryResult:
     entrypoints: list[str]
     workspace_count: int
     manifest_hash: str
+    discovery_scope: str = "context"
 
 
 def normalize_root_path(value: str) -> Path:
@@ -217,8 +234,19 @@ def root_fingerprint(root: Path) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def register_project(*, vault_id: str, root_path: str, name: str | None, sync: bool = True) -> dict:
+def normalize_discovery_scope(value: str | None) -> str:
+    scope = str(value or "context").strip().casefold()
+    if scope not in DISCOVERY_SCOPES:
+        raise ProjectError("Project discovery scope must be 'context' or 'code'.")
+    return scope
+
+
+def register_project(
+    *, vault_id: str, root_path: str, name: str | None,
+    discovery_scope: str = "context", sync: bool = True,
+) -> dict:
     root = normalize_root_path(root_path)
+    normalized_scope = normalize_discovery_scope(discovery_scope)
     fingerprint = root_fingerprint(root)
     project_name = (name or root.name).strip()
     if not project_name:
@@ -272,11 +300,12 @@ def register_project(*, vault_id: str, root_path: str, name: str | None, sync: b
                 """
                 INSERT INTO projects (
                     id, vault_id, name, root_path, root_fingerprint, primary_cluster_id,
+                    discovery_scope,
                     repository_kind, git_remote_fingerprint, default_branch, indexed_commit,
                     working_tree_dirty, changed_file_count, status,
                     structure_status, retrieval_status, interpretation_status,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', 'waiting', 'waiting',
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', 'waiting', 'waiting',
                           'unavailable', ?, ?)
                 """,
                 (
@@ -286,6 +315,7 @@ def register_project(*, vault_id: str, root_path: str, name: str | None, sync: b
                     str(root),
                     fingerprint,
                     cluster_id,
+                    normalized_scope,
                     repository_kind,
                     remote_fingerprint,
                     branch,
@@ -337,23 +367,27 @@ def get_project(project_id: str) -> dict:
         return _project_from_row(conn, row)
 
 
-def update_project(project_id: str, *, name: str | None = None, root_path: str | None = None) -> dict:
-    if name is None and root_path is None:
-        raise ProjectError("Provide a project name or a replacement folder.")
+def update_project(
+    project_id: str, *, name: str | None = None, root_path: str | None = None,
+    discovery_scope: str | None = None,
+) -> dict:
+    if name is None and root_path is None and discovery_scope is None:
+        raise ProjectError("Provide a project name, replacement folder, or discovery scope.")
     normalized = name.strip() if name is not None else None
     if normalized is not None and (not normalized or len(normalized) > 120):
         raise ProjectError("Project name must be between 1 and 120 characters.")
     replacement_root = normalize_root_path(root_path) if root_path is not None else None
     replacement_fingerprint = root_fingerprint(replacement_root) if replacement_root is not None else None
+    normalized_scope = normalize_discovery_scope(discovery_scope) if discovery_scope is not None else None
     with connect() as conn:
         row = conn.execute(
-            "SELECT vault_id, primary_cluster_id, name, active_run_id FROM projects WHERE id = ? AND deleted_at IS NULL",
+            "SELECT vault_id, primary_cluster_id, name, active_run_id, discovery_scope FROM projects WHERE id = ? AND deleted_at IS NULL",
             (project_id,),
         ).fetchone()
         if row is None:
             raise KeyError(project_id)
-        if row["active_run_id"] and replacement_root is not None:
-            raise ProjectError("Cancel the active synchronization before reconnecting this project.")
+        if row["active_run_id"] and (replacement_root is not None or normalized_scope is not None):
+            raise ProjectError("Cancel the active synchronization before changing this project's folder or scope.")
         if normalized is not None:
             collision = conn.execute(
                 """
@@ -390,10 +424,26 @@ def update_project(project_id: str, *, name: str | None = None, root_path: str |
                 (str(replacement_root), replacement_fingerprint, repository_kind, remote_fingerprint,
                  branch, int(dirty), changed_count, now, project_id),
             )
+        if normalized_scope is not None and normalized_scope != row["discovery_scope"]:
+            conn.execute(
+                """
+                UPDATE projects SET discovery_scope = ?,
+                    status = CASE WHEN active_snapshot_id IS NULL THEN 'registered' ELSE 'stale' END,
+                    updated_at = ? WHERE id = ?
+                """,
+                (normalized_scope, now, project_id),
+            )
     return get_project(project_id)
 
 
-def sync_project(project_id: str, *, trigger_source: str = "manual") -> dict:
+def sync_project(
+    project_id: str, *, trigger_source: str = "manual", discovery_scope: str | None = None,
+) -> dict:
+    if discovery_scope is not None:
+        requested_scope = normalize_discovery_scope(discovery_scope)
+        current = get_project(project_id)
+        if requested_scope != current["discovery_scope"]:
+            update_project(project_id, discovery_scope=requested_scope)
     project = get_project(project_id)
     run_id = f"project-run-{uuid4()}"
     candidate_snapshot_id = f"project-snapshot-{uuid4()}"
@@ -495,7 +545,7 @@ def run_project_index_job(*, project_id: str, run_id: str, job_id: str) -> dict:
             (job_id, now, now, now, run_id),
         )
     try:
-        discovery = discover_project(root)
+        discovery = discover_project(root, discovery_scope=project["discovery_scope"])
         with connect() as conn:
             run = conn.execute(
                 "SELECT cancellation_requested, status FROM project_index_runs WHERE id = ?", (run_id,)
@@ -727,7 +777,13 @@ def remove_project(project_id: str, *, confirmation_name: str) -> None:
         )
 
 
-def discover_project(root: Path, *, progress_callback=None) -> DiscoveryResult:
+def discover_project(
+    root: Path, *, discovery_scope: str = "context", progress_callback=None,
+) -> DiscoveryResult:
+    root = root.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError(f"Project root is not a directory: {root}")
+    normalized_scope = normalize_discovery_scope(discovery_scope)
     ignore_patterns = _load_ignore_patterns(root)
     files: list[ManifestFile] = []
     ignored_count = 0
@@ -774,6 +830,9 @@ def discover_project(root: Path, *, progress_callback=None) -> DiscoveryResult:
             if suffix not in SUPPORTED_EXTENSIONS and lower_name not in SUPPORTED_FILENAMES:
                 ignored_count += 1
                 continue
+            if normalized_scope == "code" and suffix not in CODE_EXTENSIONS:
+                ignored_count += 1
+                continue
             try:
                 size = path.stat().st_size
                 if size > MAX_FILE_BYTES:
@@ -809,6 +868,8 @@ def discover_project(root: Path, *, progress_callback=None) -> DiscoveryResult:
 
     files.sort(key=lambda item: item.relative_path.casefold())
     manifest_digest = hashlib.sha256()
+    manifest_digest.update(normalized_scope.encode("ascii"))
+    manifest_digest.update(b"\n")
     for item in files:
         manifest_digest.update(item.relative_path.casefold().encode("utf-8"))
         manifest_digest.update(b"\0")
@@ -823,6 +884,7 @@ def discover_project(root: Path, *, progress_callback=None) -> DiscoveryResult:
         entrypoints=entrypoints[:8],
         workspace_count=workspaces,
         manifest_hash=manifest_digest.hexdigest(),
+        discovery_scope=normalized_scope,
     )
 
 
@@ -832,6 +894,7 @@ def _activate_discovery(project: dict, discovery: DiscoveryResult, run_id: str) 
     repository_kind, branch, commit, remote_fingerprint, dirty, changed_file_count = _git_metadata(Path(project["root_path"]))
     manifest_summary = {
         "version": 1,
+        "discovery_scope": discovery.discovery_scope,
         "files": [{"path": item.relative_path, "hash": item.content_hash} for item in discovery.files],
         "excluded": {
             "ignored": discovery.ignored_count,
@@ -954,15 +1017,16 @@ def _activate_discovery(project: dict, discovery: DiscoveryResult, run_id: str) 
         conn.execute(
             """
             INSERT INTO project_snapshots (
-                id, project_id, source_manifest_hash, git_commit, branch, dirty_working_tree,
+                id, project_id, discovery_scope, source_manifest_hash, git_commit, branch, dirty_working_tree,
                 extractor_version, eligible_count, ignored_count, generated_count, parsed_count,
                 failed_count, structure_status, retrieval_status, interpretation_status,
                 manifest_json, activated_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unavailable', ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unavailable', ?, ?, ?)
             """,
             (
                 snapshot_id,
                 project["id"],
+                discovery.discovery_scope,
                 discovery.manifest_hash,
                 commit,
                 branch,

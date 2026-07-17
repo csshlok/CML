@@ -41,6 +41,7 @@ from backend.app.schemas import (
     ProjectReindexRequest,
     ProjectRemoveRequest,
     ProjectSyncResponse,
+    ProjectSyncRequest,
     ProjectUpdate,
 )
 
@@ -96,6 +97,7 @@ def project_create(payload: ProjectCreate, request: Request) -> dict:
             vault_id=payload.vault_id,
             root_path=payload.root_path,
             name=payload.name,
+            discovery_scope=payload.discovery_scope,
             sync=payload.sync,
         )
     except ProjectError as exc:
@@ -113,7 +115,12 @@ def project_get(project_id: str) -> dict:
 @router.patch("/{project_id}", response_model=ProjectRead)
 def project_update(project_id: str, payload: ProjectUpdate) -> dict:
     try:
-        return update_project(project_id, name=payload.name, root_path=payload.root_path)
+        return update_project(
+            project_id,
+            name=payload.name,
+            root_path=payload.root_path,
+            discovery_scope=payload.discovery_scope,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except ProjectError as exc:
@@ -121,9 +128,12 @@ def project_update(project_id: str, payload: ProjectUpdate) -> dict:
 
 
 @router.post("/{project_id}/sync", response_model=ProjectSyncResponse, status_code=202)
-def project_sync(project_id: str) -> dict:
+def project_sync(project_id: str, payload: ProjectSyncRequest | None = None) -> dict:
     try:
-        return sync_project(project_id)
+        return sync_project(
+            project_id,
+            discovery_scope=payload.discovery_scope if payload is not None else None,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except ProjectError as exc:

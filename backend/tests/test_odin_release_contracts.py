@@ -106,6 +106,7 @@ class OdinReleaseMigrationTests(unittest.TestCase):
             snapshot = conn.execute("SELECT * FROM project_snapshots WHERE id = 'snapshot-old'").fetchone()
             membership = conn.execute("SELECT * FROM project_snapshot_sources").fetchone()
             migration = conn.execute("SELECT * FROM schema_migrations WHERE version = 10").fetchone()
+            scope_migration = conn.execute("SELECT * FROM schema_migrations WHERE version = 11").fetchone()
             tables = {
                 row["name"]
                 for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
@@ -122,6 +123,9 @@ class OdinReleaseMigrationTests(unittest.TestCase):
         self.assertEqual(membership["source_id"], "source-old")
         self.assertEqual(membership["stage_status"], "active")
         self.assertEqual(migration["status"], "succeeded")
+        self.assertEqual(scope_migration["status"], "succeeded")
+        self.assertEqual(project["discovery_scope"], "context")
+        self.assertEqual(snapshot["discovery_scope"], "context")
         self.assertTrue({"cli_clients", "cli_pairing_challenges", "cli_sessions", "cli_auth_audit"} <= tables)
         self.assertTrue({"project_id", "project_snapshot_id", "activation_state"} <= source_columns)
         self.assertTrue({"project_id", "project_snapshot_id", "activation_state"} <= chunk_columns)

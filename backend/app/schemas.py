@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 MIN_VAULT_PASSPHRASE_LENGTH = 12
@@ -89,17 +91,20 @@ class ProjectCreate(BaseModel):
     vault_id: str
     root_path: str = Field(min_length=1)
     name: str | None = Field(default=None, min_length=1, max_length=120)
+    discovery_scope: Literal["context", "code"] = "context"
     sync: bool = True
 
 
 class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     root_path: str | None = Field(default=None, min_length=1)
+    discovery_scope: Literal["context", "code"] | None = None
 
 
 class ProjectSnapshotRead(BaseModel):
     id: str
     project_id: str
+    discovery_scope: Literal["context", "code"] = "context"
     source_manifest_hash: str
     git_commit: str | None = None
     branch: str | None = None
@@ -153,6 +158,7 @@ class ProjectRead(BaseModel):
     name: str
     root_path: str
     root_fingerprint: str
+    discovery_scope: Literal["context", "code"] = "context"
     primary_cluster_id: str
     repository_kind: str
     git_remote_fingerprint: str | None = None
@@ -186,6 +192,10 @@ class ProjectSyncResponse(BaseModel):
     snapshot_id: str | None = None
     job_id: str | None = None
     queued: bool = False
+
+
+class ProjectSyncRequest(BaseModel):
+    discovery_scope: Literal["context", "code"] | None = None
 
 
 class ProjectReindexRequest(BaseModel):
