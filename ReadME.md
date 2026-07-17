@@ -97,7 +97,14 @@ Odin is Vault's project-context layer. It registers a repository as a first-clas
 From PowerShell in a source checkout:
 
 ```powershell
-.\odin.ps1 project add . --name "My Project"
+.\odin.ps1 project add . --name "My Project" --scope context
+```
+
+The default `context` scope includes source code plus useful repository documentation and configuration. Use `--scope code` when you want a source-focused index, or change the persisted choice during a later sync:
+
+```powershell
+.\odin.ps1 project add . --name "My Project" --scope code
+.\odin.ps1 project sync . --scope context
 ```
 
 Then ask questions or inspect the project:
@@ -124,7 +131,7 @@ Then ask questions or inspect the project:
 .\odin.ps1 project remove .
 ```
 
-Odin never executes imported code and never writes into the registered repository. Graph and tree views stay out of the way until you explicitly request them.
+Odin never executes imported code and never writes into the registered repository. Scope changes build a candidate snapshot while the last usable snapshot remains active. Graph and tree views stay out of the way until you explicitly request them.
 
 ## How retrieval works
 

@@ -31,6 +31,70 @@
       ]
     }
   ],
+  "django": [
+    {
+      "id": "url_resolution",
+      "question": "Which Django objects resolve an incoming URL path, and where is that resolution implemented?",
+      "required_fact_groups": [
+        ["urlresolver"],
+        ["resolve"],
+        ["django/urls/resolvers.py", "urls/resolvers.py"],
+        ["urlpattern", "url_patterns"]
+      ]
+    },
+    {
+      "id": "model_save",
+      "question": "How does a Django model instance move from Model.save into the lower-level database save flow?",
+      "required_fact_groups": [
+        ["model.save", "save"],
+        ["save_base"],
+        ["_save_table", "save table"],
+        ["django/db/models/base.py", "db/models/base.py"]
+      ]
+    },
+    {
+      "id": "middleware",
+      "question": "Where does Django build its middleware chain and which symbols are responsible?",
+      "required_fact_groups": [
+        ["basehandler"],
+        ["load_middleware"],
+        ["_middleware_chain", "middleware chain"],
+        ["django/core/handlers/base.py", "core/handlers/base.py"]
+      ]
+    }
+  ],
+  "react": [
+    {
+      "id": "create_root",
+      "question": "How does React DOM create a client root and which symbols hold and initialize it?",
+      "required_fact_groups": [
+        ["createroot"],
+        ["reactdomroot"],
+        ["createcontainer"],
+        ["react-dom/src/client/reactdomroot.js", "reactdomroot.js"]
+      ]
+    },
+    {
+      "id": "hooks_dispatch",
+      "question": "How does React's public useState hook reach the active hook implementation?",
+      "required_fact_groups": [
+        ["usestate"],
+        ["resolvedispatcher"],
+        ["dispatcher.usestate", "dispatcher"],
+        ["react/src/reacthooks.js", "reacthooks.js"]
+      ]
+    },
+    {
+      "id": "scheduler_loop",
+      "question": "Which Scheduler symbols run queued callbacks and decide whether work should continue?",
+      "required_fact_groups": [
+        ["workloop"],
+        ["flushwork"],
+        ["shouldyield", "has time remaining", "hastimeremaining"],
+        ["scheduler/src/forks/scheduler.js", "scheduler.js"]
+      ]
+    }
+  ],
   "zustand": [
     {
       "id": "public_apis",

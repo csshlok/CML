@@ -45,6 +45,7 @@ def main() -> int:
         "python": sys.version,
         "graphify_executable": str(graphify),
         "runs_per_tool": args.runs,
+        "odin_discovery_scope": "code",
         "repositories": [],
     }
     for name, repository in repositories:
@@ -95,6 +96,8 @@ def _run_odin(repository: Path, output: Path) -> dict[str, Any]:
         "scripts.backend.benchmark_odin_project",
         str(repository),
         str(output),
+        "--scope",
+        "code",
     ]
     completed, wall_seconds, peak_rss = _run_sampled(command)
     if completed.returncode != 0:

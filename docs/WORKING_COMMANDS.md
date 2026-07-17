@@ -102,10 +102,12 @@ the `odin.ps1` wrapper runs the same CLI:
 
 ```powershell
 .\odin.ps1 auth status
-.\odin.ps1 project add . --name "My Project"
+.\odin.ps1 project add . --name "My Project" --scope context
+.\odin.ps1 project add C:\src\library --name "Library Code" --scope code
 .\odin.ps1 project list
 .\odin.ps1 project status .
 .\odin.ps1 project sync .
+.\odin.ps1 project sync . --scope code
 .\odin.ps1 project reindex . --layer retrieval
 .\odin.ps1 project link . --cluster "Research"
 .\odin.ps1 project explain . register_project
@@ -126,11 +128,15 @@ Odin uses `ODIN_BACKEND_URL` and `ODIN_API_TOKEN`, with the existing `CML_BACKEN
 `CML_API_TOKEN` variables as development fallbacks. Normal desktop use pairs the CLI through
 the approval flow and stores its device credential with Windows user-bound protection. Removing
 an Odin project deletes only CML's imported index and never modifies the repository working tree.
+The persisted `context` scope (the default) includes code, supported documentation, manifests, and
+configuration. The `code` scope retains source-like files and code manifests while excluding general
+prose and configuration. Changing scope during sync builds a candidate snapshot and keeps the prior
+active snapshot usable until activation.
 
 Run the isolated Odin benchmark:
 
 ```powershell
-.\.venv\Scripts\python.exe -m scripts.backend.benchmark_odin_project . tmp\benchmark\odin --retrieval
+.\.venv\Scripts\python.exe -m scripts.backend.benchmark_odin_project . tmp\benchmark\odin --scope code --retrieval
 ```
 
 ## 4. Windows Packaging And Rebuilds

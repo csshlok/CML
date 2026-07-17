@@ -35,11 +35,11 @@ CML is not just a vault UI. It is a context-management layer between the user an
 - Local-first privacy remains a release requirement.
 - Security boundary remains a release requirement: vault unlock, encryption, Bridge approval, parser/browser isolation, renderer hardening, and package integrity.
 
-Odin is the project-context layer. It provides project registration, immutable candidate snapshots, asynchronous synchronization, independent structure and retrieval activation, project-backed clusters, source reconciliation, deterministic code nodes and authoritative edges, unresolved-relationship suggestions, bounded graph/tree/path queries, project-scoped chat and Bridge packets, CLI CRUD/explain/context/graph/tree commands, and a dedicated desktop project workspace. Graph and tree artifacts remain request-only. Odin reads eligible repository files locally and never executes or modifies repository code.
+Odin is the project-context layer. It provides project registration, persisted `context` and `code` discovery scopes, immutable candidate snapshots, asynchronous synchronization, independent structure and retrieval activation, project-backed clusters, source reconciliation, deterministic code nodes and authoritative edges, unresolved-relationship suggestions, bounded graph/tree/path queries, project-scoped chat and Bridge packets, CLI CRUD/explain/context/graph/tree commands, and a dedicated desktop project workspace. `context` is the default and includes supported repository documentation and configuration; `code` keeps source-like files and code manifests. Graph and tree artifacts remain request-only. Odin reads eligible repository files locally and never executes or modifies repository code.
 
 Odin's release plan, parser dependency decision, and external benchmark are local working records intentionally excluded from Git. Current repository truth is captured here and in the implemented code under `backend/app/core/projects.py`, `backend/app/core/project_graph.py`, `backend/app/api/routes/projects.py`, and the desktop project workspace.
 
-Odin's scoped implementation plan is complete. The CLI now pairs through a desktop-approved, Windows user-protected device credential; project sync is durable, cancellable, restart-reconciled, and retrieval-atomic; and pinned offline parsers cover Python, JSON, JavaScript/TypeScript/TSX, Go, Rust, Java, C#, C, and C++. Project interpretation/model-written briefs, cross-project retrieval, watch mode, remote repositories, and macOS/Linux credential helpers remain intentionally deferred.
+Odin's scoped implementation plan is complete. The CLI now pairs through a desktop-approved, Windows user-protected device credential; project sync is durable, cancellable, restart-reconciled, retrieval-atomic, and optionally changes discovery scope; and pinned offline parsers cover Python, JSON, JavaScript/TypeScript/TSX (including module-specific extensions), Go, Rust, Java, C#, C, and C++. Custom discovery rules, project interpretation/model-written briefs, cross-project retrieval, watch mode, remote repositories, and macOS/Linux credential helpers remain intentionally deferred.
 
 ## Current Architecture
 
@@ -123,10 +123,11 @@ The July 13 UI integrity pass also completed:
 
 The Odin release implementation pass also completed:
 
-- schema version 10 adds scoped CLI clients, one-time pairing challenges, short-lived sessions, audit records, project-run progress, candidate membership, layer pointers, and snapshot-scoped retrieval activation
+- schema version 10 adds scoped CLI clients, one-time pairing challenges, short-lived sessions, audit records, project-run progress, candidate membership, layer pointers, and snapshot-scoped retrieval activation; schema version 11 adds persisted project and snapshot discovery scopes with compatibility defaults for existing indexes
 - the desktop writes an atomic non-secret loopback runtime descriptor; the CLI credential helper stores the long-lived device credential with Windows user-bound protection and never accepts it as a command argument
 - pairing, scope enforcement, rotation, revocation, logout, and forget flows are implemented in the backend, CLI, Electron runtime, and Settings CLI Access surface
 - project discovery, structure, retrieval staging, activation, and cleanup run as persisted dependent jobs; ordinary search, chat, graph, source, vector-maintenance, and Bridge reads exclude candidate data
+- the CLI, project API, and desktop project settings expose `context` and `code` discovery scopes; scope changes preserve the current active snapshot while a replacement is indexed
 - parser adapters use pinned grammar wheels packaged offline, preserve retrieval for unsupported/malformed files, record extractor provenance, and keep unresolved dynamic references non-authoritative
 - the canonical `/projects/$projectId` workspace includes live run progress, cancellation, layer health, freshness, scoped questions, settings, folder reconnection, cluster links, layer-specific reindex, run history, and exact-name removal
 - the primary navigation now exposes a `/projects` index with real project status, freshness, synchronization, and direct access to the canonical project workspace; the legacy "Mind" label is now the plain-language "Search" label
@@ -162,6 +163,8 @@ Latest repo-backed validation that already passed for 0.1.7:
 - external Flask benchmark: Odin 140 eligible files, 1,774 nodes, 2,064 relationships, 1.920-second median; Graphify 0.9.17 indexed 92 files, 1,427 nodes, 2,353 relationships, 31.091-second median
 - external Zustand benchmark: Odin 121 eligible files, 1,503 nodes, 1,686 relationships, 1.731-second median; Graphify indexed 58 files, 536 nodes, 695 relationships, 10.586-second median
 - local Qwen2.5-1.5B-Instruct graph-only evaluation: Odin 0.500 mean fact-group recall, Graphify 0.458, no-context baseline 0.250 across six fixed questions; this is directional, small-sample evidence
+- large-repository code-scope sample: Odin indexed 3,029 Django files into 46,975 nodes/81,953 relationships in 79.841 seconds and 4,757 React files into 75,057 nodes/87,535 relationships in 124.472 seconds; Graphify indexed 3,096 and 4,785 files in 664.228 and 956.842 seconds with a broader cross-file relationship vocabulary
+- large-repository Qwen2.5-1.5B-Instruct evaluation: Odin 0.333 mean exact fact-group recall with one fully answered question, Graphify 0.167, and no-context 0.250 across six fixed questions; poor React slice selection and unpenalized hallucinations make this diagnostic evidence, not a general quality ranking
 - Odin Tier A/B golden corpus: deterministic across three runs; all reviewed language fixtures pass
 - TypeScript/JavaScript structure extraction is Tree-sitter AST-based; the obsolete regex fallback has been removed and regression coverage includes nested functions, arrow functions, computed method names, re-exports, comments, and string literals
 - `tree-sitter==0.25.2` is enforced after 0.26.0 produced reproducible native access violations on valid Zustand TypeScript/TSX files
@@ -210,7 +213,7 @@ Reduction now comes from:
 ## Immediate Next Steps
 
 1. Run the remaining general clean-machine and signed-installer release proof.
-2. Expand external graph-quality evaluation beyond Flask and Zustand, including hallucination-aware scoring and more model sizes.
-3. Improve authoritative import/reference/re-export relationships while keeping ambiguous dynamic calls non-authoritative.
+2. Improve graph-slice ranking with exact symbol/path priority, default test/fixture demotion, authoritative relationship expansion, and hallucination-aware scoring.
+3. Improve authoritative import/reference/re-export relationships while keeping ambiguous dynamic calls non-authoritative, then repeat the Django/React evaluation with more model sizes and multiple runs.
 4. Decide when project interpretation and deterministic multi-project retrieval are ready to leave the deferred list.
 5. Continue accessibility QA and packaged Windows account-separation validation.

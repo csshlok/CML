@@ -53,12 +53,15 @@ def main() -> int:
         "max_new_tokens": args.max_new_tokens,
         "cases": [],
     }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    _write_checkpoint(args.output, result)
 
     for case in cases:
         case_questions = questions.get(case.name)
         if not case_questions:
             raise ValueError(f"No questions configured for {case.name}")
         case_result: dict[str, Any] = {"name": case.name, "evaluations": []}
+        result["cases"].append(case_result)
         for question in case_questions:
             contexts = {
                 "none": "No repository graph context was provided.",
@@ -92,20 +95,33 @@ def main() -> int:
                         "wall_seconds": round(elapsed, 3),
                     }
                 )
+                case_result["summary"] = _summary(case_result["evaluations"])
+                _write_checkpoint(args.output, result)
                 print(
                     f"{case.name}/{question['id']}/{tool}: score={score:.2f} wall={elapsed:.2f}s",
                     flush=True,
                 )
         case_result["summary"] = _summary(case_result["evaluations"])
-        result["cases"].append(case_result)
 
     result["summary"] = _summary(
         [evaluation for case in result["cases"] for evaluation in case["evaluations"]]
     )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    _write_checkpoint(args.output, result)
     print(json.dumps(result["summary"], separators=(",", ":")))
     return 0
+
+
+def _write_checkpoint(output: Path, result: dict[str, Any]) -> None:
+    """Keep completed evaluations usable when a long local-model run is interrupted."""
+    evaluations = [
+        evaluation
+        for case in result["cases"]
+        for evaluation in case.get("evaluations", [])
+    ]
+    result["summary"] = _summary(evaluations) if evaluations else {}
+    temporary = output.with_suffix(f"{output.suffix}.tmp")
+    temporary.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    temporary.replace(output)
 
 
 def _parse_case(value: str) -> Case:

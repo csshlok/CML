@@ -14,6 +14,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Benchmark Odin's local project indexing pipeline.")
     parser.add_argument("project_root", type=Path)
     parser.add_argument("data_dir", type=Path)
+    parser.add_argument("--scope", choices=("context", "code"), default="context")
     parser.add_argument(
         "--retrieval",
         action="store_true",
@@ -70,6 +71,7 @@ def main() -> int:
         vault_id="vault-odin-benchmark",
         root_path=str(root),
         name=f"{root.name} benchmark",
+        discovery_scope=args.scope,
         sync=True,
     )
     structure_jobs = 0
@@ -142,6 +144,7 @@ def main() -> int:
         json.dumps(
             {
                 "tool": "odin",
+                "discovery_scope": project["discovery_scope"],
                 "structure_wall_seconds": round(structure_wall_seconds, 3),
                 "full_wall_seconds": round(wall_seconds, 3),
                 "cpu_seconds": round(cpu_seconds, 3),

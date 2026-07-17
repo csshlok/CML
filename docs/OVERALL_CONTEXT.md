@@ -20,8 +20,9 @@ The live architecture is now RAG-only:
 - chat and Bridge share a retrieval-first packet contract
 - Odin can append bounded, snapshot-proven graph/tree context for explicit internal or external requests without exposing a permanent graph UI
 - Odin synchronization runs through immutable candidate manifests and persisted discovery, structure, retrieval, activation, and cleanup jobs; active retrieval membership changes only in the activation transaction
+- Odin projects persist either a broad `context` discovery scope or a source-focused `code` scope; the choice is available in the CLI, API, and project settings and is recorded on each snapshot
 - Odin CLI access uses desktop-approved scoped clients, a non-secret runtime descriptor, short-lived sessions, and a Windows user-protected credential helper
-- Odin structure extraction uses a versioned offline registry for Python, JSON, JavaScript/TypeScript/TSX, Go, Rust, Java, C#, C, and C++
+- Odin structure extraction uses a versioned offline registry for Python, JSON, JavaScript/TypeScript/TSX (including `.mjs`, `.cjs`, `.mts`, and `.cts`), Go, Rust, Java, C#, C, and C++
 - token reduction comes from packet shaping and cache reuse, not adapter compression
 - desktop setup and packaged runtime no longer expect a second expert runtime
 
@@ -79,6 +80,8 @@ Scale and token-reduction validation passed:
 - desktop project, Tasks, and answer-evidence interactions passed against an isolated live backend at the 1024 px minimum without page-level horizontal overflow or console errors
 - three clean external runs were deterministic for both tools: Odin indexed Flask in a 1.920-second median and Zustand in 1.731 seconds; Graphify 0.9.17 took 31.091 and 10.586 seconds respectively under its different `--code-only` scope
 - a six-question local Qwen2.5-1.5B-Instruct evaluation scored Odin graph slices at 0.500 mean fact-group recall, Graphify at 0.458, and no graph at 0.250; the small gap is directional rather than a general quality ranking
+- a one-run, code-scope follow-up on Django and React kept file counts within 2.2% and 0.6% between tools; Odin was 8.32x and 7.69x faster with substantially lower sampled process-tree memory, while Graphify retained a broader cross-file relationship vocabulary
+- the Django/React Qwen2.5-1.5B-Instruct follow-up scored Odin at 0.333 mean exact fact-group recall, Graphify at 0.167, and no graph at 0.250; only one answer was complete, exposing graph-slice ranking and hallucination grading as the next interpretability bottlenecks
 - `tree-sitter` is pinned to 0.25.2 because 0.26.0 caused reproducible native access violations on valid external TypeScript/TSX inputs
 
 ## Odin Project Context
@@ -87,12 +90,13 @@ Odin's scoped release implementation is complete in live code.
 
 The active project contract now separates:
 
+- persisted discovery scope (`context` by default or source-focused `code`)
 - accepted manifest freshness
 - structure readiness and `active_structure_snapshot_id`
 - retrieval readiness and `active_retrieval_snapshot_id`
 - optional interpretation, which remains unavailable unless a future local interpretation layer is enabled
 
-Candidate sources have no active cluster membership and use candidate-only chunk state. Discovery and structure may become visible independently, but ordinary retrieval continues to resolve through the prior active snapshot until candidate chunks and membership are activated atomically. Cancellation and interrupted-worker reconciliation preserve the prior usable index.
+Candidate sources have no active cluster membership and use candidate-only chunk state. Discovery and structure may become visible independently, but ordinary retrieval continues to resolve through the prior active snapshot until candidate chunks and membership are activated atomically. This also applies when the discovery scope changes. Cancellation and interrupted-worker reconciliation preserve the prior usable index. Custom include/exclude scopes remain deliberately deferred.
 
 The canonical desktop project route loads aggregate project facts rather than all files or graph nodes. It exposes live progress, cancellation, layer status, freshness, scoped chat entry, run history, folder reconnection, cluster links, layer-specific reindex, and safe removal. Graph/tree views remain on demand. Project-grounded answer citations disclose only the evidence used by that answer, including path, line span, symbol, snapshot/commit, excerpt, and local file actions.
 
