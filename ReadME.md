@@ -252,7 +252,7 @@ Current context-packet benchmarks report:
 | Average reduction | 44.43% |
 | Warm-cache average reduction | 94.8% |
 
-The current Odin structural benchmark on this repository indexed 353 files into 3,740 nodes and 7,498 authoritative edges, with a 2.47-second median cold wall time. These are development benchmarks, not broad production guarantees.
+Representative three-run external benchmarks currently show Odin indexing Flask in a 1.920-second median and Zustand in 1.731 seconds. Graphify 0.9.17 took 31.091 and 10.586 seconds respectively under its different `--code-only` scope. A six-question local Qwen2.5-1.5B-Instruct check scored bounded Odin graph context at 0.500 mean fact-group recall, Graphify at 0.458, and no graph at 0.250. These are directional development measurements—not broad production guarantees or a claim of semantic parity.
 
 ## Architecture
 
@@ -287,9 +287,18 @@ Run the main validation checks before committing:
 ```powershell
 npm run lint
 npm run build
-.\.venv\Scripts\python.exe -m pytest -q backend/tests
+.\scripts\backend\run-tests.ps1 -Tier quick
+.\scripts\backend\run-tests.ps1 -Tier integration
+.\scripts\backend\run-tests.ps1 -Tier system
+.\scripts\backend\run-tests.ps1 -Tier benchmark
 .\.venv\Scripts\python.exe -m compileall -q backend\app scripts\backend backend\tests
 npm run security:renderer
+```
+
+The 50,000-file scale tier is intentionally manual because it has a longer Windows runtime budget:
+
+```powershell
+.\scripts\backend\run-tests.ps1 -Tier scale
 ```
 
 Build a Windows package with:
@@ -307,9 +316,8 @@ The core local workflow is implemented: vaults, ingestion, indexing, retrieval, 
 Before a public V1 release, the project still needs:
 
 - clean-machine Windows installer validation
-- scoped Odin CLI device authentication
-- cancellable, atomic Odin background sync
-- broader deterministic language-parser coverage
+- signed-installer and Windows account-separation proof
+- broader external graph-quality and parser-performance evaluation
 - additional accessibility and interaction QA
 - continued packaging and security hardening
 

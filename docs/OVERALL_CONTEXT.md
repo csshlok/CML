@@ -1,6 +1,6 @@
 # Overall Context
 
-Last updated: 2026-07-13
+Last updated: 2026-07-17
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
@@ -63,7 +63,10 @@ Broader regression validation passed:
 
 - focused backend regression slice: `127 passed`
 - Electron behavior tests: `42 passed`
-- Complete backend suite: `497 passed`, `4 skipped`
+- the full set of 499 backend tests is classified into non-overlapping quick, integration, system, benchmark, and scale tiers
+- quick: `147 passed`; integration: `214 passed`; system: `120 passed`
+- benchmark: `16 passed`, `1 skipped` when optional TurboVec was unavailable
+- manually dispatched 50,000-file scale test: `1 passed` in 555.50 seconds
 - npm dependency audit: `0 vulnerabilities`
 - desktop typecheck and production build passed after the July 13 cleanup
 
@@ -74,6 +77,9 @@ Scale and token-reduction validation passed:
 - Odin's reviewed language corpus is deterministic across three runs and preserves unsupported/malformed files for text retrieval
 - the opt-in 50,000-file Odin discovery gate passed in `126.2 s` with `68.3 MiB` peak traced memory
 - desktop project, Tasks, and answer-evidence interactions passed against an isolated live backend at the 1024 px minimum without page-level horizontal overflow or console errors
+- three clean external runs were deterministic for both tools: Odin indexed Flask in a 1.920-second median and Zustand in 1.731 seconds; Graphify 0.9.17 took 31.091 and 10.586 seconds respectively under its different `--code-only` scope
+- a six-question local Qwen2.5-1.5B-Instruct evaluation scored Odin graph slices at 0.500 mean fact-group recall, Graphify at 0.458, and no graph at 0.250; the small gap is directional rather than a general quality ranking
+- `tree-sitter` is pinned to 0.25.2 because 0.26.0 caused reproducible native access violations on valid external TypeScript/TSX inputs
 
 ## Odin Project Context
 
@@ -139,7 +145,7 @@ Changes that now define current behavior:
 - README and live interface copy now address users directly and reserve backend/runtime terminology for advanced settings and diagnostics.
 - Historical UI audit, ingestion-reference, and packaging-investigation documents are retained with status notices so their evidence remains available without being mistaken for current implementation truth.
 
-The Odin architecture/UI/benchmark/ADR drafts remain useful local working notes but are intentionally ignored by Git. Implemented Odin behavior and release status must stay summarized in `PROJECT_CONTEXT.md`. The desktop now includes a first-class Projects navigation destination and lightweight project index; project details remain centered on status, scoped questions, and run activity, with graph/tree artifacts shown only when requested.
+The Odin release plan, parser dependency decision, and external benchmark are local working records intentionally excluded from Git. Implemented behavior and release status remain summarized in `PROJECT_CONTEXT.md`. The desktop includes a first-class Projects navigation destination and lightweight project index; project details remain centered on status, scoped questions, and run activity, with graph/tree artifacts shown only when requested.
 
 Important distinction:
 

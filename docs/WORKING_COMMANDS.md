@@ -123,16 +123,15 @@ For direct CLI development, use the module form:
 ```
 
 Odin uses `ODIN_BACKEND_URL` and `ODIN_API_TOKEN`, with the existing `CML_BACKEND_URL` and
-`CML_API_TOKEN` variables as fallbacks. Removing an Odin project deletes only CML's imported
-index and never modifies the repository working tree.
+`CML_API_TOKEN` variables as development fallbacks. Normal desktop use pairs the CLI through
+the approval flow and stores its device credential with Windows user-bound protection. Removing
+an Odin project deletes only CML's imported index and never modifies the repository working tree.
 
 Run the isolated Odin benchmark:
 
 ```powershell
-.\.venv\Scripts\python.exe -m scripts.backend.benchmark_odin_project . .tmp\benchmark\odin --retrieval
+.\.venv\Scripts\python.exe -m scripts.backend.benchmark_odin_project . tmp\benchmark\odin --retrieval
 ```
-
-The current CLI pairing command is specified but not release-ready. Development commands still require the desktop-managed local API token.
 
 ## 4. Windows Packaging And Rebuilds
 
@@ -251,16 +250,17 @@ Versioning is split by surface, but backend runtime metadata is centralized now:
 
 ### 5.1 Recommended Version Bump Order
 
-Update the root npm package version:
+Set the intended version once, then update the root npm package:
 
 ```powershell
-npm version 0.1.6 --no-git-tag-version
+$version = "0.1.8"
+npm version $version --no-git-tag-version
 ```
 
 Update the desktop app version:
 
 ```powershell
-npm version 0.1.6 --workspace @cml/desktop --no-git-tag-version
+npm version $version --workspace @cml/desktop --no-git-tag-version
 ```
 
 Then update the backend package version in:
@@ -278,7 +278,8 @@ npm install --package-lock-only
 If you want to check for stale version strings before committing, search for the old version directly:
 
 ```powershell
-rg -n "0\\.1\\.4|0\\.1\\.0" package.json apps\desktop\package.json backend\pyproject.toml backend\app
+$oldVersion = "0.1.7"
+rg -n ([regex]::Escape($oldVersion)) package.json apps\desktop\package.json backend\pyproject.toml backend\app
 ```
 
 ### 5.2 Important Version Rules
@@ -330,10 +331,25 @@ That run:
 
 ## 7. Daily Validation Commands
 
-Run all backend tests:
+Run the CI-equivalent backend tiers independently:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q backend/tests
+.\scripts\backend\run-tests.ps1 -Tier quick
+.\scripts\backend\run-tests.ps1 -Tier integration
+.\scripts\backend\run-tests.ps1 -Tier system
+.\scripts\backend\run-tests.ps1 -Tier benchmark
+```
+
+Run the opt-in 50,000-file gate separately; it has a longer Windows budget and is not part of ordinary CI:
+
+```powershell
+.\scripts\backend\run-tests.ps1 -Tier scale
+```
+
+Run all non-scale backend tests in one local process when tier isolation is not needed:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q backend/tests -m "not scale"
 ```
 
 Run the targeted backend tests that have been useful during packaging work:

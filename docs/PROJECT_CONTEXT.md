@@ -1,6 +1,6 @@
 # Project Context And Progress
 
-Last updated: 2026-07-14
+Last updated: 2026-07-17
 
 ## Operating Rule
 
@@ -37,7 +37,7 @@ CML is not just a vault UI. It is a context-management layer between the user an
 
 Odin is the project-context layer. It provides project registration, immutable candidate snapshots, asynchronous synchronization, independent structure and retrieval activation, project-backed clusters, source reconciliation, deterministic code nodes and authoritative edges, unresolved-relationship suggestions, bounded graph/tree/path queries, project-scoped chat and Bridge packets, CLI CRUD/explain/context/graph/tree commands, and a dedicated desktop project workspace. Graph and tree artifacts remain request-only. Odin reads eligible repository files locally and never executes or modifies repository code.
 
-Odin architecture, UI exploration, and benchmark notes are local working documents and are intentionally ignored by Git. Current repository truth is captured here and in the implemented code under `backend/app/core/projects.py`, `backend/app/core/project_graph.py`, `backend/app/api/routes/projects.py`, and the desktop project workspace.
+Odin's release plan, parser dependency decision, and external benchmark are local working records intentionally excluded from Git. Current repository truth is captured here and in the implemented code under `backend/app/core/projects.py`, `backend/app/core/project_graph.py`, `backend/app/api/routes/projects.py`, and the desktop project workspace.
 
 Odin's scoped implementation plan is complete. The CLI now pairs through a desktop-approved, Windows user-protected device credential; project sync is durable, cancellable, restart-reconciled, and retrieval-atomic; and pinned offline parsers cover Python, JSON, JavaScript/TypeScript/TSX, Go, Rust, Java, C#, C, and C++. Project interpretation/model-written briefs, cross-project retrieval, watch mode, remote repositories, and macOS/Linux credential helpers remain intentionally deferred.
 
@@ -139,7 +139,7 @@ Authoritative migration record:
 
 ## Current Validation Status
 
-Latest repo-backed validation that already passed:
+Latest repo-backed validation that already passed for 0.1.7:
 
 - live isolated backend search returned grounded citations
 - live isolated `chat/context` returned grounded citations and retrieval fallback output
@@ -152,14 +152,19 @@ Latest repo-backed validation that already passed:
 - desktop production typecheck/build: passed on 2026-07-13
 - Electron behavior tests: `42 passed`
 - encrypted storage regression tests: `7 passed`
-- complete backend suite: `497 passed`, `4 skipped` on 2026-07-13
-- root `pytest` discovery is scoped to `backend/tests` so packaged runtimes, releases, and local comparison clones are not collected
+- all 499 backend tests are assigned to one CI tier: quick (147), integration (214), system (120), benchmark (17), or scale (1)
+- quick: `147 passed`; integration: `214 passed`; system: `120 passed`
+- benchmark: `16 passed`, `1 skipped` because the optional TurboVec runtime was absent
+- manually dispatched 50,000-file scale gate: `1 passed` in 555.50 seconds under its 900-second Windows budget
+- root `pytest` discovery is scoped to `backend/tests`; per-test timeouts, fault diagnostics, and tier-specific budgets prevent silent CI stalls
 - npm dependency audit: `0 vulnerabilities` after compatible lockfile updates
 - primary Electron routes: no visible overflow at the supported 1024 px minimum and at 1440 px
-- Odin structural benchmark on this repo: ready, 353 files, 3,740 nodes, 7,498 authoritative edges; 2.47 s median cold wall time
-- Graphify 0.9.13 pinned comparison: completed; see the benchmark document
+- external Flask benchmark: Odin 140 eligible files, 1,774 nodes, 2,064 relationships, 1.920-second median; Graphify 0.9.17 indexed 92 files, 1,427 nodes, 2,353 relationships, 31.091-second median
+- external Zustand benchmark: Odin 121 eligible files, 1,503 nodes, 1,686 relationships, 1.731-second median; Graphify indexed 58 files, 536 nodes, 695 relationships, 10.586-second median
+- local Qwen2.5-1.5B-Instruct graph-only evaluation: Odin 0.500 mean fact-group recall, Graphify 0.458, no-context baseline 0.250 across six fixed questions; this is directional, small-sample evidence
 - Odin Tier A/B golden corpus: deterministic across three runs; all reviewed language fixtures pass
 - TypeScript/JavaScript structure extraction is Tree-sitter AST-based; the obsolete regex fallback has been removed and regression coverage includes nested functions, arrow functions, computed method names, re-exports, comments, and string literals
+- `tree-sitter==0.25.2` is enforced after 0.26.0 produced reproducible native access violations on valid Zustand TypeScript/TSX files
 - Odin 50,000-file discovery gate: `126.2 s`, `68.3 MiB` peak traced memory
 - Odin project/task/evidence UI: rendered against an isolated live backend at 1024 px with no page-level horizontal overflow or console errors; canonical cluster redirect and evidence follow-up actions passed
 - renderer HTML safety and packaged helper-layout audits: passed; helper manifest contains 245 verified entries with no writable-layout overlaps
@@ -205,6 +210,7 @@ Reduction now comes from:
 ## Immediate Next Steps
 
 1. Run the remaining general clean-machine and signed-installer release proof.
-2. Measure parser and indexing performance on representative external Tier B repositories in addition to the committed fixture corpus.
-3. Decide when project interpretation and deterministic multi-project retrieval are ready to leave the deferred list.
-4. Continue accessibility QA and packaged Windows account-separation validation.
+2. Expand external graph-quality evaluation beyond Flask and Zustand, including hallucination-aware scoring and more model sizes.
+3. Improve authoritative import/reference/re-export relationships while keeping ambiguous dynamic calls non-authoritative.
+4. Decide when project interpretation and deterministic multi-project retrieval are ready to leave the deferred list.
+5. Continue accessibility QA and packaged Windows account-separation validation.
