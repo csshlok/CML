@@ -92,6 +92,7 @@ class OdinProjectTests(unittest.TestCase):
         (self.repo / "settings.yaml").write_text("feature: true\n", encoding="utf-8")
         (self.repo / "src" / "worker.mts").write_text("export const worker = true;\n", encoding="utf-8")
         (self.repo / "src" / "compat.cjs").write_text("module.exports = {};\n", encoding="utf-8")
+        (self.repo / "src" / "contracts.pyi").write_text("def authorize(token: str) -> bool: ...\n", encoding="utf-8")
 
         context = discover_project(self.repo, discovery_scope="context")
         code = discover_project(self.repo, discovery_scope="code")
@@ -100,7 +101,10 @@ class OdinProjectTests(unittest.TestCase):
         self.assertEqual(code.discovery_scope, "code")
         self.assertEqual(
             {item.relative_path for item in code.files},
-            {"package.json", "src/auth.ts", "src/compat.cjs", "src/main.ts", "src/worker.mts"},
+            {
+                "package.json", "src/auth.ts", "src/compat.cjs", "src/contracts.pyi",
+                "src/main.ts", "src/worker.mts",
+            },
         )
         self.assertTrue({"README.md", "settings.yaml"} <= {item.relative_path for item in context.files})
         self.assertNotEqual(context.manifest_hash, code.manifest_hash)
@@ -392,6 +396,178 @@ class OdinProjectTests(unittest.TestCase):
         self.assertEqual([node["display_label"] for node in result["path"]], ["start", "authorize"])
         self.assertEqual(result["edges"][0]["edge_type"], "calls")
 
+    def test_node_insertion_is_idempotent_within_a_snapshot(self) -> None:
+        from backend.app.core.code_structure import _insert_node, _path_key
+        from backend.app.core.database import connect, utc_now
+
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        values = {
+            "project_id": project["id"],
+            "snapshot_id": project["active_structure_snapshot_id"],
+            "qualified_id": "test:idempotent-node",
+            "kind": "function",
+            "language": "Python",
+            "label": "idempotent",
+            "relative_path": "src/idempotent.py",
+            "source_id": None,
+            "signature": "idempotent()",
+            "content_hash": "hash",
+            "now": utc_now(),
+        }
+        with connect() as conn:
+            first = _insert_node(conn, **values)
+            second = _insert_node(conn, **values)
+            upper = _insert_node(
+                conn, **{**values, "qualified_id": f"file:{_path_key('src/Thing.ts')}", "relative_path": "src/Thing.ts"},
+            )
+            lower = _insert_node(
+                conn, **{**values, "qualified_id": f"file:{_path_key('src/thing.ts')}", "relative_path": "src/thing.ts"},
+            )
+            count = conn.execute(
+                "SELECT COUNT(*) AS total FROM code_nodes WHERE snapshot_id = ? AND qualified_id = ?",
+                (values["snapshot_id"], values["qualified_id"]),
+            ).fetchone()["total"]
+
+        self.assertEqual(first, second)
+        self.assertEqual(count, 1)
+        self.assertNotEqual(upper, lower)
+
+    def test_import_resolution_is_language_aware_and_rejects_root_escape(self) -> None:
+        from backend.app.core.code_structure import _module_file_index, _resolve_import
+
+        index = _module_file_index({
+            "lib/utils.ts": "node-utils",
+            "some.module.js": "node-dotted-js",
+            "django/db/utils.py": "node-python-relative",
+            "flask/helpers.py": "node-python-absolute",
+            "types/client.py": "node-python-runtime",
+            "types/client.pyi": "node-python-stub",
+        })
+
+        self.assertEqual(_resolve_import("src/components/Button.tsx", "../../lib/utils", index), "lib/utils.ts")
+        self.assertIsNone(_resolve_import("src/components/Button.tsx", "../../../outside", index))
+        self.assertEqual(_resolve_import("src/main.js", "some.module.js", index), "some.module.js")
+        self.assertEqual(_resolve_import("django/db/models/base.py", "..utils", index), "django/db/utils.py")
+        self.assertEqual(_resolve_import("app.py", "flask.helpers", index), "flask/helpers.py")
+        self.assertEqual(_resolve_import("app.py", "types.client", index), "types/client.pyi")
+
+    def test_file_roles_and_context_terms_are_project_agnostic(self) -> None:
+        from backend.app.api.routes.projects import _context_candidate_score, _context_query_terms
+        from backend.app.core.projects import _file_role
+
+        self.assertEqual(_file_role("pkg/test_auth.py", "test_auth.py"), "test")
+        self.assertEqual(_file_role("pkg/auth_test.py", "auth_test.py"), "test")
+        self.assertEqual(_file_role("src/__tests__/auth.ts", "auth.ts"), "test")
+        self.assertEqual(_file_role("src/auth.spec.ts", "auth.spec.ts"), "test")
+        self.assertEqual(_file_role("src/Button.stories.tsx", "button.stories.tsx"), "test")
+        self.assertEqual(_file_role("types/api.pyi", "api.pyi"), "stub")
+        self.assertEqual(_file_role("src/contest.py", "contest.py"), "source")
+        self.assertEqual(_context_query_terms("How does useState work in the project?"), ["useState"])
+
+        source = {"display_label": "useState", "qualified_id": "tsx:hooks:useState", "relative_path": "src/hooks.ts", "file_role": "source"}
+        test = {**source, "relative_path": "src/__tests__/hooks.test.ts", "file_role": "test"}
+        self.assertLess(_context_candidate_score(source, "useState"), _context_candidate_score(test, "useState"))
+
+    def test_graph_search_exposes_snapshot_file_roles_for_context_ranking(self) -> None:
+        from backend.app.api.routes.projects import _context_candidate_score
+        from backend.app.core.project_graph import find_nodes
+
+        (self.repo / "src" / "auth.test.ts").write_text(
+            "export function authorize() { return false; }\n",
+            encoding="utf-8",
+        )
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        matches = find_nodes(project["id"], "authorize", limit=10)
+        roles = {match["file_role"] for match in matches if match["display_label"] == "authorize"}
+        ranked = sorted(matches, key=lambda match: _context_candidate_score(match, "authorize"))
+
+        self.assertEqual(roles, {"source", "test"})
+        self.assertEqual(ranked[0]["file_role"], "source")
+
+    def test_named_imports_and_barrel_exports_disambiguate_call_targets(self) -> None:
+        from backend.app.core.database import connect
+
+        (self.repo / "src" / "utils.ts").write_text(
+            "export function target() { return 1; }\n",
+            encoding="utf-8",
+        )
+        (self.repo / "src" / "other.ts").write_text(
+            "export function target() { return 2; }\n",
+            encoding="utf-8",
+        )
+        (self.repo / "src" / "index.ts").write_text(
+            "export { target } from './utils';\n",
+            encoding="utf-8",
+        )
+        (self.repo / "src" / "consumer.ts").write_text(
+            "import { target as chosen } from './index';\nexport function invokeImported() { return chosen(); }\n",
+            encoding="utf-8",
+        )
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+
+        with connect() as conn:
+            calls = conn.execute(
+                """
+                SELECT source.display_label AS source_label, target.display_label AS target_label,
+                       target.relative_path AS target_path
+                FROM code_edges edge
+                JOIN code_nodes source ON source.id = edge.source_node_id
+                JOIN code_nodes target ON target.id = edge.target_node_id
+                WHERE edge.project_id = ? AND edge.snapshot_id = ? AND edge.edge_type = 'calls'
+                  AND source.display_label = 'invokeImported'
+                """,
+                (project["id"], project["active_structure_snapshot_id"]),
+            ).fetchall()
+
+        self.assertEqual(
+            [(row["source_label"], row["target_label"], row["target_path"]) for row in calls],
+            [("invokeImported", "target", "src/utils.ts")],
+        )
+
+    def test_shortest_path_enforces_node_and_edge_budgets_without_overshoot(self) -> None:
+        from backend.app.core.code_structure import _insert_edge, _insert_node
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.project_graph import shortest_path
+
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        snapshot_id = project["active_structure_snapshot_id"]
+        now = utc_now()
+        with connect() as conn:
+            source = _insert_node(
+                conn, project_id=project["id"], snapshot_id=snapshot_id,
+                qualified_id="budget:source", kind="function", language="Python",
+                label="budgetSource", relative_path="budget.py", source_id=None,
+                signature="budgetSource()", content_hash="source", now=now,
+            )
+            _insert_node(
+                conn, project_id=project["id"], snapshot_id=snapshot_id,
+                qualified_id="budget:target", kind="function", language="Python",
+                label="budgetTarget", relative_path="budget.py", source_id=None,
+                signature="budgetTarget()", content_hash="target", now=now,
+            )
+            for index in range(12):
+                leaf = _insert_node(
+                    conn, project_id=project["id"], snapshot_id=snapshot_id,
+                    qualified_id=f"budget:leaf:{index}", kind="function", language="Python",
+                    label=f"budgetLeaf{index}", relative_path="budget.py", source_id=None,
+                    signature=f"budgetLeaf{index}()", content_hash=str(index), now=now,
+                )
+                _insert_edge(
+                    conn, project["id"], snapshot_id, source, leaf, "calls", None, index + 1, now,
+                )
+
+        node_limited = shortest_path(
+            project["id"], "budgetSource", "budgetTarget", max_nodes=10, max_edges=100,
+        )
+        edge_limited = shortest_path(
+            project["id"], "budgetSource", "budgetTarget", max_nodes=100, max_edges=10,
+        )
+
+        self.assertEqual(node_limited["status"], "node_budget_exceeded")
+        self.assertLessEqual(node_limited["visited_nodes"], 10)
+        self.assertEqual(edge_limited["status"], "edge_budget_exceeded")
+        self.assertLessEqual(edge_limited["examined_edges"], 10)
+
     def test_project_chat_session_persists_project_scope(self) -> None:
         from backend.app.api.routes.chat import create_chat_session
         from backend.app.core.projects import register_project
@@ -415,9 +591,61 @@ class OdinProjectTests(unittest.TestCase):
         self.assertLessEqual(len(view["nodes"]), 20)
         self.assertTrue(any(node["label"] == "authorize" for node in view["nodes"]))
         self.assertTrue(any(edge["type"] in {"calls", "contains", "exports"} for edge in view["edges"]))
+        self.assertEqual(view["direction"], "outbound")
         packet = graph_view_markdown(view)
         self.assertIn("# Odin Graph Context", packet)
         self.assertIn("authorize", packet)
+
+    def test_graph_view_direction_prioritizes_the_requested_edge_orientation(self) -> None:
+        from backend.app.core.code_structure import _insert_edge, _insert_node
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.project_graph import graph_view
+        from backend.app.core.projects import register_project
+
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        snapshot_id = project["active_snapshot_id"]
+        now = utc_now()
+        with connect() as conn:
+            root = _insert_node(
+                conn, project_id=project["id"], snapshot_id=snapshot_id,
+                qualified_id="direction:root", kind="function", language="TypeScript",
+                label="directionRoot", relative_path="src/direction.ts", source_id=None,
+                signature="directionRoot()", content_hash="root", now=now,
+            )
+            for index in range(12):
+                inbound = _insert_node(
+                    conn, project_id=project["id"], snapshot_id=snapshot_id,
+                    qualified_id=f"orientation:inbound:{index}", kind="function", language="TypeScript",
+                    label=f"inboundCaller{index}", relative_path="src/inbound.ts", source_id=None,
+                    signature=f"inboundCaller{index}()", content_hash=f"inbound-{index}", now=now,
+                )
+                outbound = _insert_node(
+                    conn, project_id=project["id"], snapshot_id=snapshot_id,
+                    qualified_id=f"orientation:outbound:{index}", kind="function", language="TypeScript",
+                    label=f"outboundCallee{index}", relative_path="src/outbound.ts", source_id=None,
+                    signature=f"outboundCallee{index}()", content_hash=f"outbound-{index}", now=now,
+                )
+                # Insert inbound first so insertion order cannot mask direction ordering.
+                _insert_edge(conn, project["id"], snapshot_id, inbound, root, "calls", None, index + 1, now)
+                _insert_edge(conn, project["id"], snapshot_id, root, outbound, "calls", None, index + 1, now)
+
+        outbound_view = graph_view(
+            project["id"], mode="graph", query="directionRoot", max_depth=1,
+            max_nodes=10, direction="outbound",
+        )
+        inbound_view = graph_view(
+            project["id"], mode="graph", query="directionRoot", max_depth=1,
+            max_nodes=10, direction="inbound",
+        )
+
+        outbound_labels = {node["label"] for node in outbound_view["nodes"]}
+        inbound_labels = {node["label"] for node in inbound_view["nodes"]}
+        self.assertIn("directionRoot", outbound_labels)
+        self.assertTrue(any(label.startswith("outboundCallee") for label in outbound_labels))
+        self.assertFalse(any(label.startswith("inboundCaller") for label in outbound_labels))
+        self.assertIn("directionRoot", inbound_labels)
+        self.assertTrue(any(label.startswith("inboundCaller") for label in inbound_labels))
+        self.assertFalse(any(label.startswith("outboundCallee") for label in inbound_labels))
 
     def test_tree_view_builds_hidden_project_file_symbol_hierarchy(self) -> None:
         from backend.app.core.project_graph import graph_view

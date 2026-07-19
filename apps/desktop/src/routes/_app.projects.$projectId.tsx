@@ -127,6 +127,7 @@ function ProjectWorkspace() {
               <p className="mt-3 flex flex-wrap gap-x-2 gap-y-1 text-sm text-muted-foreground">
                 {project.default_branch && <span className="inline-flex items-center gap-1"><GitBranch className="h-3.5 w-3.5" /> {project.default_branch}</span>}
                 {commit && <span>Indexed at {commit}</span>}
+                {project.changed_file_count > 0 && <span role="status" className="inline-flex items-center rounded border border-[var(--status-warn)] bg-[var(--status-warn-bg)] px-2 py-0.5 text-xs font-medium text-foreground" title="Synchronize to include these working-tree changes in Odin answers.">{project.changed_file_count.toLocaleString()} {project.changed_file_count === 1 ? "change" : "changes"} newer than index</span>}
                 <span>{project.source_count.toLocaleString()} files</span>
               </p>
             </div>
@@ -178,7 +179,16 @@ function RunStrip({ run, project, onCancel }: { run: ProjectIndexRunRecord; proj
   const total = run.phase_total_count || run.eligible_total;
   const complete = run.phase_completed_count || run.completed_count;
   const percent = total ? Math.min(100, Math.round((complete / total) * 100)) : 0;
-  return <section aria-label="Project indexing progress" className="mt-5 rounded-md border border-border bg-card px-4 py-3"><div className="flex flex-wrap items-center justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2 text-sm font-medium"><Clock3 className="h-4 w-4 text-primary" /><span className="capitalize">{run.phase.replaceAll("_", " ")}</span></div><p className="mt-1 text-xs text-muted-foreground">{complete.toLocaleString()} / {total.toLocaleString()} eligible files · the active {project.active_retrieval_snapshot_id ? "index remains available" : "index is being prepared"}</p></div><div className="flex gap-2"><Button variant="outline" size="sm" onClick={onCancel}><Square className="h-3.5 w-3.5" /> Cancel</Button><Button variant="outline" size="sm" asChild><Link to="/tasks">View task</Link></Button></div></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><div className="h-full bg-primary transition-[width] motion-reduce:transition-none" style={{ width: `${percent}%` }} /></div></section>;
+  const phase = projectRunPhase(run.phase);
+  return <section aria-label="Project indexing progress" className="mt-5 rounded-md border border-border bg-card px-4 py-3"><div className="flex flex-wrap items-center justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2 text-sm font-medium"><Clock3 className="h-4 w-4 text-primary" /><span>Step {phase.step} of 4</span><span aria-hidden="true" className="text-muted-foreground">·</span><span>{phase.label}</span></div><p className="mt-1 text-xs text-muted-foreground">{total ? `${complete.toLocaleString()} / ${total.toLocaleString()} files in this phase` : "Preparing this phase"} · the active {project.active_retrieval_snapshot_id ? "index remains available" : "index is being prepared"}</p></div><div className="flex gap-2"><Button variant="outline" size="sm" onClick={onCancel}><Square className="h-3.5 w-3.5" /> Cancel</Button><Button variant="outline" size="sm" asChild><Link to="/tasks">View task</Link></Button></div></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${phase.label}: ${percent}%`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><div className="h-full bg-primary transition-[width] motion-reduce:transition-none" style={{ width: `${percent}%` }} /></div></section>;
+}
+
+function projectRunPhase(value: string) {
+  const phase = value.toLowerCase();
+  if (phase.startsWith("discover") || phase === "candidate_build") return { step: 1, label: "Discovering files" };
+  if (phase.startsWith("structure")) return { step: 2, label: "Building structure" };
+  if (phase.startsWith("retrieval")) return { step: 3, label: "Preparing search" };
+  return { step: 4, label: "Activating index" };
 }
 
 function ProjectScopeSettings({ project, busy, onChange }: { project: ProjectRecord; busy: boolean; onChange: (scope: "context" | "code") => void }) {

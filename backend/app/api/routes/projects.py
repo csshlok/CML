@@ -240,11 +240,12 @@ def project_graph_view(
     max_depth: int = 2,
     max_nodes: int = 120,
     edge_type: list[str] | None = Query(default=None),
+    direction: str = Query(default="outbound", pattern="^(outbound|inbound|balanced)$"),
 ) -> dict:
     try:
         return graph_view(
             project_id, mode=mode, query=q, root=root, max_depth=max_depth,
-            max_nodes=max_nodes, edge_types=edge_type,
+            max_nodes=max_nodes, edge_types=edge_type, direction=direction,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
@@ -262,11 +263,12 @@ def project_graph_export(
     max_depth: int = 2,
     max_nodes: int = 160,
     edge_type: list[str] | None = Query(default=None),
+    direction: str = Query(default="outbound", pattern="^(outbound|inbound|balanced)$"),
 ):
     try:
         view = graph_view(
             project_id, mode=mode, query=q, root=root, max_depth=max_depth,
-            max_nodes=max_nodes, edge_types=edge_type,
+            max_nodes=max_nodes, edge_types=edge_type, direction=direction,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
@@ -290,29 +292,20 @@ def project_context(project_id: str, payload: ProjectContextRequest) -> dict:
         token_budget=payload.limit,
         mode=payload.mode,
     )
-    structural_candidates: list[tuple[int, dict]] = []
-    seen_nodes: set[str] = set()
-    stopwords = {"about", "does", "from", "have", "how", "project", "that", "this", "what", "where", "which", "with"}
-    terms = [
-        term for term in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", payload.query)
-        if term.casefold() not in stopwords
-    ][:12]
+    structural_candidates: dict[str, tuple[int, dict]] = {}
+    terms = _context_query_terms(payload.query)
     for term in terms:
         try:
             candidates = find_nodes(project_id, term, limit=5)
         except GraphQueryError:
             continue
         for candidate in candidates:
-            if candidate["id"] not in seen_nodes:
-                seen_nodes.add(candidate["id"])
-                label = str(candidate["display_label"]).casefold()
-                needle = term.casefold()
-                score = 0 if label == needle else 1 if label.startswith(needle) else 2 if needle in label else 3
-                if str(candidate["relative_path"]).startswith("backend/tests/"):
-                    score += 5
-                structural_candidates.append((score, candidate))
+            score = _context_candidate_score(candidate, term)
+            existing = structural_candidates.get(candidate["id"])
+            if existing is None or score < existing[0]:
+                structural_candidates[candidate["id"]] = (score, candidate)
     structural_hits = [candidate for _score, candidate in sorted(
-        structural_candidates,
+        structural_candidates.values(),
         key=lambda item: (item[0], len(str(item[1]["display_label"])), str(item[1]["qualified_id"])),
     )[:12]]
     return {
@@ -329,6 +322,54 @@ def project_context(project_id: str, payload: ProjectContextRequest) -> dict:
         "token_estimate": bundle.get("token_estimate") or {},
         "bundle_status": bundle.get("bundle_status") or {},
     }
+
+
+_CONTEXT_STOPWORDS = {
+    "about", "code", "codebase", "does", "from", "function", "have", "how",
+    "method", "project", "system", "that", "this", "using", "what", "where",
+    "which", "with", "work", "working", "works",
+}
+
+
+def _context_query_terms(query: str) -> list[str]:
+    candidates: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for index, term in enumerate(re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", query)):
+        folded = term.casefold()
+        identifier_like = "_" in term or "$" in term or any(character.isupper() for character in term[1:])
+        if folded in _CONTEXT_STOPWORDS or (len(term) < 5 and not identifier_like):
+            continue
+        if folded in seen:
+            continue
+        seen.add(folded)
+        priority = 0 if identifier_like else 1
+        candidates.append((priority * 1000 + index, term))
+    candidates.sort(key=lambda item: item[0])
+    return [term for _priority, term in candidates[:12]]
+
+
+def _context_candidate_score(candidate: dict, term: str) -> int:
+    needle = term.casefold()
+    label = str(candidate.get("display_label") or "").casefold()
+    qualified = str(candidate.get("qualified_id") or "").casefold()
+    path = str(candidate.get("relative_path") or "").replace("\\", "/").casefold()
+    basename = path.rsplit("/", 1)[-1]
+    stem = basename.rsplit(".", 1)[0]
+    if label == needle or stem == needle:
+        score = 0
+    elif label.startswith(needle):
+        score = 2
+    elif needle in label:
+        score = 4
+    elif f"/{needle}/" in f"/{path}/" or needle in qualified:
+        score = 6
+    else:
+        score = 8
+    if not ("_" in term or "$" in term or any(character.isupper() for character in term[1:])):
+        score += 2
+    if str(candidate.get("file_role") or "source") == "test":
+        score += 20
+    return score
 
 
 @router.get("/{project_id}/graph/nodes")

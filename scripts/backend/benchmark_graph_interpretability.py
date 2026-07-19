@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sqlite3
+import statistics
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,8 @@ def main() -> int:
     )
     parser.add_argument("--questions", type=Path, required=True)
     parser.add_argument("--model", required=True, help="Local model path or cached Hugging Face model id.")
+    parser.add_argument("--odin-python", type=Path, required=True, help="Python executable for the Odin backend environment.")
+    parser.add_argument("--graphify", type=Path, required=True, help="Graphify CLI executable.")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--context-chars", type=int, default=16_000)
     parser.add_argument("--max-new-tokens", type=int, default=320)
@@ -65,9 +68,11 @@ def main() -> int:
         for question in case_questions:
             contexts = {
                 "none": "No repository graph context was provided.",
-                "odin": _odin_context(case.odin_db, question["question"], args.context_chars),
+                "odin": _odin_context(
+                    args.odin_python, case.odin_db, question["question"], args.context_chars
+                ),
                 "graphify": _graphify_context(
-                    case.graphify_graph, question["question"], args.context_chars
+                    args.graphify, case.graphify_graph, question["question"], args.context_chars
                 ),
             }
             for tool, context in contexts.items():
@@ -81,17 +86,33 @@ def main() -> int:
                 )
                 elapsed = time.perf_counter() - started
                 score, matched = _score(answer, question["required_fact_groups"])
+                context_score, context_matched = _score(context, question["required_fact_groups"])
+                supported_groups = sum(
+                    bool(answer_group["matched"]) and bool(context_group["matched"])
+                    for answer_group, context_group in zip(matched, context_matched, strict=True)
+                )
+                unsupported_groups = sum(
+                    bool(answer_group["matched"]) and not bool(context_group["matched"])
+                    for answer_group, context_group in zip(matched, context_matched, strict=True)
+                )
                 case_result["evaluations"].append(
                     {
                         "question_id": question["id"],
+                        "category": question.get("category", "unspecified"),
                         "question": question["question"],
                         "tool": tool,
                         "context_chars": len(context),
                         "context_lines": len(context.splitlines()),
                         "answer": answer,
                         "matched_fact_groups": matched,
+                        "context_matched_fact_groups": context_matched,
                         "fact_group_count": len(question["required_fact_groups"]),
                         "score": score,
+                        "context_score": context_score,
+                        "supported_score": round(
+                            supported_groups / max(1, len(question["required_fact_groups"])), 3
+                        ),
+                        "unsupported_matched_fact_groups": unsupported_groups,
                         "wall_seconds": round(elapsed, 3),
                     }
                 )
@@ -141,102 +162,38 @@ def _rank(text: str, keywords: set[str]) -> int:
     return sum(4 if word in lowered else 0 for word in keywords)
 
 
-def _odin_context(database: Path, question: str, budget: int) -> str:
-    keywords = _keywords(question)
-    conn = sqlite3.connect(database)
-    conn.row_factory = sqlite3.Row
-    try:
-        snapshot = conn.execute(
-            "SELECT active_structure_snapshot_id FROM projects ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
-        if snapshot is None or not snapshot["active_structure_snapshot_id"]:
-            raise RuntimeError(f"No active Odin structure snapshot in {database}")
-        snapshot_id = snapshot["active_structure_snapshot_id"]
-        nodes = [dict(row) for row in conn.execute(
-            "SELECT id, kind, display_label AS label, relative_path, start_line, signature FROM code_nodes WHERE snapshot_id = ?",
-            (snapshot_id,),
-        )]
-        node_by_id = {str(node["id"]): node for node in nodes}
-        ranked = sorted(
-            nodes,
-            key=lambda node: (
-                -_rank(
-                    " ".join(str(node.get(key) or "") for key in ("label", "relative_path", "kind", "signature")),
-                    keywords,
-                ),
-                str(node.get("relative_path") or ""),
-                str(node.get("label") or ""),
-            ),
-        )
-        seeds = [node for node in ranked if _rank(json.dumps(node), keywords) > 0][:28]
-        if not seeds:
-            seeds = ranked[:12]
-        seed_ids = {str(node["id"]) for node in seeds}
-        edges = [dict(row) for row in conn.execute(
-            "SELECT source_node_id, target_node_id, edge_type, source_line FROM code_edges WHERE snapshot_id = ?",
-            (snapshot_id,),
-        ) if str(row["source_node_id"]) in seed_ids or str(row["target_node_id"]) in seed_ids]
-    finally:
-        conn.close()
-    lines = ["ODIN GRAPH SLICE", "NODES"]
-    for node in seeds:
-        lines.append(
-            f"- {node['kind']} {node['label']} | {node['relative_path']}:{node['start_line']} | {node.get('signature') or ''}"
-        )
-    lines.append("RELATIONSHIPS")
-    for edge in edges[:140]:
-        source = node_by_id.get(str(edge["source_node_id"]), {})
-        target = node_by_id.get(str(edge["target_node_id"]), {})
-        evidence_path = source.get("relative_path") or target.get("relative_path") or ""
-        lines.append(
-            f"- {source.get('label', edge['source_node_id'])} -[{edge['edge_type']}]-> "
-            f"{target.get('label', edge['target_node_id'])} | {evidence_path}:{edge.get('source_line') or ''}"
-        )
-    return _bounded(lines, budget)
-
-
-def _graphify_context(graph_path: Path, question: str, budget: int) -> str:
-    keywords = _keywords(question)
-    graph = json.loads(graph_path.read_text(encoding="utf-8"))
-    nodes = list(graph.get("nodes") or [])
-    node_by_id = {str(node.get("id")): node for node in nodes}
-    ranked = sorted(
-        nodes,
-        key=lambda node: (
-            -_rank(
-                " ".join(
-                    str(node.get(key) or "")
-                    for key in ("label", "source_file", "source_location", "file_type")
-                ),
-                keywords,
-            ),
-            str(node.get("source_file") or ""),
-            str(node.get("label") or ""),
-        ),
+def _odin_context(python: Path, database: Path, question: str, budget: int) -> str:
+    completed = subprocess.run(
+        [
+            str(python.resolve(strict=True)),
+            "-m", "scripts.backend.export_odin_graph_context",
+            "--database", str(database),
+            "--question", question,
+            "--budget", str(budget),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
-    seeds = [node for node in ranked if _rank(json.dumps(node), keywords) > 0][:28]
-    if not seeds:
-        seeds = ranked[:12]
-    seed_ids = {str(node.get("id")) for node in seeds}
-    links = [
-        link
-        for link in (graph.get("links") or graph.get("edges") or [])
-        if str(link.get("source")) in seed_ids or str(link.get("target")) in seed_ids
-    ]
-    lines = ["GRAPHIFY GRAPH SLICE", "NODES"]
-    for node in seeds:
-        lines.append(
-            f"- {node.get('label')} | {node.get('source_file', '')}:{node.get('source_location', '')}"
-        )
-    lines.append("RELATIONSHIPS")
-    for link in links[:140]:
-        source = node_by_id.get(str(link.get("source")), {})
-        target = node_by_id.get(str(link.get("target")), {})
-        lines.append(
-            f"- {source.get('label', link.get('source'))} -[{link.get('relation', link.get('type', 'related'))}]-> "
-            f"{target.get('label', link.get('target'))} | {link.get('source_file', '')}:{link.get('source_location', '')}"
-        )
-    return _bounded(lines, budget)
+    if completed.returncode != 0:
+        raise RuntimeError(f"Odin graph export failed: {completed.stderr[-2000:]}")
+    return completed.stdout
+
+
+def _graphify_context(executable: Path, graph_path: Path, question: str, budget: int) -> str:
+    completed = subprocess.run(
+        [
+            str(executable.resolve(strict=True)), "query", question,
+            "--budget", str(max(256, budget // 4)),
+            "--graph", str(graph_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"Graphify query failed: {completed.stderr[-2000:]}")
+    return _bounded(completed.stdout.splitlines(), budget)
 
 
 def _bounded(lines: list[str], budget: int) -> str:
@@ -310,16 +267,28 @@ def _score(answer: str, groups: list[list[str]]) -> tuple[float, list[dict[str, 
 
 
 def _summary(evaluations: list[dict[str, Any]]) -> dict[str, Any]:
-    by_tool: dict[str, list[float]] = {}
+    by_tool: dict[str, list[dict[str, Any]]] = {}
     for evaluation in evaluations:
-        by_tool.setdefault(evaluation["tool"], []).append(float(evaluation["score"]))
+        by_tool.setdefault(evaluation["tool"], []).append(evaluation)
     return {
         tool: {
-            "questions": len(scores),
-            "mean_score": round(sum(scores) / len(scores), 3),
-            "fully_answered": sum(score == 1.0 for score in scores),
+            "questions": len(items),
+            "mean_score": round(sum(float(item["score"]) for item in items) / len(items), 3),
+            "mean_context_score": round(
+                sum(float(item["context_score"]) for item in items) / len(items), 3
+            ),
+            "mean_supported_score": round(
+                sum(float(item["supported_score"]) for item in items) / len(items), 3
+            ),
+            "unsupported_matched_fact_groups": sum(
+                int(item["unsupported_matched_fact_groups"]) for item in items
+            ),
+            "fully_answered": sum(float(item["score"]) == 1.0 for item in items),
+            "median_wall_seconds": round(
+                statistics.median(float(item["wall_seconds"]) for item in items), 3
+            ),
         }
-        for tool, scores in sorted(by_tool.items())
+        for tool, items in sorted(by_tool.items())
     }
 
 

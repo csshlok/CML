@@ -1,0 +1,186 @@
+{
+  "django": [
+    {
+      "id": "url_resolution",
+      "category": "routing",
+      "question": "Which Django objects resolve an incoming URL path, and where is that resolution implemented?",
+      "required_fact_groups": [["urlresolver"], ["resolve"], ["django/urls/resolvers.py", "urls/resolvers.py"], ["urlpattern", "url_patterns"]]
+    },
+    {
+      "id": "model_save",
+      "category": "persistence",
+      "question": "How does a Django model instance move from Model.save into the lower-level database save flow?",
+      "required_fact_groups": [["model.save", "save"], ["save_base"], ["_save_table", "save table"], ["django/db/models/base.py", "db/models/base.py"]]
+    },
+    {
+      "id": "middleware_chain",
+      "category": "request_lifecycle",
+      "question": "Where does Django build its middleware chain and which symbols are responsible?",
+      "required_fact_groups": [["basehandler"], ["load_middleware"], ["_middleware_chain", "middleware chain"], ["django/core/handlers/base.py", "core/handlers/base.py"]]
+    },
+    {
+      "id": "queryset_get",
+      "category": "orm",
+      "question": "Which QuerySet method retrieves one object, and which cloning and limit operations support that lookup?",
+      "required_fact_groups": [["queryset"], ["get"], ["_chain", "clone"], ["django/db/models/query.py", "db/models/query.py"]]
+    },
+    {
+      "id": "atomic_transactions",
+      "category": "transactions",
+      "question": "How does Django implement the atomic transaction context manager and create savepoints?",
+      "required_fact_groups": [["atomic"], ["__enter__", "enter"], ["savepoint"], ["django/db/transaction.py", "db/transaction.py"]]
+    },
+    {
+      "id": "lazy_settings",
+      "category": "configuration",
+      "question": "Which objects lazily initialize Django settings, and where does initialization happen?",
+      "required_fact_groups": [["lazysettings"], ["_setup", "setup"], ["settings"], ["django/conf/__init__.py", "conf/__init__.py"]]
+    },
+    {
+      "id": "management_cli",
+      "category": "cli",
+      "question": "How does execute_from_command_line hand control to Django's management command machinery?",
+      "required_fact_groups": [["execute_from_command_line"], ["managementutility"], ["execute"], ["django/core/management/__init__.py", "core/management/__init__.py"]]
+    },
+    {
+      "id": "asgi_handler",
+      "category": "request_lifecycle",
+      "question": "Which Django ASGI handler receives a request scope and which methods process and send the response?",
+      "required_fact_groups": [["asgihandler"], ["__call__", "call"], ["handle", "send_response"], ["django/core/handlers/asgi.py", "core/handlers/asgi.py"]]
+    },
+    {
+      "id": "wsgi_handler",
+      "category": "request_lifecycle",
+      "question": "Which Django WSGI symbols turn an environ into a request and response?",
+      "required_fact_groups": [["wsgihandler"], ["wsgirequest"], ["__call__", "call"], ["django/core/handlers/wsgi.py", "core/handlers/wsgi.py"]]
+    },
+    {
+      "id": "signals",
+      "category": "events",
+      "question": "Which class implements Django signals and which methods register and notify receivers?",
+      "required_fact_groups": [["signal"], ["connect"], ["send", "send_robust"], ["django/dispatch/dispatcher.py", "dispatch/dispatcher.py"]]
+    },
+    {
+      "id": "form_validation",
+      "category": "validation",
+      "question": "How does a Django BaseForm perform full validation and clean its fields?",
+      "required_fact_groups": [["baseform"], ["full_clean"], ["_clean_fields", "clean fields"], ["django/forms/forms.py", "forms/forms.py"]]
+    },
+    {
+      "id": "migration_executor",
+      "category": "migrations",
+      "question": "Which Django migration object plans and applies migrations, and where is it implemented?",
+      "required_fact_groups": [["migrationexecutor"], ["migration_plan"], ["migrate"], ["django/db/migrations/executor.py", "db/migrations/executor.py"]]
+    },
+    {
+      "id": "template_engine",
+      "category": "templates",
+      "question": "Which Django template engine methods locate and load a named template?",
+      "required_fact_groups": [["engine"], ["find_template"], ["get_template"], ["django/template/engine.py", "template/engine.py"]]
+    },
+    {
+      "id": "authentication",
+      "category": "authentication",
+      "question": "How does Django choose a compatible authentication backend and establish a logged-in session?",
+      "required_fact_groups": [["authenticate"], ["_get_compatible_backends", "compatible backends"], ["login"], ["django/contrib/auth/__init__.py", "contrib/auth/__init__.py"]]
+    },
+    {
+      "id": "cache_proxy",
+      "category": "caching",
+      "question": "Which Django objects expose configured cache backends and the default cache proxy?",
+      "required_fact_groups": [["cachehandler"], ["caches"], ["connectionproxy", "connection proxy"], ["default_cache_alias", "django/core/cache/__init__.py", "core/cache/__init__.py"]]
+    }
+  ],
+  "react": [
+    {
+      "id": "create_root",
+      "category": "rendering",
+      "question": "How does React DOM create a client root and which symbols hold and initialize it?",
+      "required_fact_groups": [["createroot"], ["reactdomroot"], ["createcontainer"], ["react-dom/src/client/reactdomroot.js", "reactdomroot.js"]]
+    },
+    {
+      "id": "hooks_dispatch",
+      "category": "hooks",
+      "question": "How does React's public useState hook reach the active hook implementation?",
+      "required_fact_groups": [["usestate"], ["resolvedispatcher"], ["dispatcher.usestate", "dispatcher"], ["react/src/reacthooks.js", "reacthooks.js"]]
+    },
+    {
+      "id": "scheduler_loop",
+      "category": "scheduling",
+      "question": "Which Scheduler symbols run queued callbacks and decide whether work should continue?",
+      "required_fact_groups": [["workloop"], ["flushwork"], ["shouldyield", "has time remaining", "hastimeremaining"], ["scheduler/src/forks/scheduler.js", "scheduler.js"]]
+    },
+    {
+      "id": "reconcile_children",
+      "category": "reconciliation",
+      "question": "Where does React begin reconciling a fiber's children and which symbol performs that handoff?",
+      "required_fact_groups": [["reconcilechildren"], ["mountchildfibers", "reconcilechildfibers"], ["workinprogress", "current"], ["react-reconciler/src/reactfiberbeginwork.js", "reactfiberbeginwork.js"]]
+    },
+    {
+      "id": "commit_root",
+      "category": "commit_lifecycle",
+      "question": "Which React reconciler function commits a finished root and which effect phases does it invoke?",
+      "required_fact_groups": [["commitroot"], ["commitmutationeffects", "mutation effects"], ["commitlayouteffects", "layout effects"], ["react-reconciler/src/reactfiberworkloop.js", "reactfiberworkloop.js"]]
+    },
+    {
+      "id": "context_creation",
+      "category": "public_api",
+      "question": "Which React function creates a context object and which Provider and Consumer fields does it establish?",
+      "required_fact_groups": [["createcontext"], ["provider"], ["consumer"], ["react/src/reactcontext.js", "reactcontext.js"]]
+    },
+    {
+      "id": "lazy_components",
+      "category": "public_api",
+      "question": "How does React represent and initialize a component returned by React.lazy?",
+      "required_fact_groups": [["lazy"], ["lazyinitializer"], ["lazytype", "lazy component"], ["react/src/reactlazy.js", "reactlazy.js"]]
+    },
+    {
+      "id": "memo_components",
+      "category": "public_api",
+      "question": "Which React function creates a memo component and where is its comparison function stored?",
+      "required_fact_groups": [["memo"], ["compare"], ["react_memo_type", "memo type"], ["react/src/reactmemo.js", "reactmemo.js"]]
+    },
+    {
+      "id": "forward_ref",
+      "category": "public_api",
+      "question": "Which React API wraps a render function for ref forwarding and what type marker does it use?",
+      "required_fact_groups": [["forwardref"], ["render"], ["react_forward_ref_type", "forward ref type"], ["react/src/reactforwardref.js", "reactforwardref.js"]]
+    },
+    {
+      "id": "external_store_hook",
+      "category": "hooks",
+      "question": "How does React's public useSyncExternalStore hook delegate to the active dispatcher?",
+      "required_fact_groups": [["usesyncexternalstore"], ["resolvedispatcher"], ["subscribe", "getsnapshot"], ["react/src/reacthooks.js", "reacthooks.js"]]
+    },
+    {
+      "id": "dom_event_dispatch",
+      "category": "events",
+      "question": "How does React DOM dispatch a native event into the plugin event system?",
+      "required_fact_groups": [["dispatchevent"], ["dispatcheventforplugineventsystem"], ["reactdomeventlistener.js"], ["domplugineventsystem.js"]]
+    },
+    {
+      "id": "server_stream",
+      "category": "server_rendering",
+      "question": "Which React DOM server function creates and starts a pipeable streaming render request?",
+      "required_fact_groups": [["rendertopipeablestream"], ["createrequest", "createrequestimpl"], ["startwork"], ["reactdomfizzservernode.js"]]
+    },
+    {
+      "id": "jsx_creation",
+      "category": "jsx",
+      "question": "Which React JSX implementation creates production elements and where is it defined?",
+      "required_fact_groups": [["jsxprod"], ["reactelement"], ["type", "config", "key"], ["react/src/jsx/reactjsxelement.js", "reactjsxelement.js"]]
+    },
+    {
+      "id": "flush_sync",
+      "category": "scheduling",
+      "question": "Which React DOM function implements flushSync and which reconciler operation does it trigger?",
+      "required_fact_groups": [["flushsyncimpl", "flushsync"], ["flushsyncwork"], ["discreteeventpriority", "update priority"], ["reactdomflushsync.js"]]
+    },
+    {
+      "id": "child_fiber",
+      "category": "reconciliation",
+      "question": "Which React child-fiber functions reconcile arrays and produce the exported reconcileChildFibers implementation?",
+      "required_fact_groups": [["childreconciler"], ["reconcilechildrenarray"], ["reconcilechildfibers"], ["react-reconciler/src/reactchildfiber.js", "reactchildfiber.js"]]
+    }
+  ]
+}

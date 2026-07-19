@@ -80,25 +80,32 @@ def find_nodes(project_id: str, query: str, *, kinds: list[str] | None = None, l
     bounded_limit = max(1, min(int(limit), 100))
     with connect() as conn:
         project = _active_project(conn, project_id)
-        params: list[object] = [project_id, _structure_snapshot_id(project), f"%{needle}%", f"%{needle}%"]
+        wildcard = f"%{needle}%"
+        params: list[object] = [
+            project_id, _structure_snapshot_id(project), wildcard, wildcard, wildcard,
+        ]
         kind_clause = ""
         if kinds:
             allowed = [kind.strip() for kind in kinds if kind.strip()]
             if allowed:
-                kind_clause = f" AND kind IN ({','.join('?' for _ in allowed)})"
+                kind_clause = f" AND n.kind IN ({','.join('?' for _ in allowed)})"
                 params.extend(allowed)
-        params.extend([needle, bounded_limit])
+        params.extend([needle, needle, bounded_limit])
         rows = conn.execute(
             f"""
-            SELECT id, qualified_id, kind, language, display_label, relative_path,
-                   start_line, end_line, signature, source_id
-            FROM code_nodes
-            WHERE project_id = ? AND snapshot_id = ?
-              AND (display_label LIKE ? OR qualified_id LIKE ?)
+            SELECT n.id, n.qualified_id, n.kind, n.language, n.display_label, n.relative_path,
+                   n.start_line, n.end_line, n.signature, n.source_id,
+                   COALESCE(pss.file_role, 'source') AS file_role
+            FROM code_nodes n
+            LEFT JOIN project_snapshot_sources pss
+              ON pss.snapshot_id = n.snapshot_id AND pss.relative_path = n.relative_path
+            WHERE n.project_id = ? AND n.snapshot_id = ?
+              AND (n.display_label LIKE ? OR n.qualified_id LIKE ? OR n.relative_path LIKE ?)
               {kind_clause}
             ORDER BY
-              CASE WHEN lower(display_label) = lower(?) THEN 0 ELSE 1 END,
-              length(display_label), qualified_id
+              CASE WHEN lower(n.display_label) = lower(?) THEN 0
+                   WHEN lower(n.relative_path) = lower(?) THEN 1 ELSE 2 END,
+              length(n.display_label), n.qualified_id
             LIMIT ?
             """,
             params,
@@ -174,6 +181,13 @@ def shortest_path(
             current, depth = queue.popleft()
             if depth >= depth_limit:
                 continue
+            if len(previous) >= node_limit:
+                status = "node_budget_exceeded"
+                break
+            remaining_edges = edge_limit - len(examined_edges)
+            if remaining_edges <= 0:
+                status = "edge_budget_exceeded"
+                break
             edge_rows = conn.execute(
                 f"""
                 SELECT id, source_node_id, target_node_id, edge_type, confidence_class,
@@ -184,24 +198,25 @@ def shortest_path(
                   AND edge_type IN ({placeholders})
                   AND confidence_class IN ('extracted', 'user_confirmed')
                 ORDER BY edge_type, id
+                LIMIT ?
                 """,
-                [project_id, snapshot_id, current, current, *allowed_edges],
+                [project_id, snapshot_id, current, current, *allowed_edges, remaining_edges + 1],
             ).fetchall()
             for row in edge_rows:
                 edge = dict_from_row(row)
-                examined_edges.add(edge["id"])
-                if len(examined_edges) > edge_limit:
+                if edge["id"] not in examined_edges and len(examined_edges) >= edge_limit:
                     status = "edge_budget_exceeded"
                     queue.clear()
                     break
+                examined_edges.add(edge["id"])
                 neighbor = edge["target_node_id"] if edge["source_node_id"] == current else edge["source_node_id"]
                 if neighbor in previous:
                     continue
-                previous[neighbor] = (current, edge)
-                if len(previous) > node_limit:
+                if len(previous) >= node_limit:
                     status = "node_budget_exceeded"
                     queue.clear()
                     break
+                previous[neighbor] = (current, edge)
                 if neighbor == target["id"]:
                     status = "found"
                     queue.clear()
@@ -260,11 +275,15 @@ def graph_view(
     max_depth: int = 2,
     max_nodes: int = 120,
     edge_types: list[str] | None = None,
+    direction: str = "outbound",
 ) -> dict:
     """Return a bounded, evidence-backed projection suitable for UI and LLM clients."""
     normalized_mode = mode.strip().casefold()
     if normalized_mode not in {"graph", "tree"}:
         raise GraphQueryError("Graph view mode must be 'graph' or 'tree'.")
+    normalized_direction = direction.strip().casefold()
+    if normalized_direction not in {"outbound", "inbound", "balanced"}:
+        raise GraphQueryError("Graph direction must be 'outbound', 'inbound', or 'balanced'.")
     node_limit = max(10, min(int(max_nodes), 300))
     depth_limit = max(1, min(int(max_depth), 4))
     with connect() as conn:
@@ -285,6 +304,7 @@ def graph_view(
                 max_depth=depth_limit,
                 max_nodes=node_limit,
                 edge_types=allowed_edges,
+                direction=normalized_direction,
             )
         return {
             "version": 1,
@@ -294,6 +314,7 @@ def graph_view(
             "mode": normalized_mode,
             "query": query.strip(),
             "root": root.strip(),
+            "direction": normalized_direction,
             "nodes": nodes,
             "edges": edges,
             "truncated": truncated,
@@ -344,6 +365,7 @@ def _graph_projection(
     max_depth: int,
     max_nodes: int,
     edge_types: list[str],
+    direction: str,
 ) -> tuple[list[dict], list[dict], bool]:
     seeds = _projection_seeds(conn, project_id, snapshot_id, query=query, root=root, limit=min(12, max_nodes))
     if not seeds:
@@ -362,6 +384,14 @@ def _graph_projection(
         frontier_placeholders = ",".join("?" for _ in frontier)
         edge_placeholders = ",".join("?" for _ in edge_types)
         edge_budget = max(50, remaining * 5)
+        direction_order = ""
+        direction_params: list[str] = []
+        if direction == "outbound":
+            direction_order = f"CASE WHEN e.source_node_id IN ({frontier_placeholders}) THEN 0 ELSE 1 END,"
+            direction_params = list(frontier)
+        elif direction == "inbound":
+            direction_order = f"CASE WHEN e.target_node_id IN ({frontier_placeholders}) THEN 0 ELSE 1 END,"
+            direction_params = list(frontier)
         rows = conn.execute(
             f"""
             SELECT e.id, e.source_node_id, e.target_node_id, e.edge_type,
@@ -372,10 +402,15 @@ def _graph_projection(
                    OR e.target_node_id IN ({frontier_placeholders}))
               AND e.edge_type IN ({edge_placeholders})
               AND e.confidence_class IN ('extracted', 'user_confirmed')
-            ORDER BY CASE e.edge_type WHEN 'calls' THEN 0 WHEN 'imports' THEN 1 ELSE 2 END, e.id
+            ORDER BY {direction_order}
+                     CASE e.edge_type WHEN 'calls' THEN 0 WHEN 'imports' THEN 1
+                         WHEN 'defines_route' THEN 2 ELSE 3 END, e.id
             LIMIT ?
             """,
-            [project_id, snapshot_id, *frontier, *frontier, *edge_types, edge_budget + 1],
+            [
+                project_id, snapshot_id, *frontier, *frontier, *edge_types,
+                *direction_params, edge_budget + 1,
+            ],
         ).fetchall()
         if len(rows) > edge_budget:
             truncated = True
@@ -507,15 +542,21 @@ def _projection_seeds(conn, project_id: str, snapshot_id: str, *, query: str, ro
     scope_params: list[object] = [f"{scope}%"] if scope else []
     selected: dict[str, dict] = {}
     if terms:
-        per_term_limit = max(3, (limit + len(terms) - 1) // len(terms))
+        # Gather candidates for every meaningful query term before ranking. Returning
+        # as soon as the first term filled the budget made question word order affect
+        # the graph and allowed generic/test symbols to crowd out exact source symbols.
+        per_term_limit = max(12, limit * 2)
         for term in terms:
             needle = term[:4] if len(term) > 6 else term
             wildcard = f"%{needle}%"
             rows = conn.execute(
                 f"""
                 SELECT n.id, n.qualified_id, n.kind, n.language, n.display_label, n.relative_path,
-                       n.start_line, n.end_line, n.signature, n.source_id
+                       n.start_line, n.end_line, n.signature, n.source_id,
+                       COALESCE(pss.file_role, 'source') AS file_role
                 FROM code_nodes n
+                LEFT JOIN project_snapshot_sources pss
+                  ON pss.snapshot_id = n.snapshot_id AND pss.relative_path = n.relative_path
                 WHERE n.project_id = ? AND n.snapshot_id = ? {scope_clause}
                   AND (n.display_label LIKE ? OR n.qualified_id LIKE ? OR n.relative_path LIKE ?)
                 ORDER BY CASE
@@ -537,12 +578,16 @@ def _projection_seeds(conn, project_id: str, snapshot_id: str, *, query: str, ro
                 ],
             ).fetchall()
             for row in rows:
-                item = _view_node(dict_from_row(row))
+                raw = dict_from_row(row)
+                item = {**_view_node(raw), "file_role": raw.get("file_role") or "source"}
                 selected.setdefault(item["id"], item)
-                if len(selected) >= limit:
-                    return list(selected.values())
         if selected:
-            return list(selected.values())
+            ranked = sorted(
+                selected.values(),
+                key=lambda item: (_projection_seed_score(item, terms), item["qualified_id"]),
+                reverse=True,
+            )
+            return [{key: value for key, value in item.items() if key != "file_role"} for item in ranked[:limit]]
     rows = conn.execute(
         f"""
         WITH endpoints AS (
@@ -574,6 +619,42 @@ def _projection_seeds(conn, project_id: str, snapshot_id: str, *, query: str, ro
         [project_id, snapshot_id, project_id, snapshot_id, project_id, snapshot_id, *scope_params, limit],
     ).fetchall()
     return [_view_node(dict_from_row(row)) for row in rows]
+
+
+def _projection_seed_score(node: dict, terms: list[str]) -> int:
+    """Rank exact, authoritative code symbols ahead of incidental text matches."""
+    label = str(node.get("label") or node.get("display_label") or "").casefold()
+    qualified = str(node.get("qualified_id") or "").casefold()
+    path = str(node.get("relative_path") or "").replace("\\", "/").casefold()
+    signature = str(node.get("signature") or "").casefold()
+    score = 0
+    for raw_term in terms:
+        term = raw_term.casefold()
+        if label == term:
+            score += 120
+        elif label.startswith(term):
+            score += 55
+        elif term in label:
+            score += 35
+        if qualified == term or qualified.endswith(f":{term}") or qualified.endswith(f".{term}"):
+            score += 70
+        elif term in qualified:
+            score += 18
+        if term in signature:
+            score += 14
+        if term in path:
+            score += 8
+    kind_bonus = {
+        "class": 18, "route": 17, "function": 16, "method": 15,
+        "module": 10, "file": 8,
+    }
+    score += kind_bonus.get(str(node.get("kind") or ""), 0)
+    file_role = str(node.get("file_role") or "source").casefold()
+    if file_role in {"test", "fixture", "generated", "vendor"}:
+        score -= 45
+    if re.search(r"(^|/)(tests?|__tests__|fixtures?|generated|vendor)(/|$)", path):
+        score -= 35
+    return score
 
 
 def _view_node(item: dict, *, node_id: str | None = None) -> dict:
