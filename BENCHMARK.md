@@ -48,11 +48,11 @@ Local ingest  ->  Retrieve candidates  ->  Pack bounded evidence  ->  Generate a
 
 | Benchmark and configuration | Questions | Retrieval | Kimi K2.6 | GPT-5.4 judge | Reader prompt tokens/query | Evaluation cost |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| LongMemEval-S, typed-v1 | 500 | 0.9802 recall@10 | **83.8%** | **83.2%** | 33,331.9 | $13.4211 |
+| LongMemEval-S, typed-v1 (historical full-context baseline) | 500 | 0.9802 recall@10 | **83.8%** | **83.2%** | 33,331.9 | $13.4211 |
 | LongMemEval-S, claim-first 10K | 500 | 0.9802 recall@10 | 81.8% | 82.0% | **8,307.1** | **$4.5111** |
 | LoCoMo, ColBERT | 1,540 | **0.7606 recall@10** | **66.75%** | **63.96%** | **650.4** | **$1.7388** |
 
-The two LongMemEval rows expose the principal product tradeoff. Typed-v1 produced the highest measured Kimi-judged accuracy. Claim-first v2 retained nearly all of that answer quality while cutting mean reader prompts by 75.08%, cache-adjusted evaluation cost by 66.39%, and mean reader latency by 60.68%.
+The two LongMemEval rows expose the principal product tradeoff. Typed-v1 is retained as a historical full-context baseline, not as the recommended current configuration. It produced the highest measured Kimi-judged accuracy, while claim-first v2 retained nearly all of that answer quality and cut mean reader prompts by 75.08%, cache-adjusted evaluation cost by 66.39%, and mean reader latency by 60.68%.
 
 The LoCoMo result exposes a different bottleneck. Better candidate generation raised both retrieval recall and downstream answer quality, but its current exact ColBERT index is an experimental implementation rather than a production-ready index.
 

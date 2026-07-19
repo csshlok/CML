@@ -254,21 +254,20 @@ Vault is evaluated on two public conversational-memory benchmarks. LongMemEval t
 
 | Benchmark and configuration | Questions | Retrieval | Kimi K2.6 | GPT-5.4 judge | Reader prompt tokens/query | Evaluation cost |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| LongMemEval-S, typed-v1 | 500 | 0.9802 recall@10 | **83.8%** | **83.2%** | 33,331.9 | $13.4211 |
 | LongMemEval-S, claim-first 10K | 500 | 0.9802 recall@10 | 81.8% | 82.0% | **8,307.1** | **$4.5111** |
 | LoCoMo, ColBERT | 1,540 | **0.7606 recall@10** | **66.75%** | **63.96%** | **650.4** | **$1.7388** |
 
-The claim-first LongMemEval pipeline is the best measured efficiency configuration. Relative to typed-v1, it reduced reader prompts by **75.08%**, evaluation cost by **66.39%**, and mean reader latency by **60.68%**. The tradeoff was a 2.0-point decrease under the Kimi judge and a 1.2-point decrease under the independent GPT-5.4 judge. All 500 questions remained within the 10,000-token packed-prompt budget.
+The claim-first LongMemEval pipeline is Vault's recommended measured configuration. Compared with the previous full-context baseline, it reduced reader prompts by **75.08%**, evaluation cost by **66.39%**, and mean reader latency by **60.68%**. All 500 questions remained within the 10,000-token packed-prompt budget. Historical configurations and their accuracy-efficiency tradeoffs remain documented in the [full benchmark report](BENCHMARK.md).
 
 ### What that means in a working day
 
-| If you ask 100 context-heavy questions | Complete-session approach | Claim-first Vault | Measured difference |
-| --- | ---: | ---: | ---: |
-| Reader prompt volume | 3.33M tokens | 0.83M tokens | **2.50M fewer tokens** |
-| Sequential reader wait, at benchmark latency | 19.0 minutes | 7.5 minutes | **11.5 minutes less** |
-| Benchmark reader + dual-judge cost | $2.68 | $0.90 | **$1.78 less** |
+| If you ask 100 context-heavy questions | Claim-first Vault | Saving from the previous full-context baseline |
+| --- | ---: | ---: |
+| Reader prompt volume | 0.83M tokens | **2.50M fewer tokens (75.08%)** |
+| Sequential reader wait, at benchmark latency | 7.5 minutes | **11.5 minutes less (60.68%)** |
+| Benchmark reader + dual-judge cost | $0.90 | **$1.78 less (66.39%)** |
 
-In practical terms, the measured claim-first pipeline can answer about **4× as many similarly sized questions within the same reader-prompt token allowance**. It still preserved roughly **82 accepted answers per 100 benchmark questions**, compared with 84 for the larger typed-v1 context. These are benchmark projections, not a promise about every personal vault: actual savings depend on source length, question complexity, model pricing, caching, and whether an application runs judges at all.
+In practical terms, the measured claim-first pipeline can answer about **4× as many similarly sized questions within the same reader-prompt token allowance**, with roughly **82 accepted answers per 100 benchmark questions** under both evaluation perspectives. These are benchmark projections, not a promise about every personal vault: actual savings depend on source length, question complexity, model pricing, caching, and whether an application runs judges at all.
 
 On LoCoMo, the full ColBERT retrieval pass improved recall@10 from 0.6295 to 0.7606 and reduced questions with no annotated evidence in the top 50 from 217 to 100. On the exact earlier 300-question set, that retrieval change raised official token F1 from 0.4373 to 0.5065, Kimi acceptance from 59.33% to 66.00%, and GPT-5.4 acceptance from 56.33% to 63.33%.
 
@@ -288,7 +287,7 @@ Published systems currently report higher LongMemEval answer accuracy, but the r
 
 Vault is not yet state of the art in multi-session answer accuracy. Its measured advantages are local-first ingestion with no extraction-API bill, a reproducible dual-judge protocol, bounded and inspectable evidence packets, and one workspace for conversational, document, and Odin project context.
 
-Read [Benchmark methodology and full analysis](BENCHMARK.md) for category results, token and cost accounting, confidence information, rejected experiments, retrieval variants, competitive caveats, and artifact locations.
+Read [Benchmark methodology and full analysis](BENCHMARK.md) for historical baselines, category results, token and cost accounting, confidence information, rejected experiments, retrieval variants, competitive caveats, and artifact locations.
 
 ## Architecture
 
