@@ -95,6 +95,7 @@ SUPPORTED_EXTENSIONS = {
     ".proto",
     ".ps1",
     ".py",
+    ".pyi",
     ".rb",
     ".rs",
     ".scala",
@@ -124,7 +125,7 @@ DISCOVERY_SCOPES = frozenset({"context", "code"})
 CODE_EXTENSIONS = {
     ".c", ".cc", ".clj", ".cljs", ".cpp", ".cs", ".dart", ".ex", ".exs",
     ".go", ".graphql", ".gql", ".h", ".hpp", ".java", ".js", ".cjs", ".json", ".jsx",
-    ".kt", ".kts", ".lua", ".php", ".prisma", ".proto", ".ps1", ".py", ".rb",
+    ".kt", ".kts", ".lua", ".php", ".prisma", ".proto", ".ps1", ".py", ".pyi", ".rb",
     ".rs", ".scala", ".sh", ".sql", ".svelte", ".swift", ".mjs", ".mts",
     ".ts", ".cts", ".tsx", ".vue",
 }
@@ -164,6 +165,7 @@ LANGUAGE_BY_EXTENSION = {
     ".php": "PHP",
     ".ps1": "PowerShell",
     ".py": "Python",
+    ".pyi": "Python",
     ".rb": "Ruby",
     ".rs": "Rust",
     ".scala": "Scala",
@@ -1300,7 +1302,19 @@ def _inside_root(root: Path, candidate: Path) -> bool:
 def _file_role(relative: str, lower_name: str) -> str:
     if lower_name in {"package.json", "pyproject.toml", "cargo.toml", "go.mod", "pom.xml"}:
         return "workspace_manifest"
-    if "/test" in f"/{relative.lower()}" or lower_name.startswith("test_") or ".test." in lower_name:
+    if lower_name.endswith(".pyi"):
+        return "stub"
+    normalized = relative.replace("\\", "/").casefold()
+    directories = set(normalized.split("/")[:-1])
+    test_directories = {"test", "tests", "__tests__", "spec", "specs", "fixture", "fixtures", "__fixtures__"}
+    test_filename = (
+        lower_name.startswith("test_")
+        or lower_name.endswith(("_test.py", "_test.go", "_test.rs"))
+        or ".test." in lower_name
+        or ".spec." in lower_name
+        or lower_name.endswith((".stories.ts", ".stories.tsx", ".stories.js", ".stories.jsx"))
+    )
+    if directories & test_directories or test_filename:
         return "test"
     if lower_name in ENTRYPOINT_NAMES:
         return "entrypoint"

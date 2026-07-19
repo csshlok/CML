@@ -48,6 +48,7 @@ SUPPORTED_CODE_EXTENSIONS = {
     ".php",
     ".ps1",
     ".py",
+    ".pyi",
     ".rb",
     ".rs",
     ".sh",

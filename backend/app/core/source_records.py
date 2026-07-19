@@ -63,6 +63,6 @@ def source_type_for_suffix(suffix: str) -> str:
         return "audio"
     if suffix in {".mp4", ".mov", ".webm"}:
         return "video"
-    if suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".cpp", ".c"}:
+    if suffix in {".py", ".pyi", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".cpp", ".c"}:
         return "code"
     return "file"

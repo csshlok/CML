@@ -83,6 +83,68 @@ class Box { ["computed"]() { return outer(); } }
     )
 
 
+def test_tsx_promotes_direct_arrow_components_without_promoting_callback_values() -> None:
+    result = extract_file_structure(
+        "Component.tsx",
+        """
+export const Component = () => <section>Ready</section>;
+const wrapped = (() => <aside>Wrapped</aside>);
+const values = items.map((item) => item.value);
+""",
+        "TypeScript",
+        None,
+    )
+
+    kinds = {symbol.label: symbol.kind for symbol in result.symbols}
+    assert kinds["Component"] == "component"
+    assert kinds["wrapped"] == "function"
+    assert kinds["values"] == "exported_value"
+
+
+def test_typescript_records_named_type_dynamic_and_barrel_imports() -> None:
+    result = extract_file_structure(
+        "consumer.ts",
+        """
+import type { PublicType as LocalType } from "./types";
+import { execute as run } from "./commands";
+export { helper as publicHelper } from "./helpers";
+export * from "./shared";
+const lazy = import("./lazy");
+""",
+        "TypeScript",
+        None,
+    )
+
+    assert ("LocalType", "PublicType", "./types") in {
+        (binding.local_name, binding.imported_name, binding.module) for binding in result.import_bindings
+    }
+    assert ("run", "execute", "./commands") in {
+        (binding.local_name, binding.imported_name, binding.module) for binding in result.import_bindings
+    }
+    assert ("publicHelper", "helper", "./helpers") in {
+        (binding.local_name, binding.imported_name, binding.module) for binding in result.export_bindings
+    }
+    assert "./lazy" in {module for module, _line in result.imports}
+    assert result.wildcard_exports == [("./shared", 5)]
+
+
+def test_python_stub_extracts_declarations_without_call_edges() -> None:
+    result = extract_file_structure(
+        "client.pyi",
+        "class Client:\n    def request(self, url: str) -> bytes: ...\n\ndef create() -> Client: ...\n",
+        "Python",
+        None,
+    )
+
+    assert [(symbol.kind, symbol.label) for symbol in result.symbols] == [
+        ("class", "Client"),
+        ("method", "request"),
+        ("function", "create"),
+    ]
+    assert all(not symbol.calls for symbol in result.symbols)
+    assert extractor_for_path("client.pyi") is not None
+
+
 @pytest.mark.parametrize("path,text", [
     ("broken.py", "def broken(:\n"),
     ("broken.ts", "export function broken( {\n"),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import posixpath
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -10,7 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 
-STRUCTURE_EXTRACTOR_VERSION = "odin-structure-v1"
+STRUCTURE_EXTRACTOR_VERSION = "odin-structure-v2"
 
 
 @dataclass
@@ -38,6 +39,9 @@ class FileStructure:
     symbols: list[Symbol] = field(default_factory=list)
     imports: list[tuple[str, int]] = field(default_factory=list)
     exports: list[tuple[str, int]] = field(default_factory=list)
+    wildcard_exports: list[tuple[str, int]] = field(default_factory=list)
+    import_bindings: list["SymbolBinding"] = field(default_factory=list)
+    export_bindings: list["SymbolBinding"] = field(default_factory=list)
     package_dependencies: list[str] = field(default_factory=list)
     parse_error: str = ""
     status: str = "parsed"
@@ -46,6 +50,14 @@ class FileStructure:
     grammar_version: str = ""
     warnings: list[dict] = field(default_factory=list)
     unresolved_references: list[dict] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SymbolBinding:
+    local_name: str
+    imported_name: str
+    module: str
+    line: int
 
 
 def build_structure_graph(
@@ -84,7 +96,7 @@ def build_structure_graph(
             conn,
             project_id=project["id"],
             snapshot_id=snapshot_id,
-            qualified_id=f"file:{item.relative_path.casefold()}",
+            qualified_id=f"file:{_path_key(item.relative_path)}",
             kind="file",
             language=item.language,
             label=Path(item.relative_path).name,
@@ -95,7 +107,7 @@ def build_structure_graph(
             now=now,
             extractor_version=STRUCTURE_EXTRACTOR_VERSION,
         )
-        file_nodes[item.relative_path] = file_node
+        file_nodes[_path_key(item.relative_path)] = file_node
         _insert_edge(
             conn,
             project_id=project["id"],
@@ -155,7 +167,7 @@ def build_structure_graph(
     module_to_file = _module_file_index(file_nodes)
     suggestions = 0
     for relative_path, structure in structures.items():
-        file_node = file_nodes[relative_path]
+        file_node = _file_node_id(file_nodes, relative_path)
         source_id = source_by_path.get(relative_path)
         imported_paths = {
             target
@@ -190,7 +202,20 @@ def build_structure_graph(
                 _insert_edge(conn, project["id"], snapshot_id, symbol_node, route_node, "defines_route", source_id, line, now)
             for target_name, line in symbol.calls:
                 candidates = simple_names.get(target_name, [])
-                if (
+                imported_candidates = _imported_symbol_candidates(
+                    relative_path,
+                    target_name,
+                    structures=structures,
+                    module_index=module_to_file,
+                    simple_names=simple_names,
+                    symbol_records=symbol_records,
+                )
+                if len(imported_candidates) == 1 and imported_candidates[0] != symbol.qualified_id:
+                    _insert_edge(
+                        conn, project["id"], snapshot_id, symbol_node,
+                        symbol_nodes[imported_candidates[0]], "calls", source_id, line, now,
+                    )
+                elif (
                     len(candidates) == 1
                     and candidates[0] != symbol.qualified_id
                     and (
@@ -286,13 +311,28 @@ def build_structure_graph(
                     conn,
                     project["id"],
                     snapshot_id,
-                    file_nodes[relative_path],
-                    file_nodes[target_path],
+                    _file_node_id(file_nodes, relative_path),
+                    _file_node_id(file_nodes, target_path),
                     "imports",
                     source_id,
                     line,
                     now,
                 )
+            elif target_path is None and _is_local_relative_import(relative_path, imported):
+                _insert_suggestion(
+                    conn,
+                    project_id=project["id"],
+                    snapshot_id=snapshot_id,
+                    source_node_id=_file_node_id(file_nodes, relative_path),
+                    target_node_id=None,
+                    suggested_type="unresolved_import",
+                    score=0.0,
+                    reason="A relative import escaped the project root or did not match an indexed file.",
+                    evidence={"path": relative_path, "imported": imported, "line": line},
+                    now=now,
+                    extractor_version=structure.extractor_version or STRUCTURE_EXTRACTOR_VERSION,
+                )
+                suggestions += 1
         for exported, line in structure.exports:
             target_path = _resolve_import(relative_path, exported, module_to_file)
             if target_path and target_path != relative_path:
@@ -300,8 +340,8 @@ def build_structure_graph(
                     conn,
                     project["id"],
                     snapshot_id,
-                    file_nodes[relative_path],
-                    file_nodes[target_path],
+                    _file_node_id(file_nodes, relative_path),
+                    _file_node_id(file_nodes, target_path),
                     "reexports",
                     source_id,
                     line,
@@ -356,7 +396,14 @@ def _extract_python(relative_path: str, text: str, source_id: str | None) -> Fil
 
         def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
             prefix = "." * node.level
-            result.imports.append((prefix + (node.module or ""), node.lineno))
+            module = prefix + (node.module or "")
+            result.imports.append((module, node.lineno))
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                binding = SymbolBinding(alias.asname or alias.name, alias.name, module, node.lineno)
+                result.import_bindings.append(binding)
+                result.export_bindings.append(binding)
 
         def visit_ClassDef(self, node: ast.ClassDef) -> None:
             qual = ".".join([*(parent.label for parent in self.parents), node.name])
@@ -409,10 +456,11 @@ def _extract_python(relative_path: str, text: str, source_id: str | None) -> Fil
                 route = _python_route(decorator)
                 if route:
                     symbol.routes.append((route[0], route[1], getattr(decorator, "lineno", node.lineno)))
-            call_visitor = _PythonCallVisitor()
-            for statement in node.body:
-                call_visitor.visit(statement)
-            symbol.calls = call_visitor.calls
+            if not relative_path.casefold().endswith(".pyi"):
+                call_visitor = _PythonCallVisitor()
+                for statement in node.body:
+                    call_visitor.visit(statement)
+                symbol.calls = call_visitor.calls
             result.symbols.append(symbol)
             self.parents.append(symbol)
             for statement in node.body:
@@ -548,7 +596,7 @@ def _insert_node(
     node_id = f"code-node-{uuid4()}"
     conn.execute(
         """
-        INSERT INTO code_nodes (
+        INSERT OR IGNORE INTO code_nodes (
             id, project_id, snapshot_id, source_id, qualified_id, kind, language,
             display_label, relative_path, start_line, start_column, end_line, end_column,
             signature, extraction_method, extractor_version, content_hash, created_at
@@ -560,7 +608,13 @@ def _insert_node(
             signature, extractor_version, extractor_version, content_hash, now,
         ),
     )
-    return node_id
+    existing = conn.execute(
+        "SELECT id FROM code_nodes WHERE snapshot_id = ? AND qualified_id = ?",
+        (snapshot_id, qualified_id),
+    ).fetchone()
+    if existing is None:
+        raise RuntimeError(f"Failed to persist code node {qualified_id!r}.")
+    return str(existing["id"])
 
 
 def _insert_edge(
@@ -617,12 +671,12 @@ def _insert_suggestion(
     )
 
 
-def _module_file_index(file_nodes: dict[str, str]) -> dict[str, str]:
-    index: dict[str, str] = {}
+def _module_file_index(file_nodes: dict[str, str]) -> dict[str, str | None]:
+    index: dict[str, str | None] = {}
     for path in file_nodes:
-        normalized = path.replace("\\", "/")
+        normalized = _path_key(path)
         stem = str(Path(normalized).with_suffix("")).replace("\\", "/")
-        variants = {stem, stem.replace("/", ".")}
+        variants = {normalized, stem, stem.replace("/", ".")}
         if stem.endswith("/index"):
             variants.add(stem[:-6])
             variants.add(stem[:-6].replace("/", "."))
@@ -630,21 +684,172 @@ def _module_file_index(file_nodes: dict[str, str]) -> dict[str, str]:
             variants.add(stem[:-9])
             variants.add(stem[:-9].replace("/", "."))
         for variant in variants:
-            index[variant.casefold().strip("./")] = path
+            key = _module_key(variant)
+            existing = index.get(key)
+            if existing is None and key not in index:
+                index[key] = path
+            elif existing != path:
+                index[key] = _preferred_module_path(existing, path)
     return index
 
 
-def _resolve_import(relative_path: str, imported: str, module_index: dict[str, str]) -> str | None:
+def _resolve_import(relative_path: str, imported: str, module_index: dict[str, str | None]) -> str | None:
     normalized = imported.replace("\\", "/")
-    if normalized.startswith("."):
-        base = Path(relative_path).parent
-        candidate = (base / normalized).as_posix()
-        while candidate.startswith("../"):
-            candidate = candidate[3:]
-        key = candidate.casefold().strip("./")
+    keys: list[str] = []
+    if relative_path.casefold().endswith(".py"):
+        if normalized.startswith("."):
+            level = len(normalized) - len(normalized.lstrip("."))
+            parent = posixpath.dirname(_path_key(relative_path))
+            package_parts = [part for part in parent.split("/") if part and part != "."]
+            ascent = level - 1
+            if ascent > len(package_parts):
+                return None
+            remainder = normalized[level:]
+            target_parts = package_parts[: len(package_parts) - ascent]
+            if remainder:
+                target_parts.extend(part for part in remainder.split(".") if part)
+            keys.append("/".join(target_parts))
+        else:
+            keys.extend((normalized.replace(".", "/"), normalized))
+    elif normalized.startswith(("./", "../")):
+        candidate = posixpath.normpath(posixpath.join(posixpath.dirname(_path_key(relative_path)), normalized))
+        if candidate == ".." or candidate.startswith("../"):
+            return None
+        keys.append(candidate)
     else:
-        key = normalized.casefold().strip("./").replace(".", "/")
-    return module_index.get(key) or module_index.get(key.replace("/", "."))
+        keys.append(normalized)
+    for candidate in keys:
+        variants = [candidate]
+        without_suffix = re.sub(r"\.(?:c|cc|cpp|cxx|h|hpp|java|js|jsx|mjs|cjs|ts|tsx|mts|cts|py|pyi|rs)$", "", candidate, flags=re.IGNORECASE)
+        if without_suffix != candidate:
+            variants.append(without_suffix)
+        for variant in variants:
+            resolved = module_index.get(_module_key(variant))
+            if resolved:
+                return resolved
+    return None
+
+
+def _path_key(path: str) -> str:
+    return path.replace("\\", "/").removeprefix("./").lstrip("/")
+
+
+def _module_key(value: str) -> str:
+    return value.replace("\\", "/").removeprefix("./").lstrip("/").rstrip("/").casefold()
+
+
+def _preferred_module_path(existing: str | None, candidate: str) -> str | None:
+    if existing is None:
+        return None
+    existing_path = Path(existing)
+    candidate_path = Path(candidate)
+    if (
+        existing_path.with_suffix("").as_posix().casefold()
+        == candidate_path.with_suffix("").as_posix().casefold()
+        and {existing_path.suffix.casefold(), candidate_path.suffix.casefold()} == {".py", ".pyi"}
+    ):
+        return candidate if candidate_path.suffix.casefold() == ".pyi" else existing
+    return None
+
+
+def _file_node_id(file_nodes: dict[str, str], path: str) -> str:
+    key = _path_key(path)
+    direct = file_nodes.get(key)
+    if direct is not None:
+        return direct
+    matches = {node_id for candidate, node_id in file_nodes.items() if candidate.casefold() == key.casefold()}
+    if len(matches) == 1:
+        return matches.pop()
+    raise KeyError(f"No unambiguous file node for {path!r}.")
+
+
+def _is_local_relative_import(relative_path: str, imported: str) -> bool:
+    normalized = imported.replace("\\", "/")
+    if relative_path.casefold().endswith(".py"):
+        return normalized.startswith(".")
+    return normalized.startswith(("./", "../"))
+
+
+def _imported_symbol_candidates(
+    relative_path: str,
+    local_name: str,
+    *,
+    structures: dict[str, FileStructure],
+    module_index: dict[str, str | None],
+    simple_names: dict[str, list[str]],
+    symbol_records: dict[str, Symbol],
+) -> list[str]:
+    structure = structures.get(relative_path)
+    if structure is None:
+        return []
+    resolved: set[str] = set()
+    for binding in structure.import_bindings:
+        if binding.local_name != local_name:
+            continue
+        target_path = _resolve_import(relative_path, binding.module, module_index)
+        if target_path is None:
+            continue
+        resolved.update(_exported_symbol_candidates(
+            target_path,
+            binding.imported_name,
+            structures=structures,
+            module_index=module_index,
+            simple_names=simple_names,
+            symbol_records=symbol_records,
+            visited=set(),
+        ))
+    return sorted(resolved)
+
+
+def _exported_symbol_candidates(
+    relative_path: str,
+    exported_name: str,
+    *,
+    structures: dict[str, FileStructure],
+    module_index: dict[str, str | None],
+    simple_names: dict[str, list[str]],
+    symbol_records: dict[str, Symbol],
+    visited: set[tuple[str, str]],
+) -> set[str]:
+    visit_key = (relative_path, exported_name)
+    if visit_key in visited:
+        return set()
+    visited.add(visit_key)
+    resolved = {
+        qualified_id
+        for qualified_id in simple_names.get(exported_name, [])
+        if symbol_records[qualified_id].relative_path == relative_path
+    }
+    structure = structures.get(relative_path)
+    if structure is None:
+        return resolved
+    for binding in structure.export_bindings:
+        if binding.local_name != exported_name:
+            continue
+        target_path = _resolve_import(relative_path, binding.module, module_index)
+        if target_path is not None:
+            resolved.update(_exported_symbol_candidates(
+                target_path,
+                binding.imported_name,
+                structures=structures,
+                module_index=module_index,
+                simple_names=simple_names,
+                symbol_records=symbol_records,
+                visited=visited,
+            ))
+    for module, _line in structure.wildcard_exports:
+        target_path = _resolve_import(relative_path, module, module_index)
+        if target_path is not None:
+            resolved.update(_exported_symbol_candidates(
+                target_path,
+                exported_name,
+                structures=structures,
+                module_index=module_index,
+                simple_names=simple_names,
+                symbol_records=symbol_records,
+                visited=visited,
+            ))
+    return resolved
 
 
 def _python_module(relative_path: str) -> str:

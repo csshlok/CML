@@ -7,10 +7,10 @@ from typing import Callable
 
 from tree_sitter import Language, Parser
 
-from backend.app.core.code_structure import FileStructure, Symbol
+from backend.app.core.code_structure import FileStructure, Symbol, SymbolBinding
 
 
-REGISTRY_VERSION = "odin-extractor-registry-v1"
+REGISTRY_VERSION = "odin-extractor-registry-v2"
 
 
 @dataclass(frozen=True)
@@ -145,7 +145,8 @@ def _tree_sitter_adapter(path: str, text: str, source_id: str | None, spec: Extr
     def walk(node) -> None:
         pushed = False
         if node.type in declarations:
-            name_node = node.child_by_field_name("name") or _first_identifier(node)
+            declaration_node = _first_child_of_type(node, "variable_declarator") if node.type == "lexical_declaration" else node
+            name_node = declaration_node.child_by_field_name("name") or _first_identifier(declaration_node)
             if name_node is not None:
                 name = _node_text(encoded, name_node)
                 parent_names = [owner.label for owner in owners if owner.kind in {"class", "interface", "module", "implementation"}]
@@ -154,16 +155,24 @@ def _tree_sitter_adapter(path: str, text: str, source_id: str | None, spec: Extr
                 base = f"{spec.language_id}:{module}:{ownership}:{_signature_key(signature)}"
                 qualified_id = _stable_unique_id(result, base)
                 kind = declarations[node.type]
-                if node.type == "lexical_declaration" and _contains_type(node, {"arrow_function", "function_expression"}):
-                    kind = "function"
+                if node.type == "lexical_declaration":
+                    initializer = declaration_node.child_by_field_name("value")
+                    if (
+                        spec.language_id == "tsx"
+                        and re.fullmatch(r"[A-Z][A-Za-z0-9_$]*", name)
+                        and _is_function_initializer(initializer)
+                        and _contains_node_type(initializer, {"jsx_element", "jsx_self_closing_element", "jsx_fragment"})
+                    ):
+                        kind = "component"
+                    elif _is_function_initializer(initializer):
+                        kind = "function"
                 symbol = Symbol(
-                    qualified_id=qualified_id, kind=declarations[node.type], language=spec.display_name,
+                    qualified_id=qualified_id, kind=kind, language=spec.display_name,
                     label=name, relative_path=path, source_id=source_id,
                     start_line=node.start_point.row + 1, start_column=node.start_point.column,
                     end_line=node.end_point.row + 1, end_column=node.end_point.column,
                     signature=signature, parent_qualified_id=owners[-1].qualified_id if owners else None,
                 )
-                symbol.kind = kind
                 _inheritance(node, encoded, symbol)
                 result.symbols.append(symbol)
                 owners.append(symbol)
@@ -186,6 +195,8 @@ def _tree_sitter_adapter(path: str, text: str, source_id: str | None, spec: Extr
     walk(tree.root_node)
     if spec.language_id in {"javascript", "typescript", "tsx"}:
         for match in re.finditer(r"\brequire\s*\(\s*[\"']([^\"']+)[\"']\s*\)", text):
+            result.imports.append((match.group(1), text.count("\n", 0, match.start()) + 1))
+        for match in re.finditer(r"\bimport\s*\(\s*[\"']([^\"']+)[\"']\s*\)", text):
             result.imports.append((match.group(1), text.count("\n", 0, match.start()) + 1))
     if spec.language_id in {"c", "cpp"}:
         for match in re.finditer(r"^\s*#\s*include\s*<([^>]+)>", text, flags=re.MULTILINE):
@@ -247,8 +258,26 @@ def _first_identifier(node):
     return None
 
 
-def _contains_type(node, types: set[str]) -> bool:
-    return node.type in types or any(_contains_type(child, types) for child in node.named_children)
+def _first_child_of_type(node, node_type: str):
+    return next((child for child in node.named_children if child.type == node_type), node)
+
+
+def _is_function_initializer(node) -> bool:
+    if node is None:
+        return False
+    if node.type in {"arrow_function", "function_expression"}:
+        return True
+    wrappers = {
+        "as_expression", "non_null_expression", "parenthesized_expression",
+        "satisfies_expression", "type_assertion",
+    }
+    return node.type in wrappers and any(_is_function_initializer(child) for child in node.named_children)
+
+
+def _contains_node_type(node, node_types: set[str]) -> bool:
+    return node is not None and (
+        node.type in node_types or any(_contains_node_type(child, node_types) for child in node.named_children)
+    )
 
 
 def _declaration_signature(encoded: bytes, node, name: str) -> str:
@@ -284,8 +313,38 @@ def _record_import(node, encoded: bytes, result: FileStructure) -> None:
     for value in candidates:
         if node.type == "export_statement":
             result.exports.append((value, line))
+            if re.search(r"\bexport\s*\*", raw):
+                result.wildcard_exports.append((value, line))
+            _record_named_bindings(raw, value, line, result.export_bindings, default_import=False)
         else:
             result.imports.append((value, line))
+            _record_named_bindings(raw, value, line, result.import_bindings, default_import=True)
+
+
+def _record_named_bindings(
+    raw: str,
+    module: str,
+    line: int,
+    destination: list[SymbolBinding],
+    *,
+    default_import: bool,
+) -> None:
+    block = re.search(r"\{([^}]*)\}", raw, flags=re.DOTALL)
+    if block:
+        for item in block.group(1).split(","):
+            normalized = re.sub(r"^\s*type\s+", "", item.strip())
+            if not normalized:
+                continue
+            parts = re.split(r"\s+as\s+", normalized, maxsplit=1)
+            imported_name = parts[0].strip()
+            local_name = parts[-1].strip()
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", imported_name) and re.fullmatch(r"[A-Za-z_$][\w$]*", local_name):
+                destination.append(SymbolBinding(local_name, imported_name, module, line))
+    if default_import:
+        default = re.match(r"\s*import\s+(?:type\s+)?([A-Za-z_$][\w$]*)\s*(?:,|\s+from\b)", raw)
+        if default:
+            name = default.group(1)
+            destination.append(SymbolBinding(name, "default", module, line))
 
 
 def _inheritance(node, encoded: bytes, symbol: Symbol) -> None:
@@ -310,11 +369,11 @@ def _spec(language_id: str, display: str, suffixes: tuple[str, ...], grammar: st
                          ("contains", "imports", "reexports", "extends", "implements", "calls"), calls)
 
 
-register(_spec("python", "Python", (".py",), "python-ast-runtime", ("class", "function", "method", "test")), _python_adapter)
+register(_spec("python", "Python", (".py", ".pyi"), "python-ast-runtime", ("class", "function", "method", "test")), _python_adapter)
 register(ExtractorSpec("json", "JSON", (".json",), ("package.json",), "json-adapter-v1", "stdlib-json", ("configuration_key", "package"), ("depends_on_package",), "unsupported"), _json_adapter)
 register(_spec("javascript", "JavaScript", (".js", ".jsx", ".mjs", ".cjs"), "tree-sitter-javascript-0.25.0", ("class", "function", "method", "exported_value")), _tree_sitter_adapter)
 register(_spec("typescript", "TypeScript", (".ts", ".mts", ".cts"), "tree-sitter-typescript-0.23.2", ("class", "interface", "schema", "enum", "function", "method", "exported_value")), _tree_sitter_adapter)
-register(_spec("tsx", "TSX", (".tsx",), "tree-sitter-typescript-0.23.2-tsx", ("class", "interface", "schema", "enum", "function", "method", "exported_value")), _tree_sitter_adapter)
+register(_spec("tsx", "TSX", (".tsx",), "tree-sitter-typescript-0.23.2-tsx", ("class", "component", "interface", "schema", "enum", "function", "method", "exported_value")), _tree_sitter_adapter)
 register(_spec("go", "Go", (".go",), "tree-sitter-go-0.25.0", ("function", "method", "type")), _tree_sitter_adapter)
 register(_spec("rust", "Rust", (".rs",), "tree-sitter-rust-0.24.2", ("function", "class", "enum", "interface", "implementation", "schema")), _tree_sitter_adapter)
 register(_spec("java", "Java", (".java",), "tree-sitter-java-0.23.5", ("class", "interface", "enum", "method", "constructor")), _tree_sitter_adapter)
