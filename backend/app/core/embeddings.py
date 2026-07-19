@@ -23,6 +23,8 @@ from backend.app.core.turbovec_runtime import apply_source_delta_to_sidecar
 HASH_EMBEDDING_DIMENSIONS = 128
 CHUNK_SIZE_WORDS = 180
 CHUNK_OVERLAP_WORDS = 40
+EMBEDDING_TARGET_TOKENS = 240
+EMBEDDING_TOKEN_OVERLAP = 24
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 TOKEN_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{1,}")
@@ -402,24 +404,173 @@ def chunk_text(text: str) -> list[str]:
     return [item["text"] for item in chunk_text_for_source({}, text)]
 
 
-def chunk_text_for_source(source: dict, text: str) -> list[dict[str, str]]:
+def chunk_text_for_source(
+    source: dict,
+    text: str,
+    *,
+    tokenizer=None,
+    max_seq_length: int | None = None,
+) -> list[dict[str, str]]:
     normalized = str(text or "").replace("\r\n", "\n")
     profile = detect_content_profile(source, normalized)
     if profile == "conversation":
-        return _conversation_chunks(normalized)
-    if profile == "markdown":
-        return _markdown_chunks(normalized)
-    if profile == "code":
-        return _code_chunks(source, normalized)
-    if profile == "diff":
-        return _diff_chunks(normalized)
-    if profile == "log":
-        return _log_chunks(normalized)
-    if profile == "structured_json":
-        return _structured_chunks(normalized, profile=profile)
-    if profile == "table_csv":
-        return _csv_chunks(normalized, delimiter="\t" if _looks_like_tsv(source, normalized) else ",")
-    return _word_window_chunks(normalized, profile=profile)
+        chunks = (
+            [_chunk_payload(normalized, "conversation", "conversation_token_window")]
+            if tokenizer is not None and max_seq_length and normalized.strip()
+            else _conversation_chunks(normalized)
+        )
+    elif profile == "markdown":
+        chunks = _markdown_chunks(normalized)
+    elif profile == "code":
+        chunks = _code_chunks(source, normalized)
+    elif profile == "diff":
+        chunks = _diff_chunks(normalized)
+    elif profile == "log":
+        chunks = _log_chunks(normalized)
+    elif profile == "structured_json":
+        chunks = _structured_chunks(normalized, profile=profile)
+    elif profile == "table_csv":
+        chunks = _csv_chunks(
+            normalized,
+            delimiter="\t" if _looks_like_tsv(source, normalized) else ",",
+        )
+    else:
+        chunks = _word_window_chunks(normalized, profile=profile)
+    if tokenizer is None or not max_seq_length:
+        return chunks
+    return _embedding_safe_chunks(
+        chunks,
+        tokenizer=tokenizer,
+        max_seq_length=max_seq_length,
+    )
+
+
+def _embedding_safe_chunks(
+    chunks: list[dict[str, str]],
+    *,
+    tokenizer,
+    max_seq_length: int,
+) -> list[dict[str, str]]:
+    special_tokens = max(0, int(tokenizer.num_special_tokens_to_add(pair=False)))
+    total_budget = max(8, min(int(max_seq_length), EMBEDDING_TARGET_TOKENS))
+    content_budget = max(1, total_budget - special_tokens)
+    overlap = min(EMBEDDING_TOKEN_OVERLAP, max(0, content_budget // 4))
+    safe: list[dict[str, str]] = []
+    for chunk in chunks:
+        text = str(chunk.get("text") or "")
+        spans = _token_spans(tokenizer, text)
+        if len(spans) <= content_budget:
+            safe.append(chunk)
+            continue
+        windows: list[tuple[int, int, int, int]] = []
+        token_start = 0
+        while token_start < len(spans):
+            desired_end = min(len(spans), token_start + content_budget)
+            fitted = None
+            preferred_start = _word_boundary_start(text, spans[token_start][0])
+            for char_start in dict.fromkeys((preferred_start, spans[token_start][0])):
+                token_end = desired_end
+                while token_end > token_start:
+                    char_end = spans[token_end - 1][1]
+                    candidate = text[char_start:char_end].strip()
+                    if _model_token_count(tokenizer, candidate) <= total_budget:
+                        fitted = (token_end, char_start, char_end)
+                        break
+                    token_end -= 1
+                if fitted is not None and (
+                    fitted[0] >= len(spans)
+                    or fitted[0] - token_start > overlap
+                    or char_start == spans[token_start][0]
+                ) and char_start >= spans[max(0, token_start - overlap)][0]:
+                    break
+                fitted = None
+            if fitted is None:
+                raise RuntimeError(
+                    "The active embedding tokenizer could not fit one token inside its sequence limit"
+                )
+            token_end, char_start, char_end = fitted
+            windows.append((token_start, token_end, char_start, char_end))
+            if token_end >= len(spans):
+                break
+            token_start = max(token_start + 1, token_end - overlap)
+        for segment_index, (token_start, token_end, char_start, char_end) in enumerate(windows):
+            segment_text = text[char_start:char_end].strip()
+            if not segment_text:
+                continue
+            try:
+                metadata = json.loads(chunk.get("chunk_meta_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            metadata.update(
+                {
+                    "embedding_segment_index": segment_index,
+                    "embedding_segment_count": len(windows),
+                    "embedding_token_start": token_start,
+                    "embedding_token_end": token_end,
+                    "embedding_content_tokens": token_end - token_start,
+                    "embedding_total_token_budget": total_budget,
+                    "embedding_original_content_tokens": len(spans),
+                }
+            )
+            safe.append(
+                {
+                    **chunk,
+                    "text": segment_text,
+                    "chunk_meta_json": json.dumps(metadata, separators=(",", ":")),
+                }
+            )
+    return safe
+
+
+def _word_boundary_start(text: str, offset: int) -> int:
+    start = max(0, min(len(text), int(offset)))
+    while start > 0 and not text[start - 1].isspace():
+        start -= 1
+    return start
+
+
+def _model_token_count(tokenizer, text: str) -> int:
+    encoded = tokenizer(
+        text,
+        add_special_tokens=True,
+        truncation=False,
+        return_attention_mask=False,
+    )
+    return len(encoded.get("input_ids") or [])
+
+
+def _token_spans(tokenizer, text: str) -> list[tuple[int, int]]:
+    try:
+        encoded = tokenizer(
+            text,
+            add_special_tokens=False,
+            truncation=False,
+            return_attention_mask=False,
+            return_offsets_mapping=True,
+        )
+        offsets = encoded.get("offset_mapping") or []
+        spans = [(int(start), int(end)) for start, end in offsets if int(end) > int(start)]
+        if spans:
+            return spans
+    except (TypeError, NotImplementedError, ValueError):
+        pass
+    return _word_token_spans(tokenizer, text)
+
+
+def _word_token_spans(tokenizer, text: str) -> list[tuple[int, int]]:
+    words = list(re.finditer(r"\S+", text))
+    if not words:
+        return []
+    spans: list[tuple[int, int]] = []
+    for word in words:
+        token_ids = tokenizer(
+            word.group(0),
+            add_special_tokens=False,
+            truncation=False,
+            return_attention_mask=False,
+        ).get("input_ids") or []
+        spans.extend([(word.start(), word.end())] * max(1, len(token_ids)))
+    return spans
 
 
 def detect_content_profile(source: dict, text: str) -> str:
@@ -762,9 +913,21 @@ def reindex_source_chunks(conn, source: dict) -> int:
         index_version="v1",
     )
     tuple_values = chunk_tuple_values(tuple_snapshot)
+    tokenizer = None
+    max_seq_length = None
+    config = embedding_config()
+    if config["provider"] == "sentence-transformers":
+        embedding_model = _get_sentence_transformer(config["model"], config["cache_dir"])
+        tokenizer = embedding_model.tokenizer
+        max_seq_length = int(embedding_model.max_seq_length)
     for page in pages:
         page_data = page_from_encrypted_row(conn, page)
-        chunks = chunk_text_for_source(source, page_data["raw_text"])
+        chunks = chunk_text_for_source(
+            source,
+            page_data["raw_text"],
+            tokenizer=tokenizer,
+            max_seq_length=max_seq_length,
+        )
         for index, chunk in enumerate(chunks):
             chunk_id = f"chunk-{uuid4()}"
             embedding = encode_embedding(embed_text(chunk["text"]))
