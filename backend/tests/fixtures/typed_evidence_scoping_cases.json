@@ -1,0 +1,270 @@
+{
+  "schema_version": 1,
+  "purpose": "Manual, zero-API scoping fixtures for a typed memory evidence layer",
+  "cases": [
+    {
+      "question_id": "c4a1ceb8",
+      "question": "How many different types of citrus fruits have I used in my cocktail recipes?",
+      "expected_answer": "3",
+      "query_plan": {
+        "intent": "distinct_count",
+        "subject": "user",
+        "domain": "cocktail",
+        "target_entity_type": "citrus_fruit",
+        "allowed_assertion_modes": ["completed"],
+        "allowed_provenance": ["user_statement"],
+        "reducer": "distinct_normalized_objects"
+      },
+      "evidence": [
+        {
+          "claim_id": "citrus-orange-bitters",
+          "source_session_id": "answer_56d02cab_3",
+          "source_turn_index": 0,
+          "session_date": "2023-05-21",
+          "speaker": "user",
+          "provenance": "user_statement",
+          "assertion_mode": "completed",
+          "subject": "user",
+          "predicate": "used_in_cocktail_preparation",
+          "object": "orange",
+          "object_type": "citrus_fruit",
+          "excerpt": "recently made my own orange bitters using orange peels and vodka"
+        },
+        {
+          "claim_id": "citrus-lime-daiquiri",
+          "source_session_id": "answer_56d02cab_4",
+          "source_turn_index": 0,
+          "session_date": "2023-05-25",
+          "speaker": "user",
+          "provenance": "user_statement",
+          "assertion_mode": "completed",
+          "subject": "user",
+          "predicate": "used_in_cocktail_preparation",
+          "object": "lime",
+          "object_type": "citrus_fruit",
+          "excerpt": "learned how to make a classic Daiquiri ... using fresh lime juice"
+        },
+        {
+          "claim_id": "citrus-orange-sangria",
+          "source_session_id": "answer_56d02cab_2",
+          "source_turn_index": 8,
+          "session_date": "2023-05-27",
+          "speaker": "user",
+          "provenance": "user_statement",
+          "assertion_mode": "completed",
+          "subject": "user",
+          "predicate": "used_in_cocktail_preparation",
+          "object": "orange",
+          "object_type": "citrus_fruit",
+          "excerpt": "Sangria ... with slices of orange and lemon, just like I did ... two weeks ago"
+        },
+        {
+          "claim_id": "citrus-lemon-sangria",
+          "source_session_id": "answer_56d02cab_2",
+          "source_turn_index": 8,
+          "session_date": "2023-05-27",
+          "speaker": "user",
+          "provenance": "user_statement",
+          "assertion_mode": "completed",
+          "subject": "user",
+          "predicate": "used_in_cocktail_preparation",
+          "object": "lemon",
+          "object_type": "citrus_fruit",
+          "excerpt": "Sangria ... with slices of orange and lemon, just like I did ... two weeks ago"
+        },
+        {
+          "claim_id": "citrus-lime-gimlet",
+          "source_session_id": "answer_56d02cab_1",
+          "source_turn_index": 0,
+          "session_date": "2023-05-30",
+          "speaker": "user",
+          "provenance": "user_statement",
+          "assertion_mode": "completed",
+          "subject": "user",
+          "predicate": "used_in_cocktail_preparation",
+          "object": "lime",
+          "object_type": "citrus_fruit",
+          "excerpt": "recently made a Cucumber Gimlet ... with lime juice"
+        },
+        {
+          "claim_id": "citrus-grapefruit-suggestion",
+          "source_session_id": "answer_56d02cab_1",
+          "source_turn_index": 1,
+          "session_date": "2023-05-30",
+          "speaker": "assistant",
+          "provenance": "assistant_suggestion",
+          "assertion_mode": "suggested",
+          "subject": "user",
+          "predicate": "could_use_in_cocktail_preparation",
+          "object": "grapefruit",
+          "object_type": "citrus_fruit",
+          "excerpt": "such as a grapefruit or lemon-infused gin"
+        }
+      ],
+      "deterministic_result": {
+        "included_objects": ["lemon", "lime", "orange"],
+        "excluded_claim_ids": ["citrus-grapefruit-suggestion"],
+        "value": 3,
+        "answer_is_unambiguous": true
+      }
+    },
+    {
+      "question_id": "6071bd76",
+      "question": "For the coffee-to-water ratio in my French press, did I switch to more water per tablespoon of coffee, or less?",
+      "expected_answer": "Less water: from 6 to 5 ounces per tablespoon of coffee.",
+      "query_plan": {
+        "intent": "latest_state_comparison",
+        "subject": "user",
+        "metric": "french_press_water_ounces_per_coffee_tablespoon",
+        "reducer": "sort_snapshots_then_compare_latest_to_previous"
+      },
+      "evidence": [
+        {
+          "claim_id": "ratio-prior-six",
+          "source_session_id": "answer_4dac77cb_1",
+          "source_turn_index": 0,
+          "session_date": "2023-02-11",
+          "speaker": "user",
+          "provenance": "user_statement",
+          "assertion_mode": "current_snapshot_at_time",
+          "subject": "user",
+          "predicate": "uses_french_press_ratio",
+          "numeric": {
+            "value": 6,
+            "unit": "water_ounce_per_coffee_tablespoon",
+            "semantic_role": "cumulative_state_snapshot"
+          },
+          "excerpt": "1 tablespoon of coffee for every 6 ounces of water is the perfect ratio for me"
+        },
+        {
+          "claim_id": "ratio-current-five",
+          "source_session_id": "answer_4dac77cb_2",
+          "source_turn_index": 0,
+          "session_date": "2023-06-30",
+          "speaker": "user",
+          "provenance": "user_statement",
+          "assertion_mode": "current_snapshot_at_time",
+          "subject": "user",
+          "predicate": "uses_french_press_ratio",
+          "numeric": {
+            "value": 5,
+            "unit": "water_ounce_per_coffee_tablespoon",
+            "semantic_role": "cumulative_state_snapshot"
+          },
+          "excerpt": "1 tablespoon of coffee for every 5 ounces of water"
+        }
+      ],
+      "deterministic_result": {
+        "previous_value": 6,
+        "current_value": 5,
+        "delta": -1,
+        "direction": "less",
+        "answer_is_unambiguous": true
+      }
+    },
+    {
+      "question_id": "caf03d32",
+      "question": "I've been struggling with my slow cooker recipes. Any advice on getting better results?",
+      "expected_answer_contract": "Advice must build on the successful beef stew and slow-cooker yogurt interest, including the user's plant-based and cashew-yogurt direction.",
+      "query_plan": {
+        "intent": "personalized_advice",
+        "subject": "user",
+        "domain": "slow_cooker",
+        "reducer": "rank_personal_anchors_then_generate",
+        "required_claim_ids": [
+          "slow-cooker-beef-stew-success",
+          "slow-cooker-yogurt-goal"
+        ],
+        "supporting_claim_ids": [
+          "slow-cooker-temperature-concern",
+          "slow-cooker-plant-based-goal",
+          "slow-cooker-cashew-yogurt-goal"
+        ]
+      },
+      "evidence": [
+        {
+          "claim_id": "slow-cooker-beef-stew-success",
+          "source_session_id": "answer_2fc6aabb",
+          "source_turn_index": 0,
+          "session_date": "2023-05-30",
+          "speaker": "user",
+          "provenance": "user_statement",
+          "assertion_mode": "completed",
+          "preference": {"polarity": "positive", "strength": "demonstrated_success"},
+          "subject": "user",
+          "predicate": "successfully_made",
+          "object": "slow_cooker_beef_stew",
+          "excerpt": "made a delicious beef stew"
+        },
+        {
+          "claim_id": "slow-cooker-yogurt-goal",
+          "source_session_id": "answer_2fc6aabb",
+          "source_turn_index": 2,
+          "session_date": "2023-05-30",
+          "speaker": "user",
+          "provenance": "user_statement",
+          "assertion_mode": "goal",
+          "preference": {"polarity": "positive", "strength": "explicit_interest"},
+          "subject": "user",
+          "predicate": "wants_to_make",
+          "object": "slow_cooker_yogurt",
+          "excerpt": "recipes for making yogurt in a slow cooker"
+        },
+        {
+          "claim_id": "slow-cooker-temperature-concern",
+          "source_session_id": "answer_2fc6aabb",
+          "source_turn_index": 4,
+          "session_date": "2023-05-30",
+          "speaker": "user",
+          "provenance": "user_statement",
+          "assertion_mode": "questioned_constraint",
+          "subject": "user",
+          "predicate": "needs_guidance_about",
+          "object": "yogurt_temperature_monitoring",
+          "excerpt": "Is it really necessary to monitor the temperature?"
+        },
+        {
+          "claim_id": "slow-cooker-plant-based-goal",
+          "source_session_id": "answer_2fc6aabb",
+          "source_turn_index": 6,
+          "session_date": "2023-05-30",
+          "speaker": "user",
+          "provenance": "user_statement",
+          "assertion_mode": "ongoing_goal",
+          "preference": {"polarity": "positive", "strength": "explicit_goal"},
+          "subject": "user",
+          "predicate": "wants_more",
+          "object": "plant_based_meals",
+          "excerpt": "I've been trying to eat more plant-based meals lately"
+        },
+        {
+          "claim_id": "slow-cooker-cashew-yogurt-goal",
+          "source_session_id": "answer_2fc6aabb",
+          "source_turn_index": 12,
+          "session_date": "2023-05-30",
+          "speaker": "user",
+          "provenance": "user_statement",
+          "assertion_mode": "goal",
+          "preference": {"polarity": "positive", "strength": "repeated_explicit_interest"},
+          "subject": "user",
+          "predicate": "wants_to_make",
+          "object": "cashew_based_slow_cooker_yogurt",
+          "excerpt": "try making a slow cooker yogurt with a cashew base"
+        }
+      ],
+      "deterministic_result": {
+        "required_anchor_claim_ids": [
+          "slow-cooker-beef-stew-success",
+          "slow-cooker-yogurt-goal"
+        ],
+        "supporting_anchor_claim_ids": [
+          "slow-cooker-temperature-concern",
+          "slow-cooker-plant-based-goal",
+          "slow-cooker-cashew-yogurt-goal"
+        ],
+        "answer_is_unambiguous": false,
+        "remaining_llm_task": "Generate concise advice that explicitly uses the required anchors and may use the supporting anchors."
+      }
+    }
+  ]
+}
