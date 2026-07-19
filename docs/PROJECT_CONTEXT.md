@@ -1,219 +1,101 @@
-# Project Context And Progress
+# Project Context
 
-Last updated: 2026-07-17
+Last updated: 2026-07-19
 
-## Operating Rule
+## Purpose
 
-This is the compact source of truth for the project. Keep it current and small.
+This is the lean operating brief for Vault. It records current truth, the active project phase, and immediate priorities. Detailed history, experiments, and validation results belong in `docs/OVERALL_CONTEXT.md`; public benchmark methodology belongs in `BENCHMARK.md`.
 
-- Prefer current truth over historical logs.
-- Move deep implementation detail to dedicated design docs.
-- Long-form fallback: `docs/OVERALL_CONTEXT.md`.
-- Current migration record: `docs/LORA_TO_RAG_MIGRATION_PLAN.md`.
+## Product
 
-## Project Goal
+Vault is a local-first Windows context-management layer. It turns a user's files, notes, links, screenshots, transcripts, folders, and codebases into reusable, cited context for AI.
 
-Build CML, a local-first Windows desktop app for turning a user's files, notes, links, screenshots, transcripts, and synced folders into reusable, grounded AI context.
+- Desktop: Electron and React in `apps/desktop`
+- Backend: FastAPI in `backend`
+- Storage: explicit local vaults backed by SQLite and local indexes
+- External access: Bridge, MCP, local HTTP API, and CLI
+- Codebase context: Odin project indexing, retrieval, scoped chat, and request-only graph/tree artifacts
+- Current version: `0.1.7` pre-release
 
-CML is not just a vault UI. It is a context-management layer between the user and LLMs:
+## Current Project Phase
 
-- preserve long-lived context outside the model
-- reduce repeated transcript and corpus replay
-- return grounded context packets instead of raw dumps
-- let internal chat and external tools reuse the same local context through Bridge, MCP, CLI, and API
+Vault is in **pre-release stabilization and productionization**.
 
-## Current Product Decisions
+The scoped RAG migration, temporal memory foundation, Odin project workflow, bounded context pipeline, and primary desktop surfaces are implemented. The project is no longer deciding its core architecture. Current work is about proving release reliability, productionizing the strongest retrieval improvements, improving measured quality without benchmark-specific behavior, and finishing clean Windows packaging.
 
-- Product form: local downloadable desktop app, not a hosted web app.
-- Public V1 platform: Windows only.
-- Desktop shell: Electron in `apps/desktop`.
-- Backend: FastAPI in `backend`.
-- Browser extension: thin capture surface for Chrome and Brave.
-- V1 storage: explicit local vaults only.
-- Vault layout: `CML_DATA_DIR=<vault>/.vault` and `CML_DATABASE_PATH=<vault>/.vault/cml.sqlite3`.
-- First-class external surfaces: Bridge, MCP, local HTTP API, CLI.
-- Local-first privacy remains a release requirement.
-- Security boundary remains a release requirement: vault unlock, encryption, Bridge approval, parser/browser isolation, renderer hardening, and package integrity.
-
-Odin is the project-context layer. It provides project registration, persisted `context` and `code` discovery scopes, immutable candidate snapshots, asynchronous synchronization, independent structure and retrieval activation, project-backed clusters, source reconciliation, deterministic code nodes and authoritative edges, unresolved-relationship suggestions, bounded graph/tree/path queries, project-scoped chat and Bridge packets, CLI CRUD/explain/context/graph/tree commands, and a dedicated desktop project workspace. `context` is the default and includes supported repository documentation and configuration; `code` keeps source-like files and code manifests. Graph and tree artifacts remain request-only. Odin reads eligible repository files locally and never executes or modifies repository code.
-
-Odin's release plan, parser dependency decision, and external benchmark are local working records intentionally excluded from Git. Current repository truth is captured here and in the implemented code under `backend/app/core/projects.py`, `backend/app/core/project_graph.py`, `backend/app/api/routes/projects.py`, and the desktop project workspace.
-
-Odin's scoped implementation plan is complete. The CLI now pairs through a desktop-approved, Windows user-protected device credential; project sync is durable, cancellable, restart-reconciled, retrieval-atomic, and optionally changes discovery scope; and pinned offline parsers cover Python, JSON, JavaScript/TypeScript/TSX (including module-specific extensions), Go, Rust, Java, C#, C, and C++. Custom discovery rules, project interpretation/model-written briefs, cross-project retrieval, watch mode, remote repositories, and macOS/Linux credential helpers remain intentionally deferred.
+The reviewed 0.1.7 product, benchmark, CI, and documentation pass is published on `main` as 10 commits. GitHub CI run `29682163820` passed every automatic job. Version 0.1.7 is still pre-release rather than a release candidate because the manual clean-machine installer, account-separation, signing, and package-integrity gates remain.
 
 ## Current Architecture
 
-The LoRA cluster-expert direction has been removed from the live product.
+Vault is RAG-only. Retrieval is authoritative for facts, citations, dates, names, numbers, and missing-evidence behavior. Chat and Bridge consume the same bounded retrieval-first packet contract. Clusters are retrieval scopes with cached summaries and glossaries, not trained experts.
 
-CML is now RAG-only:
+Temporal memory uses append-only fact versions with immutable speaker/source provenance, citations, validity windows, and supersession links. Users can review, correct, remove, and locally refresh extracted facts.
 
-- retrieval is the authority for facts, citations, source IDs, dates, names, numbers, and missing-evidence refusal
-- clusters provide cached profile metadata to improve packet quality, not a trained expert layer
-- chat and Bridge both consume the same retrieval-first context contract
-- token reduction comes from packet shaping, citation selection, memory distillation, and cache reuse
+Odin indexes approved repository files without executing or modifying project code. It supports persisted `context` and `code` scopes, immutable snapshots, atomic retrieval activation, cancellable jobs, AST-based Tier A/B extraction, CLI CRUD/query commands, project-backed clusters, scoped chat, and a dedicated Projects workspace. Graph and tree results remain hidden unless requested.
 
-The current cluster contract is:
+## Current Product Status
 
-```text
-Cluster =
-  retrieval scope
-  cached summary
-  cached glossary
-  profile freshness metadata
-  index/profile status
-```
+| Area | State |
+| --- | --- |
+| Core RAG and cluster lifecycle | Complete for V1 scope |
+| Shared chat/Bridge context contract | Complete |
+| Temporal fact history and user controls | Implemented |
+| Claim-first bounded evidence packing | Implemented and benchmarked; production behavior remains conservatively gated |
+| Odin scoped project workflow | Complete for current scope |
+| Odin AST extraction | Tree-sitter/Python AST based; Tier A/B corpus deterministic |
+| Desktop project, task, source, settings, and health surfaces | Implemented |
+| Public README and benchmark report | Updated with current results and qualified comparisons |
+| ColBERT late-interaction retrieval | Strong prototype; not production-enabled |
+| Windows installer and clean-machine proof | In progress |
+| UI refinement pass | Deliberately deferred until later |
 
-Current cluster lifecycle fields:
+## Latest Benchmark Snapshot
 
-- `index_status`: `empty`, `indexing`, `ready`, `stale`, `error`
-- `profile_status`: refresh state for cached profile material
-- `cluster_summary`
-- `cluster_glossary`
-- `profile_updated_at`
-- `profile_source_hash`
-- `indexed_source_count`
-
-## Current RAG Contract
-
-Shared context delivery is now retrieval-first across chat and Bridge:
-
-- selected clusters
-- citations
-- source snippets
-- memory items
-- working memory
-- cluster profile
-- token estimate
-- bundle status
-- warnings
-
-Removed from the live path:
-
-- LoRA runtime and training
-- expert-compression packets
-- expert artifact activation/rollback
-- adapter quality gates
-- expert-only setup/runtime flows
-
-## What Is Done
-
-The LoRA-to-RAG migration is complete in live code:
-
-- backend schema and lifecycle are RAG-native
-- cluster refresh happens from indexing/profile jobs
-- chat uses retrieval-first packets
-- Bridge uses retrieval-first packets
-- desktop cluster, source, Bridge, onboarding, and settings flows are aligned with RAG
-- packaged desktop startup no longer depends on an expert runtime
-- model recommender live path is chat-only
-- LoRA runtime, training, and proof modules are removed
-
-The July 13 UI integrity pass also completed:
-
-- Home now uses one main column, with Quick Actions above the prompt and Activity below Suggested Clusters
-- Suggested Cluster counts and progress come from real indexed sources and cannot overflow their cards
-- Settings includes a live Health section backed by backend, library, database, embedding, model, job, OCR, and hardware checks
-- production Map no longer exposes seeded demo data
-- Chat no longer fabricates a cluster count when no library is open
-- unimplemented Google sign-in surfaces were removed; onboarding now explains the local profile directly
-- production routes no longer depend on seeded state; the mock vault store remains available as a guarded development and interaction-test fixture
-- the reusable UI primitive inventory and its required packages are retained for feature work even when individual primitives are not mounted today
-- stale LoRA runtime code and dependencies with no live product role were removed
-- secured-source hydration now restores every encrypted content field for authorized in-memory readers while keeping plaintext database columns empty
-
-The Odin release implementation pass also completed:
-
-- schema version 10 adds scoped CLI clients, one-time pairing challenges, short-lived sessions, audit records, project-run progress, candidate membership, layer pointers, and snapshot-scoped retrieval activation; schema version 11 adds persisted project and snapshot discovery scopes with compatibility defaults for existing indexes
-- the desktop writes an atomic non-secret loopback runtime descriptor; the CLI credential helper stores the long-lived device credential with Windows user-bound protection and never accepts it as a command argument
-- pairing, scope enforcement, rotation, revocation, logout, and forget flows are implemented in the backend, CLI, Electron runtime, and Settings CLI Access surface
-- project discovery, structure, retrieval staging, activation, and cleanup run as persisted dependent jobs; ordinary search, chat, graph, source, vector-maintenance, and Bridge reads exclude candidate data
-- the CLI, project API, and desktop project settings expose `context` and `code` discovery scopes; scope changes preserve the current active snapshot while a replacement is indexed
-- parser adapters use pinned grammar wheels packaged offline, preserve retrieval for unsupported/malformed files, record extractor provenance, and keep unresolved dynamic references non-authoritative
-- the canonical `/projects/$projectId` workspace includes live run progress, cancellation, layer health, freshness, scoped questions, settings, folder reconnection, cluster links, layer-specific reindex, run history, and exact-name removal
-- the primary navigation now exposes a `/projects` index with real project status, freshness, synchronization, and direct access to the canonical project workspace; the legacy "Mind" label is now the plain-language "Search" label
-- cluster summaries and generated glossary terms are visible in both the cluster overview and list inspector; project-backed primary clusters continue to redirect to their project workspace instead of exposing a mismatched vault map
-- Tasks groups project runs and their persisted phases; Sources shows bounded project summaries and indexing issues; ordinary clusters show linked projects; answer citations disclose relative paths, line spans, symbols, indexed snapshot/commit, and local file actions
-
-Authoritative migration record:
-
-- `docs/LORA_TO_RAG_MIGRATION_PLAN.md`
-
-## Current Validation Status
-
-Latest repo-backed validation that already passed for 0.1.7:
-
-- live isolated backend search returned grounded citations
-- live isolated `chat/context` returned grounded citations and retrieval fallback output
-- live isolated `bridge/context` returned grounded citations and cluster profile data
-- desktop frontend loaded against the isolated backend without console errors on the validated screens
-- backend regression slice: `127 passed`
-- synthetic mixed-corpus benchmark: passed
-- retrieval benchmark at `500` sources: passed
-- Odin targeted backend tests: `43 passed`
-- desktop production typecheck/build: passed on 2026-07-13
-- Electron behavior tests: `42 passed`
-- encrypted storage regression tests: `7 passed`
-- all 499 backend tests are assigned to one CI tier: quick (147), integration (214), system (120), benchmark (17), or scale (1)
-- quick: `147 passed`; integration: `214 passed`; system: `120 passed`
-- benchmark: `16 passed`, `1 skipped` because the optional TurboVec runtime was absent
-- manually dispatched 50,000-file scale gate: `1 passed` in 555.50 seconds under its 900-second Windows budget
-- root `pytest` discovery is scoped to `backend/tests`; per-test timeouts, fault diagnostics, and tier-specific budgets prevent silent CI stalls
-- npm dependency audit: `0 vulnerabilities` after compatible lockfile updates
-- primary Electron routes: no visible overflow at the supported 1024 px minimum and at 1440 px
-- external Flask benchmark: Odin 140 eligible files, 1,774 nodes, 2,064 relationships, 1.920-second median; Graphify 0.9.17 indexed 92 files, 1,427 nodes, 2,353 relationships, 31.091-second median
-- external Zustand benchmark: Odin 121 eligible files, 1,503 nodes, 1,686 relationships, 1.731-second median; Graphify indexed 58 files, 536 nodes, 695 relationships, 10.586-second median
-- local Qwen2.5-1.5B-Instruct graph-only evaluation: Odin 0.500 mean fact-group recall, Graphify 0.458, no-context baseline 0.250 across six fixed questions; this is directional, small-sample evidence
-- large-repository code-scope sample: Odin indexed 3,029 Django files into 46,975 nodes/81,953 relationships in 79.841 seconds and 4,757 React files into 75,057 nodes/87,535 relationships in 124.472 seconds; Graphify indexed 3,096 and 4,785 files in 664.228 and 956.842 seconds with a broader cross-file relationship vocabulary
-- large-repository Qwen2.5-1.5B-Instruct evaluation: Odin 0.333 mean exact fact-group recall with one fully answered question, Graphify 0.167, and no-context 0.250 across six fixed questions; poor React slice selection and unpenalized hallucinations make this diagnostic evidence, not a general quality ranking
-- Odin Tier A/B golden corpus: deterministic across three runs; all reviewed language fixtures pass
-- TypeScript/JavaScript structure extraction is Tree-sitter AST-based; the obsolete regex fallback has been removed and regression coverage includes nested functions, arrow functions, computed method names, re-exports, comments, and string literals
-- `tree-sitter==0.25.2` is enforced after 0.26.0 produced reproducible native access violations on valid Zustand TypeScript/TSX files
-- Odin 50,000-file discovery gate: `126.2 s`, `68.3 MiB` peak traced memory
-- Odin project/task/evidence UI: rendered against an isolated live backend at 1024 px with no page-level horizontal overflow or console errors; canonical cluster redirect and evidence follow-up actions passed
-- renderer HTML safety and packaged helper-layout audits: passed; helper manifest contains 245 verified entries with no writable-layout overlaps
-
-## Current Token Reduction Story
-
-Token reduction still exists, but it is now retrieval-driven instead of LoRA-driven.
-
-Current benchmark evidence:
-
-- average raw tokens: `1858.62`
-- average current packet tokens: `1030.38`
-- average reduction: `44.43%`
-- warm-cache average reduction: `94.8%`
-
-Reduction now comes from:
-
-- relevance filtering
-- citation deduplication
-- snippet trimming
-- working-memory reuse
-- cached cluster profile material
-- packet shaping for repeat queries
-
-## Current Caveats
-
-- If no local synthesis runtime is configured, chat falls back to retrieval-draft output. That is expected and not a RAG failure.
-- Clean-VM and full packaged release validation remain release tasks, separate from the migration itself.
-
-## Current Progress
-
-| Area | State | Notes |
+| Benchmark | Best relevant result | Efficiency |
 | --- | --- | --- |
-| Core RAG migration | Complete | Live backend, desktop, and packaging paths are RAG-only. |
-| Bridge/MCP context delivery | Complete | Shared retrieval-first packet contract is live. |
-| Cluster lifecycle/profile refresh | Complete | Indexing and cached profile refresh are live. |
-| Model recommender migration | Complete for live path | Chat-only live path is in place; no expert-role dependency remains. |
-| Token reduction | Complete for RAG V1 | Packet shaping and cache reuse are producing measurable reduction. |
-| Release hardening | In progress | Packaging, security, and clean-machine proof remain release work. |
-| Odin project context | Scoped implementation complete | Device auth, atomic jobs, Tier A/B parsers, project/tasks/evidence/settings UI, tests, and offline packaging pins are live. |
-| UI truth and copy | Current pass complete | Hardcoded health/demo/count surfaces removed; active app copy uses user-facing language by default. |
+| LongMemEval-S typed-v1, 500 questions | 83.8% Kimi / 83.2% GPT-5.4 | 33,331.9 reader prompt tokens/query |
+| LongMemEval-S claim-first 10K, 500 questions | 81.8% Kimi / 82.0% GPT-5.4 | 8,307.1 tokens/query; 0/500 over budget; $4.5111 evaluation cost |
+| LoCoMo ColBERT, 1,540 questions | 0.7606 recall@10; 66.75% Kimi / 63.96% GPT-5.4 | 650.4 reader prompt tokens/query; $1.7388 evaluation cost |
+
+Claim-first reduced LongMemEval reader prompt volume by **75.08%**, measured reader-plus-dual-judge cost by **66.39%**, and mean reader latency by **60.68%** versus typed-v1, with a 2.0-point Kimi and 1.2-point GPT accuracy tradeoff. At the same workload shape, 100 questions use about 0.83M instead of 3.33M reader prompt tokens. Local benchmark ingestion used zero billable extraction or embedding API tokens.
+
+These are benchmark measurements, not universal user-bill guarantees. Model pricing, caching, question complexity, answer length, and judge use change monetary cost. LongMemEval is now development-exposed, so future promotion claims require a preregistered untouched set or another benchmark.
+
+## Validation Snapshot
+
+- Latest recorded backend suite: `593 passed`, `2 skipped`; one non-blocking Starlette TestClient compatibility warning
+- Desktop TypeScript check and production client/SSR build: passed on the latest recorded product slice
+- Electron behavior tests: `42 passed`
+- Python and npm dependency audits: no known vulnerabilities in the pinned repository environments
+- GitHub CI: current action majors, least-privilege read permission, dependency audit, desktop lint/build, four backend tiers, and manual Odin scale gate
+- Published CI proof: run `29682163820` passed dependency audit, desktop, quick, integration, system, and benchmark jobs; the manual scale job was correctly skipped
+- Odin 50,000-file discovery gate: `126.2 s`, `68.3 MiB` peak traced memory
+- Project/task/evidence UI: passed at the 1024 px minimum against an isolated backend
+- npm dependency audit: `0 vulnerabilities`
+- Claim-packing CI gate enforces budget, answer-session recall, literal containment, and packet size
+
+## Active Decisions And Boundaries
+
+- Do not restore LoRA/expert runtime paths; the live product is RAG-only.
+- Do not enable the exact ColBERT prototype in production. First prove compressed persistent indexing, packaging/licensing, migration, deletion, concurrency, memory, and cross-dataset behavior.
+- Do not optimize only for exposed benchmark questions. Product changes must improve real retrieval, evidence provenance, temporal reasoning, or operating cost and pass regression gates.
+- Keep ambiguous dynamic code relationships non-authoritative.
+- Keep graphs request-only and project pages focused on status, questions, evidence, and activity.
+- Missing local synthesis is a supported retrieval-draft fallback, not a retrieval failure.
 
 ## Immediate Next Steps
 
-1. Run the remaining general clean-machine and signed-installer release proof.
-2. Improve graph-slice ranking with exact symbol/path priority, default test/fixture demotion, authoritative relationship expansion, and hallucination-aware scoring.
-3. Improve authoritative import/reference/re-export relationships while keeping ambiguous dynamic calls non-authoritative, then repeat the Django/React evaluation with more model sizes and multiple runs.
-4. Decide when project interpretation and deterministic multi-project retrieval are ready to leave the deferred list.
-5. Continue accessibility QA and packaged Windows account-separation validation.
+1. Complete clean-machine Windows installer, account-separation, package-integrity, and signing proof.
+2. Build a compressed, persistent ColBERT proof of concept with explicit size, latency, lifecycle, and licensing gates before any production decision.
+3. Create a fresh memory-quality evaluation set; prioritize provenance-aware claim selection, temporal reconciliation, numeric aggregation, preferences, and multi-session synthesis.
+4. Improve Odin TypeScript/React graph-to-prompt ranking and authoritative cross-file import/re-export/reference coverage, then rerun multi-model external evaluation.
+5. Run the manual Odin scale workflow when the next discovery/indexing change needs promotion evidence.
+6. Return to the deferred UI audit after backend and benchmark productionization stabilizes.
+
+## Canonical References
+
+- Detailed internal state: `docs/OVERALL_CONTEXT.md`
+- Public product overview: `ReadME.md`
+- Public benchmark methodology and analysis: `BENCHMARK.md`
+- Completed migration archive: `docs/LORA_TO_RAG_MIGRATION_PLAN.md`
+- Odin implementation: `backend/app/core/projects.py`, `backend/app/core/project_graph.py`, and `backend/app/api/routes/projects.py`

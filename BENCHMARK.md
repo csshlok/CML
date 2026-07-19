@@ -1,0 +1,558 @@
+<p align="center">
+  <img src="apps/desktop/public/brand/Frame%208.png" width="420" alt="Vault logo">
+</p>
+
+<h1 align="center">Vault Benchmarks</h1>
+
+<h3 align="center">memory quality, retrieval, and context efficiency</h3>
+
+<p align="center">
+  Reproducible evaluation of Vault's conversational-memory pipeline on LongMemEval and LoCoMo.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/LongMemEval-500_questions-1f2937.svg" alt="LongMemEval: 500 questions">
+  <img src="https://img.shields.io/badge/LoCoMo-1%2C540_questions-1f2937.svg" alt="LoCoMo: 1,540 questions">
+  <img src="https://img.shields.io/badge/evaluation-dual_judge-2f855a.svg" alt="Dual-judge evaluation">
+  <img src="https://img.shields.io/badge/ingestion-local--first-2f855a.svg" alt="Local-first ingestion">
+</p>
+
+<p align="center">
+  <a href="ReadME.md">Overview</a> ·
+  <a href="#headline-results">Headline results</a> ·
+  <a href="#longmemeval-s">LongMemEval</a> ·
+  <a href="#locomo">LoCoMo</a> ·
+  <a href="#published-comparison">Comparison</a> ·
+  <a href="#reproducibility-artifacts">Artifacts</a>
+</p>
+
+> [!NOTE]
+> Last verified: 19 July 2026. Odin is not used by either dataset. These results measure Vault's memory retrieval and context-packing pipeline, not Odin's code graph.
+
+This report covers retrieval, answer quality, token use, API cost, latency, ingestion economics, experimental variants, and comparison boundaries. Headline claims come from the saved full-run reports; smaller development and holdout sets are labeled separately.
+
+## Benchmark suite
+
+| Suite | Evaluation set | Questions | Primary capability measured |
+| --- | --- | ---: | --- |
+| **LongMemEval-S** | Official cleaned set | 500 | Long-history recall, knowledge updates, temporal reasoning, and multi-session synthesis |
+| **LoCoMo** | Standard categories 1-4 | 1,540 | Conversational recall, event ordering, open-domain knowledge, and evidence-sensitive QA |
+
+Each suite follows the same high-level path, while preserving its official dataset structure and scoring rules:
+
+```text
+Local ingest  ->  Retrieve candidates  ->  Pack bounded evidence  ->  Generate answer  ->  Judge and analyze
+```
+
+## Headline results
+
+| Benchmark and configuration | Questions | Retrieval | Kimi K2.6 | GPT-5.4 judge | Reader prompt tokens/query | Evaluation cost |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| LongMemEval-S, typed-v1 | 500 | 0.9802 recall@10 | **83.8%** | **83.2%** | 33,331.9 | $13.4211 |
+| LongMemEval-S, claim-first 10K | 500 | 0.9802 recall@10 | 81.8% | 82.0% | **8,307.1** | **$4.5111** |
+| LoCoMo, ColBERT | 1,540 | **0.7606 recall@10** | **66.75%** | **63.96%** | **650.4** | **$1.7388** |
+
+The two LongMemEval rows expose the principal product tradeoff. Typed-v1 produced the highest measured Kimi-judged accuracy. Claim-first v2 retained nearly all of that answer quality while cutting mean reader prompts by 75.08%, cache-adjusted evaluation cost by 66.39%, and mean reader latency by 60.68%.
+
+The LoCoMo result exposes a different bottleneck. Better candidate generation raised both retrieval recall and downstream answer quality, but its current exact ColBERT index is an experimental implementation rather than a production-ready index.
+
+> [!IMPORTANT]
+> The best accuracy configuration is not automatically the best production configuration. Vault reports quality, context size, latency, cost, and operational constraints together so the tradeoff remains visible.
+
+### What these results mean for everyday use
+
+The LongMemEval comparison approximates a demanding workflow in which questions draw on long histories spread across many sessions. Scaling the measured per-question results to 100 questions makes the difference easier to interpret:
+
+| 100-question workflow | Typed-v1 complete context | Claim-first 10K | Practical change |
+| --- | ---: | ---: | ---: |
+| Reader prompt tokens | 3,333,190 | 830,710 | **2,502,480 fewer (75.08%)** |
+| Equivalent questions within the same prompt-token allowance | 100 | About 401 | **About 4× as many** |
+| Sequential reader latency | 19.0 min | 7.5 min | **11.5 min less (60.68%)** |
+| Cache-adjusted reader + dual-judge cost | $2.68 | $0.90 | **$1.78 less (66.39%)** |
+| Kimi-accepted answers, projected from the full run | About 84 | About 82 | **2 fewer per 100** |
+| GPT-accepted answers, projected from the full run | About 83 | About 82 | **1 fewer per 100** |
+
+For someone repeatedly asking about a large research archive, meeting history, or project record, the result points to less irrelevant history being resent on every turn. A 100-question workload used roughly 0.83 million reader prompt tokens instead of 3.33 million, while the bounded packet stayed under 10,000 tokens on every one of the 500 measured questions.
+
+The **75.08% figure is a reduction in reader prompt-token volume**, which is the part Vault controls through retrieval and packing. The **66.39% figure is the measured API-cost reduction for this particular reader-and-dual-judge evaluation**. It is not a universal discount on a user's model bill: ordinary app use may omit both judges, and provider prices, caching, answer length, and model choice change the monetary result.
+
+Local ingestion is a separate saving. Both benchmark corpora were parsed and embedded without paid extraction or embedding API calls, so adding or updating the indexed material produced **zero billable API ingestion tokens**. The corresponding cost is local CPU time, memory, storage, and electricity rather than zero total resource use.
+
+```mermaid
+xychart-beta
+    title "LongMemEval mean reader prompt tokens per question"
+    x-axis ["Release baseline", "Typed-v1", "Claim-first 10K"]
+    y-axis "Tokens" 0 --> 35000
+    bar [31972, 33332, 8307]
+```
+
+```mermaid
+xychart-beta
+    title "LongMemEval cache-adjusted reader and judging cost"
+    x-axis ["Release baseline", "Typed-v1", "Claim-first 10K"]
+    y-axis "USD for 500 questions" 0 --> 15
+    bar [13.97, 13.42, 4.51]
+```
+
+## How to read the numbers
+
+- **Retrieval recall** measures whether annotated evidence was retrieved. It does not measure whether the answer model used that evidence correctly.
+- **Kimi accuracy** is the verdict of the primary strict binary judge. The reader was also Kimi K2.6.
+- **GPT-5.4 accuracy** is an independent strict binary judgment of the same generated answers.
+- **Reader prompt tokens/query** includes the complete prompt sent to the answer model, not just retrieved evidence.
+- **Evaluation cost** includes the reader and both judges using recorded usage. Where provider caching was reported, the table uses the cache-adjusted estimate.
+- Local retrieval and local embedding do not create billable API tokens. CPU, memory, disk, and elapsed time remain real costs.
+- Different products' published results are not directly interchangeable because readers, judges, reasoning settings, context accounting, and retrieval cutoffs differ.
+
+## Evaluation protocol
+
+| Stage | What Vault records |
+| --- | --- |
+| **Ingest** | Dataset hash, selection manifest, local chunk/index counts, and elapsed work |
+| **Retrieve** | Ranked evidence, retrieval cutoff, recall, latency, and retrieval configuration |
+| **Read** | Packed context, prompt protocol, model, finish reason, latency, and provider usage |
+| **Judge** | Independent verdicts, agreement, category accuracy, retries, and refusals |
+| **Report** | Token budgets, cost estimates, confidence intervals, failures, and artifact paths |
+
+### Models
+
+| Role | Model |
+| --- | --- |
+| Answer reader | Kimi K2.6 |
+| Primary judge | Kimi K2.6, strict binary protocol |
+| Independent judge | `gpt-5.4-2026-03-05`, strict binary protocol |
+| Dense embedding baseline | `all-MiniLM-L6-v2` |
+| Late-interaction candidate | `answerai-colbert-small-v1` |
+
+All paid runs were checkpointed and resumable. Dataset hashes, selection manifests, retrieval hashes, prompt protocol IDs, model names, answer finish reasons, judge results, and provider usage were recorded. Invalid judge output and length-limited reader attempts were retried rather than silently scored.
+
+### Why two judges
+
+One model's verdict can hide prompt or rubric sensitivity. Vault therefore reports:
+
+- both acceptance rates;
+- judge agreement;
+- Cohen's kappa;
+- category-level accuracy;
+- length finishes and provider refusals;
+- confidence intervals on the main full runs.
+
+This does not eliminate evaluator bias, but it makes disagreements measurable.
+
+---
+
+## LongMemEval-S
+
+LongMemEval evaluates memory across long histories and six question types: knowledge updates, multi-session aggregation, assistant facts, user preferences, user facts, and temporal reasoning.
+
+### Dataset and retrieval
+
+- Dataset: official cleaned LongMemEval-S set
+- Questions: all 500 records in official order
+- Retrieval-scored questions: 470
+- Abstention questions: 30
+- Indexed sessions: 23,867
+- Indexed chunks in the measured baseline: 274,824
+- Retrieval: local dense embeddings, top 10 sessions
+- Retrieval scope: each question's own memory corpus
+
+| Retrieval metric | Result |
+| --- | ---: |
+| Macro session recall@10 | 0.9802 |
+| Any-evidence hit rate@10 | 0.9936 |
+| Mean query latency | 3.8501 s |
+| P95 query latency | 7.0724 s |
+
+| Question type | Questions | Recall@10 |
+| --- | ---: | ---: |
+| Knowledge update | 78 | 1.0000 |
+| Multi-session | 133 | 0.9701 |
+| Single-session assistant | 56 | 1.0000 |
+| Single-session preference | 30 | 0.9667 |
+| Single-session user | 70 | 1.0000 |
+| Temporal reasoning | 133 | 0.9633 |
+
+Retrieval is already strong. Most remaining LongMemEval errors occur after relevant sessions have been found: evidence selection, temporal reconciliation, numeric aggregation, provenance, and synthesis are the dominant issues.
+
+### Full-run lineage
+
+| Full 500-question run | Context strategy | Kimi | GPT-5.4 | Judge agreement | Reader prompt tokens/query | Cache-adjusted cost |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Release baseline | Complete selected sessions | 83.0% | **84.8%** | 96.6% | 31,971.7 | $13.9708 |
+| Typed-v1 | Typed evidence plus complete sessions | **83.8%** | 83.2% | **97.8%** | 33,331.9 | $13.4211 |
+| Claim-first v2 | Cited claims inside a 10K budget | 81.8% | 82.0% | 97.4% | **8,307.1** | **$4.5111** |
+
+Typed-v1 is the best Kimi-judged result, while the earlier release baseline remains the highest GPT-judged result. Claim-first v2 is the best measured cost-quality balance and the only full run designed around a strict 10,000-token reader budget.
+
+The release baseline ended with zero length-limited answers and five provider content filters. Typed-v1 recorded one length finish and four content filters. Claim-first v2 recorded two length finishes and one content filter. These cases remain counted in the reported accuracy rather than being removed from the denominator.
+
+### Token and cost reduction
+
+| Change | Typed-v1 | Claim-first v2 | Reduction |
+| --- | ---: | ---: | ---: |
+| Mean reader prompt tokens/query | 33,331.9 | 8,307.1 | **75.08%** |
+| Reader prompt tokens across 500 questions | 16,665,968 | 4,153,559 | **12,512,409 fewer** |
+| All recorded evaluation tokens/query | 34,096.7 | 8,995.9 | **73.62%** |
+| Cache-adjusted reader + judges | $13.4211 | $4.5111 | **66.39%** |
+| Cost/query | $0.02684 | $0.00902 | **66.39%** |
+| Mean reader latency | 11.41 s | 4.49 s | **60.68%** |
+| Kimi accuracy | 83.8% | 81.8% | -2.0 points |
+| GPT-5.4 accuracy | 83.2% | 82.0% | -1.2 points |
+
+The cost did not fall in exact proportion to prompt tokens because completion tokens, judging, provider-cache use, and retry behavior also contribute to the bill.
+
+Against the release baseline rather than typed-v1, claim-first reduced reader prompt tokens by 74.02% and cache-adjusted cost by 67.71%.
+
+### Budget compliance
+
+| Claim-first budget measurement | Result |
+| --- | ---: |
+| Reader budget | 10,000 tokens |
+| Questions over packed-prompt estimate | **0 / 500** |
+| Questions over final-request usage | **0 / 500** |
+| Questions over cumulative billed request usage | **0 / 500** |
+| Mean packed estimate | 9,078.3 tokens |
+| Mean actual reader prompt | 8,307.1 tokens |
+
+Because no query exceeded the budget, there is no statistically meaningful over-budget versus under-budget accuracy comparison. All measured claim-first accuracy belongs to the under-budget group.
+
+### Accuracy by question type
+
+| Question type | Typed-v1 Kimi | Typed-v1 GPT | Claim-first Kimi | Claim-first GPT |
+| --- | ---: | ---: | ---: | ---: |
+| Knowledge update | 82.05% | 82.05% | **85.90%** | **85.90%** |
+| Multi-session | **75.94%** | **74.44%** | 69.17% | 72.18% |
+| Single-session assistant | **96.43%** | **96.43%** | 94.64% | 94.64% |
+| Single-session preference | **90.00%** | **83.33%** | 83.33% | 66.67% |
+| Single-session user | **98.57%** | **97.14%** | 97.14% | 95.71% |
+| Temporal reasoning | 78.20% | 79.70% | 78.20% | **80.45%** |
+
+The bounded pipeline improved knowledge-update accuracy and retained temporal performance, but compressed away useful evidence for some preference and multi-session questions. Those are the clearest targets for better typed evidence and claim selection.
+
+### Reader and evidence experiments
+
+The full runs were preceded by controlled diagnostics. These experiments were deliberately gated; variants that failed retention or latency requirements were not promoted.
+
+| Variant | Scope | Main result | Cost where recorded | Decision |
+| --- | ---: | --- | ---: | --- |
+| Complete-session release reader | 500 | 83.0% Kimi / 84.8% GPT | $13.9708 | Historical baseline |
+| Structured reader v1, failure set | 22 | Recovered 9/22 baseline failures | $0.5821 | Promising but below recovery gate |
+| Structured reader v1, matched controls | 22 | Retained 20/22; balanced net +7/44 | Not isolated cleanly | Continue on holdout |
+| Structured reader v2 | 25 fresh | Retained 13/18; recovered 0/7 | $0.7562 | Rejected |
+| Routed reader v3 development | 25 | Recovered 4/7; retained 15/18 | Development run | Revised before holdout |
+| Routed reader v3.1 development | 25 | Recovered 6/7; retained 16/18 | Development run | Frozen for fresh test |
+| Routed reader v3.2 fresh | 30 | Retained 17/20; recovered 3/10 | $0.8423 | Rejected by one retention case |
+| Routed reader v4 development | 30 | Retained 19/20; recovered 3/10 | $0.8359 | Passed development diagnostics |
+| Routed reader v4 fresh | 30 | Retained 17/20; recovered 4/10 | $0.8443 | Rejected by one retention case |
+| Typed-v1 | 500 | 83.8% Kimi / 83.2% GPT | $13.4211 | Best accuracy-oriented run |
+| Claim-first v2 | 500 | 81.8% Kimi / 82.0% GPT; 0 over budget | $4.5111 | Best efficiency run |
+| Ledger v3 offline replay | 500 | Recall held at 0.9788; mean estimate -0.5% | $0 API | Passed offline safety gates; no new accuracy claim |
+
+The failed reader variants are important negative results. Adding more global instructions improved targeted failures but repeatedly created regressions on previously correct questions. This led to the typed-evidence and claim-first direction instead of an ever-longer universal prompt.
+
+Typed-v1 itself advanced through selective development and holdout sets before the full run:
+
+| Typed-evidence run | Questions | Kimi | GPT-5.4 | Recorded cost | Interpretation |
+| --- | ---: | ---: | ---: | ---: | --- |
+| V1 development | 26 | 80.77% | 84.62% | $0.5907 | Initial typed contract |
+| V1.1 development | 26 | 96.15% | 92.31% | $0.5871 | Development-only improvement |
+| Fresh holdout | 30 | 80.00% | 76.67% | $0.8452 | Untouched validation before scale-up |
+| Full typed-v1 | 500 | 83.80% | 83.20% | $13.4211 | Final full-set result |
+
+Three-question smoke runs validated provider routing, cache migration, and checkpoint behavior. They are not accuracy experiments and are intentionally excluded from result comparisons.
+
+### Bounded-context development sequence
+
+The 10K path was frozen through small, paid regression sets before the full run. These sets are development evidence and must not be compared with a representative full-500 score.
+
+| Claim-first variant | Questions | Kimi | GPT-5.4 | Recorded cost | Purpose |
+| --- | ---: | ---: | ---: | ---: | --- |
+| V1 regression | 30 | 86.67% | 83.33% | $0.3249 | Establish initial bounded-packet behavior |
+| V1 strict | 30 | 83.33% | 76.67% | $0.2352 | Test stricter evidence selection |
+| V2 adaptive | 30 | 80.00% | 80.00% | $0.2296 | Test adaptive allocation |
+| V2 final regression | 30 | 83.33% | 80.00% | $0.2417 | Freeze the full-run protocol |
+| V2 independent regression | 30 | 83.33% | 80.00% | $0.2403 | Confirm frozen behavior |
+| Targeted failures | 3 | 66.67% | 66.67% | $0.0301 | Inspect known failure classes |
+| Tokenizer probes | 1 + 1 | 100% | 100% | $0.0170 | Verify estimated versus full-budget tokenization |
+| V2 full | 500 | 81.80% | 82.00% | $4.5111 | Final full-set measurement |
+
+An earlier 50-question complete-context diagnostic scored 82% under both judges at a recorded cost of $0.6242. It truncated context at a fixed character boundary and did not preserve the final release protocol, so it is retained only as historical diagnostic evidence.
+
+### Failure analysis for claim-first v2
+
+The no-model replay examined every answer rejected by either judge.
+
+| Failure stage | Count |
+| --- | ---: |
+| Claim selection or paraphrase | 43 |
+| Reader reasoning | 18 |
+| Judge or rubric mismatch | 17 |
+| Retrieval omission | 15 |
+| Judge disagreement | 2 |
+| Provider refusal | 1 |
+| Reader truncation | 1 |
+
+| Semantic family | Count |
+| --- | ---: |
+| Temporal resolution | 56 |
+| Numeric aggregation | 15 |
+| Preference synthesis | 9 |
+| Supersession/latest state | 9 |
+| Entity/fact selection | 6 |
+| Cross-session synthesis | 2 |
+
+The next gains are more likely to come from typed temporal and numeric reducers, better claim selection, and stronger provenance than from retrieving more sessions.
+
+### Ingestion economics
+
+The measured LongMemEval index used local embeddings and made no extraction-LLM calls.
+
+| Ingestion measurement | Result |
+| --- | ---: |
+| Source sessions | 23,867 |
+| Source wordpiece tokens | 55,535,290 |
+| Baseline chunks | 274,824 |
+| Tokens processed by the 256-token embedder | 65,736,688 |
+| Billable API ingestion tokens | **0** |
+| Local CPU embedding time | 5,061.3 s |
+| Benchmark SQLite database | approximately 2.18 GB |
+
+Zero billable tokens does not mean zero cost. Vault exchanged ingestion API spend for approximately 84 minutes of local CPU work, disk use, and a large vector index.
+
+The tokenizer-aware chunking projection reduced raw chunk tokens from 89,622,132 to 62,044,014, a 30.8% reduction, while eliminating chunks above the new 240-token target. It projected 269,270 chunks, 2.0% fewer than the original index. This projection validates coverage and index economics; it is not a new answer-accuracy score until the full index is rebuilt and evaluated.
+
+---
+
+## LoCoMo
+
+LoCoMo evaluates evidence retrieval and question answering across extended conversations. The canonical Vault run uses all 1,540 standard questions in Categories 1-4. The adversarial abstention task is kept separate because it has a different answer contract.
+
+### Full ColBERT result
+
+| Metric | Result |
+| --- | ---: |
+| Questions | 1,540 |
+| Evidence-scored questions | 1,536 |
+| Retrieval recall@10 | **0.760586** |
+| Any-evidence hit rate@10 | 0.831380 |
+| Official LoCoMo token F1 | **0.5259** |
+| Kimi acceptance | **1,028 / 1,540 (66.75%)** |
+| GPT-5.4 acceptance | **985 / 1,540 (63.96%)** |
+| Judge agreement | 92.01% |
+| Cohen's kappa | 0.8238 |
+| Reader length finishes | 0 |
+| Mean reader prompt tokens/query | 650.4 |
+| All reader-and-judge tokens/query | 892.5 |
+| Total evaluation cost | $1.738753 |
+| Evaluation cost/query | $0.001129 |
+
+### Category results
+
+| Category | Questions | Recall@10 | Kimi accuracy | GPT-5.4 accuracy |
+| --- | ---: | ---: | ---: | ---: |
+| 1: single-hop | 282 | 0.5499 | 55.67% | 46.10% |
+| 2: temporal | 321 | 0.8084 | 49.53% | 47.66% |
+| 3: multi-hop | 96 | 0.5185 | 43.75% | 45.83% |
+| 4: open-domain | 841 | 0.8395 | 79.67% | 78.24% |
+
+Category 1 and Category 3 remain the hardest. ColBERT improved both substantially, but multi-hop evidence completeness and reader reasoning remain material constraints.
+
+### Paired end-to-end improvement
+
+The cleanest before/after comparison uses the exact 300 IDs from the earlier dense run.
+
+| Metric | Dense hybrid | ColBERT | Change |
+| --- | ---: | ---: | ---: |
+| Retrieval recall@10 | 0.6031 | **0.7641** | +0.1611 |
+| Official token F1 | 0.4373 | **0.5065** | +0.0692 |
+| Kimi acceptance | 59.33% | **66.00%** | +6.67 points |
+| GPT-5.4 acceptance | 56.33% | **63.33%** | +7.00 points |
+
+Kimi recorded 46 gains and 26 losses; GPT-5.4 recorded 42 gains and 21 losses. Because answers were regenerated, this is an end-to-end paired comparison rather than deterministic proof that every verdict change came only from retrieval.
+
+### Retrieval variants
+
+| Retriever | Recall@10 | Recall@50 | Zero-evidence at 50 | Mean latency | P95 latency | Outcome |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Dense hybrid, MiniLM | 0.6295 | 0.7974 | 217 | 0.2087 s | 0.3469 s | Production baseline |
+| Dense hybrid, MultiQA MiniLM | 0.6067 | 0.7820 | 230 | **0.1304 s** | **0.1533 s** | Rejected: quality regression |
+| Dense + INT8 cross-encoder, depth 20 | 0.6804 | — | — | 0.4339 s | 1.1714 s | Rejected: P95 gate |
+| Dense + INT8 cross-encoder, depth 30 | 0.7036 | — | — | 0.4429 s | 1.0904 s | Rejected: P95 gate |
+| Exact semantic ColBERT | **0.7606** | **0.8894** | **100** | **0.0685 s** | **0.0758 s** | Passed experimental gates |
+
+The ColBERT latency is conversation-scoped and holds all experimental token vectors in memory. It must not be interpreted as a whole-vault production latency result.
+
+### Dense reranker and fusion diagnostics
+
+The first reranker gate used the canonical 100-question set. All rows below were local and incurred no reader or judge API cost.
+
+| Runtime | Candidate depth | Batch | Recall@10 | Mean/question |
+| --- | ---: | ---: | ---: | ---: |
+| Torch FP32 cross-encoder | 50 | 64 | 0.7138 | 366.9 ms |
+| ONNX INT8 AVX2 | 50 | 64 | 0.7138 | 289.7 ms |
+| ONNX INT8 AVX2 | 50 | 128 | 0.7138 | **274.2 ms** |
+| ONNX FP32 | 50 | 64 | 0.7138 | 501.4 ms |
+| ONNX INT8 AVX2 | 30 | 64 | 0.6953 | 156.8 ms |
+| ONNX INT8 AVX2 | 20 | 64 | 0.6532 | **136.4 ms** |
+
+INT8 preserved the measured ranking and reduced the model artifact from 90.9 MB to 23.2 MB, but no configuration met the desktop latency gate without giving up meaningful recall. The subsequent full-1,540 depth-20 and depth-30 runs confirmed the P95 problem.
+
+Other low-cost ranking tests were also rejected:
+
+- A nine-point weighted reciprocal-rank-fusion grid peaked at 0.6114 recall@10 on the 300-question set, only 0.0084 above its baseline.
+- A 21-point semantic/BM25 grid selected a 0.75 semantic weight on its tuning split but regressed the holdout from 0.5417 to 0.5357.
+- Hard per-session diversity caps from one through five items all reduced full-set recall.
+- Depth 10 reranking cannot improve evidence recall because it only reorders the same ten returned candidates.
+
+The existing 70/30 semantic/BM25 production scorer therefore remained unchanged during these experiments.
+
+### Candidate-depth headroom
+
+| Cutoff | Dense recall | ColBERT recall | Dense zero-recall | ColBERT zero-recall |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 0.6295 | **0.7606** | — | 259 |
+| 20 | 0.6981 | **0.8191** | — | 182 |
+| 30 | 0.7393 | **0.8555** | — | 139 |
+| 50 | 0.7974 | **0.8894** | 217 | **100** |
+
+Returning 50 items directly is not the answer: it increases reader noise and token cost. Candidate generation and final evidence depth are separate controls. The goal is broader retrieval followed by a bounded top-10 evidence packet.
+
+### ColBERT storage and deployment tradeoff
+
+| Index measurement | Result |
+| --- | ---: |
+| Dialogue turns | 5,882 |
+| Token vectors | 237,965 |
+| Raw late-interaction vectors | 91,378,560 bytes |
+| Equivalent 384-dimension dense vectors | 9,034,752 bytes |
+| Raw size ratio | **10.1141x** |
+| Initial CPU document encoding | 74.977 s |
+
+The retrieval result justifies further engineering, not immediate production activation. A production path needs a compressed, memory-mapped index; resumable backfill; add/update/delete reconciliation; atomic activation and rollback; encrypted-vault handling; lock-time cache eviction; storage accounting; and realistic 10K/100K/1M-scale measurements. Dense and BM25 retrieval should remain available for exact identifiers, code, unsupported content, and automatic fallback.
+
+---
+
+## Published comparison
+
+### LongMemEval
+
+| System | Published accuracy | Questions | Published context | Important difference |
+| --- | ---: | ---: | ---: | --- |
+| [Mem0](https://mem0.ai/research) | 94.4%; 94.8% at a different cutoff | 500 | 6,787 mean retrieval tokens | Managed pipeline and its own reader/judge protocol |
+| [Hindsight](https://vectorize.io/benchmarks) | 94.6% current published result | 500 | Not published with the headline | Updated composite methodology and different evaluation stack |
+| [Zep](https://www.getzep.com/research/) | 90.2% | 500 | 4,408 median context tokens | GPT-5.4 with medium reasoning; managed graph retrieval |
+| **Vault typed-v1** | 83.8% Kimi / 83.2% GPT | 500 | 33,331.9 mean complete reader-prompt tokens | Local dense ingestion; Kimi reader; dual strict judges |
+| **Vault claim-first v2** | 81.8% Kimi / 82.0% GPT | 500 | 8,307.1 mean complete reader-prompt tokens | Bounded cited claims; zero packed prompts over 10K |
+| [Graphify](https://github.com/Graphify-Labs/graphify#benchmarks) | 76% | 50 | Not published | Smaller sample; tied with its dense-RAG baseline |
+
+Vault is credible but not state of the art on LongMemEval answer accuracy. Claim-first closes most of the token-efficiency gap while preserving local ingestion and inspectable evidence, but multi-session and preference synthesis still trail the strongest published systems.
+
+Hindsight's separately published benchmark repository reports an earlier 91.4% Gemini-3 result with category detail. The current 94.6% page uses an updated five-dimension composite presentation. Both differ from Vault's six-type, Kimi-reader, dual-judge protocol, so this report uses the current figure for market context without treating it as a matched rerun.
+
+### LoCoMo
+
+| System | Published result | Questions | Published context | Comparison caveat |
+| --- | ---: | ---: | ---: | --- |
+| [Zep](https://www.getzep.com/research/) | 94.7% accuracy | 1,540 | 5,760 median tokens | Different reader, judge, retrieval, and accuracy protocol |
+| [Mem0](https://mem0.ai/research) | 92.5 overall | 1,540 | 6,956 mean tokens | Different scoring and managed pipeline |
+| **Vault ColBERT** | 66.75% Kimi / 63.96% GPT; 0.5259 token F1 | 1,540 standard | 650.4 mean complete reader-prompt tokens | Strict dual judges; Categories 1-4 |
+| [Graphify](https://github.com/Graphify-Labs/graphify#benchmarks) | 45.3% QA; 0.497 recall@10 | 300 | Not published | Smaller sample and different harness |
+
+These rows are directional market context, not a rank ordering. Vault's official token F1, strict dual-judge accuracy, and retrieval recall should not be substituted for another system's single headline score.
+
+## Product improvements produced by the benchmark program
+
+```mermaid
+flowchart LR
+    A[Complete sessions] --> B[Tokenizer-safe chunks]
+    B --> C[Structured reader tests]
+    C --> D[Routed readers]
+    D --> E[Typed evidence]
+    E --> F[Claim-first 10K packets]
+    F --> G[Temporal and provenance ledger]
+    G --> H[Late-interaction retrieval candidate]
+```
+
+The work resulted in product-level changes rather than benchmark-only scoring rules:
+
+1. **Reproducible evaluation** — dataset and retrieval hashes, frozen selections, content-addressed checkpoints, retry accounting, and two judges.
+2. **Tokenizer-safe ingestion** — model-aware chunk limits and bounded overlap prevent silent embedding truncation.
+3. **Separated candidate generation and context depth** — retrieval may consider more candidates while the reader remains bounded.
+4. **Typed evidence contracts** — speaker, provenance, event date, semantic role, numeric role, and citation validity can be represented before generation.
+5. **Temporal history** — facts can retain validity windows and supersession history instead of overwriting old state.
+6. **Claim-first packing** — compact cited evidence replaces whole-session replay for the bounded path.
+7. **Observable budgets** — packed estimates, final request usage, cumulative usage, over-budget counts, and accuracy are recorded together.
+8. **Conservative promotion gates** — improvements must retain previously correct answers, remain within latency/token limits, and pass fresh holdouts.
+
+## Tradeoffs explored
+
+| Decision | Benefit | Cost or risk | Current position |
+| --- | --- | --- | --- |
+| Complete-session context | Highest evidence availability | Approximately 32K-33K prompt tokens/query | Retained as an accuracy reference, not preferred default |
+| Claim-first 10K | 75% token reduction and 61% lower latency | Small overall accuracy decrease; preference/multi-session regressions | Best bounded configuration |
+| Universal structured prompt | Recovers some complex failures | Creates regressions on already-correct answers | Rejected |
+| Routed prompts | Better targeted behavior | Promotion holdouts missed retention by one case twice | Not promoted |
+| Typed evidence | Better provenance and deterministic reasoning path | Limited deterministic coverage so far | Continue expanding conservatively |
+| Cross-encoder reranking | Improves LoCoMo dense recall | P95 above desktop gate | Rejected for current runtime |
+| MultiQA dense model | Faster retrieval | Lower recall and more deep misses | Rejected |
+| ColBERT | Large retrieval and QA gain | Raw index about 10.1x dense; production lifecycle incomplete | Proceed as an opt-in compressed-index candidate |
+| Local ingestion | Zero API ingestion tokens and private processing | CPU, disk, and indexing time move to the device | Core Vault property |
+
+## Cost accounting limitations
+
+The report does not claim one exact lifetime spend for the entire research program.
+
+- Current full runs preserve complete accepted usage and retry history.
+- The earliest LoCoMo run did not preserve the cost of four discarded length-limited attempts.
+- Some development reports reuse checkpoints, so summing every JSON total would double-count previously generated answers or judgments.
+- Local electricity, developer time, model downloads, CPU wear, and disk are not converted to dollars.
+- Provider pricing can change; recorded estimates use the rates verified on 17 July 2026.
+
+The defensible figures are therefore the per-run and per-question costs shown above.
+
+## Reproducibility artifacts
+
+Benchmark data and checkpoints remain local because they are large and may contain complete benchmark conversations.
+
+### LongMemEval
+
+- Retrieval: `.tmp/vault-odin-memory-benchmark/longmemeval-full500-retrieval.json`
+- Release baseline: `.tmp/vault-odin-memory-benchmark/longmemeval-api-kimi-k26-gpt54-full500-v3.json`
+- Typed-v1: `.tmp/vault-odin-memory-benchmark/longmemeval-typed-v1-full500-evaluated.json`
+- Claim-first v2: `.tmp/vault-odin-memory-benchmark/longmemeval-claim-first-10k-v2-full500.json`
+- Claim-first failure analysis: `.tmp/vault-odin-memory-benchmark/longmemeval-claim-first-10k-v2-failure-analysis.json`
+- Ledger v3 offline replay: `.tmp/vault-odin-memory-benchmark/longmemeval-claim-first-10k-v3-ledger-offline.json`
+- Ingestion accounting: `.tmp/vault-odin-memory-benchmark/longmemeval-ingestion-token-count.json`
+- Tokenizer-safe projection: `.tmp/vault-odin-memory-benchmark/longmemeval-token-aware-chunk-projection.json`
+- Structured/routed reader reports: `.tmp/vault-odin-memory-benchmark/longmemeval-structured-reader-*.json` and `.tmp/vault-odin-memory-benchmark/longmemeval-routed-reader-*.json`
+
+### LoCoMo
+
+- Full dense baseline: `.tmp/vault-odin-memory-benchmark/locomo-standard-all.json`
+- Dense top-50 trace: `.tmp/vault-odin-memory-benchmark/locomo-standard-all-top50.json`
+- Candidate-depth analysis: `.tmp/vault-odin-memory-benchmark/locomo-standard-all-candidate-depth.json`
+- Cross-encoder policies: `.tmp/vault-odin-memory-benchmark/locomo-reranker-full1540-*-policies.json`
+- MultiQA comparison: `.tmp/vault-odin-memory-benchmark/locomo-multiqa-embedding-comparison.json`
+- ColBERT top-50 trace: `.tmp/vault-odin-memory-benchmark/locomo-colbert-small-all-top50.json`
+- ColBERT cutoff analysis: `.tmp/vault-odin-memory-benchmark/locomo-colbert-small-candidate-depth.json`
+- ColBERT gate: `.tmp/vault-odin-memory-benchmark/locomo-colbert-small-comparison.json`
+- Full reader and judges: `.tmp/vault-odin-memory-benchmark/locomo-colbert-small-api-kimi-k26-gpt54-all1540.json`
+
+## Current conclusions
+
+1. LongMemEval retrieval is no longer the main bottleneck; evidence shaping and synthesis are.
+2. LoCoMo remains retrieval-sensitive, and late interaction produced the largest measured improvement.
+3. Smaller prompts are achievable without collapsing answer quality, but compression must protect preference and multi-session evidence.
+4. Local ingestion eliminates billable extraction and embedding API tokens, while shifting cost to local compute and storage.
+5. Prompt-only complexity has diminishing returns. Typed evidence and deterministic reducers are more promising for dates, counts, updates, and provenance.
+6. ColBERT warrants a compressed production proof of concept, not direct activation of the exact in-memory prototype.
+7. Competitive claims should remain qualified until readers, judges, context accounting, and question manifests are matched end to end.
+
+---
+
+<p align="center">
+  <a href="ReadME.md">Vault overview</a> ·
+  <a href="#headline-results">Headline results</a> ·
+  <a href="#reproducibility-artifacts">Reproducibility artifacts</a> ·
+  <a href="LICENSE">MIT License</a>
+</p>

@@ -42,10 +42,10 @@ if (-not $basePythonRoot -or -not (Test-Path $basePythonRoot)) {
 $backendRuntimePackages = @(
   "fastapi==0.136.3",
   "uvicorn[standard]==0.48.0",
-  "pydantic-settings==2.14.1",
-  "cryptography==47.0.0",
+  "pydantic-settings==2.14.2",
+  "cryptography==48.0.1",
   "numpy==2.4.6",
-  "pypdf==6.12.2",
+  "pypdf==6.13.3",
   "python-docx==1.2.0",
   "PyMuPDF==1.26.7",
   "ocrmypdf==17.5.0",

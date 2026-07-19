@@ -163,6 +163,17 @@ class OdinProjectTests(unittest.TestCase):
         from backend.app.core.projects import register_project, sync_project
 
         project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        with connect() as conn:
+            removed_source = conn.execute(
+                """
+                SELECT s.id
+                FROM project_sources ps
+                JOIN sources s ON s.id = ps.source_id
+                WHERE ps.project_id = ? AND ps.relative_path = ?
+                """,
+                (project["id"], "src/auth.ts"),
+            ).fetchone()
+        self.assertIsNotNone(removed_source)
         (self.repo / "src" / "auth.ts").unlink()
         (self.repo / "src" / "main.ts").write_text("export const start = () => 'updated';\n", encoding="utf-8")
         (self.repo / "src" / "routes.ts").write_text("export const routes = [];\n", encoding="utf-8")
@@ -178,10 +189,21 @@ class OdinProjectTests(unittest.TestCase):
         self.assertEqual(result["project"]["source_count"], 3)
         with connect() as conn:
             deleted = conn.execute(
-                "SELECT deleted_at FROM sources WHERE original_path = ?",
-                (str(self.repo / "src" / "auth.ts"),),
+                "SELECT deleted_at FROM sources WHERE id = ?",
+                (removed_source["id"],),
             ).fetchone()
-        self.assertIsNotNone(deleted["deleted_at"])
+            active_membership = conn.execute(
+                """
+                SELECT 1
+                FROM project_sources
+                WHERE project_id = ? AND source_id = ?
+                """,
+                (project["id"], removed_source["id"]),
+            ).fetchone()
+        # Cleanup may retain the tombstone for audit or physically purge it once
+        # no active snapshot references it. Both outcomes preserve the contract.
+        self.assertTrue(deleted is None or deleted["deleted_at"] is not None)
+        self.assertIsNone(active_membership)
 
     def test_sync_populates_release_snapshot_and_run_contracts(self) -> None:
         from backend.app.core.database import connect

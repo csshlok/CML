@@ -27,6 +27,14 @@ BENCHMARK_FILES = {
     "test_benchmark_corpus.py",
     "test_benchmark_graphs.py",
     "test_benchmark_matrix.py",
+    "test_claim_packing_regression.py",
+    "test_locomo_candidate_depth.py",
+    "test_locomo_embedding_comparison.py",
+    "test_locomo_late_interaction_comparison.py",
+    "test_locomo_reranker_latency.py",
+    "test_locomo_reranker_policies.py",
+    "test_locomo_retrieval_projection.py",
+    "test_memory_benchmark_protocols.py",
     "test_turbovec_benchmark.py",
 }
 

@@ -177,7 +177,7 @@ class TestingParametersDocCases(unittest.TestCase):
             )
             malformed = client.post(
                 "/api/v1/chat/context",
-                data='{"complete_analysis":',
+                content='{"complete_analysis":',
                 headers={"Content-Type": "application/json"},
             )
         finally:

@@ -246,20 +246,49 @@ The backend listens on `http://127.0.0.1:7343`. The renderer development server 
 Invoke-RestMethod -Uri http://127.0.0.1:7343/health
 ```
 
-## Current performance evidence
+## Benchmarks
 
-Repository-backed validation currently includes a complete backend test suite, desktop production builds, Electron behavior tests, encrypted-storage regressions, package security checks, and isolated retrieval flows.
+Vault is evaluated on two public conversational-memory benchmarks. LongMemEval tests memory across long, multi-session histories; LoCoMo tests evidence retrieval and question answering over extended conversations. Odin is not involved in these runs, so the results below measure Vault's memory and context pipeline.
 
-Current context-packet benchmarks report:
+### Latest headline results
 
-| Measurement | Result |
-| --- | ---: |
-| Average raw context | 1,858.62 tokens |
-| Average shaped packet | 1,030.38 tokens |
-| Average reduction | 44.43% |
-| Warm-cache average reduction | 94.8% |
+| Benchmark and configuration | Questions | Retrieval | Kimi K2.6 | GPT-5.4 judge | Reader prompt tokens/query | Evaluation cost |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| LongMemEval-S, typed-v1 | 500 | 0.9802 recall@10 | **83.8%** | **83.2%** | 33,331.9 | $13.4211 |
+| LongMemEval-S, claim-first 10K | 500 | 0.9802 recall@10 | 81.8% | 82.0% | **8,307.1** | **$4.5111** |
+| LoCoMo, ColBERT | 1,540 | **0.7606 recall@10** | **66.75%** | **63.96%** | **650.4** | **$1.7388** |
 
-Representative three-run external benchmarks currently show Odin indexing Flask in a 1.920-second median and Zustand in 1.731 seconds. Graphify 0.9.17 took 31.091 and 10.586 seconds respectively under its different `--code-only` scope. A six-question local Qwen2.5-1.5B-Instruct check scored bounded Odin graph context at 0.500 mean fact-group recall, Graphify at 0.458, and no graph at 0.250. These are directional development measurements—not broad production guarantees or a claim of semantic parity.
+The claim-first LongMemEval pipeline is the best measured efficiency configuration. Relative to typed-v1, it reduced reader prompts by **75.08%**, evaluation cost by **66.39%**, and mean reader latency by **60.68%**. The tradeoff was a 2.0-point decrease under the Kimi judge and a 1.2-point decrease under the independent GPT-5.4 judge. All 500 questions remained within the 10,000-token packed-prompt budget.
+
+### What that means in a working day
+
+| If you ask 100 context-heavy questions | Complete-session approach | Claim-first Vault | Measured difference |
+| --- | ---: | ---: | ---: |
+| Reader prompt volume | 3.33M tokens | 0.83M tokens | **2.50M fewer tokens** |
+| Sequential reader wait, at benchmark latency | 19.0 minutes | 7.5 minutes | **11.5 minutes less** |
+| Benchmark reader + dual-judge cost | $2.68 | $0.90 | **$1.78 less** |
+
+In practical terms, the measured claim-first pipeline can answer about **4× as many similarly sized questions within the same reader-prompt token allowance**. It still preserved roughly **82 accepted answers per 100 benchmark questions**, compared with 84 for the larger typed-v1 context. These are benchmark projections, not a promise about every personal vault: actual savings depend on source length, question complexity, model pricing, caching, and whether an application runs judges at all.
+
+On LoCoMo, the full ColBERT retrieval pass improved recall@10 from 0.6295 to 0.7606 and reduced questions with no annotated evidence in the top 50 from 217 to 100. On the exact earlier 300-question set, that retrieval change raised official token F1 from 0.4373 to 0.5065, Kimi acceptance from 59.33% to 66.00%, and GPT-5.4 acceptance from 56.33% to 63.33%.
+
+### Cost and comparison boundary
+
+Vault's ingestion used local embeddings and consumed **zero billable API ingestion tokens**. The costs above cover answer generation and two judges, not ordinary local retrieval. They are estimates from recorded provider usage and the prices verified when the runs were completed.
+
+Published systems currently report higher LongMemEval answer accuracy, but the results are not a shared leaderboard: readers, judges, context accounting, reasoning settings, and retrieval limits differ.
+
+| System | Published LongMemEval result | Reported context |
+| --- | ---: | ---: |
+| [Mem0](https://mem0.ai/research) | 94.4% on 500 questions | 6,787 mean tokens |
+| [Hindsight](https://vectorize.io/benchmarks) | 94.6% current published LongMemEval result | Not published with the headline |
+| [Zep](https://www.getzep.com/research/) | 90.2% on 500 questions | 4,408 median tokens |
+| **Vault claim-first 10K** | **82.0% independent judge on 500 questions** | **8,307 mean complete reader-prompt tokens** |
+| [Graphify](https://github.com/Graphify-Labs/graphify#benchmarks) | 76% on 50 questions | Not published |
+
+Vault is not yet state of the art in multi-session answer accuracy. Its measured advantages are local-first ingestion with no extraction-API bill, a reproducible dual-judge protocol, bounded and inspectable evidence packets, and one workspace for conversational, document, and Odin project context.
+
+Read [Benchmark methodology and full analysis](BENCHMARK.md) for category results, token and cost accounting, confidence information, rejected experiments, retrieval variants, competitive caveats, and artifact locations.
 
 ## Architecture
 
