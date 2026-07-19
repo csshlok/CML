@@ -1,12 +1,13 @@
 const { spawn } = require("node:child_process");
+const electronPath = require("electron");
 
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 
-const child = spawn("electron", ["."], {
+const child = spawn(electronPath, [...process.argv.slice(2), "."], {
   cwd: process.cwd(),
   env,
-  shell: process.platform === "win32",
+  shell: false,
   stdio: "inherit",
 });
 

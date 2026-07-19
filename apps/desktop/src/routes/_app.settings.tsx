@@ -28,9 +28,11 @@ import { Progress } from "@/components/ui/progress";
 import {
   activateLocalModel,
   approveCliPairingChallenge,
+  backfillTemporalFacts,
   cancelModelDownload,
   cancelEmbeddingDownload,
   configureEmbeddingRuntime,
+  correctTemporalFact,
   createVaultBackup,
   createDiagnosticBundle,
   createVault,
@@ -51,6 +53,8 @@ import {
   lockVault,
   getModelRuntimeStatus,
   getOCRRuntimeStatus,
+  getRetrievalPackingDiagnostics,
+  getTemporalFactStatus,
   pruneQueryCache,
   reindexVaultSearch,
   listLocalModels,
@@ -61,7 +65,9 @@ import {
   listCliPairingChallenges,
   listVaults,
   listProjects,
+  listTemporalFacts,
   refreshIntegrationImport,
+  retractTemporalFact,
   revokeCliClient,
   retryIntegrationReconciliationItem,
   rotateCliClient,
@@ -88,8 +94,11 @@ import {
   type ModelRuntimeStatus,
   type OCRRuntimeStatusRead,
   type ProjectRecord,
+  type RetrievalPackingDiagnostics,
   type ReconciliationItemPage,
   type ReconciliationRunRecord,
+  type TemporalFactDiagnostics,
+  type TemporalFactRecord,
   type UnlockStatusRead,
   type VaultRecord,
 } from "@/lib/backend";
@@ -140,6 +149,14 @@ function SettingsView() {
   const [ocrRuntime, setOcrRuntime] = useState<OCRRuntimeStatusRead | null>(null);
   const [hardware, setHardware] = useState<HardwareStatusRead | null>(null);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
+  const [temporalFacts, setTemporalFacts] = useState<TemporalFactDiagnostics | null>(null);
+  const [reviewableFacts, setReviewableFacts] = useState<TemporalFactRecord[]>([]);
+  const [retrievalPacking, setRetrievalPacking] = useState<RetrievalPackingDiagnostics | null>(null);
+  const [temporalBackfillBusy, setTemporalBackfillBusy] = useState(false);
+  const [editingFactId, setEditingFactId] = useState<string | null>(null);
+  const [factCorrectionDraft, setFactCorrectionDraft] = useState("");
+  const [factReviewBusyId, setFactReviewBusyId] = useState<string | null>(null);
+  const [retractConfirmId, setRetractConfirmId] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [cliPairings, setCliPairings] = useState<CliPairingChallenge[]>([]);
   const [cliClients, setCliClients] = useState<CliClientRecord[]>([]);
@@ -221,6 +238,9 @@ function SettingsView() {
           if (cancelled) return;
           const firstVault = vaultRows[0] ?? null;
           setBackendVault(firstVault);
+          setTemporalFacts(null);
+          setReviewableFacts([]);
+          setRetrievalPacking(null);
           if (firstVault) setPathDraft(firstVault.path);
           setHealthCheckedAt(new Date());
           setStatusMessage(currentUnlock.message || "Library is locked. Unlock it from Privacy settings.");
@@ -257,9 +277,15 @@ function SettingsView() {
         if (firstVault) {
           setPathDraft(firstVault.path);
         }
-        const [importRows, projectRows] = firstVault
-          ? await Promise.all([listIntegrationImports(firstVault.id), listProjects(firstVault.id)])
-          : [[], []];
+        const [importRows, projectRows, temporalStatus, factRows, packingStatus] = firstVault
+          ? await Promise.all([
+              listIntegrationImports(firstVault.id),
+              listProjects(firstVault.id),
+              getTemporalFactStatus(firstVault.id),
+              listTemporalFacts(firstVault.id),
+              getRetrievalPackingDiagnostics(firstVault.id),
+            ])
+          : [[], [], null, [], null];
         if (cancelled) return;
         setModels(modelRows);
         setModelRecommendations(recommendations);
@@ -271,6 +297,9 @@ function SettingsView() {
         setOcrRuntime(ocrStatus);
         setHardware(hardwareStatus);
         setJobs(jobStatus);
+        setTemporalFacts(temporalStatus);
+        setReviewableFacts(factRows);
+        setRetrievalPacking(packingStatus);
         setRetentionPolicy(evidencePolicy);
         setIntegrationImports(importRows);
         setProjects(projectRows);
@@ -794,6 +823,72 @@ function SettingsView() {
     }
   }
 
+  async function refreshTemporalHistory() {
+    if (!backendVault) return;
+    setTemporalBackfillBusy(true);
+    try {
+      const job = await backfillTemporalFacts(backendVault.id);
+      setJobs(await getJobStatus());
+      setStatusMessage(
+        job.status === "running"
+          ? "Refreshing memory history now."
+          : "Memory history refresh added to Tasks.",
+      );
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not refresh memory history.");
+    } finally {
+      setTemporalBackfillBusy(false);
+    }
+  }
+
+  async function refreshMemoryInsights() {
+    if (!backendVault) return;
+    const [status, facts, packing] = await Promise.all([
+      getTemporalFactStatus(backendVault.id),
+      listTemporalFacts(backendVault.id),
+      getRetrievalPackingDiagnostics(backendVault.id),
+    ]);
+    setTemporalFacts(status);
+    setReviewableFacts(facts);
+    setRetrievalPacking(packing);
+  }
+
+  async function saveFactCorrection(factId: string) {
+    if (!backendVault || !factCorrectionDraft.trim()) return;
+    setFactReviewBusyId(factId);
+    try {
+      await correctTemporalFact(
+        factId,
+        backendVault.id,
+        factCorrectionDraft.trim(),
+        "Corrected from Memory history.",
+      );
+      await refreshMemoryInsights();
+      setEditingFactId(null);
+      setFactCorrectionDraft("");
+      setStatusMessage("Memory corrected. The previous version remains in its history.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not correct this memory.");
+    } finally {
+      setFactReviewBusyId(null);
+    }
+  }
+
+  async function removeFact(factId: string) {
+    if (!backendVault) return;
+    setFactReviewBusyId(factId);
+    try {
+      await retractTemporalFact(factId, backendVault.id, "Removed from Memory history.");
+      await refreshMemoryInsights();
+      setRetractConfirmId(null);
+      setStatusMessage("Memory removed from future answers.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not remove this memory.");
+    } finally {
+      setFactReviewBusyId(null);
+    }
+  }
+
   async function decideCliPairing(challenge: CliPairingChallenge, approve: boolean) {
     if (!backendVault) return;
     setCliAccessBusyId(challenge.id);
@@ -846,6 +941,11 @@ function SettingsView() {
     unlockStatus?.ready === true &&
     embeddingRuntime?.available === true &&
     !healthLoadError;
+  const temporalBackfillActive = Boolean(
+    [...(jobs?.running_jobs ?? []), ...(jobs?.latest ?? [])].some(
+      (job) => job.job_type === "temporal_fact_backfill" && ["queued", "running"].includes(job.status),
+    ),
+  );
 
   return (
     <div className="vault-page-wash grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[205px_1fr_326px]">
@@ -1389,7 +1489,7 @@ function SettingsView() {
           </SettingsCard>
           )}
 
-          {showSection("storage") && (
+          {showSection("storage") && (<>
           <SettingsCard
             icon={<Database className="h-4 w-4" />}
             title="Disk usage"
@@ -1400,7 +1500,165 @@ function SettingsView() {
               <span className="text-foreground">{pathDraft || "No library selected"}</span>.
             </div>
           </SettingsCard>
-          )}
+          <SettingsCard
+            icon={<MessageSquare className="h-4 w-4" />}
+            title="Memory history"
+            description="Keep dated conversation facts and preferences aligned with your saved chats. This runs locally."
+            status={
+              temporalBackfillActive
+                ? "Refreshing"
+                : temporalFacts
+                  ? `${temporalFacts.indexed_session_count} of ${temporalFacts.session_count} conversations`
+                  : "Checking"
+            }
+            statusTone={
+              temporalFacts && temporalFacts.indexed_session_count < temporalFacts.session_count
+                ? "issue"
+                : "ready"
+            }
+          >
+            <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
+              {temporalFacts ? (
+                <>
+                  {temporalFacts.status_counts.current ?? 0} current facts and preferences are available for grounded answers.
+                  {temporalFacts.latest_observed_at
+                    ? ` Latest saved history: ${new Date(temporalFacts.latest_observed_at).toLocaleString()}.`
+                    : " No dated history has been derived yet."}
+                </>
+              ) : (
+                "Waiting for the local history check."
+              )}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                className="gap-2"
+                onClick={() => void refreshTemporalHistory()}
+                disabled={!backendVault || temporalBackfillBusy || temporalBackfillActive}
+              >
+                <RefreshCw className={`h-4 w-4 ${temporalBackfillActive ? "animate-spin" : ""}`} />
+                {temporalBackfillActive ? "Refreshing..." : "Refresh memory history"}
+              </Button>
+            </div>
+            {retrievalPacking && retrievalPacking.query_count > 0 ? (
+              <div className="mt-5 border-t border-border pt-4">
+                <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                  <p className="text-sm font-medium text-foreground">Answer context</p>
+                  <p className="text-xs text-muted-foreground">
+                    {retrievalPacking.context_reduction_percent}% less context across {retrievalPacking.query_count} saved {retrievalPacking.query_count === 1 ? "answer" : "answers"}
+                  </p>
+                </div>
+                <p className="mt-1 max-w-[70ch] text-xs text-muted-foreground">
+                  Vault keeps the most relevant evidence before asking the local model. Recent answers averaged {retrievalPacking.average_final_context_tokens.toLocaleString()} estimated context tokens.
+                </p>
+              </div>
+            ) : null}
+            <div className="mt-5 border-t border-border pt-4">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                <p className="text-sm font-medium text-foreground">What Vault remembers</p>
+                <p className="text-xs text-muted-foreground">Recent current facts</p>
+              </div>
+              {reviewableFacts.length ? (
+                <div className="mt-2 divide-y divide-border">
+                  {reviewableFacts.slice(0, 8).map((fact) => (
+                    <div key={fact.id} className="py-3 first:pt-2">
+                      {editingFactId === fact.id ? (
+                        <div className="space-y-2">
+                          <label className="block text-xs font-medium text-foreground" htmlFor={`fact-${fact.id}`}>
+                            Correct {fact.predicate_key.replaceAll("_", " ")}
+                          </label>
+                          <Input
+                            id={`fact-${fact.id}`}
+                            value={factCorrectionDraft}
+                            onChange={(event) => setFactCorrectionDraft(event.target.value)}
+                            autoFocus
+                          />
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => void saveFactCorrection(fact.id)}
+                              disabled={factReviewBusyId === fact.id || !factCorrectionDraft.trim()}
+                            >
+                              Save correction
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => {
+                                setEditingFactId(null);
+                                setFactCorrectionDraft("");
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="break-words text-sm text-foreground">
+                              <span className="text-muted-foreground">{fact.predicate_key.replaceAll("_", " ")}: </span>
+                              {fact.modality === "negated" ? "no longer " : ""}{fact.object_text}
+                            </p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Saved {new Date(fact.observed_at).toLocaleDateString()} from {fact.source_type === "manual" ? "your correction" : "a conversation"}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => {
+                                setEditingFactId(fact.id);
+                                setFactCorrectionDraft(fact.object_text);
+                                setRetractConfirmId(null);
+                              }}
+                            >
+                              Correct
+                            </Button>
+                            {retractConfirmId === fact.id ? (
+                              <>
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  onClick={() => void removeFact(fact.id)}
+                                  disabled={factReviewBusyId === fact.id}
+                                >
+                                  Confirm remove
+                                </Button>
+                                <Button size="sm" variant="ghost" onClick={() => setRetractConfirmId(null)}>
+                                  Cancel
+                                </Button>
+                              </>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  setRetractConfirmId(fact.id);
+                                  setEditingFactId(null);
+                                }}
+                              >
+                                Remove
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-2 text-sm text-muted-foreground">
+                  No current conversation facts are available to review yet.
+                </p>
+              )}
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">
+              Suggestions remain separate from actions. Corrections preserve the older version for dated questions and audit history.
+            </p>
+          </SettingsCard>
+          </>)}
 
           {showSection("privacy") && (
           <SettingsCard

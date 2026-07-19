@@ -479,6 +479,7 @@ export type ProjectGraphView = {
   snapshot_id: string;
   indexed_commit: string | null;
   mode: "graph" | "tree";
+  direction: "outbound" | "inbound" | "balanced";
   query: string;
   root: string;
   nodes: ProjectGraphNode[];
@@ -522,6 +523,50 @@ export type JobQueueStatus = {
   manual_review: number;
   running_jobs: AppJobRecord[];
   latest: AppJobRecord[];
+};
+
+export type TemporalFactDiagnostics = {
+  vault_id: string;
+  extractor_version: string;
+  status_counts: Record<string, number>;
+  speaker_counts: Record<string, number>;
+  assertion_kind_counts: Record<string, number>;
+  session_count: number;
+  indexed_session_count: number;
+  latest_observed_at: string | null;
+  latest_processed_at: string | null;
+};
+
+export type TemporalFactRecord = {
+  id: string;
+  vault_id: string;
+  cluster_id: string | null;
+  subject_key: string;
+  predicate_key: string;
+  object_text: string;
+  assertion_kind: string;
+  modality: string;
+  source_type: string;
+  citation_excerpt: string;
+  observed_at: string;
+  valid_from: string;
+  status: string;
+  confidence: number;
+};
+
+export type RetrievalPackingDiagnostics = {
+  vault_id: string;
+  query_count: number;
+  candidate_citation_count: number;
+  selected_citation_count: number;
+  raw_context_tokens: number;
+  final_context_tokens: number;
+  context_tokens_avoided: number;
+  context_reduction_percent: number;
+  raw_evidence_tokens: number;
+  selected_evidence_tokens: number;
+  average_final_context_tokens: number;
+  latest_query_at: string | null;
 };
 
 export type SourceRecord = {
@@ -1393,6 +1438,7 @@ export async function getProjectGraphView(
     root?: string;
     maxDepth?: number;
     maxNodes?: number;
+    direction?: "outbound" | "inbound" | "balanced";
   },
 ) {
   const params = new URLSearchParams({ mode: options.mode });
@@ -1400,6 +1446,7 @@ export async function getProjectGraphView(
   if (options.root) params.set("root", options.root);
   if (options.maxDepth) params.set("max_depth", String(options.maxDepth));
   if (options.maxNodes) params.set("max_nodes", String(options.maxNodes));
+  if (options.direction) params.set("direction", options.direction);
   return request<ProjectGraphView>(
     `/api/v1/projects/${encodeURIComponent(id)}/graph/view?${params.toString()}`,
   );
@@ -1909,6 +1956,42 @@ export async function getJobStatus() {
 
 export async function runJobsOnce() {
   return request<JobQueueStatus>("/api/v1/jobs/run-once", { method: "POST" });
+}
+
+export async function getTemporalFactStatus(vaultId: string) {
+  const params = new URLSearchParams({ vault_id: vaultId });
+  return request<TemporalFactDiagnostics>(`/api/v1/jobs/temporal-facts/status?${params.toString()}`);
+}
+
+export async function backfillTemporalFacts(vaultId: string, batchSize = 50) {
+  return request<AppJobRecord>("/api/v1/jobs/temporal-facts/backfill", {
+    method: "POST",
+    body: JSON.stringify({ vault_id: vaultId, batch_size: batchSize }),
+  });
+}
+
+export async function listTemporalFacts(vaultId: string, limit = 12) {
+  const params = new URLSearchParams({ vault_id: vaultId, limit: String(limit) });
+  return request<TemporalFactRecord[]>(`/api/v1/memory/facts?${params.toString()}`);
+}
+
+export async function correctTemporalFact(factId: string, vaultId: string, objectText: string, note = "") {
+  return request<TemporalFactRecord>(`/api/v1/memory/facts/${encodeURIComponent(factId)}/correct`, {
+    method: "POST",
+    body: JSON.stringify({ vault_id: vaultId, object_text: objectText, note }),
+  });
+}
+
+export async function retractTemporalFact(factId: string, vaultId: string, note = "") {
+  return request<TemporalFactRecord>(`/api/v1/memory/facts/${encodeURIComponent(factId)}/retract`, {
+    method: "POST",
+    body: JSON.stringify({ vault_id: vaultId, note }),
+  });
+}
+
+export async function getRetrievalPackingDiagnostics(vaultId: string) {
+  const params = new URLSearchParams({ vault_id: vaultId });
+  return request<RetrievalPackingDiagnostics>(`/api/v1/memory/retrieval-efficiency?${params.toString()}`);
 }
 
 export async function cancelJob(jobId: string) {
