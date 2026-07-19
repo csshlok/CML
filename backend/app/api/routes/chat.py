@@ -42,6 +42,11 @@ from backend.app.core.retrieval_trust import (
 )
 from backend.app.core.context_budget_policy import select_context_budget
 from backend.app.core.context_reduction import build_context_reduction_plan
+from backend.app.core.typed_evidence_runtime import (
+    contract_memory_item,
+    evaluate_runtime_evidence,
+    public_diagnostics as typed_evidence_diagnostics,
+)
 from backend.app.core.vector_maintenance import active_embedding_selector
 from backend.app.core.turbovec_runtime import maybe_remove_source_chunks_from_sidecar
 from backend.app.core.synthesis_guard import analyze_synthesis_readiness
@@ -385,6 +390,7 @@ def build_chat_context(payload: ChatContextRequest) -> dict:
             clusters_used=clusters_used,
             citations=citations,
             token_budget=context["coverage_ledger"].get("token_budget"),
+            retrieval_telemetry=context["coverage_ledger"],
             warnings=warnings,
         )
         session_id = generation["session_id"]
@@ -478,6 +484,10 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                     for chunk in _chunk_text(fallback):
                         answer_parts.append(chunk)
                         yield _sse("token", {"text": chunk})
+            elif context.get("typed_evidence_resolved"):
+                for chunk in _chunk_text(context["answer"]):
+                    answer_parts.append(chunk)
+                    yield _sse("token", {"text": chunk})
             elif not citations or not context.get("trust_gate", {}).get("allow_synthesis", True):
                 for chunk in _chunk_text(context["answer"]):
                     answer_parts.append(chunk)
@@ -520,6 +530,7 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                     clusters_used=clusters_used,
                     citations=citations,
                     token_budget=context["coverage_ledger"].get("token_budget"),
+                    retrieval_telemetry=context["coverage_ledger"],
                     warnings=warnings,
                 )
                 generation_completed = True
@@ -661,6 +672,20 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
     ]
     memory_items = list(bundle.get("memory_items") or [])
     working_memory = bundle.get("working_memory") or {}
+    with connect() as conn:
+        typed_decision = evaluate_runtime_evidence(
+            conn,
+            vault_id=payload.vault_id,
+            cluster_id=payload.cluster_id,
+            question=payload.prompt,
+        )
+    typed_result = typed_decision["result"]
+    typed_contract_item = contract_memory_item(typed_decision)
+    if typed_contract_item is not None:
+        memory_items = [
+            typed_contract_item,
+            *(item for item in memory_items if item.get("id") != typed_contract_item["id"]),
+        ]
     trust_gate = classify_evidence_trust(payload.prompt, candidate_citations)
     synthesis_candidates = citations_for_synthesis(candidate_citations, trust_gate)
     budget_selection = select_context_budget(
@@ -763,6 +788,7 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         "retrieval_authority": bool((bundle or {}).get("retrieval_authority", True)),
         "token_estimate": (bundle or {}).get("token_estimate") or {},
         "bundle_status": (bundle or {}).get("bundle_status") or {},
+        "typed_evidence": typed_evidence_diagnostics(typed_decision),
     }
     if budget_plan["budget_applied"]:
         warnings.append(
@@ -774,7 +800,13 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
         )
     if memory_items:
         warnings.append(f"Included {len(memory_items)} distilled memory item(s) in the grounded context packet.")
-    if not citations:
+    if typed_result.status == "resolved" and typed_result.answer:
+        answer = typed_result.answer
+        coverage_ledger["partial_failure_mode"] = "typed_evidence_resolved"
+        warnings.append(
+            "Answered deterministically from provenance-validated memory history."
+        )
+    elif not citations:
         warnings.append("No semantic citations were found.")
         if runtime["state"] == "ready":
             warnings.append("No grounded vault evidence was found, so CML is falling back to an ungrounded direct answer.")
@@ -851,6 +883,7 @@ def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = Tru
             "embedding_unavailable_direct_answer",
             "no_citations_direct_answer",
         },
+        "typed_evidence_resolved": typed_result.status == "resolved",
         "direct_answer_prefix": (
             _ungrounded_direct_answer_prefix("Semantic retrieval is unavailable for this question.")
             if coverage_ledger["partial_failure_mode"] == "embedding_unavailable_direct_answer"
@@ -1668,6 +1701,7 @@ def _complete_chat_generation(
     citations: list[dict],
     token_budget: int | None,
     warnings: list[str],
+    retrieval_telemetry: dict | None = None,
 ) -> None:
     now = utc_now()
     with connect() as conn:
@@ -1696,6 +1730,7 @@ def _complete_chat_generation(
             query=prompt,
             citations=citations,
             token_budget=token_budget,
+            retrieval_telemetry=retrieval_telemetry or {},
             now=now,
         )
         conn.execute(
@@ -1742,6 +1777,7 @@ def _write_retrieval_snapshot(
     query: str,
     citations: list[dict],
     token_budget: int | None,
+    retrieval_telemetry: dict,
     now: str,
 ) -> None:
     snapshot_id = f"snapshot-{uuid4()}"
@@ -1757,9 +1793,12 @@ def _write_retrieval_snapshot(
         INSERT INTO retrieval_snapshots (
             id, message_id, session_id, vault_id, query, retrieval_mode,
             embedding_model_id, index_version, normalization_version, extraction_version,
-            derived_state_epoch, token_budget, created_at
+            derived_state_epoch, token_budget, context_strategy, candidate_citation_count,
+            selected_citation_count, prompt_tokens_estimate, evidence_tokens_estimate,
+            history_tokens_estimate, memory_tokens_estimate, raw_candidate_tokens_estimate,
+            raw_context_tokens_estimate, final_context_tokens_estimate, created_at
         )
-        VALUES (?, ?, ?, ?, ?, 'semantic', ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, 'semantic', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             snapshot_id,
@@ -1773,6 +1812,16 @@ def _write_retrieval_snapshot(
             tuple_snapshot["extraction_version"],
             tuple_snapshot["epoch"],
             token_budget,
+            str((retrieval_telemetry.get("budget_diagnostics") or {}).get("strategy") or ""),
+            int(retrieval_telemetry.get("candidate_citations") or len(citations)),
+            int(retrieval_telemetry.get("citations_selected") or len(citations)),
+            int(retrieval_telemetry.get("prompt_tokens_estimate") or 0),
+            int(retrieval_telemetry.get("evidence_tokens_estimate") or 0),
+            int(retrieval_telemetry.get("history_tokens_estimate") or 0),
+            int((retrieval_telemetry.get("budget_diagnostics") or {}).get("memory_tokens") or 0),
+            int((retrieval_telemetry.get("budget_diagnostics") or {}).get("raw_candidate_tokens") or 0),
+            int((retrieval_telemetry.get("budget_diagnostics") or {}).get("raw_context_tokens") or 0),
+            int((retrieval_telemetry.get("budget_diagnostics") or {}).get("final_context_tokens") or 0),
             now,
         ),
     )

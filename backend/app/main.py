@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.api.routes import bridge, chat, cli_auth, clusters, diagnostics, extension, integrations, jobs, models, projects, search, sources, system, vaults
+from backend.app.api.routes import bridge, chat, cli_auth, clusters, diagnostics, extension, integrations, jobs, memory, models, projects, search, sources, system, vaults
 from backend.app.core.auth import LocalApiAuthMiddleware
 from backend.app.core.background_jobs import enqueue_startup_reconciliation_jobs, start_background_worker
 from backend.app.core.config import get_settings
@@ -129,6 +129,7 @@ app.include_router(chat.router, prefix=settings.api_prefix)
 app.include_router(bridge.router, prefix=settings.api_prefix)
 app.include_router(models.router, prefix=settings.api_prefix)
 app.include_router(jobs.router, prefix=settings.api_prefix)
+app.include_router(memory.router, prefix=settings.api_prefix)
 app.include_router(diagnostics.router, prefix=settings.api_prefix)
 app.include_router(system.router, prefix=settings.api_prefix)
 app.include_router(integrations.router, prefix=settings.api_prefix)

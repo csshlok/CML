@@ -16,6 +16,11 @@ from backend.app.core.encrypted_storage import (
 from backend.app.core.cluster_lifecycle import mark_cluster_needs_update, refresh_cluster_profile
 from backend.app.core.vector_maintenance import vector_repair_plan
 from backend.app.core.context_memory import rebuild_chat_session_memory, rebuild_source_memory
+from backend.app.core.temporal_facts import (
+    CHAT_FACT_EXTRACTOR_VERSION,
+    sync_chat_session_temporal_facts,
+    temporal_fact_source_hash,
+)
 from backend.app.core.analysis_packets import build_analysis_packets
 from backend.app.core.unlock_state import should_pause_vault_job
 
@@ -132,6 +137,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         preemptable=False,
         timeout_seconds=300,
         soft_timeout_seconds=None,
+        timeout_action="defer",
+    ),
+    "temporal_fact_backfill": JobPolicy(
+        priority="low",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="vault",
+        concurrency_group="temporal_facts",
+        resource_cost="light",
+        can_run_during_synthesis=True,
+        user_visible=True,
+        user_initiated=True,
+        cancellable=True,
+        preemptable=True,
+        timeout_seconds=1800,
+        soft_timeout_seconds=300,
         timeout_action="defer",
     ),
     "refresh_cluster_profile": JobPolicy(
@@ -608,6 +630,8 @@ def _run_claimed_job(job: dict) -> None:
             _run_reindex_source(payload)
         elif job["job_type"] == "chat_transcript_memory":
             _run_chat_transcript_memory(payload)
+        elif job["job_type"] == "temporal_fact_backfill":
+            _run_temporal_fact_backfill(payload, job["id"])
         elif job["job_type"] == "refresh_cluster_profile":
             _run_refresh_cluster_profile(payload)
         elif job["job_type"] == "ocr_source":
@@ -632,8 +656,7 @@ def _run_claimed_job(job: dict) -> None:
         conn.execute(
             """
             UPDATE app_jobs
-            SET status = 'succeeded', completed_at = ?, updated_at = ?, last_error = '',
-                status_detail = ''
+            SET status = 'succeeded', completed_at = ?, updated_at = ?, last_error = ''
             WHERE id = ? AND status = 'running'
             """,
             (utc_now(), utc_now(), job["id"]),
@@ -723,6 +746,81 @@ def _run_chat_transcript_memory(payload: dict) -> None:
             "UPDATE chat_sessions SET memory_status = 'indexed', memory_updated_at = ? WHERE id = ?",
             (utc_now(), session_id),
         )
+
+
+def _run_temporal_fact_backfill(payload: dict, job_id: str) -> None:
+    vault_id = str(payload.get("vault_id") or "").strip()
+    if not vault_id:
+        raise ValueError("vault_id is required")
+    batch_size = max(1, min(int(payload.get("batch_size") or 50), 200))
+    with connect() as conn:
+        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+        if vault is None:
+            raise ValueError("vault_not_found")
+        total = int(
+            conn.execute(
+                "SELECT COUNT(*) AS count FROM chat_sessions WHERE vault_id = ?",
+                (vault_id,),
+            ).fetchone()["count"]
+        )
+
+    processed = 0
+    updated = 0
+    cursor = ""
+    while True:
+        with connect() as conn:
+            job = conn.execute("SELECT status FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
+            if job is None or job["status"] == "cancelled":
+                return
+            sessions = conn.execute(
+                """
+                SELECT id FROM chat_sessions
+                WHERE vault_id = ? AND id > ?
+                ORDER BY id ASC LIMIT ?
+                """,
+                (vault_id, cursor, batch_size),
+            ).fetchall()
+            if not sessions:
+                detail = (
+                    f"Temporal history is current for {processed} chat sessions."
+                    if updated == processed
+                    else f"Checked {processed} chat sessions; refreshed {updated} with changed or upgraded history."
+                )
+                conn.execute(
+                    "UPDATE app_jobs SET status_detail = ?, updated_at = ? WHERE id = ?",
+                    (detail, utc_now(), job_id),
+                )
+                return
+            for session in sessions:
+                session_id = str(session["id"])
+                messages = conn.execute(
+                    "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at, rowid",
+                    (session_id,),
+                ).fetchall()
+                state = conn.execute(
+                    "SELECT * FROM temporal_fact_session_state WHERE session_id = ? AND vault_id = ?",
+                    (session_id, vault_id),
+                ).fetchone()
+                source_hash = temporal_fact_source_hash(messages)
+                if (
+                    state is None
+                    or state["extractor_version"] != CHAT_FACT_EXTRACTOR_VERSION
+                    or state["source_content_hash"] != source_hash
+                    or int(state["source_message_count"] or 0) != len(messages)
+                ):
+                    sync_chat_session_temporal_facts(
+                        conn,
+                        vault_id=vault_id,
+                        session_id=session_id,
+                        messages=messages,
+                    )
+                    updated += 1
+                cursor = session_id
+                processed += 1
+            conn.execute(
+                "UPDATE app_jobs SET status_detail = ?, updated_at = ? WHERE id = ?",
+                (f"Checked {processed} of {total} chat sessions; refreshed {updated}.", utc_now(), job_id),
+            )
 
 
 def _run_refresh_cluster_profile(payload: dict) -> None:

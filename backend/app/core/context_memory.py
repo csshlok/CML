@@ -7,6 +7,11 @@ from backend.app.core.database import dict_from_row, utc_now
 from backend.app.core.embeddings import content_hash
 from backend.app.core.encrypted_storage import source_from_encrypted_row
 from backend.app.core.memory_card import summarize_text
+from backend.app.core.temporal_facts import (
+    parse_as_of_query,
+    query_temporal_facts,
+    sync_chat_session_temporal_facts,
+)
 
 
 MEMORY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -38,6 +43,12 @@ def rebuild_chat_session_memory(conn, *, vault_id: str, session_id: str) -> None
         session_id=session_id,
         text=text,
         origin_prefix=f"chat-session:{session_id}",
+    )
+    sync_chat_session_temporal_facts(
+        conn,
+        vault_id=vault_id,
+        session_id=session_id,
+        messages=messages,
     )
     refresh_working_memory(conn, vault_id=vault_id, cluster_id=cluster_id)
     refresh_bootstrap_memory_map(conn, vault_id=vault_id, cluster_id=cluster_id)
@@ -78,6 +89,14 @@ def get_context_memory(
 ) -> tuple[list[dict], dict]:
     working = _latest_working_memory(conn, vault_id=vault_id, cluster_id=cluster_id)
     memory_items = _select_memory_items(conn, vault_id=vault_id, cluster_id=cluster_id, query=query, limit=limit)
+    temporal_items = _select_temporal_memory_items(
+        conn,
+        vault_id=vault_id,
+        cluster_id=cluster_id,
+        query=query,
+        limit=limit,
+    )
+    memory_items = _merge_memory_items(temporal_items, memory_items, limit=limit)
     if not working:
         refresh_bootstrap_memory_map(conn, vault_id=vault_id, cluster_id=cluster_id)
         working = _latest_working_memory(conn, vault_id=vault_id, cluster_id=cluster_id)
@@ -571,6 +590,69 @@ def _select_memory_items(conn, *, vault_id: str, cluster_id: str | None, query: 
         scored.append((overlap, item["confidence"], item))
     scored.sort(key=lambda value: (value[0], value[1], value[2]["updated_at"]), reverse=True)
     return [item for _, _, item in scored[:bounded_limit]]
+
+
+def _select_temporal_memory_items(
+    conn,
+    *,
+    vault_id: str,
+    cluster_id: str | None,
+    query: str,
+    limit: int,
+) -> list[dict]:
+    as_of = parse_as_of_query(query)
+    facts = query_temporal_facts(
+        conn,
+        vault_id=vault_id,
+        cluster_id=cluster_id,
+        as_of=as_of,
+        limit=100,
+    )
+    query_terms = {term for term in re.findall(r"[a-z0-9]{3,}", query.lower())}
+    scored: list[tuple[int, float, str, dict]] = []
+    for fact in facts:
+        predicate = str(fact["predicate_key"]).replace("_", " ")
+        if fact["modality"] == "negated":
+            predicate = f"no longer {predicate}"
+        summary = " ".join(
+            (
+                str(fact["subject_key"]).replace("_", " "),
+                predicate,
+                str(fact["object_text"]),
+            )
+        )
+        overlap = sum(term in summary.lower() for term in query_terms)
+        item = {
+            "id": fact["id"],
+            "kind": f"temporal_{fact['assertion_kind']}",
+            "summary": summary,
+            "detail_text": fact["citation_excerpt"],
+            "confidence": fact["confidence"],
+            "source_id": fact["source_id"],
+            "session_id": fact["session_id"],
+            "updated_at": fact["valid_from"],
+            "speaker_role": fact["speaker_role"],
+            "valid_from": fact["valid_from"],
+            "valid_until": fact["valid_until"],
+        }
+        scored.append((overlap, float(fact["confidence"]), str(fact["valid_from"]), item))
+    scored.sort(key=lambda value: (value[0], value[1], value[2]), reverse=True)
+    return [item for _, _, _, item in scored[: max(1, min(limit, 50))]]
+
+
+def _merge_memory_items(*groups: list[dict], limit: int) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            item_id = str(item.get("id") or "")
+            if not item_id or item_id in seen:
+                continue
+            seen.add(item_id)
+            merged.append(item)
+            if len(merged) >= max(1, min(limit, 50)):
+                return merged
+    return merged
 
 
 def _latest_working_memory(conn, *, vault_id: str, cluster_id: str | None) -> dict | None:

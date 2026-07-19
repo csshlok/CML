@@ -13,6 +13,12 @@ def build_context_reduction_plan(
     token_budget: int,
     cluster_descriptions: list[str] | None = None,
 ) -> dict:
+    raw_history_tokens = sum(estimate_tokens(turn.get("content", "")) for turn in (recent_turns or []))
+    raw_memory_tokens = sum(
+        estimate_tokens(str(item.get("summary") or item.get("text") or ""))
+        for item in (memory_items or [])
+    )
+    raw_working_memory_tokens = estimate_tokens(str((working_memory or {}).get("summary") or ""))
     trimmed_turns = trim_recent_turns_to_budget(recent_turns or [], token_budget=token_budget)
     history_tokens_estimate = sum(estimate_tokens(turn.get("content", "")) for turn in trimmed_turns)
     history_turns_trimmed = max(0, len(recent_turns or []) - len(trimmed_turns))
@@ -55,6 +61,15 @@ def build_context_reduction_plan(
             "tokens": sum(estimate_tokens(item.get("snippet", "")) for item in citations_with_marker),
         }
     total_tokens = base_tokens + citation_plan["tokens"]
+    raw_context_tokens = (
+        estimate_tokens(prompt)
+        + estimate_tokens("\n".join(cluster_descriptions or []))
+        + raw_history_tokens
+        + raw_memory_tokens
+        + raw_working_memory_tokens
+        + citation_plan["raw_tokens"]
+        + 120
+    )
     dropped_citations = [item for item in citation_plan["dropped"]]
     diagnostics = {
         "strategy": "salient_dedupe_v1",
@@ -68,7 +83,11 @@ def build_context_reduction_plan(
         "memory_items_dropped": memory_plan["dropped_count"],
         "working_memory_trimmed": bool(working_memory_plan["trimmed"]),
         "raw_candidate_tokens": citation_plan["raw_tokens"],
+        "raw_context_tokens": raw_context_tokens,
         "final_context_tokens": total_tokens,
+        "memory_tokens": memory_plan["tokens"],
+        "raw_memory_tokens": raw_memory_tokens,
+        "tokens_avoided": max(0, raw_context_tokens - total_tokens),
     }
     return {
         "citations": citation_plan["citations"],
@@ -310,6 +329,7 @@ def _dedupe_key(citation: dict) -> str:
     return "|".join([source_id, title, snippet])
 
 
-def _memory_score(item: dict, prompt: str) -> tuple[int, int]:
+def _memory_score(item: dict, prompt: str) -> tuple[int, int, int]:
     summary = str(item.get("summary") or item.get("text") or "")
-    return (_segment_score(summary, _query_terms(prompt)), len(summary))
+    typed_contract = int(item.get("kind") == "typed_evidence_contract")
+    return (typed_contract, _segment_score(summary, _query_terms(prompt)), len(summary))
