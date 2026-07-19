@@ -261,7 +261,7 @@ class VaultCryptoPhase1Tests(unittest.TestCase):
 
     def test_migration_adds_security_metadata_table_to_existing_v1_database(self) -> None:
         from backend.app.core.database import connect
-        from backend.app.core.migrations import run_migrations
+        from backend.app.core.migrations import SCHEMA_VERSION, run_migrations
 
         with connect() as conn:
             conn.execute(
@@ -308,7 +308,7 @@ class VaultCryptoPhase1Tests(unittest.TestCase):
         self.assertIsNotNone(encrypted_table)
         self.assertIsNotNone(derived_table)
         self.assertIsNotNone(quarantine_table)
-        self.assertEqual(version, 10)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertEqual(migration["status"], "succeeded")
         self.assertEqual(encrypted_migration["status"], "succeeded")
         self.assertEqual(derived_migration["status"], "succeeded")

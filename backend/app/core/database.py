@@ -34,6 +34,7 @@ def init_db() -> None:
         _add_column_if_missing_if_table_exists(conn, "source_chunks", "normalization_version", "TEXT NOT NULL DEFAULT 'norm-v1'")
         _add_column_if_missing_if_table_exists(conn, "source_chunks", "extraction_version", "TEXT NOT NULL DEFAULT 'extract-v1'")
         _add_column_if_missing_if_table_exists(conn, "source_chunks", "derived_state_epoch", "INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing_if_table_exists(conn, "temporal_facts", "cluster_id", "TEXT")
         conn.executescript(
             """
             PRAGMA foreign_keys = ON;
@@ -490,6 +491,109 @@ def init_db() -> None:
                 FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS temporal_facts (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                cluster_id TEXT,
+                subject_key TEXT NOT NULL,
+                predicate_key TEXT NOT NULL,
+                object_text TEXT NOT NULL,
+                object_type TEXT NOT NULL DEFAULT 'text',
+                assertion_kind TEXT NOT NULL CHECK (
+                    assertion_kind IN ('fact', 'preference', 'suggestion', 'action', 'plan', 'goal', 'state')
+                ),
+                modality TEXT NOT NULL DEFAULT 'asserted' CHECK (
+                    modality IN ('asserted', 'negated', 'hypothetical')
+                ),
+                speaker_role TEXT NOT NULL CHECK (
+                    speaker_role IN ('user', 'assistant', 'tool', 'system', 'external')
+                ),
+                source_type TEXT NOT NULL CHECK (
+                    source_type IN ('chat_message', 'source', 'benchmark', 'manual')
+                ),
+                source_id TEXT NOT NULL,
+                session_id TEXT,
+                citation_excerpt TEXT NOT NULL DEFAULT '',
+                observed_at TEXT NOT NULL,
+                valid_from TEXT NOT NULL,
+                valid_until TEXT,
+                supersession_key TEXT NOT NULL DEFAULT '',
+                supersedes_fact_id TEXT,
+                superseded_by_fact_id TEXT,
+                status TEXT NOT NULL DEFAULT 'current' CHECK (
+                    status IN ('current', 'superseded', 'retracted')
+                ),
+                confidence REAL NOT NULL DEFAULT 1.0 CHECK (confidence >= 0 AND confidence <= 1),
+                origin_fingerprint TEXT NOT NULL UNIQUE,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE SET NULL,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (supersedes_fact_id) REFERENCES temporal_facts(id) ON DELETE SET NULL,
+                FOREIGN KEY (superseded_by_fact_id) REFERENCES temporal_facts(id) ON DELETE SET NULL,
+                CHECK (valid_until IS NULL OR valid_until >= valid_from),
+                CHECK (
+                    NOT (
+                        speaker_role = 'assistant'
+                        AND subject_key = 'user'
+                        AND assertion_kind = 'action'
+                    )
+                )
+            );
+
+            CREATE TRIGGER IF NOT EXISTS temporal_facts_immutable_provenance
+            BEFORE UPDATE ON temporal_facts
+            WHEN NEW.vault_id != OLD.vault_id
+              OR COALESCE(NEW.cluster_id, '') != COALESCE(OLD.cluster_id, '')
+              OR NEW.subject_key != OLD.subject_key
+              OR NEW.predicate_key != OLD.predicate_key
+              OR NEW.object_text != OLD.object_text
+              OR NEW.object_type != OLD.object_type
+              OR NEW.assertion_kind != OLD.assertion_kind
+              OR NEW.modality != OLD.modality
+              OR NEW.speaker_role != OLD.speaker_role
+              OR NEW.source_type != OLD.source_type
+              OR NEW.source_id != OLD.source_id
+              OR COALESCE(NEW.session_id, '') != COALESCE(OLD.session_id, '')
+              OR NEW.citation_excerpt != OLD.citation_excerpt
+              OR NEW.observed_at != OLD.observed_at
+              OR NEW.valid_from != OLD.valid_from
+              OR NEW.supersession_key != OLD.supersession_key
+              OR COALESCE(NEW.supersedes_fact_id, '') != COALESCE(OLD.supersedes_fact_id, '')
+              OR NEW.confidence != OLD.confidence
+              OR NEW.origin_fingerprint != OLD.origin_fingerprint
+              OR NEW.metadata_json != OLD.metadata_json
+            BEGIN
+                SELECT RAISE(ABORT, 'temporal_fact_provenance_is_immutable');
+            END;
+
+            CREATE TABLE IF NOT EXISTS temporal_fact_session_state (
+                session_id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                source_message_count INTEGER NOT NULL DEFAULT 0,
+                source_content_hash TEXT NOT NULL,
+                extractor_version TEXT NOT NULL,
+                fact_count INTEGER NOT NULL DEFAULT 0,
+                processed_at TEXT NOT NULL,
+                last_error TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS temporal_fact_reviews (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                fact_id TEXT NOT NULL,
+                replacement_fact_id TEXT,
+                action TEXT NOT NULL CHECK (action IN ('corrected', 'retracted')),
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (fact_id) REFERENCES temporal_facts(id) ON DELETE CASCADE,
+                FOREIGN KEY (replacement_fact_id) REFERENCES temporal_facts(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS chat_generations (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
@@ -537,6 +641,16 @@ def init_db() -> None:
                 extraction_version TEXT NOT NULL DEFAULT 'extract-v1',
                 derived_state_epoch INTEGER NOT NULL DEFAULT 1,
                 token_budget INTEGER,
+                context_strategy TEXT NOT NULL DEFAULT '',
+                candidate_citation_count INTEGER NOT NULL DEFAULT 0,
+                selected_citation_count INTEGER NOT NULL DEFAULT 0,
+                prompt_tokens_estimate INTEGER NOT NULL DEFAULT 0,
+                evidence_tokens_estimate INTEGER NOT NULL DEFAULT 0,
+                history_tokens_estimate INTEGER NOT NULL DEFAULT 0,
+                memory_tokens_estimate INTEGER NOT NULL DEFAULT 0,
+                raw_candidate_tokens_estimate INTEGER NOT NULL DEFAULT 0,
+                raw_context_tokens_estimate INTEGER NOT NULL DEFAULT 0,
+                final_context_tokens_estimate INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
                 FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
@@ -1000,6 +1114,16 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_source_pages_vault_id ON source_pages(vault_id);
             CREATE INDEX IF NOT EXISTS idx_chat_sessions_vault_id ON chat_sessions(vault_id);
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);
+            CREATE INDEX IF NOT EXISTS idx_temporal_facts_current
+                ON temporal_facts(vault_id, cluster_id, subject_key, predicate_key, status, valid_from DESC);
+            CREATE INDEX IF NOT EXISTS idx_temporal_facts_history
+                ON temporal_facts(vault_id, supersession_key, valid_from ASC);
+            CREATE INDEX IF NOT EXISTS idx_temporal_facts_source
+                ON temporal_facts(source_type, source_id, status);
+            CREATE INDEX IF NOT EXISTS idx_temporal_fact_session_state_vault
+                ON temporal_fact_session_state(vault_id, processed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_temporal_fact_reviews_vault
+                ON temporal_fact_reviews(vault_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_chat_generations_state ON chat_generations(state, updated_at);
             CREATE INDEX IF NOT EXISTS idx_chat_attachments_message_id ON chat_attachments(message_id);
             CREATE INDEX IF NOT EXISTS idx_chat_attachments_source_id ON chat_attachments(source_id);
@@ -1065,6 +1189,16 @@ def init_db() -> None:
         _add_column_if_missing(conn, "retrieval_snapshots", "normalization_version", "TEXT NOT NULL DEFAULT 'norm-v1'")
         _add_column_if_missing(conn, "retrieval_snapshots", "extraction_version", "TEXT NOT NULL DEFAULT 'extract-v1'")
         _add_column_if_missing(conn, "retrieval_snapshots", "derived_state_epoch", "INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing(conn, "retrieval_snapshots", "context_strategy", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "retrieval_snapshots", "candidate_citation_count", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "retrieval_snapshots", "selected_citation_count", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "retrieval_snapshots", "prompt_tokens_estimate", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "retrieval_snapshots", "evidence_tokens_estimate", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "retrieval_snapshots", "history_tokens_estimate", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "retrieval_snapshots", "memory_tokens_estimate", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "retrieval_snapshots", "raw_candidate_tokens_estimate", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "retrieval_snapshots", "raw_context_tokens_estimate", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "retrieval_snapshots", "final_context_tokens_estimate", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "chat_sessions", "memory_status", "TEXT NOT NULL DEFAULT 'idle'")
         _add_column_if_missing(conn, "chat_sessions", "memory_updated_at", "TEXT")
         _add_column_if_missing(conn, "chat_sessions", "scope_project_id", "TEXT")

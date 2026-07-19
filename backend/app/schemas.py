@@ -790,6 +790,7 @@ class ChatCoverageLedger(BaseModel):
     retrieval_authority: bool = True
     token_estimate: dict = {}
     bundle_status: dict = {}
+    typed_evidence: dict = {}
 
 
 class ChatContextResponse(BaseModel):
@@ -1477,6 +1478,78 @@ class AppJobRead(BaseModel):
     estimated_remaining_seconds: int | None = None
     created_at: str
     updated_at: str
+
+
+class TemporalFactBackfillRequest(BaseModel):
+    vault_id: str = Field(min_length=1)
+    batch_size: int = Field(default=50, ge=1, le=200)
+
+
+class TemporalFactDiagnosticsRead(BaseModel):
+    vault_id: str
+    extractor_version: str = ""
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    speaker_counts: dict[str, int] = Field(default_factory=dict)
+    assertion_kind_counts: dict[str, int] = Field(default_factory=dict)
+    session_count: int = 0
+    indexed_session_count: int = 0
+    latest_observed_at: str | None = None
+    latest_processed_at: str | None = None
+
+
+class TemporalFactRead(BaseModel):
+    id: str
+    vault_id: str
+    cluster_id: str | None = None
+    subject_key: str
+    predicate_key: str
+    object_text: str
+    object_type: str
+    assertion_kind: str
+    modality: str
+    speaker_role: str
+    source_type: str
+    source_id: str
+    session_id: str | None = None
+    citation_excerpt: str = ""
+    observed_at: str
+    valid_from: str
+    valid_until: str | None = None
+    supersession_key: str = ""
+    supersedes_fact_id: str | None = None
+    superseded_by_fact_id: str | None = None
+    status: str
+    confidence: float
+    origin_fingerprint: str
+    metadata: dict = Field(default_factory=dict)
+    created_at: str
+
+
+class TemporalFactCorrectionRequest(BaseModel):
+    vault_id: str = Field(min_length=1)
+    object_text: str = Field(min_length=1, max_length=1000)
+    note: str = Field(default="", max_length=500)
+    valid_from: str | None = None
+
+
+class TemporalFactRetractionRequest(BaseModel):
+    vault_id: str = Field(min_length=1)
+    note: str = Field(default="", max_length=500)
+
+
+class RetrievalPackingDiagnosticsRead(BaseModel):
+    vault_id: str
+    query_count: int = 0
+    candidate_citation_count: int = 0
+    selected_citation_count: int = 0
+    raw_context_tokens: int = 0
+    final_context_tokens: int = 0
+    context_tokens_avoided: int = 0
+    context_reduction_percent: float = 0.0
+    raw_evidence_tokens: int = 0
+    selected_evidence_tokens: int = 0
+    average_final_context_tokens: int = 0
+    latest_query_at: str | None = None
 
 
 class JobQueueStatus(BaseModel):

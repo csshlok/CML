@@ -2437,7 +2437,7 @@ class SourcePageIndexingTests(unittest.TestCase):
 
     def test_schema_migration_security_metadata_is_recorded(self) -> None:
         from backend.app.core.database import connect
-        from backend.app.core.migrations import run_migrations
+        from backend.app.core.migrations import SCHEMA_VERSION, run_migrations
 
         run_migrations()
 
@@ -2458,9 +2458,9 @@ class SourcePageIndexingTests(unittest.TestCase):
             quarantine_table = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'source_quarantine_records'"
             ).fetchone()
-        self.assertEqual(row["version"], 10)
+        self.assertEqual(row["version"], SCHEMA_VERSION)
         self.assertEqual(row["status"], "succeeded")
-        self.assertEqual(user_version, 10)
+        self.assertEqual(user_version, SCHEMA_VERSION)
         self.assertIsNotNone(security_table)
         self.assertIsNotNone(encrypted_table)
         self.assertIsNotNone(derived_table)
