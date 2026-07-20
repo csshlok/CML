@@ -50,7 +50,7 @@ def _artifact_paths(report_path: Path) -> tuple[Path, Path, Path]:
     )
 
 
-def _failure_family(question: str, question_type: str, hypothesis: str) -> str:
+def _question_family(question: str, question_type: str) -> str:
     if question_type == "temporal-reasoning" or re.search(
         r"\b(when|before|after|days?|weeks?|months?|years?|first|last)\b", question,
         re.IGNORECASE,
@@ -143,10 +143,9 @@ def main() -> int:
                 "primary_correct": primary[question_id],
                 "independent_correct": independent[question_id],
                 "failure_stage": stage,
-                "failure_family": _failure_family(
+                "question_family": _question_family(
                     str(reference.get("question") or ""),
                     str(reference.get("question_type") or ""),
-                    str(hypothesis.get("hypothesis") or ""),
                 ),
                 "answer_session_count": len(answer_ids),
                 "answer_sessions_retrieved": len(answer_ids & retrieved_set),
@@ -160,7 +159,7 @@ def main() -> int:
         )
 
     payload = {
-        "protocol": "longmemeval-deterministic-failure-analysis-v1",
+        "protocol": "longmemeval-deterministic-failure-analysis-v2",
         "source_report": str(args.report),
         "question_count": int(report["question_count"]),
         "dual_judge_correct_count": sum(
@@ -168,7 +167,7 @@ def main() -> int:
         ),
         "analyzed_failure_count": len(rows),
         "failure_stage_counts": dict(Counter(row["failure_stage"] for row in rows)),
-        "failure_family_counts": dict(Counter(row["failure_family"] for row in rows)),
+        "question_family_counts": dict(Counter(row["question_family"] for row in rows)),
         "rows": rows,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

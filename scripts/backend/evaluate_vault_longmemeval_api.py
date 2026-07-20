@@ -40,6 +40,7 @@ from backend.app.core.typed_evidence import (
 )
 from backend.app.core.claim_evidence_packing import (
     CLAIM_PACKER_VERSION,
+    CONSOLIDATED_CLAIM_PACKER_VERSION,
     SessionEnvelope,
     estimate_claim_tokens,
     pack_claim_evidence,
@@ -91,14 +92,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-context-chars", type=int, default=200_000)
     parser.add_argument(
         "--context-packing",
-        choices=("complete-sessions-v2", "claim-first-v1"),
+        choices=("complete-sessions-v2", "claim-first-v1", "claim-consolidated-v1"),
         default="complete-sessions-v2",
     )
     parser.add_argument(
         "--reader-token-budget",
         type=int,
         default=0,
-        help="Hard estimated prompt budget. Required for claim-first-v1.",
+        help="Hard estimated prompt budget. Required for bounded claim packing.",
     )
     parser.add_argument(
         "--reader-budget-safety-factor",
@@ -397,7 +398,7 @@ def _pack_reader_context(
             ),
         }
     if reader_token_budget <= 0:
-        raise ValueError("--reader-token-budget must be positive for claim-first-v1")
+        raise ValueError("--reader-token-budget must be positive for bounded claim packing")
     prompt_builder = {
         "official": _answer_prompt,
         "structured": _structured_answer_prompt,
@@ -419,6 +420,7 @@ def _pack_reader_context(
         sessions=_claim_sessions(reference, retrieved_ids),
         token_budget=evidence_budget,
         question_type=str(reference.get("question_type") or ""),
+        consolidate=context_packing == "claim-consolidated-v1",
     )
     return context, {
         **claim_meta,
@@ -1110,8 +1112,8 @@ def main() -> int:
         if requested_ids
         else retrieval["results"][: args.limit or None]
     )
-    if args.context_packing == "claim-first-v1" and args.reader_token_budget <= 0:
-        raise RuntimeError("claim-first-v1 requires --reader-token-budget")
+    if args.context_packing in {"claim-first-v1", "claim-consolidated-v1"} and args.reader_token_budget <= 0:
+        raise RuntimeError("bounded claim packing requires --reader-token-budget")
     if not 0 < args.reader_budget_safety_factor <= 1:
         raise RuntimeError("--reader-budget-safety-factor must be greater than 0 and at most 1")
     if not selected:
@@ -1290,9 +1292,9 @@ def main() -> int:
         "max_answer_tokens": args.max_answer_tokens,
         "context": {
             "packing": (
-                CLAIM_PACKER_VERSION
-                if args.context_packing == "claim-first-v1"
-                else "rank-selected-complete-chronological-sessions-v2"
+                CLAIM_PACKER_VERSION if args.context_packing == "claim-first-v1" else
+                CONSOLIDATED_CLAIM_PACKER_VERSION if args.context_packing == "claim-consolidated-v1" else
+                "rank-selected-complete-chronological-sessions-v2"
             ),
             "reader_token_budget": args.reader_token_budget,
             "reader_budget_safety_factor": args.reader_budget_safety_factor,

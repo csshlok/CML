@@ -26,6 +26,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reader-token-budget", type=int, default=10_000)
     parser.add_argument("--reader-budget-safety-factor", type=float, default=1.0)
     parser.add_argument("--max-context-chars", type=int, default=500_000)
+    parser.add_argument(
+        "--context-packing",
+        choices=("claim-first-v1", "claim-consolidated-v1"),
+        default="claim-consolidated-v1",
+    )
     return parser.parse_args()
 
 
@@ -41,7 +46,7 @@ def main() -> int:
     references_list = json.loads(args.dataset.read_text(encoding="utf-8"))
     references = {str(row["question_id"]): row for row in references_list}
     runtime_args = SimpleNamespace(
-        context_packing="claim-first-v1",
+        context_packing=args.context_packing,
         reader_token_budget=args.reader_token_budget,
         reader_budget_safety_factor=args.reader_budget_safety_factor,
         max_context_chars=args.max_context_chars,
@@ -74,12 +79,44 @@ def main() -> int:
                     len(answer_ids & included_ids) / len(answer_ids) if answer_ids else None
                 ),
                 "normalized_gold_contained": _containment(reference.get("answer", ""), context),
+                "consolidation_group_count": int(
+                    (meta.get("ledger") or {}).get("consolidation_group_count") or 0
+                ),
+                "cross_session_consolidated_claim_count": int(
+                    (meta.get("ledger") or {}).get("cross_session_consolidated_claim_count") or 0
+                ),
+                "conflicting_preference_group_count": int(
+                    (meta.get("ledger") or {}).get("conflicting_preference_group_count") or 0
+                ),
             }
         )
 
     answer_rows = [row for row in rows if row["answer_session_recall"] is not None]
+    by_question_type: dict[str, dict] = {}
+    for question_type in sorted({str(row["question_type"]) for row in rows}):
+        typed_rows = [row for row in rows if str(row["question_type"]) == question_type]
+        typed_answer_rows = [
+            row for row in typed_rows if row["answer_session_recall"] is not None
+        ]
+        by_question_type[question_type] = {
+            "question_count": len(typed_rows),
+            "macro_answer_session_recall": round(
+                statistics.fmean(row["answer_session_recall"] for row in typed_answer_rows), 6
+            ) if typed_answer_rows else None,
+            "normalized_gold_containment_rate": round(
+                statistics.fmean(row["normalized_gold_contained"] for row in typed_rows), 6
+            ),
+            "mean_packed_prompt_tokens_estimate": round(
+                statistics.fmean(row["packed_prompt_tokens_estimate"] for row in typed_rows), 2
+            ),
+        }
     report = {
-        "protocol": "claim-first-longmemeval-offline-analysis-v1",
+        "protocol": (
+            "claim-consolidated-longmemeval-offline-analysis-v1"
+            if args.context_packing == "claim-consolidated-v1"
+            else "claim-first-longmemeval-offline-analysis-v1"
+        ),
+        "context_packing": args.context_packing,
         "reader_token_budget": args.reader_token_budget,
         "question_count": len(rows),
         "prepack_over_budget_count": sum(row["prepack_over_budget"] for row in rows),
@@ -115,6 +152,17 @@ def main() -> int:
                 if row["prepack_over_budget"]
             )
         ),
+        "questions_with_consolidation": sum(
+            row["consolidation_group_count"] > 0 for row in rows
+        ),
+        "consolidation_group_count": sum(row["consolidation_group_count"] for row in rows),
+        "cross_session_consolidated_claim_count": sum(
+            row["cross_session_consolidated_claim_count"] for row in rows
+        ),
+        "conflicting_preference_group_count": sum(
+            row["conflicting_preference_group_count"] for row in rows
+        ),
+        "by_question_type": by_question_type,
         "rows": rows,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

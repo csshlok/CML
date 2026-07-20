@@ -6,16 +6,20 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Iterable
 
+from backend.app.core.claim_semantics import extract_structured_claims, split_claim_units
 from backend.app.core.context_reduction import estimate_tokens
 from backend.app.core.multi_session_ledger import (
+    ConsolidationGroup,
     LedgerEntry,
     build_evidence_ledger,
+    consolidation_groups,
     ledger_anchor_keys,
     ledger_priority,
 )
 
 
 CLAIM_PACKER_VERSION = "claim-first-cited-v3-ledger"
+CONSOLIDATED_CLAIM_PACKER_VERSION = "claim-first-cited-v4-consolidated"
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _AGGREGATION_RE = re.compile(
@@ -64,6 +68,9 @@ class Claim:
     speaker: str
     text: str
     tokens: int
+    structured_topic_keys: tuple[str, ...] = ()
+    structured_kinds: tuple[str, ...] = ()
+    preference_polarities: tuple[str, ...] = ()
 
     @property
     def key(self) -> tuple[str, int, int]:
@@ -76,17 +83,19 @@ def pack_claim_evidence(
     sessions: list[SessionEnvelope],
     token_budget: int,
     question_type: str = "",
+    consolidate: bool = False,
 ) -> tuple[str, dict]:
     if token_budget <= 0:
         raise ValueError("token_budget must be positive")
-    claims = _claims(sessions)
+    claims = _claims(sessions, atomic=consolidate)
     if not claims:
         return "", _metadata([], [], token_budget=token_budget, used_tokens=0)
 
     scores = _score_claims(question, question_type, claims)
     ledger_plan, ledger_entries = build_evidence_ledger(
-        question, question_type, claims
+        question, question_type, claims, consolidate=consolidate
     )
+    groups = consolidation_groups(ledger_entries) if consolidate else []
     for claim in claims:
         scores[claim.key] += ledger_priority(ledger_entries[claim.key], ledger_plan)
     by_session: dict[str, list[Claim]] = defaultdict(list)
@@ -122,6 +131,12 @@ def pack_claim_evidence(
     for key in ledger_anchor_keys(ledger_entries, ledger_plan):
         add(by_position[key], "ledger_anchor")
 
+    # A consolidation index is useful only if its exact source claims survive too.
+    # Anchor every member before rendering any derived navigation metadata.
+    for group in groups:
+        for key in group.claim_keys:
+            add(by_position[key], "consolidation_anchor")
+
     ranked = sorted(
         claims,
         key=lambda item: (
@@ -148,7 +163,12 @@ def pack_claim_evidence(
         selected.values(),
         key=lambda item: (item.date, item.session_id, item.turn_index, item.sentence_index),
     )
-    context = _render(ordered, ledger_entries=ledger_entries, annotate=True)
+    context = _render(
+        ordered,
+        ledger_entries=ledger_entries,
+        consolidation=groups,
+        annotate=True,
+    )
     actual_estimate = estimate_claim_tokens(context)
     if actual_estimate > token_budget:
         # Rendering headers can push the estimate slightly over the selection allowance.
@@ -167,7 +187,12 @@ def pack_claim_evidence(
                 selected.values(),
                 key=lambda item: (item.date, item.session_id, item.turn_index, item.sentence_index),
             )
-            context = _render(ordered, ledger_entries=ledger_entries, annotate=True)
+            context = _render(
+                ordered,
+                ledger_entries=ledger_entries,
+                consolidation=groups,
+                annotate=True,
+            )
             actual_estimate = estimate_claim_tokens(context)
 
     meta = _metadata(
@@ -184,23 +209,36 @@ def pack_claim_evidence(
         "assertion_modes": dict(Counter(item.assertion_mode for item in selected_ledger)),
         "numeric_roles": dict(Counter(item.numeric_role for item in selected_ledger)),
         "event_roles": dict(Counter(item.event_role for item in selected_ledger)),
+        "consolidation_group_count": len(_renderable_groups(groups, ordered)),
+        "cross_session_consolidated_claim_count": sum(
+            len(group.claim_keys) for group in _renderable_groups(groups, ordered)
+        ),
+        "conflicting_preference_group_count": sum(
+            group.conflicting_preference_stances
+            for group in _renderable_groups(groups, ordered)
+        ),
     }
+    meta["packing"] = (
+        CONSOLIDATED_CLAIM_PACKER_VERSION if consolidate else CLAIM_PACKER_VERSION
+    )
     return context, meta
 
 
-def _claims(sessions: Iterable[SessionEnvelope]) -> list[Claim]:
+def _claims(sessions: Iterable[SessionEnvelope], *, atomic: bool = False) -> list[Claim]:
     claims: list[Claim] = []
     seen: set[tuple[str, str, str]] = set()
     for session in sessions:
         for turn_index, turn in enumerate(session.turns):
             speaker = str(turn.get("role") or "unknown").strip().lower()
             content = " ".join(str(turn.get("content") or "").split())
-            for sentence_index, sentence in enumerate(_sentences(content)):
+            units = split_claim_units(content) if atomic else _sentences(content)
+            for sentence_index, sentence in enumerate(units):
                 normalized = " ".join(sentence.casefold().split())
                 dedupe_key = (session.session_id, speaker, normalized)
                 if not normalized or dedupe_key in seen:
                     continue
                 seen.add(dedupe_key)
+                structured = extract_structured_claims(sentence, speaker) if atomic else []
                 claims.append(
                     Claim(
                         session_id=session.session_id,
@@ -211,6 +249,23 @@ def _claims(sessions: Iterable[SessionEnvelope]) -> list[Claim]:
                         speaker=speaker,
                         text=sentence,
                         tokens=estimate_claim_tokens(sentence),
+                        structured_topic_keys=tuple(
+                            dict.fromkeys(
+                                claim.supersession_key
+                                for claim in structured
+                                if claim.supersession_key
+                            )
+                        ),
+                        structured_kinds=tuple(
+                            dict.fromkeys(claim.assertion_kind for claim in structured)
+                        ),
+                        preference_polarities=tuple(
+                            dict.fromkeys(
+                                claim.metadata.get("polarity", "")
+                                for claim in structured
+                                if claim.metadata.get("polarity")
+                            )
+                        ),
                     )
                 )
     return claims
@@ -281,9 +336,20 @@ def _render(
     claims: list[Claim],
     *,
     ledger_entries: dict[tuple[str, int, int], LedgerEntry] | None = None,
+    consolidation: list[ConsolidationGroup] | None = None,
     annotate: bool = False,
 ) -> str:
     lines: list[str] = []
+    groups = _renderable_groups(consolidation or [], claims)
+    if groups:
+        lines.append("Consolidated evidence index (navigation only; cited source claims below are authoritative)")
+        for group in groups:
+            stance = ", conflicting explicit preference stances" if group.conflicting_preference_stances else ""
+            lines.append(
+                f"- {group.topic_key}: {len(group.claim_keys)} cited observations across "
+                f"{len(group.session_ids)} sessions; latest citation {group.latest_claim_key[0]}{stance}"
+            )
+        lines.append("")
     current: tuple[str, str] | None = None
     for claim in claims:
         header = (claim.session_id, claim.date)
@@ -298,6 +364,29 @@ def _render(
             f"- [{claim.speaker} turn {claim.turn_index} sentence {claim.sentence_index}]{annotation} {claim.text}"
         )
     return "\n".join(lines)
+
+
+def _renderable_groups(
+    groups: list[ConsolidationGroup], claims: list[Claim]
+) -> list[ConsolidationGroup]:
+    selected = {claim.key for claim in claims}
+    output: list[ConsolidationGroup] = []
+    for group in groups:
+        retained = tuple(key for key in group.claim_keys if key in selected)
+        retained_sessions = tuple(dict.fromkeys(key[0] for key in retained))
+        if len(retained_sessions) < 2:
+            continue
+        latest = group.latest_claim_key if group.latest_claim_key in retained else retained[-1]
+        output.append(
+            ConsolidationGroup(
+                topic_key=group.topic_key,
+                claim_keys=retained,
+                session_ids=retained_sessions,
+                latest_claim_key=latest,
+                conflicting_preference_stances=group.conflicting_preference_stances,
+            )
+        )
+    return output
 
 
 def _metadata(

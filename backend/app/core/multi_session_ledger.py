@@ -39,6 +39,9 @@ class LedgerEntry:
     event_role: EventRole
     query_overlap: int
     provenance_authority: int
+    structured_topic_keys: tuple[str, ...] = ()
+    structured_kinds: tuple[str, ...] = ()
+    preference_polarities: tuple[str, ...] = ()
 
     @property
     def annotation(self) -> str:
@@ -55,11 +58,21 @@ class LedgerEntry:
 @dataclass(frozen=True)
 class LedgerPlan:
     operation: Literal[
-        "aggregate", "duration", "latest_state", "preference", "fact_lookup"
+        "aggregate", "duration", "latest_state", "preference", "multi_session", "fact_lookup"
     ]
     target_terms: frozenset[str]
     prefer_user_provenance: bool
     prefer_latest: bool
+    consolidate: bool = False
+
+
+@dataclass(frozen=True)
+class ConsolidationGroup:
+    topic_key: str
+    claim_keys: tuple[tuple[str, int, int], ...]
+    session_ids: tuple[str, ...]
+    latest_claim_key: tuple[str, int, int]
+    conflicting_preference_stances: bool
 
 
 _STOPWORDS = {
@@ -81,7 +94,9 @@ _NUMBER_WORDS = {
 }
 
 
-def plan_ledger(question: str, question_type: str = "") -> LedgerPlan:
+def plan_ledger(
+    question: str, question_type: str = "", *, consolidate: bool = False
+) -> LedgerPlan:
     lowered = question.casefold()
     if "temporal" in question_type or re.search(
         r"\bhow long\b|\b(days?|weeks?|months?|years?)\b|\bwhen\b", lowered
@@ -95,6 +110,8 @@ def plan_ledger(question: str, question_type: str = "") -> LedgerPlan:
         operation = "latest_state"
     elif "preference" in question_type:
         operation = "preference"
+    elif consolidate and question_type == "multi-session":
+        operation = "multi_session"
     else:
         operation = "fact_lookup"
     return LedgerPlan(
@@ -102,6 +119,7 @@ def plan_ledger(question: str, question_type: str = "") -> LedgerPlan:
         target_terms=frozenset(_terms(question)),
         prefer_user_provenance=question_type != "single-session-assistant",
         prefer_latest=operation in {"aggregate", "latest_state"},
+        consolidate=consolidate,
     )
 
 
@@ -109,8 +127,10 @@ def build_evidence_ledger(
     question: str,
     question_type: str,
     claims: Iterable[ClaimLike],
+    *,
+    consolidate: bool = False,
 ) -> tuple[LedgerPlan, dict[tuple[str, int, int], LedgerEntry]]:
-    plan = plan_ledger(question, question_type)
+    plan = plan_ledger(question, question_type, consolidate=consolidate)
     entries = {
         claim.key: _entry(claim, plan)
         for claim in claims
@@ -136,6 +156,10 @@ def ledger_priority(entry: LedgerEntry, plan: LedgerPlan) -> float:
         score += 2.2
     if plan.operation == "latest_state" and entry.event_role == "update":
         score += 1.8
+    if plan.consolidate and plan.operation == "preference" and "preference" in entry.structured_kinds:
+        score += 2.0
+    if plan.consolidate and plan.operation == "multi_session" and entry.structured_topic_keys:
+        score += 1.2
     return score
 
 
@@ -155,6 +179,16 @@ def ledger_anchor_keys(
             or (
                 plan.operation == "latest_state"
                 and entry.assertion_mode in {"completed", "current"}
+            )
+            or (
+                plan.consolidate
+                and plan.operation == "preference"
+                and "preference" in entry.structured_kinds
+            )
+            or (
+                plan.consolidate
+                and plan.operation == "multi_session"
+                and bool(entry.structured_topic_keys)
             )
         )
     ]
@@ -176,6 +210,46 @@ def ledger_anchor_keys(
         if len(selected) >= limit:
             break
     return selected
+
+
+def consolidation_groups(
+    entries: dict[tuple[str, int, int], LedgerEntry],
+    *,
+    limit: int = 8,
+) -> list[ConsolidationGroup]:
+    """Group only explicit structured topics observed in multiple sessions."""
+    by_topic: dict[str, list[LedgerEntry]] = {}
+    for entry in entries.values():
+        for topic_key in entry.structured_topic_keys:
+            by_topic.setdefault(topic_key, []).append(entry)
+    groups: list[ConsolidationGroup] = []
+    for topic_key, topic_entries in by_topic.items():
+        sessions = tuple(dict.fromkeys(entry.session_id for entry in topic_entries))
+        if len(sessions) < 2:
+            continue
+        ordered = sorted(
+            topic_entries,
+            key=lambda entry: (entry.session_date, -entry.retrieval_rank, entry.claim_key),
+        )
+        stances = {
+            polarity
+            for entry in ordered
+            for polarity in entry.preference_polarities
+        }
+        groups.append(
+            ConsolidationGroup(
+                topic_key=topic_key,
+                claim_keys=tuple(entry.claim_key for entry in ordered),
+                session_ids=sessions,
+                latest_claim_key=ordered[-1].claim_key,
+                conflicting_preference_stances={"positive", "negative"}.issubset(stances),
+            )
+        )
+    groups.sort(
+        key=lambda group: (len(group.session_ids), len(group.claim_keys), group.topic_key),
+        reverse=True,
+    )
+    return groups[: max(1, limit)]
 
 
 def _entry(claim: ClaimLike, plan: LedgerPlan) -> LedgerEntry:
@@ -207,6 +281,9 @@ def _entry(claim: ClaimLike, plan: LedgerPlan) -> LedgerEntry:
         provenance_authority=(
             1 if claim.speaker == "user" and plan.prefer_user_provenance else 0
         ),
+        structured_topic_keys=tuple(getattr(claim, "structured_topic_keys", ()) or ()),
+        structured_kinds=tuple(getattr(claim, "structured_kinds", ()) or ()),
+        preference_polarities=tuple(getattr(claim, "preference_polarities", ()) or ()),
     )
 
 

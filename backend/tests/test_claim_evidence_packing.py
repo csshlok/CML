@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from backend.app.core.claim_evidence_packing import (
     CLAIM_PACKER_VERSION,
+    CONSOLIDATED_CLAIM_PACKER_VERSION,
     SessionEnvelope,
     pack_claim_evidence,
 )
@@ -64,6 +65,33 @@ def test_claim_packer_preserves_speaker_and_sentence_citations() -> None:
     assert "[assistant turn 0 sentence 0]" in context
     assert "five ounces" in context
     assert meta["omitted_session_ids"] == []
+
+
+def test_consolidated_packer_splits_compound_claims_and_preserves_sources() -> None:
+    context, meta = pack_claim_evidence(
+        question="How did my preference for tea change?",
+        sessions=[
+            _session("session-old", 0, "I love tea, but I hate coffee."),
+            SessionEnvelope(
+                session_id="session-new",
+                date="2025-03-01",
+                turns=[{"role": "user", "content": "I no longer like tea."}],
+                retrieval_rank=1,
+            ),
+        ],
+        token_budget=240,
+        question_type="single-session-preference",
+        consolidate=True,
+    )
+
+    assert meta["packing"] == CONSOLIDATED_CLAIM_PACKER_VERSION
+    assert "I love tea" in context
+    assert "I no longer like tea" in context
+    assert "I love tea, but I hate coffee" not in context
+    assert "navigation only" in context
+    assert meta["ledger"]["consolidation_group_count"] == 1
+    assert meta["ledger"]["conflicting_preference_group_count"] == 1
+    assert meta["ledger"]["cross_session_consolidated_claim_count"] == 2
 
 
 def test_budget_accuracy_reports_over_and_under_groups() -> None:

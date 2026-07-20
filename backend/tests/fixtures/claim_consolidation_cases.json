@@ -1,0 +1,135 @@
+[
+  {
+    "id": "compound-preferences",
+    "question": "What are my preferences?",
+    "question_type": "multi-session",
+    "sessions": [
+      {
+        "id": "compound-1",
+        "date": "2025-01-01",
+        "turns": [
+          {"role": "user", "content": "I love hiking, but I hate crowded trails. My favorite editor is VS Code."}
+        ]
+      }
+    ],
+    "expected_claims": [
+      "preference|prefers|hiking",
+      "preference|avoids|crowded trails",
+      "preference|prefers|VS Code"
+    ],
+    "expected_groups": 0,
+    "expected_conflicting_preference_groups": 0
+  },
+  {
+    "id": "preference-reversal",
+    "question": "How did my preference for tea change?",
+    "question_type": "multi-session",
+    "sessions": [
+      {"id": "tea-old", "date": "2025-01-01", "turns": [{"role": "user", "content": "I love tea."}]},
+      {"id": "tea-new", "date": "2025-02-01", "turns": [{"role": "user", "content": "I no longer like tea."}]}
+    ],
+    "expected_claims": [
+      "preference|prefers|tea",
+      "preference|avoids|tea"
+    ],
+    "expected_groups": 1,
+    "expected_conflicting_preference_groups": 1
+  },
+  {
+    "id": "favorite-update",
+    "question": "What editor do I favor now?",
+    "question_type": "multi-session",
+    "sessions": [
+      {"id": "editor-old", "date": "2025-01-01", "turns": [{"role": "user", "content": "My favorite editor is Vim."}]},
+      {"id": "editor-new", "date": "2025-03-01", "turns": [{"role": "user", "content": "My favorite editor is VS Code."}]}
+    ],
+    "expected_claims": [
+      "preference|prefers|Vim",
+      "preference|prefers|VS Code"
+    ],
+    "expected_groups": 1,
+    "expected_conflicting_preference_groups": 0
+  },
+  {
+    "id": "state-update",
+    "question": "How did my location change?",
+    "question_type": "multi-session",
+    "sessions": [
+      {"id": "location-old", "date": "2025-01-01", "turns": [{"role": "user", "content": "I live in London."}]},
+      {"id": "location-new", "date": "2025-04-01", "turns": [{"role": "user", "content": "I now live in Berlin."}]}
+    ],
+    "expected_claims": [
+      "state|lives_in|London",
+      "state|lives_in|Berlin"
+    ],
+    "expected_groups": 1,
+    "expected_conflicting_preference_groups": 0
+  },
+  {
+    "id": "speaker-provenance",
+    "question": "What did I prefer and what was suggested?",
+    "question_type": "multi-session",
+    "sessions": [
+      {"id": "speaker-user", "date": "2025-01-01", "turns": [{"role": "user", "content": "I prefer cycling."}]},
+      {"id": "speaker-assistant", "date": "2025-01-02", "turns": [{"role": "assistant", "content": "You should try swimming."}]}
+    ],
+    "expected_claims": [
+      "preference|prefers|cycling",
+      "suggestion|suggested_option|try swimming"
+    ],
+    "expected_groups": 0,
+    "expected_conflicting_preference_groups": 0
+  },
+  {
+    "id": "no-durable-claim",
+    "question": "Was a durable preference stated?",
+    "question_type": "multi-session",
+    "sessions": [
+      {"id": "none-1", "date": "2025-01-01", "turns": [{"role": "user", "content": "Thanks for explaining that."}]}
+    ],
+    "expected_claims": [],
+    "expected_groups": 0,
+    "expected_conflicting_preference_groups": 0
+  },
+  {
+    "id": "habitual-paraphrases",
+    "question": "What do I tend to choose?",
+    "question_type": "multi-session",
+    "sessions": [
+      {"id": "habit-positive", "date": "2025-01-01", "turns": [{"role": "user", "content": "I usually reach for tea."}]},
+      {"id": "habit-negative", "date": "2025-02-01", "turns": [{"role": "user", "content": "I don't reach for coffee anymore."}]}
+    ],
+    "expected_claims": [
+      "preference|prefers|tea",
+      "preference|avoids|coffee"
+    ],
+    "expected_groups": 0,
+    "expected_conflicting_preference_groups": 0
+  },
+  {
+    "id": "canonical-formatting-reversal",
+    "question": "Did my tea preference change?",
+    "question_type": "multi-session",
+    "sessions": [
+      {"id": "canonical-old", "date": "2025-01-01", "turns": [{"role": "user", "content": "I love the Tea."}]},
+      {"id": "canonical-new", "date": "2025-02-01", "turns": [{"role": "user", "content": "I hate tea."}]}
+    ],
+    "expected_claims": [
+      "preference|prefers|the Tea",
+      "preference|avoids|tea"
+    ],
+    "expected_groups": 1,
+    "expected_conflicting_preference_groups": 1
+  },
+  {
+    "id": "first-choice-paraphrase",
+    "question": "What is my first choice?",
+    "question_type": "multi-session",
+    "sessions": [
+      {"id": "choice-1", "date": "2025-01-01", "turns": [{"role": "user", "content": "Green tea is my usual first choice."}]}
+    ],
+    "expected_claims": ["preference|prefers|Green tea"],
+    "expected_groups": 0,
+    "expected_conflicting_preference_groups": 0
+  }
+]

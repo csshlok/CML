@@ -16,6 +16,21 @@ def _report(*, recall: float = 0.98, containment: float = 0.50, tokens: float = 
     }
 
 
+def _typed_report(*, preference_containment: float = 0.8, multi_recall: float = 0.9) -> dict:
+    report = _report()
+    report["by_question_type"] = {
+        "single-session-preference": {
+            "macro_answer_session_recall": 1.0,
+            "normalized_gold_containment_rate": preference_containment,
+        },
+        "multi-session": {
+            "macro_answer_session_recall": multi_recall,
+            "normalized_gold_containment_rate": 0.7,
+        },
+    }
+    return report
+
+
 def test_claim_packing_regression_accepts_bounded_candidate() -> None:
     result = compare_claim_packing_reports(
         _report(), _report(recall=0.979, containment=0.495, tokens=9100)
@@ -42,3 +57,15 @@ def test_claim_packing_regression_rejects_mismatched_sample_sizes() -> None:
 
     with pytest.raises(ValueError, match="question counts differ"):
         compare_claim_packing_reports(_report(), candidate)
+
+
+def test_claim_packing_regression_catches_priority_type_regression() -> None:
+    baseline = _typed_report()
+    candidate = _typed_report(preference_containment=0.7, multi_recall=0.85)
+    candidate["protocol"] = "claim-consolidated-longmemeval-offline-analysis-v1"
+
+    result = compare_claim_packing_reports(baseline, candidate)
+
+    assert result["passed"] is False
+    assert result["checks"]["single-session-preference_containment"] is False
+    assert result["checks"]["multi-session_recall"] is False
