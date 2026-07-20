@@ -8,6 +8,7 @@ from unittest.mock import patch
 from backend.app.core.typed_evidence_runtime import (
     contract_memory_item,
     evaluate_runtime_evidence,
+    plan_runtime_query,
     public_diagnostics,
 )
 
@@ -60,6 +61,7 @@ def _fact(
     date: str = "2025-01-01T00:00:00+00:00",
     metadata: dict | None = None,
     cluster_id: str | None = None,
+    subject: str = "user",
 ) -> None:
     conn.execute(
         """
@@ -69,12 +71,13 @@ def _fact(
             source_id, session_id, citation_excerpt, observed_at, valid_from,
             valid_until, status, confidence, origin_fingerprint, metadata_json,
             created_at
-        ) VALUES (?, 'vault-1', ?, 'user', ?, ?, 'text', ?, 'asserted', ?,
+        ) VALUES (?, 'vault-1', ?, ?, ?, ?, 'text', ?, 'asserted', ?,
                   'chat_message', ?, ?, ?, ?, ?, NULL, ?, 0.95, ?, ?, ?)
         """,
         (
             fact_id,
             cluster_id,
+            subject,
             predicate,
             object_text,
             assertion_kind,
@@ -90,6 +93,71 @@ def _fact(
             date,
         ),
     )
+
+
+def test_named_speaker_preference_query_filters_other_speakers() -> None:
+    conn = _database()
+    _fact(
+        conn,
+        "a",
+        excerpt="My favorite editor is Vim.",
+        object_text="Vim",
+        assertion_kind="preference",
+        predicate="prefers",
+        subject="caroline",
+        metadata={"polarity": "positive", "family": "favorite"},
+    )
+    _fact(
+        conn,
+        "b",
+        excerpt="My favorite editor is Emacs.",
+        object_text="Emacs",
+        assertion_kind="preference",
+        predicate="prefers",
+        subject="melanie",
+        metadata={"polarity": "positive", "family": "favorite"},
+    )
+
+    decision = evaluate_runtime_evidence(
+        conn,
+        vault_id="vault-1",
+        cluster_id=None,
+        question="What does Caroline generally prefer for an editor?",
+    )
+
+    assert decision["result"].status == "needs_generation"
+    required = set(decision["result"].contract.required_claim_ids)
+    selected = [record for record in decision["records"] if record.claim_id in required]
+    assert [record.subject for record in selected] == ["caroline"]
+    assert [record.object for record in selected] == ["vim"]
+
+
+def test_named_speaker_bounded_favorite_question_stays_on_retrieval_path() -> None:
+    plan = plan_runtime_query("What was Melanie's favorite childhood book?")
+    assert plan.intent == "unsupported"
+
+
+def test_preference_topic_miss_abstains_instead_of_injecting_other_preferences() -> None:
+    conn = _database()
+    _fact(
+        conn,
+        "a",
+        excerpt="I prefer tea.",
+        object_text="tea",
+        assertion_kind="preference",
+        predicate="prefers",
+        metadata={"polarity": "positive"},
+    )
+
+    decision = evaluate_runtime_evidence(
+        conn,
+        vault_id="vault-1",
+        cluster_id=None,
+        question="What is my favorite editor now?",
+    )
+
+    assert decision["result"].status == "fallback"
+    assert "matched the requested topic" in decision["result"].reason
 
 
 def test_unsupported_question_does_not_require_temporal_table() -> None:
@@ -189,6 +257,88 @@ def test_structured_numeric_history_resolves_latest_comparison() -> None:
 
     assert decision["result"].status == "resolved"
     assert decision["result"].answer.startswith("Less: from 6 to 5")
+
+
+def test_preference_summary_uses_latest_topic_fact_and_preserves_history_on_request() -> None:
+    conn = _database()
+    _fact(
+        conn,
+        "p",
+        excerpt="I love tea.",
+        object_text="tea",
+        assertion_kind="preference",
+        predicate="prefers",
+        session_id="session-old",
+        status="superseded",
+        date="2025-01-01T00:00:00+00:00",
+        metadata={"polarity": "positive"},
+    )
+    _fact(
+        conn,
+        "n",
+        excerpt="I no longer like tea.",
+        object_text="tea",
+        assertion_kind="preference",
+        predicate="avoids",
+        session_id="session-new",
+        date="2025-02-01T00:00:00+00:00",
+        metadata={"polarity": "negative"},
+    )
+
+    current = evaluate_runtime_evidence(
+        conn,
+        vault_id="vault-1",
+        cluster_id=None,
+        question="What are my preferences?",
+    )
+    history = evaluate_runtime_evidence(
+        conn,
+        vault_id="vault-1",
+        cluster_id=None,
+        question="How have my preferences changed over time?",
+    )
+
+    assert current["plan"].intent == "preference_summary"
+    assert current["result"].status == "needs_generation"
+    assert current["result"].contract.required_claim_ids == ["temporal_n"]
+    assert set(history["result"].contract.required_claim_ids) == {
+        "temporal_p",
+        "temporal_n",
+    }
+
+
+def test_personalized_advice_can_use_cited_anchors_across_sessions() -> None:
+    conn = _database()
+    _fact(
+        conn,
+        "h",
+        excerpt="I completed a long hiking trip.",
+        object_text="completed a long hiking trip",
+        session_id="session-experience",
+    )
+    _fact(
+        conn,
+        "g",
+        excerpt="My goal is to improve my hiking endurance.",
+        object_text="improve my hiking endurance",
+        assertion_kind="goal",
+        predicate="goal",
+        session_id="session-goal",
+        date="2025-02-01T00:00:00+00:00",
+    )
+
+    decision = evaluate_runtime_evidence(
+        conn,
+        vault_id="vault-1",
+        cluster_id=None,
+        question="Based on my hiking experience, what should I do to improve?",
+    )
+
+    assert decision["result"].status == "needs_generation"
+    assert set(decision["result"].contract.required_claim_ids) == {
+        "temporal_h",
+        "temporal_g",
+    }
 
 
 def test_personalized_advice_injects_same_session_provenance_contract() -> None:

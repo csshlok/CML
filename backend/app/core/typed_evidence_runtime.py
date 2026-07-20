@@ -12,6 +12,7 @@ from backend.app.core.typed_evidence import (
     Citation,
     EvidenceRecord,
     NumericValue,
+    PreferenceSignal,
     QueryPlan,
     ReducerResult,
     plan_query,
@@ -20,7 +21,7 @@ from backend.app.core.typed_evidence import (
 )
 
 
-RUNTIME_ADAPTER_VERSION = "temporal-ledger-v1"
+RUNTIME_ADAPTER_VERSION = "temporal-ledger-v3"
 
 
 def evaluate_runtime_evidence(
@@ -49,12 +50,43 @@ def evaluate_runtime_evidence(
         cluster_id=cluster_id,
         limit=limit,
     )
+    if plan.intent == "preference_summary":
+        named_subjects = _named_subjects_in_question(rows, question)
+        if named_subjects:
+            rows = [
+                row
+                for row in rows
+                if str(row.get("subject_key") or "").casefold() in named_subjects
+            ]
+            if len(named_subjects) == 1:
+                plan = plan.model_copy(
+                    update={"target_subject": next(iter(named_subjects))}
+                )
+        plan = plan.model_copy(
+            update={
+                "topic_terms": _preference_topic_terms(
+                    question, named_subjects=named_subjects
+                )
+            }
+        )
+    history_requested = bool(
+        re.search(
+            r"\b(changed|change|history|over time|used to|previously|formerly)\b",
+            question,
+            re.I,
+        )
+    )
+    if plan.intent == "personalized_advice" or (
+        plan.intent == "preference_summary" and not history_requested
+    ):
+        rows = [row for row in rows if str(row.get("status") or "") == "current"]
     records = records_from_temporal_rows(rows, plan=plan)
     result = reduce_evidence(
         plan,
         records,
         question=question,
         allow_deterministic_advice_anchors=True,
+        allow_cross_session_advice_anchors=True,
     )
     if ledger_truncated and result.status != "fallback":
         result = ReducerResult(
@@ -73,12 +105,45 @@ def evaluate_runtime_evidence(
 
 def plan_runtime_query(question: str) -> QueryPlan:
     lowered = " ".join(str(question or "").lower().split())
+    preference_markers = (
+        "my preferences",
+        "my preference",
+        "my favorite",
+        "my favourite",
+        "what do i prefer",
+        "what do i like",
+        "what do i dislike",
+        "what do i avoid",
+        "do i still like",
+        "do i still prefer",
+    )
+    named_preference_query = bool(
+        re.search(
+            r"\bwhat\s+are\s+[a-z][a-z .'-]{0,40}(?:'s|s')?\s+preferences?\b",
+            lowered,
+        )
+        or re.search(
+            r"\bwhat\s+(?:does|did)\s+[a-z][a-z'-]{0,30}\s+"
+            r"(?:(?:usually|generally|typically|normally|tend(?:s)? to)\s+)?prefer\b",
+            lowered,
+        )
+    )
+    if any(marker in lowered for marker in preference_markers) or named_preference_query:
+        base = plan_query(
+            {"question": question, "question_type": "single-session-preference"}
+        )
+        return base.model_copy(
+            update={
+                "intent": "preference_summary",
+                "allowed_primary_modes": ["current"],
+                "required_anchor_types": [],
+            }
+        )
     personalized_markers = (
         "based on my",
         "given my",
         "for me",
         "my interests",
-        "my preferences",
         "what should i",
         "recommend",
         "suggest",
@@ -109,6 +174,77 @@ def records_from_temporal_rows(
             records.append(base)
             records.extend(entity_records)
     return records
+
+
+def _named_subjects_in_question(
+    rows: list[dict[str, Any]], question: str
+) -> set[str]:
+    question_tokens = set(re.findall(r"[a-z0-9]+", question.casefold()))
+    matched: set[str] = set()
+    for row in rows:
+        subject = str(row.get("subject_key") or "").casefold()
+        if not subject or subject == "user":
+            continue
+        subject_tokens = set(re.findall(r"[a-z0-9]+", subject.replace("_", " ")))
+        if subject_tokens and subject_tokens <= question_tokens:
+            matched.add(subject)
+    return matched
+
+
+def _preference_topic_terms(
+    question: str, *, named_subjects: set[str]
+) -> list[str]:
+    ignored = {
+        "avoid",
+        "are",
+        "about",
+        "changed",
+        "changes",
+        "current",
+        "dislike",
+        "does",
+        "did",
+        "for",
+        "from",
+        "favorite",
+        "favourite",
+        "generally",
+        "history",
+        "how",
+        "have",
+        "mine",
+        "now",
+        "like",
+        "likes",
+        "my",
+        "normally",
+        "our",
+        "over",
+        "prefer",
+        "preference",
+        "preferences",
+        "still",
+        "the",
+        "time",
+        "typically",
+        "usually",
+        "user",
+        "what",
+        "when",
+        "your",
+    }
+    subject_terms = {
+        token
+        for subject in named_subjects
+        for token in re.findall(r"[a-z0-9]{3,}", subject.replace("_", " "))
+    }
+    return list(
+        dict.fromkeys(
+            token
+            for token in re.findall(r"[a-z0-9]{3,}", question.casefold())
+            if token not in ignored and token not in subject_terms
+        )
+    )
 
 
 def contract_memory_item(decision: dict) -> dict | None:
@@ -216,6 +352,25 @@ def _record_from_temporal_row(row: dict[str, Any]) -> EvidenceRecord | None:
 
     metadata = _metadata(row.get("metadata_json"))
     numeric = _numeric_value(metadata.get("numeric"))
+    preference = None
+    if assertion_kind == "preference":
+        polarity = str(metadata.get("polarity") or "positive")
+        if polarity not in {"positive", "negative"}:
+            polarity = "positive"
+        supersession_key = str(row.get("supersession_key") or "")
+        topic = (
+            re.sub(r"^[^:]+:preference:", "", supersession_key)
+            or re.sub(
+                r"[^a-z0-9]+",
+                "_",
+                str(row.get("object_text") or "").casefold(),
+            ).strip("_")
+        )
+        preference = PreferenceSignal(
+            polarity=polarity,
+            strength="soft",
+            topic=topic,
+        )
     fingerprint = str(row.get("origin_fingerprint") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
         fingerprint = hashlib.sha256(
@@ -241,8 +396,9 @@ def _record_from_temporal_row(row: dict[str, Any]) -> EvidenceRecord | None:
         predicate=str(row.get("predicate_key") or "fact"),
         object=str(row.get("object_text") or "unknown"),
         object_type=str(row.get("object_type") or "text"),
-        event_date=str(row.get("valid_from") or "") or None,
+        event_date=str(metadata.get("event_time") or row.get("valid_from") or "") or None,
         numeric=numeric,
+        preference=preference,
         semantic_tags=semantic_tags,
         confidence=float(row.get("confidence") or 0.0),
     )

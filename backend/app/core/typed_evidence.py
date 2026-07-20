@@ -22,6 +22,7 @@ PrimaryAssertionMode = Literal[
 EvidenceIntent = Literal[
     "distinct_count",
     "latest_state_comparison",
+    "preference_summary",
     "personalized_advice",
     "unsupported",
 ]
@@ -791,6 +792,7 @@ def reduce_evidence(
     *,
     question: str,
     allow_deterministic_advice_anchors: bool = False,
+    allow_cross_session_advice_anchors: bool = False,
 ) -> ReducerResult:
     eligible = _eligible(records, plan)
     if plan.intent == "distinct_count":
@@ -875,6 +877,91 @@ def reduce_evidence(
             confidence=min(previous.confidence, current.confidence),
         )
 
+    if plan.intent == "preference_summary":
+        preferences = [
+            record
+            for record in eligible
+            if record.preference is not None or "preference" in record.semantic_tags
+        ]
+        if plan.topic_terms:
+            topic_terms = set(plan.topic_terms)
+            focused = [
+                record
+                for record in preferences
+                if topic_terms
+                & set(
+                    re.findall(
+                        r"[a-z0-9]{3,}",
+                        " ".join(
+                            [
+                                record.object,
+                                record.predicate,
+                                record.preference.topic if record.preference else "",
+                                record.citation.excerpt,
+                            ]
+                        ).lower(),
+                    )
+                )
+            ]
+            if focused:
+                preferences = focused
+            else:
+                return ReducerResult(
+                    intent=plan.intent,
+                    status="fallback",
+                    reason=(
+                        "No provenance-valid preference facts matched the requested topic."
+                    ),
+                    confidence=0.0,
+                )
+        by_topic: dict[str, list[EvidenceRecord]] = {}
+        for record in preferences:
+            topic = record.preference.topic if record.preference else record.object
+            by_topic.setdefault(topic, []).append(record)
+        if not by_topic:
+            return ReducerResult(
+                intent=plan.intent,
+                status="fallback",
+                reason="No provenance-valid current preference facts were extracted.",
+                confidence=0.0,
+            )
+        history_requested = bool(
+            re.search(
+                r"\b(changed|change|history|over time|used to|previously|formerly)\b",
+                question,
+                re.I,
+            )
+        )
+        selected: list[EvidenceRecord] = []
+        for topic_records in by_topic.values():
+            topic_records.sort(
+                key=lambda record: record.event_date or record.citation.session_date
+            )
+            selected.extend(topic_records[-2:] if history_requested else topic_records[-1:])
+        selected.sort(
+            key=lambda record: (
+                record.event_date or record.citation.session_date,
+                record.confidence,
+            ),
+            reverse=True,
+        )
+        selected = selected[:8]
+        return ReducerResult(
+            intent=plan.intent,
+            status="needs_generation",
+            evidence_claim_ids=[record.claim_id for record in selected],
+            contract=EvidenceContract(
+                required_claim_ids=[record.claim_id for record in selected],
+                instructions=(
+                    "Summarize only these explicit user preference facts. Treat the latest cited "
+                    "fact for each normalized topic as current; mention older facts only when the "
+                    "question asks about change. Preserve negative preferences and do not infer "
+                    "unstated tastes."
+                ),
+            ),
+            confidence=min(record.confidence for record in selected),
+        )
+
     if plan.intent == "personalized_advice":
         if plan.topic_terms:
             topic_terms = set(plan.topic_terms)
@@ -921,6 +1008,33 @@ def reduce_evidence(
             if experience and interests and topic_coverage >= minimum_topic_coverage:
                 session_candidates.append(
                     (topic_coverage, session_records, experience, interests)
+                )
+        if not session_candidates and allow_cross_session_advice_anchors:
+            experience = [
+                record
+                for record in eligible
+                if "demonstrated_experience" in record.semantic_tags
+            ]
+            interests = [
+                record
+                for record in eligible
+                if "stated_goal_or_interest" in record.semantic_tags
+                or "preference" in record.semantic_tags
+            ]
+            if experience and interests:
+                global_tokens = set(
+                    re.findall(
+                        r"[a-z]{3,}",
+                        " ".join(record.citation.excerpt for record in eligible).lower(),
+                    )
+                )
+                session_candidates.append(
+                    (
+                        len(set(plan.topic_terms) & global_tokens),
+                        eligible,
+                        experience,
+                        interests,
+                    )
                 )
         if not session_candidates:
             return ReducerResult(
