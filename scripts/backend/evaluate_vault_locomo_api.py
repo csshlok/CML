@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import re
 import statistics
@@ -8,6 +9,7 @@ import string
 import sys
 import time
 from collections import Counter, defaultdict
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 
@@ -32,9 +34,18 @@ from scripts.backend.evaluate_vault_longmemeval_api import (
     _wilson_interval,
 )
 from scripts.backend.evaluate_vault_longmemeval_local import _load_jsonl, _write_jsonl
+from backend.app.core.config import get_settings
+from backend.app.core.context_memory import get_context_memory, rebuild_chat_session_memory
+from backend.app.core.database import connect, init_db
+from backend.app.core.typed_evidence_runtime import (
+    RUNTIME_ADAPTER_VERSION,
+    contract_memory_item,
+    evaluate_runtime_evidence,
+)
 
 
 READER_PROTOCOL = "locomo-official-dialog-rag-short-answer-v1"
+PRODUCTION_TEMPORAL_PROTOCOL = "locomo-production-temporal-routing-v2"
 JUDGE_PROTOCOL = "locomo-gold-answer-strict-binary-v1"
 
 
@@ -49,13 +60,162 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument(
+        "--question-id",
+        action="append",
+        default=[],
+        help="Evaluate only the named question ID; may be repeated.",
+    )
     parser.add_argument("--max-answer-tokens", type=int, default=96)
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--reader-model", default="kimi-k2.6")
     parser.add_argument("--primary-judge-model", default="kimi-k2.6")
     parser.add_argument("--independent-judge-model", default="gpt-5.4-2026-03-05")
+    parser.add_argument(
+        "--context-mode",
+        choices=("retrieval-only", "production-temporal"),
+        default="retrieval-only",
+        help="Optionally augment retrieved turns through Vault's production memory path.",
+    )
+    parser.add_argument(
+        "--temporal-db",
+        type=Path,
+        help="Persistent benchmark ledger used by --context-mode production-temporal.",
+    )
     return parser.parse_args()
+
+
+def _session_timestamp(value: object) -> datetime:
+    return datetime.strptime(str(value), "%I:%M %p on %d %B, %Y").replace(tzinfo=UTC)
+
+
+class ProductionTemporalContext:
+    """Adapter from imported LoCoMo dialogue to Vault's product memory pipeline."""
+
+    def __init__(self, *, dataset: list[dict], dataset_sha256: str, database_path: Path):
+        self.database_path = database_path.resolve()
+        self.manifest_path = self.database_path.with_suffix(".manifest.json")
+        self.old_database = os.environ.get("CML_DATABASE_PATH")
+        self.old_data = os.environ.get("CML_DATA_DIR")
+        os.environ["CML_DATABASE_PATH"] = str(self.database_path)
+        os.environ["CML_DATA_DIR"] = str(self.database_path.parent)
+        get_settings.cache_clear()
+        expected = {
+            "protocol": PRODUCTION_TEMPORAL_PROTOCOL,
+            "runtime_adapter_version": RUNTIME_ADAPTER_VERSION,
+            "dataset_sha256": dataset_sha256,
+        }
+        if self.manifest_path.exists():
+            if json.loads(self.manifest_path.read_text(encoding="utf-8")) != expected:
+                raise RuntimeError(
+                    f"Temporal ledger manifest mismatch at {self.manifest_path}; use a new --temporal-db path."
+                )
+            init_db()
+        else:
+            if self.database_path.exists():
+                raise RuntimeError(
+                    f"Unrecognized temporal ledger at {self.database_path}; use a new --temporal-db path."
+                )
+            init_db()
+            self._ingest(dataset)
+            self.manifest_path.write_text(json.dumps(expected, indent=2), encoding="utf-8")
+
+    def close(self) -> None:
+        get_settings.cache_clear()
+        if self.old_database is None:
+            os.environ.pop("CML_DATABASE_PATH", None)
+        else:
+            os.environ["CML_DATABASE_PATH"] = self.old_database
+        if self.old_data is None:
+            os.environ.pop("CML_DATA_DIR", None)
+        else:
+            os.environ["CML_DATA_DIR"] = self.old_data
+
+    def _ingest(self, dataset: list[dict]) -> None:
+        with connect() as conn:
+            for sample in dataset:
+                sample_id = str(sample["sample_id"])
+                vault_id = f"locomo-{sample_id}"
+                session_dates = [
+                    _session_timestamp(value)
+                    for key, value in sample["conversation"].items()
+                    if key.endswith("_date_time")
+                ]
+                created_at = min(session_dates).isoformat()
+                updated_at = max(session_dates).isoformat()
+                conn.execute(
+                    "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (vault_id, sample_id, str(self.database_path.parent), created_at, updated_at),
+                )
+                conversation = sample["conversation"]
+                for key, turns in conversation.items():
+                    if not key.startswith("session_") or key.endswith("_date_time") or not isinstance(turns, list):
+                        continue
+                    session_id = f"{sample_id}-{key}"
+                    base_time = _session_timestamp(conversation[f"{key}_date_time"])
+                    conn.execute(
+                        "INSERT INTO chat_sessions (id, vault_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                        (session_id, vault_id, key, base_time.isoformat(), base_time.isoformat()),
+                    )
+                    for index, turn in enumerate(turns):
+                        speaker = str(turn.get("speaker") or "Speaker").strip()
+                        text = " ".join(str(turn.get("text") or "").split())
+                        content = f'{speaker} said, "{text}"'
+                        message_time = (base_time + timedelta(seconds=index)).isoformat()
+                        conn.execute(
+                            """INSERT INTO chat_messages
+                            (id, session_id, role, content, clusters_used, citations, warnings, created_at)
+                            VALUES (?, ?, 'user', ?, '[]', '[]', '[]', ?)""",
+                            (f"locomo-{sample_id}-{turn['dia_id']}", session_id, content, message_time),
+                        )
+                    rebuild_chat_session_memory(conn, vault_id=vault_id, session_id=session_id)
+            conn.commit()
+
+    def context(self, *, sample_id: str, question: str, retrieved_context: str) -> tuple[str, dict]:
+        vault_id = f"locomo-{sample_id}"
+        with connect() as conn:
+            memory_items, _working = get_context_memory(
+                conn, vault_id=vault_id, cluster_id=None, query=question, limit=12
+            )
+            decision = evaluate_runtime_evidence(
+                conn, vault_id=vault_id, cluster_id=None, question=question
+            )
+            contract = contract_memory_item(decision)
+            if contract is not None:
+                memory_items = [contract, *memory_items]
+            fact_count = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS count FROM temporal_facts WHERE vault_id = ? AND status != 'retracted'",
+                    (vault_id,),
+                ).fetchone()["count"]
+            )
+        # Match the app's typed routing semantics. A resolved result bypasses model
+        # generation; a needs-generation result injects only its bounded contract;
+        # unsupported queries retain the normal retrieval context unchanged.
+        additions: list[str] = []
+        if contract is not None:
+            text = str(contract.get("detail_text") or contract.get("summary") or "").strip()
+            if text and text not in retrieved_context:
+                additions.append(text)
+        augmented = retrieved_context
+        if additions:
+            augmented += "\n\nVault structured memory:\n" + "\n\n".join(additions)
+        return augmented, {
+            "protocol": PRODUCTION_TEMPORAL_PROTOCOL,
+            "runtime_adapter_version": RUNTIME_ADAPTER_VERSION,
+            "runtime_intent": decision["plan"].intent,
+            "runtime_status": decision["result"].status,
+            "contract_injected": contract is not None,
+            "deterministic_answer": (
+                decision["result"].answer
+                if decision["result"].status == "resolved"
+                else None
+            ),
+            "temporal_fact_count": fact_count,
+            "memory_item_count": len(memory_items),
+            "added_context_chars": len(augmented) - len(retrieved_context),
+        }
 
 
 def _conversation_turns(dataset: list[dict]) -> dict[str, dict[str, str]]:
@@ -187,6 +347,7 @@ def _generate(
     turns_by_sample: dict[str, dict[str, str]],
     path: Path,
     run_fingerprint: str,
+    temporal_context: ProductionTemporalContext | None = None,
 ) -> list[dict]:
     selected_ids = [str(row["question_id"]) for row in selected]
     existing = {
@@ -200,6 +361,13 @@ def _generate(
         if previous and previous.get("reader_finish_reason") != "length":
             continue
         context, included = _context(item, turns_by_sample)
+        temporal_diagnostics = None
+        if temporal_context is not None:
+            context, temporal_diagnostics = temporal_context.context(
+                sample_id=str(item["sample_id"]),
+                question=str(item["question"]),
+                retrieved_context=context,
+            )
         started = time.perf_counter()
         token_budget = (
             max(256, args.max_answer_tokens * 2)
@@ -207,44 +375,84 @@ def _generate(
             else args.max_answer_tokens
         )
         attempt_history = list((previous or {}).get("reader_attempt_history") or [])
-        response = _chat(
-            provider,
-            _answer_prompt(item, context),
-            max_tokens=token_budget,
-            timeout=args.timeout,
-            retries=args.retries,
-        )
-        attempt_history.append(
-            {
-                "max_answer_tokens": token_budget,
-                "finish_reason": _finish_reason(response),
-                "usage": _usage(response),
+        deterministic_answer = str(
+            (temporal_diagnostics or {}).get("deterministic_answer") or ""
+        ).strip()
+        if deterministic_answer:
+            hypothesis = deterministic_answer
+            reader_usage = {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "cached_tokens": 0,
+                "total_tokens": 0,
             }
-        )
+            finish_reason = "deterministic"
+        else:
+            while True:
+                response = _chat(
+                    provider,
+                    _answer_prompt(item, context),
+                    max_tokens=token_budget,
+                    timeout=args.timeout,
+                    retries=args.retries,
+                )
+                reader_usage = _usage(response)
+                finish_reason = _finish_reason(response)
+                hypothesis = response["choices"][0]["message"]["content"].strip()
+                attempt_history.append(
+                    {
+                        "max_answer_tokens": token_budget,
+                        "finish_reason": finish_reason,
+                        "usage": reader_usage,
+                    }
+                )
+                if finish_reason != "length":
+                    break
+                if token_budget >= 768:
+                    raise RuntimeError(
+                        f"Reader remained length-limited at 768 tokens for {question_id}; "
+                        "the benchmark report was not generated."
+                    )
+                token_budget = min(768, max(256, token_budget * 2))
         row = {
             "question_id": question_id,
             "sample_id": item["sample_id"],
             "category": item["category"],
             "question": item["question"],
             "answer": item["answer"],
-            "hypothesis": response["choices"][0]["message"]["content"].strip(),
+            "hypothesis": hypothesis,
             "retrieved_evidence_ids": included,
             "context_chars": len(context),
             "reader_provider": provider.name,
             "reader_model": provider.model,
-            "reader_protocol": READER_PROTOCOL,
+            "reader_protocol": (
+                f"{READER_PROTOCOL}+{PRODUCTION_TEMPORAL_PROTOCOL}"
+                if temporal_context is not None
+                else READER_PROTOCOL
+            ),
+            "temporal_memory": temporal_diagnostics,
             "run_fingerprint": run_fingerprint,
             "max_answer_tokens": token_budget,
             "reader_attempt_count": len(attempt_history),
             "reader_attempt_history": attempt_history,
             "reader_wall_seconds": round(time.perf_counter() - started, 4),
-            "reader_usage": _usage(response),
-            "reader_finish_reason": _finish_reason(response),
+            "reader_usage": reader_usage,
+            "reader_finish_reason": finish_reason,
         }
         existing[question_id] = row
         _checkpoint(path, existing, selected_ids)
         print(f"reader {position}/{len(selected)} {question_id}", flush=True)
-    return [existing[question_id] for question_id in selected_ids]
+    completed = [existing[question_id] for question_id in selected_ids]
+    length_limited = [
+        row["question_id"]
+        for row in completed
+        if row.get("reader_finish_reason") == "length"
+    ]
+    if length_limited:
+        raise RuntimeError(
+            f"Length-limited reader outputs block report generation: {length_limited}"
+        )
+    return completed
 
 
 def _judge(
@@ -343,7 +551,16 @@ def main() -> int:
     args = parse_args()
     retrieval = json.loads(args.retrieval.read_text(encoding="utf-8"))
     dataset = json.loads(args.dataset.read_text(encoding="utf-8"))
-    selected = retrieval["results"][: args.limit or None]
+    if args.context_mode == "production-temporal" and args.temporal_db is None:
+        raise RuntimeError("--temporal-db is required for --context-mode production-temporal")
+    selected = retrieval["results"]
+    if args.question_id:
+        requested = set(args.question_id)
+        selected = [row for row in selected if str(row["question_id"]) in requested]
+        missing = requested - {str(row["question_id"]) for row in selected}
+        if missing:
+            raise RuntimeError(f"Unknown question IDs: {sorted(missing)}")
+    selected = selected[: args.limit or None]
     if not selected:
         raise RuntimeError("The retrieval artifact contains no selected questions")
     if any(int(row["category"]) == 5 for row in selected):
@@ -369,7 +586,17 @@ def main() -> int:
             "retrieval_sha256": _file_sha256(args.retrieval),
             "selected_question_ids": selected_ids,
             "selected_question_ids_sha256": _fingerprint(selected_ids),
-            "reader_protocol": READER_PROTOCOL,
+            "reader_protocol": (
+                f"{READER_PROTOCOL}+{PRODUCTION_TEMPORAL_PROTOCOL}"
+                if args.context_mode == "production-temporal"
+                else READER_PROTOCOL
+            ),
+            "context_mode": args.context_mode,
+            "runtime_adapter_version": (
+                RUNTIME_ADAPTER_VERSION
+                if args.context_mode == "production-temporal"
+                else None
+            ),
             "judge_protocol": JUDGE_PROTOCOL,
             "reader": {"provider": reader.name, "model": reader.model},
             "primary_judge": {
@@ -387,14 +614,26 @@ def main() -> int:
     hypotheses_path = stem.with_name(stem.name + ".hypotheses.jsonl")
     primary_path = stem.with_name(stem.name + ".kimi-evaluated.jsonl")
     independent_path = stem.with_name(stem.name + ".openai-evaluated.jsonl")
-    hypotheses = _generate(
-        args,
-        reader,
-        selected,
-        _conversation_turns(dataset),
-        hypotheses_path,
-        run_fingerprint,
-    )
+    temporal_context = None
+    try:
+        if args.context_mode == "production-temporal":
+            temporal_context = ProductionTemporalContext(
+                dataset=dataset,
+                dataset_sha256=manifest["dataset_sha256"],
+                database_path=args.temporal_db,
+            )
+        hypotheses = _generate(
+            args,
+            reader,
+            selected,
+            _conversation_turns(dataset),
+            hypotheses_path,
+            run_fingerprint,
+            temporal_context,
+        )
+    finally:
+        if temporal_context is not None:
+            temporal_context.close()
     hypotheses_sha256 = _fingerprint(
         [(row["question_id"], row["hypothesis"]) for row in hypotheses]
     )
@@ -437,6 +676,12 @@ def main() -> int:
         "run_fingerprint": run_fingerprint,
         "question_count": len(selected),
         "category_scope": "standard (categories 1-4)",
+        "context_mode": args.context_mode,
+        "runtime_adapter_version": (
+            RUNTIME_ADAPTER_VERSION
+            if args.context_mode == "production-temporal"
+            else None
+        ),
         "dataset_sha256": manifest["dataset_sha256"],
         "retrieval_sha256": manifest["retrieval_sha256"],
         "retrieval_macro_recall_at_k": round(statistics.fmean(retrieval_scores), 6),
@@ -469,6 +714,27 @@ def main() -> int:
             ),
             "max": max(int(row["context_chars"]) for row in hypotheses),
         },
+        "temporal_memory": (
+            {
+                "contract_injected_count": sum(
+                    bool((row.get("temporal_memory") or {}).get("contract_injected"))
+                    for row in hypotheses
+                ),
+                "supported_runtime_count": sum(
+                    (row.get("temporal_memory") or {}).get("runtime_status") != "fallback"
+                    for row in hypotheses
+                ),
+                "mean_added_context_chars": round(
+                    statistics.fmean(
+                        int((row.get("temporal_memory") or {}).get("added_context_chars") or 0)
+                        for row in hypotheses
+                    ),
+                    1,
+                ),
+            }
+            if args.context_mode == "production-temporal"
+            else None
+        ),
         "comparison_note": (
             "The official token-F1 is reproducible. The binary judges are diagnostic; "
             "Graphify's unpublished atomic-key-fact files and sample manifest prevent "
