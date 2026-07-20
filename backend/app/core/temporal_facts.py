@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from backend.app.core.claim_semantics import extract_structured_claims
 from backend.app.core.database import dict_from_row, utc_now
 
 
@@ -19,7 +20,7 @@ AssertionKind = Literal[
 ]
 Modality = Literal["asserted", "negated", "hypothetical"]
 SourceType = Literal["chat_message", "source", "benchmark", "manual"]
-CHAT_FACT_EXTRACTOR_VERSION = "chat-facts-v2"
+CHAT_FACT_EXTRACTOR_VERSION = "chat-facts-v3"
 
 
 class TemporalFactCreate(BaseModel):
@@ -199,6 +200,36 @@ def temporal_fact_history(
         ORDER BY valid_from ASC, created_at ASC
         """,
         (vault_id, _key(supersession_key)),
+    ).fetchall()
+    return [_fact_dict(row) for row in rows]
+
+
+def query_temporal_fact_versions(
+    conn: sqlite3.Connection,
+    *,
+    vault_id: str,
+    cluster_id: str | None = None,
+    assertion_kind: AssertionKind | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    """Return provenance-preserving fact versions for explicit history questions."""
+    clauses = ["vault_id = ?", "status != 'retracted'"]
+    params: list[object] = [vault_id]
+    if cluster_id:
+        clauses.append("(cluster_id = ? OR cluster_id IS NULL)")
+        params.append(cluster_id)
+    if assertion_kind:
+        clauses.append("assertion_kind = ?")
+        params.append(assertion_kind)
+    params.append(max(1, min(limit, 500)))
+    rows = conn.execute(
+        f"""
+        SELECT * FROM temporal_facts
+        WHERE {' AND '.join(clauses)}
+        ORDER BY valid_from ASC, created_at ASC
+        LIMIT ?
+        """,
+        params,
     ).fetchall()
     return [_fact_dict(row) for row in rows]
 
@@ -557,6 +588,16 @@ def _chat_candidates(
     content = " ".join(str(message["content"] or "").split())
     if not content:
         return []
+    extraction_content = content
+    attributed_subject = ""
+    attributed = re.fullmatch(
+        r"(?P<speaker>[A-Za-z][A-Za-z0-9 .'-]{0,80})\s+said,\s*[\"“](?P<quote>.*)[\"”]",
+        content,
+        re.IGNORECASE,
+    )
+    if role == "user" and attributed:
+        attributed_subject = _key(attributed.group("speaker"))
+        extraction_content = attributed.group("quote").strip()
     base = {
         "vault_id": vault_id,
         "speaker_role": role,
@@ -568,119 +609,91 @@ def _chat_candidates(
         "valid_from": str(message["created_at"]),
     }
     candidates: list[tuple[TemporalFactCreate, bool]] = []
-    if role == "user":
-        patterns: list[tuple[re.Pattern[str], str, str, str, bool, dict]] = [
+    for claim in extract_structured_claims(extraction_content, role):
+        subject_key = attributed_subject or claim.subject_key
+        supersession_key = claim.supersession_key
+        if attributed_subject and supersession_key:
+            supersession_key = re.sub(r"^user(?=:)", subject_key, supersession_key)
+        metadata = {
+            **claim.metadata,
+            "extractor_version": CHAT_FACT_EXTRACTOR_VERSION,
+        }
+        if attributed_subject:
+            metadata["attributed_speaker"] = attributed.group("speaker").strip()
+        event_time = _resolve_claim_event_time(
+            metadata.get("event_time_expression"), str(message["created_at"])
+        )
+        if event_time:
+            metadata.update(event_time)
+        valid_from = str(message["created_at"])
+        if claim.assertion_kind == "action" and event_time and event_time.get("event_time"):
+            valid_from = str(event_time["event_time"])
+        candidates.append(
             (
-                re.compile(r"\bi (?:really )?(prefer|like|love)\s+(.+?)(?:[.!?]|$)", re.I),
-                "user", "prefers", "preference", False, {"polarity": "positive"},
-            ),
-            (
-                re.compile(
-                    r"\bi (?:(?:do not|don't|no longer)(?: like)?|dislike|hate|avoid)"
-                    r"\s+(.+?)(?:[.!?]|$)",
-                    re.I,
+                TemporalFactCreate(
+                    **{
+                        **base,
+                        "citation_excerpt": claim.citation_excerpt[:600],
+                        "valid_from": valid_from,
+                    },
+                    subject_key=subject_key,
+                    predicate_key=claim.predicate_key,
+                    object_text=claim.object_text,
+                    assertion_kind=claim.assertion_kind,
+                    modality=claim.modality,
+                    supersession_key=supersession_key,
+                    confidence=claim.confidence,
+                    metadata=metadata,
                 ),
-                "user", "avoids", "preference", False, {"polarity": "negative"},
-            ),
-            (re.compile(r"\bi (?:now )?(?:live in|moved to)\s+(.+?)(?:[.!?]|$)", re.I), "user", "lives_in", "state", True, {}),
-            (re.compile(r"\bi (?:now )?work at\s+(.+?)(?:[.!?]|$)", re.I), "user", "works_at", "state", True, {}),
-            (
-                re.compile(
-                    r"\bi (?:just |recently |already |finally )?"
-                    r"(bought|made|visited|completed|finished|started|stopped|attended|used|tried)"
-                    r"\s+(.+?)(?:[.!?]|$)",
-                    re.I,
-                ),
-                "user", "completed_action", "action", False, {},
-            ),
-            (
-                re.compile(r"\bi (?:plan to|am going to|want to|would like to)\s+(.+?)(?:[.!?]|$)", re.I),
-                "user", "plans", "plan", False, {},
-            ),
-        ]
-        patterns.extend(
-            [
-                (re.compile(r"\bmy name is\s+(.+?)(?:[.!?]|$)", re.I), "user", "name", "fact", True, {"family": "identity"}),
-                (re.compile(r"\bi (?:am|'m) based in\s+(.+?)(?:[.!?]|$)", re.I), "user", "lives_in", "state", True, {"family": "location"}),
-                (re.compile(r"\bmy time ?zone is\s+(.+?)(?:[.!?]|$)", re.I), "user", "timezone", "state", True, {"family": "locale"}),
-                (re.compile(r"\bi (?:work as|am employed as)\s+(?:an?\s+)?(.+?)(?:[.!?]|$)", re.I), "user", "role", "state", True, {"family": "work"}),
-                (re.compile(r"\bmy (?:role|job title) is\s+(.+?)(?:[.!?]|$)", re.I), "user", "role", "state", True, {"family": "work"}),
-                (re.compile(r"\bi speak\s+(.+?)(?:[.!?]|$)", re.I), "user", "speaks", "fact", False, {"family": "language"}),
-                (re.compile(r"\bmy goal is(?: to)?\s+(.+?)(?:[.!?]|$)", re.I), "user", "goal", "goal", False, {"family": "goal"}),
-                (re.compile(r"\bi (?:decided|have decided) to\s+(.+?)(?:[.!?]|$)", re.I), "user", "decided", "action", False, {"family": "decision"}),
-                (re.compile(r"\bremember that\s+(.+?)(?:[.!?]|$)", re.I), "user", "stated_fact", "fact", False, {"family": "explicit_memory"}),
-            ]
-        )
-        for pattern, subject, predicate, kind, supersede, metadata in patterns:
-            for match in pattern.finditer(content):
-                object_text = match.group(match.lastindex or 1).strip()
-                if kind == "action" and match.lastindex == 2:
-                    object_text = f"{match.group(1)} {match.group(2)}"
-                current_supersede = supersede
-                if kind == "preference":
-                    key = f"user:preference:{_key(object_text)}"
-                    current_supersede = True
-                else:
-                    key = f"{subject}:{predicate}" if current_supersede else ""
-                candidates.append(
-                    (
-                        TemporalFactCreate(
-                            **{**base, "citation_excerpt": match.group(0)[:600]},
-                            subject_key=subject,
-                            predicate_key=predicate,
-                            object_text=object_text,
-                            assertion_kind=kind,
-                            supersession_key=key,
-                            metadata={**metadata, "extractor_version": CHAT_FACT_EXTRACTOR_VERSION},
-                            confidence=0.9,
-                        ),
-                        current_supersede,
-                    )
-                )
-        negated_states = (
-            (re.compile(r"\bi (?:no longer|do not|don't) live in\s+(.+?)(?:[.!?]|$)", re.I), "lives_in"),
-            (re.compile(r"\bi (?:no longer|do not|don't) work at\s+(.+?)(?:[.!?]|$)", re.I), "works_at"),
-        )
-        for pattern, predicate in negated_states:
-            match = pattern.search(content)
-            if not match:
-                continue
-            candidates.append(
-                (
-                    TemporalFactCreate(
-                        **{**base, "citation_excerpt": match.group(0)[:600]},
-                        subject_key="user",
-                        predicate_key=predicate,
-                        object_text=match.group(1),
-                        assertion_kind="state",
-                        modality="negated",
-                        supersession_key=f"user:{predicate}",
-                        confidence=0.95,
-                    ),
-                    True,
-                )
+                claim.supersede_current,
             )
-    else:
-        suggestion = re.search(
-            r"(?:\byou (?:could|should|might)|\btry|\bconsider|\bi recommend)\s+(.+?)(?:[.!?]|$)",
-            content,
-            re.I,
         )
-        if suggestion:
-            candidates.append(
-                (
-                    TemporalFactCreate(
-                        **{**base, "citation_excerpt": suggestion.group(0)[:600]},
-                        subject_key="user",
-                        predicate_key="suggested_option",
-                        object_text=suggestion.group(1),
-                        assertion_kind="suggestion",
-                        confidence=0.9,
-                    ),
-                    False,
-                )
-            )
     return candidates
+
+
+def _resolve_claim_event_time(expression: str | None, observed_at: str) -> dict[str, str]:
+    if not expression:
+        return {}
+    reference = datetime.fromisoformat(_iso(observed_at))
+    lowered = expression.casefold().strip()
+    target: datetime | None = None
+    if lowered == "today":
+        target = reference
+    elif lowered == "yesterday":
+        target = reference - timedelta(days=1)
+    else:
+        relative = re.fullmatch(r"(\d+)\s+(days?|weeks?)\s+ago", lowered)
+        if relative:
+            amount = int(relative.group(1))
+            days = amount * (7 if relative.group(2).startswith("week") else 1)
+            target = reference - timedelta(days=days)
+        explicit = re.fullmatch(r"on\s+(\d{4}-\d{2}-\d{2})", lowered)
+        if explicit:
+            try:
+                target = datetime.strptime(explicit.group(1), "%Y-%m-%d").replace(tzinfo=UTC)
+            except ValueError:
+                return {"event_time_expression": expression, "event_time_precision": "unresolved"}
+    if target is not None:
+        resolved = target.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        return {
+            "event_time_expression": expression,
+            "event_time": resolved,
+            "event_time_precision": "day",
+            "event_time_resolved_from": _iso(observed_at),
+        }
+    if lowered == "last week":
+        end = (reference - timedelta(days=reference.weekday() + 1)).replace(
+            hour=23, minute=59, second=59, microsecond=0
+        )
+        start = (end - timedelta(days=6)).replace(hour=0, minute=0, second=0)
+        return {
+            "event_time_expression": expression,
+            "event_time_start": start.isoformat(),
+            "event_time_end": end.isoformat(),
+            "event_time_precision": "week",
+            "event_time_resolved_from": _iso(observed_at),
+        }
+    return {"event_time_expression": expression, "event_time_precision": "unresolved"}
 
 
 def _fingerprint(

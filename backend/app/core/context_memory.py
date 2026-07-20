@@ -9,6 +9,7 @@ from backend.app.core.encrypted_storage import source_from_encrypted_row
 from backend.app.core.memory_card import summarize_text
 from backend.app.core.temporal_facts import (
     parse_as_of_query,
+    query_temporal_fact_versions,
     query_temporal_facts,
     sync_chat_session_temporal_facts,
 )
@@ -608,6 +609,14 @@ def _select_temporal_memory_items(
         as_of=as_of,
         limit=100,
     )
+    consolidation = _consolidated_temporal_item(
+        conn,
+        vault_id=vault_id,
+        cluster_id=cluster_id,
+        query=query,
+        current_facts=facts,
+        as_of=as_of,
+    )
     query_terms = {term for term in re.findall(r"[a-z0-9]{3,}", query.lower())}
     scored: list[tuple[int, float, str, dict]] = []
     for fact in facts:
@@ -626,7 +635,11 @@ def _select_temporal_memory_items(
             "id": fact["id"],
             "kind": f"temporal_{fact['assertion_kind']}",
             "summary": summary,
-            "detail_text": fact["citation_excerpt"],
+            # The ledger date is already resolved from relative source wording such
+            # as "yesterday". Keep the verbatim citation as metadata, but do not put
+            # both representations in model-facing prose: readers can otherwise
+            # apply the relative offset a second time.
+            "detail_text": f"- {str(fact['valid_from'])[:10]} {summary}",
             "confidence": fact["confidence"],
             "source_id": fact["source_id"],
             "session_id": fact["session_id"],
@@ -634,10 +647,138 @@ def _select_temporal_memory_items(
             "speaker_role": fact["speaker_role"],
             "valid_from": fact["valid_from"],
             "valid_until": fact["valid_until"],
+            "citation_excerpt": fact["citation_excerpt"],
         }
         scored.append((overlap, float(fact["confidence"]), str(fact["valid_from"]), item))
     scored.sort(key=lambda value: (value[0], value[1], value[2]), reverse=True)
-    return [item for _, _, _, item in scored[: max(1, min(limit, 50))]]
+    ranked = [item for _, _, _, item in scored]
+    if consolidation is not None:
+        ranked.insert(0, consolidation)
+    return ranked[: max(1, min(limit, 50))]
+
+
+def _consolidated_temporal_item(
+    conn,
+    *,
+    vault_id: str,
+    cluster_id: str | None,
+    query: str,
+    current_facts: list[dict],
+    as_of: str | None,
+) -> dict | None:
+    lowered = query.casefold()
+    preference_query = bool(
+        re.search(
+            r"\b(prefer|preferences?|favou?rites?|likes?|dislikes?|tastes?)\b",
+            lowered,
+        )
+    )
+    history_query = as_of is None and bool(
+        re.search(
+            r"\b(changed|change|history|over time|used to|previously|formerly|before)\b",
+            lowered,
+        )
+    )
+    state_predicate = _state_predicate_for_query(lowered)
+    if not preference_query and not (history_query and state_predicate):
+        return None
+
+    if history_query:
+        kind = "preference" if preference_query else "state"
+        candidates = query_temporal_fact_versions(
+            conn,
+            vault_id=vault_id,
+            cluster_id=cluster_id,
+            assertion_kind=kind,
+            limit=200,
+        )
+        if state_predicate:
+            candidates = [
+                fact for fact in candidates if fact["predicate_key"] == state_predicate
+            ]
+    else:
+        candidates = [fact for fact in current_facts if fact["assertion_kind"] == "preference"]
+
+    query_terms = {term for term in re.findall(r"[a-z0-9]{3,}", lowered)}
+    scored: list[tuple[int, str, dict]] = []
+    for fact in candidates:
+        text = " ".join(
+            (
+                str(fact["predicate_key"]).replace("_", " "),
+                str(fact["object_text"]),
+                str(fact["citation_excerpt"]),
+            )
+        ).casefold()
+        overlap = sum(term in text for term in query_terms)
+        scored.append((overlap, str(fact["valid_from"]), fact))
+    scored.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    selected = [fact for _, _, fact in scored[:12]]
+    if len({str(fact.get("session_id") or "") for fact in selected if fact.get("session_id")}) < 2:
+        return None
+
+    selected.sort(key=lambda fact: (str(fact["valid_from"]), str(fact["id"])))
+    summaries: list[str] = []
+    detail_lines: list[str] = []
+    citations: list[dict] = []
+    for fact in selected:
+        predicate = str(fact["predicate_key"]).replace("_", " ")
+        if fact["modality"] == "negated":
+            predicate = f"no longer {predicate}"
+        summary = f"{str(fact['subject_key']).replace('_', ' ')} {predicate} {fact['object_text']}"
+        summaries.append(summary)
+        detail_lines.append(
+            f"- {str(fact['valid_from'])[:10]} [{fact['status']}] {summary} — \"{fact['citation_excerpt']}\""
+        )
+        citations.append(
+            {
+                "fact_id": fact["id"],
+                "source_id": fact["source_id"],
+                "session_id": fact["session_id"],
+                "valid_from": fact["valid_from"],
+                "status": fact["status"],
+                "citation_excerpt": fact["citation_excerpt"],
+            }
+        )
+    unique_summaries = list(dict.fromkeys(summaries))
+    digest = content_hash("|".join(str(fact["id"]) for fact in selected))[:16]
+    label = (
+        "Preference history"
+        if history_query and preference_query
+        else "State history"
+        if history_query
+        else "Current preference evidence"
+    )
+    return {
+        "id": f"temporal-consolidation-{digest}",
+        "kind": "temporal_consolidation",
+        "summary": f"{label}: " + "; ".join(unique_summaries),
+        "detail_text": "\n".join(detail_lines),
+        "confidence": min(float(fact["confidence"]) for fact in selected),
+        "source_id": selected[-1]["source_id"],
+        "session_id": selected[-1]["session_id"],
+        "source_ids": list(dict.fromkeys(str(fact["source_id"]) for fact in selected)),
+        "session_ids": list(
+            dict.fromkeys(str(fact["session_id"]) for fact in selected if fact.get("session_id"))
+        ),
+        "citations": citations,
+        "updated_at": selected[-1]["valid_from"],
+        "speaker_role": "user",
+        "derived": True,
+        "authoritative_source_claims_preserved": True,
+    }
+
+
+def _state_predicate_for_query(query: str) -> str | None:
+    mappings = (
+        (r"\b(location|live|lived|moved|based)\b", "lives_in"),
+        (r"\b(company|employer|workplace|work at|worked at)\b", "works_at"),
+        (r"\b(role|job title|profession|occupation)\b", "role"),
+        (r"\btime ?zone\b", "timezone"),
+    )
+    for pattern, predicate in mappings:
+        if re.search(pattern, query):
+            return predicate
+    return None
 
 
 def _merge_memory_items(*groups: list[dict], limit: int) -> list[dict]:

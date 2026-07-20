@@ -445,6 +445,31 @@ def enqueue_startup_reconciliation_jobs() -> None:
             payload={},
             dedupe_key="vector-reconcile:startup",
         )
+        stale_vaults = conn.execute(
+            """
+            SELECT DISTINCT sessions.vault_id
+            FROM chat_sessions sessions
+            LEFT JOIN temporal_fact_session_state state
+              ON state.session_id = sessions.id AND state.vault_id = sessions.vault_id
+            WHERE state.session_id IS NULL
+               OR state.extractor_version != ?
+               OR state.source_message_count != (
+                    SELECT COUNT(*) FROM chat_messages messages
+                    WHERE messages.session_id = sessions.id
+               )
+            """,
+            (CHAT_FACT_EXTRACTOR_VERSION,),
+        ).fetchall()
+        for row in stale_vaults:
+            vault_id = str(row["vault_id"])
+            enqueue_job(
+                conn,
+                job_type="temporal_fact_backfill",
+                payload={"vault_id": vault_id, "batch_size": 50},
+                dedupe_key=f"temporal-fact-backfill:{vault_id}",
+                scope_id=vault_id,
+                user_initiated=False,
+            )
 
 
 def run_due_jobs_once(limit: int = 5) -> int:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -320,6 +321,38 @@ class TemporalFactLedgerTests(unittest.TestCase):
             repeated_count = conn.execute("SELECT COUNT(*) AS count FROM temporal_facts").fetchone()["count"]
         self.assertEqual(repeated_count, 2)
 
+    def test_startup_reconciliation_queues_backfill_only_for_stale_sessions(self) -> None:
+        from backend.app.core.background_jobs import (
+            enqueue_startup_reconciliation_jobs,
+            run_due_jobs_once,
+        )
+        from backend.app.core.database import connect
+
+        self._message("user-1", "user", "I prefer tea.", "2025-01-01T10:00:00+00:00")
+        enqueue_startup_reconciliation_jobs()
+        with connect() as conn:
+            jobs = conn.execute(
+                """
+                SELECT job_type, payload, user_initiated FROM app_jobs
+                WHERE job_type = 'temporal_fact_backfill'
+                """
+            ).fetchall()
+        self.assertEqual(len(jobs), 1)
+        self.assertIn('"vault_id":"vault-1"', jobs[0]["payload"])
+        self.assertEqual(jobs[0]["user_initiated"], 0)
+
+        # Keep this focused test independent of the embedding runtime used by the
+        # separate startup vector-reconciliation job.
+        with connect() as conn:
+            conn.execute("DELETE FROM app_jobs WHERE job_type = 'vector_reconcile_incremental'")
+        self.assertEqual(run_due_jobs_once(limit=1), 1)
+        enqueue_startup_reconciliation_jobs()
+        with connect() as conn:
+            backfill_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM app_jobs WHERE job_type = 'temporal_fact_backfill'"
+            ).fetchone()["count"]
+        self.assertEqual(backfill_count, 1)
+
     def test_provenance_columns_are_immutable(self) -> None:
         from backend.app.core.database import connect
         from backend.app.core.temporal_facts import record_temporal_fact
@@ -376,6 +409,148 @@ class TemporalFactLedgerTests(unittest.TestCase):
         self.assertEqual(current[0]["summary"], "user lives in Berlin")
         self.assertEqual(historical[0]["summary"], "user lives in London")
 
+    def test_state_history_query_preserves_old_and_current_values(self) -> None:
+        from backend.app.core.context_memory import get_context_memory
+        from backend.app.core.database import connect
+        from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
+
+        self._message("user-old", "user", "I live in London.", "2025-01-01T10:00:00+00:00")
+        with connect() as conn:
+            conn.execute(
+                """INSERT INTO chat_sessions (id, vault_id, title, created_at, updated_at)
+                VALUES ('session-2', 'vault-1', 'New home', ?, ?)""",
+                ("2025-03-01T00:00:00+00:00", "2025-03-01T00:00:00+00:00"),
+            )
+            conn.execute(
+                """INSERT INTO chat_messages
+                (id, session_id, role, content, clusters_used, citations, warnings, created_at)
+                VALUES ('user-new', 'session-2', 'user', 'I now live in Berlin.', '[]', '[]', '[]', ?)""",
+                ("2025-03-01T10:00:00+00:00",),
+            )
+            for session_id in ("session-1", "session-2"):
+                messages = conn.execute(
+                    "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at",
+                    (session_id,),
+                ).fetchall()
+                sync_chat_session_temporal_facts(
+                    conn, vault_id="vault-1", session_id=session_id, messages=messages
+                )
+            items, _ = get_context_memory(
+                conn,
+                vault_id="vault-1",
+                cluster_id=None,
+                query="Where did I live before, and where do I live now?",
+            )
+
+        self.assertEqual(items[0]["kind"], "temporal_consolidation")
+        self.assertIn("State history", items[0]["summary"])
+        self.assertIn("London", items[0]["detail_text"])
+        self.assertIn("Berlin", items[0]["detail_text"])
+
+    def test_resolved_action_date_is_not_reapplied_from_relative_citation(self) -> None:
+        from backend.app.core.context_memory import get_context_memory
+        from backend.app.core.database import connect
+        from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
+
+        self._message(
+            "user-visit",
+            "user",
+            "I visited Jaipur yesterday.",
+            "2025-06-11T12:00:00+00:00",
+        )
+        with connect() as conn:
+            messages = conn.execute(
+                "SELECT * FROM chat_messages WHERE session_id = 'session-1' ORDER BY created_at"
+            ).fetchall()
+            sync_chat_session_temporal_facts(
+                conn, vault_id="vault-1", session_id="session-1", messages=messages
+            )
+            items, _ = get_context_memory(
+                conn,
+                vault_id="vault-1",
+                cluster_id=None,
+                query="On what date did I visit Jaipur?",
+            )
+
+        visit = next(item for item in items if "Jaipur" in item["summary"])
+        self.assertIn("2025-06-10", visit["detail_text"])
+        self.assertNotIn("yesterday", visit["detail_text"].casefold())
+        self.assertEqual(visit["citation_excerpt"], "I visited Jaipur yesterday.")
+
+    def test_imported_dialogue_attributes_first_person_claim_to_named_speaker(self) -> None:
+        from backend.app.core.database import connect
+        from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
+
+        self._message(
+            "user-imported",
+            "user",
+            'Caroline said, "My favorite editor is Vim."',
+            "2025-06-11T12:00:00+00:00",
+        )
+        with connect() as conn:
+            messages = conn.execute(
+                "SELECT * FROM chat_messages WHERE session_id = 'session-1' ORDER BY created_at"
+            ).fetchall()
+            sync_chat_session_temporal_facts(
+                conn, vault_id="vault-1", session_id="session-1", messages=messages
+            )
+            fact = conn.execute(
+                "SELECT subject_key, citation_excerpt, metadata_json FROM temporal_facts"
+            ).fetchone()
+
+        self.assertEqual(fact["subject_key"], "caroline")
+        self.assertEqual(fact["citation_excerpt"], "My favorite editor is Vim.")
+        self.assertEqual(json.loads(fact["metadata_json"])["attributed_speaker"], "Caroline")
+
+    def test_preference_consolidation_preserves_cross_session_citations(self) -> None:
+        from backend.app.core.context_memory import get_context_memory
+        from backend.app.core.database import connect
+        from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
+
+        self._message("user-tea", "user", "I prefer tea.", "2025-01-01T10:00:00+00:00")
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (id, vault_id, title, created_at, updated_at)
+                VALUES ('session-2', 'vault-1', 'More preferences', ?, ?)
+                """,
+                ("2025-02-01T00:00:00+00:00", "2025-02-01T00:00:00+00:00"),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_messages (
+                    id, session_id, role, content, clusters_used, citations, warnings, created_at
+                ) VALUES ('user-coffee', 'session-2', 'user', 'I avoid coffee.', '[]', '[]', '[]', ?)
+                """,
+                ("2025-02-01T10:00:00+00:00",),
+            )
+            first = conn.execute(
+                "SELECT * FROM chat_messages WHERE session_id = 'session-1' ORDER BY created_at"
+            ).fetchall()
+            second = conn.execute(
+                "SELECT * FROM chat_messages WHERE session_id = 'session-2' ORDER BY created_at"
+            ).fetchall()
+            sync_chat_session_temporal_facts(
+                conn, vault_id="vault-1", session_id="session-1", messages=first
+            )
+            sync_chat_session_temporal_facts(
+                conn, vault_id="vault-1", session_id="session-2", messages=second
+            )
+            items, _ = get_context_memory(
+                conn,
+                vault_id="vault-1",
+                cluster_id=None,
+                query="What are my current preferences?",
+            )
+
+        consolidated = items[0]
+        self.assertEqual(consolidated["kind"], "temporal_consolidation")
+        self.assertEqual(set(consolidated["session_ids"]), {"session-1", "session-2"})
+        self.assertEqual(len(consolidated["citations"]), 2)
+        self.assertIn("user prefers tea", consolidated["summary"])
+        self.assertIn("user avoids coffee", consolidated["summary"])
+        self.assertTrue(consolidated["authoritative_source_claims_preserved"])
+
     def test_edit_retracts_obsolete_fact_without_deleting_history(self) -> None:
         from backend.app.core.database import connect
         from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
@@ -396,7 +571,7 @@ class TemporalFactLedgerTests(unittest.TestCase):
         self.assertEqual(result["retracted_count"], 1)
         self.assertEqual(row["status"], "retracted")
 
-    def test_v2_extractor_captures_multiple_explicit_fact_families(self) -> None:
+    def test_v3_extractor_captures_multiple_explicit_fact_families(self) -> None:
         from backend.app.core.database import connect
         from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
 
@@ -427,7 +602,73 @@ class TemporalFactLedgerTests(unittest.TestCase):
                 ("stated_fact", "my passport expires in 2028"),
             },
         )
-        self.assertEqual(state["extractor_version"], "chat-facts-v2")
+        self.assertEqual(state["extractor_version"], "chat-facts-v3")
+
+    def test_v3_extractor_splits_compound_preferences_without_inference(self) -> None:
+        from backend.app.core.database import connect
+        from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
+
+        self._message(
+            "user-compound",
+            "user",
+            "I love hiking, but I hate crowded trails. My favorite editor is VS Code.",
+            "2025-01-01T10:00:00+00:00",
+        )
+        with connect() as conn:
+            messages = conn.execute("SELECT * FROM chat_messages WHERE session_id = 'session-1'").fetchall()
+            sync_chat_session_temporal_facts(
+                conn, vault_id="vault-1", session_id="session-1", messages=messages
+            )
+            rows = conn.execute(
+                """
+                SELECT predicate_key, object_text, citation_excerpt, supersession_key
+                FROM temporal_facts ORDER BY object_text
+                """
+            ).fetchall()
+
+        self.assertEqual(
+            {(row["predicate_key"], row["object_text"]) for row in rows},
+            {
+                ("avoids", "crowded trails"),
+                ("prefers", "hiking"),
+                ("prefers", "VS Code"),
+            },
+        )
+        source_text = "I love hiking, but I hate crowded trails. My favorite editor is VS Code."
+        self.assertTrue(all(row["citation_excerpt"] in source_text for row in rows))
+        favorite = next(row for row in rows if row["object_text"] == "VS Code")
+        self.assertEqual(favorite["supersession_key"], "user:preference:favorite:editor")
+
+    def test_v3_resolves_safe_action_dates_without_backdating_current_state(self) -> None:
+        from backend.app.core.database import connect
+        from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
+
+        self._message(
+            "user-dates",
+            "user",
+            "I visited Kyoto yesterday. I moved to Berlin last week.",
+            "2025-05-15T18:30:00+00:00",
+        )
+        with connect() as conn:
+            messages = conn.execute("SELECT * FROM chat_messages WHERE session_id = 'session-1'").fetchall()
+            sync_chat_session_temporal_facts(
+                conn, vault_id="vault-1", session_id="session-1", messages=messages
+            )
+            rows = conn.execute(
+                "SELECT assertion_kind, object_text, valid_from, metadata_json FROM temporal_facts"
+            ).fetchall()
+
+        by_kind = {row["assertion_kind"]: row for row in rows}
+        action = by_kind["action"]
+        state = by_kind["state"]
+        self.assertEqual(action["object_text"], "visited Kyoto")
+        self.assertEqual(action["valid_from"], "2025-05-14T00:00:00+00:00")
+        self.assertEqual(json.loads(action["metadata_json"])["event_time_precision"], "day")
+        self.assertEqual(state["object_text"], "Berlin")
+        self.assertEqual(state["valid_from"], "2025-05-15T18:30:00+00:00")
+        state_metadata = json.loads(state["metadata_json"])
+        self.assertEqual(state_metadata["event_time_precision"], "week")
+        self.assertIn("event_time_start", state_metadata)
 
     def test_user_correction_and_retraction_are_auditable(self) -> None:
         from backend.app.core.database import connect
