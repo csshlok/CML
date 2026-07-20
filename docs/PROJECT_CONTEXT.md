@@ -45,7 +45,7 @@ Odin indexes approved repository files without executing or modifying project co
 | Odin AST extraction | Tree-sitter/Python AST based; Tier A/B corpus deterministic |
 | Desktop project, task, source, settings, and health surfaces | Implemented |
 | Public README and benchmark report | Updated with current results and qualified comparisons |
-| ColBERT late-interaction retrieval | Strong prototype; not production-enabled |
+| ColBERT late-interaction retrieval | Compressed 300K proof measured; scoped path remains experimental and not production-enabled |
 | Windows installer and clean-machine proof | In progress |
 | UI refinement pass | Deliberately deferred until later |
 
@@ -56,6 +56,7 @@ Odin indexes approved repository files without executing or modifying project co
 | LongMemEval-S typed-v1, 500 questions | 83.8% Kimi / 83.2% GPT-5.4 | 33,331.9 reader prompt tokens/query |
 | LongMemEval-S claim-first 10K, 500 questions | 81.8% Kimi / 82.0% GPT-5.4 | 8,307.1 tokens/query; 0/500 over budget; $4.5111 evaluation cost |
 | LoCoMo ColBERT, 1,540 questions | 0.7606 recall@10; 66.75% Kimi / 63.96% GPT-5.4 | 650.4 reader prompt tokens/query; $1.7388 evaluation cost |
+| Compressed ColBERT scale, 300K items | 0.7303 recall@10 on 100 controlled global questions | 1.134 GiB; 0.539 s scoped P95 / 0.865 s global P95 |
 
 Claim-first reduced LongMemEval reader prompt volume by **75.08%**, measured reader-plus-dual-judge cost by **66.39%**, and mean reader latency by **60.68%** versus typed-v1, with a 2.0-point Kimi and 1.2-point GPT accuracy tradeoff. At the same workload shape, 100 questions use about 0.83M instead of 3.33M reader prompt tokens. Local benchmark ingestion used zero billable extraction or embedding API tokens.
 
@@ -77,7 +78,8 @@ These are benchmark measurements, not universal user-bill guarantees. Model pric
 ## Active Decisions And Boundaries
 
 - Do not restore LoRA/expert runtime paths; the live product is RAG-only.
-- Do not enable the exact ColBERT prototype in production. First prove compressed persistent indexing, packaging/licensing, migration, deletion, concurrency, memory, and cross-dataset behavior.
+- Do not enable ColBERT as a universal production retriever. The 300K compressed proof supports an opt-in cluster-scoped path, but global fan-out failed the 850 ms P95 gate and lifecycle, memory, packaging/licensing, migration, deletion, concurrency, encryption, and cross-dataset behavior remain unresolved.
+- Treat scoped/global recall equality as controlled synthetic evidence only; it does not prove that relevant cross-cluster evidence can be omitted. Keep a global dense/BM25 fallback in the design.
 - Do not optimize only for exposed benchmark questions. Product changes must improve real retrieval, evidence provenance, temporal reasoning, or operating cost and pass regression gates.
 - Keep ambiguous dynamic code relationships non-authoritative.
 - Keep graphs request-only and project pages focused on status, questions, evidence, and activity.
@@ -86,7 +88,7 @@ These are benchmark measurements, not universal user-bill guarantees. Model pric
 ## Immediate Next Steps
 
 1. Complete clean-machine Windows installer, account-separation, package-integrity, and signing proof.
-2. Build a compressed, persistent ColBERT proof of concept with explicit size, latency, lifecycle, and licensing gates before any production decision.
+2. Prototype bounded staging plus verified atomic compressed-shard rebuilds, with immediate tombstone filtering, runtime memory-pressure fallback, cross-cluster routing tests, encryption, exact artifact licensing, and a second real corpus before reconsidering ColBERT activation.
 3. Create a fresh memory-quality evaluation set; prioritize provenance-aware claim selection, temporal reconciliation, numeric aggregation, preferences, and multi-session synthesis.
 4. Improve Odin TypeScript/React graph-to-prompt ranking and authoritative cross-file import/re-export/reference coverage, then rerun multi-model external evaluation.
 5. Run the manual Odin scale workflow when the next discovery/indexing change needs promotion evidence.

@@ -430,6 +430,61 @@ Returning 50 items directly is not the answer: it increases reader noise and tok
 
 The retrieval result justifies further engineering, not immediate production activation. A production path needs a compressed, memory-mapped index; resumable backfill; add/update/delete reconciliation; atomic activation and rollback; encrypted-vault handling; lock-time cache eviction; storage accounting; and realistic 10K/100K/1M-scale measurements. Dense and BM25 retrieval should remain available for exact identifiers, code, unsupported content, and automatic fallback.
 
+### Compressed scale experiment
+
+The next experiment replaced the raw in-memory vectors with a persistent 2-bit FastPLAID index. It seeded the primary index with the 5,882 real LoCoMo dialogue turns, added deterministic vault-like distractors, and evaluated 100 fixed evidence-bearing questions against a global index. The run was stopped at 300,000 items by decision rather than extended to one million.
+
+| Scale and search scope | Disk | Bytes/item | Size vs 384-float dense | Recall@10 | P95 search |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 100K, monolithic global | 0.371 GiB | 3,988 | 2.60x | 0.7303 | 0.385 s |
+| 150K, routed primary shard | 0.559 GiB | 4,005 | 2.61x | 0.7303 | 0.539 s |
+| 300K, four-shard global merge | **1.134 GiB** | **4,057** | **2.64x** | **0.7303** | **0.865 s** |
+
+Across 300,000 items, the index represented 16,305,967 token vectors. The equivalent raw float vectors occupied 5.831 GiB, so compression reduced vector storage by **80.56%**. Index construction spent 6.5 minutes encoding on the local GPU and 73.8 minutes in CPU index work. It used no paid model, embedding, reader, or judge API calls.
+
+Scoped routing is the important result. Searching only the 150K primary shard preserved 0.7303 recall@10 with a 0.539-second P95. Searching all four shards sequentially preserved the same recall in this controlled corpus but reached a 0.865-second P95 and 1.102-second maximum, narrowly failing the existing 850 ms desktop gate. Query-process RSS peaked at 4.45 GiB. None of the synthetic distractors entered the merged top 10, but that does not establish score calibration on independent real-world corpora.
+
+Incremental maintenance is also unresolved. Five-thousand-item updates grew from 20 seconds near index creation to 86 seconds at 100K. A 25K update took 537-630 seconds and peaked at 5.18 GiB RSS, while deferring centroid expansion retained a large uncompressed buffer. Sharding bounded the rewrite cost, but global fan-out moved that cost into query latency and memory.
+
+The production decision remains **do not enable ColBERT as a universal default**. The evidence supports a future opt-in, cluster-scoped compressed index with dense/BM25 fallback. Promotion still requires real-corpus cross-validation, deletion and update compaction, encrypted-index behavior, crash recovery, bounded RAM, package and license proof, and a routing policy that avoids whole-vault shard fan-out. The scale corpus is deterministic and intentionally controlled; it validates storage and operational behavior, not general 300K-item retrieval quality.
+
+#### Interpretation boundaries
+
+- Equal scoped and global recall does **not** prove that searching only the active cluster is always safe. The three added shards contained synthetic distractors and no annotated cross-cluster evidence. Production routing must be tested on questions whose required evidence genuinely spans clusters, with dense/BM25 global fallback when routing confidence is low.
+- The 4.45 GiB query-process peak does **not** support a linear RAM projection to one million items. Allocator retention, model state, shard loading, memory mapping, and query concurrency all change that curve. One-million-item RAM remains unmeasured.
+- The slow 5K update reached 86 seconds at the 100K checkpoint; the 537-630-second 25K updates occurred while extending the primary index from 100K to 150K. They were not measurements at 300K.
+- The unchanged recall only covers the fixed 100-question controlled set. It does not establish cross-corpus quality, cross-shard score calibration, or safe omission of unrelated shards.
+
+#### Staged-ingestion hypothesis
+
+A staged architecture is the next design to test, not an accepted solution:
+
+```text
+Canonical live records
+        | immediate append
+        v
+Bounded staging index ----+
+                          +--> merged candidates --> bounded evidence packet
+Read-only compressed shard+
+        |
+        +--> verified background rebuild --> atomic activation --> old-index cleanup
+```
+
+New or changed records would enter a small bounded staging index immediately. Queries would search both staging and the active compressed shard. Deletions would be enforced through canonical live-record filtering and tombstones before results can reach the reader. A background job would rebuild a new compressed shard from canonical live records, verify its manifest and retrieval smoke tests, then activate it atomically; the old shard remains available for rollback until cleanup. Thresholds such as item count or elapsed time must be measured rather than assumed.
+
+This design does not make compaction free. The current FastPLAID experiment still rewrites substantial index state, so rebuild duration, temporary disk amplification, concurrent query behavior, and crash recovery need explicit gates. Under runtime memory pressure, Vault must be able to unload the late-interaction index and fall back to dense/BM25 retrieval without losing access to canonical content.
+
+| Hard promotion gate | Required proof |
+| --- | --- |
+| Deletion correctness | Deleted or revoked content cannot appear even before compaction; tombstones and canonical filtering survive restart |
+| Crash-safe rebuild | Staging or rebuild interruption preserves the active shard; verification and atomic swap support rollback |
+| Runtime resource governor | Admission uses available RAM and disk; sustained pressure unloads ColBERT and activates fallback without terminating Vault |
+| Encryption and locking | Derived indexes are encrypted at rest where required and all searchable state is evicted or made inaccessible on vault lock |
+| Packaging and licensing | Exact model and engine artifacts have recorded hashes, notices, redistribution rights, and package-size measurements |
+| Retrieval generalization | A second real corpus and a cross-cluster evidence set preserve quality without benchmark-specific routing assumptions |
+
+The upstream Answer.AI model declares Apache-2.0, while PyLate and FastPLAID ship under MIT. The converted `lightonai/answerai-colbert-small-v1` snapshot used in this experiment does not declare a license in its own model metadata, so redistribution provenance remains an explicit shipping blocker.
+
 ---
 
 ## Published comparison
