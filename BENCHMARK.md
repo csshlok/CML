@@ -292,7 +292,7 @@ The no-model replay examined every answer rejected by either judge.
 | Provider refusal | 1 |
 | Reader truncation | 1 |
 
-| Semantic family | Count |
+| Question family among rejected answers | Count |
 | --- | ---: |
 | Temporal resolution | 56 |
 | Numeric aggregation | 15 |
@@ -301,7 +301,30 @@ The no-model replay examined every answer rejected by either judge.
 | Entity/fact selection | 6 |
 | Cross-session synthesis | 2 |
 
-The next gains are more likely to come from typed temporal and numeric reducers, better claim selection, and stronger provenance than from retrieving more sessions.
+These are deterministic labels derived from question type and wording, not causal diagnoses. In particular, the 56 temporal-family questions do not mean temporal resolution caused 56 failures. The stage analysis above attributes the observable failures primarily to claim selection/paraphrase (43), reader reasoning (18), judge/rubric mismatch (17), and retrieval omission (15).
+
+The next gains are more likely to come from better claim selection, typed temporal and numeric reducers, stronger provenance, and targeted retrieval work than from indiscriminately retrieving more sessions.
+
+### Shared claim extraction and consolidation gate
+
+Vault now uses the same conservative claim semantics for production temporal ingestion and the bounded benchmark packer. Extractor v3 splits explicit compound first-person statements into atomic source substrings, adds narrowly defined preference forms, and retains speaker, message, session, date, and exact citation provenance. Cross-session consolidation is navigation metadata only: it is emitted only when the same structured topic has cited observations in at least two sessions, and every underlying source claim remains in the evidence packet.
+
+The new `claim-consolidated-v1` offline protocol was compared with `claim-first-v1` on the identical frozen 500-question retrieval artifact and 10K budget:
+
+| Offline gate | Claim-first v1 | Consolidated v1 |
+| --- | ---: | ---: |
+| Questions over budget | 0 | 0 |
+| Answer-session recall | 0.978767 | 0.978767 |
+| Literal gold containment | 0.492 | 0.492 |
+| Mean prompt estimate | 9,032.54 | 9,004.75 |
+| Multi-session recall / containment | 0.966541 / 0.443609 | 0.966541 / 0.443609 |
+| Preference recall / containment | 0.966667 / 0.000000 | 0.966667 / 0.000000 |
+
+All preregistered overall and category-specific non-regression gates passed. The 27.79-token mean reduction is 0.308%. Only 1 of 500 questions produced a genuine cross-session consolidation group, so this corpus cannot establish an answer-accuracy benefit for the feature. The zero preference-containment value is also a limitation of literal answer matching for that question family, not a zero reader score.
+
+A separate controlled provenance protocol directly exercises compound claims, preference reversals, formatting-normalized topics, favorite updates, state updates, habitual and first-choice paraphrases, user/assistant attribution, and no-claim input. It passed 9/9 cases with 100% exact-claim precision and recall, 100% citation validity, and 100% expected-source retention. It uses no model or paid API and is a regression fixture, not a competitive benchmark claim.
+
+The production reducer now has a dedicated preference-summary path. Current questions select only the latest non-retracted cited fact for each normalized preference topic; explicit change/history questions may include the previous version. Personalized advice can combine compatible explicit experience and interest anchors across sessions after topic filtering, rather than requiring both to appear in one conversation. Safe day-level action expressions such as `yesterday`, `three days ago`, and ISO dates are normalized deterministically; coarse expressions such as `last week` remain bounded interval metadata and do not backdate current state.
 
 ### Ingestion economics
 
@@ -369,6 +392,25 @@ The cleanest before/after comparison uses the exact 300 IDs from the earlier den
 | GPT-5.4 acceptance | 56.33% | **63.33%** | +7.00 points |
 
 Kimi recorded 46 gains and 26 losses; GPT-5.4 recorded 42 gains and 21 losses. Because answers were regenerated, this is an end-to-end paired comparison rather than deterministic proof that every verdict change came only from retrieval.
+
+### Temporal-memory activation audit
+
+A production-path experiment ingested the LoCoMo dialogue into Vault's temporal ledger, retained named-speaker provenance, and added structured preference contracts after ColBERT retrieval. The first full run activated on 34 of 1,540 questions. Its aggregate scores appeared slightly better, but 1,506 fallback answers were regenerated and 577 of those hypotheses changed despite identical retrieval inputs. The aggregate delta therefore mixed feature behavior with reader variance.
+
+The activation-only slice exposed the actual regression:
+
+| Metric on 34 activated questions | ColBERT baseline | Broad temporal routing | Change |
+| --- | ---: | ---: | ---: |
+| Official token F1 | 0.6008 | 0.5419 | **-0.0589** |
+| Kimi acceptance | 26 / 34 (76.47%) | 21 / 34 (61.76%) | **-14.71 points** |
+| GPT-5.4 acceptance | 22 / 34 (64.71%) | 21 / 34 (61.76%) | **-2.95 points** |
+| Mean structured context added | 0 characters | 658.8 characters | +658.8 characters |
+
+The broad router treated bounded factual questions containing words such as “favorite” as preference-synthesis requests. When topic evidence was weak, the reducer also admitted tangential preference facts instead of abstaining. This path was rejected for promotion.
+
+The corrected router now reserves named-speaker activation for explicit preference synthesis, and the reducer falls back when no preference evidence strongly matches the requested topic. A frozen paired rerun reused the original reader answers and judge decisions for every unchanged fallback. All 34 former activations abstained, producing exactly neutral results—0.6008 F1, 26/34 Kimi, and 22/34 GPT-5.4—with zero model calls and zero evaluation cost. This removes the measured regression, but it is safety evidence rather than a positive accuracy result: LoCoMo contains no validated synthesis activation under the conservative router.
+
+The benchmark runner now retries length-limited reader responses synchronously up to a bounded 768-token ceiling and refuses to generate a report if any response remains truncated. Future routing work must first pass an activation-only paired gate with no regression before another paid 1,540-question run is warranted.
 
 ### Retrieval variants
 
@@ -592,6 +634,8 @@ Benchmark data and checkpoints remain local because they are large and may conta
 - ColBERT cutoff analysis: `.tmp/vault-odin-memory-benchmark/locomo-colbert-small-candidate-depth.json`
 - ColBERT gate: `.tmp/vault-odin-memory-benchmark/locomo-colbert-small-comparison.json`
 - Full reader and judges: `.tmp/vault-odin-memory-benchmark/locomo-colbert-small-api-kimi-k26-gpt54-all1540.json`
+- Rejected broad temporal-path run: `.tmp/vault-odin-memory-benchmark/locomo-production-temporal-v2-full1540.json`
+- Frozen activation-only correction: `.tmp/vault-odin-memory-benchmark/locomo-temporal-paired-v3.json`
 
 ## Current conclusions
 

@@ -1,6 +1,6 @@
 # Overall Context
 
-Last updated: 2026-07-19
+Last updated: 2026-07-20
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
@@ -24,6 +24,7 @@ The major scoped implementation passes are complete:
 - Odin supports scoped project registration, durable synchronization, AST-derived structure, retrieval activation, CLI access, project-backed clusters, scoped questions, and request-only graph/tree artifacts;
 - the desktop has first-class Projects, Tasks, Sources, cluster profiles, Settings Health, CLI Access, and evidence follow-up surfaces;
 - benchmark tooling now separates ingestion, retrieval, packing, reading, judging, and reporting with resumable artifacts and regression gates;
+- production memory benchmarking now includes a frozen evolving-fact suite and an activation-only paired protocol that reuses unchanged answers and judgments;
 - the public README and benchmark report describe the product and its measured results in user-facing language.
 
 The remaining cycle is release work and quality productionization:
@@ -91,6 +92,7 @@ Live isolated validation passed:
 
 Broader regression validation passed:
 
+- current combined backend collection: `608 passed`, `2 skipped`, with only the existing Starlette TestClient deprecation warning;
 - focused backend regression slice: `127 passed`
 - Electron behavior tests: `42 passed`
 - backend tests are classified automatically into non-overlapping quick, integration, system, benchmark, and scale tiers
@@ -243,9 +245,9 @@ LongMemEval and LOCOMO now have separate diagnoses. LongMemEval is chiefly an ev
 
 The active memory roadmap is: temporal invalidation and explicit fact histories; immutable assistant/user provenance; bounded evidence packing with evidence/scaffolding token accounting; production-grade reranking; broader typed reducers; then full LOCOMO-1540 and BEAM evaluation. Vault's current target user is a developer or knowledge worker who values local ownership and unified code, project, document, and conversational context more than hosted sub-200-ms retrieval or benchmark-leading multi-session accuracy.
 
-The temporal-memory product layer is now operational end to end. A persistent append-only fact ledger stores cluster-scoped versions with immutable speaker/source provenance, citations, validity windows, and supersession links. Extractor v2 covers conservative preference, state, action, plan, identity, locale, role, language, goal, decision, and explicit-memory statements; assistant recommendations remain suggestions and cannot become completed user actions. Current facts enter grounded memory packets automatically, while dated questions select the historically valid version.
+The temporal-memory product layer is now operational end to end. A persistent append-only fact ledger stores cluster-scoped versions with immutable speaker/source provenance, citations, validity windows, and supersession links. Extractor v3 covers conservative preference, state, action, plan, identity, locale, role, language, goal, decision, habitual choice, favorite category, and explicit-memory statements; assistant recommendations remain suggestions and cannot become completed user actions. Current facts enter grounded memory packets automatically, while dated questions select the historically valid version.
 
-The product lifecycle around that ledger is also live. General state and preference reversals preserve their histories, written and relative `as of` dates resolve deterministically, and every processed chat session receives a versioned content fingerprint even when it yields no facts. Users can inspect recent current facts, correct them through immutable replacements, remove them from future answers, inspect aggregate coverage, and start a local resumable refresh from Settings > Library storage. The work uses the existing cancellable Tasks queue, skips unchanged current-version conversations, stays behind the unlock boundary, and makes no paid model calls.
+The product lifecycle around that ledger is also live. General state and preference reversals preserve their histories, written and relative `as of` dates resolve deterministically, and every processed chat session receives a versioned content fingerprint even when it yields no facts. New completed chats enter the ledger through the transcript-memory job. On startup, Vault now detects legacy chat sessions with no state, an older extractor version, or a changed message count and queues one deduplicated local backfill per affected vault. Users can still inspect recent current facts, correct them through immutable replacements, remove them from future answers, inspect aggregate coverage, and start a resumable refresh from Settings > Library storage. The work uses the existing cancellable Tasks queue, skips unchanged current-version conversations, stays behind the unlock boundary, and makes no paid model calls.
 
 Context reduction is now observable on real saved chat turns rather than inferred only from benchmark runs. Retrieval snapshots persist the packing strategy, candidate and selected citation counts, and split estimated token totals for prompt, evidence, history, memory, raw context, and final context. The UI reports aggregate reduction and average final context size without exposing query text or evidence contents. This telemetry is local operational feedback; it does not alter ranking or answers to improve a score.
 
@@ -255,7 +257,7 @@ The current product and benchmark-tooling slice is covered by 593 passing backen
 
 The 10K claim-first LongMemEval v2 run is the frozen full-set baseline: Kimi accepted 409/500 answers (81.8%), the pinned GPT-5.4 judge accepted 410/500 (82.0%), agreement was 97.4%, and no final or cumulative reader request exceeded 10,000 tokens. Mean actual reader-prompt usage was 8,307 tokens, a 75.08% reduction from the earlier 33,332-token mean. This protocol is different from earlier typed-v1 and release-reader runs, so their scores must not be combined.
 
-A deterministic failure dataset now separates retrieval, packing, reading, provider, and judging stages. Of 97 answers rejected by at least one judge, 43 are classified as claim selection or paraphrase, 18 as reader reasoning, 17 as judge/rubric mismatch, 15 as retrieval omission, 2 as judge disagreement, 1 as provider refusal, and 1 as reader truncation. The main semantic families are temporal resolution (56), numeric aggregation (15), preference synthesis (9), supersession/latest-state (9), fact selection (6), and cross-session synthesis (2).
+A deterministic failure dataset now separates retrieval, packing, reading, provider, and judging stages. Of 97 answers rejected by at least one judge, 43 are classified as claim selection or paraphrase, 18 as reader reasoning, 17 as judge/rubric mismatch, 15 as retrieval omission, 2 as judge disagreement, 1 as provider refusal, and 1 as reader truncation. A separate question-family grouping contains 56 temporal, 15 numeric, 9 preference, 9 supersession/latest-state, 6 fact-selection, and 2 cross-session questions. Those family labels derive from question type and wording; they are useful for slicing results but are not causal findings. In particular, they do not establish 56 temporal-resolution defects.
 
 The evidence-packing prototype now has a thin deterministic ledger aligned with the production temporal and typed-evidence semantics. It records assertion mode, numeric role, event role, source authority, and query overlap; it does not replace authoritative raw evidence or the production temporal-fact store. On an apples-to-apples 500-question offline replay, ledger v3 retained the same 0.978767 answer-session recall, stayed under budget on every question, reduced the mean estimate by 0.5%, and moved literal gold containment from 0.496 to 0.492. That 0.004 change passes the declared 0.01 containment gate but does not establish an accuracy improvement; another paid full-set run is therefore unwarranted.
 
@@ -278,6 +280,22 @@ The July 20 compressed-index scale experiment moved this work from an exact in-m
 On 100 fixed evidence-bearing LoCoMo questions, the 100K monolithic checkpoint produced 0.730278 recall@10 and 0.384981-second P95 global search. At the final scale, routing to the 150K primary shard preserved 0.730278 recall@10 with a 0.538606-second P95. Sequential global fan-out across all four shards also preserved recall in this controlled corpus, and no synthetic result entered the merged top 10, but P95 rose to 0.864851 seconds with a 1.102211-second maximum and 4.45 GiB peak query-process RSS. The global path therefore narrowly fails the existing 850 ms desktop gate. The synthetic corpus validates capacity and operational scaling rather than general real-world retrieval quality or cross-shard score calibration.
 
 Incremental index lifecycle remains the stronger blocker. Five-thousand-item update time rose from 20.4 seconds near creation to 86.2 seconds at 100K. Twenty-five-thousand-item updates took 537.2 and 629.6 seconds and drove process RSS to 5.18 GiB; increasing the centroid-expansion buffer preserved recall but stored the pending append largely uncompressed, while reducing K-means iterations did not improve update time. Sharding bounds rewrite cost, but whole-vault querying transfers cost into latency and memory. The resulting decision is not to activate ColBERT universally. Continue only toward an opt-in, cluster-scoped compressed index with dense/BM25 fallback, and require deletion/compaction, crash recovery, encryption and lock eviction, RAM ceilings, packaging/licensing, and a second real corpus before promotion.
+
+## July 20 Shared Claim Semantics And Consolidation
+
+Claim extraction is now shared between production temporal ingestion and bounded benchmark evidence packing. The pure extractor returns only explicit source-verbatim claims and carries their subject, predicate, object, assertion kind, modality, supersession topic, confidence, and citation excerpt. Extractor v3 fixes compound first-person statements such as a positive and negative preference joined in one sentence, and adds conservative forms for `enjoy`, `can't stand`, `would rather`, and named favorite categories. The extractor version bump causes the startup migration detector to queue local idempotent backfills for older session states.
+
+The production memory path now creates a derived consolidation item for preference or explicit history questions only when at least two sessions contribute. Its summary is assembled from structured facts, while its detail retains dated current/superseded labels, exact excerpts, fact IDs, source IDs, session IDs, and validity timestamps. The item never replaces the authoritative facts: individual source-backed temporal items remain available in the same packet. Explicit `as of` queries continue to use the fact version valid at that time rather than mixing a history profile into the answer.
+
+The benchmark packer has a separate opt-in `claim-consolidated-v1` protocol. It atomizes compound claims, anchors all source claims belonging to a cross-session topic, and emits a clearly labeled navigation index only if at least two cited sessions survive packing. The gate compares overall budget, answer-session recall, literal containment, and mean tokens, plus independent recall and containment checks for multi-session and preference questions.
+
+On the frozen 500-question LongMemEval retrieval artifact, consolidated v1 preserved 0.978767 answer-session recall, 0.492 literal containment, and zero over-budget packets. Mean estimated prompt tokens fell from 9,032.54 to 9,004.75, a 0.308% reduction. Multi-session and preference offline recall/containment were unchanged. Only one question formed a cross-session consolidation group, so no paid reader run or accuracy claim is justified from this corpus.
+
+A new deterministic provenance protocol supplies the missing direct coverage. Nine controlled cases test compound preferences, exact and formatting-normalized reversals, a favorite update, a location update, habitual and first-choice paraphrases, user-versus-assistant attribution, and a no-durable-claim input. It measured 9/9 passing cases, 100% exact-claim precision and recall, 100% citation validity, and 100% expected-source retention with zero paid API calls. This fixture is a product regression gate, not a generalization or competitive benchmark.
+
+The next accuracy slice is implemented in the production typed-evidence adapter. Preference questions no longer route through the personalized-advice reducer: a dedicated reducer chooses the latest current cited claim per normalized topic, while explicit history wording admits the previous version. Current preference and advice paths remove superseded rows before reduction. Advice may combine compatible experience and interest anchors across sessions after query-topic filtering, preserving both citations and falling back when either anchor is absent.
+
+Temporal extraction now separates an event expression from the structured object. Completed actions with deterministic day-level expressions (`today`, `yesterday`, an integer number of days or weeks ago, or `on YYYY-MM-DD`) receive a resolved event date with resolution provenance. `last week` is stored as a start/end interval with week precision. State validity is never moved backward from message observation merely because a retrospective sentence contains an older event expression, preventing an old recollection from superseding a newer current state.
 
 The follow-up review tightened four interpretation boundaries. Equal scoped and global recall is not evidence that active-cluster-only search is universally safe because the added shards contained no annotated cross-cluster evidence. The 4.45 GiB process peak cannot be linearly extrapolated to one million items because allocator behavior, memory mapping, model state, and concurrency were not isolated. The 86.2-second 5K update belongs to the 100K checkpoint, while the two 25K measurements extended the primary shard from 100K to 150K rather than operating at 300K. Finally, the controlled question set does not establish cross-corpus quality or independent-shard score calibration.
 
@@ -390,3 +408,56 @@ The CI workflow is now aligned with the incoming tree:
 The first pushed run exposed a platform-sensitive test assumption: it compared an absolute Windows source path even though Odin's canonical relationship is the normalized project-relative path. The test now resolves the source through `project_sources.relative_path`, verifies that the new active membership excludes it, and accepts either a retained tombstone or final physical cleanup. After 10 repeated local passes, the replacement GitHub run passed the quick tier and the complete automatic workflow.
 
 The unreferenced `apps/desktop/public/brand/Container.svg` is a 1.6 MB SVG wrapper around an embedded raster and is not used by the product or documentation. It remains outside the intended commit set rather than being silently deleted or published.
+
+## July 20 Temporal Activation Isolation
+
+The first production-path LoCoMo temporal-memory experiment used the existing 0.760586-recall@10 ColBERT trace, ingested all ten conversations into Vault's SQLite temporal ledger, retained attributed speaker names, and routed applicable questions through the production typed-evidence adapter. Infrastructure behavior was correct: all 1,540 questions completed, unsupported questions fell back, named-speaker facts retained their provenance, 34 structured contracts were injected, and measured cost remained essentially unchanged at $1.739514.
+
+The aggregate report was not accepted as feature evidence. It showed 0.5306 official token F1, 66.82% Kimi acceptance, and 64.35% GPT-5.4 acceptance, superficially above the earlier 0.5259, 66.75%, and 63.96%. However, 1,506 questions used the unchanged fallback path and the stochastic reader regenerated 577 different hypotheses. Seven responses also ended at the length limit on the first invocation. Aggregate changes therefore conflated reader variance, incomplete retry handling, and the 34 actual feature activations.
+
+Isolation on those 34 activations showed a clear regression. Official F1 fell from 0.6008 to 0.5419. Kimi acceptance fell from 26/34 to 21/34, a 14.71-point loss; GPT-5.4 fell from 22/34 to 21/34. Each activation added 382-1,298 characters of structured text, averaging 658.8. The router had interpreted bounded factual prompts containing preference-adjacent words—especially “favorite”—as distributed preference-synthesis requests. When requested topics did not match extracted facts strongly, the reducer retained tangential preferences instead of returning no contract.
+
+The rejected behavior was corrected in production code rather than hidden in the benchmark. Imported dialogue may still attribute explicit first-person claims to a named speaker, but named-speaker preference routing now requires an explicit aggregate request such as a general preference query. Bounded “favorite” facts remain on ordinary retrieval. Preference contracts now abstain when the requested topic has no provenance-valid match. The runtime adapter version advanced to `temporal-ledger-v3`.
+
+The LoCoMo runner now retries length-limited responses synchronously, increasing the allowance up to a bounded 768-token ceiling, and refuses to generate a report if any response remains truncated. A separate paired evaluator freezes an earlier activation set, reuses baseline hypotheses and judge labels whenever the corrected router falls back, and calls models only for contexts that truly change.
+
+The corrected paired run evaluated the same 34-question set. All 34 former false positives abstained; no reader or judge API calls were made. Official F1 remained exactly 0.6008, Kimi remained 26/34, and GPT-5.4 remained 22/34. The measured regression is closed, but this is abstention and non-regression evidence rather than a new accuracy result. Another full 1,540-question temporal run is not justified until a fresh set contains genuine distributed preference-synthesis questions and the changed subset passes a preregistered paired gate.
+
+Post-change backend verification passes 608 tests with two intentional skips. The only warning is the existing upstream Starlette TestClient deprecation notice.
+
+## July 20 Evolving-Memory Production Benchmark
+
+A dedicated paired benchmark now exercises the behavior that was too sparse in the frozen 500-question LongMemEval artifact. Dataset protocol `vault-evolving-memory-v1` contains 40 deterministic cases, evenly split across current preferences, preference history, state history, and relative-date completed actions. Each case includes fourteen irrelevant sessions so the reader must distinguish the evolving fact from ordinary conversational activity. The frozen dataset SHA-256 is `ecd4e3141dc2f3772763cba57c609525b8a667207898a8440a5dcd13bf951b64`.
+
+The paired reader protocol holds the question, Kimi K2.6 reader, GPT-5.4 independent judge, and answer rubric constant. Its baseline arm uses the prior unconsolidated claim-first packet. Its candidate arm creates a real temporary Vault database, inserts the conversation sessions and messages, runs production temporal synchronization, retrieves through `get_context_memory`, evaluates the runtime typed-evidence adapter, and injects a bounded contract only when the production path supports it. Deterministic required-fact groups provide a second scorer independent of the LLM judge.
+
+The first smoke exposed two product-path serialization defects rather than hiding them. Resolved relative action dates were stored correctly in `valid_from`, but model-facing detail included both that date and the source word “yesterday”; Kimi could apply the offset twice. Temporal items now present the resolved date in model-facing prose while retaining the exact relative source quotation separately as immutable citation metadata. State-history questions using “before ... now” were not recognized as history requests; the history selector now includes explicit “before” wording and returns dated superseded/current state evidence. Both behaviors have dedicated regression tests.
+
+The final v3 run completed 80 reader/judge arms across all 40 cases with no scorer disagreement:
+
+| Measurement | Legacy claim-first | Production temporal path | Change |
+| --- | ---: | ---: | ---: |
+| GPT-5.4 judged accuracy | 40/40 (100%) | 40/40 (100%) | No regression |
+| Deterministic accuracy | 40/40 (100%) | 40/40 (100%) | No regression |
+| Mean reader prompt tokens | 774.725 | 181.250 | **-76.60%** |
+| P95 reader prompt tokens | 788 | 276 | **-64.97%** |
+| Total reader prompt tokens | 30,989 | 7,250 | **-76.60%** |
+| Mean context characters | 1,907.12 | 403.88 | **-78.82%** |
+| Estimated uncached reader cost | $0.033248 | $0.010087 | **-69.66%** |
+
+Every category scored 10/10 in both arms. The combined v3 evaluation used 38,239 Kimi prompt tokens and 1,752 Kimi completion tokens across both arms, plus 10,164 GPT-5.4 judge prompt tokens and 320 judge completion tokens. Estimated cost was $0.043335 for Kimi at uncached rates or $0.020368 with reported caching, plus $0.030210 for GPT-5.4 judging. The cache-adjusted total was $0.050578; the all-uncached estimate was $0.073545.
+
+This experiment is a controlled capability and efficiency result. It establishes that the production ledger can preserve answer quality while substantially shortening evidence for the four explicitly covered fact families. It does not establish general conversational-memory accuracy, market leadership, or performance on arbitrary multi-hop questions. The suite and runner live in `scripts/backend/generate_evolving_memory_benchmark.py` and `scripts/backend/evaluate_evolving_memory_api.py`; generated datasets, checkpoints, logs, and reports remain under `.tmp/vault-odin-memory-benchmark`.
+
+The production changes behind the result are broader than benchmark prompt tuning. Shared source-verbatim claim semantics now serve both ingestion and bounded evidence packing. Preference reduction selects the latest cited current fact per normalized topic and admits earlier versions only for explicit history questions. Current preference and advice paths exclude superseded rows. Safe day-level expressions resolve relative to the source timestamp for completed actions, while coarse ranges remain declared metadata. Imported dialogue of the form `Name said, "..."` can attribute explicit first-person claims to that named subject without converting assistant suggestions into user actions. These behaviors preserve original citations and fall back whenever the structured contract is unsupported or insufficient.
+
+The subsequent LoCoMo activation audit narrowed the production boundary further. Surface words such as “favorite” are not sufficient evidence that a question requests distributed preference synthesis. Named-speaker routing now requires an explicit aggregate preference request, and topic matching must find provenance-valid evidence or abstain. `temporal-ledger-v3` records this routing contract. The evolving-memory suite remains the current positive controlled result; the corrected LoCoMo paired run remains a neutral abstention result. Both are required context for future temporal-memory promotion decisions.
+
+Current benchmark artifacts and protocol responsibilities are:
+
+- `evaluate_vault_locomo_api.py`: full retrieval/reader/dual-judge evaluation, optional production-temporal routing, persistent dialogue ledger, named-speaker ingestion, synchronous bounded length retry, and report blocking on unresolved truncation;
+- `evaluate_locomo_temporal_paired.py`: frozen activation-only comparison that reuses unchanged hypotheses and judgments, checkpoints only changed paths, and reports paired wins/losses and incremental cost;
+- `evaluate_evolving_memory_api.py`: paired legacy-versus-production evaluation for explicit evolving-fact families;
+- `generate_evolving_memory_benchmark.py`: deterministic generation and hashing of the 40-case controlled corpus.
+
+The promotion state is therefore precise: explicit evolving preferences, state histories, and relative action dates pass their controlled product-path regression gate; broad LoCoMo preference routing failed and was removed; conservative fallback is verified; positive distributed synthesis still needs a fresh preregistered evaluation set before another full paid LoCoMo temporal run.
