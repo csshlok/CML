@@ -21,7 +21,7 @@ from backend.app.core.typed_evidence import (
 )
 
 
-RUNTIME_ADAPTER_VERSION = "temporal-ledger-v3"
+RUNTIME_ADAPTER_VERSION = "temporal-ledger-v4"
 
 
 def evaluate_runtime_evidence(
@@ -50,25 +50,7 @@ def evaluate_runtime_evidence(
         cluster_id=cluster_id,
         limit=limit,
     )
-    if plan.intent == "preference_summary":
-        named_subjects = _named_subjects_in_question(rows, question)
-        if named_subjects:
-            rows = [
-                row
-                for row in rows
-                if str(row.get("subject_key") or "").casefold() in named_subjects
-            ]
-            if len(named_subjects) == 1:
-                plan = plan.model_copy(
-                    update={"target_subject": next(iter(named_subjects))}
-                )
-        plan = plan.model_copy(
-            update={
-                "topic_terms": _preference_topic_terms(
-                    question, named_subjects=named_subjects
-                )
-            }
-        )
+    plan, rows = scope_runtime_query(plan, rows, question)
     history_requested = bool(
         re.search(
             r"\b(changed|change|history|over time|used to|previously|formerly)\b",
@@ -101,6 +83,32 @@ def evaluate_runtime_evidence(
         records=records,
         ledger_truncated=ledger_truncated,
     )
+
+
+def scope_runtime_query(
+    plan: QueryPlan,
+    rows: list[dict[str, Any]],
+    question: str,
+) -> tuple[QueryPlan, list[dict[str, Any]]]:
+    """Apply the runtime subject/topic scope shared by chat memory and reducers."""
+
+    if plan.intent != "preference_summary":
+        return plan, rows
+    named_subjects = _named_subjects_in_question(rows, question)
+    if named_subjects:
+        rows = [
+            row
+            for row in rows
+            if str(row.get("subject_key") or "").casefold() in named_subjects
+        ]
+    updates: dict[str, Any] = {
+        "topic_terms": _preference_topic_terms(
+            question, named_subjects=named_subjects
+        )
+    }
+    if len(named_subjects) == 1:
+        updates["target_subject"] = next(iter(named_subjects))
+    return plan.model_copy(update=updates), rows
 
 
 def plan_runtime_query(question: str) -> QueryPlan:

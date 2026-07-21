@@ -198,6 +198,7 @@ def main() -> None:
             changed = bool(
                 diagnostics.get("deterministic_answer")
                 or diagnostics.get("contract_injected")
+                or int(diagnostics.get("added_context_chars") or 0) > 0
             )
             if not changed:
                 candidate_hypothesis = str(baseline["hypothesis"])

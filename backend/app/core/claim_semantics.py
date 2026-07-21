@@ -84,6 +84,108 @@ def split_claim_units(text: str) -> list[str]:
 def _user_segment_claims(segment: str) -> list[StructuredClaim]:
     claims: list[StructuredClaim] = []
 
+    current_activity = re.search(
+        r"\bi (?:(?:am|'m) currently|currently|(?:am|'m) now)\s+"
+        r"(?P<verb>reading|devouring|using|working on|obsessed with|keeping|storing|"
+        r"watching|driving|taking|wearing)\s+(?P<object>.+?)(?:[.!?]|$)",
+        segment,
+        re.I,
+    )
+    if current_activity:
+        verb = current_activity.group("verb").casefold().replace(" ", "_")
+        normalized_verb = "reading" if verb == "devouring" else verb
+        metadata = {"family": "current_activity"}
+        if normalized_verb == "reading":
+            metadata["object_type"] = "book"
+        claims.append(
+            StructuredClaim(
+                subject_key="user",
+                predicate_key=f"currently_{normalized_verb}",
+                object_text=current_activity.group("object").strip(),
+                assertion_kind="state",
+                citation_excerpt=current_activity.group(0),
+                supersession_key=f"user:current_activity:{normalized_verb}",
+                supersede_current=True,
+                metadata=metadata,
+                confidence=0.92,
+            )
+        )
+
+    current_use = re.search(
+        r"\bi currently use\s+(?P<object>.+?)(?:[.!?]|$)", segment, re.I
+    )
+    if current_use:
+        claims.append(
+            StructuredClaim(
+                subject_key="user",
+                predicate_key="currently_uses",
+                object_text=current_use.group("object").strip(),
+                assertion_kind="state",
+                citation_excerpt=current_use.group(0),
+                supersession_key="user:currently_uses",
+                supersede_current=True,
+                metadata={"family": "current_possession_or_use"},
+                confidence=0.92,
+            )
+        )
+
+    current_quantity = re.search(
+        r"\bi (?:(?:am|'m) now at|now (?:have|own|lead)|currently (?:have|own|lead))\s+"
+        r"(?P<object>.+?)(?:[.!?]|$)|"
+        r"\bi (?:have|own|lead)\s+(?P<trailing_object>.+?)\s+(?:right )?now(?:[.!?]|$)",
+        segment,
+        re.I,
+    )
+    if current_quantity:
+        quantity_object = (
+            current_quantity.group("object")
+            or current_quantity.group("trailing_object")
+        ).strip()
+        claims.append(
+            StructuredClaim(
+                subject_key="user",
+                predicate_key="current_quantity",
+                object_text=quantity_object,
+                assertion_kind="state",
+                citation_excerpt=current_quantity.group(0),
+                supersession_key=(
+                    "user:current_quantity:"
+                    + canonical_topic_key(quantity_object)
+                ),
+                supersede_current=True,
+                metadata={"family": "current_quantity"},
+                confidence=0.9,
+            )
+        )
+
+    current_location = re.search(
+        r"\bi (?:(?:currently|now) )?(?:keep|store)\s+"
+        r"(?P<object>.+?)\s+(?:in|on|at)\s+(?P<location>.+?)(?:[.!?]|$)",
+        segment,
+        re.I,
+    )
+    if current_location:
+        stored_object = current_location.group("object").strip()
+        location = current_location.group("location").strip()
+        claims.append(
+            StructuredClaim(
+                subject_key="user",
+                predicate_key="currently_stored_at",
+                object_text=location,
+                assertion_kind="state",
+                citation_excerpt=current_location.group(0),
+                supersession_key=(
+                    "user:stored_location:" + canonical_topic_key(stored_object)
+                ),
+                supersede_current=True,
+                metadata={
+                    "family": "stored_location",
+                    "stored_object": stored_object,
+                },
+                confidence=0.92,
+            )
+        )
+
     favorite = re.search(
         r"\bmy favou?rite\s+(.+?)\s+is\s+(.+?)(?:[.!?]|$)", segment, re.I
     )
