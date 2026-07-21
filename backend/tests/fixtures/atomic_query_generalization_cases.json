@@ -1,0 +1,41 @@
+[
+  {"id":"state-coffee","question":"Did my morning coffee allowance go up or down compared with before?","operation":"state_comparison","path":"atomic","sessions":4},
+  {"id":"state-medication","question":"How has the dosage changed since I started the prescription?","operation":"state_comparison","path":"atomic","sessions":3},
+  {"id":"state-team","question":"Am I leading more engineers than before?","operation":"state_comparison","path":"atomic","sessions":5},
+  {"id":"state-budget","question":"Was my monthly travel budget increased or reduced?","operation":"state_comparison","path":"atomic","sessions":4},
+  {"id":"state-diet","question":"I used to avoid dairy; has that changed?","operation":"state_comparison","path":"atomic","sessions":3},
+
+  {"id":"current-subscription","question":"Which streaming subscription do I currently use?","operation":"current_state","path":"atomic","sessions":4},
+  {"id":"current-city","question":"Where am I living now?","operation":"current_state","path":"atomic","sessions":5},
+  {"id":"current-workflow","question":"What is my present morning workflow?","operation":"current_state","path":"atomic","sessions":3},
+
+  {"id":"aggregate-activities","question":"Which activities came up across our conversations?","operation":"aggregate_list","path":"atomic","sessions":8},
+  {"id":"aggregate-travel","question":"List every country I said I had visited.","operation":"aggregate_list","path":"atomic","sessions":6},
+  {"id":"aggregate-common","question":"What interests appeared in common over the different months?","operation":"aggregate_list","path":"atomic","sessions":5},
+  {"id":"aggregate-single","question":"List every purchase in this one conversation.","operation":"aggregate_list","path":"claim-first","sessions":1},
+
+  {"id":"count-doctors","question":"How many different doctors did I visit?","operation":"distinct_count","path":"atomic","sessions":6},
+  {"id":"count-courses","question":"What is the number of distinct courses I completed?","operation":"distinct_count","path":"atomic","sessions":5},
+  {"id":"count-restaurants","question":"Count the restaurants I actually tried.","operation":"distinct_count","path":"atomic","sessions":7},
+
+  {"id":"average-age","question":"What was the average age of the three participants?","operation":"numeric_average","path":"atomic","sessions":3},
+  {"id":"average-spend","question":"What was my mean weekly grocery spend?","operation":"numeric_average","path":"atomic","sessions":5},
+  {"id":"sum-cost","question":"What was the total amount spent on those repairs?","operation":"numeric_sum","path":"atomic","sessions":4},
+  {"id":"sum-distance","question":"How much distance did the combined trips cover?","operation":"numeric_sum","path":"atomic","sessions":3},
+  {"id":"difference-price","question":"How much more did the second laptop cost?","operation":"numeric_difference","path":"atomic","sessions":2},
+  {"id":"difference-age","question":"What was the age gap between the siblings?","operation":"numeric_difference","path":"atomic","sessions":2},
+
+  {"id":"time-days","question":"How many days elapsed between the appointment and the follow-up?","operation":"temporal_difference","path":"atomic","sessions":3},
+  {"id":"time-duration","question":"How long was it between moving in and moving out?","operation":"temporal_difference","path":"atomic","sessions":4},
+  {"id":"time-weeks","question":"How many weeks between starting therapy and returning to work?","operation":"temporal_difference","path":"atomic","sessions":5},
+
+  {"id":"order-trip","question":"Which trip happened most recently?","operation":"event_order","path":"atomic","sessions":6},
+  {"id":"order-visit","question":"What was the earliest museum visit?","operation":"event_order","path":"atomic","sessions":4},
+  {"id":"order-appointment","question":"Which appointment occurred first?","operation":"event_order","path":"atomic","sessions":3},
+
+  {"id":"direct-speed","question":"What speed is my internet plan?","operation":"direct_lookup","path":"claim-first","sessions":5},
+  {"id":"direct-color","question":"What color was the jacket I bought?","operation":"direct_lookup","path":"claim-first","sessions":4},
+  {"id":"direct-assistant","question":"Which restaurant did you recommend?","operation":"direct_lookup","path":"claim-first","sessions":6},
+  {"id":"direct-preference","question":"What kind of breakfast do I prefer?","operation":"direct_lookup","path":"claim-first","sessions":5},
+  {"id":"direct-date","question":"When was my dentist appointment?","operation":"direct_lookup","path":"claim-first","sessions":3}
+]
