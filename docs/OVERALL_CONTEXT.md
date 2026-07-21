@@ -1,6 +1,6 @@
 # Overall Context
 
-Last updated: 2026-07-20
+Last updated: 2026-07-21
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
@@ -92,7 +92,7 @@ Live isolated validation passed:
 
 Broader regression validation passed:
 
-- current combined backend collection: `608 passed`, `2 skipped`, with only the existing Starlette TestClient deprecation warning;
+- current combined backend collection: `644 passed`, `2 skipped`, with only the existing Starlette TestClient deprecation warning;
 - focused backend regression slice: `127 passed`
 - Electron behavior tests: `42 passed`
 - backend tests are classified automatically into non-overlapping quick, integration, system, benchmark, and scale tiers
@@ -417,13 +417,13 @@ The aggregate report was not accepted as feature evidence. It showed 0.5306 offi
 
 Isolation on those 34 activations showed a clear regression. Official F1 fell from 0.6008 to 0.5419. Kimi acceptance fell from 26/34 to 21/34, a 14.71-point loss; GPT-5.4 fell from 22/34 to 21/34. Each activation added 382-1,298 characters of structured text, averaging 658.8. The router had interpreted bounded factual prompts containing preference-adjacent words—especially “favorite”—as distributed preference-synthesis requests. When requested topics did not match extracted facts strongly, the reducer retained tangential preferences instead of returning no contract.
 
-The rejected behavior was corrected in production code rather than hidden in the benchmark. Imported dialogue may still attribute explicit first-person claims to a named speaker, but named-speaker preference routing now requires an explicit aggregate request such as a general preference query. Bounded “favorite” facts remain on ordinary retrieval. Preference contracts now abstain when the requested topic has no provenance-valid match. The runtime adapter version advanced to `temporal-ledger-v3`.
+The rejected behavior was corrected in production code rather than hidden in the benchmark. Imported dialogue may still attribute explicit first-person claims to a named speaker, but named-speaker preference routing now requires an explicit aggregate request such as a general preference query. Bounded “favorite” facts remain on ordinary retrieval. Preference contracts now abstain when the requested topic has no provenance-valid match. The subsequent `temporal-ledger-v4` hardening applies that same routing and topic scope to ordinary temporal memory selection and derived consolidation, closing the desktop packet path that previously could still admit unrelated preference items after the typed adapter abstained.
 
 The LoCoMo runner now retries length-limited responses synchronously, increasing the allowance up to a bounded 768-token ceiling, and refuses to generate a report if any response remains truncated. A separate paired evaluator freezes an earlier activation set, reuses baseline hypotheses and judge labels whenever the corrected router falls back, and calls models only for contexts that truly change.
 
 The corrected paired run evaluated the same 34-question set. All 34 former false positives abstained; no reader or judge API calls were made. Official F1 remained exactly 0.6008, Kimi remained 26/34, and GPT-5.4 remained 22/34. The measured regression is closed, but this is abstention and non-regression evidence rather than a new accuracy result. Another full 1,540-question temporal run is not justified until a fresh set contains genuine distributed preference-synthesis questions and the changed subset passes a preregistered paired gate.
 
-Post-change backend verification passes 608 tests with two intentional skips. The only warning is the existing upstream Starlette TestClient deprecation notice.
+Post-change backend verification now passes 644 tests with two intentional skips. The only warning is the existing upstream Starlette TestClient deprecation notice.
 
 ## July 20 Evolving-Memory Production Benchmark
 
@@ -451,7 +451,7 @@ This experiment is a controlled capability and efficiency result. It establishes
 
 The production changes behind the result are broader than benchmark prompt tuning. Shared source-verbatim claim semantics now serve both ingestion and bounded evidence packing. Preference reduction selects the latest cited current fact per normalized topic and admits earlier versions only for explicit history questions. Current preference and advice paths exclude superseded rows. Safe day-level expressions resolve relative to the source timestamp for completed actions, while coarse ranges remain declared metadata. Imported dialogue of the form `Name said, "..."` can attribute explicit first-person claims to that named subject without converting assistant suggestions into user actions. These behaviors preserve original citations and fall back whenever the structured contract is unsupported or insufficient.
 
-The subsequent LoCoMo activation audit narrowed the production boundary further. Surface words such as “favorite” are not sufficient evidence that a question requests distributed preference synthesis. Named-speaker routing now requires an explicit aggregate preference request, and topic matching must find provenance-valid evidence or abstain. `temporal-ledger-v3` records this routing contract. The evolving-memory suite remains the current positive controlled result; the corrected LoCoMo paired run remains a neutral abstention result. Both are required context for future temporal-memory promotion decisions.
+The subsequent LoCoMo activation audit narrowed the production boundary further. Surface words such as “favorite” are not sufficient evidence that a question requests distributed preference synthesis. Named-speaker routing now requires an explicit aggregate preference request, and topic matching must find provenance-valid evidence or abstain. `temporal-ledger-v4` records this routing contract across both the typed adapter and the shared chat/Bridge memory packet. The evolving-memory suite remains the current positive controlled result; the corrected LoCoMo paired run remains a neutral typed-contract abstention result, supplemented by a deterministic production-bundle regression for the shared packet path. Both are required context for future temporal-memory promotion decisions.
 
 Current benchmark artifacts and protocol responsibilities are:
 
@@ -461,3 +461,49 @@ Current benchmark artifacts and protocol responsibilities are:
 - `generate_evolving_memory_benchmark.py`: deterministic generation and hashing of the 40-case controlled corpus.
 
 The promotion state is therefore precise: explicit evolving preferences, state histories, and relative action dates pass their controlled product-path regression gate; broad LoCoMo preference routing failed and was removed; conservative fallback is verified; positive distributed synthesis still needs a fresh preregistered evaluation set before another full paid LoCoMo temporal run.
+
+## July 21 Atomic-Memory Readiness And Offline Evaluation
+
+The architectural hypothesis was that Vault leaves accuracy on the table by asking the query-time reader to extract, attribute, date, deduplicate, and synthesize raw session text simultaneously, whereas systems such as Mem0 perform much of that work during ingestion. The atomic-memory work therefore moved question-independent fact compilation to write time and required the query path to activate only when an operation-specific evidence contract proves completeness.
+
+The production-shaped compiler now retains a lossless source envelope plus deterministic semantic facts with speaker, session, turn, observation/event dates, quantities, state/supersession identity, and immutable source citations. Every source unit has a terminal `facts_extracted` or `processed_no_fact` outcome and a content hash. The question-only planner reads no benchmark question-family label; it plans current-state, state-comparison, list/count, numeric, temporal-difference, or event-order operations from ordinary question text and retrieved-session count.
+
+The evaluation infrastructure was hardened before further paid work. Coverage, reader, and judge stages use content fingerprints; impact-only replays merge unchanged rows; packet diffs identify exactly which reader inputs changed; reader and judge checkpoints invalidate only when their own inputs change. Local neural benchmarks are CUDA-fail-closed on the RTX 3060 Laptop GPU using PyTorch 2.12.0+cu130. Deterministic JSON parsing and contract evaluation remain CPU work because they invoke no neural model. A cache-version failure during v6 proved that fact-cache schema versions must advance whenever compiled fact semantics or unit typing changes; v7 performs that invalidation.
+
+The development sequence matters:
+
+- The earlier v4 baseline safely activated 3/200 representative and 2/200 former-final questions.
+- v5 added source-unit accounting, grouped-number parsing, grammatical quantity subjects, date/state normalization, unit-family filtering, repeated-event deduplication, and evaluation-only deterministic reference checks. It reached 4/200 on both sets with zero false-safe activations.
+- An initially permissive v6 explicit-cardinality rule transiently activated 10/200 and 8/200, but produced three false-safe operations on each set. Local counts were being mistaken for cross-session totals. Those results were rejected rather than promoted.
+- Tightening context coverage, related-cardinality history checks, and later-related-fact checks restored zero false-safes. Current-state selection was then restricted to the requested concept and supersession chain, adding one valid former-final activation for the current BBQ-sauce state.
+- A clean full replay exposed an aquarium failure: three tank-capacity values were added as fish counts, producing 50 instead of 17. Gallons/liters are now a separate capacity family. Because the implicit singular pleco still is not an explicit count fact, the final system safely falls back instead of inventing the missing operand.
+
+The clean atomic-memory v7 results are:
+
+| Metric | Representative 200 | Former-final 200 |
+| --- | ---: | ---: |
+| Stored evidence recall | 98.1763% | 98.4709% |
+| Packed evidence recall | 86.6261% | 84.7095% |
+| Atomic candidates | 119 | 117 |
+| Reference-verified safe activations | 4 (2.0%) | 5 (2.5%) |
+| False-safe activations | 0 | 0 |
+| Activated-question completeness | 100% | 100% |
+| Deterministic result correctness | 4/4 | 5/5 |
+| Source-unit compiler coverage | 100% | 100% |
+| Temporal anchor recall | 98.1132% | 100% |
+| Direct-fact recall | 100% | 100% |
+| Expected mean prompt tokens | 8,283.92 vs 8,290.75 control | 8,303.97 vs 8,320.81 control |
+
+No reader or judge API calls were made. All gates pass except the preregistered 10% activation/usefulness threshold, so the machine-readable decision remains `no-go`. Running a large reader evaluation now would mostly repeat the claim-first control and would not establish an atomic-memory accuracy gain.
+
+The remaining blockers are semantic rather than retrieval-budget problems:
+
+- implicit cardinality and entity normalization, such as turning “a small pleco” into one cited fish entity without unsafe inference;
+- closed-world category membership for genuine “how many different/all” questions;
+- progressive and cumulative counters that require identity-aware histories rather than summing snapshots;
+- repeated-event identity and deduplication across paraphrases and sessions;
+- broader but conservative current-state and supersession normalization;
+- coreference, synonyms, and category words absent from the source wording while retaining exact provenance;
+- a fresh promotion corpus, because both 200-question manifests are development-exposed and only seven LongMemEval questions remain eligible and untouched under the current rules.
+
+The next gate is unchanged: reach at least 10% safe activation on both development sets with zero false-safe operations, 100% source-unit accounting, and prompt usage below the claim-first control. Only then should a new frozen corpus receive reader and dual-judge evaluation.

@@ -27,7 +27,7 @@
 </p>
 
 > [!NOTE]
-> Last verified: 19 July 2026. Odin is not used by either dataset. These results measure Vault's memory retrieval and context-packing pipeline, not Odin's code graph.
+> Last verified: 20 July 2026. Odin is not used by either dataset. These results measure Vault's memory retrieval and context-packing pipeline, not Odin's code graph.
 
 This report covers retrieval, answer quality, token use, API cost, latency, ingestion economics, experimental variants, and comparison boundaries. Headline claims come from the saved full-run reports; smaller development and holdout sets are labeled separately.
 
@@ -408,7 +408,7 @@ The activation-only slice exposed the actual regression:
 
 The broad router treated bounded factual questions containing words such as “favorite” as preference-synthesis requests. When topic evidence was weak, the reducer also admitted tangential preference facts instead of abstaining. This path was rejected for promotion.
 
-The corrected router now reserves named-speaker activation for explicit preference synthesis, and the reducer falls back when no preference evidence strongly matches the requested topic. A frozen paired rerun reused the original reader answers and judge decisions for every unchanged fallback. All 34 former activations abstained, producing exactly neutral results—0.6008 F1, 26/34 Kimi, and 22/34 GPT-5.4—with zero model calls and zero evaluation cost. This removes the measured regression, but it is safety evidence rather than a positive accuracy result: LoCoMo contains no validated synthesis activation under the conservative router.
+The corrected router now reserves named-speaker activation for explicit preference synthesis, and the reducer falls back when no preference evidence strongly matches the requested topic. A frozen paired rerun reused the original reader answers and judge decisions for every unchanged fallback. All 34 former activations abstained, producing exactly neutral results—0.6008 F1, 26/34 Kimi, and 22/34 GPT-5.4—with zero model calls and zero evaluation cost. A subsequent deterministic production-bundle regression applies the same activation and topic scope to ordinary temporal memory selection and consolidation, preventing the desktop packet from reintroducing unrelated preference items after typed abstention. This removes the measured regression, but it is safety evidence rather than a positive accuracy result: LoCoMo contains no validated synthesis activation under the conservative router.
 
 The benchmark runner now retries length-limited reader responses synchronously up to a bounded 768-token ceiling and refuses to generate a report if any response remains truncated. Future routing work must first pass an activation-only paired gate with no regression before another paid 1,540-question run is warranted.
 
@@ -595,6 +595,48 @@ The work resulted in product-level changes rather than benchmark-only scoring ru
 | ColBERT | Large retrieval and QA gain | Raw index about 10.1x dense; production lifecycle incomplete | Proceed as an opt-in compressed-index candidate |
 | Local ingestion | Zero API ingestion tokens and private processing | CPU, disk, and indexing time move to the device | Core Vault property |
 
+## Atomic-memory development result
+
+The frozen representative 200-question atomic-memory run is development evidence. The
+former broad adaptive route scored 171/200 by both judges versus 173/200 for claim-first
+(13 wins, 15 losses), while reducing mean reader prompt tokens from 8,291 to 7,583.
+Complete atomic packets helped; incomplete packets accounted for most regressions.
+
+The corrected v7 path does not read official benchmark question types. It plans general
+operations from the raw question, requires operation-specific evidence contracts, and
+falls back unless the write-time facts prove completeness. A 32-case frozen paraphrase
+suite plus 128 metamorphic variants covers unrelated domains and direct-look-up
+fallbacks.
+
+Offline replays on both 200-question development sets produced zero false-safe atomic
+activations, 100% source-unit compiler coverage, and 100% completeness and reference
+correctness among activated deterministic answers. The representative set activated
+4/200 (2.0%) with 98.18% stored evidence recall; the former final set activated 5/200
+(2.5%) with 98.47% recall. Expected mean prompts remained below their claim-first
+controls. Safety therefore passes, but both runs fail the predeclared 10%
+activation/usefulness gate. No new reader or judge calls were made.
+
+The v7 pass adds explicit-cardinality proofs without treating a local count as a
+cross-session total, selects current states within the requested supersession chain,
+and separates capacity units from inventory counts. It newly validates the current BBQ
+sauce state on the former-final set while retaining zero false-safe activations. A
+full cache-invalidated replay caught and rejected an aquarium error where gallon values
+had previously been interpreted as fish counts.
+
+Coverage, reader, and judge stages are now content-addressed. Question-level packet
+diffs support impact-only replay by changed capability, and reader/judge checkpoints are
+reused only when their prompt, model, token budget, evidence, and upstream answer
+fingerprints match. Local neural benchmarks fail closed unless CUDA is available; the
+verified development runtime is PyTorch 2.12.0+cu130 on an RTX 3060 Laptop GPU.
+
+The nominal final manifest has been consumed by evidence labeling and diagnostic
+replays and is now development data. Under the existing eligibility rules only seven
+untouched LongMemEval questions remain, so it cannot supply another meaningful
+200-question final. Paid evaluation is blocked until ingestion-time semantic coverage
+and category/state closure reach the activation gate on both development sets, after
+which a genuinely fresh corpus or split must be frozen. The machine-readable decision
+is `.tmp/vault-odin-memory-benchmark/atomic-memory-readiness.json`.
+
 ## Cost accounting limitations
 
 The report does not claim one exact lifetime spend for the entire research program.
@@ -619,6 +661,9 @@ Benchmark data and checkpoints remain local because they are large and may conta
 - Claim-first v2: `.tmp/vault-odin-memory-benchmark/longmemeval-claim-first-10k-v2-full500.json`
 - Claim-first failure analysis: `.tmp/vault-odin-memory-benchmark/longmemeval-claim-first-10k-v2-failure-analysis.json`
 - Ledger v3 offline replay: `.tmp/vault-odin-memory-benchmark/longmemeval-claim-first-10k-v3-ledger-offline.json`
+- Atomic-memory pilot: `.tmp/vault-odin-memory-benchmark/atomic-memory-v1/ablation-report.json`
+- Frozen representative atomic manifest: `.tmp/vault-odin-memory-benchmark/atomic-memory-representative-200/manifest.json`
+- Frozen final atomic holdout: `.tmp/vault-odin-memory-benchmark/atomic-memory-final-holdout-200/manifest.json`
 - Ingestion accounting: `.tmp/vault-odin-memory-benchmark/longmemeval-ingestion-token-count.json`
 - Tokenizer-safe projection: `.tmp/vault-odin-memory-benchmark/longmemeval-token-aware-chunk-projection.json`
 - Structured/routed reader reports: `.tmp/vault-odin-memory-benchmark/longmemeval-structured-reader-*.json` and `.tmp/vault-odin-memory-benchmark/longmemeval-routed-reader-*.json`
