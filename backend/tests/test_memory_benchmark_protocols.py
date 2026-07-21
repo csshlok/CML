@@ -14,6 +14,7 @@ from scripts.backend.check_vault_memory_regression import (
     compare_reports,
 )
 from scripts.backend.evaluate_vault_locomo_api import (
+    ProductionTemporalContext,
     _official_locomo_score,
     _parse_binary_verdict,
 )
@@ -84,6 +85,51 @@ class _FakeCrossEncoder:
     def predict(pairs, **kwargs):
         assert kwargs["show_progress_bar"] is False
         return [float("gold evidence" in passage) for _, passage in pairs]
+
+
+def test_locomo_production_temporal_context_uses_shared_preference_scope(tmp_path: Path) -> None:
+    dataset = [
+        {
+            "sample_id": "sample-1",
+            "conversation": {
+                "session_1_date_time": "10:00 AM on 01 January, 2025",
+                "session_1": [
+                    {"speaker": "Melanie", "text": "I prefer tea.", "dia_id": "d1"}
+                ],
+                "session_2_date_time": "10:00 AM on 01 February, 2025",
+                "session_2": [
+                    {"speaker": "Melanie", "text": "I avoid coffee.", "dia_id": "d2"}
+                ],
+            },
+        }
+    ]
+    adapter = ProductionTemporalContext(
+        dataset=dataset,
+        dataset_sha256="fixture",
+        database_path=tmp_path / "temporal.sqlite3",
+    )
+    try:
+        unchanged, bounded = adapter.context(
+            sample_id="sample-1",
+            question="What was Melanie's favorite childhood book?",
+            retrieved_context="ordinary retrieval",
+        )
+        augmented, aggregate = adapter.context(
+            sample_id="sample-1",
+            question="What are Melanie's preferences?",
+            retrieved_context="ordinary retrieval",
+        )
+    finally:
+        adapter.close()
+
+    assert unchanged == "ordinary retrieval"
+    assert bounded["contract_injected"] is False
+    assert bounded["memory_item_count"] == 0
+    assert bounded["added_context_chars"] == 0
+    assert aggregate["contract_injected"] is True
+    assert aggregate["memory_item_count"] >= 1
+    assert aggregate["added_context_chars"] > 0
+    assert "Vault structured memory" in augmented
 
 
 def test_typed_evidence_scoping_fixture_enforces_architecture_boundary() -> None:

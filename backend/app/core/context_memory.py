@@ -13,6 +13,8 @@ from backend.app.core.temporal_facts import (
     query_temporal_facts,
     sync_chat_session_temporal_facts,
 )
+from backend.app.core.typed_evidence import QueryPlan
+from backend.app.core.typed_evidence_runtime import plan_runtime_query, scope_runtime_query
 
 
 MEMORY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -609,6 +611,8 @@ def _select_temporal_memory_items(
         as_of=as_of,
         limit=100,
     )
+    runtime_plan = plan_runtime_query(query)
+    runtime_plan, scoped_facts = scope_runtime_query(runtime_plan, facts, query)
     consolidation = _consolidated_temporal_item(
         conn,
         vault_id=vault_id,
@@ -616,10 +620,20 @@ def _select_temporal_memory_items(
         query=query,
         current_facts=facts,
         as_of=as_of,
+        runtime_plan=runtime_plan,
     )
-    query_terms = {term for term in re.findall(r"[a-z0-9]{3,}", query.lower())}
+    query_terms = (
+        set(runtime_plan.topic_terms)
+        if runtime_plan.intent == "preference_summary"
+        else {term for term in re.findall(r"[a-z0-9]{3,}", query.lower())}
+    )
+    candidate_facts = (
+        [fact for fact in scoped_facts if fact["assertion_kind"] == "preference"]
+        if runtime_plan.intent == "preference_summary"
+        else [fact for fact in facts if fact["assertion_kind"] != "preference"]
+    )
     scored: list[tuple[int, float, str, dict]] = []
-    for fact in facts:
+    for fact in candidate_facts:
         predicate = str(fact["predicate_key"]).replace("_", " ")
         if fact["modality"] == "negated":
             predicate = f"no longer {predicate}"
@@ -630,7 +644,10 @@ def _select_temporal_memory_items(
                 str(fact["object_text"]),
             )
         )
-        overlap = sum(term in summary.lower() for term in query_terms)
+        searchable = f"{summary} {fact['citation_excerpt']}".casefold()
+        overlap = sum(term in searchable for term in query_terms)
+        if query_terms and overlap == 0:
+            continue
         item = {
             "id": fact["id"],
             "kind": f"temporal_{fact['assertion_kind']}",
@@ -665,14 +682,10 @@ def _consolidated_temporal_item(
     query: str,
     current_facts: list[dict],
     as_of: str | None,
+    runtime_plan: QueryPlan,
 ) -> dict | None:
     lowered = query.casefold()
-    preference_query = bool(
-        re.search(
-            r"\b(prefer|preferences?|favou?rites?|likes?|dislikes?|tastes?)\b",
-            lowered,
-        )
-    )
+    preference_query = runtime_plan.intent == "preference_summary"
     history_query = as_of is None and bool(
         re.search(
             r"\b(changed|change|history|over time|used to|previously|formerly|before)\b",
@@ -699,7 +712,11 @@ def _consolidated_temporal_item(
     else:
         candidates = [fact for fact in current_facts if fact["assertion_kind"] == "preference"]
 
-    query_terms = {term for term in re.findall(r"[a-z0-9]{3,}", lowered)}
+    if preference_query:
+        runtime_plan, candidates = scope_runtime_query(runtime_plan, candidates, query)
+        query_terms = set(runtime_plan.topic_terms)
+    else:
+        query_terms = {term for term in re.findall(r"[a-z0-9]{3,}", lowered)}
     scored: list[tuple[int, str, dict]] = []
     for fact in candidates:
         text = " ".join(
@@ -710,6 +727,8 @@ def _consolidated_temporal_item(
             )
         ).casefold()
         overlap = sum(term in text for term in query_terms)
+        if query_terms and overlap == 0:
+            continue
         scored.append((overlap, str(fact["valid_from"]), fact))
     scored.sort(key=lambda row: (row[0], row[1]), reverse=True)
     selected = [fact for _, _, fact in scored[:12]]

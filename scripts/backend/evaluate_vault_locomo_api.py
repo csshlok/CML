@@ -183,19 +183,27 @@ class ProductionTemporalContext:
             )
             contract = contract_memory_item(decision)
             if contract is not None:
-                memory_items = [contract, *memory_items]
+                memory_items = [
+                    contract,
+                    *(item for item in memory_items if item.get("id") != contract["id"]),
+                ]
+            temporal_items = [
+                item
+                for item in memory_items
+                if str(item.get("kind") or "").startswith("temporal_")
+                or item.get("kind") == "typed_evidence_contract"
+            ]
             fact_count = int(
                 conn.execute(
                     "SELECT COUNT(*) AS count FROM temporal_facts WHERE vault_id = ? AND status != 'retracted'",
                     (vault_id,),
                 ).fetchone()["count"]
             )
-        # Match the app's typed routing semantics. A resolved result bypasses model
-        # generation; a needs-generation result injects only its bounded contract;
-        # unsupported queries retain the normal retrieval context unchanged.
+        # Match the app's temporal-memory packet semantics while leaving unrelated
+        # non-temporal distilled-memory experiments outside this benchmark.
         additions: list[str] = []
-        if contract is not None:
-            text = str(contract.get("detail_text") or contract.get("summary") or "").strip()
+        for item in temporal_items:
+            text = str(item.get("detail_text") or item.get("summary") or "").strip()
             if text and text not in retrieved_context:
                 additions.append(text)
         augmented = retrieved_context
@@ -213,7 +221,7 @@ class ProductionTemporalContext:
                 else None
             ),
             "temporal_fact_count": fact_count,
-            "memory_item_count": len(memory_items),
+            "memory_item_count": len(temporal_items),
             "added_context_chars": len(augmented) - len(retrieved_context),
         }
 

@@ -22,6 +22,7 @@ from scripts.backend.benchmark_vault_memory import (  # noqa: E402
     _flatten_locomo,
     _select_questions,
 )
+from backend.app.core.benchmark_gpu import require_cuda  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -123,7 +124,7 @@ def _evaluate(
             documents_ids=[candidate_ids],
             queries_embeddings=query_embedding,
             documents_embeddings=[candidate_embeddings],
-            device="cpu",
+            device="cuda",
         )[0]
         latency = time.perf_counter() - started
         latencies.append(latency)
@@ -194,6 +195,8 @@ def main() -> int:
     args = parse_args()
     from pylate import models
 
+    cuda_runtime = require_cuda()
+
     data = json.loads(args.locomo.read_text(encoding="utf-8"))
     documents, all_questions = _flatten_locomo(data)
     questions = _select_questions(
@@ -203,7 +206,7 @@ def main() -> int:
         selection=args.selection,
         seed=args.seed,
     )
-    model = models.ColBERT(model_name_or_path=str(args.model.resolve()), device="cpu")
+    model = models.ColBERT(model_name_or_path=str(args.model.resolve()), device="cuda")
     signature = _cache_signature(args.model, documents)
     document_embeddings, indexing_seconds, cache_hit, cache_path = _encode_documents(
         model,
@@ -221,6 +224,7 @@ def main() -> int:
     )
     report = {
         "schema_version": 2,
+        "cuda_runtime": cuda_runtime,
         "system": "Vault late-interaction retrieval prototype (Odin not applicable)",
         "dataset": "LOCOMO official locomo10.json",
         "protocol": {

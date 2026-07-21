@@ -551,6 +551,118 @@ class TemporalFactLedgerTests(unittest.TestCase):
         self.assertIn("user avoids coffee", consolidated["summary"])
         self.assertTrue(consolidated["authoritative_source_claims_preserved"])
 
+    def test_bounded_favorite_question_excludes_unrelated_cross_session_preferences(self) -> None:
+        from backend.app.core.cluster_bundle import build_cluster_bundle_context
+        from backend.app.core.context_memory import get_context_memory
+        from backend.app.core.database import connect
+        from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
+
+        self._message("user-tea", "user", "I prefer tea.", "2025-01-01T10:00:00+00:00")
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (id, vault_id, title, created_at, updated_at)
+                VALUES ('session-2', 'vault-1', 'More preferences', ?, ?)
+                """,
+                ("2025-02-01T00:00:00+00:00", "2025-02-01T00:00:00+00:00"),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_messages (
+                    id, session_id, role, content, clusters_used, citations, warnings, created_at
+                ) VALUES ('user-coffee', 'session-2', 'user', 'I avoid coffee.', '[]', '[]', '[]', ?)
+                """,
+                ("2025-02-01T10:00:00+00:00",),
+            )
+            for session_id in ("session-1", "session-2"):
+                messages = conn.execute(
+                    "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at",
+                    (session_id,),
+                ).fetchall()
+                sync_chat_session_temporal_facts(
+                    conn, vault_id="vault-1", session_id=session_id, messages=messages
+                )
+            items, _ = get_context_memory(
+                conn,
+                vault_id="vault-1",
+                cluster_id=None,
+                query="What was Melanie's favorite childhood book?",
+            )
+        bundle = build_cluster_bundle_context(
+            vault_id="vault-1",
+            query="What was Melanie's favorite childhood book?",
+            search_func=lambda _payload: {"results": []},
+        )
+
+        self.assertEqual(items, [])
+        self.assertEqual(bundle["memory_items"], [])
+
+    def test_aggregate_preference_topic_miss_excludes_unrelated_memory_items(self) -> None:
+        from backend.app.core.context_memory import get_context_memory
+        from backend.app.core.database import connect
+        from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
+
+        self._message("user-tea", "user", "I prefer tea.", "2025-01-01T10:00:00+00:00")
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (id, vault_id, title, created_at, updated_at)
+                VALUES ('session-2', 'vault-1', 'More preferences', ?, ?)
+                """,
+                ("2025-02-01T00:00:00+00:00", "2025-02-01T00:00:00+00:00"),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_messages (
+                    id, session_id, role, content, clusters_used, citations, warnings, created_at
+                ) VALUES ('user-coffee', 'session-2', 'user', 'I avoid coffee.', '[]', '[]', '[]', ?)
+                """,
+                ("2025-02-01T10:00:00+00:00",),
+            )
+            for session_id in ("session-1", "session-2"):
+                messages = conn.execute(
+                    "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at",
+                    (session_id,),
+                ).fetchall()
+                sync_chat_session_temporal_facts(
+                    conn, vault_id="vault-1", session_id=session_id, messages=messages
+                )
+            items, _ = get_context_memory(
+                conn,
+                vault_id="vault-1",
+                cluster_id=None,
+                query="What is my favorite editor now?",
+            )
+
+        self.assertEqual(items, [])
+
+    def test_bounded_favorite_question_leaves_matching_fact_to_ordinary_retrieval(self) -> None:
+        from backend.app.core.context_memory import get_context_memory
+        from backend.app.core.database import connect
+        from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
+
+        self._message(
+            "user-book",
+            "user",
+            'Melanie said, "My favorite childhood book is The Hobbit."',
+            "2025-01-01T10:00:00+00:00",
+        )
+        with connect() as conn:
+            messages = conn.execute(
+                "SELECT * FROM chat_messages WHERE session_id = 'session-1' ORDER BY created_at"
+            ).fetchall()
+            sync_chat_session_temporal_facts(
+                conn, vault_id="vault-1", session_id="session-1", messages=messages
+            )
+            items, _ = get_context_memory(
+                conn,
+                vault_id="vault-1",
+                cluster_id=None,
+                query="What was Melanie's favorite childhood book?",
+            )
+
+        self.assertEqual(items, [])
+
     def test_edit_retracts_obsolete_fact_without_deleting_history(self) -> None:
         from backend.app.core.database import connect
         from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
