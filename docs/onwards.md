@@ -40,6 +40,31 @@ closed chains for these rules to move aggregate benchmark activation. The next c
 should focus on provenance-safe entity membership and cross-utterance aliases (for example a
 named physician belonging to a doctor category), not broader regex routing or another paid run.
 
+## Atomic-memory v9 entity membership and real-vault diagnostics (2026-07-21)
+
+The next compiler layer now records explicit, provenance-backed entity membership without
+claiming global closure. Titles such as `Dr.` and explicit appositions such as “Morgan Hale is
+my physician” produce canonical doctor membership facts. The question plan exposes a small,
+general alias set (doctor/physician/clinician, lawyer/attorney, therapist/counselor, and
+professor/academic). Each membership is marked `closed_world_category=false`; it can improve
+candidate recall but cannot by itself activate a distinct-count answer.
+
+The new `scripts/backend/inspect_atomic_memory_coverage.py` command performs an integrity check
+and SQLite backup before optional backfill, then reports content-free metrics: indexed sessions,
+user-turn fact yield, source-unit terminal coverage, closed cardinality count, counter snapshots,
+counter increments, and materialized progressive totals. Inspection found no usable local
+production corpus: the configured DB contains one empty benchmark vault, and the packaged
+pre-vault DB contains zero vaults, sessions, and messages. Consequently there is no honest
+real-user activation or fact-yield number to report yet.
+
+Compiler v9 forced a cache-invalidated, model-free replay of both frozen 200-question sets.
+Eight packets changed in each set. The representative set had one reader-impact packet; the
+former-final set had none. Activation remained 4/200 and 5/200, all 9 activated operations were
+correct, false-safe count remained zero, and source-unit coverage remained 100%. Readiness is
+still **NO-GO** because activation is below 10%. This was committed as infrastructure and
+candidate-recall work with the failed promotion gate explicitly retained, not as a benchmark
+promotion.
+
 ## Where we are now
 
 We have proven three useful things:

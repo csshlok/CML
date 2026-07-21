@@ -796,3 +796,28 @@ def test_progressive_counter_requires_snapshot_then_materializes_increment() -> 
 
     no_snapshot = deterministic_atomic_facts(sessions[1])
     assert materialize_progressive_counters(no_snapshot) == no_snapshot
+
+
+def test_entity_membership_normalizes_titles_and_explicit_roles_without_closure() -> None:
+    session = {
+        "session_id": "entities",
+        "date": "2025-02-01",
+        "turns": [
+            {
+                "role": "user",
+                "content": "I visited Dr. Lee. Morgan Hale is my physician.",
+            }
+        ],
+    }
+    facts = deterministic_atomic_facts(session)
+    memberships = [fact for fact in facts if fact.predicate == "category_member"]
+
+    assert {fact.qualifiers["canonical_entity_key"] for fact in memberships} == {
+        "lee",
+        "morgan_hale",
+    }
+    assert {fact.qualifiers["entity_category"] for fact in memberships} == {"doctor"}
+    assert all(fact.qualifiers["closed_world_category"] == "false" for fact in memberships)
+    assert plan_atomic_query(
+        "How many physicians did I visit?"
+    ).candidate_aliases == ["clinician", "doctor"]

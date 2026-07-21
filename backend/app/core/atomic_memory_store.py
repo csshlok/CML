@@ -275,3 +275,110 @@ def load_atomic_facts_for_sessions(
             )
         )
     return materialize_progressive_counters(result)
+
+
+def atomic_memory_coverage_report(
+    conn: sqlite3.Connection,
+    *,
+    vault_id: str,
+) -> dict:
+    """Return content-free production coverage metrics for one vault."""
+    session_rows = conn.execute(
+        "SELECT id FROM chat_sessions WHERE vault_id = ? ORDER BY created_at, id",
+        (vault_id,),
+    ).fetchall()
+    session_ids = [str(row["id"]) for row in session_rows]
+    message_counts = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS message_count,
+            SUM(CASE WHEN messages.role = 'user' THEN 1 ELSE 0 END) AS user_turn_count,
+            SUM(CASE WHEN messages.role IN ('user', 'assistant', 'tool') THEN 1 ELSE 0 END)
+                AS supported_turn_count
+        FROM chat_messages messages
+        JOIN chat_sessions sessions ON sessions.id = messages.session_id
+        WHERE sessions.vault_id = ?
+        """,
+        (vault_id,),
+    ).fetchone()
+    indexed_sessions = conn.execute(
+        "SELECT COUNT(*) AS count FROM atomic_memory_session_state WHERE vault_id = ?",
+        (vault_id,),
+    ).fetchone()["count"]
+    fact_rows = conn.execute(
+        """
+        SELECT source_message_id, speaker_role, qualifiers_json
+        FROM atomic_memory_facts
+        WHERE vault_id = ? AND status = 'current'
+        """,
+        (vault_id,),
+    ).fetchall()
+    source_rows = conn.execute(
+        """
+        SELECT coverage_status FROM atomic_memory_source_units
+        WHERE vault_id = ? AND status = 'current'
+        """,
+        (vault_id,),
+    ).fetchall()
+    fact_turns = {str(row["source_message_id"]) for row in fact_rows}
+    user_fact_turns = {
+        str(row["source_message_id"])
+        for row in fact_rows
+        if row["speaker_role"] == "user"
+    }
+    qualifier_rows = [json.loads(str(row["qualifiers_json"])) for row in fact_rows]
+    origins: dict[str, int] = {}
+    for qualifiers in qualifier_rows:
+        origin = str(qualifiers.get("atomic_origin") or "unknown")
+        origins[origin] = origins.get(origin, 0) + 1
+    supported_turn_count = int(message_counts["supported_turn_count"] or 0)
+    user_turn_count = int(message_counts["user_turn_count"] or 0)
+    terminal_units = sum(
+        row["coverage_status"] in {"facts_extracted", "processed_no_fact"}
+        for row in source_rows
+    )
+    materialized = load_atomic_facts_for_sessions(
+        conn,
+        vault_id=vault_id,
+        session_ids=session_ids,
+    )
+    return {
+        "vault_id": vault_id,
+        "compiler_version": ATOMIC_MEMORY_VERSION,
+        "session_count": len(session_ids),
+        "indexed_session_count": int(indexed_sessions),
+        "message_count": int(message_counts["message_count"] or 0),
+        "supported_turn_count": supported_turn_count,
+        "user_turn_count": user_turn_count,
+        "turns_with_atomic_facts": len(fact_turns),
+        "user_turns_with_atomic_facts": len(user_fact_turns),
+        "turn_fact_yield_rate": round(
+            len(fact_turns) / supported_turn_count, 6
+        ) if supported_turn_count else 0.0,
+        "user_turn_fact_yield_rate": round(
+            len(user_fact_turns) / user_turn_count, 6
+        ) if user_turn_count else 0.0,
+        "current_fact_count": len(fact_rows),
+        "fact_origin_counts": origins,
+        "source_unit_count": len(source_rows),
+        "terminal_source_unit_count": terminal_units,
+        "source_coverage_complete_rate": round(
+            terminal_units / len(source_rows), 6
+        ) if source_rows else 0.0,
+        "closed_world_count_fact_count": sum(
+            qualifiers.get("closed_world_category") == "true"
+            for qualifiers in qualifier_rows
+        ),
+        "counter_snapshot_fact_count": sum(
+            qualifiers.get("counter_snapshot") == "true"
+            for qualifiers in qualifier_rows
+        ),
+        "counter_delta_fact_count": sum(
+            qualifiers.get("counter_operation") == "increment"
+            for qualifiers in qualifier_rows
+        ),
+        "materialized_counter_count": sum(
+            fact.qualifiers.get("atomic_origin") == "deterministic_derived"
+            for fact in materialized
+        ),
+    }

@@ -57,7 +57,10 @@ class AtomicMemoryStoreTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_production_sync_persists_loads_and_retracts_atomic_memory(self) -> None:
-        from backend.app.core.atomic_memory_store import load_atomic_facts_for_sessions
+        from backend.app.core.atomic_memory_store import (
+            atomic_memory_coverage_report,
+            load_atomic_facts_for_sessions,
+        )
         from backend.app.core.database import connect
         from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
 
@@ -80,6 +83,7 @@ class AtomicMemoryStoreTests(unittest.TestCase):
             state = conn.execute(
                 "SELECT * FROM atomic_memory_session_state WHERE session_id = 'session-1'"
             ).fetchone()
+            coverage = atomic_memory_coverage_report(conn, vault_id="vault-1")
 
             conn.execute(
                 """
@@ -106,3 +110,7 @@ class AtomicMemoryStoreTests(unittest.TestCase):
         self.assertEqual(len(facts), current_count)
         self.assertEqual(state["source_unit_count"], state["covered_source_unit_count"])
         self.assertGreater(retracted_count, 0)
+        self.assertEqual(coverage["indexed_session_count"], 1)
+        self.assertEqual(coverage["user_turn_fact_yield_rate"], 1.0)
+        self.assertEqual(coverage["source_coverage_complete_rate"], 1.0)
+        self.assertGreater(coverage["closed_world_count_fact_count"], 0)

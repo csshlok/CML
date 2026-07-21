@@ -10,12 +10,12 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from backend.app.core.claim_semantics import extract_structured_claims
 
 
-ATOMIC_MEMORY_VERSION = "atomic-memory-v8"
+ATOMIC_MEMORY_VERSION = "atomic-memory-v9"
 _TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _QUESTION_STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "did", "do", "does", "for",
@@ -65,18 +65,41 @@ QueryOperation = Literal[
     "unknown",
 ]
 
+_CATEGORY_ALIASES = {
+    "attorney": {"attorney", "lawyer"},
+    "doctor": {"clinician", "doctor", "physician"},
+    "professor": {"academic", "professor"},
+    "therapist": {"counselor", "therapist"},
+}
+
+
+def _category_aliases(terms: Iterable[str]) -> set[str]:
+    expanded: set[str] = set()
+    for term in terms:
+        for aliases in _CATEGORY_ALIASES.values():
+            if term in aliases:
+                expanded.update(aliases - {term})
+    return expanded
+
 
 class AtomicQueryPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     operation: QueryOperation
     target_terms: list[str] = Field(default_factory=list)
+    candidate_aliases: list[str] = Field(default_factory=list)
     quantity_subject_terms: list[str] = Field(default_factory=list)
     subject_scope: Literal["user", "assistant", "any"] = "any"
     required_slots: list[str] = Field(default_factory=list)
     atomic_eligible: bool = False
     confidence: float = Field(ge=0.0, le=1.0)
     reason: str
+
+    @model_validator(mode="after")
+    def add_category_aliases(self) -> "AtomicQueryPlan":
+        if not self.candidate_aliases:
+            self.candidate_aliases = sorted(_category_aliases(self.target_terms))
+        return self
 _EXPLICIT_CALCULATION_RE = re.compile(
     r"\b(average|sum|total|difference|how much more|how much less|"
     r"how many|elapsed|earliest|latest|current|currently|now)\b",
@@ -624,6 +647,78 @@ def _counter_delta(unit: str) -> tuple[str, str] | None:
     return (match.group(0), category) if category else None
 
 
+def _canonical_category(value: str) -> str:
+    term = _canonical_entity_category(value)
+    for canonical, aliases in _CATEGORY_ALIASES.items():
+        if term in aliases:
+            return canonical
+    return term
+
+
+def _canonical_entity_key(value: str) -> str:
+    normalized = re.sub(
+        r"^(?:dr|doctor|prof|professor)\.?\s+",
+        "",
+        value.strip(),
+        flags=re.IGNORECASE,
+    )
+    return "_".join(re.findall(r"[a-z0-9]+", normalized.casefold()))
+
+
+def _entity_memberships(unit: str) -> list[tuple[str, str, str]]:
+    """Extract only explicit name/category relationships with verbatim evidence."""
+    lowered = unit.casefold()
+    role_markers = (
+        "my attorney", "my counselor", "my doctor", "my lawyer", "my physician",
+        "my professor", "my therapist",
+    )
+    if not any(marker in lowered for marker in role_markers) and not re.search(
+        r"\b(?:Dr|Doctor|Prof|Professor)\.?\s+[A-Z]", unit
+    ):
+        return []
+    candidates: list[tuple[str, str, str]] = []
+    title_pattern = re.compile(
+        r"\b(?P<title>Dr|Doctor|Prof|Professor)\.?\s+"
+        r"(?P<name>[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){0,2})\b"
+    )
+    for match in title_pattern.finditer(unit):
+        category = (
+            "doctor"
+            if match.group("title").casefold() in {"dr", "doctor"}
+            else "professor"
+        )
+        candidates.append((match.group(0), category, match.group(0)))
+
+    apposition_patterns = (
+        re.compile(
+            r"\b(?P<name>[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){1,2})\s+"
+            r"(?:is|was)\s+my\s+"
+            r"(?P<category>doctor|physician|therapist|counselor|lawyer|attorney|"
+            r"professor)\b"
+        ),
+        re.compile(
+            r"\bmy\s+(?P<category>doctor|physician|therapist|counselor|lawyer|"
+            r"attorney|professor),?\s+"
+            r"(?P<name>[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){1,2})\b",
+        ),
+    )
+    for pattern in apposition_patterns:
+        for match in pattern.finditer(unit):
+            candidates.append(
+                (
+                    match.group("name"),
+                    _canonical_category(match.group("category")),
+                    match.group(0),
+                )
+            )
+    deduped: dict[tuple[str, str], tuple[str, str, str]] = {}
+    for entity_text, category, excerpt in candidates:
+        key = (_canonical_entity_key(entity_text), category)
+        if key[0]:
+            deduped.setdefault(key, (entity_text, category, excerpt))
+    return list(deduped.values())
+
+
 def _source_units(content: str) -> list[str]:
     units: list[str] = []
     for line in content.splitlines():
@@ -902,6 +997,43 @@ def deterministic_atomic_facts(session: dict) -> list[AtomicFact]:
                         confidence=0.88,
                     )
                 )
+            if speaker == "user":
+                for membership_index, (
+                    entity_text,
+                    category,
+                    membership_excerpt,
+                ) in enumerate(_entity_memberships(unit)):
+                    facts.append(
+                        AtomicFact(
+                            fact_id=(
+                                f"{session['session_id']}-t{turn_index}-u{unit_index}"
+                                f"-membership-{membership_index}"
+                            ),
+                            citation=AtomicCitation(
+                                session_id=session["session_id"],
+                                turn_index=turn_index,
+                                speaker=speaker,
+                                session_date=session["date"],
+                                excerpt=membership_excerpt,
+                                source_content_hash=digest,
+                            ),
+                            subject="user",
+                            predicate="category_member",
+                            object_text=entity_text,
+                            fact_kind="relationship",
+                            observed_date=session["date"],
+                            qualifiers={
+                                "atomic_origin": "deterministic_semantic",
+                                "canonical_entity_key": _canonical_entity_key(entity_text),
+                                "entity_category": category,
+                                "category_aliases": ":".join(
+                                    sorted(_CATEGORY_ALIASES.get(category, {category}))
+                                ),
+                                "closed_world_category": "false",
+                            },
+                            confidence=0.9,
+                        )
+                    )
         for claim_index, claim in enumerate(
             extract_structured_claims(content, speaker)
         ):
