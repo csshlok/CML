@@ -1,5 +1,45 @@
 In simple terms: Vault’s memory system is becoming much more efficient, but we have not yet proved that it improves accuracy on broad, real-world conversations.
 
+## Atomic-memory v8 production wiring and compiler replay (2026-07-21)
+
+The v7 diagnosis was correct that the lossless compiler was only exercised by offline
+benchmark code. That disconnect is now closed at ingestion. Production chat-session sync
+continues to write the compact `temporal_facts` semantic ledger and now also regenerates a
+separate atomic tier:
+
+- `atomic_memory_facts` stores lossless and deterministic semantic atoms with exact message,
+  speaker, session, citation, source-hash, quantity, and compiler-version provenance;
+- `atomic_memory_source_units` records every bounded unit as either `facts_extracted` or
+  `processed_no_fact`;
+- `atomic_memory_session_state` makes legacy backfill and compiler upgrades resumable;
+- source edits retract superseded derived rows, repeated sync is idempotent, and loaders are
+  constrained to retrieval-authorized session IDs;
+- the existing temporal table is not filled with raw atoms, avoiding the suggestion/noise
+  regression that the earlier diagnostics exposed.
+
+Compiler v8 also adds two conservative, question-independent semantics. Explicit user count
+assertions such as “I watched three amateur comedians” are typed as closed cardinalities with
+a normalized category. An explicit counter snapshot followed by unambiguous singular increment
+events can materialize a derived current total while retaining the complete supporting fact-ID
+chain. No benchmark question labels or routing vocabulary were added.
+
+The full backend suite passed `647 passed, 2 skipped`. CUDA preflight passed on the NVIDIA
+GeForce RTX 3060 Laptop GPU; the subsequent forced coverage replay was deterministic and made
+zero reader or judge calls. Results remained:
+
+| Frozen development set | v7 safe activation | v8 safe activation | False-safe | Source coverage |
+| --- | ---: | ---: | ---: | ---: |
+| Representative 200 | 4/200 (2.0%) | 4/200 (2.0%) | 0 | 100% |
+| Former-final 200 | 5/200 (2.5%) | 5/200 (2.5%) | 0 | 100% |
+
+Four packets changed in each set; one representative reader packet changed and none changed in
+the former-final set. The readiness decision therefore remains **NO-GO**, solely because both
+sets remain below the preregistered 10% activation threshold. The result means the new write
+path is production-wired and regression-safe, but the frozen corpus contains too few newly
+closed chains for these rules to move aggregate benchmark activation. The next compiler work
+should focus on provenance-safe entity membership and cross-utterance aliases (for example a
+named physician belonging to a doctor category), not broader regex routing or another paid run.
+
 ## Where we are now
 
 We have proven three useful things:

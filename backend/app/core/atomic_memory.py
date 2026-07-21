@@ -5,7 +5,7 @@ import json
 import math
 import re
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Literal
@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from backend.app.core.claim_semantics import extract_structured_claims
 
 
-ATOMIC_MEMORY_VERSION = "atomic-memory-v7"
+ATOMIC_MEMORY_VERSION = "atomic-memory-v8"
 _TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _QUESTION_STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "did", "do", "does", "for",
@@ -552,6 +552,78 @@ def _quantity_context(text: str, span: tuple[int, int]) -> str:
     return text[left:right].strip(" ,;.!?-") or text
 
 
+_COUNT_ASSERTION_RE = re.compile(
+    r"\b(?:i|we)\s+(?:(?:now|currently|recently|just)\s+)?"
+    r"(?:have|own|lead|visited|watched|completed|attended|bought|read|met|tried|saw)\s*$",
+    re.IGNORECASE,
+)
+_COUNTER_SNAPSHOT_RE = re.compile(
+    r"\b(?:i|we)\s+(?:(?:now|currently)\s+)?(?:have|own|lead)\s*$",
+    re.IGNORECASE,
+)
+_CATEGORY_BOUNDARIES = {
+    "and", "are", "at", "because", "but", "contain", "contains", "did", "during",
+    "for", "from", "had", "has", "in", "on", "that", "the", "this", "those",
+    "was", "were", "which", "who", "with",
+}
+
+
+def _canonical_entity_category(value: str) -> str:
+    tokens = [token.casefold() for token in re.findall(r"[A-Za-z]+", value)]
+    if not tokens:
+        return ""
+    return _canonical_term(tokens[-1])
+
+
+def _count_category(text: str, span: tuple[int, int]) -> str:
+    words: list[str] = []
+    for token in re.findall(r"[A-Za-z]+", text[span[1] :])[:5]:
+        if token.casefold() in _CATEGORY_BOUNDARIES:
+            break
+        words.append(token)
+    return _canonical_entity_category(" ".join(words))
+
+
+def _quantity_semantics(
+    text: str,
+    quantity: AtomicQuantity,
+    span: tuple[int, int],
+) -> tuple[AtomicQuantity, dict[str, str], str | None]:
+    prefix = text[: span[0]]
+    if not _COUNT_ASSERTION_RE.search(prefix):
+        return quantity, {}, None
+    category = _count_category(text, span)
+    if not category:
+        return quantity, {}, None
+    typed = quantity.model_copy(
+        update={"unit": category, "role": "declared_cardinality"}
+    )
+    snapshot = bool(_COUNTER_SNAPSHOT_RE.search(prefix))
+    qualifiers = {
+        "closed_world_category": "true",
+        "entity_category": category,
+        "quantity_role": "declared_cardinality",
+        **({"counter_snapshot": "true"} if snapshot else {}),
+    }
+    key = f"user:current_quantity:{category}" if snapshot else None
+    return typed, qualifiers, key
+
+
+def _counter_delta(unit: str) -> tuple[str, str] | None:
+    match = re.search(
+        r"\bI\s+(?:(?:just|recently)\s+)?"
+        r"(?:started|added|bought|acquired|adopted|hired|opened|created)\s+"
+        r"(?:a|an|one)\s+(?:new\s+)?(?P<category>[A-Za-z]+(?:\s+[A-Za-z]+){0,2}?)"
+        r"(?=\s+(?:at|because|for|in|on|with)\b|[.!?]|$)",
+        unit,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    category = _canonical_entity_category(match.group("category"))
+    return (match.group(0), category) if category else None
+
+
 def _source_units(content: str) -> list[str]:
     units: list[str] = []
     for line in content.splitlines():
@@ -674,7 +746,13 @@ def deterministic_atomic_facts(session: dict) -> list[AtomicFact]:
         bounded_units = _source_units(content)
         for unit_index, unit in enumerate(bounded_units):
             extracted_quantities = _extract_quantities(unit)
-            quantity = extracted_quantities[0][0] if extracted_quantities else None
+            quantity_details = [
+                (*_quantity_semantics(unit, extracted, span), span)
+                for extracted, span in extracted_quantities
+            ]
+            quantity = quantity_details[0][0] if quantity_details else None
+            quantity_qualifiers = quantity_details[0][1] if quantity_details else {}
+            quantity_key = quantity_details[0][2] if quantity_details else None
             fact_kind: str = "quantity" if quantity else "other"
             if unit.startswith("|"):
                 fact_kind = "list_item"
@@ -691,6 +769,8 @@ def deterministic_atomic_facts(session: dict) -> list[AtomicFact]:
                 unit,
                 re.I,
             ):
+                fact_kind = "state"
+            if quantity_key:
                 fact_kind = "state"
             assertion_mode = (
                 "hypothetical"
@@ -729,17 +809,24 @@ def deterministic_atomic_facts(session: dict) -> list[AtomicFact]:
                             if extracted_quantities
                             else {}
                         ),
+                        **quantity_qualifiers,
                         **(
                             {"state_signal": "true"}
                             if fact_kind == "state"
                             else {}
                         ),
                     },
+                    supersession_key=quantity_key,
                     confidence=0.8,
                 )
             )
-            for quantity_index, (additional_quantity, _) in enumerate(
-                extracted_quantities[1:], start=1
+            for quantity_index, (
+                additional_quantity,
+                additional_qualifiers,
+                additional_key,
+                additional_span,
+            ) in enumerate(
+                quantity_details[1:], start=1
             ):
                 facts.append(
                     AtomicFact(
@@ -769,15 +856,50 @@ def deterministic_atomic_facts(session: dict) -> list[AtomicFact]:
                             ),
                             "quantity_index": str(quantity_index),
                             "quantity_context": _quantity_context(
-                                unit, extracted_quantities[quantity_index][1]
+                                unit, additional_span
                             ),
+                            **additional_qualifiers,
                             **(
                                 {"state_signal": "true"}
                                 if fact_kind == "state"
                                 else {}
                             ),
                         },
+                        supersession_key=additional_key,
                         confidence=0.8,
+                    )
+                )
+            delta = _counter_delta(unit) if speaker == "user" else None
+            if delta:
+                delta_excerpt, delta_category = delta
+                facts.append(
+                    AtomicFact(
+                        fact_id=f"{session['session_id']}-t{turn_index}-u{unit_index}-delta",
+                        citation=AtomicCitation(
+                            session_id=session["session_id"],
+                            turn_index=turn_index,
+                            speaker=speaker,
+                            session_date=session["date"],
+                            excerpt=delta_excerpt,
+                            source_content_hash=digest,
+                        ),
+                        subject="user",
+                        predicate="counter_delta",
+                        object_text=delta_category,
+                        fact_kind="event",
+                        observed_date=session["date"],
+                        quantity=AtomicQuantity(
+                            value=1,
+                            unit=delta_category,
+                            role="counter_increment",
+                        ),
+                        qualifiers={
+                            "atomic_origin": "deterministic_semantic",
+                            "counter_operation": "increment",
+                            "counter_key": f"user:current_quantity:{delta_category}",
+                            "entity_category": delta_category,
+                        },
+                        confidence=0.88,
                     )
                 )
         for claim_index, claim in enumerate(
@@ -832,6 +954,100 @@ def deterministic_atomic_facts(session: dict) -> list[AtomicFact]:
     return facts
 
 
+def compile_deterministic_atomic_session(session: dict) -> AtomicSessionExtraction:
+    """Compile one session and prove that every bounded source unit was processed."""
+    facts = deterministic_atomic_facts(session)
+    return AtomicSessionExtraction(
+        session_id=session["session_id"],
+        facts=facts,
+        source_units=_source_coverage(session, facts),
+    )
+
+
+def materialize_progressive_counters(facts: Iterable[AtomicFact]) -> list[AtomicFact]:
+    """Materialize totals only for an explicit snapshot followed by unambiguous +1 events."""
+    output = list(facts)
+    snapshots: dict[str, list[AtomicFact]] = defaultdict(list)
+    deltas: dict[str, list[AtomicFact]] = defaultdict(list)
+    for fact in output:
+        if fact.quantity is None or fact.assertion_mode != "asserted":
+            continue
+        if fact.qualifiers.get("counter_snapshot") == "true" and fact.supersession_key:
+            snapshots[fact.supersession_key].append(fact)
+        counter_key = fact.qualifiers.get("counter_key")
+        if fact.qualifiers.get("counter_operation") == "increment" and counter_key:
+            deltas[counter_key].append(fact)
+
+    for counter_key, bases in snapshots.items():
+        bases.sort(
+            key=lambda fact: (
+                fact.observed_date,
+                fact.citation.session_id,
+                fact.citation.turn_index,
+            )
+        )
+        base = bases[-1]
+        applicable = [
+            fact
+            for fact in deltas.get(counter_key, [])
+            if fact.observed_date > base.observed_date
+            or (
+                fact.observed_date == base.observed_date
+                and fact.citation.session_id == base.citation.session_id
+                and fact.citation.turn_index > base.citation.turn_index
+            )
+        ]
+        if not applicable:
+            continue
+        applicable.sort(
+            key=lambda fact: (
+                fact.observed_date,
+                fact.citation.session_id,
+                fact.citation.turn_index,
+            )
+        )
+        if any(
+            fact.quantity is None
+            or fact.quantity.role != "counter_increment"
+            or fact.quantity.value != 1
+            or fact.quantity.unit != base.quantity.unit
+            for fact in applicable
+        ):
+            continue
+        supporting = [base, *applicable]
+        digest = hashlib.sha256(
+            "|".join(fact.fact_id for fact in supporting).encode("utf-8")
+        ).hexdigest()[:16]
+        latest = applicable[-1]
+        total = base.quantity.value + len(applicable)
+        output.append(
+            AtomicFact(
+                fact_id=f"derived-counter-{digest}",
+                citation=latest.citation,
+                subject=base.subject,
+                predicate="current_quantity",
+                object_text=f"{total:g} {base.quantity.unit}",
+                fact_kind="state",
+                observed_date=latest.observed_date,
+                quantity=AtomicQuantity(
+                    value=total,
+                    unit=base.quantity.unit,
+                    role="derived_current_total",
+                ),
+                qualifiers={
+                    "atomic_origin": "deterministic_derived",
+                    "closed_world_category": "true",
+                    "counter_snapshot": "true",
+                    "derived_from": ",".join(fact.fact_id for fact in supporting),
+                    "entity_category": base.quantity.unit,
+                },
+                supersession_key=counter_key,
+                confidence=min(fact.confidence for fact in supporting),
+            )
+        )
+    return output
+
+
 def extract_atomic_memory(
     sessions: list[dict],
     *,
@@ -859,11 +1075,7 @@ def extract_atomic_memory(
     extracted_count = 0
     if extractor is None:
         for session in uncached:
-            extraction = AtomicSessionExtraction(
-                session_id=session["session_id"],
-                facts=deterministic_atomic_facts(session),
-            )
-            extraction.source_units = _source_coverage(session, extraction.facts)
+            extraction = compile_deterministic_atomic_session(session)
             cached[session["session_id"]] = extraction
             _write_cache(_cache_path(cache_dir, model, session), extraction)
             extracted_count += 1
@@ -936,6 +1148,7 @@ def extract_atomic_memory(
     facts, removed = deduplicate_atomic_facts(
         [*semantic_facts, *lossless_facts]
     )
+    facts = materialize_progressive_counters(facts)
     source_unit_count = sum(
         len(extraction.source_units) for extraction in cached.values()
     )

@@ -310,9 +310,17 @@ class TemporalFactLedgerTests(unittest.TestCase):
         with connect() as conn:
             job = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (first["id"],)).fetchone()
             fact_count = conn.execute("SELECT COUNT(*) AS count FROM temporal_facts").fetchone()["count"]
+            atomic_session_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM atomic_memory_session_state"
+            ).fetchone()["count"]
+            atomic_fact_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM atomic_memory_facts WHERE status = 'current'"
+            ).fetchone()["count"]
         self.assertEqual(job["status"], "succeeded")
         self.assertEqual(job["status_detail"], "Temporal history is current for 3 chat sessions.")
         self.assertEqual(fact_count, 2)
+        self.assertEqual(atomic_session_count, 3)
+        self.assertGreater(atomic_fact_count, fact_count)
 
         second = backfill_temporal_facts(request)
         self.assertNotEqual(second["id"], first["id"])

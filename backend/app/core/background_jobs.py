@@ -16,6 +16,7 @@ from backend.app.core.encrypted_storage import (
 from backend.app.core.cluster_lifecycle import mark_cluster_needs_update, refresh_cluster_profile
 from backend.app.core.vector_maintenance import vector_repair_plan
 from backend.app.core.context_memory import rebuild_chat_session_memory, rebuild_source_memory
+from backend.app.core.atomic_memory import ATOMIC_MEMORY_VERSION
 from backend.app.core.temporal_facts import (
     CHAT_FACT_EXTRACTOR_VERSION,
     sync_chat_session_temporal_facts,
@@ -826,12 +827,19 @@ def _run_temporal_fact_backfill(payload: dict, job_id: str) -> None:
                     "SELECT * FROM temporal_fact_session_state WHERE session_id = ? AND vault_id = ?",
                     (session_id, vault_id),
                 ).fetchone()
+                atomic_state = conn.execute(
+                    "SELECT * FROM atomic_memory_session_state WHERE session_id = ? AND vault_id = ?",
+                    (session_id, vault_id),
+                ).fetchone()
                 source_hash = temporal_fact_source_hash(messages)
                 if (
                     state is None
                     or state["extractor_version"] != CHAT_FACT_EXTRACTOR_VERSION
                     or state["source_content_hash"] != source_hash
                     or int(state["source_message_count"] or 0) != len(messages)
+                    or atomic_state is None
+                    or atomic_state["compiler_version"] != ATOMIC_MEMORY_VERSION
+                    or int(atomic_state["source_message_count"] or 0) != len(messages)
                 ):
                     sync_chat_session_temporal_facts(
                         conn,

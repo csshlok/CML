@@ -581,6 +581,81 @@ def init_db() -> None:
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS atomic_memory_facts (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                cluster_id TEXT,
+                session_id TEXT NOT NULL,
+                source_message_id TEXT NOT NULL,
+                compiler_fact_id TEXT NOT NULL,
+                turn_index INTEGER NOT NULL,
+                speaker_role TEXT NOT NULL CHECK (speaker_role IN ('user', 'assistant', 'tool')),
+                session_date TEXT NOT NULL,
+                citation_excerpt TEXT NOT NULL,
+                source_content_hash TEXT NOT NULL,
+                subject_key TEXT NOT NULL,
+                predicate_key TEXT NOT NULL,
+                object_text TEXT NOT NULL,
+                fact_kind TEXT NOT NULL,
+                assertion_mode TEXT NOT NULL CHECK (assertion_mode IN ('asserted', 'negated', 'hypothetical')),
+                event_date TEXT,
+                observed_date TEXT NOT NULL,
+                quantity_value REAL,
+                quantity_unit TEXT,
+                quantity_role TEXT,
+                qualifiers_json TEXT NOT NULL DEFAULT '{}',
+                supersession_key TEXT,
+                confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+                compiler_version TEXT NOT NULL,
+                origin_fingerprint TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'current' CHECK (status IN ('current', 'retracted')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE SET NULL,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (source_message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS atomic_memory_source_units (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                source_message_id TEXT NOT NULL,
+                compiler_unit_id TEXT NOT NULL,
+                turn_index INTEGER NOT NULL,
+                speaker_role TEXT NOT NULL CHECK (speaker_role IN ('user', 'assistant', 'tool')),
+                excerpt_hash TEXT NOT NULL,
+                coverage_status TEXT NOT NULL CHECK (
+                    coverage_status IN ('facts_extracted', 'processed_no_fact')
+                ),
+                fact_ids_json TEXT NOT NULL DEFAULT '[]',
+                compiler_version TEXT NOT NULL,
+                source_content_hash TEXT NOT NULL,
+                origin_fingerprint TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'current' CHECK (status IN ('current', 'retracted')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (source_message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS atomic_memory_session_state (
+                session_id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                source_message_count INTEGER NOT NULL DEFAULT 0,
+                source_content_hash TEXT NOT NULL,
+                compiler_version TEXT NOT NULL,
+                fact_count INTEGER NOT NULL DEFAULT 0,
+                source_unit_count INTEGER NOT NULL DEFAULT 0,
+                covered_source_unit_count INTEGER NOT NULL DEFAULT 0,
+                processed_at TEXT NOT NULL,
+                last_error TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS temporal_fact_reviews (
                 id TEXT PRIMARY KEY,
                 vault_id TEXT NOT NULL,
@@ -1122,6 +1197,14 @@ def init_db() -> None:
                 ON temporal_facts(source_type, source_id, status);
             CREATE INDEX IF NOT EXISTS idx_temporal_fact_session_state_vault
                 ON temporal_fact_session_state(vault_id, processed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_atomic_memory_facts_session
+                ON atomic_memory_facts(vault_id, session_id, status, turn_index);
+            CREATE INDEX IF NOT EXISTS idx_atomic_memory_facts_lookup
+                ON atomic_memory_facts(vault_id, subject_key, predicate_key, status, observed_date DESC);
+            CREATE INDEX IF NOT EXISTS idx_atomic_memory_source_units_session
+                ON atomic_memory_source_units(vault_id, session_id, status, turn_index);
+            CREATE INDEX IF NOT EXISTS idx_atomic_memory_session_state_vault
+                ON atomic_memory_session_state(vault_id, processed_at DESC);
             CREATE INDEX IF NOT EXISTS idx_temporal_fact_reviews_vault
                 ON temporal_fact_reviews(vault_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_chat_generations_state ON chat_generations(state, updated_at);

@@ -13,6 +13,7 @@ from backend.app.core.atomic_memory import (
     export_semantic_normalization_jobs,
     extract_atomic_memory,
     import_semantic_normalization_results,
+    materialize_progressive_counters,
     pack_atomic_facts,
     plan_atomic_query,
     route_atomic_question,
@@ -737,3 +738,61 @@ def test_async_semantic_import_keeps_lossless_facts(tmp_path: Path) -> None:
     assert imported["imported_session_count"] == 1
     assert diagnostics.cache_hit_count == 1
     assert {fact.citation.speaker for fact in facts} == {"user", "assistant"}
+
+
+def test_compiler_types_general_closed_world_category_counts() -> None:
+    session = {
+        "session_id": "counts",
+        "date": "2025-01-01",
+        "turns": [
+            {"role": "user", "content": "I watched three amateur comedians."},
+            {"role": "user", "content": "I visited 4 different doctors."},
+        ],
+    }
+    facts = deterministic_atomic_facts(session)
+    typed = [
+        fact
+        for fact in facts
+        if fact.quantity is not None
+        and fact.qualifiers.get("atomic_origin") == "deterministic_lossless"
+    ]
+
+    assert [(fact.quantity.value, fact.quantity.unit) for fact in typed] == [
+        (3, "comedian"),
+        (4, "doctor"),
+    ]
+    assert all(fact.quantity.role == "declared_cardinality" for fact in typed)
+    assert all(fact.qualifiers["closed_world_category"] == "true" for fact in typed)
+
+
+def test_progressive_counter_requires_snapshot_then_materializes_increment() -> None:
+    sessions = [
+        {
+            "session_id": "base",
+            "date": "2025-01-01",
+            "turns": [{"role": "user", "content": "I have 4 active projects."}],
+        },
+        {
+            "session_id": "increment",
+            "date": "2025-01-02",
+            "turns": [{"role": "user", "content": "I started a new project."}],
+        },
+    ]
+    source_facts = [
+        fact for session in sessions for fact in deterministic_atomic_facts(session)
+    ]
+    materialized = materialize_progressive_counters(source_facts)
+    derived = [
+        fact
+        for fact in materialized
+        if fact.qualifiers.get("atomic_origin") == "deterministic_derived"
+    ]
+
+    assert len(derived) == 1
+    assert derived[0].quantity == AtomicQuantity(
+        value=5, unit="project", role="derived_current_total"
+    )
+    assert derived[0].supersession_key == "user:current_quantity:project"
+
+    no_snapshot = deterministic_atomic_facts(sessions[1])
+    assert materialize_progressive_counters(no_snapshot) == no_snapshot

@@ -40,6 +40,7 @@ Odin indexes approved repository files without executing or modifying project co
 | Core RAG and cluster lifecycle | Complete for V1 scope |
 | Shared chat/Bridge context contract | Complete |
 | Temporal fact history and user controls | Extractor v3, runtime ledger v4, cited histories, resolved day-level actions, conservative synthesis routing, and local legacy backfill implemented |
+| Lossless atomic memory | Compiler v8 is production-wired at chat-session sync with dedicated fact, source-unit, and session-state tables; retrieval activation remains gated |
 | Claim-first bounded evidence packing | Shared consolidated v1 semantics pass offline non-regression; paid accuracy promotion remains gated |
 | Odin scoped project workflow | Complete for current scope |
 | Odin AST extraction | Tree-sitter/Python AST based; Tier A/B corpus deterministic |
@@ -55,7 +56,7 @@ Odin indexes approved repository files without executing or modifying project co
 | --- | --- | --- |
 | LongMemEval-S typed-v1, 500 questions | 83.8% Kimi / 83.2% GPT-5.4 | 33,331.9 reader prompt tokens/query |
 | LongMemEval-S claim-first 10K, 500 questions | 81.8% Kimi / 82.0% GPT-5.4 | 8,307.1 tokens/query; 0/500 over budget; $4.5111 evaluation cost |
-| LongMemEval atomic-memory v7 readiness, two frozen 200-question development sets | 4/200 and 5/200 reference-verified safe activations; zero false-safe activations; readiness remains no-go | 100% source-unit coverage; expected mean prompts 8,283.92 and 8,303.97, both below claim-first controls; 0 reader/judge calls |
+| LongMemEval atomic-memory v8 readiness, two frozen 200-question development sets | 4/200 and 5/200 reference-verified safe activations; zero false-safe activations; readiness remains no-go | 100% source-unit coverage; expected mean prompts 8,283.92 and 8,303.97, both below claim-first controls; 0 reader/judge calls |
 | Evolving-memory v3, 40 paired questions | 100% baseline and 100% production-path accuracy across four categories | Mean reader prompt fell 774.7 to 181.3 tokens (76.6%); uncached reader cost fell 69.7% |
 | LoCoMo ColBERT, 1,540 questions | 0.7606 recall@10; 66.75% Kimi / 63.96% GPT-5.4 | 650.4 reader prompt tokens/query; $1.7388 evaluation cost |
 | LoCoMo temporal activation audit, 34 frozen questions | Broad routing regressed Kimi by 14.71 points; conservative routing restored the exact baseline | 34/34 former false positives now abstain; 0 API calls in paired rerun |
@@ -69,7 +70,7 @@ The dedicated evolving-memory v3 suite freezes 40 questions—10 each for curren
 
 The first production-shaped LoCoMo temporal-memory run activated 34 preference-adjacent questions but reduced activation-slice F1 from 0.6008 to 0.5419, Kimi acceptance from 26/34 to 21/34, and GPT-5.4 acceptance from 22/34 to 21/34. It was rejected. Named-speaker routing now requires an explicit synthesis query, topic misses abstain, and fallback outputs are reused in paired experiments. The corrected frozen rerun changed 0/34 former false positives and exactly preserved all baseline scores at zero API cost. This closes the regression but does not establish a positive LoCoMo accuracy gain.
 
-Atomic-memory v7 is the current LongMemEval development state. The compiler accounts for every source unit, preserves immutable citations, types grouped quantities and capacity units, separates explicit cardinalities from inferred lists, and resolves current state inside the requested supersession chain. The representative set remains at 4/200 safe activations; the former-final set improves from 4/200 to 5/200 by safely resolving the current BBQ-sauce state. All nine activated results across the two sets are evidence-complete and reference-correct, with zero false-safe activations. The preregistered 10% activation gate still fails, so reader and judge evaluation remains blocked.
+Atomic-memory v8 is the current LongMemEval development state. Production chat sync now compiles every supported message into separate, queryable atomic fact and source-unit tables without flooding the curated temporal-fact index. The compiler also types general explicit category counts and can materialize an exact progressive total from one explicit snapshot followed by unambiguous +1 events. A forced offline replay changed four packets in each frozen set but did not change safe activation: 4/200 and 5/200, with all nine results evidence-complete and reference-correct and zero false-safe activations. The preregistered 10% activation gate still fails, so reader and judge evaluation remains blocked.
 
 The main memory-quality constraint is no longer retrieval or packet budget. It is ingestion-time semantic closure: implicit singular counts, category membership, progressive totals, event identity, and supersession must be normalized before query time. LongMemEval cannot provide another meaningful final split under the current rules because only seven eligible untouched questions remain; both 200-question manifests are development-exposed.
 
@@ -77,7 +78,7 @@ These are benchmark measurements, not universal user-bill guarantees. Model pric
 
 ## Validation Snapshot
 
-- Latest recorded backend suite: `644 passed`, `2 skipped`; one non-blocking Starlette TestClient compatibility warning
+- Latest recorded backend suite: `647 passed`, `2 skipped`; one non-blocking Starlette TestClient compatibility warning
 - Desktop TypeScript check and production client/SSR build: passed on the latest recorded product slice
 - Electron behavior tests: `42 passed`
 - Python and npm dependency audits: no known vulnerabilities in the pinned repository environments

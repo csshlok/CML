@@ -25,6 +25,7 @@ The major scoped implementation passes are complete:
 - the desktop has first-class Projects, Tasks, Sources, cluster profiles, Settings Health, CLI Access, and evidence follow-up surfaces;
 - benchmark tooling now separates ingestion, retrieval, packing, reading, judging, and reporting with resumable artifacts and regression gates;
 - production memory benchmarking now includes a frozen evolving-fact suite and an activation-only paired protocol that reuses unchanged answers and judgments;
+- atomic-memory compiler v8 now runs in production chat-session sync, persists lossless facts and terminal source-unit coverage separately from the curated temporal ledger, and exposes session-scoped loading for future retrieval activation;
 - the public README and benchmark report describe the product and its measured results in user-facing language.
 
 The remaining cycle is release work and quality productionization:
@@ -38,6 +39,8 @@ The remaining cycle is release work and quality productionization:
 7. resume the broader UI refinement pass after backend and retrieval behavior stabilizes.
 
 The reviewed 0.1.7 pass is published on `main` as 10 commits. GitHub CI run `29682163820` passed the dependency audit, desktop, quick, integration, system, and benchmark jobs; the dispatch-only Odin scale job was correctly skipped. The project remains pre-release because clean-machine installer, account-separation, signing, and package-integrity proof are still outstanding.
+
+The July 21 atomic-memory v8 pass closes the production-ingestion disconnect identified in the v7 review. `sync_chat_session_temporal_facts` now also regenerates a dedicated atomic tier with immutable source hashes, message provenance, source-unit terminal status, compiler-version state, retraction on source edits, and idempotent resync. Existing temporal retrieval remains unchanged. Generic explicit category counts are normalized as closed cardinalities, and conservative progressive counters support an explicit base such as “I have 4 projects” followed by an unambiguous singular increment. A forced, model-free replay of both frozen 200-question development sets preserved 4/200 and 5/200 activation, 100% activated correctness, zero false-safes, and 100% source-unit coverage. This is a production capability improvement, not a benchmark accuracy gain; broader category membership/coreference remains the activation blocker.
 
 ## Architecture State
 

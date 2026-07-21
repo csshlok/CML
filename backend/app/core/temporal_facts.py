@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from backend.app.core.atomic_memory_store import sync_chat_session_atomic_memory
 from backend.app.core.claim_semantics import extract_structured_claims
 from backend.app.core.database import dict_from_row, utc_now
 
@@ -487,7 +488,17 @@ def sync_chat_session_temporal_facts(
             utc_now(),
         ),
     )
-    return {"fact_ids": list(dict.fromkeys(created_ids)), "retracted_count": retracted}
+    atomic = sync_chat_session_atomic_memory(
+        conn,
+        vault_id=vault_id,
+        session_id=session_id,
+        messages=messages,
+    )
+    return {
+        "fact_ids": list(dict.fromkeys(created_ids)),
+        "retracted_count": retracted,
+        "atomic_memory": atomic,
+    }
 
 
 def temporal_fact_source_hash(messages: list[sqlite3.Row]) -> str:
