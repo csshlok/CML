@@ -16,7 +16,17 @@ from backend.app.core.encrypted_storage import (
 from backend.app.core.cluster_lifecycle import mark_cluster_needs_update, refresh_cluster_profile
 from backend.app.core.vector_maintenance import vector_repair_plan
 from backend.app.core.context_memory import rebuild_chat_session_memory, rebuild_source_memory
-from backend.app.core.atomic_memory import ATOMIC_MEMORY_VERSION
+from backend.app.core.atomic_memory import (
+    ATOMIC_MEMORY_VERSION,
+    ATOMIC_EXTRACTION_RESPONSE_SCHEMA,
+    compile_semantic_atomic_session,
+    source_content_hash as atomic_source_content_hash,
+)
+from backend.app.core.atomic_memory_store import (
+    LOCAL_SEMANTIC_EXTRACTOR_VERSION,
+    chat_session_atomic_payload,
+    persist_local_semantic_extraction,
+)
 from backend.app.core.temporal_facts import (
     CHAT_FACT_EXTRACTOR_VERSION,
     sync_chat_session_temporal_facts,
@@ -155,6 +165,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         preemptable=True,
         timeout_seconds=1800,
         soft_timeout_seconds=300,
+        timeout_action="defer",
+    ),
+    "atomic_semantic_enrichment": JobPolicy(
+        priority="low",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="chat",
+        concurrency_group="local_llm",
+        resource_cost="heavy",
+        can_run_during_synthesis=False,
+        user_visible=False,
+        user_initiated=False,
+        cancellable=True,
+        preemptable=True,
+        timeout_seconds=900,
+        soft_timeout_seconds=240,
         timeout_action="defer",
     ),
     "refresh_cluster_profile": JobPolicy(
@@ -658,6 +685,8 @@ def _run_claimed_job(job: dict) -> None:
             _run_chat_transcript_memory(payload)
         elif job["job_type"] == "temporal_fact_backfill":
             _run_temporal_fact_backfill(payload, job["id"])
+        elif job["job_type"] == "atomic_semantic_enrichment":
+            _run_atomic_semantic_enrichment(payload, job["id"])
         elif job["job_type"] == "refresh_cluster_profile":
             _run_refresh_cluster_profile(payload)
         elif job["job_type"] == "ocr_source":
@@ -772,6 +801,117 @@ def _run_chat_transcript_memory(payload: dict) -> None:
             "UPDATE chat_sessions SET memory_status = 'indexed', memory_updated_at = ? WHERE id = ?",
             (utc_now(), session_id),
         )
+        _enqueue_atomic_semantic_enrichment(
+            conn,
+            vault_id=vault_id,
+            session_id=session_id,
+        )
+
+
+def _enqueue_atomic_semantic_enrichment(
+    conn,
+    *,
+    vault_id: str,
+    session_id: str,
+) -> dict | None:
+    from backend.app.core.config import get_settings
+
+    settings = get_settings()
+    if not settings.atomic_semantic_enrichment_enabled:
+        return None
+    state = conn.execute(
+        "SELECT status, extractor_version, model FROM atomic_memory_semantic_state WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if (
+        state is not None
+        and state["status"] == "current"
+        and state["extractor_version"] == LOCAL_SEMANTIC_EXTRACTOR_VERSION
+        and state["model"] == settings.llm_model
+    ):
+        return None
+    return enqueue_job(
+        conn,
+        job_type="atomic_semantic_enrichment",
+        payload={"vault_id": vault_id, "session_id": session_id},
+        dedupe_key=(
+            f"atomic-semantic:{session_id}:{LOCAL_SEMANTIC_EXTRACTOR_VERSION}:"
+            f"{settings.llm_model}"
+        ),
+        max_attempts=2,
+    )
+
+
+def _run_atomic_semantic_enrichment(payload: dict, job_id: str) -> None:
+    from backend.app.core.config import get_settings
+    from backend.app.core.llm_runtime import generate_local_structured_json
+
+    settings = get_settings()
+    if not settings.atomic_semantic_enrichment_enabled:
+        raise RuntimeError("Local atomic semantic enrichment is disabled")
+    vault_id = str(payload.get("vault_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    if not vault_id or not session_id:
+        raise ValueError("vault_id and session_id are required")
+    with connect() as conn:
+        session = conn.execute(
+            "SELECT id FROM chat_sessions WHERE id = ? AND vault_id = ?",
+            (session_id, vault_id),
+        ).fetchone()
+        if session is None:
+            raise ValueError("chat_session_not_found")
+        messages = conn.execute(
+            "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at, rowid",
+            (session_id,),
+        ).fetchall()
+        session_payload = chat_session_atomic_payload(session_id, messages)
+    source_hash = atomic_source_content_hash(
+        session_payload["session_id"],
+        session_payload["date"],
+        session_payload["turns"],
+    )
+
+    provider_model: dict[str, str] = {}
+
+    def extractor(prompt: str) -> tuple[str, dict]:
+        result = generate_local_structured_json(
+            system_prompt=(
+                "Extract durable conversational memory as one strict JSON object. "
+                "Do not think aloud. Preserve exact citations, speaker attribution, "
+                "modality, named entities, category membership, and coreference only "
+                "when supported by the supplied conversation."
+            ),
+            user_prompt=prompt,
+            json_schema=ATOMIC_EXTRACTION_RESPONSE_SCHEMA,
+        )
+        provider_model.update(provider=result.provider, model=result.model)
+        return result.text, {}
+
+    extraction, invalid_reasons, _ = compile_semantic_atomic_session(
+        session_payload,
+        extractor=extractor,
+        max_source_chars=max(int(settings.atomic_semantic_max_source_chars), 1_000),
+    )
+    with connect() as conn:
+        summary = persist_local_semantic_extraction(
+            conn,
+            vault_id=vault_id,
+            session_id=session_id,
+            source_hash=source_hash,
+            extraction=extraction,
+            invalid_reasons=invalid_reasons,
+            provider=provider_model["provider"],
+            model=provider_model["model"],
+        )
+        conn.execute(
+            "UPDATE app_jobs SET status_detail = ?, updated_at = ? WHERE id = ?",
+            (
+                f"Stored {summary['fact_count']} validated local semantic facts; "
+                f"rejected {summary['invalid_fact_count']} invalid facts.",
+                utc_now(),
+                job_id,
+            ),
+        )
 
 
 def _run_temporal_fact_backfill(payload: dict, job_id: str) -> None:
@@ -848,6 +988,11 @@ def _run_temporal_fact_backfill(payload: dict, job_id: str) -> None:
                         messages=messages,
                     )
                     updated += 1
+                _enqueue_atomic_semantic_enrichment(
+                    conn,
+                    vault_id=vault_id,
+                    session_id=session_id,
+                )
                 cursor = session_id
                 processed += 1
             conn.execute(

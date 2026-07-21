@@ -40,7 +40,7 @@ Odin indexes approved repository files without executing or modifying project co
 | Core RAG and cluster lifecycle | Complete for V1 scope |
 | Shared chat/Bridge context contract | Complete |
 | Temporal fact history and user controls | Extractor v3, runtime ledger v4, cited histories, resolved day-level actions, conservative synthesis routing, and local legacy backfill implemented |
-| Lossless atomic memory | Compiler v9 is production-wired; content-free vault coverage diagnostics and conservative entity/category aliases are implemented; retrieval activation remains gated |
+| Lossless atomic memory | Compiler v9 is production-wired; optional loopback-only local semantic enrichment, separate provenance/staleness state, content-free coverage diagnostics, and conservative entity/category aliases are implemented; retrieval activation remains gated |
 | Claim-first bounded evidence packing | Shared consolidated v1 semantics pass offline non-regression; paid accuracy promotion remains gated |
 | Odin scoped project workflow | Complete for current scope |
 | Odin AST extraction | Tree-sitter/Python AST based; Tier A/B corpus deterministic |
@@ -116,7 +116,7 @@ These are benchmark measurements, not universal user-bill guarantees. Model pric
 
 ## Immediate Next Steps
 
-1. Extend ingestion-time atomic normalization for category membership, implicit singular entities, repeated-event identity, progressive counters, and supersession chains; keep the zero-false-safe gate unchanged.
+1. Extend ingestion-time atomic normalization for category membership, implicit singular entities, repeated-event identity, progressive counters, and supersession chains; keep the zero-false-safe gate unchanged. The first opt-in Qwen3 4B CUDA pilot produced concise cited facts but no explicit category qualifiers, took 343.40 seconds for three user-turn evidence sessions, and did not make the doctor-count contract safe.
 2. Raise safe atomic activation to at least 10% on both development sets before any reader/judge evaluation, then freeze a genuinely fresh corpus or benchmark split for promotion evidence.
 3. Complete clean-machine Windows installer, account-separation, package-integrity, and signing proof.
 4. Prototype bounded staging plus verified atomic compressed-shard rebuilds, with immediate tombstone filtering, runtime memory-pressure fallback, cross-cluster routing tests, encryption, exact artifact licensing, and a second real corpus before reconsidering ColBERT activation.

@@ -9,11 +9,16 @@ from backend.app.core.atomic_memory import (
     AtomicCitation,
     AtomicFact,
     AtomicQuantity,
+    AtomicSessionExtraction,
     compile_deterministic_atomic_session,
+    deduplicate_atomic_facts,
     materialize_progressive_counters,
     source_content_hash,
 )
 from backend.app.core.database import utc_now
+
+
+LOCAL_SEMANTIC_EXTRACTOR_VERSION = f"{ATOMIC_MEMORY_VERSION}-local-semantic-v1"
 
 
 def _fingerprint(payload: dict) -> str:
@@ -21,7 +26,7 @@ def _fingerprint(payload: dict) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _session_payload(session_id: str, messages: list[sqlite3.Row]) -> dict:
+def chat_session_atomic_payload(session_id: str, messages: list[sqlite3.Row]) -> dict:
     first_date = next(
         (str(row["created_at"])[:10] for row in messages if str(row["created_at"] or "")),
         "1970-01-01",
@@ -51,7 +56,7 @@ def sync_chat_session_atomic_memory(
     if session is None:
         raise ValueError("chat_session_not_found")
 
-    payload = _session_payload(session_id, messages)
+    payload = chat_session_atomic_payload(session_id, messages)
     extraction = compile_deterministic_atomic_session(payload)
     compiled_source_hash = source_content_hash(
         payload["session_id"], payload["date"], payload["turns"]
@@ -192,6 +197,14 @@ def sync_chat_session_atomic_memory(
             now,
         ),
     )
+    conn.execute(
+        """
+        UPDATE atomic_memory_semantic_state
+        SET status = 'stale', processed_at = ?
+        WHERE session_id = ? AND source_content_hash != ? AND status = 'current'
+        """,
+        (now, session_id, compiled_source_hash),
+    )
     return {
         "fact_count": len(extraction.facts),
         "source_unit_count": len(extraction.source_units),
@@ -274,7 +287,103 @@ def load_atomic_facts_for_sessions(
                 confidence=float(row["confidence"]),
             )
         )
-    return materialize_progressive_counters(result)
+    semantic_rows = conn.execute(
+        f"""
+        SELECT facts_json FROM atomic_memory_semantic_state
+        WHERE vault_id = ? AND session_id IN ({placeholders}) AND status = 'current'
+        ORDER BY processed_at, session_id
+        """,
+        (vault_id, *session_ids),
+    ).fetchall()
+    for row in semantic_rows:
+        for raw in json.loads(str(row["facts_json"])):
+            result.append(AtomicFact.model_validate(raw))
+    deduplicated, _ = deduplicate_atomic_facts(result)
+    return materialize_progressive_counters(deduplicated)
+
+
+def persist_local_semantic_extraction(
+    conn: sqlite3.Connection,
+    *,
+    vault_id: str,
+    session_id: str,
+    source_hash: str,
+    extraction: AtomicSessionExtraction,
+    invalid_reasons: dict[str, int],
+    provider: str,
+    model: str,
+) -> dict:
+    """Persist validated local-model facts only if the source session is unchanged."""
+    messages = conn.execute(
+        "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at, rowid",
+        (session_id,),
+    ).fetchall()
+    session = conn.execute(
+        "SELECT id FROM chat_sessions WHERE id = ? AND vault_id = ?",
+        (session_id, vault_id),
+    ).fetchone()
+    if session is None:
+        raise ValueError("chat_session_not_found")
+    current_payload = chat_session_atomic_payload(session_id, messages)
+    current_hash = source_content_hash(
+        current_payload["session_id"], current_payload["date"], current_payload["turns"]
+    )
+    if current_hash != source_hash:
+        raise ValueError("semantic_extraction_source_changed")
+    now = utc_now()
+    invalid_count = sum(int(value) for value in invalid_reasons.values())
+    conn.execute(
+        """
+        INSERT INTO atomic_memory_semantic_state (
+            session_id, vault_id, source_content_hash, provider, model,
+            extractor_version, facts_json, source_units_json, fact_count,
+            invalid_fact_count, invalid_reasons_json, status, processed_at, last_error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'current', ?, '')
+        ON CONFLICT(session_id) DO UPDATE SET
+            vault_id = excluded.vault_id,
+            source_content_hash = excluded.source_content_hash,
+            provider = excluded.provider,
+            model = excluded.model,
+            extractor_version = excluded.extractor_version,
+            facts_json = excluded.facts_json,
+            source_units_json = excluded.source_units_json,
+            fact_count = excluded.fact_count,
+            invalid_fact_count = excluded.invalid_fact_count,
+            invalid_reasons_json = excluded.invalid_reasons_json,
+            status = 'current',
+            processed_at = excluded.processed_at,
+            last_error = ''
+        """,
+        (
+            session_id,
+            vault_id,
+            source_hash,
+            provider,
+            model,
+            LOCAL_SEMANTIC_EXTRACTOR_VERSION,
+            json.dumps(
+                [fact.model_dump(mode="json") for fact in extraction.facts],
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            json.dumps(
+                [unit.model_dump(mode="json") for unit in extraction.source_units],
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            len(extraction.facts),
+            invalid_count,
+            json.dumps(invalid_reasons, sort_keys=True, separators=(",", ":")),
+            now,
+        ),
+    )
+    return {
+        "fact_count": len(extraction.facts),
+        "invalid_fact_count": invalid_count,
+        "source_unit_count": len(extraction.source_units),
+        "provider": provider,
+        "model": model,
+    }
 
 
 def atomic_memory_coverage_report(
@@ -305,6 +414,21 @@ def atomic_memory_coverage_report(
         "SELECT COUNT(*) AS count FROM atomic_memory_session_state WHERE vault_id = ?",
         (vault_id,),
     ).fetchone()["count"]
+    semantic_state = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS attempted_session_count,
+            SUM(CASE WHEN status = 'current' THEN 1 ELSE 0 END) AS current_session_count,
+            SUM(CASE WHEN status = 'stale' THEN 1 ELSE 0 END) AS stale_session_count,
+            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_session_count,
+            SUM(CASE WHEN status = 'current' THEN fact_count ELSE 0 END) AS fact_count,
+            SUM(CASE WHEN status = 'current' THEN invalid_fact_count ELSE 0 END)
+                AS invalid_fact_count
+        FROM atomic_memory_semantic_state
+        WHERE vault_id = ?
+        """,
+        (vault_id,),
+    ).fetchone()
     fact_rows = conn.execute(
         """
         SELECT source_message_id, speaker_role, qualifiers_json
@@ -347,6 +471,22 @@ def atomic_memory_coverage_report(
         "compiler_version": ATOMIC_MEMORY_VERSION,
         "session_count": len(session_ids),
         "indexed_session_count": int(indexed_sessions),
+        "semantic_attempted_session_count": int(
+            semantic_state["attempted_session_count"] or 0
+        ),
+        "semantic_current_session_count": int(
+            semantic_state["current_session_count"] or 0
+        ),
+        "semantic_stale_session_count": int(
+            semantic_state["stale_session_count"] or 0
+        ),
+        "semantic_failed_session_count": int(
+            semantic_state["failed_session_count"] or 0
+        ),
+        "semantic_fact_count": int(semantic_state["fact_count"] or 0),
+        "semantic_invalid_fact_count": int(
+            semantic_state["invalid_fact_count"] or 0
+        ),
         "message_count": int(message_counts["message_count"] or 0),
         "supported_turn_count": supported_turn_count,
         "user_turn_count": user_turn_count,

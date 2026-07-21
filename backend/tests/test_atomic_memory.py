@@ -7,6 +7,7 @@ from backend.app.core.atomic_memory import (
     AtomicCitation,
     AtomicFact,
     AtomicQuantity,
+    compile_semantic_atomic_session,
     deduplicate_atomic_facts,
     deterministic_atomic_facts,
     evaluate_deterministic_operation,
@@ -143,6 +144,59 @@ def test_atomic_extraction_rejects_non_verbatim_citation(tmp_path: Path) -> None
 
     assert facts == []
     assert diagnostics.invalid_by_reason == {"excerpt_not_exact": 1}
+
+
+def test_semantic_compiler_chunks_long_sessions_and_restores_turn_indices() -> None:
+    session = {
+        "session_id": "long-session",
+        "date": "2026-07-22",
+        "turns": [
+            {"role": "user", "content": "A" * 1_100},
+            {"role": "assistant", "content": "Dr. Lee recommended rest."},
+        ],
+    }
+    calls = 0
+
+    def extractor(prompt: str) -> tuple[str, dict]:
+        nonlocal calls
+        calls += 1
+        payload = json.loads(prompt.split("Sessions:\n", 1)[1])
+        turns = payload[0]["turns"]
+        facts = []
+        for turn_index, turn in enumerate(turns):
+            if "Dr. Lee" in turn["content"]:
+                facts.append(
+                    {
+                        "fact_id": "doctor",
+                        "citation": {
+                            "turn_index": turn_index,
+                            "excerpt": "Dr. Lee recommended rest.",
+                        },
+                        "subject": "Dr. Lee",
+                        "predicate": "recommended",
+                        "object_text": "rest",
+                        "fact_kind": "recommendation",
+                        "confidence": 0.98,
+                    }
+                )
+        return json.dumps(
+            {"sessions": [{"session_id": "long-session", "facts": facts}]}
+        ), {"prompt_tokens": 5}
+
+    extraction, reasons, usage = compile_semantic_atomic_session(
+        session,
+        extractor=extractor,
+        max_source_chars=1_000,
+    )
+
+    assert calls >= 2
+    assert len(extraction.facts) == 1
+    assert extraction.facts[0].citation.turn_index == 1
+    assert extraction.facts[0].citation.source_content_hash == source_content_hash(
+        session["session_id"], session["date"], session["turns"]
+    )
+    assert reasons == {}
+    assert usage["prompt_tokens"] == calls * 5
 
 
 def test_lossless_atomic_compiler_persists_exact_table_rows(tmp_path: Path) -> None:

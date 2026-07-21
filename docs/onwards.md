@@ -467,3 +467,47 @@ CPU work because it has no neural tensor workload. Setup and verification:
 .\scripts\backend\setup-benchmark-cuda.ps1
 .\.venv\Scripts\python.exe scripts/backend/check_cuda_runtime.py
 ```
+
+## July 22 local write-time semantic-ingestion pilot
+
+Vault now has an opt-in implementation of the Mem0-style architectural experiment.
+After deterministic chat-memory sync, a low-priority, cancellable
+`atomic_semantic_enrichment` job may ask the configured local model to extract atomic
+facts. The path is disabled by default and hard-rejects non-loopback model URLs.
+Validated model facts are stored separately with provider/model/extractor provenance,
+exact turn citations, source hashes, invalid-fact diagnostics, and current/stale state.
+Source edits stale semantic output; deterministic memory remains available if local
+enrichment is disabled, delayed, or fails.
+
+Long conversations are split into bounded overlapping windows while citations are
+translated back to original turn indexes and validated against the unchanged full
+session. llama.cpp schema-constrained JSON is used, with one bounded retry and a narrow
+repair for Qwen's non-standard escaped apostrophe. Deterministic and semantic facts are
+deduplicated before progressive counters are materialized. Content-free coverage now
+reports semantic attempted/current, stale/failed, valid-fact, and invalid-fact counts.
+
+The first CUDA pilot used Qwen3 4B Q4_K_M on the RTX 3060 Laptop GPU and frozen
+LongMemEval question `gpt4_f2262a51`, "How many different doctors did I visit?" Its
+three gold sessions contain about 45,477 characters. Fully enriching the verbose
+assistant responses was projected at roughly fifteen minutes, so that diagnostic was
+stopped. A user-turn-only diagnostic completed in 343.40 seconds and produced 36
+provenance-valid semantic facts. Seven overlap duplicates were removed and one fact was
+rejected for a non-exact excerpt. Per-session times were 47.64, 134.48, and 161.28
+seconds.
+
+The result is mixed. The model produced concise facts such as `visited_doctor -> Dr.
+Lee`, `visited_specialist -> Dr. Patel`, and a primary-care relationship involving Dr.
+Smith. Packing changed from 139 deterministic facts / 8,341 estimated tokens to 107
+combined facts / 8,498 tokens. But Qwen3 4B emitted zero explicit `entity_category`
+qualifiers, occasionally confused a prescription relationship with a completed visit,
+and did not prove closed-world category coverage. The distinct-count contract remained
+unsafe in both arms. This pilot establishes neither an accuracy improvement nor a
+reason to launch a large reader/judge run.
+
+The architecture remains plausible, but this 4B extractor is not yet reliable or
+economical enough to promote. Next development should improve compact category and
+coreference output on a small question-independent fixture, measure false action/role
+conversions, compare a stronger local model if it fits the 6 GB GPU, and require an
+offline activation gain with zero false-safe counts before reader evaluation. The
+reproducible diagnostic is `scripts/backend/run_local_semantic_ingestion_pilot.py`; its
+result is `.tmp/vault-odin-memory-benchmark/atomic-memory-v1/local-semantic-pilot-gpt4_f2262a51.json`.

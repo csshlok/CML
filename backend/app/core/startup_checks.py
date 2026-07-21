@@ -28,6 +28,7 @@ def verify_schema_version() -> None:
         "atomic_memory_facts",
         "atomic_memory_source_units",
         "atomic_memory_session_state",
+        "atomic_memory_semantic_state",
         "temporal_fact_reviews",
         "app_jobs",
         "vault_security_metadata",

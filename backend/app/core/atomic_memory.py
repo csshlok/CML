@@ -72,6 +72,65 @@ _CATEGORY_ALIASES = {
     "therapist": {"counselor", "therapist"},
 }
 
+ATOMIC_EXTRACTION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sessions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "facts": {
+                        "type": "array",
+                        "maxItems": 8,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "fact_id": {"type": "string"},
+                                "citation": {
+                                    "type": "object",
+                                    "properties": {
+                                        "turn_index": {"type": "integer"},
+                                        "excerpt": {"type": "string"},
+                                    },
+                                    "required": ["turn_index", "excerpt"],
+                                },
+                                "subject": {"type": "string"},
+                                "predicate": {"type": "string"},
+                                "object_text": {"type": "string"},
+                                "fact_kind": {
+                                    "type": "string",
+                                    "enum": [
+                                        "identity", "attribute", "event", "state",
+                                        "preference", "plan", "relationship",
+                                        "recommendation", "list_item", "quantity", "other",
+                                    ],
+                                },
+                                "assertion_mode": {
+                                    "type": "string",
+                                    "enum": ["asserted", "negated", "hypothetical"],
+                                },
+                                "event_date": {"type": ["string", "null"]},
+                                "quantity": {"type": ["object", "null"]},
+                                "qualifiers": {"type": "object"},
+                                "supersession_key": {"type": ["string", "null"]},
+                                "confidence": {"type": "number"},
+                            },
+                            "required": [
+                                "fact_id", "citation", "subject", "predicate",
+                                "object_text", "fact_kind", "confidence",
+                            ],
+                        },
+                    },
+                },
+                "required": ["session_id", "facts"],
+            },
+        }
+    },
+    "required": ["sessions"],
+}
+
 
 def _category_aliases(terms: Iterable[str]) -> set[str]:
     expanded: set[str] = set()
@@ -270,8 +329,18 @@ Rules:
   are memories too. Do not reduce every assistant fact to a suggestion.
 - Split compound statements, enumerations, tables, and multiple quantities into separate
   atomic facts. Preserve list position in qualifiers when present.
+- Return at most 8 of the most durable concrete facts per supplied session chunk. Keep
+  predicate and object_text concise so the JSON finishes within the output budget.
 - Preserve named entities, attributes, relationships, locations, actions, outcomes,
   quantities with units and roles, preferences, plans, constraints, and state changes.
+- Normalize useful entity categories without waiting for a question. When the source says
+  a named or described entity is a member of a broader everyday category, preserve the
+  specific entity as object_text and add qualifiers.entity_category with the singular
+  category (for example, a physician is a doctor and a professor is an educator). Emit
+  one fact per distinct entity; do not collapse multiple entities into a count.
+- Category normalization may use ordinary language knowledge, but entity identity and the
+  underlying relationship or event must still be supported by the exact citation. Never
+  invent a person's name, role, visit, attendance, ownership, or other user action.
 - subject identifies who or what the fact is about. Use "user" only for the conversation
   user; otherwise use the explicit person, organization, object, or topic.
 - event_date is the resolved event date only when explicit or safely resolvable from the
@@ -282,8 +351,11 @@ Rules:
 - quantity is null or {{"value":3,"unit":"items","role":"items_to_pick_up"}}.
 - fact_kind must be one of identity, attribute, event, state, preference, plan,
   relationship, recommendation, list_item, quantity, other.
+- turn_index is ZERO-BASED: the first supplied turn is 0, the second is 1, and so on.
 - Every excerpt must be an exact, contiguous substring of the cited turn and must contain
   enough text to support the fact. Never invent or paraphrase a citation.
+- Advice, plans, and recommendations are not completed user actions. Never convert "should",
+  "could", "might", "plans to", or "wants to" into something the user already did.
 - Do not extract greetings, boilerplate cautions, generic conversational filler, or facts
   stated only inside an obviously hypothetical example.
 - Prefer recall for concrete information, but never infer an unsupported fact.
@@ -298,14 +370,24 @@ def _extract_json_object(text: str) -> dict:
     if candidate.startswith("```"):
         candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE)
         candidate = re.sub(r"\s*```$", "", candidate)
+    # Some small local models escape apostrophes even though JSON does not define
+    # that escape. Repair only a single, otherwise-unescaped backslash-apostrophe.
+    candidate = re.sub(r"(?<!\\)\\'", "'", candidate)
     try:
         return json.loads(candidate)
     except json.JSONDecodeError:
         start = candidate.find("{")
-        end = candidate.rfind("}")
-        if start < 0 or end <= start:
+        if start < 0:
             raise ValueError("Atomic extractor response did not contain a JSON object")
-        return json.loads(candidate[start : end + 1])
+        try:
+            value, _ = json.JSONDecoder().raw_decode(candidate[start:])
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "Atomic extractor response did not contain a valid JSON object"
+            ) from exc
+        if not isinstance(value, dict):
+            raise ValueError("Atomic extractor response root was not a JSON object")
+        return value
 
 
 def _cache_path(cache_dir: Path, model: str, session: dict) -> Path:
@@ -1094,6 +1176,158 @@ def compile_deterministic_atomic_session(session: dict) -> AtomicSessionExtracti
         facts=facts,
         source_units=_source_coverage(session, facts),
     )
+
+
+def compile_semantic_atomic_session(
+    session: dict,
+    *,
+    extractor: AtomicExtractor,
+    max_source_chars: int = 1_000,
+    included_roles: set[str] | None = None,
+) -> tuple[AtomicSessionExtraction, dict[str, int], dict[str, int]]:
+    """Compile one session in bounded requests and validate every citation."""
+    if max_source_chars < 1_000:
+        raise ValueError("max_source_chars must be at least 1000")
+
+    def windows(content: str) -> list[str]:
+        if len(content) <= max_source_chars:
+            return [content]
+        output: list[str] = []
+        start = 0
+        overlap = min(240, max_source_chars // 10)
+        while start < len(content):
+            target = min(start + max_source_chars, len(content))
+            end = target
+            if target < len(content):
+                boundary = max(
+                    content.rfind("\n", start + max_source_chars // 2, target),
+                    content.rfind(". ", start + max_source_chars // 2, target),
+                    content.rfind("? ", start + max_source_chars // 2, target),
+                    content.rfind("! ", start + max_source_chars // 2, target),
+                )
+                if boundary > start:
+                    end = boundary + (1 if content[boundary] == "\n" else 2)
+            output.append(content[start:end])
+            if end >= len(content):
+                break
+            start = max(start + 1, end - overlap)
+        return output
+
+    chunks: list[tuple[dict, list[int]]] = []
+    pending_turns: list[dict] = []
+    pending_indices: list[int] = []
+    pending_chars = 0
+
+    def flush() -> None:
+        nonlocal pending_turns, pending_indices, pending_chars
+        if not pending_turns:
+            return
+        chunks.append(
+            (
+                {
+                    "session_id": str(session["session_id"]),
+                    "date": str(session["date"]),
+                    "turns": pending_turns,
+                },
+                pending_indices,
+            )
+        )
+        pending_turns = []
+        pending_indices = []
+        pending_chars = 0
+
+    for original_index, turn in enumerate(session["turns"]):
+        if included_roles is not None and str(turn.get("role") or "") not in included_roles:
+            continue
+        content = str(turn.get("content") or "")
+        for fragment in windows(content):
+            if pending_turns and pending_chars + len(fragment) > max_source_chars:
+                flush()
+            pending_turns.append({**turn, "content": fragment})
+            pending_indices.append(original_index)
+            pending_chars += len(fragment)
+    flush()
+    if not chunks:
+        return (
+            AtomicSessionExtraction(
+                session_id=str(session["session_id"]),
+                facts=[],
+                source_units=[],
+            ),
+            {},
+            {},
+        )
+
+    full_digest = source_content_hash(
+        session["session_id"], session["date"], session["turns"]
+    )
+    all_facts: list[AtomicFact] = []
+    reasons: Counter[str] = Counter()
+    combined_usage: Counter[str] = Counter()
+    for chunk_index, (chunk, original_indices) in enumerate(chunks):
+        prompt = atomic_extraction_prompt([chunk])
+        payload: dict | None = None
+        for attempt in range(2):
+            response_text, attempt_usage = extractor(
+                prompt
+                + (
+                    "\nRETRY: Your prior response was not complete valid JSON. Return one "
+                    "smaller JSON object with no prose and no more than 8 facts."
+                    if attempt
+                    else ""
+                )
+            )
+            combined_usage.update(
+                {
+                    key: int(value)
+                    for key, value in attempt_usage.items()
+                    if isinstance(value, (int, float))
+                }
+            )
+            try:
+                payload = _extract_json_object(response_text)
+                break
+            except ValueError:
+                if attempt == 1:
+                    raise
+        if payload is None:
+            raise ValueError("semantic_extractor_invalid_json")
+        returned = {
+            str(item.get("session_id") or ""): item
+            for item in payload.get("sessions") or []
+            if isinstance(item, dict)
+        }
+        raw = returned.get(str(session["session_id"]))
+        if raw is None:
+            raise ValueError("semantic_extractor_missing_session")
+        extraction, chunk_reasons = _coerce_and_validate(raw, chunk)
+        reasons.update(chunk_reasons)
+        for fact_index, fact in enumerate(extraction.facts):
+            original_turn_index = original_indices[fact.citation.turn_index]
+            all_facts.append(
+                fact.model_copy(
+                    update={
+                        "fact_id": (
+                            f"semantic-{session['session_id']}-t{original_turn_index}"
+                            f"-c{chunk_index}-f{fact_index}"
+                        ),
+                        "citation": fact.citation.model_copy(
+                            update={
+                                "turn_index": original_turn_index,
+                                "source_content_hash": full_digest,
+                            }
+                        ),
+                    }
+                )
+            )
+
+    facts, _ = deduplicate_atomic_facts(all_facts)
+    extraction = AtomicSessionExtraction(
+        session_id=str(session["session_id"]),
+        facts=facts,
+        source_units=_source_coverage(session, facts),
+    )
+    return extraction, dict(reasons), dict(combined_usage)
 
 
 def materialize_progressive_counters(facts: Iterable[AtomicFact]) -> list[AtomicFact]:

@@ -512,3 +512,24 @@ The remaining blockers are semantic rather than retrieval-budget problems:
 - a fresh promotion corpus, because both 200-question manifests are development-exposed and only seven LongMemEval questions remain eligible and untouched under the current rules.
 
 The next gate is unchanged: reach at least 10% safe activation on both development sets with zero false-safe operations, 100% source-unit accounting, and prompt usage below the claim-first control. Only then should a new frozen corpus receive reader and dual-judge evaluation.
+
+## July 22 Local Semantic Ingestion Experiment
+
+An opt-in local-model enrichment tier is now production-wired after deterministic chat
+memory sync. It runs as a low-priority, preemptable job, refuses non-loopback LLM
+endpoints, stores validated facts in separate versioned session state, and marks that
+state stale when source content changes. Bounded overlapping chunks preserve full
+session hashes and original turn citations; malformed or unsupported citations are
+discarded before persistence. Deterministic memory remains the fallback and source of
+record.
+
+The first Qwen3 4B Q4_K_M CUDA pilot targeted the frozen three-session doctor-count
+case. User turns took 343.40 seconds total and yielded 36 valid facts, seven overlap
+duplicates, and one genuinely invalid excerpt. The model generated useful concise
+visit/specialist facts, but no `entity_category` qualifiers and at least one incorrect
+completed-visit interpretation. Combined packing used 107 facts / 8,498 estimated
+tokens versus 139 / 8,341 for deterministic-only, and both arms still failed the
+`closed_world_category_coverage` slot. This supports continued small-fixture
+development, not promotion or a large reader/judge benchmark. Full assistant-turn
+enrichment is substantially slower on verbose benchmark sessions and remains
+idle/background work.

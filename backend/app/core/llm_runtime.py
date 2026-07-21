@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 from typing import Any
 from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 import json
 import threading
@@ -114,6 +115,61 @@ def generate_direct_answer(*, prompt: str, recent_turns: list[dict[str, str]] | 
         raise LLMRuntimeError("Local model returned an unexpected response.") from exc
     if not text:
         raise LLMRuntimeError("Local model returned an empty response.")
+    return LLMResult(text=text, provider=settings.llm_provider, model=settings.llm_model)
+
+
+def local_runtime_configured() -> bool:
+    settings = get_settings()
+    if settings.llm_provider == "none":
+        return False
+    hostname = (urlparse(settings.llm_base_url).hostname or "").casefold()
+    return hostname in {"127.0.0.1", "::1", "localhost"}
+
+
+def generate_local_structured_json(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int | None = None,
+    json_schema: dict[str, Any] | None = None,
+) -> LLMResult:
+    """Generate bounded JSON through a loopback-only model endpoint."""
+    settings = get_settings()
+    if not local_runtime_configured():
+        raise LLMRuntimeError(
+            "Structured ingestion requires a configured loopback-only local model runtime."
+        )
+    payload = {
+        "model": settings.llm_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.0,
+        "stream": False,
+        "max_tokens": max(
+            64,
+            int(max_tokens or settings.atomic_semantic_max_output_tokens),
+        ),
+        "response_format": (
+            {"type": "json_object", "schema": json_schema}
+            if json_schema is not None
+            else {"type": "json_object"}
+        ),
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    with generation_in_flight():
+        response = _openai_post(
+            "/chat/completions",
+            payload,
+            timeout=max(float(settings.atomic_semantic_timeout_seconds), 1.0),
+        )
+    try:
+        text = response["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMRuntimeError("Local model returned an unexpected JSON response.") from exc
+    if not text:
+        raise LLMRuntimeError("Local model returned an empty JSON response.")
     return LLMResult(text=text, provider=settings.llm_provider, model=settings.llm_model)
 
 

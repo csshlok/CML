@@ -656,6 +656,25 @@ def init_db() -> None:
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS atomic_memory_semantic_state (
+                session_id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                source_content_hash TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                extractor_version TEXT NOT NULL,
+                facts_json TEXT NOT NULL DEFAULT '[]',
+                source_units_json TEXT NOT NULL DEFAULT '[]',
+                fact_count INTEGER NOT NULL DEFAULT 0,
+                invalid_fact_count INTEGER NOT NULL DEFAULT 0,
+                invalid_reasons_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL CHECK (status IN ('current', 'failed', 'stale')),
+                processed_at TEXT NOT NULL,
+                last_error TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS temporal_fact_reviews (
                 id TEXT PRIMARY KEY,
                 vault_id TEXT NOT NULL,
@@ -1205,6 +1224,8 @@ def init_db() -> None:
                 ON atomic_memory_source_units(vault_id, session_id, status, turn_index);
             CREATE INDEX IF NOT EXISTS idx_atomic_memory_session_state_vault
                 ON atomic_memory_session_state(vault_id, processed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_atomic_memory_semantic_state_vault
+                ON atomic_memory_semantic_state(vault_id, status, processed_at DESC);
             CREATE INDEX IF NOT EXISTS idx_temporal_fact_reviews_vault
                 ON temporal_fact_reviews(vault_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_chat_generations_state ON chat_generations(state, updated_at);
