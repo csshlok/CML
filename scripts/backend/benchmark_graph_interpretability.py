@@ -226,8 +226,11 @@ def _load_model(model_name: str):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if device == "cuda" else torch.float32
+    from backend.app.core.benchmark_gpu import require_cuda
+
+    require_cuda()
+    device = "cuda"
+    dtype = torch.float16
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         local_files_only=True,

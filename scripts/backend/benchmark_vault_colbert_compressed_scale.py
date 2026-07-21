@@ -223,7 +223,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--locomo", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--model-device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--model-device", choices=("cuda",), default="cuda")
     parser.add_argument("--index-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--targets", type=int, nargs="+", default=[100_000, 1_000_000])
@@ -515,6 +515,9 @@ def _batched_ranges(start: int, stop: int, batch_size: int) -> Iterable[tuple[in
 
 def main() -> int:
     args = parse_args()
+    from backend.app.core.benchmark_gpu import require_cuda
+
+    cuda_runtime = require_cuda()
     targets = sorted(set(args.targets))
     if not targets or targets[0] <= 0:
         raise ValueError("Targets must contain positive item counts.")
@@ -555,6 +558,7 @@ def main() -> int:
                 "synthetic_offset": args.synthetic_offset,
                 "model": str(args.model.resolve()),
                 "model_device": args.model_device,
+                "cuda_runtime": cuda_runtime,
                 "index_backend": "PyLate FastPLAID",
                 "nbits": args.nbits,
                 "batch_size": args.batch_size,

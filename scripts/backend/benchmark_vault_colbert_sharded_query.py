@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--locomo", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--model-device", choices=("cpu", "cuda"), default="cuda")
+    parser.add_argument("--model-device", choices=("cuda",), default="cuda")
     parser.add_argument("--primary-report", type=Path, required=True)
     parser.add_argument("--primary-index-root", type=Path, required=True)
     parser.add_argument("--shard-report-dir", type=Path, required=True)
@@ -125,6 +125,9 @@ def _metrics(
 
 def main() -> int:
     args = parse_args()
+    from backend.app.core.benchmark_gpu import require_cuda
+
+    cuda_runtime = require_cuda()
     from pylate import indexes, models
 
     data = json.loads(args.locomo.read_text(encoding="utf-8"))
@@ -245,6 +248,7 @@ def main() -> int:
             raise RuntimeError("Primary index was not evaluated.")
         report = {
             "schema_version": 1,
+            "cuda_runtime": cuda_runtime,
             "system": "Vault compressed ColBERT sharded scale experiment",
             "item_count": sum(row["document_count"] for row in index_results),
             "shard_count": len(index_results),
