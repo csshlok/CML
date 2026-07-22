@@ -1,0 +1,215 @@
+{
+  "fixture_version": "atomic-memory-v2-fixtures-v1",
+  "fixtures": [
+    {
+      "id": "doctor_alias_single_visit",
+      "critical": true,
+      "session": {"session_id": "f01", "date": "2026-03-15", "turns": [{"role": "user", "content": "I saw Dr. Lee today. My physician said I should rest."}]},
+      "required": ["category|dr. lee|doctor", "alias|dr. lee|my physician", "event|medical_visit|completed", "event_participant|medical_visit|completed|doctor|dr. lee"],
+      "forbidden": ["event|rest|completed"]
+    },
+    {
+      "id": "two_distinct_doctors",
+      "critical": true,
+      "session": {"session_id": "f02", "date": "2026-03-16", "turns": [{"role": "user", "content": "I visited Dr. Lee on Monday and Dr. Patel on Friday."}]},
+      "required": ["category|dr. lee|doctor", "category|dr. patel|doctor", "event_participant|medical_visit|completed|doctor|dr. lee", "event_participant|medical_visit|completed|doctor|dr. patel"],
+      "forbidden": []
+    },
+    {
+      "id": "medical_advice_not_action",
+      "critical": true,
+      "session": {"session_id": "f03", "date": "2026-03-17", "turns": [{"role": "assistant", "content": "You should schedule an appointment with a cardiologist."}]},
+      "required": ["event|schedule_appointment|recommended"],
+      "forbidden": ["event|schedule_appointment|completed", "event|medical_visit|completed"]
+    },
+    {
+      "id": "planned_trip_not_completed",
+      "critical": true,
+      "session": {"session_id": "f04", "date": "2026-04-01", "turns": [{"role": "user", "content": "I plan to visit Kyoto next autumn."}]},
+      "required": ["event|travel|planned"],
+      "forbidden": ["event|travel|completed"]
+    },
+    {
+      "id": "negated_car_ownership",
+      "critical": true,
+      "session": {"session_id": "f05", "date": "2026-04-02", "turns": [{"role": "user", "content": "I do not own a Tesla."}]},
+      "required": ["relation|owns|user|tesla|negated"],
+      "forbidden": ["relation|owns|user|tesla|asserted"]
+    },
+    {
+      "id": "uncertain_job_change",
+      "critical": true,
+      "session": {"session_id": "f06", "date": "2026-04-03", "turns": [{"role": "user", "content": "I might join Acme next month, but nothing is decided."}]},
+      "required": ["event|join_organization|uncertain"],
+      "forbidden": ["event|join_organization|completed"]
+    },
+    {
+      "id": "same_project_alias",
+      "critical": true,
+      "session": {"session_id": "f07", "date": "2026-04-04", "turns": [{"role": "user", "content": "I lead Project Aurora. The Aurora migration is my main project."}]},
+      "required": ["entity|project aurora|project", "alias|project aurora|the aurora migration"],
+      "forbidden": []
+    },
+    {
+      "id": "separate_projects",
+      "critical": true,
+      "session": {"session_id": "f08", "date": "2026-04-05", "turns": [{"role": "user", "content": "I lead Project Aurora and Project Beacon."}]},
+      "required": ["entity|project aurora|project", "entity|project beacon|project"],
+      "forbidden": ["alias|project aurora|project beacon"]
+    },
+    {
+      "id": "case_competition_not_project",
+      "critical": true,
+      "session": {"session_id": "f09", "date": "2026-04-06", "turns": [{"role": "user", "content": "Alongside Project Aurora, I entered a weekend case competition."}]},
+      "required": ["entity|project aurora|project", "event|enter_competition|completed"],
+      "forbidden": ["entity|weekend case competition|project"]
+    },
+    {
+      "id": "feature_not_separate_project",
+      "critical": true,
+      "session": {"session_id": "f10", "date": "2026-04-07", "turns": [{"role": "user", "content": "I added offline sync as a feature of Project Aurora."}]},
+      "required": ["entity|project aurora|project", "relation|has_feature|project aurora|offline sync|asserted"],
+      "forbidden": ["entity|offline sync|project"]
+    },
+    {
+      "id": "shift_table_relationship",
+      "critical": true,
+      "session": {"session_id": "f11", "date": "2026-04-08", "turns": [{"role": "assistant", "content": "| Employee | Sunday |\n| --- | --- |\n| Admon | 8am-4pm |"}]},
+      "required": ["table|admon|sunday|8am-4pm"],
+      "forbidden": []
+    },
+    {
+      "id": "price_table_relationship",
+      "critical": true,
+      "session": {"session_id": "f12", "date": "2026-04-09", "turns": [{"role": "assistant", "content": "| Plan | Monthly price |\n| --- | --- |\n| Pro | $29 |"}]},
+      "required": ["table|pro|monthly price|$29"],
+      "forbidden": []
+    },
+    {
+      "id": "assistant_generated_schedule",
+      "critical": false,
+      "session": {"session_id": "f13", "date": "2026-04-10", "turns": [{"role": "assistant", "content": "Your Yosemite itinerary is two days: Saturday and Sunday."}]},
+      "required": ["event|yosemite_trip|planned"],
+      "forbidden": ["event|yosemite_trip|completed"]
+    },
+    {
+      "id": "assistant_recommendation",
+      "critical": false,
+      "session": {"session_id": "f14", "date": "2026-04-11", "turns": [{"role": "assistant", "content": "Based on your preference for storytelling comedy, I recommend Netflix."}]},
+      "required": ["event|recommend_service|recommended", "event_participant|recommend_service|recommended|service|netflix"],
+      "forbidden": ["relation|subscribes_to|user|netflix|asserted"]
+    },
+    {
+      "id": "professor_category",
+      "critical": false,
+      "session": {"session_id": "f15", "date": "2026-04-12", "turns": [{"role": "user", "content": "Professor Nguyen taught my statistics class."}]},
+      "required": ["category|professor nguyen|educator", "event_participant|teach_class|completed|educator|professor nguyen"],
+      "forbidden": []
+    },
+    {
+      "id": "attorney_category",
+      "critical": false,
+      "session": {"session_id": "f16", "date": "2026-04-13", "turns": [{"role": "user", "content": "Attorney Chen reviewed the lease for me."}]},
+      "required": ["category|attorney chen|lawyer", "event|review_document|completed"],
+      "forbidden": []
+    },
+    {
+      "id": "therapist_category",
+      "critical": false,
+      "session": {"session_id": "f17", "date": "2026-04-14", "turns": [{"role": "user", "content": "My therapist, Maya, suggested a breathing exercise."}]},
+      "required": ["category|maya|therapist", "event|suggest_exercise|recommended"],
+      "forbidden": ["event|perform_exercise|completed"]
+    },
+    {
+      "id": "explicit_same_person_alias",
+      "critical": false,
+      "session": {"session_id": "f18", "date": "2026-04-15", "turns": [{"role": "user", "content": "Dr. Smith, my primary-care physician, called today."}]},
+      "required": ["category|dr. smith|doctor", "alias|dr. smith|my primary-care physician"],
+      "forbidden": []
+    },
+    {
+      "id": "hypothetical_purchase",
+      "critical": true,
+      "session": {"session_id": "f19", "date": "2026-04-16", "turns": [{"role": "user", "content": "If I bought a cabin, I would work remotely from there."}]},
+      "required": ["event|purchase_property|hypothetical"],
+      "forbidden": ["event|purchase_property|completed", "relation|owns|user|cabin|asserted"]
+    },
+    {
+      "id": "proposed_meeting",
+      "critical": false,
+      "session": {"session_id": "f20", "date": "2026-04-17", "turns": [{"role": "assistant", "content": "Could we meet with Dana on Tuesday?"}]},
+      "required": ["event|meeting|proposed"],
+      "forbidden": ["event|meeting|completed"]
+    },
+    {
+      "id": "completed_purchase",
+      "critical": false,
+      "session": {"session_id": "f21", "date": "2026-04-18", "turns": [{"role": "user", "content": "I bought three yellow dresses yesterday."}]},
+      "required": ["event|purchase|completed", "event_participant|purchase|completed|quantity|three yellow dresses", "quantity|event|purchase|item_count|3|dress"],
+      "forbidden": []
+    },
+    {
+      "id": "ongoing_course",
+      "critical": false,
+      "session": {"session_id": "f22", "date": "2026-04-19", "turns": [{"role": "user", "content": "I am currently taking a French course."}]},
+      "required": ["event|take_course|ongoing"],
+      "forbidden": ["event|take_course|completed"]
+    },
+    {
+      "id": "document_author_relation",
+      "critical": false,
+      "session": {"session_id": "f23", "date": "2026-04-20", "turns": [{"role": "user", "content": "Dana wrote the launch brief."}]},
+      "required": ["relation|authored|dana|the launch brief|asserted"],
+      "forbidden": []
+    },
+    {
+      "id": "organization_membership",
+      "critical": false,
+      "session": {"session_id": "f24", "date": "2026-04-21", "turns": [{"role": "user", "content": "I joined the Alpine Club in 2024."}]},
+      "required": ["event|join_organization|completed", "event_participant|join_organization|completed|organization|the alpine club"],
+      "forbidden": []
+    },
+    {
+      "id": "current_home_state",
+      "critical": false,
+      "session": {"session_id": "f25", "date": "2026-04-22", "turns": [{"role": "user", "content": "I now live in Pune."}]},
+      "required": ["relation|lives_in|user|pune|asserted"],
+      "forbidden": []
+    },
+    {
+      "id": "dated_event",
+      "critical": false,
+      "session": {"session_id": "f26", "date": "2026-04-23", "turns": [{"role": "user", "content": "I graduated on June 12, 2020."}]},
+      "required": ["event|graduate|completed"],
+      "forbidden": []
+    },
+    {
+      "id": "ordered_list_items",
+      "critical": false,
+      "session": {"session_id": "f27", "date": "2026-04-24", "turns": [{"role": "assistant", "content": "Packing list: 1. passport 2. charger 3. medication."}]},
+      "required": ["relation|includes_item|packing list|passport|asserted", "relation|includes_item|packing list|charger|asserted", "relation|includes_item|packing list|medication|asserted"],
+      "forbidden": []
+    },
+    {
+      "id": "preference_comparison",
+      "critical": false,
+      "session": {"session_id": "f28", "date": "2026-04-25", "turns": [{"role": "user", "content": "I prefer tea to coffee."}]},
+      "required": ["relation|prefers_over|user|tea over coffee|asserted"],
+      "forbidden": []
+    },
+    {
+      "id": "mortgage_state_update",
+      "critical": true,
+      "session": {"session_id": "f29", "date": "2026-04-26", "turns": [{"role": "user", "content": "The mortgage balance is now $400,000, up from $350,000."}]},
+      "required": ["relation|current_mortgage_balance|user|$400,000|asserted", "quantity|relation|current_mortgage_balance|balance|400000|usd", "supersession|current_mortgage_balance|user"],
+      "forbidden": ["relation|current_mortgage_balance|user|$350,000|asserted"]
+    },
+    {
+      "id": "prescription_not_visit",
+      "critical": true,
+      "session": {"session_id": "f30", "date": "2026-04-27", "turns": [{"role": "user", "content": "Dr. Patel prescribed antibiotics over the phone; I did not visit the clinic."}]},
+      "required": ["category|dr. patel|doctor", "event|prescribe_medication|completed", "event|medical_visit|negated"],
+      "forbidden": ["event|medical_visit|completed"]
+    }
+  ]
+}

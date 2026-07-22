@@ -1,0 +1,20 @@
+{
+  "gate_version": "atomic-memory-v2-default-extractor-gates-v1",
+  "thresholds": {
+    "response_schema_compliance_rate_min": 0.98,
+    "accepted_citation_validity_rate_min": 0.99,
+    "required_signature_recall_min": 0.90,
+    "critical_fixture_complete_pass_rate_min": 1.0,
+    "forbidden_signature_violation_count_max": 0,
+    "false_completed_action_violation_count_max": 0,
+    "failed_or_truncated_fixture_count_max": 0,
+    "p95_seconds_per_1000_source_tokens_max": 20.0,
+    "peak_gpu_memory_mib_max": 5632
+  },
+  "policy": {
+    "cpu_fallback_allowed": false,
+    "loopback_endpoint_required": true,
+    "threshold_changes_require_new_gate_version": true,
+    "fixture_data_may_be_used_for_training": false
+  }
+}

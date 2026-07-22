@@ -124,3 +124,4 @@ sample_new
 artifacts/
 .playwright-cli
 docs/onwards.md
+docs/ATOMIC_MEMORY_V2_EXECUTION_PLAN.md
