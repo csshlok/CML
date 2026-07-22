@@ -57,6 +57,7 @@ Odin indexes approved repository files without executing or modifying project co
 | LongMemEval-S typed-v1, 500 questions | 83.8% Kimi / 83.2% GPT-5.4 | 33,331.9 reader prompt tokens/query |
 | LongMemEval-S claim-first 10K, 500 questions | 81.8% Kimi / 82.0% GPT-5.4 | 8,307.1 tokens/query; 0/500 over budget; $4.5111 evaluation cost |
 | LongMemEval atomic-memory v9 readiness, two frozen 200-question development sets | 4/200 and 5/200 reference-verified safe activations; zero false-safe activations; readiness remains no-go | 100% source-unit coverage; expected mean prompts 8,283.92 and 8,303.97, both below claim-first controls; 0 reader/judge calls |
+| LongMemEval API semantic-extraction smoke, 12 exposed recovery/control questions | Claim-first 6/12 vs facts-only 7/12 dual-judge correct; 3 wins, 2 losses; promotion failed | 120 sessions, 4,089 valid facts, $8.7551 extraction; 0/12 safe activations; facts-only prompts increased |
 | Evolving-memory v3, 40 paired questions | 100% baseline and 100% production-path accuracy across four categories | Mean reader prompt fell 774.7 to 181.3 tokens (76.6%); uncached reader cost fell 69.7% |
 | LoCoMo ColBERT, 1,540 questions | 0.7606 recall@10; 66.75% Kimi / 63.96% GPT-5.4 | 650.4 reader prompt tokens/query; $1.7388 evaluation cost |
 | LoCoMo temporal activation audit, 34 frozen questions | Broad routing regressed Kimi by 14.71 points; conservative routing restored the exact baseline | 34/34 former false positives now abstain; 0 API calls in paired rerun |
@@ -116,7 +117,7 @@ These are benchmark measurements, not universal user-bill guarantees. Model pric
 
 ## Immediate Next Steps
 
-1. Extend ingestion-time atomic normalization for category membership, implicit singular entities, repeated-event identity, progressive counters, and supersession chains; keep the zero-false-safe gate unchanged. The first opt-in Qwen3 4B CUDA pilot produced concise cited facts but no explicit category qualifiers, took 343.40 seconds for three user-turn evidence sessions, and did not make the doctor-count contract safe.
+1. Extend ingestion-time atomic normalization for category membership, implicit singular entities, repeated-event/project identity, structured table relationships, progressive counters, and supersession chains; keep the zero-false-safe gate unchanged. The local Qwen3 pilot did not close categories, while the 12-question GPT-5.4 extraction smoke gained three answers but lost two controls and activated 0/12 safe contracts.
 2. Raise safe atomic activation to at least 10% on both development sets before any reader/judge evaluation, then freeze a genuinely fresh corpus or benchmark split for promotion evidence.
 3. Complete clean-machine Windows installer, account-separation, package-integrity, and signing proof.
 4. Prototype bounded staging plus verified atomic compressed-shard rebuilds, with immediate tombstone filtering, runtime memory-pressure fallback, cross-cluster routing tests, encryption, exact artifact licensing, and a second real corpus before reconsidering ColBERT activation.

@@ -1,8 +1,100 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import scripts.backend.run_longmemeval_atomic_ablation as ablation
+
+
+def test_bounded_semantic_extraction_is_cached_and_reported(
+    monkeypatch, tmp_path
+) -> None:
+    provider = SimpleNamespace(name="kimi", model="extractor")
+    monkeypatch.setattr(ablation, "_provider", lambda *_args: provider)
+    calls: list[str] = []
+
+    def fake_chat(_provider, prompt, **_kwargs):
+        calls.append(prompt)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "sessions": [
+                                    {
+                                        "session_id": "s1",
+                                        "facts": [
+                                            {
+                                                "fact_id": "visit",
+                                                "citation": {
+                                                    "turn_index": 0,
+                                                    "excerpt": "I visited Dr. Lee.",
+                                                },
+                                                "subject": "user",
+                                                "predicate": "visited_doctor",
+                                                "object_text": "Dr. Lee",
+                                                "fact_kind": "event",
+                                                "confidence": 0.98,
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        )
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+
+    monkeypatch.setattr(ablation, "_chat", fake_chat)
+    monkeypatch.setattr(
+        ablation,
+        "_provider_cost",
+        lambda _provider, usages: {
+            "prompt_tokens": sum(row.get("prompt_tokens", 0) for row in usages)
+        },
+    )
+    manifest = {
+        "questions": [
+            {"question_id": "q1", "retrieved_session_ids": ["s1"]}
+        ]
+    }
+    references = {
+        "q1": {
+            "haystack_session_ids": ["s1"],
+            "haystack_dates": ["2026-01-01"],
+            "haystack_sessions": [
+                [{"role": "user", "content": "I visited Dr. Lee."}]
+            ],
+        }
+    }
+    args = SimpleNamespace(
+        run_dir=tmp_path,
+        semantic_extraction=True,
+        extractor_provider="kimi",
+        extractor_model="extractor",
+        extraction_max_tokens=1024,
+        extraction_max_source_chars=1000,
+        extraction_max_facts_per_chunk=8,
+        extraction_roles="all",
+        timeout=10,
+        retries=1,
+        max_extraction_sessions=0,
+        workers=1,
+    )
+
+    ablation.extract_sessions(args, manifest, references)
+    ablation.extract_sessions(args, manifest, references)
+
+    report = json.loads(
+        (tmp_path / "semantic-extraction-report.json").read_text(encoding="utf-8")
+    )
+    assert len(calls) == 1
+    assert report["completed_session_count"] == 1
+    assert report["fact_count"] == 1
+    assert report["cost"]["prompt_tokens"] == 10
 
 
 def test_label_evidence_retries_malformed_provider_json(monkeypatch, tmp_path) -> None:
@@ -230,3 +322,62 @@ def test_reader_stage_reuses_only_matching_content_fingerprint(monkeypatch, tmp_
     assert first[0]["stage_fingerprint"] == second[0]["stage_fingerprint"]
     assert third[0]["stage_fingerprint"] != first[0]["stage_fingerprint"]
     assert calls == ["prompt:evidence", "prompt:evidence"]
+
+
+def test_reader_retries_length_limit_and_keeps_final_answer(monkeypatch, tmp_path) -> None:
+    responses = iter(
+        [
+            {
+                "choices": [
+                    {"message": {"content": "unfinished"}, "finish_reason": "length"}
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+            },
+            {
+                "choices": [
+                    {"message": {"content": "complete answer"}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 3},
+            },
+        ]
+    )
+    limits: list[int] = []
+    monkeypatch.setattr(
+        ablation,
+        "_reader_context",
+        lambda *_args: ("evidence", {"packing": "test"}),
+    )
+    monkeypatch.setattr(
+        ablation,
+        "_answer_prompt",
+        lambda _reference, context: f"prompt:{context}",
+    )
+
+    def fake_chat(_provider, _prompt, *, max_tokens, **_kwargs):
+        limits.append(max_tokens)
+        return next(responses)
+
+    monkeypatch.setattr(ablation, "_chat", fake_chat)
+    args = SimpleNamespace(
+        run_dir=tmp_path,
+        answer_max_tokens=512,
+        timeout=10,
+        retries=1,
+        workers=1,
+    )
+    items = [
+        {"question_id": "q1", "question_type": "test", "retrieved_session_ids": []}
+    ]
+    rows = ablation._answer_arm(
+        args,
+        SimpleNamespace(name="kimi", model="reader"),
+        "facts-only",
+        items,
+        {"q1": {"question": "Question?"}},
+    )
+
+    assert limits == [512, 1024]
+    assert rows[0]["hypothesis"] == "complete answer"
+    assert rows[0]["finish_reason"] == "stop"
+    assert rows[0]["attempt_count"] == 2
+    assert rows[0]["usage"]["prompt_tokens"] == 20

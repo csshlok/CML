@@ -77,6 +77,7 @@ def test_atomic_extraction_preserves_user_and_assistant_facts(tmp_path: Path) ->
                                 "predicate": "bought",
                                 "object_text": "three yellow dresses",
                                 "fact_kind": "event",
+                                "qualifiers": {"list_position": 2},
                                 "confidence": 0.98,
                             },
                             {
@@ -109,6 +110,7 @@ def test_atomic_extraction_preserves_user_and_assistant_facts(tmp_path: Path) ->
     assert {fact.citation.speaker for fact in facts} == {"user", "assistant"}
     assert diagnostics.valid_fact_count == 2
     assert diagnostics.invalid_fact_count == 0
+    assert facts[0].qualifiers["list_position"] == "2"
 
 
 def test_atomic_extraction_rejects_non_verbatim_citation(tmp_path: Path) -> None:

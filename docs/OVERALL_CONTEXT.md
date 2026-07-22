@@ -533,3 +533,24 @@ tokens versus 139 / 8,341 for deterministic-only, and both arms still failed the
 development, not promotion or a large reader/judge benchmark. Full assistant-turn
 enrichment is substantially slower on verbose benchmark sessions and remains
 idle/background work.
+
+## July 22 API Semantic Extraction Recovery/Control Smoke
+
+The benchmark runner now performs bounded, resumable, provenance-validated cloud
+extraction while the production path remains loopback-only. A 12-question set was
+frozen from already-exposed evaluation data with one claim-first failure and one control
+per LongMemEval family. GPT-5.4 processed all 120 retrieved sessions in 270 requests,
+producing 4,089 valid facts and 187 rejected candidates for an estimated $8.7551.
+
+Coverage did not clear the offline gate: 100% stored evidence recall, 92.8571% packed
+evidence recall, zero false-safe packets, but 0/12 safe atomic activations and a larger
+mean packet than claim-first. The facts-only reader nevertheless moved from 6/12 to
+7/12 dual-judge correctness, with three wins and two losses (McNemar p=1.0). The gains
+covered current-value update, preference recommendation, and temporal calculation. The
+losses exposed over-broad project identity and a table relationship reduced to an
+incomplete Sunday assignment. Two of six controls regressed, so promotion failed.
+
+This is evidence that write-time synthesis can help the reader, but not that a flat
+fact store is sufficient. The next semantic compiler must preserve structured
+relationships, normalize entity/category identity, prove closed-world set coverage,
+and reject loosely related actions before a larger API extraction run is justified.

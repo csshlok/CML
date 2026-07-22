@@ -294,7 +294,13 @@ def source_content_hash(session_id: str, date: str, turns: list[dict]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def atomic_extraction_prompt(sessions: list[dict]) -> str:
+def atomic_extraction_prompt(
+    sessions: list[dict],
+    *,
+    max_facts_per_session: int = 8,
+) -> str:
+    if max_facts_per_session <= 0:
+        raise ValueError("max_facts_per_session must be positive")
     payload = [
         {
             "session_id": session["session_id"],
@@ -329,7 +335,8 @@ Rules:
   are memories too. Do not reduce every assistant fact to a suggestion.
 - Split compound statements, enumerations, tables, and multiple quantities into separate
   atomic facts. Preserve list position in qualifiers when present.
-- Return at most 8 of the most durable concrete facts per supplied session chunk. Keep
+- Return at most {max_facts_per_session} of the most durable concrete facts per supplied
+  session chunk. Keep
   predicate and object_text concise so the JSON finishes within the output budget.
 - Preserve named entities, attributes, relationships, locations, actions, outcomes,
   quantities with units and roles, preferences, plans, constraints, and state changes.
@@ -418,6 +425,29 @@ def _write_cache(path: Path, extraction: AtomicSessionExtraction) -> None:
     temporary.replace(path)
 
 
+def load_atomic_session_cache(
+    *,
+    cache_dir: Path,
+    model: str,
+    session: dict,
+) -> AtomicSessionExtraction | None:
+    """Load one versioned, source-addressed extraction cache entry."""
+    return _read_cache(_cache_path(cache_dir, model, session))
+
+
+def store_atomic_session_cache(
+    extraction: AtomicSessionExtraction,
+    *,
+    cache_dir: Path,
+    model: str,
+    session: dict,
+) -> None:
+    """Atomically store one validated extraction for resumable benchmark work."""
+    if extraction.session_id != str(session["session_id"]):
+        raise ValueError("atomic_cache_session_id_mismatch")
+    _write_cache(_cache_path(cache_dir, model, session), extraction)
+
+
 def _coerce_and_validate(
     raw_session: dict,
     session: dict,
@@ -454,10 +484,22 @@ def _coerce_and_validate(
         candidate.setdefault("qualifiers", {})
         candidate.setdefault("supersession_key", None)
         candidate.setdefault("confidence", 0.5)
+        if isinstance(candidate["qualifiers"], dict):
+            candidate["qualifiers"] = {
+                str(key): (
+                    value
+                    if isinstance(value, str)
+                    else json.dumps(value, ensure_ascii=False, sort_keys=True)
+                )
+                for key, value in candidate["qualifiers"].items()
+            }
         try:
             fact = AtomicFact.model_validate(candidate)
-        except ValidationError:
-            invalid["schema_validation"] += 1
+        except ValidationError as exc:
+            first = exc.errors()[0]
+            location = ".".join(str(part) for part in first.get("loc") or ())
+            error_type = str(first.get("type") or "unknown")
+            invalid[f"schema_validation:{location}:{error_type}"] += 1
             continue
         content = str(turn.get("content") or "")
         if fact.citation.excerpt not in content:
@@ -1184,10 +1226,13 @@ def compile_semantic_atomic_session(
     extractor: AtomicExtractor,
     max_source_chars: int = 1_000,
     included_roles: set[str] | None = None,
+    max_facts_per_chunk: int = 8,
 ) -> tuple[AtomicSessionExtraction, dict[str, int], dict[str, int]]:
     """Compile one session in bounded requests and validate every citation."""
     if max_source_chars < 1_000:
         raise ValueError("max_source_chars must be at least 1000")
+    if max_facts_per_chunk <= 0:
+        raise ValueError("max_facts_per_chunk must be positive")
 
     def windows(content: str) -> list[str]:
         if len(content) <= max_source_chars:
@@ -1265,14 +1310,18 @@ def compile_semantic_atomic_session(
     reasons: Counter[str] = Counter()
     combined_usage: Counter[str] = Counter()
     for chunk_index, (chunk, original_indices) in enumerate(chunks):
-        prompt = atomic_extraction_prompt([chunk])
+        prompt = atomic_extraction_prompt(
+            [chunk],
+            max_facts_per_session=max_facts_per_chunk,
+        )
         payload: dict | None = None
         for attempt in range(2):
             response_text, attempt_usage = extractor(
                 prompt
                 + (
                     "\nRETRY: Your prior response was not complete valid JSON. Return one "
-                    "smaller JSON object with no prose and no more than 8 facts."
+                    "smaller JSON object with no prose and no more than "
+                    f"{max_facts_per_chunk} facts."
                     if attempt
                     else ""
                 )

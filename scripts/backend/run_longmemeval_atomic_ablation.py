@@ -25,16 +25,19 @@ if str(REPO_ROOT) not in sys.path:
 from backend.app.core.atomic_memory import (  # noqa: E402
     ATOMIC_MEMORY_VERSION,
     AtomicFact,
+    compile_semantic_atomic_session,
     estimate_atomic_tokens,
     evaluate_deterministic_operation,
     export_semantic_normalization_jobs,
     extract_atomic_memory,
     import_semantic_normalization_results,
+    load_atomic_session_cache,
     pack_atomic_facts,
     plan_atomic_query,
     render_deterministic_operation,
     route_atomic_question,
     source_content_hash,
+    store_atomic_session_cache,
     validate_atomic_contract,
 )
 from backend.app.core.claim_evidence_packing import (  # noqa: E402
@@ -45,6 +48,7 @@ from scripts.backend.evaluate_vault_longmemeval_api import (  # noqa: E402
     ProviderContentFilterError,
     _chat,
     _provider,
+    _provider_cost,
     _usage,
 )
 from scripts.backend.evaluate_vault_longmemeval_local import (  # noqa: E402
@@ -122,6 +126,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=240.0)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--extraction-max-tokens", type=int, default=8_192)
+    parser.add_argument(
+        "--extraction-max-source-chars",
+        type=int,
+        default=16_000,
+        help="Maximum source characters sent in one bounded semantic request.",
+    )
+    parser.add_argument(
+        "--extraction-max-facts-per-chunk",
+        type=int,
+        default=48,
+        help="Maximum durable facts requested from each bounded source chunk.",
+    )
+    parser.add_argument(
+        "--extraction-roles",
+        choices=("all", "user"),
+        default="all",
+        help="Question-independent source roles eligible for semantic extraction.",
+    )
     parser.add_argument("--sessions-per-extraction-batch", type=int, default=2)
     parser.add_argument(
         "--max-extraction-sessions",
@@ -525,10 +547,29 @@ def extract_sessions(
             digest = source_content_hash(session["session_id"], session["date"], session["turns"])
             unique[digest] = session
 
-    def extract(batch: list[dict]) -> tuple[str, int, int]:
+    cache_model = _semantic_cache_model(args)
+    ledger_path = args.run_dir / "semantic-extraction-ledger.jsonl"
+    failure_path = args.run_dir / "semantic-extraction-failures.jsonl"
+    existing_ledger = {
+        (str(row.get("source_content_hash") or ""), str(row.get("cache_model") or "")): row
+        for row in _load_jsonl(ledger_path)
+    }
+
+    def extract(session: dict) -> tuple[str, int, int, dict]:
+        cached = load_atomic_session_cache(
+            cache_dir=cache_dir,
+            model=cache_model,
+            session=session,
+        )
+        if cached is not None:
+            return session["session_id"], len(cached.facts), 1, {}
+        request_count = 0
+
         def model(prompt: str) -> tuple[str, dict]:
+            nonlocal request_count
             if provider is None:
                 raise RuntimeError("Semantic extraction provider is disabled")
+            request_count += 1
             response = _chat(
                 provider,
                 prompt,
@@ -538,33 +579,146 @@ def extract_sessions(
             )
             return response["choices"][0]["message"]["content"], _usage(response)
 
-        facts, diagnostics = extract_atomic_memory(
-            batch,
-            model=provider.model if provider is not None else "deterministic-lossless-v1",
-            cache_dir=cache_dir,
-            extractor=model if provider is not None else None,
-            max_sessions_per_batch=args.sessions_per_extraction_batch,
+        started = time.perf_counter()
+        extraction, invalid_reasons, usage = compile_semantic_atomic_session(
+            session,
+            extractor=model,
+            max_source_chars=args.extraction_max_source_chars,
+            included_roles=(
+                {"user"} if args.extraction_roles == "user" else None
+            ),
+            max_facts_per_chunk=args.extraction_max_facts_per_chunk,
         )
-        if diagnostics.extraction_failed:
-            raise RuntimeError(diagnostics.failure_reason)
-        return ",".join(session["session_id"] for session in batch), len(facts), diagnostics.cache_hit_count
+        store_atomic_session_cache(
+            extraction,
+            cache_dir=cache_dir,
+            model=cache_model,
+            session=session,
+        )
+        row = {
+            "session_id": session["session_id"],
+            "source_content_hash": source_content_hash(
+                session["session_id"], session["date"], session["turns"]
+            ),
+            "provider": provider.name if provider is not None else "deterministic",
+            "model": provider.model if provider is not None else cache_model,
+            "cache_model": cache_model,
+            "source_role_scope": args.extraction_roles,
+            "max_source_chars": args.extraction_max_source_chars,
+            "max_facts_per_chunk": args.extraction_max_facts_per_chunk,
+            "request_count": request_count,
+            "fact_count": len(extraction.facts),
+            "invalid_fact_count": sum(invalid_reasons.values()),
+            "invalid_reasons": invalid_reasons,
+            "usage": usage,
+            "wall_seconds": round(time.perf_counter() - started, 4),
+        }
+        _append_jsonl(ledger_path, row)
+        return session["session_id"], len(extraction.facts), 0, row
 
     sessions = list(unique.values())
     if args.max_extraction_sessions > 0:
         sessions = sessions[: args.max_extraction_sessions]
-    batches = [
-        sessions[offset : offset + args.sessions_per_extraction_batch]
-        for offset in range(0, len(sessions), args.sessions_per_extraction_batch)
-    ]
+    if provider is None:
+        facts, diagnostics = extract_atomic_memory(
+            sessions,
+            model="deterministic-lossless-v1",
+            cache_dir=cache_dir,
+            extractor=None,
+        )
+        if diagnostics.extraction_failed:
+            raise RuntimeError(diagnostics.failure_reason)
+        print(
+            json.dumps(
+                {
+                    "protocol": "deterministic-atomic-extraction-v1",
+                    "requested_session_count": len(sessions),
+                    "fact_count": len(facts),
+                    "cache_hit_count": diagnostics.cache_hit_count,
+                },
+                indent=2,
+            )
+        )
+        return
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = [pool.submit(extract, batch) for batch in batches]
+        futures = {pool.submit(extract, session): session for session in sessions}
         for position, future in enumerate(as_completed(futures), start=1):
-            session_id, fact_count, cache_hit = future.result()
+            session = futures[future]
+            try:
+                session_id, fact_count, cache_hit, row = future.result()
+            except (OSError, RuntimeError, ValueError) as exc:
+                failure = {
+                    "session_id": session["session_id"],
+                    "source_content_hash": source_content_hash(
+                        session["session_id"], session["date"], session["turns"]
+                    ),
+                    "cache_model": cache_model,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:500],
+                }
+                _append_jsonl(failure_path, failure)
+                print(
+                    f"failed session {position}/{len(sessions)}: "
+                    f"{session['session_id']} {type(exc).__name__}",
+                    flush=True,
+                )
+                continue
+            if row:
+                key = (row["source_content_hash"], row["cache_model"])
+                existing_ledger[key] = row
             print(
-                f"extracted batch {position}/{len(batches)}: {session_id} "
+                f"extracted session {position}/{len(sessions)}: {session_id} "
                 f"facts={fact_count} cache_hit={cache_hit}",
                 flush=True,
             )
+    rows = [
+        row
+        for (source_hash, model), row in existing_ledger.items()
+        if model == cache_model and source_hash in unique
+    ]
+    usages = [row.get("usage") or {} for row in rows]
+    failed_hashes = {
+        str(row.get("source_content_hash") or "")
+        for row in _load_jsonl(failure_path)
+        if row.get("cache_model") == cache_model
+    }
+    summary = {
+        "protocol": "bounded-semantic-extraction-v1",
+        "provider": provider.name if provider is not None else "deterministic",
+        "model": provider.model if provider is not None else cache_model,
+        "cache_model": cache_model,
+        "source_role_scope": args.extraction_roles,
+        "requested_session_count": len(sessions),
+        "completed_session_count": len(rows),
+        "failed_session_count": len(
+            failed_hashes
+            - {str(row.get("source_content_hash") or "") for row in rows}
+        ),
+        "request_count": sum(int(row.get("request_count") or 0) for row in rows),
+        "fact_count": sum(int(row.get("fact_count") or 0) for row in rows),
+        "invalid_fact_count": sum(
+            int(row.get("invalid_fact_count") or 0) for row in rows
+        ),
+        "wall_seconds_sum": round(
+            sum(float(row.get("wall_seconds") or 0.0) for row in rows), 4
+        ),
+        "cost": _provider_cost(provider, usages) if provider is not None else {},
+    }
+    (args.run_dir / "semantic-extraction-report.json").write_text(
+        json.dumps(summary, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(summary, indent=2))
+
+
+def _semantic_cache_model(args: argparse.Namespace) -> str:
+    if not args.semantic_extraction:
+        return "deterministic-lossless-v1"
+    return (
+        f"{args.extractor_provider}:{args.extractor_model}:bounded-v3:"
+        f"chars={args.extraction_max_source_chars}:"
+        f"facts={args.extraction_max_facts_per_chunk}:roles={args.extraction_roles}"
+    )
 
 
 def _unique_retrieved_sessions(
@@ -615,11 +769,7 @@ def _cached_facts(
 
     facts, diagnostics = extract_atomic_memory(
         sessions,
-        model=(
-            args.extractor_model
-            if args.semantic_extraction
-            else "deterministic-lossless-v1"
-        ),
+        model=_semantic_cache_model(args),
         cache_dir=args.run_dir / "fact-cache",
         extractor=require_complete_semantic_cache if args.semantic_extraction else None,
     )
@@ -1040,6 +1190,7 @@ def _coverage_stage_fingerprint(
             "claim_first_token_budget": args.claim_first_token_budget,
             "semantic_extraction": args.semantic_extraction,
             "extractor_model": args.extractor_model if args.semantic_extraction else None,
+            "semantic_cache_model": _semantic_cache_model(args),
             "impact_question_ids": sorted(impact_ids),
             "base_coverage_sha256": (
                 hashlib.sha256(
@@ -1229,12 +1380,13 @@ def _answer_arm(
         )
         prompt = _answer_prompt(reference, context)
         stage_payload = {
-            "stage": "reader-answer-v1",
+            "stage": "reader-answer-v2-bounded-length-retry",
             "question_id": item["question_id"],
             "arm": arm,
             "provider": getattr(provider, "name", "unknown"),
             "model": getattr(provider, "model", "unknown"),
             "max_tokens": args.answer_max_tokens,
+            "length_retry_max_tokens": min(args.answer_max_tokens * 2, 1_024),
             "prompt": prompt,
         }
         fingerprint = hashlib.sha256(
@@ -1251,6 +1403,7 @@ def _answer_arm(
     def answer(prepared: dict) -> dict:
         item = prepared["item"]
         try:
+            responses = []
             response = _chat(
                 provider,
                 prepared["prompt"],
@@ -1258,9 +1411,22 @@ def _answer_arm(
                 timeout=args.timeout,
                 retries=args.retries,
             )
+            responses.append(response)
+            if response["choices"][0].get("finish_reason") == "length":
+                response = _chat(
+                    provider,
+                    prepared["prompt"],
+                    max_tokens=min(args.answer_max_tokens * 2, 1_024),
+                    timeout=args.timeout,
+                    retries=args.retries,
+                )
+                responses.append(response)
             hypothesis = response["choices"][0]["message"]["content"].strip()
             finish_reason = response["choices"][0].get("finish_reason")
-            usage = _usage(response)
+            usage_counter: Counter[str] = Counter()
+            for attempt in responses:
+                usage_counter.update(_usage(attempt))
+            usage = dict(usage_counter)
             content_filtered = False
         except ProviderContentFilterError:
             hypothesis = "The provider rejected the supplied evidence, so no answer was produced."
@@ -1274,6 +1440,7 @@ def _answer_arm(
             "hypothesis": hypothesis,
             "finish_reason": finish_reason,
             "content_filtered": content_filtered,
+            "attempt_count": len(responses) if not content_filtered else 1,
             "usage": usage,
             "context_metadata": prepared["metadata"],
             "stage_fingerprint": prepared["stage_fingerprint"],
@@ -1317,6 +1484,9 @@ def _judge_arm(
             "provider": getattr(provider, "name", "unknown"),
             "model": getattr(provider, "model", "unknown"),
             "answer_fingerprint": answer.get("stage_fingerprint"),
+            "hypothesis_sha256": hashlib.sha256(
+                str(answer.get("hypothesis") or "").encode("utf-8")
+            ).hexdigest(),
             "prompt": prompt,
         }
         fingerprint = hashlib.sha256(

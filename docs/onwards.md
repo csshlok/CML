@@ -511,3 +511,56 @@ conversions, compare a stronger local model if it fits the 6 GB GPU, and require
 offline activation gain with zero false-safe counts before reader evaluation. The
 reproducible diagnostic is `scripts/backend/run_local_semantic_ingestion_pilot.py`; its
 result is `.tmp/vault-odin-memory-benchmark/atomic-memory-v1/local-semantic-pilot-gpt4_f2262a51.json`.
+
+## July 22 API write-time extraction experiment
+
+The atomic ablation runner now uses the same bounded per-session semantic compiler as
+production instead of sending whole sessions in two-session batches. Cloud extraction
+is benchmark-only: production ingestion still refuses non-loopback endpoints. The
+runner has content-addressed cache identities that include provider, model, chunk size,
+fact limit, and role scope; an append-only usage/cost ledger; per-session failure
+recording; atomic cache writes; exact-citation validation; and resumable reruns. Numeric
+or structured qualifier values are normalized into the string-valued production
+schema. Reader checkpoints now retry only length-limited answers up to a 1,024-token
+ceiling, and judge fingerprints include the actual hypothesis text.
+
+A five-session Kimi K2.6 calibration at 16K source characters / 48 facts was rejected:
+four sessions cost about $0.106, took 596.35 summed seconds, yielded only 48 accepted
+facts versus 84 invalid facts, and the fifth session twice exhausted an 8,192-token
+output allowance. GPT-5.4 at 8K characters / 16 facts was faster and reliable enough to
+run a bounded experiment after fixing numeric qualifier coercion.
+
+The experiment froze 12 already-exposed evaluation questions: exactly one existing
+claim-first failure and one existing claim-first control from each of the six
+LongMemEval families. This is a recovery/control smoke test, not a fresh holdout or
+headline result. GPT-5.4 extracted all 120 retrieved sessions in 270 requests, producing
+4,089 validated facts and rejecting 187 candidates. Of those rejections, 165 had
+non-exact excerpts. Extraction used 586,340 prompt and 485,950 completion tokens and
+cost an estimated $8.7551 at uncached rates. Eight concurrent workers completed the
+wall-clock run in roughly six and a half minutes; summed request wall time was 3,254.19
+seconds.
+
+Offline coverage remained a no-go. Stored evidence recall was 100%, packed evidence
+recall 92.8571%, effective evidence recall 85.7143%, and false-safe count zero, but safe
+atomic activation was 0/12. Mean packed facts-only context was 7,895.75 estimated tokens
+versus a 7,685.50-token claim-first control, so the semantic layer did not compress this
+sample or prove category/set closure.
+
+The corrected reader/dual-judge result moved from 6/12 claim-first to 7/12 facts-only:
+three wins, two losses, exact McNemar p=1.0. Wins were one current-value update, one
+preference-grounded recommendation, and one temporal-duration calculation. Losses were
+a project-count overcount caused by treating loosely related work as distinct led
+projects, and an assistant-table lookup where the facts preserved the Sunday assignment
+but lost the linked 8am-4pm shift value. Two of six previously correct controls
+regressed, mean reader prompt usage rose to 8,509.67 tokens after counting the bounded
+length retry, and one reader request was content-filtered. The candidate fails every
+promotion criterion despite the net one-question gain.
+
+The architectural theory is therefore partially supported but not production-ready:
+strong write-time extraction can rescue some questions, yet an unordered open-world
+fact list also creates new ambiguity and loses relational/table structure. Do not run
+the remaining 60-question extraction yet. The next work should compile explicit entity
+categories and set-closure attestations, preserve table row/header relationships, and
+deduplicate event/project identities before packing. Those changes should first replay
+the cached 12-question set offline and must remove both observed regressions before any
+larger paid run.
