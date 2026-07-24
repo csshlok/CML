@@ -41,6 +41,9 @@ router = APIRouter(prefix="/sources", tags=["sources"])
 def list_sources(
     vault_id: str | None = None,
     cluster_id: str | None = None,
+    unclustered: bool = False,
+    states: str | None = None,
+    q: str | None = None,
     limit: int = 500,
     offset: int = 0,
     include_content: bool = False,
@@ -53,6 +56,22 @@ def list_sources(
     if cluster_id:
         clauses.append("cluster_id = ?")
         params.append(cluster_id)
+    elif unclustered:
+        clauses.append("cluster_id IS NULL")
+    state_values = [item.strip() for item in (states or "").split(",") if item.strip()]
+    if state_values:
+        invalid_states = [item for item in state_values if item not in {"waiting", "processing", "indexed", "failed"}]
+        if invalid_states:
+            raise HTTPException(status_code=400, detail="Invalid source state filter")
+        clauses.append(f"state IN ({','.join('?' for _ in state_values)})")
+        params.extend(state_values)
+    normalized_query = (q or "").strip().lower()
+    if normalized_query:
+        clauses.append(
+            "(LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(source_type) LIKE ?)"
+        )
+        match = f"%{normalized_query}%"
+        params.extend([match, match, match, match])
 
     clauses.append("deleted_at IS NULL")
     where = f"WHERE {' AND '.join(clauses)}"
@@ -68,7 +87,13 @@ def list_sources(
 
 
 @router.get("/count")
-def count_sources(vault_id: str | None = None, cluster_id: str | None = None) -> dict:
+def count_sources(
+    vault_id: str | None = None,
+    cluster_id: str | None = None,
+    unclustered: bool = False,
+    states: str | None = None,
+    q: str | None = None,
+) -> dict:
     clauses = ["deleted_at IS NULL"]
     params: list[object] = []
     if vault_id:
@@ -77,6 +102,22 @@ def count_sources(vault_id: str | None = None, cluster_id: str | None = None) ->
     if cluster_id:
         clauses.append("cluster_id = ?")
         params.append(cluster_id)
+    elif unclustered:
+        clauses.append("cluster_id IS NULL")
+    state_values = [item.strip() for item in (states or "").split(",") if item.strip()]
+    if state_values:
+        invalid_states = [item for item in state_values if item not in {"waiting", "processing", "indexed", "failed"}]
+        if invalid_states:
+            raise HTTPException(status_code=400, detail="Invalid source state filter")
+        clauses.append(f"state IN ({','.join('?' for _ in state_values)})")
+        params.extend(state_values)
+    normalized_query = (q or "").strip().lower()
+    if normalized_query:
+        clauses.append(
+            "(LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(source_type) LIKE ?)"
+        )
+        match = f"%{normalized_query}%"
+        params.extend([match, match, match, match])
     with connect() as conn:
         _validate_source_list_filters(conn, vault_id=vault_id, cluster_id=cluster_id)
         row = conn.execute(
