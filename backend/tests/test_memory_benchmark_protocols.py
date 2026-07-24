@@ -767,6 +767,82 @@ def test_longmemeval_reader_retries_through_1024_and_reuses_checkpoint(monkeypat
     assert resumed[0]["reader_attempt_count"] == 3
 
 
+def test_longmemeval_reader_uses_concise_recovery_after_large_length_response(
+    monkeypatch, tmp_path
+) -> None:
+    responses = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "message": {"content": "long unfinished analysis"},
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 2_048},
+            },
+            {
+                "choices": [
+                    {
+                        "message": {"content": "The concise final answer."},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 120, "completion_tokens": 6},
+            },
+        ]
+    )
+    prompts: list[str] = []
+    budgets: list[int] = []
+
+    def fake_chat(_provider, prompt, *, max_tokens, timeout, retries):
+        del timeout, retries
+        prompts.append(prompt)
+        budgets.append(max_tokens)
+        return next(responses)
+
+    monkeypatch.setattr(
+        "scripts.backend.evaluate_vault_longmemeval_api._chat", fake_chat
+    )
+    args = SimpleNamespace(
+        max_context_chars=10_000,
+        max_answer_tokens=2_048,
+        length_recovery_tokens=256,
+        timeout=1.0,
+        retries=0,
+    )
+    provider = Provider("test", "https://invalid", "model", "KEY", 0.0, 0.0)
+    reference = {
+        "question_id": "q1",
+        "question_type": "single-session-user",
+        "question": "What happened?",
+        "question_date": "2025-01-02",
+        "answer": "The concise final answer.",
+        "haystack_session_ids": ["s1"],
+        "haystack_dates": ["2025-01-01"],
+        "haystack_sessions": [
+            [{"role": "user", "content": "The concise final answer."}]
+        ],
+    }
+
+    rows = generate_longmemeval(
+        args,
+        provider,
+        [{"question_id": "q1", "retrieved_session_ids": ["s1"]}],
+        {"q1": reference},
+        tmp_path / "answers.jsonl",
+        "run-fingerprint",
+    )
+
+    assert budgets == [2_048, 256]
+    assert "return only the concise final answer" in prompts[1]
+    assert rows[0]["hypothesis"] == "The concise final answer."
+    assert rows[0]["reader_finish_reason"] == "stop"
+    assert rows[0]["reader_length_recovery_attempted"] is True
+    assert rows[0]["reader_length_recovery_succeeded"] is True
+    assert rows[0]["reader_billed_prompt_tokens"] == 220
+
+
 def test_longmemeval_chat_retries_socket_timeout(monkeypatch) -> None:
     class Response:
         def __enter__(self):

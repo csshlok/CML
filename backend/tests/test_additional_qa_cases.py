@@ -2564,21 +2564,20 @@ class AdditionalQACases(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[2]
         search = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.search.tsx").read_text(encoding="utf-8")
 
-        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", search)
-        self.assertIn("xl:grid-cols-[minmax(0,1fr)_320px] xl:overflow-hidden", search)
+        self.assertIn("relative h-full overflow-y-auto bg-background", search)
         self.assertIn("px-4 py-5 sm:px-6", search)
         self.assertIn("flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between", search)
         self.assertIn("lg:grid-cols-[minmax(0,1fr)_auto_auto]", search)
-        self.assertIn("mb-4 break-words rounded-md border", search)
-        self.assertIn("border-t border-border bg-card/55 p-4 sm:p-5 xl:border-l xl:border-t-0", search)
-        self.assertIn("break-all text-right font-medium", search)
+        self.assertIn("grid grid-cols-1 gap-3 xl:grid-cols-2", search)
+        self.assertIn("line-clamp-3 text-sm leading-6", search)
         self.assertIn('DialogTitle className="break-words"', search)
-        self.assertIn("flex flex-col gap-2 sm:flex-row", search)
         self.assertIn('className="min-w-0"', search)
         self.assertIn("break-words rounded-md border border-border bg-muted/35", search)
         self.assertIn("max-w-full break-words rounded-md", search)
         self.assertIn("flex flex-wrap justify-end gap-2", search)
         self.assertNotIn("grid-cols-[minmax(0,1fr)_320px] overflow-hidden", search)
+        self.assertNotIn("SourceInspector", search)
+        self.assertNotIn("handleDrop", search)
         self.assertNotIn("flex items-start justify-between gap-6", search)
         self.assertNotIn("lg:grid-cols-[1fr_auto_auto]", search)
         self.assertNotIn("mb-4 flex items-center justify-between text-sm", search)
@@ -2588,7 +2587,7 @@ class AdditionalQACases(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[2]
         sources = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.sources.tsx").read_text(encoding="utf-8")
 
-        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", sources)
+        self.assertIn("relative grid h-full grid-cols-1 overflow-y-auto", sources)
         self.assertIn("xl:grid-cols-[minmax(0,1fr)_326px] xl:overflow-hidden", sources)
         self.assertIn("min-w-0 px-7 py-8 xl:overflow-y-auto", sources)
         self.assertIn("relative mr-auto min-w-0 flex-[1_1_240px] sm:max-w-sm", sources)
@@ -2618,20 +2617,22 @@ class AdditionalQACases(unittest.TestCase):
     def test_map_route_stacks_detail_rail_and_wraps_long_graph_content_on_narrow_windows(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         map_route = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.map.tsx").read_text(encoding="utf-8")
-        cluster_map = (repo_root / "apps" / "desktop" / "src" / "components" / "ClusterMap.tsx").read_text(
+        knowledge_map = (repo_root / "apps" / "desktop" / "src" / "components" / "KnowledgeMap.tsx").read_text(
             encoding="utf-8",
         )
 
         self.assertIn("vault-page-wash h-full overflow-y-auto px-4 py-6 sm:px-6 lg:px-8", map_route)
-        self.assertIn("<ClusterMap clusters={clusters} sources={sources} />", map_route)
-        self.assertIn("Map unavailable", map_route)
-        self.assertIn("Check Settings", map_route)
+        self.assertIn("<KnowledgeMap vaultId={vault.id} overview={overview}", map_route)
+        self.assertIn("Vault could not load the map", map_route)
+        self.assertIn("Open Health", map_route)
         self.assertNotIn("mapMockData", map_route)
         self.assertNotIn("demo=cluster-map", map_route)
         self.assertNotIn("right-panel", map_route)
-        self.assertIn("break-words text-lg font-semibold text-foreground", cluster_map)
-        self.assertIn("line-clamp-3 break-words text-xs", cluster_map)
-        self.assertIn("window.setTimeout", cluster_map)
+        self.assertIn("xl:grid-cols-[minmax(0,1fr)_320px]", knowledge_map)
+        self.assertIn("Reset view", knowledge_map)
+        self.assertIn("Authoritative relationships", knowledge_map)
+        self.assertIn("break-words text-base font-semibold", knowledge_map)
+        self.assertIn("window.setTimeout", knowledge_map)
 
     def test_clusters_route_exposes_inspector_and_wraps_long_cluster_content_on_narrow_windows(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -2639,7 +2640,7 @@ class AdditionalQACases(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.assertIn("xl:grid-cols-[minmax(0,1fr)_340px]", clusters)
+        self.assertIn("vault-page-wash h-full overflow-y-auto", clusters)
         self.assertIn("min-w-0 px-4 py-6 sm:px-7 sm:py-8", clusters)
         self.assertIn("page-title flex flex-wrap items-center gap-3", clusters)
         self.assertIn("vault-card mt-5 break-words", clusters)
@@ -2650,12 +2651,9 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("line-clamp-2 break-words text-sm text-muted-foreground", clusters)
         self.assertIn("flex flex-col gap-3 px-4 py-3 sm:flex-row", clusters)
         self.assertIn("flex shrink-0 flex-wrap items-center gap-2", clusters)
-        self.assertIn("border-t border-border bg-card/35 px-4 py-6", clusters)
-        self.assertIn("xl:sticky xl:top-8", clusters)
-        self.assertIn("min-w-0 break-words text-base font-semibold", clusters)
-        self.assertIn("mt-1 break-words text-muted-foreground", clusters)
-        self.assertIn("line-clamp-2 break-words font-medium", clusters)
-        self.assertIn("break-words text-xl font-semibold tabular-nums", clusters)
+        self.assertIn('navigate({ to: "/clusters/$clusterId"', clusters)
+        self.assertNotIn("ClusterInspector", clusters)
+        self.assertNotIn("xl:grid-cols-[minmax(0,1fr)_340px]", clusters)
         self.assertNotIn("hidden border-l border-border bg-card/35", clusters)
         self.assertNotIn("grid-cols-[1fr_96px_96px_140px_32px]", clusters)
         self.assertNotIn("truncate text-sm font-semibold", clusters)
@@ -2669,7 +2667,7 @@ class AdditionalQACases(unittest.TestCase):
 
         self.assertIn("grid h-full grid-cols-1 overflow-y-auto", chat)
         self.assertIn("lg:grid-cols-[260px_minmax(0,1fr)]", chat)
-        self.assertIn("xl:grid-cols-[320px_minmax(0,1fr)_326px] xl:overflow-hidden", chat)
+        self.assertIn("xl:grid-cols-[320px_minmax(0,1fr)] xl:overflow-hidden", chat)
         self.assertIn("border-b border-border bg-card/35 px-4 py-4", chat)
         self.assertIn("max-h-56 space-y-1 overflow-y-auto lg:max-h-none", chat)
         self.assertIn("min-w-0 flex-1 break-words px-3 py-2 text-sm", chat)
@@ -2678,10 +2676,7 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("h-8 w-full min-w-0 gap-2", chat)
         self.assertIn("gap-2 sm:ml-auto", chat)
         self.assertIn("max-w-full break-all rounded-md", chat)
-        self.assertIn("border-t border-border bg-card/35 px-4 py-6", chat)
-        self.assertIn("min-w-0 flex-1 break-words text-lg font-semibold", chat)
-        self.assertIn("flex w-full min-w-0 items-center gap-3", chat)
-        self.assertIn("break-words font-semibold", chat)
+        self.assertNotIn("RecentChatInspector", chat)
         self.assertNotIn("grid h-full grid-cols-[320px_minmax(0,1fr)_326px] overflow-hidden", chat)
         self.assertNotIn("min-w-0 flex-1 truncate", chat)
         self.assertNotIn("right-panel", chat)
@@ -2696,7 +2691,7 @@ class AdditionalQACases(unittest.TestCase):
 
         self.assertIn("grid h-full grid-cols-1 overflow-y-auto", chat_detail)
         self.assertIn("lg:grid-cols-[240px_minmax(0,1fr)]", chat_detail)
-        self.assertIn("xl:grid-cols-[256px_minmax(0,1fr)_320px] xl:overflow-hidden", chat_detail)
+        self.assertIn("xl:grid-cols-[256px_minmax(0,1fr)] xl:overflow-hidden", chat_detail)
         self.assertIn("border-b border-border bg-card/30 p-2", chat_detail)
         self.assertIn("max-h-48 space-y-0.5 overflow-y-auto lg:max-h-none", chat_detail)
         self.assertIn("block break-words rounded-md px-2.5 py-1.5 text-sm", chat_detail)
@@ -2706,7 +2701,6 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("border-t border-border bg-card/20 p-4", chat_detail)
         self.assertIn("break-words text-sm font-medium", chat_detail)
         self.assertIn("line-clamp-4 break-words text-xs", chat_detail)
-        self.assertIn("li key={warning} className=\"break-words\"", chat_detail)
         self.assertIn("max-w-full break-all rounded-md", chat_detail)
         self.assertIn("mx-auto mt-1.5 max-w-3xl break-words", chat_detail)
         self.assertIn("max-w-[85%] break-words rounded-md", chat_detail)
@@ -2731,7 +2725,7 @@ class AdditionalQACases(unittest.TestCase):
             encoding="utf-8",
         )
         styles = (repo_root / "apps" / "desktop" / "src" / "styles.css").read_text(encoding="utf-8")
-        cluster_map = (repo_root / "apps" / "desktop" / "src" / "components" / "ClusterMap.tsx").read_text(
+        knowledge_map = (repo_root / "apps" / "desktop" / "src" / "components" / "KnowledgeMap.tsx").read_text(
             encoding="utf-8",
         )
 
@@ -2768,15 +2762,11 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("min-height: 32px;", styles)
         self.assertNotIn("\n    height: 32px;", styles)
 
-        self.assertIn("break-words text-lg font-semibold text-foreground", cluster_map)
-        self.assertIn("line-clamp-3 break-words text-xs", cluster_map)
-        self.assertIn("break-words text-sm font-medium text-foreground", cluster_map)
-        self.assertIn("min-w-0 flex-1", cluster_map)
-        self.assertNotIn("mt-2 max-w-36 text-sm", cluster_map)
-        self.assertNotIn("mt-2 max-w-36 text-xs", cluster_map)
-        self.assertNotIn("truncate text-sm font-medium text-foreground", cluster_map)
-        self.assertNotIn("truncate text-sm font-semibold", cluster_map)
-        self.assertNotIn("hidden w-[340px]", cluster_map)
+        self.assertIn("break-words text-base font-semibold", knowledge_map)
+        self.assertIn("min-w-0 flex-1", knowledge_map)
+        self.assertIn("Reset view", knowledge_map)
+        self.assertIn("Unclustered collection", knowledge_map)
+        self.assertNotIn("mapMockData", knowledge_map)
 
     def test_extension_capture_rejects_core_api_token(self) -> None:
         os.environ["CML_API_TOKEN"] = "core-token"

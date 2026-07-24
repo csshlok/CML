@@ -711,11 +711,19 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         with (
             patch("backend.app.core.model_registry.threading.Thread", ImmediateThread),
             patch("backend.app.core.model_registry._find_local_model_file", return_value=None),
+            patch(
+                "backend.app.core.model_registry._model_disk_preflight",
+                return_value={"ok": True, "message": ""},
+            ),
             patch("backend.app.core.model_registry._download_expected_model_sha256", return_value=expected_digest),
             patch("backend.app.core.model_registry._expected_model_sha256", return_value=expected_digest),
             patch("backend.app.core.model_registry._resolve_gguf_filename", return_value="model.Q4_K_M.gguf"),
             patch("backend.app.core.model_registry.validate_huggingface_url", return_value=None),
             patch("backend.app.core.model_registry.urlopen", return_value=FastResponse()),
+            patch(
+                "backend.app.core.model_registry.hardware_module.hardware_status",
+                return_value={"gpus": []},
+            ),
         ):
             result = model_registry.start_model_download("qwen3-4b-q4_k_m", target_dir=str(selected_dir))
 
