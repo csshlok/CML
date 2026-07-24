@@ -1,6 +1,6 @@
 # Overall Context
 
-Last updated: 2026-07-21
+Last updated: 2026-07-24
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
@@ -24,9 +24,11 @@ The major scoped implementation passes are complete:
 - Odin supports scoped project registration, durable synchronization, AST-derived structure, retrieval activation, CLI access, project-backed clusters, scoped questions, and request-only graph/tree artifacts;
 - the desktop has first-class Projects, Tasks, Sources, cluster profiles, Settings Health, CLI Access, and evidence follow-up surfaces;
 - benchmark tooling now separates ingestion, retrieval, packing, reading, judging, and reporting with resumable artifacts and regression gates;
+- external-corpus validation now includes all 3,045 Open RAG retrieval questions and a frozen 500-question paid QA gate;
 - production memory benchmarking now includes a frozen evolving-fact suite and an activation-only paired protocol that reuses unchanged answers and judgments;
 - atomic-memory compiler v9 now runs in production chat-session sync, persists lossless facts and terminal source-unit coverage separately from the curated temporal ledger, exposes session-scoped loading, and records conservative named-entity category memberships for future retrieval activation;
-- the public README and benchmark report describe the product and its measured results in user-facing language.
+- the public README and benchmark report describe the product and its measured results in user-facing language;
+- the July 24 UI distillation removed redundant cluster inspectors, dead/stale controls and components, duplicate navigation, and several spacing/overflow failures while preserving a smaller explicit accessibility and packaged-desktop backlog.
 
 The remaining cycle is release work and quality productionization:
 
@@ -36,7 +38,7 @@ The remaining cycle is release work and quality productionization:
 4. evaluate future memory changes on fresh, preregistered evidence rather than the development-exposed LongMemEval set;
 5. improve Odin's TypeScript/React graph-to-prompt selection and authoritative cross-file relationships;
 6. complete clean Windows installer, account-separation, signing, and package-integrity validation;
-7. resume the broader UI refinement pass after backend and retrieval behavior stabilizes.
+7. finish the remaining UI audit work in packaged Electron: accessibility, keyboard/zoom, offline and lock transitions, remaining stale route handlers, and Bridge/Settings decomposition.
 
 The reviewed 0.1.7 pass is published on `main` as 10 commits. GitHub CI run `29682163820` passed the dependency audit, desktop, quick, integration, system, and benchmark jobs; the dispatch-only Odin scale job was correctly skipped. The project remains pre-release because clean-machine installer, account-separation, signing, and package-integrity proof are still outstanding.
 
@@ -325,11 +327,14 @@ The public headline table now records:
 
 | Benchmark and configuration | Questions | Retrieval | Kimi | GPT-5.4 | Reader prompt tokens/query | Evaluation cost |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Open RAG frozen QA prefix | 500 | 0.9380 section Hit@10 | 83.8% | 73.6% | 2,672.1 | $1.9102 |
 | LongMemEval-S typed-v1 | 500 | 0.9802 recall@10 | 83.8% | 83.2% | 33,331.9 | $13.4211 |
 | LongMemEval-S claim-first 10K | 500 | 0.9802 recall@10 | 81.8% | 82.0% | 8,307.1 | $4.5111 |
 | LoCoMo ColBERT | 1,540 | 0.7606 recall@10 | 66.75% | 63.96% | 650.4 | $1.7388 |
 
 The practical-stat section translates the controlled LongMemEval delta into a 100-question workload. It reports 3.33M versus 0.83M reader prompt tokens, about four times as many questions within the same prompt-token allowance, 19.0 versus 7.5 minutes of equivalent sequential reader latency, and `$2.68` versus `$0.90` in the recorded reader-plus-dual-judge protocol. It also reports the quality cost: roughly 84 versus 82 Kimi-accepted answers and 83 versus 82 GPT-accepted answers per 100. This prevents an efficiency claim from hiding its accuracy tradeoff.
+
+The later Open RAG addition is a distinct document-QA workload. Its 2,672.1 prompt tokens/query is reported separately and is not substituted for the LongMemEval context figure.
 
 The public wording explicitly separates:
 
@@ -554,3 +559,19 @@ This is evidence that write-time synthesis can help the reader, but not that a f
 fact store is sufficient. The next semantic compiler must preserve structured
 relationships, normalize entity/category identity, prove closed-world set coverage,
 and reject loosely related actions before a larger API extraction run is justified.
+
+## July 24 Open RAG External-Corpus Validation
+
+Vault completed retrieval for all 3,045 questions in Vectara Open RAG Bench at frozen dataset revision `63f6b052ff83508b08e242db42263ee708815c26`. Section Hit@1 was 0.640394, Hit@5 was 0.901149, Hit@10 was 0.948440, and document Hit@10 was 0.996059. Mean query latency was 1.0597 seconds and P95 was 1.0648 seconds. Plain-text section Hit@10 reached 0.975444; text-image, text-table, and text-table-image reached 0.899083, 0.912162, and 0.909091. The result establishes strong external document discovery while identifying multimodal section ranking as the clearest retrieval weakness.
+
+The paid QA run used a deterministic first-500 prefix as an explicit spending gate and remains paused before the remaining 2,545 questions. Kimi accepted 419/500 answers (83.8%, Wilson 80.31%-86.77%); GPT-5.4 independently accepted 368/500 (73.6%, Wilson 69.57%-77.27%). Agreement was 86.2% and Cohen's kappa was 0.5947. No reader response was length-limited.
+
+The reader consumed 1,336,031 input and 80,768 completion tokens: 2,672.1 prompt tokens and 2,833.6 total reader tokens per question. Including both judges, recorded usage was 3,357.6 tokens/query. The recorded component estimates sum to $1.910226: $1.428372 reader, $0.130869 Kimi judge, and $0.350985 GPT judge. A legacy aggregate field in the artifact incorrectly remained zero; public documentation uses the component sum.
+
+This is a separate workload from LongMemEval. Open RAG's 2,672.1 prompt tokens/query is numerically 67.8% below LongMemEval claim-first's 8,307.1, but the corpus, question structure, and packed evidence differ. It is therefore a new document-QA efficiency measurement, not a valid cross-benchmark optimization delta. The full retrieval score is publishable; QA must remain labeled as a frozen 500-question prefix pilot.
+
+## July 24 UI Distillation And Verification
+
+The first implementation pass converted the earlier UI backlog into verified reductions. Home activity hierarchy and OCR settings wrapping were normalized. Map now exposes authoritative links, unclustered items, reset behavior, and large-vault mock coverage. The redundant cluster-detail right rail and nonfunctional close button were removed; cluster rows now navigate directly; duplicate cluster-local Map and source/status surfaces were removed. Global Saved chats, the Settings utility rail, the unused legacy `ClusterMap`, 29 unused UI primitives, and a stale Figma export utility were also removed.
+
+The browser audit passed 46 TSX interaction checks and rendered 13 routes at 1440x900 and 768x900, plus the cluster route at 512 px, without page-level overflow, unlabeled controls, browser errors, or failed close/reset interactions. Remaining work is intentionally narrower: source-inspector persistence, stale embedded project/search/chat paths, Bridge and Settings decomposition, keyboard and automated accessibility, 200% zoom, locked/offline behavior, and packaged Electron validation. `docs/UI_UX_DEEP_AUDIT_2026-07-24.md` is the detailed evidence record; `docs/UI_RECOMMENDATIONS_BACKLOG.md` tracks the remaining work.

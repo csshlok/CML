@@ -1,6 +1,6 @@
 # Project Context
 
-Last updated: 2026-07-21
+Last updated: 2026-07-24
 
 ## Purpose
 
@@ -21,7 +21,7 @@ Vault is a local-first Windows context-management layer. It turns a user's files
 
 Vault is in **pre-release stabilization and productionization**.
 
-The scoped RAG migration, temporal memory foundation, Odin project workflow, bounded context pipeline, and primary desktop surfaces are implemented. The project is no longer deciding its core architecture. Current work is about proving release reliability, productionizing the strongest retrieval improvements, improving measured quality without benchmark-specific behavior, and finishing clean Windows packaging.
+The scoped RAG migration, temporal memory foundation, Odin project workflow, bounded context pipeline, and primary desktop surfaces are implemented. The project is no longer deciding its core architecture. Current work is about proving release reliability, productionizing the strongest retrieval improvements, improving measured quality without benchmark-specific behavior, distilling the UI around real user journeys, and finishing clean Windows packaging.
 
 The reviewed 0.1.7 product, benchmark, CI, and documentation pass is published on `main` as 10 commits. GitHub CI run `29682163820` passed every automatic job. Version 0.1.7 is still pre-release rather than a release candidate because the manual clean-machine installer, account-separation, signing, and package-integrity gates remain.
 
@@ -45,15 +45,17 @@ Odin indexes approved repository files without executing or modifying project co
 | Odin scoped project workflow | Complete for current scope |
 | Odin AST extraction | Tree-sitter/Python AST based; Tier A/B corpus deterministic |
 | Desktop project, task, source, settings, and health surfaces | Implemented |
-| Public README and benchmark report | Updated with current results and qualified comparisons |
+| Public README and benchmark report | Updated with LongMemEval, LoCoMo, and Open RAG results and qualified comparisons |
 | ColBERT late-interaction retrieval | Compressed 300K proof measured; scoped path remains experimental and not production-enabled |
 | Windows installer and clean-machine proof | In progress |
-| UI refinement pass | Deliberately deferred until later |
+| UI refinement and distillation | Active July 24 pass removed redundant inspectors, duplicate cluster controls, dead/stale components, and layout failures; packaged Electron and accessibility validation remain |
 
 ## Latest Benchmark Snapshot
 
 | Benchmark | Best relevant result | Efficiency |
 | --- | --- | --- |
+| Open RAG full retrieval, 3,045 questions | 0.6404 section Hit@1; 0.9011 Hit@5; 0.9484 Hit@10; 0.9961 document Hit@10 | 1.0597 s mean / 1.0648 s P95 query latency |
+| Open RAG frozen QA prefix, 500 questions | 83.8% Kimi / 73.6% GPT-5.4; 86.2% judge agreement | 2,672.1 reader prompt tokens/query; $1.9102 recorded component cost |
 | LongMemEval-S typed-v1, 500 questions | 83.8% Kimi / 83.2% GPT-5.4 | 33,331.9 reader prompt tokens/query |
 | LongMemEval-S claim-first 10K, 500 questions | 81.8% Kimi / 82.0% GPT-5.4 | 8,307.1 tokens/query; 0/500 over budget; $4.5111 evaluation cost |
 | LongMemEval atomic-memory v9 readiness, two frozen 200-question development sets | 4/200 and 5/200 reference-verified safe activations; zero false-safe activations; readiness remains no-go | 100% source-unit coverage; expected mean prompts 8,283.92 and 8,303.97, both below claim-first controls; 0 reader/judge calls |
@@ -79,6 +81,8 @@ The main memory-quality constraint is no longer retrieval or packet budget. It i
 
 These are benchmark measurements, not universal user-bill guarantees. Model pricing, caching, question complexity, answer length, and judge use change monetary cost. LongMemEval is now development-exposed, so future promotion claims require a preregistered untouched set or another benchmark.
 
+Open RAG supplies that independent external-corpus check for document retrieval. Its complete 3,045-query retrieval result is strong, while the frozen first-500 QA gate exposes remaining multimodal section-selection and answer-judging variance. The 2,672.1 prompt tokens/query is the best measured Open RAG packet size, but it is not directly comparable to LongMemEval's 8,307.1 because the corpus and question shape differ. The paid QA run remains intentionally paused after 500 questions.
+
 ## Validation Snapshot
 
 - Latest recorded backend suite: `648 passed`, `2 skipped`; one non-blocking Starlette TestClient compatibility warning
@@ -94,6 +98,9 @@ These are benchmark measurements, not universal user-bill guarantees. Model pric
 - Evolving-memory v3: 40/40 production answers accepted, with 0 scorer disagreements
 - Frozen LoCoMo activation correction: exact baseline preservation on 34/34 former false positives with zero API calls
 - Atomic-memory v7: two clean 200-question offline replays, 4 and 5 safe activations, zero false-safe activations, and no reader/judge calls
+- Open RAG full retrieval: 3,045/3,045 completed; 0.9484 section Hit@10, 0.9961 document Hit@10, and 1.0597 s mean latency
+- Open RAG paid QA gate: 500/500 completed with no length finishes; 83.8% Kimi, 73.6% GPT-5.4, and 86.2% judge agreement
+- UI distillation browser audit: 46 TSX interaction checks passed; 13 routes rendered at 1440x900 and 768x900 plus the cluster route at 512 px without overflow, unlabeled controls, browser errors, or failed close/reset interactions
 
 ## Active Decisions And Boundaries
 
@@ -124,13 +131,14 @@ These are benchmark measurements, not universal user-bill guarantees. Model pric
 5. Create a fresh, preregistered memory-quality set with genuine distributed preference-synthesis, reversal, state-history, temporal-action, category-count, and cumulative-state cases.
 6. Improve Odin TypeScript/React graph-to-prompt ranking and authoritative cross-file import/re-export/reference coverage, then rerun multi-model external evaluation.
 7. Run the manual Odin scale workflow when the next discovery/indexing change needs promotion evidence.
-8. Return to the deferred UI audit after backend and benchmark productionization stabilizes.
+8. Finish the remaining UI audit items: source-inspector persistence, stale embedded project/search/chat handlers, Bridge and Settings decomposition, keyboard/accessibility coverage, 200% zoom, offline/locked states, and packaged Electron validation.
 
 ## Canonical References
 
 - Detailed internal state: `docs/OVERALL_CONTEXT.md`
 - Public product overview: `ReadME.md`
 - Public benchmark methodology and analysis: `BENCHMARK.md`
+- UI implementation status and remaining backlog: `docs/UI_UX_DEEP_AUDIT_2026-07-24.md` and `docs/UI_RECOMMENDATIONS_BACKLOG.md`
 - Completed migration archive: `docs/LORA_TO_RAG_MIGRATION_PLAN.md`
 - Odin implementation: `backend/app/core/projects.py`, `backend/app/core/project_graph.py`, and `backend/app/api/routes/projects.py`
 - Temporal memory implementation: `backend/app/core/claim_semantics.py`, `backend/app/core/temporal_facts.py`, and `backend/app/core/typed_evidence_runtime.py`

@@ -564,3 +564,43 @@ categories and set-closure attestations, preserve table row/header relationships
 deduplicate event/project identities before packing. Those changes should first replay
 the cached 12-question set offline and must remove both observed regressions before any
 larger paid run.
+
+## July 24 Open RAG external-corpus result
+
+The new independent test used Vectara Open RAG Bench rather than another development-exposed LongMemEval sample.
+
+The complete offline retrieval pass finished all 3,045 questions:
+
+- section Hit@1: 0.640394;
+- section Hit@5: 0.901149;
+- section Hit@10: 0.948440;
+- section MRR@10: 0.750298;
+- document Hit@10: 0.996059;
+- mean latency: 1.0597 seconds;
+- P95 latency: 1.0648 seconds.
+
+Plain-text section Hit@10 was 0.975444. Text-image, text-table, and text-table-image were lower at 0.899083, 0.912162, and 0.909091. Vault is reliably finding the correct document, but section ranking across non-text evidence is the clearest retrieval weakness.
+
+The paid reader-and-judge run was deliberately gated after the deterministic first 500 questions. It completed with:
+
+- Kimi primary judge: 419/500, or 83.8%;
+- GPT-5.4 independent judge: 368/500, or 73.6%;
+- judge agreement: 86.2%;
+- Cohen's kappa: 0.5947;
+- zero length-limited reader responses;
+- 2,672.1 reader prompt tokens/query;
+- 2,833.6 total reader tokens/query;
+- 3,357.6 total reader-plus-judges tokens/query;
+- $1.910226 actual recorded component estimate.
+
+The cost is the sum of $1.428372 reader, $0.130869 Kimi judge, and $0.350985 GPT judge. The artifact's legacy aggregate field incorrectly remained zero and must not be used.
+
+This gives Vault a strong new public retrieval result and a useful bounded QA pilot, not a completed 3,045-question QA score. The 2,672.1 prompt-token figure is numerically lower than LongMemEval claim-first's 8,307.1, but the workloads differ; it should be reported separately rather than called a 67.8% product optimization.
+
+The paid run remains paused with 2,545 questions unexecuted. Before paying to continue, analyze the 500-question judge disagreements and multimodal failures, then require an offline improvement on frozen retrieval/packing artifacts without dataset-specific word rules.
+
+## July 24 UI distillation result
+
+The frontend pass removed redundant cluster inspectors and duplicate detail surfaces, fixed Home activity hierarchy and OCR overflow, made Map links/unclustered/reset behavior explicit, and deleted unused legacy components. Browser verification passed 46 TSX interaction checks and rendered 13 routes at desktop and narrow widths without overflow, unlabeled controls, browser errors, or failed close/reset actions.
+
+The remaining UI work is packaged-Electron proof rather than another broad redesign: source-inspector persistence, stale embedded project/search/chat paths, Bridge and Settings decomposition, keyboard/accessibility, 200% zoom, and locked/offline behavior. The detailed record is `docs/UI_UX_DEEP_AUDIT_2026-07-24.md`; the active remainder is `docs/UI_RECOMMENDATIONS_BACKLOG.md`.
