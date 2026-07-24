@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 
 from backend.app.core.atomic_memory import (
@@ -19,6 +20,7 @@ from backend.app.core.database import utc_now
 
 
 LOCAL_SEMANTIC_EXTRACTOR_VERSION = f"{ATOMIC_MEMORY_VERSION}-local-semantic-v1"
+LOCAL_SEMANTIC_V2_EXTRACTOR_VERSION = "atomic-memory-v2-evidence-prod-v1"
 
 
 def _fingerprint(payload: dict) -> str:
@@ -302,6 +304,92 @@ def load_atomic_facts_for_sessions(
     return materialize_progressive_counters(deduplicated)
 
 
+def load_v2_atomic_memory_items(
+    conn: sqlite3.Connection,
+    *,
+    vault_id: str,
+    cluster_id: str | None,
+    query: str,
+    limit: int,
+) -> list[dict]:
+    """Return current v2 evidence memories as additive, cited retrieval hints.
+
+    Raw source retrieval remains authoritative. This selector is deliberately
+    domain-neutral: it ranks literal query overlap and does not contain benchmark
+    category lists or question-specific routing rules.
+    """
+    bounded_limit = max(1, min(int(limit), 50))
+    params: list[object] = [
+        vault_id,
+        LOCAL_SEMANTIC_V2_EXTRACTOR_VERSION,
+    ]
+    cluster_clause = ""
+    if cluster_id:
+        cluster_clause = "AND (sessions.scope_cluster_id = ? OR sessions.scope_cluster_id IS NULL)"
+        params.append(cluster_id)
+    rows = conn.execute(
+        f"""
+        SELECT state.session_id, state.facts_json, state.processed_at
+        FROM atomic_memory_semantic_state state
+        JOIN chat_sessions sessions
+          ON sessions.id = state.session_id AND sessions.vault_id = state.vault_id
+        WHERE state.vault_id = ?
+          AND state.extractor_version = ?
+          AND state.status = 'current'
+          {cluster_clause}
+        ORDER BY state.processed_at DESC
+        LIMIT 500
+        """,
+        params,
+    ).fetchall()
+    stopwords = {
+        "a", "an", "and", "are", "did", "do", "does", "for", "from", "how",
+        "in", "is", "it", "of", "on", "or", "that", "the", "to", "was",
+        "were", "what", "when", "where", "which", "who", "with",
+    }
+    query_terms = {
+        token
+        for token in re.findall(r"[^\W_]{2,}", query.casefold(), flags=re.UNICODE)
+        if token not in stopwords
+    }
+    scored: list[tuple[int, float, str, dict]] = []
+    for row in rows:
+        for raw in json.loads(str(row["facts_json"])):
+            fact = AtomicFact.model_validate(raw)
+            if fact.qualifiers.get("atomic_origin") != "semantic_v2_evidence":
+                continue
+            searchable = " ".join(
+                (
+                    fact.object_text,
+                    fact.citation.excerpt,
+                    fact.subject,
+                    fact.qualifiers.get("evidence_kinds", ""),
+                )
+            ).casefold()
+            overlap = sum(term in searchable for term in query_terms)
+            if query_terms and overlap == 0:
+                continue
+            item = {
+                "id": f"atomic-v2-{row['session_id']}-{fact.fact_id}",
+                "kind": "atomic_v2",
+                "summary": fact.object_text,
+                "detail_text": fact.object_text,
+                "confidence": fact.confidence,
+                "source_id": None,
+                "session_id": str(row["session_id"]),
+                "updated_at": str(row["processed_at"]),
+                "speaker_role": fact.citation.speaker,
+                "citation_excerpt": fact.citation.excerpt,
+                "derived": True,
+                "authoritative_source_claims_preserved": True,
+            }
+            scored.append(
+                (overlap, float(fact.confidence), str(row["processed_at"]), item)
+            )
+    scored.sort(key=lambda value: (value[0], value[1], value[2]), reverse=True)
+    return [item for _, _, _, item in scored[:bounded_limit]]
+
+
 def persist_local_semantic_extraction(
     conn: sqlite3.Connection,
     *,
@@ -312,6 +400,7 @@ def persist_local_semantic_extraction(
     invalid_reasons: dict[str, int],
     provider: str,
     model: str,
+    extractor_version: str = LOCAL_SEMANTIC_EXTRACTOR_VERSION,
 ) -> dict:
     """Persist validated local-model facts only if the source session is unchanged."""
     messages = conn.execute(
@@ -360,7 +449,7 @@ def persist_local_semantic_extraction(
             source_hash,
             provider,
             model,
-            LOCAL_SEMANTIC_EXTRACTOR_VERSION,
+            extractor_version,
             json.dumps(
                 [fact.model_dump(mode="json") for fact in extraction.facts],
                 sort_keys=True,

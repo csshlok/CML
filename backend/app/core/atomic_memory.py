@@ -1717,6 +1717,40 @@ def _fact_score(question: str, fact: AtomicFact, retrieval_rank: int) -> float:
     return overlap * 2.0 + phrase_bonus + kind_bonus + 1.0 / (retrieval_rank + 1)
 
 
+def retrieve_atomic_session_ids(
+    question: str,
+    facts: list[AtomicFact],
+    *,
+    limit: int,
+    minimum_score: float = 1.0,
+) -> list[str]:
+    """Retrieve sessions directly from the question-independent atomic fact index.
+
+    This intentionally has no raw-retrieval input. It lets a full-haystack write-time
+    index recover sessions the raw retriever missed instead of merely reranking facts
+    from sessions that were already selected.
+    """
+    if limit <= 0:
+        return []
+    by_session: dict[str, list[float]] = {}
+    for fact in facts:
+        # Use one constant rank so the atomic index is independent of raw retrieval.
+        score = _fact_score(question, fact, retrieval_rank=10_000)
+        by_session.setdefault(fact.citation.session_id, []).append(score)
+    ranked: list[tuple[float, float, str]] = []
+    for session_id, scores in by_session.items():
+        ordered = sorted(scores, reverse=True)
+        peak = ordered[0]
+        if peak < minimum_score:
+            continue
+        # Reward multiple supporting facts without allowing long sessions to win by
+        # volume alone.
+        support = sum(ordered[1:4]) * 0.2
+        ranked.append((peak + support, peak, session_id))
+    ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    return [session_id for _, _, session_id in ranked[:limit]]
+
+
 def render_atomic_fact(fact: AtomicFact) -> str:
     details = [
         f"subject={fact.subject}",
