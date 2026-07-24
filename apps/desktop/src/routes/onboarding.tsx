@@ -4,7 +4,6 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  Copy,
   Download,
   FolderOpen,
   HardDrive,
@@ -19,7 +18,6 @@ import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/BrandLogo";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { copyElementToFigma } from "@/lib/figmaExport";
 import {
   activateLocalModel,
   cancelModelDownload,
@@ -97,14 +95,9 @@ function Onboarding() {
   );
   const [diskPreflight, setDiskPreflight] = useState<DiskPreflightResponse | null>(null);
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
-  const [figmaExporting, setFigmaExporting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const selectedModel = useMemo(
-    () => models.find((model) => model.id === selectedModelId) ?? models[0] ?? null,
-    [models, selectedModelId],
-  );
 
   const activeModelDownload = useMemo(() => {
     return selectVisibleModelDownload(models, modelDownload);
@@ -134,7 +127,6 @@ function Onboarding() {
     vaultPath,
   ]);
 
-  const canExportToFigma = import.meta.env.DEV && mounted && !desktop;
 
   useEffect(() => {
     setMounted(true);
@@ -465,25 +457,6 @@ function Onboarding() {
     navigate({ to: "/home" });
   }
 
-  async function exportCurrentScreenToFigma() {
-    if (!shellRef.current) return;
-
-    setFigmaExporting(true);
-    setError(null);
-    try {
-      await copyElementToFigma({
-        element: shellRef.current,
-        name: `Vault Onboarding - ${steps[step]}`,
-      });
-      setMessage("Copied the current onboarding screen to your clipboard. Paste it into Figma.");
-    } catch (err) {
-      setMessage(null);
-      setError(err instanceof Error ? err.message : "Could not copy the current screen to Figma.");
-    } finally {
-      setFigmaExporting(false);
-    }
-  }
-
   return (
     <main
       ref={shellRef}
@@ -522,22 +495,6 @@ function Onboarding() {
                     Step {step + 1} of {steps.length} / {steps[step]}
                   </div>
                 </div>
-                {canExportToFigma && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void exportCurrentScreenToFigma()}
-                    disabled={figmaExporting}
-                  >
-                    {figmaExporting ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Copy className="h-4 w-4" />
-                    )}
-                    Copy to Figma
-                  </Button>
-                )}
               </div>
             </div>
 

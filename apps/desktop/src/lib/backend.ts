@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 
 const CONFIGURED_BACKEND_URL =
   (import.meta.env.VITE_CML_BACKEND_URL as string | undefined) || "http://127.0.0.1:7343";
@@ -34,50 +34,66 @@ if (typeof window !== "undefined") {
 
 export type BackendHealthStatus = "checking" | "online" | "degraded" | "offline";
 
-export function useBackendHealth() {
-  const [status, setStatus] = useState<BackendHealthStatus>("checking");
-  const [url, setUrl] = useState(CONFIGURED_BACKEND_URL);
+type BackendHealthSnapshot = { status: BackendHealthStatus; url: string };
+let healthSnapshot: BackendHealthSnapshot = {
+  status: "checking",
+  url: CONFIGURED_BACKEND_URL,
+};
+const serverHealthSnapshot: BackendHealthSnapshot = {
+  status: "checking",
+  url: CONFIGURED_BACKEND_URL,
+};
+const healthListeners = new Set<() => void>();
+let healthCoordinatorStarted = false;
+let discoveryPromise: Promise<string> | null = null;
+let lastDiscoveryAttempt = 0;
 
-  useEffect(() => {
-    let cancelled = false;
+function publishHealth(next: BackendHealthSnapshot) {
+  if (healthSnapshot.status === next.status && healthSnapshot.url === next.url) return;
+  healthSnapshot = next;
+  healthListeners.forEach((listener) => listener());
+}
 
-    async function check() {
-      const token = await getBackendToken();
-      for (const candidate of BACKEND_CANDIDATES) {
-        const probe = await probeBackend(candidate, token);
-        if (probe.status === "online") {
-          resolvedBackendUrl = candidate;
-          if (!cancelled) {
-            setUrl(candidate);
-            setStatus("online");
-          }
-          return;
-        }
-        if (probe.status === "degraded" && candidate === CONFIGURED_BACKEND_URL) {
-          resolvedBackendUrl = candidate;
-          if (!cancelled) {
-            setUrl(candidate);
-            setStatus("degraded");
-          }
-          return;
-        }
-      }
-      if (!cancelled) setStatus("offline");
+function subscribeHealth(listener: () => void) {
+  healthListeners.add(listener);
+  return () => healthListeners.delete(listener);
+}
+
+async function runHealthCheck() {
+  const token = await getBackendToken();
+  const candidates = resolvedBackendUrl
+    ? [resolvedBackendUrl, ...BACKEND_CANDIDATES.filter((item) => item !== resolvedBackendUrl)]
+    : BACKEND_CANDIDATES;
+  for (const candidate of candidates) {
+    const probe = await probeBackend(candidate, token);
+    if (probe.status === "online" || (probe.status === "degraded" && candidate === CONFIGURED_BACKEND_URL)) {
+      resolvedBackendUrl = candidate;
+      publishHealth({ status: probe.status, url: candidate });
+      return;
     }
+  }
+  resolvedBackendUrl = null;
+  publishHealth({ status: "offline", url: CONFIGURED_BACKEND_URL });
+}
 
-    check();
-    const id = window.setInterval(check, 5000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, []);
-
-  return {
-    status,
-    url,
+function startHealthCoordinator() {
+  if (healthCoordinatorStarted || typeof window === "undefined") return;
+  healthCoordinatorStarted = true;
+  const schedule = async () => {
+    if (!document.hidden) await runHealthCheck();
+    const delay = healthSnapshot.status === "offline" ? 15_000 : 8_000;
+    window.setTimeout(schedule, document.hidden ? delay * 4 : delay);
   };
+  const onVisibility = () => {
+    if (!document.hidden) void runHealthCheck();
+  };
+  document.addEventListener("visibilitychange", onVisibility);
+  void schedule();
+}
+
+export function useBackendHealth() {
+  useEffect(() => startHealthCoordinator(), []);
+  return useSyncExternalStore(subscribeHealth, () => healthSnapshot, () => serverHealthSnapshot);
 }
 
 async function probeBackend(url: string, token?: string | null): Promise<{ status: BackendHealthStatus }> {
@@ -102,19 +118,27 @@ async function probeBackend(url: string, token?: string | null): Promise<{ statu
 
 async function getBackendUrl() {
   if (resolvedBackendUrl) return resolvedBackendUrl;
-  const token = await getBackendToken();
-  for (const candidate of BACKEND_CANDIDATES) {
-    const probe = await probeBackend(candidate, token);
-    if (probe.status === "online") {
-      resolvedBackendUrl = candidate;
-      return candidate;
-    }
-    if (probe.status === "degraded" && candidate === CONFIGURED_BACKEND_URL) {
-      resolvedBackendUrl = candidate;
-      return candidate;
-    }
+  const now = Date.now();
+  if (!discoveryPromise && now - lastDiscoveryAttempt < 5_000) return CONFIGURED_BACKEND_URL;
+  if (!discoveryPromise) {
+    lastDiscoveryAttempt = now;
+    discoveryPromise = (async () => {
+      const token = await getBackendToken();
+      for (const candidate of BACKEND_CANDIDATES) {
+        const probe = await probeBackend(candidate, token);
+        if (probe.status === "online" || (probe.status === "degraded" && candidate === CONFIGURED_BACKEND_URL)) {
+          resolvedBackendUrl = candidate;
+          publishHealth({ status: probe.status, url: candidate });
+          return candidate;
+        }
+      }
+      publishHealth({ status: "offline", url: CONFIGURED_BACKEND_URL });
+      return CONFIGURED_BACKEND_URL;
+    })().finally(() => {
+      discoveryPromise = null;
+    });
   }
-  return CONFIGURED_BACKEND_URL;
+  return discoveryPromise;
 }
 
 async function getBackendToken() {
@@ -1421,6 +1445,39 @@ export async function updateCluster(
   });
 }
 
+export async function getMapOverview(
+  vaultId: string,
+  options: { limit?: number; offset?: number } = {},
+) {
+  const params = new URLSearchParams({ vault_id: vaultId });
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.offset !== undefined) params.set("offset", String(options.offset));
+  return request<MapGraphResponse>(`/api/v1/map/overview?${params.toString()}`);
+}
+
+export async function getMapNeighborhood(vaultId: string, rootId: string, limit = 80) {
+  const params = new URLSearchParams({
+    vault_id: vaultId,
+    root_id: rootId,
+    limit: String(limit),
+  });
+  return request<MapGraphResponse>(`/api/v1/map/neighborhood?${params.toString()}`);
+}
+
+export async function getMapItem(vaultId: string, itemId: string) {
+  const params = new URLSearchParams({ vault_id: vaultId });
+  return request<MapItemRecord>(
+    `/api/v1/map/items/${encodeURIComponent(itemId)}?${params.toString()}`,
+  );
+}
+
+export async function refreshClusterProfile(id: string) {
+  return request<ClusterRecord>(
+    `/api/v1/clusters/${encodeURIComponent(id)}/refresh-profile`,
+    { method: "POST" },
+  );
+}
+
 export async function listProjects(vaultId?: string) {
   const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
   return request<ProjectRecord[]>(`/api/v1/projects${query}`);
@@ -1546,6 +1603,58 @@ export type ProjectLinkRecord = {
   created_at: string;
 };
 
+export type MapNodeRecord = {
+  id: string;
+  kind: "cluster" | "collection" | "source" | "fact";
+  label: string;
+  summary: string;
+  color?: string;
+  state?: string;
+  source_type?: string;
+  cluster_id?: string | null;
+  source_id?: string;
+  source_count?: number;
+  fact_count?: number;
+  valid_from?: string | null;
+  valid_until?: string | null;
+  updated_at: string;
+};
+
+export type MapEdgeRecord = {
+  id: string;
+  source: string;
+  target: string;
+  kind: "contains" | "establishes" | string;
+  label: string;
+  direction: "outbound" | "inbound" | string;
+  temporal_state: "current" | "historical" | string;
+  provenance_ids: string[];
+  evidence_labels?: string[];
+  updated_at: string;
+};
+
+export type MapGraphResponse = {
+  vault_id: string;
+  root_id?: string;
+  nodes: MapNodeRecord[];
+  edges: MapEdgeRecord[];
+  total?: number;
+  cluster_total?: number;
+  unclustered_count?: number;
+  limit: number;
+  offset?: number;
+  depth?: number;
+  truncated: boolean;
+  relationship_policy: "authoritative_only";
+};
+
+export type MapItemRecord = MapNodeRecord & {
+  path?: string | null;
+  url?: string | null;
+  citation_excerpt?: string;
+  provenance: Array<Record<string, unknown>>;
+};
+
 export async function listProjectLinks(id: string) {
   return request<ProjectLinkRecord[]>(`/api/v1/projects/${encodeURIComponent(id)}/links`);
 }
@@ -1586,13 +1695,23 @@ export async function listClusterSuggestions(vaultId: string, limit = 12) {
 
 export async function listSources(
   vaultId?: string,
-  options: { limit?: number; offset?: number; clusterId?: string } = {},
+  options: {
+    limit?: number;
+    offset?: number;
+    clusterId?: string;
+    unclustered?: boolean;
+    states?: Array<SourceRecord["state"]>;
+    query?: string;
+  } = {},
 ) {
   const params = new URLSearchParams();
   if (vaultId) params.set("vault_id", vaultId);
   if (options.limit) params.set("limit", String(options.limit));
   if (options.offset) params.set("offset", String(options.offset));
   if (options.clusterId) params.set("cluster_id", options.clusterId);
+  if (options.unclustered) params.set("unclustered", "true");
+  if (options.states?.length) params.set("states", options.states.join(","));
+  if (options.query?.trim()) params.set("q", options.query.trim());
   const query = params.size ? `?${params.toString()}` : "";
   return request<SourceRecord[]>(`/api/v1/sources${query}`);
 }
@@ -1696,10 +1815,17 @@ export async function deleteCluster(clusterId: string) {
   await request<void>(`/api/v1/clusters/${encodeURIComponent(clusterId)}`, { method: "DELETE" });
 }
 
-export async function countSources(vaultId?: string, clusterId?: string) {
+export async function countSources(
+  vaultId?: string,
+  clusterId?: string,
+  options: { unclustered?: boolean; states?: Array<SourceRecord["state"]>; query?: string } = {},
+) {
   const params = new URLSearchParams();
   if (vaultId) params.set("vault_id", vaultId);
   if (clusterId) params.set("cluster_id", clusterId);
+  if (options.unclustered) params.set("unclustered", "true");
+  if (options.states?.length) params.set("states", options.states.join(","));
+  if (options.query?.trim()) params.set("q", options.query.trim());
   const query = params.size ? `?${params.toString()}` : "";
   return request<{ total: number }>(`/api/v1/sources/count${query}`);
 }
@@ -1956,6 +2082,10 @@ export async function getJobStatus() {
 
 export async function runJobsOnce() {
   return request<JobQueueStatus>("/api/v1/jobs/run-once", { method: "POST" });
+}
+
+export async function getSource(sourceId: string) {
+  return request<SourceRecord>(`/api/v1/sources/${encodeURIComponent(sourceId)}`);
 }
 
 export async function getTemporalFactStatus(vaultId: string) {
@@ -2333,11 +2463,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (token) headers.set("x-cml-api-token", token);
-  const response = await fetch(`${backendUrl}${apiPath(path)}`, {
-    ...init,
-    headers,
-    signal: init?.signal ?? AbortSignal.timeout(30_000),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${backendUrl}${apiPath(path)}`, {
+      ...init,
+      headers,
+      signal: init?.signal ?? AbortSignal.timeout(12_000),
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Vault took too long to respond. Try again.");
+    }
+    throw new Error("Vault's local service is unavailable. Open Health to reconnect.");
+  }
   if (!response.ok) {
     let detail = "";
     try {
@@ -2346,10 +2484,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       detail = await response.text().catch(() => "");
     }
-    throw new Error(detail || `Backend request failed: ${response.status}`);
+    throw new Error(userFacingError(detail, response.status));
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+export function userFacingError(detail: string, status?: number) {
+  const text = String(detail || "").trim();
+  if (!text) {
+    if (status === 401 || status === 403) return "Vault needs permission before it can do that.";
+    if (status === 404) return "That item is no longer available.";
+    if (status && status >= 500) return "Vault could not complete that action. Try again.";
+    return "Vault could not complete that action.";
+  }
+  if (/failed to fetch|networkerror|load failed/i.test(text)) {
+    return "Vault's local service is unavailable. Open Health to reconnect.";
+  }
+  return text
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace(/\.$/, "") + ".";
 }
 
 function apiPath(path: string) {

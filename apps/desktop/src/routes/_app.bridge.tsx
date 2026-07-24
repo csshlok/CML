@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Cable, Copy, ExternalLink, Plus, RefreshCw, Shield, Terminal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ConfirmAction } from "@/components/product/Feedback";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { describeBridgeCaptureResult, describeBridgeReviewDecision } from "@/lib/bridge-presentation.js";
@@ -62,6 +63,7 @@ export const Route = createFileRoute("/_app/bridge")({
 
 function BridgeView() {
   const backend = useBackendHealth();
+  const [bridgeView, setBridgeView] = useState<"overview" | "clients" | "reviews" | "history" | "advanced">("overview");
   const [status, setStatus] = useState<BridgeStatus | null>(null);
   const [requests, setRequests] = useState<BridgeRequest[]>([]);
   const [approvalRequests, setApprovalRequests] = useState<BridgeApprovalRequest[]>([]);
@@ -92,6 +94,9 @@ function BridgeView() {
   const [extensionToken, setExtensionToken] = useState<string | null>(null);
   const [extensionNotice, setExtensionNotice] = useState<string | null>(null);
   const [extensionVaultId, setExtensionVaultId] = useState("");
+  const [mcpSetupClient, setMcpSetupClient] = useState<
+    "claude" | "cursor" | "other"
+  >("claude");
 
   async function loadBridgeState(options: { clearOnError?: boolean } = {}) {
     if (backend.status !== "online") return;
@@ -418,6 +423,30 @@ function BridgeView() {
   }
 
   const exampleClientToken = clientToken ?? "<approved-client-token>";
+  const mcpServerDefinition = {
+    command: ".venv\\Scripts\\python.exe",
+    args: ["-m", "backend.app.bridge_mcp"],
+    env: {
+      CML_BACKEND_URL: backend.url,
+      CML_BRIDGE_TOKEN: exampleClientToken,
+    },
+  };
+  const mcpSetupText =
+    mcpSetupClient === "other"
+      ? [
+          `CML_BACKEND_URL=${backend.url}`,
+          `CML_BRIDGE_TOKEN=${exampleClientToken}`,
+          ".venv\\Scripts\\python.exe -m backend.app.bridge_mcp",
+        ].join("\n")
+      : JSON.stringify(
+          {
+            mcpServers: {
+              vault: mcpServerDefinition,
+            },
+          },
+          null,
+          2,
+        );
   const extensionVaultNamesById = new Map(vaults.map((vault) => [vault.id, vault.name]));
   const extensionSetupText = extensionToken
     ? buildExtensionSetupText({
@@ -479,7 +508,24 @@ function BridgeView() {
           </div>
         </div>
 
-        <div className="mt-8 grid gap-4 md:grid-cols-3">
+        <nav className="mt-8 flex gap-1 overflow-x-auto border-b border-border pb-2" aria-label="Bridge sections">
+          {(["overview", "clients", "reviews", "history", "advanced"] as const).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setBridgeView(item)}
+              aria-current={bridgeView === item ? "page" : undefined}
+              className={`min-h-9 shrink-0 rounded-md px-3 text-sm font-medium capitalize ${
+                bridgeView === item ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+              }`}
+            >
+              {item}
+              {item === "reviews" && approvalRequests.length + reviews.length > 0 ? ` (${approvalRequests.length + reviews.length})` : ""}
+            </button>
+          ))}
+        </nav>
+
+        <div className={`${bridgeView === "overview" ? "grid" : "hidden"} mt-6 gap-4 md:grid-cols-3`}>
           <BridgeCard
             icon={<ExternalLink className="h-4 w-4" />}
             title="MCP"
@@ -497,7 +543,7 @@ function BridgeView() {
           />
         </div>
 
-        <section className="mt-8 rounded-md border border-border bg-card p-4">
+        <section className={bridgeSectionClass("overview", bridgeView, "mt-6")}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -515,7 +561,67 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className="mt-4 rounded-md border border-border bg-card p-4">
+        <details className="mt-4 rounded-md border border-border bg-card">
+          <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
+            Connect an MCP client
+          </summary>
+          <div className="border-t border-border px-4 py-4">
+            <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+              Choose your client, copy the configuration, and paste it into that
+              client&apos;s MCP settings. Create a client token below first so the
+              one-time token is filled in automatically.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="MCP client">
+              {(
+                [
+                  ["claude", "Claude Desktop"],
+                  ["cursor", "Cursor"],
+                  ["other", "Other"],
+                ] as const
+              ).map(([id, label]) => (
+                <Button
+                  key={id}
+                  type="button"
+                  size="sm"
+                  variant={mcpSetupClient === id ? "default" : "outline"}
+                  role="tab"
+                  aria-selected={mcpSetupClient === id}
+                  onClick={() => setMcpSetupClient(id)}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+            <p className="mt-4 text-xs text-muted-foreground">
+              {mcpSetupClient === "claude"
+                ? "Paste into claude_desktop_config.json, then restart Claude Desktop."
+                : mcpSetupClient === "cursor"
+                  ? "Paste into your Cursor MCP configuration, then reload Cursor."
+                  : "Set both environment variables and launch Vault's stdio MCP server from the project directory."}
+            </p>
+            <pre className="mt-3 max-h-72 overflow-auto rounded-md border border-border bg-background p-3 text-xs leading-5">
+              <code>{mcpSetupText}</code>
+            </pre>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void copyBridgeText(mcpSetupText)}
+              >
+                <Copy className="h-3.5 w-3.5" />
+                Copy configuration
+              </Button>
+              {!clientToken && (
+                <span className="text-xs text-muted-foreground">
+                  The placeholder will be replaced after you create or rotate a client token.
+                </span>
+              )}
+            </div>
+          </div>
+        </details>
+
+        <section className={bridgeSectionClass("overview", bridgeView)}>
           {status?.enabled && status.allowed_vault_ids.length === 0 && (
             <div className="mb-4 rounded-md border border-[var(--status-learning)]/40 bg-[var(--status-learning)]/10 px-3 py-2 text-sm">
               Bridge is on, but no library is allowed. MCP clients will receive no_active_vault until you allow one.
@@ -585,7 +691,7 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className="mt-4 rounded-md border border-border bg-card p-4">
+        <section className={bridgeSectionClass("clients", bridgeView, "mt-6")}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -683,7 +789,7 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className="mt-4 rounded-md border border-border bg-card p-4">
+        <section className={bridgeSectionClass("clients", bridgeView)}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -730,9 +836,17 @@ function BridgeView() {
                     >
                       Allow all
                     </Button>
-                    <Button variant="ghost" size="icon" disabled={saving} aria-label={`Delete ${client.name}`} onClick={() => void removeExtensionClient(client)}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    <ConfirmAction
+                      title={`Revoke “${client.name}”?`}
+                      description="This browser extension will immediately lose access to Vault until it is paired again."
+                      confirmLabel="Revoke access"
+                      disabled={saving}
+                      onConfirm={() => removeExtensionClient(client)}
+                    >
+                      <Button variant="ghost" size="icon" disabled={saving} aria-label={`Revoke ${client.name}`}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </ConfirmAction>
                   </div>
                 </div>
               ))
@@ -758,7 +872,7 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className="mt-4 rounded-md border border-border bg-card p-4">
+        <section className={bridgeSectionClass("history", bridgeView, "mt-6")}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -796,7 +910,7 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className="mt-4 rounded-md border border-border bg-card p-4">
+        <section className={bridgeSectionClass("advanced", bridgeView, "mt-6")}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -896,7 +1010,7 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className="mt-4 rounded-md border border-border bg-card p-4">
+        <section className={bridgeSectionClass("reviews", bridgeView, "mt-6")}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -954,7 +1068,7 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className="mt-4 rounded-md border border-border bg-card p-4">
+        <section className={bridgeSectionClass("clients", bridgeView)}>
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -1031,15 +1145,17 @@ function BridgeView() {
                     >
                       Rotate
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
+                    <ConfirmAction
+                      title={`Delete “${client.name}”?`}
+                      description="This client will immediately lose access to Vault. Existing copied tokens cannot be used again."
+                      confirmLabel="Delete client"
                       disabled={saving}
-                      aria-label={`Delete ${client.name}`}
-                      onClick={() => void removeClient(client)}
+                      onConfirm={() => removeClient(client)}
                     >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                      <Button variant="ghost" size="icon" disabled={saving} aria-label={`Delete ${client.name}`}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </ConfirmAction>
                   </div>
                 </div>
               ))
@@ -1049,7 +1165,7 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className="mt-4 rounded-md border border-border bg-card p-4">
+        <section className={bridgeSectionClass("reviews", bridgeView)}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -1103,7 +1219,7 @@ function BridgeView() {
           )}
         </section>
 
-        <section className="mt-4 rounded-md border border-border bg-card p-4">
+        <section className={bridgeSectionClass("history", bridgeView)}>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -1149,7 +1265,7 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className="mt-4 rounded-md border border-border bg-card p-4">
+        <section className={bridgeSectionClass("history", bridgeView)}>
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
             Recent context requests
           </div>
@@ -1198,28 +1314,6 @@ function BridgeView() {
             >
               <Terminal className="h-3.5 w-3.5" />
               Copy CLI example
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                void copyBridgeText(
-                  JSON.stringify(
-                    {
-                      command: ".venv\\Scripts\\python.exe",
-                      args: ["-m", "backend.app.bridge_mcp"],
-                      env: {
-                        CML_BACKEND_URL: backend.url,
-                        CML_BRIDGE_TOKEN: exampleClientToken,
-                      },
-                    },
-                    null,
-                    2,
-                  ),
-                );
-              }}
-            >
-              Copy MCP config
             </Button>
             <Button
               variant="outline"
@@ -1292,6 +1386,14 @@ function PermissionRow({
       <Switch aria-label={label} checked={checked} disabled={disabled} onCheckedChange={onChange} />
     </div>
   );
+}
+
+function bridgeSectionClass(
+  section: "overview" | "clients" | "reviews" | "history" | "advanced",
+  active: "overview" | "clients" | "reviews" | "history" | "advanced",
+  margin = "mt-4",
+) {
+  return `${section === active ? "block" : "hidden"} ${margin} rounded-md border border-border bg-card p-4`;
 }
 
 function BridgeCard({ icon, title, body }: { icon: ReactNode; title: string; body: string }) {

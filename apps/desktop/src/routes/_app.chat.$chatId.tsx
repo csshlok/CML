@@ -22,12 +22,12 @@ import {
 } from "@/lib/backend";
 import {
   analysisModeLabel,
-  describeCoverage,
   describePartialFailure,
   statusToneForPartialFailure,
 } from "@/lib/chat-presentation";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 import { Button } from "@/components/ui/button";
+import { ConfirmAction } from "@/components/product/Feedback";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -37,7 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ClusterChip, ClusterDot } from "@/components/ClusterChip";
+import { ClusterChip } from "@/components/ClusterChip";
 import {
   detectProjectVisualizationRequest,
   ProjectGraphArtifact,
@@ -80,7 +80,6 @@ function ChatView() {
   const [memoryState, setMemoryState] = useState("idle");
   const [loadingSession, setLoadingSession] = useState(true);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
-  const [streamWarnings, setStreamWarnings] = useState<string[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
   const [latestContextMeta, setLatestContextMeta] = useState<Pick<
     ChatContextResponse,
@@ -212,18 +211,26 @@ function ChatView() {
   const scope = scopeClusterId
     ? (activeClusters.find((c) => c.id === scopeClusterId) ?? null)
     : null;
+  const suggestedPrompts = scope
+    ? [
+        `Summarize ${scope.name}.`,
+        `What are the most important recent additions in ${scope.name}?`,
+        `Which sources in ${scope.name} overlap or disagree?`,
+      ]
+    : [
+        "What did I add recently?",
+        activeClusters[0]
+          ? `Summarize what I know about ${activeClusters[0].name}.`
+          : "What are the main themes in my vault?",
+        activeSources[0]
+          ? `What are the key points in ${activeSources[0].title}?`
+          : "Which sources in my vault are related?",
+      ];
   const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant");
-  const latestCitations = latestAssistant?.citations ?? [];
-  const latestWarnings =
-    streamWarnings.length > 0
-      ? streamWarnings
-      : latestContextMeta?.warnings ?? latestAssistant?.warnings ?? [];
   const latestCoverage = latestContextMeta?.coverage_ledger ?? latestAssistant?.coverageLedger ?? null;
   const latestIntent = latestContextMeta?.intent ?? latestAssistant?.intent ?? "vault_question";
-  const latestRuntimeState = latestContextMeta?.runtime_state ?? latestAssistant?.runtimeState ?? null;
   const latestPartialFailure = String(latestCoverage?.partial_failure_mode ?? "none");
   const latestPartialFailureText = describePartialFailure(latestPartialFailure);
-  const latestCoverageSummary = describeCoverage(latestCoverage);
   const latestAnalysisLabel = analysisModeLabel(latestIntent, latestCoverage);
   const latestVisualizationRequest = projectId
     ? [...messages]
@@ -307,7 +314,6 @@ function ChatView() {
           ? "Scoring sources in scope..."
           : "Routing message...",
     );
-    setStreamWarnings([]);
     setLatestContextMeta(null);
     setLastError(null);
     setAttachmentNotice(
@@ -364,7 +370,6 @@ function ChatView() {
                   ? `Using ${meta.citations.length} source${meta.citations.length === 1 ? "" : "s"}`
                   : "No matching source found yet",
               );
-              setStreamWarnings(meta.warnings ?? []);
             },
             onToken: (text) => {
               streamedAnswer += text;
@@ -379,7 +384,6 @@ function ChatView() {
             },
             onDone: (done) => {
               streamedDone = done;
-              setStreamWarnings(done.warnings ?? streamedMeta.warnings ?? []);
               setLatestContextMeta({
                 coverage_ledger: done.coverage_ledger ?? streamedMeta.coverage_ledger ?? null,
                 intent: done.intent ?? streamedMeta.intent,
@@ -554,7 +558,7 @@ function ChatView() {
 
   return (
     <div
-      className="grid h-full grid-cols-1 overflow-y-auto lg:grid-cols-[240px_minmax(0,1fr)] xl:grid-cols-[256px_minmax(0,1fr)_320px] xl:overflow-hidden"
+      className="grid h-full grid-cols-1 overflow-y-auto lg:grid-cols-[240px_minmax(0,1fr)] xl:grid-cols-[256px_minmax(0,1fr)] xl:overflow-hidden"
       onDragOver={(event) => {
         event.preventDefault();
         if (backendReady) setDragActive(true);
@@ -655,15 +659,17 @@ function ChatView() {
               <Bookmark className={"h-4 w-4 " + (saved ? "fill-current" : "")} />
               {saved ? "Saved" : "Save"}
             </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="gap-1"
-              onClick={() => void deleteCurrentChat()}
+            <ConfirmAction
+              title={`Delete “${backendSession?.title ?? "this chat"}”?`}
+              description="This removes the conversation and its saved messages from this Vault."
+              confirmLabel="Delete chat"
+              onConfirm={deleteCurrentChat}
             >
-              <Trash2 className="h-4 w-4" />
-              Delete
-            </Button>
+              <Button variant="ghost" size="sm" className="gap-1">
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </Button>
+            </ConfirmAction>
             <span className="break-words rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
               {backendReady ? "Library sources" : "Library unavailable"}
             </span>
@@ -689,6 +695,18 @@ function ChatView() {
                       ? `Scoped to ${scope.name}.`
                       : "Working across all clusters in your vault."}
                   </p>
+                  <div className="mt-6 max-w-xl divide-y divide-border rounded-md border border-border bg-card">
+                    {suggestedPrompts.map((prompt) => (
+                      <button
+                        key={prompt}
+                        type="button"
+                        className="block w-full px-4 py-3 text-left text-sm leading-6 text-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                        onClick={() => setInput(prompt)}
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
               <div className="space-y-6">
@@ -725,63 +743,6 @@ function ChatView() {
               <div ref={endRef} />
             </div>
           </div>
-          <aside className="border-t border-border bg-card/20 p-4 xl:overflow-y-auto xl:border-l xl:border-t-0">
-            <div className="text-sm font-medium">Context used</div>
-            <div className="mt-3 break-words rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-              <div className="font-medium text-foreground">{latestAnalysisLabel}</div>
-              {latestCoverageSummary ? <div className="mt-1">{latestCoverageSummary}</div> : null}
-              {latestRuntimeState ? <div className="mt-1">Runtime: {latestRuntimeState}</div> : null}
-            </div>
-            {latestPartialFailureText && (
-              <div
-                className={
-                  "mt-3 rounded-md border px-3 py-2 text-xs " +
-                  (statusToneForPartialFailure(latestPartialFailure) === "critical"
-                    ? "border-red-300 bg-red-50 text-red-950"
-                    : statusToneForPartialFailure(latestPartialFailure) === "warning"
-                      ? "border-amber-300 bg-amber-50 text-amber-950"
-                      : "border-border bg-card text-muted-foreground")
-                }
-              >
-                <div className="font-medium">Degraded mode</div>
-                <div className="mt-1 break-words">{latestPartialFailureText}</div>
-              </div>
-            )}
-            <div className="mt-3 space-y-3">
-              {latestCitations.length === 0 ? (
-                <div className="text-sm text-muted-foreground">
-                  Citations from the next answer will appear here.
-                </div>
-              ) : (
-                latestCitations.map((citation, index) => {
-                  const source = activeSources.find((item) => item.id === citation.sourceId);
-                  return (
-                    <div
-                      key={`${citation.sourceId}-${index}`}
-                      className="rounded-md border border-border bg-card p-3"
-                    >
-                      <div className="break-words text-sm font-medium">
-                        {source?.title ?? "Source"}
-                      </div>
-                      <p className="mt-2 line-clamp-4 break-words text-xs leading-5 text-muted-foreground">
-                        {citation.snippet}
-                      </p>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-            {latestWarnings.length > 0 && (
-              <div className="mt-5 border-t border-border pt-4">
-                <div className="text-sm font-medium">Context notes</div>
-                <ul className="mt-2 space-y-2 text-xs text-muted-foreground">
-                  {latestWarnings.map((warning) => (
-                    <li key={warning} className="break-words">{warning}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </aside>
         </div>
 
         <div className="border-t border-border bg-card/40 p-4">
@@ -1005,7 +966,11 @@ function Message({
             return (
               <Popover key={i}>
                 <PopoverTrigger asChild>
-                  <button className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-[11px] hover:bg-accent">
+                  <button
+                    type="button"
+                    data-compound-trigger
+                    className="inline-flex min-h-8 max-w-full items-center gap-1 rounded-full border border-border bg-background px-2 text-[11px] hover:bg-accent"
+                  >
                     <Quote className="h-3 w-3" /> {title}
                     {cit.pageNumber ? <span className="text-muted-foreground">p.{cit.pageNumber}</span> : null}
                     {stateText ? <span className="text-muted-foreground">({stateText})</span> : null}

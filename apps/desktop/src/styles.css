@@ -71,6 +71,7 @@
   --status-ready-bg: #EDF5EA;
   --status-warn: #C88A3A;
   --status-warn-bg: #FBF2E4;
+  --status-warn-ink: #7A4D16;
   --status-error: #B84040;
   --status-error-bg: #FAEAEA;
   --status-muted: #9B9A96;
@@ -199,35 +200,6 @@
     font-family: var(--font);
   }
 
-  @keyframes cml-float {
-    0%, 100% {
-      transform: translate3d(-50%, -50%, 0);
-    }
-    50% {
-      transform: translate3d(-50%, calc(-50% - 10px), 0);
-    }
-  }
-
-  @keyframes cml-pulse-glow {
-    0%, 100% {
-      opacity: 0.72;
-      transform: scale(1);
-    }
-    50% {
-      opacity: 1;
-      transform: scale(1.08);
-    }
-  }
-
-  @keyframes vault-bg-drift {
-    0%, 100% {
-      background-position: 0% 50%, 100% 50%, 50% 0%;
-    }
-    50% {
-      background-position: 100% 50%, 0% 50%, 50% 100%;
-    }
-  }
-
   @keyframes vault-line-drift {
     0% {
       background-position: 0 0, 0 0;
@@ -322,6 +294,30 @@
     background: var(--sidebar);
     color: var(--text-body);
     border-right: 1px solid var(--border-default);
+  }
+
+  .vault-mobile-bar,
+  .vault-sidebar-scrim {
+    display: none;
+  }
+
+  .vault-icon-button {
+    display: inline-flex;
+    width: 36px;
+    height: 36px;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-md);
+    color: var(--text-body);
+  }
+
+  .vault-icon-button:hover {
+    background: var(--bg-hover);
+  }
+
+  .vault-icon-button:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
 
   .vault-sidebar-mark {
@@ -496,6 +492,46 @@
     }
   }
 
+  @media (max-width: 1100px) {
+    .vault-mobile-bar {
+      display: flex;
+      min-height: 48px;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      border-bottom: 1px solid var(--border-default);
+      background: var(--bg-sidebar);
+      padding: 6px 12px;
+    }
+
+    .vault-sidebar {
+      position: fixed;
+      z-index: 40;
+      inset: 48px auto 0 0;
+      width: min(300px, calc(100vw - 48px));
+      min-width: 0;
+      transform: translateX(-100%);
+      transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .vault-sidebar.is-open {
+      transform: translateX(0);
+    }
+
+    .vault-sidebar-scrim {
+      display: block;
+      position: fixed;
+      z-index: 30;
+      inset: 48px 0 0;
+      border: 0;
+      background: rgb(26 25 22 / 22%);
+    }
+
+    .vault-footer {
+      display: none !important;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .vault-bg-wash,
     .vault-bg-lines,
@@ -506,6 +542,10 @@
 
     .vault-word-rotator span:first-child {
       opacity: 1;
+    }
+
+    .vault-sidebar {
+      transition: none;
     }
   }
 }

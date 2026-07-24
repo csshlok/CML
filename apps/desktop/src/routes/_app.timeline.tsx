@@ -1,17 +1,13 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
-import { Bot, Cable, CheckCircle2, Clock3, FileText, GitBranch, Search } from "lucide-react";
+import { Bot, FileText, GitBranch, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import type { Cluster, Source } from "@/lib/domain";
 import {
-  getJobStatus,
-  listBridgeRequests,
   listChatSessions,
   listClusters,
   listSources,
   listVaults,
-  type AppJobRecord,
-  type BridgeRequest,
   type ChatSessionRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord, sourceStateText } from "@/lib/recordAdapters";
@@ -21,7 +17,7 @@ export const Route = createFileRoute("/_app/timeline")({
   component: TimelineRoute,
 });
 
-type ActivityKind = "source" | "chat" | "cluster" | "bridge" | "job";
+type ActivityKind = "source" | "chat" | "cluster";
 
 type ActivityItem = {
   id: string;
@@ -37,8 +33,6 @@ function TimelineRoute() {
   const [sources, setSources] = useState<Source[]>([]);
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [chats, setChats] = useState<ChatSessionRecord[]>([]);
-  const [bridge, setBridge] = useState<BridgeRequest[]>([]);
-  const [jobs, setJobs] = useState<AppJobRecord[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [filter, setFilter] = useState<"all" | ActivityKind>("all");
@@ -54,24 +48,19 @@ function TimelineRoute() {
         setLoadError(false);
         const vault = (await listVaults())[0] ?? null;
         if (!vault) return;
-        const [sourceRows, clusterRows, chatRows, bridgeRows, jobRows] = await Promise.all([
+        const [sourceRows, clusterRows, chatRows] = await Promise.all([
           listSources(vault.id),
           listClusters(vault.id),
           listChatSessions(vault.id),
-          listBridgeRequests(),
-          getJobStatus().catch(() => null),
         ]);
         if (cancelled) return;
         setSources(sourceRows.map(sourceFromRecord));
         setClusters(clusterRows.map(clusterFromRecord));
         setChats(chatRows);
-        setBridge(bridgeRows);
-        setJobs(jobRows?.latest ?? []);
       } catch {
         if (!cancelled) {
           setSources([]);
           setClusters([]);
-          setJobs([]);
           setLoadError(true);
         }
       } finally {
@@ -110,29 +99,13 @@ function TimelineRoute() {
         detail: chat.scope_cluster_id ? "Cluster chat session" : "Library-wide chat session",
         href: `/chat/${chat.id}`,
       })),
-      ...bridge.map((request) => ({
-        id: `bridge:${request.id}`,
-        kind: "bridge" as const,
-        time: request.created_at,
-        title: `Bridge request from ${request.client_name || "external client"}`,
-        detail: request.query || "Context request processed.",
-        href: "/bridge",
-      })),
-      ...jobs.map((job) => ({
-        id: `job:${job.id}`,
-        kind: "job" as const,
-        time: job.updated_at || job.created_at,
-        title: jobTitle(job),
-        detail: job.status_detail || job.last_error || job.job_type.replace(/_/g, " "),
-        href: "/tasks",
-      })),
     ];
     const normalized = deferredQuery.trim().toLowerCase();
     return rows
       .filter((item) => filter === "all" || item.kind === filter)
       .filter((item) => !normalized || `${item.title} ${item.detail}`.toLowerCase().includes(normalized))
       .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
-  }, [bridge, chats, clusters, deferredQuery, filter, jobs, sources]);
+  }, [chats, clusters, deferredQuery, filter, sources]);
 
   const totalPages = Math.max(1, Math.ceil(activities.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -145,7 +118,7 @@ function TimelineRoute() {
       <main className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:overflow-y-auto">
         <header className="border-b border-border pb-6">
           <h1 className="page-title">Timeline</h1>
-          <p className="mt-2 text-sm text-muted-foreground">Everything Vault processed, indexed, changed, and answered.</p>
+          <p className="mt-2 text-sm text-muted-foreground">Your source, cluster, and conversation history. Operational work stays in Tasks; external access stays in Bridge.</p>
           <div className="mt-6 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
             <div className="relative min-w-0 max-w-xl">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -161,7 +134,7 @@ function TimelineRoute() {
               />
             </div>
             <div className="flex flex-wrap gap-1">
-              {(["all", "source", "chat", "cluster", "bridge", "job"] as const).map((item) => (
+              {(["all", "source", "chat", "cluster"] as const).map((item) => (
                 <button
                   key={item}
                   type="button"
@@ -259,15 +232,6 @@ function TimelineRoute() {
   );
 }
 
-function jobTitle(job: AppJobRecord) {
-  const label = job.job_type
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part[0]?.toUpperCase() + part.slice(1))
-    .join(" ");
-  return `${label || "Job"} ${job.status}`;
-}
-
 function Meta({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col gap-1 py-3 sm:flex-row sm:justify-between sm:gap-4">
@@ -283,8 +247,6 @@ function labelForKind(kind: "all" | ActivityKind) {
     source: "Ingestion",
     chat: "Chat",
     cluster: "Clusters",
-    bridge: "Bridge",
-    job: "Jobs",
   }[kind];
 }
 
@@ -293,8 +255,6 @@ function iconForKind(kind: ActivityKind) {
     source: FileText,
     chat: Bot,
     cluster: GitBranch,
-    bridge: Cable,
-    job: CheckCircle2,
   }[kind];
 }
 

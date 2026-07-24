@@ -62,7 +62,7 @@ function TasksView() {
   }, [filter, jobs, query]);
   const visibleProjectTasks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return projectTasks.filter(({ project, run }) => matchesProjectFilter(run, filter))
+    return projectTasks.filter(({ run }) => matchesProjectFilter(run, filter))
       .filter(({ project, run }) => !normalized || `${project.name} ${run.phase} ${run.status} ${run.trigger_source}`.toLowerCase().includes(normalized));
   }, [filter, projectTasks, query]);
 

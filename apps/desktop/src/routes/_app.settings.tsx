@@ -1,9 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
   CheckCircle2,
-  ChevronRight,
   Database,
   Download,
   FileText,
@@ -134,10 +133,13 @@ const settingsSections = [
 
 function SettingsView() {
   const { section } = Route.useSearch();
+  const navigate = useNavigate();
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
   const backendHealth = useBackendHealth();
   const [mounted, setMounted] = useState(false);
-  const [activeSection, setActiveSection] = useState(section ?? "models");
+  const [activeSection, setActiveSection] = useState(() =>
+    settingsSections.some((item) => item.id === section) ? section! : "profile",
+  );
   const [backendVault, setBackendVault] = useState<VaultRecord | null>(null);
   const [pathDraft, setPathDraft] = useState("");
   const [models, setModels] = useState<LocalModelRecord[]>([]);
@@ -200,6 +202,25 @@ function SettingsView() {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    const nextSection = settingsSections.some((item) => item.id === section)
+      ? section!
+      : "models";
+    setActiveSection(nextSection);
+  }, [section]);
+
+  function selectSettingsSection(nextSection: string) {
+    const validSection = settingsSections.some((item) => item.id === nextSection)
+      ? nextSection
+      : "models";
+    setActiveSection(validSection);
+    void navigate({
+      to: "/settings",
+      search: { section: validSection },
+      replace: true,
+    });
+  }
 
   useEffect(() => {
     if (activeSection !== "odin" || !backendVault) return;
@@ -342,6 +363,7 @@ function SettingsView() {
         ? await unlockVaultWithPassphrase({ vault_id: vaultId, passphrase: vaultPassphrase })
         : await initializeVaultSecurity({ vault_id: vaultId, passphrase: vaultPassphrase, unlock_mode: "convenience" });
       setUnlockStatus(next);
+      window.dispatchEvent(new CustomEvent("vault:lock-state", { detail: next }));
       const recoveryKey = "recovery_key" in next && typeof next.recovery_key === "string" ? next.recovery_key : null;
       if (recoveryKey) setRecoveryKey(recoveryKey);
       setVaultPassphrase("");
@@ -358,6 +380,7 @@ function SettingsView() {
     try {
       const next = await lockVault(unlockStatus?.vault_id ?? backendVault?.id ?? null);
       setUnlockStatus(next);
+      window.dispatchEvent(new CustomEvent("vault:lock-state", { detail: next }));
       setStatusMessage("Library locked.");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not lock library.");
@@ -929,7 +952,6 @@ function SettingsView() {
     }
   }
 
-  const suggestedModel = models[0];
   const activeChatModel = models.find((model) => model.active_chat) ?? null;
   const recommendedChatModelId = modelRecommendations?.recommended_chat_model_id ?? "";
   const recommendedChatSummary = modelRecommendations?.chat_recommendation?.summary ?? "";
@@ -948,7 +970,7 @@ function SettingsView() {
   );
 
   return (
-    <div className="vault-page-wash grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[205px_1fr_326px]">
+    <div className="vault-page-wash grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[205px_minmax(0,1fr)]">
       <aside className="hidden border-r border-border px-5 py-9 xl:block">
         <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
           Settings
@@ -961,7 +983,7 @@ function SettingsView() {
               <button
                 key={section.id}
                 type="button"
-                onClick={() => setActiveSection(section.id)}
+                onClick={() => selectSettingsSection(section.id)}
                 className={
                   "flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm transition-colors " +
                   (active ? "bg-sidebar-accent text-foreground" : "text-muted-foreground hover:bg-card")
@@ -992,7 +1014,7 @@ function SettingsView() {
         <select
           id="settings-section-select"
           value={activeSection}
-          onChange={(event) => setActiveSection(event.target.value)}
+          onChange={(event) => selectSettingsSection(event.target.value)}
           className="mt-2 w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none xl:hidden"
         >
           {settingsSections.map((section) => (
@@ -1467,6 +1489,15 @@ function SettingsView() {
                 )}
               </div>
             )}
+            <div className="mt-4 border-t border-border pt-4">
+              <Button
+                variant="outline"
+                onClick={() => void rebuildEmbeddings()}
+                disabled={saving || !backendVault}
+              >
+                Rebuild search index
+              </Button>
+            </div>
           </SettingsCard>
           )}
 
@@ -1478,13 +1509,45 @@ function SettingsView() {
             status={ocrRuntime?.available ? "Ready" : "Missing"}
             statusTone={ocrRuntime?.available ? "ready" : "issue"}
           >
-            <RuntimeRow label="Image OCR" value={ocrRuntime?.image_ocr_available ? "Ready" : "Missing"} meta={ocrRuntime?.tesseract_path ?? ""} />
-            <RuntimeRow label="PDF OCR" value={ocrRuntime?.pdf_ocr_available ? "Ready" : "Missing"} meta={ocrRuntime?.pdf_ocr_engine ?? ""} />
-            <RuntimeRow label="OCRmyPDF" value={ocrRuntime?.full_pdf_ocr_available ? "Ready" : "Fallback"} meta={ocrRuntime?.ocrmypdf_command ?? ""} />
-            <RuntimeRow label="Ghostscript" value={ocrRuntime?.ghostscript_path ? "Installed" : "Missing"} meta={ocrRuntime?.ghostscript_path ?? ""} />
-            <RuntimeRow label="qpdf" value={ocrRuntime?.qpdf_path ? "Installed" : "Missing"} meta={ocrRuntime?.qpdf_path ?? ""} />
+            <div className="mt-6 divide-y divide-border border-y border-border">
+              <RuntimeRow
+                label="Image OCR"
+                value={ocrRuntime?.image_ocr_available ? "Ready" : "Missing"}
+                tone={ocrRuntime?.image_ocr_available ? "ready" : "issue"}
+                meta={ocrRuntime?.tesseract_path ?? ""}
+              />
+              <RuntimeRow
+                label="PDF OCR"
+                value={ocrRuntime?.pdf_ocr_available ? "Ready" : "Missing"}
+                tone={ocrRuntime?.pdf_ocr_available ? "ready" : "issue"}
+                meta={ocrRuntime?.pdf_ocr_engine ?? ""}
+              />
+              <RuntimeRow
+                label="OCRmyPDF"
+                value={ocrRuntime?.full_pdf_ocr_available ? "Ready" : "Fallback"}
+                tone={ocrRuntime?.full_pdf_ocr_available ? "ready" : "warning"}
+                meta={ocrRuntime?.ocrmypdf_command ?? ""}
+              />
+              <RuntimeRow
+                label="Ghostscript"
+                value={ocrRuntime?.ghostscript_path ? "Installed" : "Missing"}
+                tone={ocrRuntime?.ghostscript_path ? "ready" : "issue"}
+                meta={ocrRuntime?.ghostscript_path ?? ""}
+              />
+              <RuntimeRow
+                label="qpdf"
+                value={ocrRuntime?.qpdf_path ? "Installed" : "Missing"}
+                tone={ocrRuntime?.qpdf_path ? "ready" : "issue"}
+                meta={ocrRuntime?.qpdf_path ?? ""}
+              />
+            </div>
             {ocrRuntime?.missing.length ? (
-              <p className="mt-4 text-xs text-muted-foreground">Missing: {ocrRuntime.missing.join(", ")}</p>
+              <div className="mt-5 rounded-md bg-[var(--status-warn-bg)] px-4 py-3 text-sm text-[var(--status-warn-ink)]">
+                <span className="font-medium">Optional tools not detected</span>
+                <span className="mt-1 block break-words leading-5">
+                  {ocrRuntime.missing.join(", ")}
+                </span>
+              </div>
             ) : null}
           </SettingsCard>
           )}
@@ -1492,12 +1555,42 @@ function SettingsView() {
           {showSection("storage") && (<>
           <SettingsCard
             icon={<Database className="h-4 w-4" />}
-            title="Disk usage"
-            description="Manage local data and model storage."
+            title="Library storage"
+            description="Manage this library's local location and backups."
           >
-            <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
-              Storage usage is not available yet. This library is stored at{" "}
-              <span className="text-foreground">{pathDraft || "No library selected"}</span>.
+            <div className="mt-5">
+              <label className="text-sm font-medium" htmlFor="library-storage-path">Storage location</label>
+              <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                <Input
+                  id="library-storage-path"
+                  value={pathDraft}
+                  onChange={(event) => setPathDraft(event.target.value)}
+                />
+                <Button variant="outline" onClick={() => void saveVaultPath()} disabled={saving}>
+                  Change location
+                </Button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  disabled={!backendVault}
+                  onClick={() => {
+                    if (backendVault) return window.cmlDesktop?.showItemInFolder(backendVault.path);
+                  }}
+                >
+                  Show data folder
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={saving || !backendVault}
+                  onClick={() => void createBackup()}
+                >
+                  Create local backup
+                </Button>
+              </div>
+              <p className="mt-3 text-xs text-muted-foreground">
+                Storage usage totals are not available yet.
+              </p>
             </div>
           </SettingsCard>
           <SettingsCard
@@ -1924,55 +2017,32 @@ function SettingsView() {
             </Button>
           </SettingsCard>
           )}
+          {showSection("advanced") && (
+            <SettingsCard
+              icon={<Lock className="h-4 w-4" />}
+              title="Delete library"
+              description="Remove this library's database records. Original source files remain in place."
+              status="Destructive"
+              statusTone="issue"
+            >
+              <Button
+                variant="destructive"
+                className="mt-5"
+                disabled={saving || !backendVault}
+                onClick={() => {
+                  setDeleteNameDraft("");
+                  setDeletePassphrase("");
+                  setDeleteDialogOpen(true);
+                }}
+              >
+                Delete library…
+              </Button>
+            </SettingsCard>
+          )}
             </>
           )}
         </div>
       </main>
-
-      <aside className="hidden overflow-y-auto border-l border-border bg-card/35 px-6 py-9 xl:block">
-        <h3 className="text-sm font-semibold">Storage location</h3>
-        <div className="mt-4 flex items-center gap-2">
-          <Input value={pathDraft} onChange={(event) => setPathDraft(event.target.value)} />
-          <Button variant="outline" onClick={() => void saveVaultPath()} disabled={saving}>Change...</Button>
-        </div>
-
-        <div className="my-8 h-px bg-border" />
-        <h3 className="text-sm font-semibold">Privacy & data</h3>
-        <div className="mt-5 space-y-4">
-          {["All data stays on this device", "No cloud sync or backups", "No telemetry or analytics", "Local models only"].map((item) => (
-            <div key={item} className="flex items-center gap-3 text-sm text-muted-foreground">
-              <CheckCircle2 className="h-4 w-4 text-primary" />
-              {item}
-            </div>
-          ))}
-        </div>
-
-        <div className="my-8 h-px bg-border" />
-        <h3 className="text-sm font-semibold">Quick actions</h3>
-        <div className="mt-4 space-y-2">
-          <SideAction
-            icon={<Folder className="h-4 w-4" />}
-            label="Show data folder"
-            disabled={!backendVault}
-            onClick={() => {
-              if (backendVault) return window.cmlDesktop?.showItemInFolder(backendVault.path);
-            }}
-          />
-          <SideAction icon={<Layers className="h-4 w-4" />} label="Rebuild embeddings" disabled={saving || !backendVault} onClick={() => void rebuildEmbeddings()} />
-          <SideAction icon={<Database className="h-4 w-4" />} label="Create local backup" disabled={saving || !backendVault} onClick={() => void createBackup()} />
-          <SideAction icon={<Lock className="h-4 w-4" />} label="Delete library…" disabled={saving || !backendVault} onClick={() => {
-            setDeleteNameDraft("");
-            setDeletePassphrase("");
-            setDeleteDialogOpen(true);
-          }} />
-        </div>
-
-        <div className="my-8 h-px bg-border" />
-        <h3 className="text-sm font-semibold">Need help?</h3>
-        <div className="mt-4 text-sm leading-6 text-muted-foreground">
-          Local setup and recovery guidance is available in the repository documentation.
-        </div>
-      </aside>
 
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent>
@@ -2027,7 +2097,7 @@ function SettingsCard({
           <span className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground">
             <span
               className="h-2 w-2 rounded-full"
-              style={{ background: statusTone === "ready" ? "var(--status-ready)" : "var(--status-learning)" }}
+              style={{ background: statusTone === "ready" ? "var(--status-ready)" : "var(--status-issue)" }}
             />
             {status}
           </span>
@@ -2181,15 +2251,39 @@ function vaultName(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
-function RuntimeRow({ label, value, meta }: { label: string; value: string; meta?: string }) {
+function RuntimeRow({
+  label,
+  value,
+  meta,
+  tone,
+}: {
+  label: string;
+  value: string;
+  meta?: string;
+  tone: "ready" | "warning" | "issue";
+}) {
+  const color =
+    tone === "ready"
+      ? "var(--status-ready)"
+      : tone === "warning"
+        ? "var(--status-learning)"
+        : "var(--status-issue)";
+
   return (
-    <div className="mt-5 grid grid-cols-[1fr_120px_80px] items-center gap-4 text-sm">
-      <span className="font-medium">{label}</span>
-      <span className="flex items-center gap-2 text-primary">
-        <span className="h-2 w-2 rounded-full bg-primary" />
-        {value}
+    <div className="grid min-w-0 gap-3 py-4 text-sm sm:grid-cols-[minmax(0,128px)_minmax(0,1fr)] sm:gap-6">
+      <span className="break-words font-medium">{label}</span>
+      <span className="min-w-0">
+        <span className="flex min-w-0 items-center gap-2 font-medium">
+          <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: color }} />
+          <span className="break-words">{value}</span>
+        </span>
+        <span
+          className="mt-1.5 block min-w-0 break-all font-mono text-xs leading-5 text-muted-foreground"
+          title={meta || "Not detected"}
+        >
+          {meta || "Not detected"}
+        </span>
       </span>
-      <span className="text-muted-foreground">{meta}</span>
     </div>
   );
 }
@@ -2270,19 +2364,4 @@ function jobHealthLabel(jobs: JobQueueStatus | null) {
 function jobHealthDetail(jobs: JobQueueStatus | null) {
   if (!jobs) return "Waiting for the queue status check.";
   return `${jobs.queued} queued / ${jobs.running} running / ${jobs.failed} failed / ${jobs.blocked_by_dependency} blocked`;
-}
-
-function SideAction({ icon, label, onClick, disabled = false }: { icon: ReactNode; label: string; onClick: () => void | Promise<unknown>; disabled?: boolean }) {
-  return (
-    <button
-      type="button"
-      onClick={() => void onClick()}
-      disabled={disabled}
-      className="flex w-full items-center gap-3 rounded-md border border-border bg-background px-3 py-2 text-left text-sm hover:bg-accent/45 disabled:cursor-not-allowed disabled:opacity-50"
-    >
-      {icon}
-      <span className="flex-1">{label}</span>
-      <ChevronRight className="h-4 w-4 text-muted-foreground" />
-    </button>
-  );
 }

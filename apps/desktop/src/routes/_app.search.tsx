@@ -1,18 +1,16 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useDeferredValue, useEffect, useMemo, useState, type ComponentType, type DragEvent } from "react";
+import { useDeferredValue, useEffect, useMemo, useState, type ComponentType } from "react";
 import {
   ArrowUpDown,
   Clapperboard,
   ExternalLink,
   FileCode2,
   FileText,
-  Folder,
   FolderOpen,
   Image,
   Link as LinkIcon,
   Mic,
   NotebookText,
-  Plus,
   Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -24,28 +22,23 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   type Cluster,
   type Source,
   type SourceType,
 } from "@/lib/domain";
 import {
-  createSourceFromPath,
-  createSourceFromText,
-  createSourceFromUrl,
+  getSource,
   listClusters,
   listSources,
   listVaults,
   semanticSearch,
-  updateSource,
   type VaultRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord, sourceStateText } from "@/lib/recordAdapters";
 
 type FilterType = "all" | "note" | "link" | "file" | "image" | "unclustered";
 type SortMode = "newest" | "oldest" | "alphabetical";
-type AddMode = "note" | "link" | null;
 const PAGE_SIZE = 50;
 
 export const Route = createFileRoute("/_app/search")({
@@ -62,18 +55,9 @@ function SearchView() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FilterType>("all");
   const [sortMode, setSortMode] = useState<SortMode>("newest");
-  const [addMode, setAddMode] = useState<AddMode>(null);
   const [selectedSource, setSelectedSource] = useState<Source | null>(null);
-  const [noteTitle, setNoteTitle] = useState("");
-  const [noteText, setNoteText] = useState("");
-  const [linkUrl, setLinkUrl] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [dragActive, setDragActive] = useState(false);
-  const [importMessage, setImportMessage] = useState<string | null>(null);
   const [semanticRanks, setSemanticRanks] = useState<Map<string, number>>(new Map());
   const [page, setPage] = useState(1);
-
-  const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
 
   async function loadVaultData() {
     try {
@@ -83,7 +67,7 @@ function SearchView() {
       setBackendVault(activeVault);
       const [clusterRows, sourceRows] = await Promise.all([
         listClusters(activeVault.id),
-        listSources(activeVault.id),
+        listSources(activeVault.id, { limit: 100 }),
       ]);
       setBackendClusters(clusterRows.map(clusterFromRecord));
       setBackendSources(sourceRows.map(sourceFromRecord));
@@ -97,6 +81,10 @@ function SearchView() {
     setMounted(true);
     void loadVaultData();
   }, []);
+
+  useEffect(() => {
+    if (query.length === 0) void loadVaultData();
+  }, [query]);
 
   useEffect(() => {
     if (!vault || !backendReady || query.trim().length < 3) {
@@ -118,6 +106,17 @@ function SearchView() {
           const current = ranks.get(result.source_id) ?? 0;
           ranks.set(result.source_id, Math.max(current, result.score));
         }
+        const resultSources = await Promise.all(
+          Array.from(new Set(response.results.map((result) => result.source_id)))
+            .slice(0, 50)
+            .map((sourceId) => getSource(sourceId).catch(() => null)),
+        );
+        if (cancelled) return;
+        setBackendSources(
+          resultSources
+            .filter((item): item is NonNullable<typeof item> => item !== null)
+            .map(sourceFromRecord),
+        );
         setSemanticRanks(ranks);
       } catch {
         if (!cancelled) setSemanticRanks(new Map());
@@ -164,123 +163,8 @@ function SearchView() {
   const pageStart = (currentPage - 1) * PAGE_SIZE;
   const pageSources = visibleSources.slice(pageStart, pageStart + PAGE_SIZE);
 
-  const unclusteredCount = sources.filter((source) => !source.clusterId).length;
-  const needsReviewCount = sources.filter((source) => source.state !== "indexed").length;
-
-  async function addFiles() {
-    if (!vault || !desktop?.selectSourceFiles) return;
-    const paths = await desktop.selectSourceFiles();
-    await importFilePaths(paths);
-  }
-
-  async function addFolder() {
-    if (!vault || !desktop?.selectSourceFolders || !desktop?.scanSupportedFiles) return;
-    const folders = await desktop.selectSourceFolders();
-    const report = await desktop.scanSupportedFiles(folders);
-    await importFilePaths(report.files, report.truncated ? report.limit : null);
-  }
-
-  async function importFilePaths(paths: string[], truncatedAt: number | null = null) {
-    if (!vault || paths.length === 0) return;
-    setImportMessage(`Importing ${paths.length} document${paths.length === 1 ? "" : "s"}...`);
-    const failures: string[] = [];
-    let imported = 0;
-    let cursor = 0;
-    const workers = Array.from({ length: Math.min(4, paths.length) }, async () => {
-      while (cursor < paths.length) {
-        const path = paths[cursor];
-        cursor += 1;
-        try {
-          await createSourceFromPath({ vault_id: vault.id, path });
-          imported += 1;
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : "Import failed";
-          failures.push(`${fileNameFromPath(path)}: ${reason}`);
-        }
-      }
-    });
-    await Promise.all(workers);
-    await loadVaultData();
-    const limitNotice = truncatedAt
-      ? ` Folder scanning stopped at the ${truncatedAt.toLocaleString()}-file safety limit.`
-      : "";
-    setImportMessage(`${formatImportResult(imported, failures)}${limitNotice}`);
-  }
-
-  function handleDragOver(event: DragEvent<HTMLDivElement>) {
-    if (!vault || event.dataTransfer.types.includes("Files") === false) return;
-    event.preventDefault();
-    setDragActive(true);
-  }
-
-  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-    setDragActive(false);
-  }
-
-  async function handleDrop(event: DragEvent<HTMLDivElement>) {
-    if (!vault) return;
-    event.preventDefault();
-    setDragActive(false);
-    const droppedPaths = desktop?.getDroppedFilePaths?.(event.dataTransfer.files) ?? [];
-    const report = desktop?.scanSupportedFiles
-      ? await desktop.scanSupportedFiles(droppedPaths)
-      : { files: droppedPaths, truncated: false, limit: 0 };
-    await importFilePaths(report.files, report.truncated ? report.limit : null);
-  }
-
-  async function submitNote() {
-    if (!vault || !noteText.trim()) return;
-    setSubmitting(true);
-    try {
-      await createSourceFromText({
-        vault_id: vault.id,
-        title: noteTitle.trim() || "Untitled note",
-        text: noteText.trim(),
-      });
-      setNoteTitle("");
-      setNoteText("");
-      setAddMode(null);
-      await loadVaultData();
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function submitLink() {
-    if (!vault || !linkUrl.trim()) return;
-    setSubmitting(true);
-    try {
-      await createSourceFromUrl({ vault_id: vault.id, url: linkUrl.trim() });
-      setLinkUrl("");
-      setAddMode(null);
-      await loadVaultData();
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function updateCardImage(source: Source, coverImageUrl: string | null) {
-    const updated = source.id.startsWith("source-")
-      ? sourceFromRecord(await updateSource(source.id, { cover_image_url: coverImageUrl }))
-      : { ...source, coverImageUrl: coverImageUrl ?? undefined };
-    setSelectedSource(updated);
-    setBackendSources((items) => items.map((item) => (item.id === source.id ? updated : item)));
-    await loadVaultData();
-  }
-
   return (
-    <div
-      className="relative grid h-full grid-cols-1 overflow-y-auto bg-background xl:grid-cols-[minmax(0,1fr)_320px] xl:overflow-hidden"
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={(event) => void handleDrop(event)}
-    >
-      {dragActive && (
-        <div className="pointer-events-none absolute inset-3 z-30 flex items-center justify-center rounded-md border border-dashed border-primary bg-background/85 text-sm font-medium text-foreground">
-          Drop documents to add them to this library
-        </div>
-      )}
+    <div className="relative h-full overflow-y-auto bg-background">
       <main className="min-w-0 xl:overflow-y-auto">
         <div className="border-b border-border bg-background px-4 py-5 sm:px-6">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
@@ -290,24 +174,9 @@ function SearchView() {
                 Search saved sources, review unclustered items, and open the context you need.
               </p>
             </div>
-            <div className="flex flex-wrap gap-2 xl:justify-end">
-              <Button variant="outline" className="gap-2" onClick={() => setAddMode("note")}>
-                <NotebookText className="h-4 w-4" />
-                Add note
-              </Button>
-              <Button variant="outline" className="gap-2" onClick={() => setAddMode("link")}>
-                <LinkIcon className="h-4 w-4" />
-                Add link
-              </Button>
-              <Button className="gap-2" onClick={addFiles} disabled={!vault || !desktop?.selectSourceFiles}>
-                <Plus className="h-4 w-4" />
-                Add file
-              </Button>
-              <Button variant="outline" className="gap-2" onClick={addFolder} disabled={!vault || !desktop?.selectSourceFolders}>
-                <Folder className="h-4 w-4" />
-                Add folder
-              </Button>
-            </div>
+            <Button variant="outline" asChild>
+              <Link to="/sources">Manage sources</Link>
+            </Button>
           </div>
 
           <div className="mt-5 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
@@ -358,11 +227,6 @@ function SearchView() {
         </div>
 
         <div className="px-4 py-5 sm:px-6">
-          {importMessage && (
-            <div className="mb-4 break-words rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
-              {importMessage}
-            </div>
-          )}
           {!vault && (
             <div className="mb-4 rounded-md border border-border bg-card px-4 py-3 text-sm">
               <div className="font-medium">No active library</div>
@@ -440,103 +304,11 @@ function SearchView() {
         </div>
       </main>
 
-      <aside className="border-t border-border bg-card/55 p-4 sm:p-5 xl:border-l xl:border-t-0">
-        <h2 className="text-sm font-semibold">Current library</h2>
-        <div className="mt-4 space-y-2">
-          <StateRow label="Sources" value={sources.length.toString()} />
-          <StateRow label="Clusters" value={clusters.length.toString()} />
-          <StateRow label="Unclustered" value={unclusteredCount.toString()} />
-          <StateRow label="Needs review" value={needsReviewCount.toString()} />
-        </div>
-
-        <h2 className="mt-7 text-sm font-semibold">Clusters</h2>
-        <div className="mt-3 space-y-2">
-          {clusters.slice(0, 8).map((cluster) => {
-            const count = sources.filter((source) => source.clusterId === cluster.id).length;
-            return (
-              <Link
-                key={cluster.id}
-                to="/clusters/$clusterId"
-                params={{ clusterId: cluster.id }}
-                className="block rounded-md border border-border bg-background px-3 py-2 text-sm hover:bg-accent"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <span className="truncate font-medium">{cluster.name}</span>
-                  <span className="text-xs text-muted-foreground">{count}</span>
-                </div>
-              </Link>
-            );
-          })}
-          {clusters.length === 0 && (
-            <div className="rounded-md border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
-              Clusters will appear after sources are indexed.
-            </div>
-          )}
-        </div>
-      </aside>
-
       <SourceDetailDialog
         source={selectedSource}
         cluster={selectedSource?.clusterId ? clusterById.get(selectedSource.clusterId) : undefined}
         onOpenChange={(open) => !open && setSelectedSource(null)}
-        onCoverImageChange={updateCardImage}
       />
-
-      <Dialog open={addMode === "note"} onOpenChange={(open) => !open && setAddMode(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add note</DialogTitle>
-            <DialogDescription>
-              Save pasted or written text into the active local library.
-            </DialogDescription>
-          </DialogHeader>
-          <label className="grid gap-1 text-sm">
-            Title
-            <Input value={noteTitle} onChange={(event) => setNoteTitle(event.target.value)} />
-          </label>
-          <label className="grid gap-1 text-sm">
-            Text
-            <Textarea className="min-h-40" value={noteText} onChange={(event) => setNoteText(event.target.value)} />
-          </label>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setAddMode(null)}>Cancel</Button>
-            <Button onClick={submitNote} disabled={submitting || !noteText.trim()}>Add note</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={addMode === "link"} onOpenChange={(open) => !open && setAddMode(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add link</DialogTitle>
-            <DialogDescription>
-              Fetch a web page, extract readable content, and store it in the active library.
-            </DialogDescription>
-          </DialogHeader>
-          <label className="grid gap-1 text-sm">
-            URL
-            <Input placeholder="https://..." value={linkUrl} onChange={(event) => setLinkUrl(event.target.value)} />
-          </label>
-          <div className="rounded-md border border-border bg-muted/45 p-3 text-sm">
-            Vault stores the readable text and queues it for indexing.
-          </div>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setAddMode(null)}>Cancel</Button>
-            <Button onClick={submitLink} disabled={submitting || !linkUrl.trim()}>
-              {submitting ? "Extracting..." : "Add link"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-function StateRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2 text-sm">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="break-all text-right font-medium">{value}</span>
     </div>
   );
 }
@@ -592,36 +364,15 @@ function SourceDetailDialog({
   source,
   cluster,
   onOpenChange,
-  onCoverImageChange,
 }: {
   source: Source | null;
   cluster?: Cluster;
   onOpenChange: (open: boolean) => void;
-  onCoverImageChange: (source: Source, coverImageUrl: string | null) => Promise<void>;
 }) {
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
-  const [coverImageValue, setCoverImageValue] = useState("");
-
-  useEffect(() => {
-    setCoverImageValue(source?.coverImageUrl ?? "");
-  }, [source?.id, source?.coverImageUrl]);
 
   if (!source) return null;
   const coverImageUrl = imageSrc(source.coverImageUrl);
-
-  async function chooseLocalImage() {
-    const selectedPath = await desktop?.selectCoverImage?.();
-    const currentSource = source;
-    if (!selectedPath || !currentSource) return;
-    setCoverImageValue(selectedPath);
-    await onCoverImageChange(currentSource, selectedPath);
-  }
-
-  async function saveImageUrl() {
-    const currentSource = source;
-    if (!currentSource) return;
-    await onCoverImageChange(currentSource, coverImageValue.trim() || null);
-  }
 
   return (
     <Dialog open={Boolean(source)} onOpenChange={onOpenChange}>
@@ -641,22 +392,6 @@ function SourceDetailDialog({
                 No card image selected.
               </div>
             )}
-          </div>
-          <div className="grid gap-2">
-            <label className="text-sm font-medium" htmlFor="cover-image-url">Card image</label>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Input
-                id="cover-image-url"
-                value={coverImageValue}
-                onChange={(event) => setCoverImageValue(event.target.value)}
-                placeholder="Image URL or local image path"
-                className="min-w-0"
-              />
-              <Button variant="outline" onClick={saveImageUrl}>Save</Button>
-              <Button variant="outline" onClick={chooseLocalImage} disabled={!desktop?.selectCoverImage}>
-                Choose
-              </Button>
-            </div>
           </div>
           <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
             <span>{source.type}</span>
@@ -684,14 +419,8 @@ function SourceDetailDialog({
             </div>
           )}
           <div className="flex flex-wrap justify-end gap-2">
-            <Button
-              variant="outline"
-              className="gap-2"
-              disabled={!source.coverImageUrl}
-              onClick={() => source && void onCoverImageChange(source, null)}
-            >
-              <Image className="h-4 w-4" />
-              Remove image
+            <Button variant="outline" className="gap-2" asChild>
+              <Link to="/sources" search={{ source: source.id }}>Open in Sources</Link>
             </Button>
             <Button
               variant="outline"
@@ -738,14 +467,3 @@ function imageSrc(value?: string) {
   return `file:///${value.replace(/\\/g, "/")}`;
 }
 
-function fileNameFromPath(path: string) {
-  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
-}
-
-function formatImportResult(imported: number, failures: string[]) {
-  const importedLabel = `Imported ${imported} document${imported === 1 ? "" : "s"}`;
-  if (failures.length === 0) return `${importedLabel}.`;
-  const firstFailure = failures[0];
-  const more = failures.length > 1 ? ` and ${failures.length - 1} more` : "";
-  return `${importedLabel}. Failed ${failures.length}: ${firstFailure}${more}.`;
-}

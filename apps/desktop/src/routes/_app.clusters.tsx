@@ -1,7 +1,8 @@
 import { createFileRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { Check, Code2, FileText, MoreHorizontal, Plus, RefreshCw, X } from "lucide-react";
+import { Check, Code2, FileText, Plus, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   createCluster,
   listClusterSuggestions,
@@ -33,9 +34,10 @@ function ClustersList() {
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
   const [sourceCountRows, setSourceCountRows] = useState<Array<{ cluster_id: string | null; state: string; total: number }>>([]);
   const [projectClusterIds, setProjectClusterIds] = useState<Set<string>>(new Set());
+  const [newClusterName, setNewClusterName] = useState("");
+  const [creatingCluster, setCreatingCluster] = useState(false);
 
   async function loadData() {
     setLoading(true);
@@ -53,7 +55,6 @@ function ClustersList() {
       ]);
       const mappedClusters = clusterRows.map(clusterFromRecord);
       setBackendClusters(mappedClusters);
-      setSelectedClusterId((current) => current ?? mappedClusters[0]?.id ?? null);
       setBackendSources(sourceRows.map(sourceFromRecord));
       setSuggestions(suggestionRows);
       setSourceCountRows(countResult.items);
@@ -90,17 +91,6 @@ function ClustersList() {
     }
     return counts;
   }, [sourceCountRows]);
-  const selectedCluster = clusters.find((cluster) => cluster.id === selectedClusterId) ?? clusters[0] ?? null;
-  const selectedSources = selectedCluster
-    ? sources.filter((source) => source.clusterId === selectedCluster.id)
-    : [];
-  const selectedCountRows = selectedCluster
-    ? sourceCountRows.filter((row) => row.cluster_id === selectedCluster.id)
-    : [];
-  const selectedIndexedCount = selectedCountRows.find((row) => row.state === "indexed")?.total ?? 0;
-  const selectedProcessingCount = selectedCountRows.find((row) => row.state === "processing")?.total ?? 0;
-  const selectedFailedCount = selectedCountRows.find((row) => row.state === "failed")?.total ?? 0;
-
   if (pathname !== "/clusters") return <Outlet />;
 
   async function handleNewCluster() {
@@ -108,13 +98,20 @@ function ClustersList() {
       setMessage("Create or open a vault before adding clusters.");
       return;
     }
+    const name = newClusterName.trim();
+    if (!name) {
+      setMessage("Name the cluster before creating it.");
+      return;
+    }
+    setCreatingCluster(true);
     await createCluster({
       vault_id: vault.id,
-      name: "New cluster",
+      name,
       description: "",
       color: nextTint(backendClusters.length),
     });
-    await loadData();
+    setNewClusterName("");
+    await loadData().finally(() => setCreatingCluster(false));
   }
 
   async function acceptSuggestion(suggestion: ClusterSuggestionRecord) {
@@ -125,7 +122,7 @@ function ClustersList() {
 
   return (
     <div className="vault-page-wash h-full overflow-y-auto">
-      <div className="mx-auto grid min-h-full max-w-[1500px] grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="mx-auto min-h-full max-w-[1240px]">
         <div className="min-w-0 px-4 py-6 sm:px-7 sm:py-8">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0 max-w-2xl">
@@ -143,7 +140,17 @@ function ClustersList() {
             <Button variant="outline" onClick={() => void loadData()} disabled={loading}>
               <RefreshCw className="h-4 w-4" /> Refresh
             </Button>
-            <Button onClick={() => void handleNewCluster()}>
+            <Input
+              aria-label="New cluster name"
+              className="h-9 w-48"
+              value={newClusterName}
+              placeholder="Cluster name"
+              onChange={(event) => setNewClusterName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void handleNewCluster();
+              }}
+            />
+            <Button onClick={() => void handleNewCluster()} disabled={!newClusterName.trim() || creatingCluster}>
               <Plus className="h-4 w-4" /> New cluster
             </Button>
           </div>
@@ -169,14 +176,11 @@ function ClustersList() {
                   {clusters.map((cluster) => {
                     const count = sourceCounts.get(cluster.id) ?? 0;
                     return (
-                      <button
+                      <Link
                         key={cluster.id}
-                        type="button"
-                        onClick={() => setSelectedClusterId(cluster.id)}
-                        className={
-                          "grid w-full grid-cols-[minmax(0,1fr)_96px_96px_140px_32px] items-center border-b border-border px-2 py-4 text-left transition-colors hover:bg-card/65 " +
-                          (selectedCluster?.id === cluster.id ? "bg-card/80" : "")
-                        }
+                        to="/clusters/$clusterId"
+                        params={{ clusterId: cluster.id }}
+                        className="grid w-full grid-cols-[minmax(0,1fr)_96px_96px_140px_32px] items-center border-b border-border px-2 py-4 text-left transition-colors hover:bg-card/65"
                       >
                         <div className="flex min-w-0 items-center gap-4">
                           <ClusterDocument tint={cluster.tint} />
@@ -199,8 +203,8 @@ function ClustersList() {
                           {(indexedCounts.get(cluster.id) ?? 0).toLocaleString()}
                         </span>
                         <span className="break-words text-sm text-muted-foreground">{clusterLastActivity(cluster, sources)}</span>
-                        <MoreHorizontal className="h-4 w-4 justify-self-end text-muted-foreground" />
-                      </button>
+                        <span className="justify-self-end text-xs text-muted-foreground">Open</span>
+                      </Link>
                     );
                   })}
                   {clusters.length === 0 && (
@@ -210,59 +214,6 @@ function ClustersList() {
                   )}
                 </div>
               </div>
-            </div>
-          </section>
-
-          <section className="mt-8">
-            <div className="mb-4 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Cluster overview
-            </div>
-            <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
-              {clusters.map((cluster, index) => {
-                const count = sourceCounts.get(cluster.id) ?? 0;
-                const topSource = sources.find((source) => source.clusterId === cluster.id);
-                return (
-                  <Link
-                    key={cluster.id}
-                    to="/clusters/$clusterId"
-                    params={{ clusterId: cluster.id }}
-                    className="vault-cluster-card group min-h-[188px] p-4 transition-colors hover:border-primary/40"
-                    style={{ ["--cluster-accent" as string]: `var(--cluster-${cluster.tint})` }}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex min-w-0 items-center gap-3">
-                        <FileText className="h-4 w-4 text-[var(--cluster-accent)]" />
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2 break-words text-sm font-semibold">
-                            {cluster.name}
-                            {projectClusterIds.has(cluster.id) && (
-                              <span className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
-                                <Code2 className="h-3 w-3" /> Project
-                              </span>
-                            )}
-                          </div>
-                          <div className="mt-1 break-words text-xs text-muted-foreground">
-                            {count} sources <span className="px-1.5">/</span>{" "}
-                            {(indexedCounts.get(cluster.id) ?? 0).toLocaleString()} indexed
-                          </div>
-                        </div>
-                      </div>
-                      <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
-                    </div>
-                    <div className="my-4 h-px bg-border" />
-                    <div className="text-xs text-muted-foreground">Most recent source</div>
-                    <div className="mt-2 line-clamp-2 break-words text-sm font-medium">
-                      {topSource?.title || "No source yet"}
-                    </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                      <span className="rounded border border-border px-1.5 py-0.5">
-                        {topSource?.type?.toUpperCase?.() || "NOTE"}
-                      </span>
-                      <span>{clusterLastActivity(cluster, sources)}</span>
-                    </div>
-                  </Link>
-                );
-              })}
             </div>
           </section>
 
@@ -308,73 +259,6 @@ function ClustersList() {
           )}
         </div>
 
-          <aside className="border-t border-border bg-card/35 px-4 py-6 sm:px-7 xl:border-l xl:border-t-0">
-            {selectedCluster ? (
-              <div className="xl:sticky xl:top-8">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span
-                      className="h-2.5 w-2.5 shrink-0 rounded-full"
-                      style={{ background: `var(--cluster-${selectedCluster.tint})` }}
-                    />
-                    <h2 className="min-w-0 break-words text-base font-semibold">{selectedCluster.name}</h2>
-                  </div>
-                  <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
-                </div>
-                <p className="mt-10 break-words text-sm leading-6 text-muted-foreground">
-                  {selectedCluster.summary || selectedCluster.description || "A private local memory space."}
-                </p>
-                {selectedCluster.glossary.length > 0 && (
-                  <div className="mt-5 flex flex-wrap gap-2" aria-label="Key terms">
-                    {selectedCluster.glossary.slice(0, 8).map((term) => (
-                      <span key={term} className="rounded-full border border-border px-2 py-1 text-xs text-muted-foreground">
-                        {term}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <div className="mt-8 grid grid-cols-2 gap-y-6">
-                  <InspectorMetric label="Sources" value={sourceCounts.get(selectedCluster.id) ?? 0} />
-                  <InspectorMetric label="Indexed" value={selectedIndexedCount} />
-                  <InspectorMetric label="Processing" value={selectedProcessingCount} />
-                  <InspectorMetric label="Needs review" value={selectedFailedCount} />
-                </div>
-                <div className="my-8 h-px bg-border" />
-                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Activity</div>
-                <div className="mt-5 space-y-5 border-l border-border pl-5">
-                  {selectedSources.slice(0, 5).map((source) => (
-                    <div key={source.id} className="relative text-sm">
-                      <span className="absolute -left-[23px] top-1.5 h-1.5 w-1.5 rounded-full bg-muted-foreground" />
-                      <div className="font-medium">{formatDate(source.updatedAt)}</div>
-                      <div className="mt-1 break-words text-muted-foreground">Added {source.title}</div>
-                    </div>
-                  ))}
-                  {selectedSources.length === 0 && (
-                    <div className="text-sm text-muted-foreground">No source activity yet.</div>
-                  )}
-                </div>
-                <div className="my-8 h-px bg-border" />
-                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Top sources</div>
-                <div className="mt-5 space-y-4">
-                  {selectedSources.slice(0, 3).map((source) => (
-                    <Link
-                      key={source.id}
-                      to="/sources"
-                      className="flex min-w-0 gap-3 text-sm hover:text-primary"
-                    >
-                      <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-issue)]" />
-                      <span className="min-w-0">
-                        <span className="line-clamp-2 break-words font-medium">{source.title}</span>
-                        <span className="mt-1 block break-words text-xs text-muted-foreground">{source.type.toUpperCase()} / {source.state === "indexed" ? "Indexed" : source.state === "processing" ? "Processing" : source.state === "failed" ? "Needs review" : "Waiting"}</span>
-                      </span>
-                    </Link>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="text-sm text-muted-foreground">Select a cluster to inspect it.</div>
-            )}
-          </aside>
       </div>
     </div>
   );
@@ -388,22 +272,6 @@ function ClusterDocument({ tint }: { tint: ClusterTint }) {
     >
       <FileText className="h-4 w-4" />
     </span>
-  );
-}
-
-function InspectorMetric({
-  label,
-  value,
-}: {
-  label: string;
-  value: number | string;
-}) {
-  const display = typeof value === "number" ? value.toLocaleString() : value;
-  return (
-    <div className="min-w-0">
-      <div className="break-words text-xl font-semibold tabular-nums">{display}</div>
-      <div className="mt-1 text-xs text-muted-foreground">{label}</div>
-    </div>
   );
 }
 

@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState, type DragEvent } from "react";
+import { useDeferredValue, useEffect, useMemo, useState, type DragEvent } from "react";
 import {
   CheckCircle2,
   Clapperboard,
@@ -13,7 +13,6 @@ import {
   Image,
   Link2,
   Mic,
-  MoreHorizontal,
   Plus,
   RefreshCw,
   Trash2,
@@ -34,14 +33,12 @@ import {
   countSources,
   deleteSource as deleteBackendSource,
   getSourceStats,
+  getSource,
   listClusters,
   listSourcePages,
   listSources,
-  listProjects,
   listVaults,
   reindexSource,
-  synchronizeProject,
-  type ProjectRecord,
   type SourcePageRecord,
   type SourceStatsRecord,
   type VaultRecord,
@@ -55,8 +52,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ConfirmAction, DegradedState, EmptyState, SkeletonRegion } from "@/components/product/Feedback";
 
 export const Route = createFileRoute("/_app/sources")({
+  validateSearch: (search: Record<string, unknown>): { filter?: "unsorted"; source?: string } => ({
+    filter: search.filter === "unsorted" ? "unsorted" : undefined,
+    source: typeof search.source === "string" ? search.source : undefined,
+  }),
   head: () => ({ meta: [{ title: "Sources" }] }),
   component: SourcesView,
 });
@@ -74,8 +76,11 @@ const typeIcon = {
 };
 
 function SourcesView() {
+  const { filter, source: requestedSourceId } = Route.useSearch();
+  const inboxOnly = filter === "unsorted";
   const pageSize = 25;
   const [q, setQ] = useState("");
+  const deferredQuery = useDeferredValue(q);
   const [selected, setSelected] = useState<Source | null>(null);
   const [selectedPages, setSelectedPages] = useState<SourcePageRecord[]>([]);
   const [selectedStats, setSelectedStats] = useState<SourceStatsRecord | null>(null);
@@ -94,8 +99,6 @@ function SourcesView() {
   const [dragActive, setDragActive] = useState(false);
   const [pageIndex, setPageIndex] = useState(0);
   const [sourceTotal, setSourceTotal] = useState(0);
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [view, setView] = useState<"sources" | "projects">("sources");
 
   async function refreshBackendSources() {
     setLoading(true);
@@ -107,22 +110,34 @@ function SourcesView() {
       if (!activeVault) {
         setBackendSources([]);
         setBackendClusters([]);
-        setProjects([]);
         return;
       }
-      const [sourceRows, clusterRows, count, projectRows] = await Promise.all([
-        listSources(activeVault.id, { limit: pageSize, offset: pageIndex * pageSize }),
+      const [sourceRows, clusterRows, count, requestedSource] = await Promise.all([
+        listSources(activeVault.id, {
+          limit: pageSize,
+          offset: pageIndex * pageSize,
+          unclustered: inboxOnly,
+          states: inboxOnly ? ["waiting", "processing", "failed"] : undefined,
+          query: deferredQuery,
+        }),
         listClusters(activeVault.id),
-        countSources(activeVault.id),
-        listProjects(activeVault.id),
+        countSources(activeVault.id, undefined, {
+          unclustered: inboxOnly,
+          states: inboxOnly ? ["waiting", "processing", "failed"] : undefined,
+          query: deferredQuery,
+        }),
+        requestedSourceId ? getSource(requestedSourceId).catch(() => null) : Promise.resolve(null),
       ]);
       const mappedSources = sourceRows.map(sourceFromRecord);
-      setBackendSources(mappedSources);
+      const visibleSources = mappedSources;
+      setBackendSources(visibleSources);
       setBackendClusters(clusterRows.map(clusterFromRecord));
       setSourceTotal(count.total);
-      setProjects(projectRows);
       setSelected((current) =>
-        mappedSources.find((source) => source.id === current?.id) ?? mappedSources[0] ?? null,
+        (requestedSource ? sourceFromRecord(requestedSource) : null) ??
+        visibleSources.find((source) => source.id === current?.id) ??
+        visibleSources[0] ??
+        null,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Vault could not load your sources.");
@@ -134,21 +149,19 @@ function SourcesView() {
 
   useEffect(() => {
     void refreshBackendSources();
-  }, [pageIndex]);
+  }, [deferredQuery, inboxOnly, pageIndex, requestedSourceId]);
+
+  useEffect(() => {
+    setPageIndex(0);
+  }, [inboxOnly]);
+
+  useEffect(() => setPageIndex(0), [deferredQuery]);
 
   const usingBackend = Boolean(vault);
   const sources = usingBackend ? backendSources : [];
   const clusters = usingBackend ? backendClusters : [];
 
-  const filtered = useMemo(() => {
-    const query = q.trim().toLowerCase();
-    if (!query) return sources;
-    return sources.filter((source) =>
-      `${source.title} ${source.summary} ${source.tags.join(" ")} ${source.type}`
-        .toLowerCase()
-        .includes(query),
-    );
-  }, [q, sources]);
+  const filtered = useMemo(() => sources, [sources]);
 
   const inspectorSource = selected ?? filtered[0] ?? null;
   const inspectorCluster = inspectorSource
@@ -339,23 +352,24 @@ function SourcesView() {
       )}
       <main className="min-w-0 px-7 py-8 xl:overflow-y-auto">
         <header className="mb-8">
-          <h1 className="page-title">Sources</h1>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h1 className="page-title">{inboxOnly ? "Inbox" : "Sources"}</h1>
+            {inboxOnly && (
+              <Link
+                to="/sources"
+                search={{}}
+                className="text-sm text-primary hover:underline"
+              >
+                View all sources
+              </Link>
+            )}
+          </div>
           <p className="mt-3 text-sm text-muted-foreground">
-            Files, links, notes, images, and transcripts stored locally.
+            {inboxOnly
+              ? "Unclustered sources that are still waiting, processing, or need review."
+              : "Files, links, notes, images, and transcripts stored locally."}
           </p>
           <div className="mt-9 flex flex-wrap items-center gap-2">
-            <div className="flex rounded-md border border-border bg-card p-0.5">
-              {(["sources", "projects"] as const).map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setView(option)}
-                  className={`rounded px-3 py-2 text-xs font-medium capitalize ${view === option ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
             <div className="relative mr-auto min-w-0 flex-[1_1_240px] sm:max-w-sm">
               <Input
                 aria-label="Search sources"
@@ -378,17 +392,15 @@ function SourcesView() {
             <Button variant="outline" onClick={() => void handleAddFolder()} disabled={!vault}>
               <FolderPlus className="h-4 w-4" /> Import folder
             </Button>
-            <Button variant="outline" onClick={() => setIngestMessage('Run `odin project add . --name "My Project"` in your IDE. CML will not modify the repository.')} disabled={!vault}>
-              <FileCode2 className="h-4 w-4" /> Add code project
+            <Button variant="outline" asChild>
+              <Link to="/projects">
+                <FileCode2 className="h-4 w-4" /> Code projects
+              </Link>
             </Button>
           </div>
         </header>
 
-        {error && (
-          <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive break-words">
-            Vault could not load your sources: {error}
-          </div>
-        )}
+        {error && <div className="mb-3"><DegradedState compact description={error} onRetry={() => void refreshBackendSources()} /></div>}
         {ingestMessage && (
           <div className="mb-3 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground break-words">
             {ingestMessage}
@@ -396,56 +408,29 @@ function SourcesView() {
         )}
 
         {loading ? (
-          <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">
-            Loading sources...
-          </div>
-        ) : view === "projects" ? (
-          <div className="divide-y divide-border rounded-md border border-border bg-card">
-            {projects.length ? projects.map((project) => (
-              <div key={project.id} className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold">{project.name}</span>
-                    <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">Project</span>
-                  </div>
-                  <div className="mt-1 break-all text-xs text-muted-foreground" title={project.root_path}>{fileNameFromPath(project.root_path)}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {Object.keys(project.languages)[0] || "Code"} · {project.source_count.toLocaleString()} sources · {project.structure_status}
-                  </div>
-                  <p className="mt-2 line-clamp-2 max-w-3xl text-xs leading-5 text-muted-foreground">{project.brief || "Synchronize this project to build its local overview."}</p>
-                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground"><span>{project.changed_file_count ? `${project.changed_file_count} newer working-tree changes` : "No newer changes reported"}</span>{project.entrypoints.slice(0, 2).map((entry) => <span key={entry} className="max-w-64 truncate font-mono" title={entry}>{entry}</span>)}{project.active_snapshot?.failed_count ? <span>{project.active_snapshot.failed_count} files need attention</span> : null}</div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" size="sm" onClick={() => void synchronizeProject(project.id).then(() => refreshBackendSources())}>
-                    <RefreshCw className="h-3.5 w-3.5" /> Synchronize
-                  </Button>
-                  <Button size="sm" asChild><Link to="/projects/$projectId" params={{ projectId: project.id }}>Open</Link></Button>
-                  {project.active_run_id && <Button variant="outline" size="sm" asChild><Link to="/tasks">View task</Link></Button>}
-                </div>
-              </div>
-            )) : <div className="px-4 py-10 text-center text-sm text-muted-foreground">No code projects are registered.</div>}
-          </div>
+          <SkeletonRegion className="py-8" lines={9} />
         ) : filtered.length === 0 ? (
-          <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">
-            {vault
-              ? "Drop files, links, screenshots, or notes to begin."
-              : "Create a library in Settings to store real sources."}
-          </div>
+          <EmptyState
+            title={inboxOnly ? "Inbox clear" : q ? "No sources match" : "Add your first source"}
+            description={inboxOnly
+              ? "Everything has been organized or indexed."
+              : q
+                ? "Try a shorter title, type, or tag."
+                : vault
+                  ? "Drop files here, paste a note, or add a link. Vault keeps the original material local."
+                  : "Choose a library in Settings before adding sources."}
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-[760px] w-full text-sm">
               <thead className="sticky top-0 bg-background/95 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
                 <tr className="border-b border-border">
-                  <th className="w-10 px-2 py-3 font-normal">
-                    <span className="block h-4 w-4 rounded border border-border" />
-                  </th>
                   <th className="px-3 py-3 font-normal">Name</th>
                   <th className="px-3 py-3 font-normal">Type</th>
                   <th className="px-3 py-3 font-normal">State</th>
                   <th className="px-3 py-3 font-normal">Cluster</th>
                   <th className="px-3 py-3 font-normal">Status</th>
                   <th className="px-3 py-3 font-normal">Last indexed</th>
-                  <th className="px-3 py-3 font-normal" />
                 </tr>
               </thead>
               <tbody>
@@ -470,9 +455,6 @@ function SourcesView() {
                         }
                       }}
                     >
-                      <td className="px-2 py-5">
-                        <span className="block h-4 w-4 rounded border border-border bg-background" />
-                      </td>
                       <td className="px-3 py-5">
                         <div className="flex items-center gap-4">
                           <span className="flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-md border border-border bg-background text-[10px] font-semibold uppercase text-muted-foreground">
@@ -503,9 +485,6 @@ function SourcesView() {
                         <StateChip state={source.state} />
                       </td>
                       <td className="px-3 py-5 text-muted-foreground">{lastIndexed(source)}</td>
-                      <td className="px-3 py-5 text-right">
-                        <MoreHorizontal className="inline h-4 w-4 text-muted-foreground" />
-                      </td>
                     </tr>
                   );
                 })}
@@ -538,7 +517,9 @@ function SourcesView() {
               Next
             </button>
           </div>
-          <span className="rounded-md border border-border bg-card px-4 py-2">{pageSize} / page</span>
+          <span className="rounded-md border border-border bg-card px-4 py-2">
+            {inboxOnly ? "Inbox view" : `${pageSize} / page`}
+          </span>
         </div>
       </main>
 
@@ -655,13 +636,9 @@ function SourceInspector({
             </div>
           </div>
         </div>
-        <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
       </div>
 
-      <div className="mt-8 flex gap-6 border-b border-border text-sm">
-        <span className="border-b border-foreground pb-3 font-medium">Overview</span>
-        <span className="pb-3 text-muted-foreground">Preview</span>
-      </div>
+      <div className="mt-8 border-b border-border pb-3 text-sm font-medium">Source details</div>
 
       <section className="mt-6">
         <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Description</div>
@@ -723,13 +700,19 @@ function SourceInspector({
           >
             <RefreshCw className="h-4 w-4" /> Reindex
           </Button>
-          <Button
-            variant="outline"
-            className="w-full justify-start gap-2 border-[var(--status-issue)]/40 text-[var(--status-issue)]"
-            onClick={() => void onRemove(source)}
+          <ConfirmAction
+            title={`Delete “${source.title}”?`}
+            description="This removes Vault’s indexed copy and extracted context. The original local file is not deleted."
+            confirmLabel="Delete source"
+            onConfirm={() => onRemove(source)}
           >
-            <Trash2 className="h-4 w-4" /> Delete source
-          </Button>
+            <Button
+              variant="outline"
+              className="w-full justify-start gap-2 border-[var(--status-issue)]/40 text-[var(--status-issue)]"
+            >
+              <Trash2 className="h-4 w-4" /> Delete source
+            </Button>
+          </ConfirmAction>
         </div>
       </section>
     </aside>

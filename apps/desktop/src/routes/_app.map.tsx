@@ -1,10 +1,15 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useCallback, useEffect, useState } from "react";
 import { Network } from "lucide-react";
-import { ClusterMap } from "@/components/ClusterMap";
-import type { Cluster, Source } from "@/lib/domain";
-import { listClusters, listSources, listVaults } from "@/lib/backend";
-import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
+import { Button } from "@/components/ui/button";
+import { KnowledgeMap } from "@/components/KnowledgeMap";
+import { DegradedState, EmptyState, SkeletonRegion } from "@/components/product/Feedback";
+import {
+  getMapOverview,
+  listVaults,
+  type MapGraphResponse,
+  type VaultRecord,
+} from "@/lib/backend";
 
 export const Route = createFileRoute("/_app/map")({
   head: () => ({ meta: [{ title: "Map" }] }),
@@ -12,86 +17,73 @@ export const Route = createFileRoute("/_app/map")({
 });
 
 function MapView() {
-  const [clusters, setClusters] = useState<Cluster[]>([]);
-  const [sources, setSources] = useState<Source[]>([]);
+  const [vault, setVault] = useState<VaultRecord | null>(null);
+  const [overview, setOverview] = useState<MapGraphResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const activeVault = (await listVaults())[0] ?? null;
+      setVault(activeVault);
+      setOverview(activeVault ? await getMapOverview(activeVault.id, { limit: 160 }) : null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Vault could not load the map.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadMapData() {
-      setLoading(true);
-      setError(false);
-      try {
-        const vaults = await listVaults();
-        const activeVault = vaults[0] ?? null;
-        if (!activeVault) {
-          if (!cancelled) {
-            setClusters([]);
-            setSources([]);
-          }
-          return;
-        }
-        const [clusterRows, sourceRows] = await Promise.all([
-          listClusters(activeVault.id),
-          listSources(activeVault.id),
-        ]);
-        if (cancelled) return;
-        setClusters(clusterRows.map(clusterFromRecord));
-        setSources(sourceRows.map(sourceFromRecord));
-      } catch {
-        if (!cancelled) {
-          setClusters([]);
-          setSources([]);
-          setError(true);
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    void loadMapData();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    void load();
+  }, [load]);
 
   return (
     <div className="vault-page-wash h-full overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
-      <header>
-        <h1 className="page-title">Knowledge map</h1>
-        <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
-          Inspect how your clusters relate through shared language, media patterns, and source
-          density.
-        </p>
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="page-title">Knowledge map</h1>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+            Explore clusters, source episodes, and facts that Vault can trace back to your local
+            material. The map never invents connections from word overlap.
+          </p>
+        </div>
+        {overview?.truncated ? (
+          <span className="text-xs text-muted-foreground">
+            Showing {overview.nodes.length} of {overview.total?.toLocaleString()} clusters
+          </span>
+        ) : null}
       </header>
 
       <section className="mt-6">
         {loading ? (
-          <div className="grid h-[720px] place-items-center rounded-md border border-border bg-card">
-            <div className="text-center">
-              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-md border border-border bg-background">
-                <Network className="h-5 w-5 text-muted-foreground" />
-              </div>
-              <div className="mt-4 text-sm font-medium text-foreground">Building the map</div>
-              <div className="mt-1 text-sm text-muted-foreground">
-                Loading clusters and sources from your active vault.
-              </div>
-            </div>
+          <div className="min-h-[620px] rounded-md border border-border bg-card p-6">
+            <SkeletonRegion lines={10} />
           </div>
         ) : error ? (
-          <div className="grid min-h-[420px] place-items-center rounded-md border border-border bg-card px-6 text-center">
-            <div className="max-w-md">
-              <Network className="mx-auto h-5 w-5 text-muted-foreground" />
-              <h2 className="mt-4 text-base font-semibold">Map unavailable</h2>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                Vault could not load your clusters and sources. Check Settings → Health, then reopen Map.
-              </p>
-            </div>
-          </div>
+          <DegradedState description={error} onRetry={() => void load()} action={
+            <Button size="sm" variant="outline" asChild>
+              <Link to="/settings" search={{ section: "health" }}>Open Health</Link>
+            </Button>
+          } />
+        ) : !vault ? (
+          <EmptyState
+            icon={<Network className="h-7 w-7" />}
+            title="Open a library to build its map"
+            description="A map is a view over one local library. Choose a folder before exploring relationships."
+            action={<Button asChild><Link to="/settings" search={{ section: "storage" }}>Choose library</Link></Button>}
+          />
+        ) : !overview || overview.nodes.length === 0 ? (
+          <EmptyState
+            icon={<Network className="h-7 w-7" />}
+            title="Your map starts with a cluster"
+            description="Create a named cluster and add sources. Vault will show only relationships it can explain and trace."
+            action={<Button asChild><Link to="/clusters">Create a cluster</Link></Button>}
+          />
         ) : (
-          <ClusterMap clusters={clusters} sources={sources} />
+          <KnowledgeMap vaultId={vault.id} overview={overview} onReload={() => void load()} />
         )}
       </section>
     </div>

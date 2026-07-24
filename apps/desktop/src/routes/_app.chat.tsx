@@ -10,8 +10,9 @@ import {
   type ClusterRecord,
   type VaultRecord,
 } from "@/lib/backend";
-import { ArrowRight, FileText, MessageSquare, MoreHorizontal, Paperclip, Plus, Send, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { MessageSquare, Paperclip, Plus, Send, SlidersHorizontal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ConfirmAction } from "@/components/product/Feedback";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -174,7 +175,7 @@ function ChatIndex() {
 
   return (
     <div
-      className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)_326px] xl:overflow-hidden"
+      className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)] xl:overflow-hidden"
       onDragOver={(event) => {
         event.preventDefault();
         if (backendReady) setDragActive(true);
@@ -197,15 +198,21 @@ function ChatIndex() {
                 {c.title}
               </Link>
               {backendReady && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="mr-1 h-7 w-7 opacity-0 group-hover:opacity-100"
-                  aria-label={`Delete ${c.title}`}
-                  onClick={() => void removeChat(c.id)}
+                <ConfirmAction
+                  title={`Delete “${c.title}”?`}
+                  description="This removes the conversation and its saved messages from this Vault."
+                  confirmLabel="Delete chat"
+                  onConfirm={() => removeChat(c.id)}
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="mr-1 h-9 w-9 opacity-70 group-hover:opacity-100"
+                    aria-label={`Delete ${c.title}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </ConfirmAction>
               )}
             </div>
           ))}
@@ -315,60 +322,6 @@ function ChatIndex() {
           </section>
         </main>
       </div>
-      <aside className="border-t border-border bg-card/35 px-4 py-6 sm:px-7 xl:overflow-y-auto xl:border-l xl:border-t-0 xl:py-8">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="h-2.5 w-2.5 rounded-full bg-primary" />
-          <h2 className="min-w-0 flex-1 break-words text-lg font-semibold">Vault context</h2>
-          <MoreHorizontal className="ml-auto h-4 w-4 text-muted-foreground" />
-          <span className="h-6 w-px bg-border" />
-          <X className="h-4 w-4 text-muted-foreground" />
-        </div>
-        <p className="mt-8 break-words text-sm leading-6 text-muted-foreground">
-          Start globally by default. Pick a cluster only when the question needs a narrower memory space.
-        </p>
-        <div className="my-8 h-px bg-border" />
-        <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Active memory</h3>
-        <div className="mt-5 grid grid-cols-2 gap-5">
-          <Metric value={backendReady ? String(backendChats.length) : "0"} label="Chats" />
-          <Metric value={backendReady ? String(backendClusters.length) : "0"} label="Clusters" />
-          <Metric value={attachments.length.toString()} label="Attachments" />
-          <Metric value={backendReady ? "Ready" : "No vault"} label="Status" />
-        </div>
-        <div className="my-8 h-px bg-border" />
-        <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Suggested prompts</h3>
-        <div className="mt-4 space-y-2">
-          {[
-            "Summarize my design research",
-            "What needs review today?",
-            "Compare strategy and meeting notes",
-          ].map((item) => (
-            <button
-              key={item}
-              type="button"
-              onClick={() => setPrompt(item)}
-              className="flex w-full min-w-0 items-center gap-3 rounded-md border border-border bg-background px-3 py-2 text-left text-sm hover:bg-accent/45"
-            >
-              <MessageSquare className="h-4 w-4 text-muted-foreground" />
-              <span className="min-w-0 flex-1 break-words">{item}</span>
-              <ArrowRight className="h-4 w-4 text-muted-foreground" />
-            </button>
-          ))}
-        </div>
-        <div className="my-8 h-px bg-border" />
-        <h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Recent sources</h3>
-        <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
-          Recent indexed sources appear here after a vault is active.
-        </div>
-      </aside>
-    </div>
-  );
-}
-
-function Metric({ value, label }: { value: string; label: string }) {
-  return (
-    <div className="min-w-0">
-      <div className="break-words font-semibold">{value}</div>
-      <div className="mt-1 text-xs text-muted-foreground">{label}</div>
     </div>
   );
 }
