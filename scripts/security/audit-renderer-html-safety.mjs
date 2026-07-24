@@ -8,9 +8,6 @@ const scanRoots = [
   path.join(repoRoot, "apps", "desktop", "src"),
   path.join(repoRoot, "apps", "desktop", "electron"),
 ];
-const allowedDangerousHtml = new Set([
-  path.normalize(path.join("apps", "desktop", "src", "components", "ui", "chart.tsx")),
-]);
 const bannedPatterns = [
   { name: "direct innerHTML assignment", pattern: /\.innerHTML\s*=/ },
   { name: "direct outerHTML assignment", pattern: /\.outerHTML\s*=/ },
@@ -23,20 +20,14 @@ const findings = [];
 for (const filePath of walk(scanRoots)) {
   const relative = path.normalize(path.relative(repoRoot, filePath));
   const text = fs.readFileSync(filePath, "utf8");
-  if (text.includes("dangerouslySetInnerHTML") && !allowedDangerousHtml.has(relative)) {
-    findings.push(`${relative}: dangerouslySetInnerHTML is not allowlisted`);
+  if (text.includes("dangerouslySetInnerHTML")) {
+    findings.push(`${relative}: dangerouslySetInnerHTML is forbidden`);
   }
   for (const banned of bannedPatterns) {
     if (banned.pattern.test(text)) {
       findings.push(`${relative}: ${banned.name} is forbidden for renderer safety`);
     }
   }
-}
-
-const chartPath = path.join(repoRoot, "apps", "desktop", "src", "components", "ui", "chart.tsx");
-const chartText = fs.readFileSync(chartPath, "utf8");
-if (!chartText.includes("isSafeCssColor") || !chartText.includes("cssIdentifier")) {
-  findings.push("apps/desktop/src/components/ui/chart.tsx: allowlisted style injection must keep CSS value and selector sanitizers");
 }
 
 verifyHostileFixtureRendering(findings);
