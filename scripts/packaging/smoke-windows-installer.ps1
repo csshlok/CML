@@ -69,6 +69,15 @@ function Invoke-SilentExecutable {
   }
 }
 
+function Get-ShortcutTarget([string]$ShortcutPath) {
+  if (-not (Test-Path -LiteralPath $ShortcutPath)) {
+    throw "Expected shortcut was not created: $ShortcutPath"
+  }
+  $shell = New-Object -ComObject WScript.Shell
+  $shortcut = $shell.CreateShortcut($ShortcutPath)
+  return [string]$shortcut.TargetPath
+}
+
 Stop-CmlProcess
 
 Write-Host "Installing CML silently from $installer"
@@ -110,6 +119,16 @@ if (-not (Test-Path -LiteralPath $installedExe)) {
   throw "Installed CML.exe not found: $installedExe"
 }
 
+$desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "CML.lnk"
+$startMenuShortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\CML.lnk"
+$desktopTarget = Get-ShortcutTarget $desktopShortcut
+$startMenuTarget = Get-ShortcutTarget $startMenuShortcut
+foreach ($shortcutTarget in @($desktopTarget, $startMenuTarget)) {
+  if (-not $shortcutTarget.Equals($installedExe, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "CML shortcut points to '$shortcutTarget' instead of '$installedExe'."
+  }
+}
+
 $uninstallString = [string]$entry.QuietUninstallString
 if (-not $uninstallString) {
   $uninstallString = [string]$entry.UninstallString
@@ -146,6 +165,8 @@ if (Test-Path -LiteralPath $installedExe) {
   installer = $installer
   install_location = $installLocation
   installed_exe_created = $true
+  desktop_shortcut_target = $desktopTarget
+  start_menu_shortcut_target = $startMenuTarget
   uninstall_entry_created = $true
   uninstall_completed = $true
   appdata_preserved_policy = "deleteAppDataOnUninstall=false"

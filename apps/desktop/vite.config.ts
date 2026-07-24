@@ -12,4 +12,11 @@ export default defineConfig({
   tanstackStart: {
     server: { entry: "server" },
   },
+  vite: {
+    server: {
+      watch: {
+        ignored: ["**/release/**", "**/packaging/**"],
+      },
+    },
+  },
 });

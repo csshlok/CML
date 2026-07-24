@@ -15,6 +15,8 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $desktopDir = Join-Path $repoRoot "apps\desktop"
 $desktopPackageJsonPath = Join-Path $desktopDir "package.json"
+$packageLogoPath = Join-Path $repoRoot "package-logo.png"
+$windowsIconPath = Join-Path $desktopDir "build\icon.ico"
 $backendDir = Join-Path $repoRoot "backend"
 $stagingDir = Join-Path $desktopDir "packaging\backend"
 $runtimeDir = Join-Path $desktopDir "packaging\python-runtime"
@@ -29,6 +31,12 @@ $desktopPackage = Get-Content $desktopPackageJsonPath -Raw | ConvertFrom-Json
 $desktopVersion = [string]$desktopPackage.version
 if (-not $desktopVersion) {
   throw "Could not resolve desktop version from $desktopPackageJsonPath"
+}
+if (-not (Test-Path -LiteralPath $packageLogoPath)) {
+  throw "Package logo is missing: $packageLogoPath"
+}
+if (-not (Test-Path -LiteralPath $windowsIconPath)) {
+  throw "Windows package icon is missing: $windowsIconPath"
 }
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
@@ -491,16 +499,21 @@ New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
   ],
   "win": {
     "target": "$builderTarget",
-    "signAndEditExecutable": false,
+    "icon": "build/icon.ico",
+    "executableName": "CML",
+    "signAndEditExecutable": true,
     "forceCodeSigning": false,
     "requestedExecutionLevel": "asInvoker"
   },
   "nsis": {
     "oneClick": false,
     "perMachine": false,
-    "allowElevation": false,
+    "allowElevation": true,
     "allowToChangeInstallationDirectory": true,
-    "createDesktopShortcut": true,
+    "installerIcon": "build/icon.ico",
+    "uninstallerIcon": "build/icon.ico",
+    "installerHeaderIcon": "build/icon.ico",
+    "createDesktopShortcut": "always",
     "createStartMenuShortcut": true,
     "shortcutName": "CML",
     "runAfterFinish": true,
@@ -517,6 +530,9 @@ try {
     $builderArgs += "--dir"
   }
   npx electron-builder @builderArgs
+  if ($LASTEXITCODE -ne 0) {
+    throw "electron-builder failed with exit code $LASTEXITCODE."
+  }
 } finally {
   Pop-Location
 }

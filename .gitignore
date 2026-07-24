@@ -76,6 +76,7 @@ reports/
 
 # Local UI review captures and temporary visual evidence
 /*.png
+!/package-logo.png
 /ui-audit-artifacts/
 
 # OS/editor
