@@ -7,6 +7,7 @@ from backend.app.core.database import dict_from_row, utc_now
 from backend.app.core.embeddings import content_hash
 from backend.app.core.encrypted_storage import source_from_encrypted_row
 from backend.app.core.memory_card import summarize_text
+from backend.app.core.atomic_memory_store import load_v2_atomic_memory_items
 from backend.app.core.temporal_facts import (
     parse_as_of_query,
     query_temporal_fact_versions,
@@ -99,7 +100,23 @@ def get_context_memory(
         query=query,
         limit=limit,
     )
-    memory_items = _merge_memory_items(temporal_items, memory_items, limit=limit)
+    from backend.app.core.config import get_settings
+
+    v2_items = []
+    if get_settings().atomic_v2_retrieval_enabled:
+        v2_items = load_v2_atomic_memory_items(
+            conn,
+            vault_id=vault_id,
+            cluster_id=cluster_id,
+            query=query,
+            limit=limit,
+        )
+    memory_items = _merge_memory_items(
+        temporal_items,
+        v2_items,
+        memory_items,
+        limit=limit,
+    )
     if not working:
         refresh_bootstrap_memory_map(conn, vault_id=vault_id, cluster_id=cluster_id)
         working = _latest_working_memory(conn, vault_id=vault_id, cluster_id=cluster_id)

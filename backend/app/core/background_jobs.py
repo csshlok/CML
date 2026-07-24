@@ -24,8 +24,17 @@ from backend.app.core.atomic_memory import (
 )
 from backend.app.core.atomic_memory_store import (
     LOCAL_SEMANTIC_EXTRACTOR_VERSION,
+    LOCAL_SEMANTIC_V2_EXTRACTOR_VERSION,
     chat_session_atomic_payload,
     persist_local_semantic_extraction,
+)
+from backend.app.core.atomic_memory_v2 import (
+    AtomicMemoryV2EvidencePassResponse,
+    atomic_memory_v2_session_windows,
+    atomic_memory_v2_evidence_pass_json_schema,
+    atomic_memory_v2_evidence_pass_prompt,
+    compile_atomic_memory_v2_evidence,
+    merge_atomic_memory_v2_evidence_windows,
 )
 from backend.app.core.temporal_facts import (
     CHAT_FACT_EXTRACTOR_VERSION,
@@ -819,6 +828,19 @@ def _enqueue_atomic_semantic_enrichment(
     settings = get_settings()
     if not settings.atomic_semantic_enrichment_enabled:
         return None
+    contract = str(settings.atomic_semantic_extractor_contract).strip().casefold()
+    if contract not in {"v1", "v2_evidence"}:
+        raise ValueError("unsupported_atomic_semantic_extractor_contract")
+    extractor_version = (
+        LOCAL_SEMANTIC_V2_EXTRACTOR_VERSION
+        if contract == "v2_evidence"
+        else LOCAL_SEMANTIC_EXTRACTOR_VERSION
+    )
+    extractor_model = (
+        settings.atomic_extractor_model
+        if contract == "v2_evidence"
+        else settings.llm_model
+    )
     state = conn.execute(
         "SELECT status, extractor_version, model FROM atomic_memory_semantic_state WHERE session_id = ?",
         (session_id,),
@@ -826,8 +848,8 @@ def _enqueue_atomic_semantic_enrichment(
     if (
         state is not None
         and state["status"] == "current"
-        and state["extractor_version"] == LOCAL_SEMANTIC_EXTRACTOR_VERSION
-        and state["model"] == settings.llm_model
+        and state["extractor_version"] == extractor_version
+        and state["model"] == extractor_model
     ):
         return None
     return enqueue_job(
@@ -835,8 +857,9 @@ def _enqueue_atomic_semantic_enrichment(
         job_type="atomic_semantic_enrichment",
         payload={"vault_id": vault_id, "session_id": session_id},
         dedupe_key=(
-            f"atomic-semantic:{session_id}:{LOCAL_SEMANTIC_EXTRACTOR_VERSION}:"
-            f"{settings.llm_model}"
+            f"atomic-semantic:{session_id}:{extractor_version}:"
+            f"{extractor_model}:{settings.atomic_semantic_max_source_chars}:"
+            f"{settings.atomic_semantic_max_output_tokens}"
         ),
         max_attempts=2,
     )
@@ -872,26 +895,63 @@ def _run_atomic_semantic_enrichment(payload: dict, job_id: str) -> None:
     )
 
     provider_model: dict[str, str] = {}
-
-    def extractor(prompt: str) -> tuple[str, dict]:
-        result = generate_local_structured_json(
-            system_prompt=(
-                "Extract durable conversational memory as one strict JSON object. "
-                "Do not think aloud. Preserve exact citations, speaker attribution, "
-                "modality, named entities, category membership, and coreference only "
-                "when supported by the supplied conversation."
+    contract = str(settings.atomic_semantic_extractor_contract).strip().casefold()
+    extractor_version = LOCAL_SEMANTIC_EXTRACTOR_VERSION
+    if contract == "v2_evidence":
+        window_results = []
+        windows = atomic_memory_v2_session_windows(
+            session_payload,
+            max_source_chars=max(
+                int(settings.atomic_semantic_max_source_chars), 1_000
             ),
-            user_prompt=prompt,
-            json_schema=ATOMIC_EXTRACTION_RESPONSE_SCHEMA,
         )
-        provider_model.update(provider=result.provider, model=result.model)
-        return result.text, {}
+        for window in windows:
+            result = generate_local_structured_json(
+                system_prompt=(
+                    "Extract short, durable, question-independent memories as strict JSON. "
+                    "Do not think aloud. Do not invent facts. Every memory must include an "
+                    "exact contiguous citation from one supplied turn."
+                ),
+                user_prompt=atomic_memory_v2_evidence_pass_prompt(window),
+                model=settings.atomic_extractor_model,
+                max_tokens=settings.atomic_semantic_max_output_tokens,
+                json_schema=atomic_memory_v2_evidence_pass_json_schema(),
+            )
+            provider_model.update(provider=result.provider, model=result.model)
+            response = AtomicMemoryV2EvidencePassResponse.model_validate_json(
+                result.text
+            )
+            window_extraction, window_invalid = compile_atomic_memory_v2_evidence(
+                window, response
+            )
+            window_results.append((window, window_extraction, window_invalid))
+        extraction, invalid_reasons = merge_atomic_memory_v2_evidence_windows(
+            session_payload, window_results
+        )
+        extractor_version = LOCAL_SEMANTIC_V2_EXTRACTOR_VERSION
+    elif contract == "v1":
+        def extractor(prompt: str) -> tuple[str, dict]:
+            result = generate_local_structured_json(
+                system_prompt=(
+                    "Extract durable conversational memory as one strict JSON object. "
+                    "Do not think aloud. Preserve exact citations, speaker attribution, "
+                    "modality, named entities, category membership, and coreference only "
+                    "when supported by the supplied conversation."
+                ),
+                user_prompt=prompt,
+                model=settings.llm_model,
+                json_schema=ATOMIC_EXTRACTION_RESPONSE_SCHEMA,
+            )
+            provider_model.update(provider=result.provider, model=result.model)
+            return result.text, {}
 
-    extraction, invalid_reasons, _ = compile_semantic_atomic_session(
-        session_payload,
-        extractor=extractor,
-        max_source_chars=max(int(settings.atomic_semantic_max_source_chars), 1_000),
-    )
+        extraction, invalid_reasons, _ = compile_semantic_atomic_session(
+            session_payload,
+            extractor=extractor,
+            max_source_chars=max(int(settings.atomic_semantic_max_source_chars), 1_000),
+        )
+    else:
+        raise ValueError("unsupported_atomic_semantic_extractor_contract")
     with connect() as conn:
         summary = persist_local_semantic_extraction(
             conn,
@@ -902,6 +962,7 @@ def _run_atomic_semantic_enrichment(payload: dict, job_id: str) -> None:
             invalid_reasons=invalid_reasons,
             provider=provider_model["provider"],
             model=provider_model["model"],
+            extractor_version=extractor_version,
         )
         conn.execute(
             "UPDATE app_jobs SET status_detail = ?, updated_at = ? WHERE id = ?",
