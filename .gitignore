@@ -74,6 +74,10 @@ playwright-report/
 blob-report/
 reports/
 
+# Local UI review captures and temporary visual evidence
+/*.png
+/ui-audit-artifacts/
+
 # OS/editor
 .DS_Store
 Thumbs.db
@@ -122,6 +126,6 @@ docs/UI_RECOMMENDATIONS_BACKLOG.md
 sample_lora_vault
 sample_new
 artifacts/
-.playwright-cli
+.playwright-cli/
 docs/onwards.md
 docs/ATOMIC_MEMORY_V2_EXECUTION_PLAN.md
