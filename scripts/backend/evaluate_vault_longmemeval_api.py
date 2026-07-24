@@ -55,6 +55,8 @@ STRUCTURED_READER_V2_PROTOCOL = "longmemeval-structured-evidence-reader-v2"
 ROUTED_READER_PROTOCOL = "longmemeval-routed-evidence-reader-v5"
 TYPED_EVIDENCE_READER_PROTOCOL = "longmemeval-typed-evidence-reader-v2"
 JUDGE_PROTOCOL_VERSION = "longmemeval-official-prompts-strict-binary-v2"
+LENGTH_RECOVERY_PROTOCOL = "concise-final-answer-retry-v1"
+DEFAULT_PACKING_BOUNDARY_MARGIN_TOKENS = 32
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,22 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--max-answer-tokens", type=int, default=256)
+    parser.add_argument(
+        "--length-recovery-tokens",
+        type=int,
+        default=0,
+        help=(
+            "Opt-in token allowance for one answer-only retry after an ordinary "
+            "reader response reaches the output limit. Zero preserves the frozen "
+            "production protocol."
+        ),
+    )
+    parser.add_argument(
+        "--packing-boundary-margin-tokens",
+        type=int,
+        default=DEFAULT_PACKING_BOUNDARY_MARGIN_TOKENS,
+        help="Estimated-token boundary reserve used by bounded claim packing.",
+    )
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--reader-provider", choices=("kimi", "openai"), default="kimi")
@@ -347,6 +365,16 @@ Question: {reference['question']}
 Answer:"""
 
 
+def _concise_length_recovery_prompt(prompt: str) -> str:
+    return f"""{prompt}
+
+The previous attempt reached its output limit. Re-evaluate the supplied evidence, but
+return only the concise final answer needed by the question. Do not show analysis,
+scratch work, an evidence ledger, or these instructions. Use at most 100 words.
+
+Final answer:"""
+
+
 def _reader_protocol(reader_prompt: str) -> str:
     return {
         "official": READER_PROTOCOL,
@@ -414,7 +442,17 @@ def _pack_reader_context(
     # Token estimation is intentionally provider-independent and therefore not exactly
     # additive across prompt sections. Reserve a small fixed boundary margin so an
     # otherwise valid packet cannot cross the public budget by one or two tokens.
-    evidence_budget = max(256, packing_target - overhead - 32)
+    boundary_margin = max(
+        0,
+        int(
+            getattr(
+                args,
+                "packing_boundary_margin_tokens",
+                DEFAULT_PACKING_BOUNDARY_MARGIN_TOKENS,
+            )
+        ),
+    )
+    evidence_budget = max(256, packing_target - overhead - boundary_margin)
     context, claim_meta = pack_claim_evidence(
         question=reference["question"],
         sessions=_claim_sessions(reference, retrieved_ids),
@@ -436,6 +474,7 @@ def _pack_reader_context(
         "reader_budget_safety_factor": safety_factor,
         "packing_target_tokens_estimate": packing_target,
         "evidence_token_budget": evidence_budget,
+        "packing_boundary_margin_tokens": boundary_margin,
         "complete_session_candidate_count": int(full_meta["candidate_session_count"]),
     }
 
@@ -460,7 +499,10 @@ def _generate(
         question_id: row
         for question_id, row in candidates.items()
         if row.get("reader_finish_reason") != "length"
-        or int(row.get("max_answer_tokens") or args.max_answer_tokens) >= 2_048
+        or (
+            int(getattr(args, "length_recovery_tokens", 0) or 0) <= 0
+            and int(row.get("max_answer_tokens") or args.max_answer_tokens) >= 2_048
+        )
     }
     continuations = {
         question_id: row
@@ -524,6 +566,8 @@ def _generate(
                 typed_prompt = _typed_contract_prompt(
                     reference, render_evidence_contract(typed_result, typed_records)
                 )
+        length_recovery_attempted = False
+        length_recovery_succeeded = False
         while True:
             if typed_result is not None and typed_result.status == "resolved":
                 response = {
@@ -544,7 +588,14 @@ def _generate(
                         "routed-v4": _routed_answer_prompt,
                         "typed-v1": _routed_answer_prompt,
                     }
-                    prompt = typed_prompt or prompt_builders[reader_prompt](reference, context)
+                    base_prompt = typed_prompt or prompt_builders[reader_prompt](
+                        reference, context
+                    )
+                    prompt = (
+                        _concise_length_recovery_prompt(base_prompt)
+                        if length_recovery_attempted
+                        else base_prompt
+                    )
                     rendered_prompt = prompt
                     response = _chat(
                         provider,
@@ -573,9 +624,23 @@ def _generate(
                     "usage": _usage(response),
                 }
             )
-            if _finish_reason(response) != "length" or token_budget >= 2_048:
+            if _finish_reason(response) != "length":
+                length_recovery_succeeded = length_recovery_attempted
                 break
-            token_budget = max(512, token_budget * 2)
+            recovery_tokens = max(
+                0, int(getattr(args, "length_recovery_tokens", 0) or 0)
+            )
+            if token_budget < 1_024 and not length_recovery_attempted:
+                token_budget = min(1_024, max(512, token_budget * 2))
+                continue
+            if recovery_tokens and not length_recovery_attempted:
+                length_recovery_attempted = True
+                token_budget = max(64, recovery_tokens)
+                continue
+            if token_budget < 2_048:
+                token_budget = 2_048
+                continue
+            break
         row = {
             "question_id": question_id,
             "hypothesis": response["choices"][0]["message"]["content"].strip(),
@@ -615,6 +680,13 @@ def _generate(
             "max_answer_tokens": token_budget,
             "reader_attempt_count": len(attempt_history),
             "reader_attempt_history": attempt_history,
+            "reader_length_recovery_protocol": (
+                LENGTH_RECOVERY_PROTOCOL
+                if int(getattr(args, "length_recovery_tokens", 0) or 0) > 0
+                else None
+            ),
+            "reader_length_recovery_attempted": length_recovery_attempted,
+            "reader_length_recovery_succeeded": length_recovery_succeeded,
             "reader_billed_prompt_tokens": sum(
                 int((attempt.get("usage") or {}).get("prompt_tokens") or 0)
                 for attempt in attempt_history
@@ -1176,6 +1248,11 @@ def main() -> int:
             "reader_token_budget": args.reader_token_budget,
             "reader_budget_safety_factor": args.reader_budget_safety_factor,
             "max_answer_tokens": args.max_answer_tokens,
+            "length_recovery_protocol": (
+                LENGTH_RECOVERY_PROTOCOL if args.length_recovery_tokens > 0 else None
+            ),
+            "length_recovery_tokens": args.length_recovery_tokens,
+            "packing_boundary_margin_tokens": args.packing_boundary_margin_tokens,
         },
     )
     reader_run_fingerprint = manifest["fingerprint"]

@@ -5,7 +5,6 @@ import difflib
 import hashlib
 import json
 import math
-import os
 import random
 import re
 import shutil
@@ -13,7 +12,7 @@ import statistics
 import sys
 import threading
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -35,6 +34,7 @@ from backend.app.core.atomic_memory import (  # noqa: E402
     pack_atomic_facts,
     plan_atomic_query,
     render_deterministic_operation,
+    retrieve_atomic_session_ids,
     route_atomic_question,
     source_content_hash,
     store_atomic_session_cache,
@@ -94,7 +94,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--selection-mode",
         choices=("pilot-balanced", "representative"),
-        default="pilot-balanced",
+        default="representative",
+        help=(
+            "Representative is the only headline/evaluation mode. pilot-balanced "
+            "intentionally oversamples baseline failures and is diagnostic-only."
+        ),
     )
     parser.add_argument("--sample-size", type=int, default=200)
     parser.add_argument("--selection-seed", type=int, default=20260720)
@@ -149,7 +153,24 @@ def parse_args() -> argparse.Namespace:
         "--max-extraction-sessions",
         type=int,
         default=0,
-        help="Debug-only cap; zero extracts every frozen retrieved session.",
+        help="Debug-only cap; zero extracts every session in the configured scope.",
+    )
+    parser.add_argument(
+        "--atomic-extraction-scope",
+        choices=("full-haystack", "retrieved-only"),
+        default="full-haystack",
+        help=(
+            "Question-independent extraction defaults to the full haystack. "
+            "retrieved-only is retained solely for circularity diagnostics."
+        ),
+    )
+    parser.add_argument(
+        "--diagnostic-reference-matcher",
+        action="store_true",
+        help=(
+            "Enable the legacy LongMemEval-specific deterministic answer matcher for "
+            "diagnostics only. It never controls the default promotion decision."
+        ),
     )
     parser.add_argument("--answer-max-tokens", type=int, default=512)
     parser.add_argument("--fact-token-budget", type=int, default=9_000)
@@ -198,9 +219,9 @@ def _load_jsonl(path: Path) -> list[dict]:
 def _load_evidence_labels(run_dir: Path) -> list[dict]:
     merged = {
         row["question_id"]: row
-        for row in _load_jsonl(run_dir / "evidence-labels.jsonl")
+        for row in _load_jsonl(run_dir / "answer-blind-oracle-evidence-labels-v2.jsonl")
     }
-    manual_path = run_dir / "manual-evidence-labels.json"
+    manual_path = run_dir / "manual-answer-blind-oracle-evidence-labels-v2.json"
     if manual_path.exists():
         for row in json.loads(manual_path.read_text(encoding="utf-8")):
             merged[row["question_id"]] = row
@@ -228,7 +249,7 @@ def freeze_manifest(args: argparse.Namespace) -> dict:
     path = args.run_dir / "manifest.json"
     if path.exists():
         manifest = json.loads(path.read_text(encoding="utf-8"))
-        if manifest.get("selection_mode", "pilot-balanced") != args.selection_mode:
+        if manifest.get("selection_mode", "representative") != args.selection_mode:
             raise RuntimeError("Frozen manifest uses a different selection mode")
         if args.selection_mode == "pilot-balanced" and (
             manifest["questions_per_type"] != args.questions_per_type
@@ -328,7 +349,7 @@ def freeze_manifest(args: argparse.Namespace) -> dict:
                     }
                 )
     manifest = {
-        "protocol": "longmemeval-atomic-memory-frozen-ablation-v1",
+        "protocol": "longmemeval-atomic-memory-frozen-ablation-v2",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "selection_mode": args.selection_mode,
         "questions_per_type": args.questions_per_type,
@@ -340,6 +361,15 @@ def freeze_manifest(args: argparse.Namespace) -> dict:
             if args.selection_mode == "representative"
             else "official order; per type up to 50% dual-judge claim-first failures, "
             "then dual-judge controls; retrieval-hit answerable questions only"
+        ),
+        "selection_is_headline_eligible": args.selection_mode == "representative",
+        "selection_warning": (
+            None
+            if args.selection_mode == "representative"
+            else (
+                "Diagnostic-only sample intentionally enriched for baseline failures; "
+                "must not be reported as representative accuracy."
+            )
         ),
         "question_count": len(selected),
         "questions": selected,
@@ -365,12 +395,23 @@ def _session_rows(reference: dict, session_ids: list[str]) -> list[dict]:
     return [by_id[session_id] for session_id in session_ids if session_id in by_id]
 
 
+def _extraction_session_ids(
+    args: argparse.Namespace,
+    reference: dict,
+    retrieved_session_ids: list[str],
+) -> list[str]:
+    if getattr(args, "atomic_extraction_scope", "full-haystack") == "retrieved-only":
+        return retrieved_session_ids
+    return [str(session_id) for session_id in reference["haystack_session_ids"]]
+
+
 def _evidence_label_prompt(reference: dict) -> str:
     gold_sessions = _session_rows(reference, reference["answer_session_ids"])
     return f"""Identify the minimal source evidence needed to answer this memory question.
 
-This is benchmark annotation, not memory extraction. The correct answer is supplied only
-to locate evidence. Return JSON only:
+This is answer-blind oracle annotation, not memory extraction. You are given the
+question and the benchmark-designated source sessions, but never the reference answer.
+Return JSON only:
 {{"evidence":[{{"session_id":"...","turn_index":0,"speaker":"user|assistant",
 "excerpt":"exact contiguous source quotation","role":"what this span proves"}}]}}
 
@@ -381,8 +422,7 @@ Rules:
 - Do not cite text merely because it is in a gold session.
 
 Question: {reference['question']}
-Correct answer or rubric: {reference['answer']}
-Gold sessions:
+Benchmark-designated source sessions:
 {json.dumps(gold_sessions, ensure_ascii=False)}
 """
 
@@ -429,7 +469,8 @@ def _repair_excerpt(content: str, proposed: str) -> str | None:
 def label_evidence(
     args: argparse.Namespace, manifest: dict, references: dict[str, dict]
 ) -> list[dict]:
-    path = args.run_dir / "evidence-labels.jsonl"
+    # Use a new cache path so answer-aware v1 annotations cannot be silently reused.
+    path = args.run_dir / "answer-blind-oracle-evidence-labels-v2.jsonl"
     existing = {row["question_id"]: row for row in _load_jsonl(path)}
     provider = _provider(args.extractor_provider, args.extractor_model)
     fallback_provider = (
@@ -502,6 +543,7 @@ def label_evidence(
             if valid:
                 break
         row = {
+            "annotation_protocol": "answer-blind-gold-session-oracle-v2",
             "question_id": question_id,
             "question_type": item["question_type"],
             "split": item["split"],
@@ -541,8 +583,10 @@ def extract_sessions(
     cache_dir = args.run_dir / "fact-cache"
     unique: dict[str, dict] = {}
     for item in manifest["questions"]:
+        reference = references[item["question_id"]]
         for session in _session_rows(
-            references[item["question_id"]], item["retrieved_session_ids"]
+            reference,
+            _extraction_session_ids(args, reference, item["retrieved_session_ids"]),
         ):
             digest = source_content_hash(session["session_id"], session["date"], session["turns"])
             unique[digest] = session
@@ -688,6 +732,7 @@ def extract_sessions(
         "model": provider.model if provider is not None else cache_model,
         "cache_model": cache_model,
         "source_role_scope": args.extraction_roles,
+        "extraction_scope": getattr(args, "atomic_extraction_scope", "full-haystack"),
         "requested_session_count": len(sessions),
         "completed_session_count": len(rows),
         "failed_session_count": len(
@@ -721,13 +766,17 @@ def _semantic_cache_model(args: argparse.Namespace) -> str:
     )
 
 
-def _unique_retrieved_sessions(
-    manifest: dict, references: dict[str, dict]
+def _unique_extraction_sessions(
+    args: argparse.Namespace,
+    manifest: dict,
+    references: dict[str, dict],
 ) -> list[dict]:
     unique: dict[str, dict] = {}
     for item in manifest["questions"]:
+        reference = references[item["question_id"]]
         for session in _session_rows(
-            references[item["question_id"]], item["retrieved_session_ids"]
+            reference,
+            _extraction_session_ids(args, reference, item["retrieved_session_ids"]),
         ):
             digest = source_content_hash(
                 session["session_id"], session["date"], session["turns"]
@@ -743,7 +792,7 @@ def semantic_queue_phase(
 ) -> dict:
     if args.semantic_jobs_path is None:
         raise ValueError("--semantic-jobs-path is required for semantic queue phases")
-    sessions = _unique_retrieved_sessions(manifest, references)
+    sessions = _unique_extraction_sessions(args, manifest, references)
     cache_dir = args.run_dir / "fact-cache"
     if args.phase == "semantic-export":
         return export_semantic_normalization_jobs(
@@ -762,7 +811,10 @@ def semantic_queue_phase(
 def _cached_facts(
     args: argparse.Namespace, reference: dict, retrieved_session_ids: list[str]
 ) -> tuple[list[AtomicFact], dict]:
-    sessions = _session_rows(reference, retrieved_session_ids)
+    sessions = _session_rows(
+        reference,
+        _extraction_session_ids(args, reference, retrieved_session_ids),
+    )
 
     def require_complete_semantic_cache(_prompt: str) -> tuple[str, dict]:
         raise RuntimeError("Semantic atomic extraction cache is incomplete")
@@ -776,6 +828,29 @@ def _cached_facts(
     if diagnostics.extraction_failed:
         raise RuntimeError(diagnostics.failure_reason)
     return facts, diagnostics.model_dump(mode="json")
+
+
+def _atomic_retrieval_session_ids(
+    args: argparse.Namespace,
+    question: str,
+    facts: list[AtomicFact],
+    retrieved_session_ids: list[str],
+) -> tuple[list[str], list[str]]:
+    if getattr(args, "atomic_extraction_scope", "full-haystack") == "retrieved-only":
+        return list(retrieved_session_ids), []
+    atomic_ids = retrieve_atomic_session_ids(
+        question,
+        facts,
+        limit=max(1, len(retrieved_session_ids)),
+    )
+    combined = list(dict.fromkeys([*retrieved_session_ids, *atomic_ids]))
+    raw_ids = set(retrieved_session_ids)
+    newly_recovered = [
+        session_id
+        for session_id in atomic_ids
+        if session_id not in raw_ids
+    ]
+    return combined, newly_recovered
 
 
 def _spans_overlap(source: str, left: str, right: str) -> bool:
@@ -825,7 +900,12 @@ def _excerpt_in_context(excerpt: str, context: str) -> bool:
 def _deterministic_reference_match(
     question: str, answer: str, operation: dict
 ) -> bool | None:
-    """Evaluation-only correctness check; never participates in routing."""
+    """Legacy LongMemEval diagnostic; disabled by default and never used for routing.
+
+    The state-comparison rules were introduced after the benchmark format was known.
+    They are therefore unsuitable for promotion or general-accuracy claims and are
+    retained only to compare historical diagnostic artifacts.
+    """
     if not operation.get("requested") or not operation.get("resolved"):
         return None
     operation_name = str(operation.get("operation") or "")
@@ -906,10 +986,18 @@ def coverage_report(
             continue
         reference = references[item["question_id"]]
         facts, diagnostics = _cached_facts(args, reference, item["retrieved_session_ids"])
+        atomic_session_ids, newly_recovered_session_ids = (
+            _atomic_retrieval_session_ids(
+                args,
+                reference["question"],
+                facts,
+                item["retrieved_session_ids"],
+            )
+        )
         total_usage.update(diagnostics.get("usage") or {})
         source_sessions = {
             session["session_id"]: session
-            for session in _session_rows(reference, item["retrieved_session_ids"])
+            for session in _session_rows(reference, atomic_session_ids)
         }
         required = label_map[item["question_id"]]["evidence"]
         covered = 0
@@ -917,7 +1005,7 @@ def coverage_report(
         atomic_context, packing_metadata = pack_atomic_facts(
             reference["question"],
             facts,
-            item["retrieved_session_ids"],
+            atomic_session_ids,
             token_budget=args.fact_token_budget,
             plan=query_plan,
         )
@@ -927,7 +1015,7 @@ def coverage_report(
         )
         route = route_atomic_question(
             reference["question"],
-            retrieved_session_count=len(item["retrieved_session_ids"]),
+            retrieved_session_count=len(atomic_session_ids),
             plan=query_plan,
         )
         contract = validate_atomic_contract(
@@ -941,8 +1029,14 @@ def coverage_report(
             operand_fact_ids=contract.operand_fact_ids,
         )
         operation_safe = not operation.requested or operation.resolved
-        operation_reference_match = _deterministic_reference_match(
-            reference["question"], reference["answer"], operation.model_dump(mode="json")
+        operation_reference_match = (
+            _deterministic_reference_match(
+                reference["question"],
+                reference["answer"],
+                operation.model_dump(mode="json"),
+            )
+            if getattr(args, "diagnostic_reference_matcher", False)
+            else None
         )
         atomic_active = (
             route.path == "atomic"
@@ -1018,6 +1112,9 @@ def coverage_report(
                 "route_candidate": route.path,
                 "route_reason": route.reason,
                 "query_plan": query_plan.model_dump(mode="json"),
+                "raw_retrieved_session_ids": item["retrieved_session_ids"],
+                "atomic_candidate_session_ids": atomic_session_ids,
+                "newly_recovered_atomic_session_ids": newly_recovered_session_ids,
                 "contract": contract.model_dump(mode="json"),
                 "effective_path": "atomic" if atomic_active else "claim-first",
                 "fallback_reasons": [
@@ -1066,7 +1163,21 @@ def coverage_report(
         row["expected_prompt_tokens"] for row in rows
     )
     report = {
-        "protocol": "longmemeval-atomic-memory-evidence-coverage-v1",
+        "protocol": "longmemeval-answer-blind-oracle-coverage-v2",
+        "annotation_protocol": "answer-blind-gold-session-oracle-v2",
+        "metric_scope": (
+            "Coverage against answer-blind evidence annotated inside benchmark-designated "
+            "source sessions. This is oracle-source coverage, not independent retrieval "
+            "accuracy."
+        ),
+        "extraction_scope": getattr(args, "atomic_extraction_scope", "full-haystack"),
+        "diagnostic_reference_matcher_enabled": getattr(
+            args, "diagnostic_reference_matcher", False
+        ),
+        "atomic_independent_retrieval_enabled": (
+            getattr(args, "atomic_extraction_scope", "full-haystack")
+            == "full-haystack"
+        ),
         "atomic_memory_version": ATOMIC_MEMORY_VERSION,
         "question_count": len(rows),
         "labeled_question_count": sum(
@@ -1077,6 +1188,11 @@ def coverage_report(
         ),
         "required_evidence_count": required_count,
         "covered_evidence_count": covered_count,
+        "answer_blind_oracle_evidence_recall": (
+            round(covered_count / required_count, 6) if required_count else 0.0
+        ),
+        # Compatibility alias. The protocol and metric_scope above make the oracle
+        # provenance explicit for older report consumers.
         "evidence_recall": round(covered_count / required_count, 6) if required_count else 0.0,
         "packed_evidence_count": packed_covered_count,
         "packed_evidence_recall": (
@@ -1098,15 +1214,22 @@ def coverage_report(
         "atomic_candidate_question_count": len(atomic_candidate_rows),
         "atomic_activation_rate": round(len(atomic_rows) / len(rows), 6),
         "claim_first_fallback_question_count": len(rows) - len(atomic_rows),
+        "atomic_new_session_recovery_count": sum(
+            len(row["newly_recovered_atomic_session_ids"]) for row in rows
+        ),
+        "atomic_questions_with_new_session_recovery": sum(
+            bool(row["newly_recovered_atomic_session_ids"]) for row in rows
+        ),
         "atomic_routed_question_complete_rate": round(
             sum(row["all_evidence_packed"] for row in labeled_atomic_rows)
             / len(labeled_atomic_rows),
             6,
         ) if labeled_atomic_rows else 1.0,
         "atomic_false_safe_count": sum(
-            not row["all_evidence_packed"]
-            or row["operation_reference_match"] is False
-            for row in labeled_atomic_rows
+            not row["all_evidence_packed"] for row in labeled_atomic_rows
+        ),
+        "diagnostic_operation_reference_mismatch_count": sum(
+            row["operation_reference_match"] is False for row in atomic_rows
         ),
         "deterministic_operation_checked_count": sum(
             row["operation_reference_match"] is not None for row in atomic_rows
@@ -1181,7 +1304,7 @@ def _coverage_stage_fingerprint(
         else None
     )
     payload = {
-        "protocol": "atomic-memory-coverage-stage-v1",
+        "protocol": "atomic-memory-answer-blind-coverage-stage-v2",
         "atomic_memory_version": ATOMIC_MEMORY_VERSION,
         "manifest": manifest,
         "labels": sorted(labels, key=lambda row: row["question_id"]),
@@ -1191,6 +1314,12 @@ def _coverage_stage_fingerprint(
             "semantic_extraction": args.semantic_extraction,
             "extractor_model": args.extractor_model if args.semantic_extraction else None,
             "semantic_cache_model": _semantic_cache_model(args),
+            "atomic_extraction_scope": getattr(
+                args, "atomic_extraction_scope", "full-haystack"
+            ),
+            "diagnostic_reference_matcher": getattr(
+                args, "diagnostic_reference_matcher", False
+            ),
             "impact_question_ids": sorted(impact_ids),
             "base_coverage_sha256": (
                 hashlib.sha256(
@@ -1260,12 +1389,18 @@ def _reader_context(
     retrieved_session_ids: list[str],
 ) -> tuple[str, dict]:
     facts, extraction = _cached_facts(args, reference, retrieved_session_ids)
+    atomic_session_ids, newly_recovered_session_ids = _atomic_retrieval_session_ids(
+        args,
+        reference["question"],
+        facts,
+        retrieved_session_ids,
+    )
     if arm in {"facts-only", "adaptive"}:
         query_plan = plan_atomic_query(reference["question"])
         context, metadata = pack_atomic_facts(
             reference["question"],
             facts,
-            retrieved_session_ids,
+            atomic_session_ids,
             token_budget=args.fact_token_budget,
             plan=query_plan,
         )
@@ -1289,13 +1424,16 @@ def _reader_context(
             "contract": contract.model_dump(mode="json"),
             "operation": operation.model_dump(mode="json"),
             "extraction": extraction,
+            "raw_retrieved_session_ids": retrieved_session_ids,
+            "atomic_candidate_session_ids": atomic_session_ids,
+            "newly_recovered_atomic_session_ids": newly_recovered_session_ids,
         }
     if arm != "hybrid":
         raise ValueError(f"Unsupported arm: {arm}")
     fact_context, fact_metadata = pack_atomic_facts(
         reference["question"],
         facts,
-        retrieved_session_ids,
+        atomic_session_ids,
         token_budget=args.hybrid_fact_token_budget,
     )
     sessions = [
@@ -1325,6 +1463,9 @@ def _reader_context(
         "fact": fact_metadata,
         "raw": raw_metadata,
         "extraction": extraction,
+        "raw_retrieved_session_ids": retrieved_session_ids,
+        "atomic_candidate_session_ids": atomic_session_ids,
+        "newly_recovered_atomic_session_ids": newly_recovered_session_ids,
     }
 
 
@@ -1768,6 +1909,10 @@ def evaluate(
             for question_type in summary[arm]["dual_judge_accuracy_by_type"]
         }
         promotion_failures: list[str] = []
+        if manifest.get("selection_mode") != "representative":
+            promotion_failures.append(
+                "diagnostic pilot-balanced selection is not promotion-eligible"
+            )
         if wins <= losses:
             promotion_failures.append("paired wins do not exceed losses")
         if regression_rate > 0.02:
@@ -1784,8 +1929,9 @@ def evaluate(
         summary[arm]["promotion_failures"] = promotion_failures
 
     report = {
-        "protocol": "longmemeval-frozen-three-arm-atomic-memory-v1",
+        "protocol": "longmemeval-frozen-three-arm-atomic-memory-v2",
         "evaluation_question_count": len(items),
+        "headline_eligible": manifest.get("selection_mode") == "representative",
         "selection_note": (
             "seeded representative held-out sample; pilot questions excluded"
             if manifest.get("selection_mode") == "representative"

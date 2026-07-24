@@ -11,9 +11,10 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+
+from pydantic import BaseModel
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -21,9 +22,28 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.app.core.atomic_memory_v2 import (  # noqa: E402
+    AtomicMemoryV2EvidencePassResponse,
+    AtomicMemoryV2EntityPassResponse,
+    AtomicMemoryV2EventPassResponse,
+    AtomicMemoryV2PropositionPassResponse,
+    AtomicMemoryV2RelationTablePassResponse,
     AtomicMemoryV2Response,
+    AtomicMemoryV2SessionCandidate,
+    atomic_memory_v2_deterministic_turn_indices,
+    atomic_memory_v2_evidence_pass_json_schema,
+    atomic_memory_v2_evidence_pass_prompt,
+    atomic_memory_v2_entity_pass_json_schema,
+    atomic_memory_v2_entity_pass_prompt,
+    atomic_memory_v2_event_pass_json_schema,
+    atomic_memory_v2_event_pass_prompt,
     atomic_memory_v2_json_schema,
     atomic_memory_v2_prompt,
+    atomic_memory_v2_proposition_pass_json_schema,
+    atomic_memory_v2_proposition_pass_prompt,
+    atomic_memory_v2_relation_table_pass_json_schema,
+    atomic_memory_v2_relation_table_pass_prompt,
+    compile_atomic_memory_v2_evidence,
+    compile_atomic_memory_v2_propositions,
     normalize_atomic_memory_v2,
     semantic_signatures,
 )
@@ -31,7 +51,7 @@ from backend.app.core.atomic_memory_v2 import (  # noqa: E402
 
 DEFAULT_FIXTURES = REPO_ROOT / "backend/tests/fixtures/atomic_memory_v2_extraction.json"
 DEFAULT_GATES = REPO_ROOT / "backend/tests/fixtures/atomic_memory_v2_gates.json"
-RUNNER_PROTOCOL = "atomic-memory-v2-extractor-matrix-v1"
+RUNNER_PROTOCOL = "atomic-memory-v2-extractor-matrix-v11-atomic-memory-text"
 
 
 @dataclass(frozen=True)
@@ -74,6 +94,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--max-tokens", type=int, default=2_048)
+    parser.add_argument("--max-pass-attempts", type=int, default=2)
+    parser.add_argument(
+        "--strategy",
+        choices=("monolithic", "decomposed", "evidence", "propositions"),
+        default="monolithic",
+    )
     parser.add_argument("--fixture-id", action="append", default=[])
     parser.add_argument("--refresh", action="store_true")
     return parser.parse_args()
@@ -82,8 +108,13 @@ def parse_args() -> argparse.Namespace:
 def load_fixture_bundle(path: Path) -> dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
     fixtures = payload.get("fixtures")
-    if not isinstance(fixtures, list) or len(fixtures) < 30:
-        raise ValueError("atomic_v2_fixture_bundle_requires_at_least_30_fixtures")
+    minimum_count = int(payload.get("minimum_fixture_count") or 30)
+    if minimum_count < 1:
+        raise ValueError("atomic_v2_minimum_fixture_count_must_be_positive")
+    if not isinstance(fixtures, list) or len(fixtures) < minimum_count:
+        raise ValueError(
+            f"atomic_v2_fixture_bundle_requires_at_least_{minimum_count}_fixtures"
+        )
     identifiers = [str(item.get("id") or "") for item in fixtures]
     if any(not identifier for identifier in identifiers) or len(set(identifiers)) != len(identifiers):
         raise ValueError("atomic_v2_fixture_ids_must_be_unique")
@@ -98,6 +129,12 @@ def load_fixture_bundle(path: Path) -> dict:
             raise ValueError(f"invalid fixture source role: {fixture.get('id')}")
         if not isinstance(fixture.get("required"), list) or not isinstance(fixture.get("forbidden"), list):
             raise ValueError(f"invalid fixture signatures: {fixture.get('id')}")
+        reference_memories = fixture.get("reference_memories")
+        if reference_memories is not None and (
+            not isinstance(reference_memories, list)
+            or any(not str(item).strip() for item in reference_memories)
+        ):
+            raise ValueError(f"invalid reference memories: {fixture.get('id')}")
     return payload
 
 
@@ -191,6 +228,7 @@ def _post_chat(
     *,
     timeout: float,
     max_tokens: int,
+    response_schema: dict,
 ) -> dict:
     payload = {
         "model": candidate.model,
@@ -206,7 +244,7 @@ def _post_chat(
         "max_tokens": max_tokens,
         "response_format": {
             "type": "json_object",
-            "schema": atomic_memory_v2_json_schema(),
+            "schema": response_schema,
         },
         "chat_template_kwargs": {"enable_thinking": False},
     }
@@ -255,8 +293,11 @@ def evaluate_fixture_response(
         "critical": bool(fixture.get("critical")),
         "wall_seconds": round(wall_seconds, 6),
         "source_tokens_estimate": source_tokens_estimate,
+        # A one-second fixed generation cost on a ten-token fixture must not be
+        # reported as 100 seconds/1K. Normalize long sources while treating every
+        # short fixture as one minimum 1K-token scheduling window.
         "seconds_per_1000_source_tokens": round(
-            wall_seconds * 1000 / source_tokens_estimate, 6
+            wall_seconds / max(1.0, source_tokens_estimate / 1000.0), 6
         ),
         "peak_gpu_memory_mib": int(peak_gpu_memory_mib),
         "finish_reason": finish_reason,
@@ -326,6 +367,350 @@ def evaluate_fixture_response(
     except (ValueError, TypeError) as exc:
         base["error"] = f"{type(exc).__name__}:{str(exc)[:300]}"
     return base
+
+
+def compose_decomposed_candidate(
+    fixture: dict,
+    *,
+    entity_response_text: str,
+    event_response_text: str,
+    relation_table_response_text: str,
+) -> AtomicMemoryV2SessionCandidate:
+    session_id = str(fixture["session"]["session_id"])
+    entities = AtomicMemoryV2EntityPassResponse.model_validate(
+        _parse_json_object(entity_response_text)
+    )
+    events = AtomicMemoryV2EventPassResponse.model_validate(
+        _parse_json_object(event_response_text)
+    )
+    relations = AtomicMemoryV2RelationTablePassResponse.model_validate(
+        _parse_json_object(relation_table_response_text)
+    )
+    if {entities.session_id, events.session_id, relations.session_id} != {session_id}:
+        raise ValueError("decomposed_pass_session_mismatch")
+    return AtomicMemoryV2SessionCandidate(
+        session_id=session_id,
+        entities=entities.entities,
+        events=events.events,
+        relations=relations.relations,
+        table_cells=relations.table_cells,
+    )
+
+
+def evaluate_decomposed_fixture_response(
+    fixture: dict,
+    *,
+    passes: dict[str, dict],
+    wall_seconds: float,
+    peak_gpu_memory_mib: int,
+) -> dict:
+    finish_reasons = {
+        name: str(record.get("finish_reason") or "")
+        for name, record in passes.items()
+    }
+    truncated = any(reason == "length" for reason in finish_reasons.values())
+    session_id = str(fixture["session"]["session_id"])
+    pass_errors: dict[str, str] = {}
+
+    def parse_pass(name: str, model_type: type[BaseModel]) -> BaseModel | None:
+        try:
+            parsed = model_type.model_validate(
+                _parse_json_object(str(passes[name]["response_text"]))
+            )
+            if parsed.session_id != session_id:
+                raise ValueError("decomposed_pass_session_mismatch")
+            return parsed
+        except (ValueError, TypeError, KeyError) as exc:
+            pass_errors[name] = f"{type(exc).__name__}:{str(exc)[:300]}"
+            return None
+
+    entity_pass = parse_pass("entities", AtomicMemoryV2EntityPassResponse)
+    event_pass = parse_pass("events", AtomicMemoryV2EventPassResponse)
+    relation_pass = parse_pass(
+        "relations_tables", AtomicMemoryV2RelationTablePassResponse
+    )
+    candidate = AtomicMemoryV2SessionCandidate(
+        session_id=session_id,
+        entities=entity_pass.entities if entity_pass is not None else [],
+        events=event_pass.events if event_pass is not None else [],
+        relations=relation_pass.relations if relation_pass is not None else [],
+        table_cells=relation_pass.table_cells if relation_pass is not None else [],
+    )
+    combined = AtomicMemoryV2Response(sessions=[candidate]).model_dump_json()
+    result = evaluate_fixture_response(
+        fixture,
+        response_text=combined,
+        finish_reason="length" if truncated else "stop",
+        wall_seconds=wall_seconds,
+        peak_gpu_memory_mib=peak_gpu_memory_mib,
+    )
+    if pass_errors:
+        result["schema_compliant"] = False
+        result["complete_pass"] = False
+        result["error"] = "decomposed_pass_errors:" + json.dumps(
+            pass_errors, sort_keys=True, separators=(",", ":")
+        )
+    result["strategy"] = "decomposed"
+    result["pass_errors"] = pass_errors
+    result["pass_finish_reasons"] = finish_reasons
+    result["pass_wall_seconds"] = {
+        name: float(record.get("wall_seconds") or 0.0)
+        for name, record in passes.items()
+    }
+    return result
+
+
+def evaluate_proposition_fixture_response(
+    fixture: dict,
+    *,
+    passes: dict[str, dict],
+    wall_seconds: float,
+    peak_gpu_memory_mib: int,
+) -> dict:
+    session_id = str(fixture["session"]["session_id"])
+    finish_reasons = {
+        name: str(record.get("finish_reason") or "")
+        for name, record in passes.items()
+    }
+    truncated = any(reason == "length" for reason in finish_reasons.values())
+    pass_errors: dict[str, str] = {}
+    evidence: AtomicMemoryV2EvidencePassResponse | None = None
+    proposition_response: AtomicMemoryV2PropositionPassResponse | None = None
+
+    try:
+        evidence = AtomicMemoryV2EvidencePassResponse.model_validate(
+            _parse_json_object(str(passes["evidence"]["response_text"]))
+        )
+        if evidence.session_id != session_id:
+            raise ValueError("evidence_pass_session_mismatch")
+    except (ValueError, TypeError, KeyError) as exc:
+        pass_errors["evidence"] = f"{type(exc).__name__}:{str(exc)[:300]}"
+
+    try:
+        proposition_response = AtomicMemoryV2PropositionPassResponse.model_validate(
+            _parse_json_object(str(passes["propositions"]["response_text"]))
+        )
+        candidate = compile_atomic_memory_v2_propositions(
+            fixture["session"],
+            proposition_response,
+            evidence.spans if evidence is not None else (),
+        )
+    except (ValueError, TypeError, KeyError, IndexError) as exc:
+        pass_errors["propositions"] = f"{type(exc).__name__}:{str(exc)[:300]}"
+        candidate = compile_atomic_memory_v2_propositions(
+            fixture["session"],
+            AtomicMemoryV2PropositionPassResponse(
+                session_id=session_id, propositions=[]
+            ),
+        )
+
+    combined = AtomicMemoryV2Response(sessions=[candidate]).model_dump_json()
+    result = evaluate_fixture_response(
+        fixture,
+        response_text=combined,
+        finish_reason="length" if truncated else "stop",
+        wall_seconds=wall_seconds,
+        peak_gpu_memory_mib=peak_gpu_memory_mib,
+    )
+    if pass_errors:
+        result["schema_compliant"] = False
+        result["complete_pass"] = False
+        result["error"] = "proposition_pass_errors:" + json.dumps(
+            pass_errors, sort_keys=True, separators=(",", ":")
+        )
+    result["strategy"] = "propositions"
+    result["pass_errors"] = pass_errors
+    result["pass_finish_reasons"] = finish_reasons
+    result["pass_wall_seconds"] = {
+        name: float(record.get("wall_seconds") or 0.0)
+        for name, record in passes.items()
+    }
+    memory_fact_count = len(evidence.spans) if evidence is not None else 0
+    proposition_count = (
+        len(proposition_response.propositions)
+        if proposition_response is not None
+        else 0
+    )
+    result["memory_fact_count"] = memory_fact_count
+    result["evidence_memories"] = (
+        [
+            {
+                "span_id": span.span_id,
+                "memory_text": span.memory_text,
+                "attributed_to": span.attributed_to,
+                "evidence_kinds": span.evidence_kinds,
+                "confidence": span.confidence,
+                "citation": span.citation.model_dump(mode="json"),
+            }
+            for span in evidence.spans
+        ]
+        if evidence is not None
+        else []
+    )
+    accepted_evidence_memories: list[dict] = []
+    production_evidence_invalid: dict[str, int] = {}
+    if evidence is not None:
+        production_extraction, production_evidence_invalid = (
+            compile_atomic_memory_v2_evidence(fixture["session"], evidence)
+        )
+        accepted_evidence_memories = [
+            {
+                "fact_id": fact.fact_id,
+                "memory_text": fact.object_text,
+                "attributed_to": fact.subject,
+                "evidence_kinds": fact.qualifiers.get("evidence_kinds", "").split(","),
+                "confidence": fact.confidence,
+                "citation": {
+                    "turn_index": fact.citation.turn_index,
+                    "excerpt": fact.citation.excerpt,
+                    "speaker": fact.citation.speaker,
+                },
+            }
+            for fact in production_extraction.facts
+        ]
+    result["accepted_evidence_memories"] = accepted_evidence_memories
+    result["production_evidence_invalid_by_reason"] = production_evidence_invalid
+    evidence_by_id = (
+        {span.span_id: span for span in evidence.spans}
+        if evidence is not None
+        else {}
+    )
+    result["proposition_memories"] = (
+        [
+            {
+                "proposition_id": proposition.proposition_id,
+                "memory_text": proposition.memory_text,
+                "proposition_kind": proposition.proposition_kind,
+                "predicate": proposition.predicate,
+                "modality": proposition.modality,
+                "confidence": proposition.confidence,
+                "citation": (
+                    proposition.citation.model_dump(mode="json")
+                    if proposition.citation is not None
+                    else evidence_by_id[proposition.evidence_span_id].citation.model_dump(
+                        mode="json"
+                    )
+                ),
+            }
+            for proposition in proposition_response.propositions
+            if proposition.citation is not None
+            or proposition.evidence_span_id in evidence_by_id
+        ]
+        if proposition_response is not None
+        else []
+    )
+    result["reference_memories"] = list(fixture.get("reference_memories") or [])
+    result["proposition_count"] = proposition_count
+    result["memory_to_proposition_ratio"] = (
+        proposition_count / memory_fact_count if memory_fact_count else 0.0
+    )
+    return result
+
+
+def evaluate_evidence_fixture_response(
+    fixture: dict,
+    *,
+    passes: dict[str, dict],
+    wall_seconds: float,
+    peak_gpu_memory_mib: int,
+) -> dict:
+    """Evaluate exactly the one-pass representation used by production v2."""
+    session_id = str(fixture["session"]["session_id"])
+    evidence_record = passes["evidence"]
+    finish_reason = str(evidence_record.get("finish_reason") or "")
+    source_chars = sum(
+        len(str(turn.get("content") or ""))
+        for turn in fixture["session"]["turns"]
+    )
+    source_tokens_estimate = max(1, math.ceil(source_chars / 4))
+    result = {
+        "fixture_id": fixture["id"],
+        "critical": bool(fixture.get("critical")),
+        "strategy": "evidence",
+        "wall_seconds": round(wall_seconds, 6),
+        "source_tokens_estimate": source_tokens_estimate,
+        "seconds_per_1000_source_tokens": round(
+            wall_seconds / max(1.0, source_tokens_estimate / 1000.0),
+            6,
+        ),
+        "peak_gpu_memory_mib": int(peak_gpu_memory_mib),
+        "finish_reason": finish_reason,
+        "truncated": finish_reason == "length",
+        "schema_compliant": False,
+        "candidate_item_count": 0,
+        "accepted_item_count": 0,
+        "citation_invalid_count": 0,
+        "required_count": len(fixture.get("required") or []),
+        "required_hit_count": 0,
+        "missing_required": sorted(map(str, fixture.get("required") or [])),
+        "forbidden_hits": [],
+        "false_completed_action_hits": [],
+        "complete_pass": False,
+        "production_pass": False,
+        "error": None,
+        "evidence_memories": [],
+        "accepted_evidence_memories": [],
+        "proposition_memories": [],
+        "pass_finish_reasons": {"evidence": finish_reason},
+        "pass_wall_seconds": {
+            "evidence": float(evidence_record.get("wall_seconds") or 0.0)
+        },
+    }
+    try:
+        evidence = AtomicMemoryV2EvidencePassResponse.model_validate(
+            _parse_json_object(str(evidence_record["response_text"]))
+        )
+        if evidence.session_id != session_id:
+            raise ValueError("evidence_pass_session_mismatch")
+        extraction, invalid = compile_atomic_memory_v2_evidence(
+            fixture["session"], evidence
+        )
+        result["schema_compliant"] = True
+        result["candidate_item_count"] = len(evidence.spans)
+        result["accepted_item_count"] = len(extraction.facts)
+        result["citation_invalid_count"] = sum(
+            count
+            for reason, count in invalid.items()
+            if reason.startswith("citation_")
+        )
+        result["production_evidence_invalid_by_reason"] = invalid
+        result["evidence_memories"] = [
+            {
+                "span_id": span.span_id,
+                "memory_text": span.memory_text,
+                "attributed_to": span.attributed_to,
+                "evidence_kinds": span.evidence_kinds,
+                "confidence": span.confidence,
+                "citation": span.citation.model_dump(mode="json"),
+            }
+            for span in evidence.spans
+        ]
+        result["accepted_evidence_memories"] = [
+            {
+                "fact_id": fact.fact_id,
+                "memory_text": fact.object_text,
+                "attributed_to": fact.subject,
+                "evidence_kinds": fact.qualifiers.get(
+                    "evidence_kinds", ""
+                ).split(","),
+                "confidence": fact.confidence,
+                "citation": {
+                    "turn_index": fact.citation.turn_index,
+                    "excerpt": fact.citation.excerpt,
+                    "speaker": fact.citation.speaker,
+                },
+            }
+            for fact in extraction.facts
+        ]
+        result["production_pass"] = bool(
+            not result["truncated"]
+            and not invalid
+            and len(extraction.facts) == len(evidence.spans)
+        )
+        result["complete_pass"] = result["production_pass"]
+    except (ValueError, TypeError, KeyError) as exc:
+        result["error"] = f"{type(exc).__name__}:{str(exc)[:300]}"
+    return result
 
 
 def aggregate_candidate_results(results: list[dict]) -> dict:
@@ -405,6 +790,8 @@ def _artifact_path(
     prompt: str,
     *,
     max_tokens: int,
+    max_pass_attempts: int,
+    strategy: str,
 ) -> Path:
     digest = hashlib.sha256(
         json.dumps(
@@ -412,9 +799,26 @@ def _artifact_path(
                 "candidate": candidate.__dict__,
                 "fixture": fixture,
                 "prompt": prompt,
-                "schema": atomic_memory_v2_json_schema(),
+                "schemas": (
+                    [
+                        atomic_memory_v2_entity_pass_json_schema(),
+                        atomic_memory_v2_event_pass_json_schema(),
+                        atomic_memory_v2_relation_table_pass_json_schema(),
+                    ]
+                    if strategy == "decomposed"
+                    else (
+                        [
+                            atomic_memory_v2_evidence_pass_json_schema(),
+                            atomic_memory_v2_proposition_pass_json_schema(),
+                        ]
+                        if strategy == "propositions"
+                        else [atomic_memory_v2_json_schema()]
+                    )
+                ),
+                "strategy": strategy,
                 "runner_protocol": RUNNER_PROTOCOL,
                 "max_tokens": max_tokens,
+                "max_pass_attempts": max_pass_attempts,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -435,39 +839,203 @@ def run_candidate(
     output_dir: Path,
     timeout: float,
     max_tokens: int,
+    max_pass_attempts: int,
     refresh: bool,
+    strategy: str,
 ) -> list[dict]:
     results: list[dict] = []
     for position, fixture in enumerate(fixtures, start=1):
-        prompt = atomic_memory_v2_prompt(fixture["session"])
+        prompt = (
+            atomic_memory_v2_entity_pass_prompt(fixture["session"])
+            if strategy == "decomposed"
+            else (
+                atomic_memory_v2_evidence_pass_prompt(fixture["session"])
+                if strategy in {"evidence", "propositions"}
+                else atomic_memory_v2_prompt(fixture["session"])
+            )
+        )
         artifact = _artifact_path(
             output_dir,
             candidate,
             fixture,
             prompt,
             max_tokens=max_tokens,
+            max_pass_attempts=max_pass_attempts,
+            strategy=strategy,
         )
-        if artifact.exists() and not refresh:
+        deterministic_only = (
+            strategy == "propositions"
+            and bool(fixture["session"]["turns"])
+            and atomic_memory_v2_deterministic_turn_indices(fixture["session"])
+            == set(range(len(fixture["session"]["turns"])))
+        )
+        if deterministic_only:
+            response_record = {
+                "strategy": strategy,
+                "passes": {
+                    "evidence": {
+                        "response_text": json.dumps(
+                            {
+                                "session_id": str(fixture["session"]["session_id"]),
+                                "spans": [],
+                            }
+                        ),
+                        "finish_reason": "deterministic",
+                        "wall_seconds": 0.0,
+                        "usage": {},
+                    },
+                    "propositions": {
+                        "response_text": json.dumps(
+                            {
+                                "session_id": str(fixture["session"]["session_id"]),
+                                "propositions": [],
+                            }
+                        ),
+                        "finish_reason": "deterministic",
+                        "wall_seconds": 0.0,
+                        "usage": {},
+                    },
+                },
+                "wall_seconds": 0.0,
+                "peak_gpu_memory_mib": 0,
+            }
+        elif artifact.exists() and not refresh:
             response_record = json.loads(artifact.read_text(encoding="utf-8"))
         else:
             started = time.perf_counter()
             try:
                 with NvidiaMemorySampler() as sampler:
-                    response = _post_chat(
-                        candidate,
-                        prompt,
-                        timeout=timeout,
-                        max_tokens=max_tokens,
-                    )
+                    if strategy in {"decomposed", "evidence", "propositions"}:
+                        passes: dict[str, dict] = {}
+
+                        def call_pass(
+                            name: str,
+                            pass_prompt: str,
+                            schema: dict,
+                            response_model: type[BaseModel],
+                        ) -> dict:
+                            pass_started = time.perf_counter()
+                            attempts: list[dict] = []
+                            record: dict = {}
+                            for attempt in range(1, max_pass_attempts + 1):
+                                attempt_prompt = pass_prompt
+                                if attempt > 1:
+                                    attempt_prompt += (
+                                        "\nThe previous response was invalid. Return one bounded "
+                                        "JSON object matching the schema, with no repetition or prose."
+                                    )
+                                response = _post_chat(
+                                    candidate,
+                                    attempt_prompt,
+                                    timeout=timeout,
+                                    max_tokens=max_tokens,
+                                    response_schema=schema,
+                                )
+                                choice = response["choices"][0]
+                                record = {
+                                    "response_text": str(choice["message"]["content"]),
+                                    "finish_reason": choice.get("finish_reason"),
+                                    "wall_seconds": time.perf_counter() - pass_started,
+                                    "usage": response.get("usage") or {},
+                                    "attempt_count": attempt,
+                                }
+                                try:
+                                    response_model.model_validate(
+                                        _parse_json_object(record["response_text"])
+                                    )
+                                    break
+                                except (ValueError, TypeError) as exc:
+                                    attempts.append(
+                                        {
+                                            "attempt": attempt,
+                                            "error": (
+                                                f"{type(exc).__name__}:{str(exc)[:300]}"
+                                            ),
+                                        }
+                                    )
+                            if attempts:
+                                record["invalid_attempts"] = attempts
+                            passes[name] = record
+                            return record
+
+                        if strategy == "decomposed":
+                            entity_record = call_pass(
+                                "entities",
+                                prompt,
+                                atomic_memory_v2_entity_pass_json_schema(),
+                                AtomicMemoryV2EntityPassResponse,
+                            )
+                            try:
+                                entity_pass = AtomicMemoryV2EntityPassResponse.model_validate(
+                                    _parse_json_object(entity_record["response_text"])
+                                )
+                                entity_catalog = entity_pass.entities
+                            except (ValueError, TypeError):
+                                entity_catalog = []
+                            call_pass(
+                                "events",
+                                atomic_memory_v2_event_pass_prompt(
+                                    fixture["session"], entity_catalog
+                                ),
+                                atomic_memory_v2_event_pass_json_schema(),
+                                AtomicMemoryV2EventPassResponse,
+                            )
+                            call_pass(
+                                "relations_tables",
+                                atomic_memory_v2_relation_table_pass_prompt(
+                                    fixture["session"], entity_catalog
+                                ),
+                                atomic_memory_v2_relation_table_pass_json_schema(),
+                                AtomicMemoryV2RelationTablePassResponse,
+                            )
+                        else:
+                            evidence_record = call_pass(
+                                "evidence",
+                                prompt,
+                                atomic_memory_v2_evidence_pass_json_schema(),
+                                AtomicMemoryV2EvidencePassResponse,
+                            )
+                            try:
+                                evidence_pass = AtomicMemoryV2EvidencePassResponse.model_validate(
+                                    _parse_json_object(evidence_record["response_text"])
+                                )
+                                evidence_spans = evidence_pass.spans
+                            except (ValueError, TypeError):
+                                evidence_spans = []
+                            if strategy == "propositions":
+                                call_pass(
+                                    "propositions",
+                                    atomic_memory_v2_proposition_pass_prompt(
+                                        fixture["session"], evidence_spans
+                                    ),
+                                    atomic_memory_v2_proposition_pass_json_schema(),
+                                    AtomicMemoryV2PropositionPassResponse,
+                                )
+                        response_record = {
+                            "strategy": strategy,
+                            "passes": passes,
+                            "wall_seconds": time.perf_counter() - started,
+                            "peak_gpu_memory_mib": sampler.peak_mib,
+                        }
+                    else:
+                        response = _post_chat(
+                            candidate,
+                            prompt,
+                            timeout=timeout,
+                            max_tokens=max_tokens,
+                            response_schema=atomic_memory_v2_json_schema(),
+                        )
+                        choice = response["choices"][0]
+                        response_record = {
+                            "strategy": "monolithic",
+                            "response_text": str(choice["message"]["content"]),
+                            "finish_reason": choice.get("finish_reason"),
+                            "wall_seconds": time.perf_counter() - started,
+                            "peak_gpu_memory_mib": sampler.peak_mib,
+                            "usage": response.get("usage") or {},
+                        }
                 wall_seconds = time.perf_counter() - started
-                choice = response["choices"][0]
-                response_record = {
-                    "response_text": str(choice["message"]["content"]),
-                    "finish_reason": choice.get("finish_reason"),
-                    "wall_seconds": wall_seconds,
-                    "peak_gpu_memory_mib": sampler.peak_mib,
-                    "usage": response.get("usage") or {},
-                }
+                response_record["wall_seconds"] = wall_seconds
                 artifact.parent.mkdir(parents=True, exist_ok=True)
                 artifact.write_text(
                     json.dumps(response_record, ensure_ascii=False, indent=2) + "\n",
@@ -475,21 +1043,45 @@ def run_candidate(
                 )
             except (OSError, ValueError, KeyError, IndexError) as exc:
                 response_record = {
+                    "strategy": strategy,
                     "response_text": "",
                     "finish_reason": "request_error",
                     "wall_seconds": time.perf_counter() - started,
                     "peak_gpu_memory_mib": 0,
                     "request_error": f"{type(exc).__name__}:{str(exc)[:300]}",
                 }
-        evaluated = evaluate_fixture_response(fixture, **{
-            key: response_record[key]
-            for key in (
-                "response_text",
-                "finish_reason",
-                "wall_seconds",
-                "peak_gpu_memory_mib",
+        if strategy == "decomposed" and response_record.get("passes"):
+            evaluated = evaluate_decomposed_fixture_response(
+                fixture,
+                passes=response_record["passes"],
+                wall_seconds=float(response_record["wall_seconds"]),
+                peak_gpu_memory_mib=int(response_record["peak_gpu_memory_mib"]),
             )
-        })
+        elif strategy == "evidence" and response_record.get("passes"):
+            evaluated = evaluate_evidence_fixture_response(
+                fixture,
+                passes=response_record["passes"],
+                wall_seconds=float(response_record["wall_seconds"]),
+                peak_gpu_memory_mib=int(response_record["peak_gpu_memory_mib"]),
+            )
+        elif strategy == "propositions" and response_record.get("passes"):
+            evaluated = evaluate_proposition_fixture_response(
+                fixture,
+                passes=response_record["passes"],
+                wall_seconds=float(response_record["wall_seconds"]),
+                peak_gpu_memory_mib=int(response_record["peak_gpu_memory_mib"]),
+            )
+        else:
+            evaluated = evaluate_fixture_response(fixture, **{
+                key: response_record[key]
+                for key in (
+                    "response_text",
+                    "finish_reason",
+                    "wall_seconds",
+                    "peak_gpu_memory_mib",
+                )
+            })
+            evaluated["strategy"] = strategy
         if response_record.get("request_error"):
             evaluated["error"] = response_record["request_error"]
         results.append(evaluated)
@@ -503,6 +1095,8 @@ def run_candidate(
 
 def main() -> int:
     args = parse_args()
+    if args.max_pass_attempts < 1 or args.max_pass_attempts > 3:
+        raise ValueError("max_pass_attempts_must_be_between_1_and_3")
     hardware = cuda_preflight()
     fixture_bundle = load_fixture_bundle(args.fixtures)
     gate_manifest = load_gate_manifest(args.gates)
@@ -522,12 +1116,15 @@ def main() -> int:
             output_dir=args.output_dir,
             timeout=args.timeout,
             max_tokens=args.max_tokens,
+            max_pass_attempts=args.max_pass_attempts,
             refresh=args.refresh,
+            strategy=args.strategy,
         )
         metrics = aggregate_candidate_results(results)
         reports.append(
             {
                 "candidate": candidate.__dict__,
+                "strategy": args.strategy,
                 "metrics": metrics,
                 "gate": evaluate_gates(metrics, gate_manifest),
                 "fixtures": results,
@@ -536,9 +1133,13 @@ def main() -> int:
     report = {
         "protocol": RUNNER_PROTOCOL,
         "fixture_version": fixture_bundle["fixture_version"],
+        "evaluation_role": str(
+            fixture_bundle.get("evaluation_role") or "development"
+        ),
         "gate_version": gate_manifest["gate_version"],
         "hardware": hardware,
         "fixture_count": len(fixtures),
+        "strategy": args.strategy,
         "reports": reports,
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)

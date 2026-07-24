@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import json
 import threading
 import time
 from contextlib import asynccontextmanager
+from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
@@ -32,9 +34,11 @@ class ChatCompletionRequest(BaseModel):
     model: str = MODEL_ALIAS
     messages: list[ChatMessage]
     temperature: float = 0.0
-    max_tokens: int = Field(default=160, ge=1, le=1024)
+    max_tokens: int = Field(default=160, ge=1, le=4096)
     n: int = Field(default=1, ge=1, le=1)
     stream: bool = False
+    response_format: dict[str, Any] | None = None
+    chat_template_kwargs: dict[str, Any] | None = None
 
 
 def _load_model() -> None:
@@ -99,6 +103,12 @@ def chat_completions(payload: ChatCompletionRequest) -> dict:
     if _model is None or _tokenizer is None or _torch is None:
         raise HTTPException(status_code=503, detail="Model is still loading")
     messages = [{"role": item.role, "content": item.content} for item in payload.messages]
+    response_schema = (payload.response_format or {}).get("schema")
+    if isinstance(response_schema, dict):
+        messages[-1]["content"] += (
+            "\n\nRequired JSON Schema (return one matching JSON object and no prose):\n"
+            + json.dumps(response_schema, ensure_ascii=False, separators=(",", ":"))
+        )
     rendered = _tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
@@ -122,6 +132,10 @@ def chat_completions(payload: ChatCompletionRequest) -> dict:
     generated = output[0, prompt_tokens:]
     content = _tokenizer.decode(generated, skip_special_tokens=True).strip()
     completion_tokens = int(generated.shape[0])
+    ended_with_eos = bool(
+        completion_tokens
+        and int(generated[-1].item()) == int(_tokenizer.eos_token_id)
+    )
     return {
         "id": f"chatcmpl-{uuid4()}",
         "object": "chat.completion",
@@ -131,7 +145,7 @@ def chat_completions(payload: ChatCompletionRequest) -> dict:
             {
                 "index": 0,
                 "message": {"role": "assistant", "content": content},
-                "finish_reason": "stop",
+                "finish_reason": "stop" if ended_with_eos else "length",
             }
         ],
         "usage": {
