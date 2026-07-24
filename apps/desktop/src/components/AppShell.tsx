@@ -3,7 +3,6 @@ import {
   Boxes,
   CalendarDays,
   CheckSquare,
-  ChevronDown,
   Code2,
   FolderOpen,
   Globe,
@@ -13,25 +12,27 @@ import {
   MessageSquare,
   Search,
   Settings,
-  Plus,
   UserRound,
   LockKeyhole,
+  Menu,
+  X,
 } from "lucide-react";
 import { CommandPalette, useCommandPalette } from "@/components/CommandPalette";
 import { BrandLogo } from "@/components/BrandLogo";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-  createChatSession,
   getJobStatus,
   listClusters,
-  listChatSessions,
   listVaults,
+  getUnlockStatus,
   useBackendHealth,
-  type ChatSessionRecord,
   type ClusterRecord,
   type JobQueueStatus,
   type VaultRecord,
+  type UnlockStatusRead,
 } from "@/lib/backend";
+import { AppStatusAnnouncer, LockedState, StatusLabel } from "@/components/product/Feedback";
+import { useVisiblePolling } from "@/lib/useVisiblePolling";
 
 type NavItem = {
   to:
@@ -72,8 +73,9 @@ export function AppShell() {
   const backend = useBackendHealth();
   const [vault, setVault] = useState<VaultRecord | null>(null);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
-  const [backendSavedChats, setBackendSavedChats] = useState<ChatSessionRecord[]>([]);
   const [recentClusters, setRecentClusters] = useState<ClusterRecord[]>([]);
+  const [unlockStatus, setUnlockStatus] = useState<UnlockStatusRead | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -103,112 +105,86 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, [navigate, setOpen]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function refreshJobs() {
-      try {
-        const status = await getJobStatus();
-        if (!cancelled) setJobs(status);
-      } catch {
-        if (!cancelled) setJobs(null);
-      }
+  const refreshJobs = useCallback(async () => {
+    try {
+      setJobs(await getJobStatus());
+    } catch {
+      setJobs(null);
     }
-
-    void refreshJobs();
-    const id = window.setInterval(refreshJobs, 5000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
+  }, []);
+  const refreshLibrary = useCallback(async () => {
+    try {
+      const activeVault = (await listVaults())[0] ?? null;
+      setVault(activeVault);
+      if (!activeVault) {
+        setRecentClusters([]);
+        setUnlockStatus(null);
+        return;
+      }
+      const [rows, currentUnlock] = await Promise.all([
+        listClusters(activeVault.id),
+        getUnlockStatus(),
+      ]);
+      setRecentClusters(rows.slice(0, 5));
+      setUnlockStatus(currentUnlock);
+    } catch {
+      setRecentClusters([]);
+    }
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function refreshClusters() {
-      try {
-        const vault = (await listVaults())[0] ?? null;
-        if (!vault) {
-          if (!cancelled) setVault(null);
-          if (!cancelled) setRecentClusters([]);
-          return;
-        }
-        if (!cancelled) setVault(vault);
-        const rows = await listClusters(vault.id);
-        if (!cancelled) setRecentClusters(rows.slice(0, 5));
-      } catch {
-        if (!cancelled) setRecentClusters([]);
-      }
-    }
-
-    void refreshClusters();
-    const id = window.setInterval(refreshClusters, 30000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, []);
+  useVisiblePolling(refreshJobs, 10_000, backend.status === "online");
+  useVisiblePolling(refreshLibrary, 30_000, backend.status === "online");
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function refreshSavedChats() {
-      try {
-        const vault = (await listVaults())[0] ?? null;
-        if (!vault) {
-          if (!cancelled) setBackendSavedChats([]);
-          return;
-        }
-        const sessions = await listChatSessions(vault.id);
-        if (!cancelled) setBackendSavedChats(sessions.filter((session) => session.saved).slice(0, 6));
-      } catch {
-        if (!cancelled) setBackendSavedChats([]);
-      }
-    }
-
-    void refreshSavedChats();
-    const id = window.setInterval(refreshSavedChats, 15000);
-    window.addEventListener("vault:chats-changed", refreshSavedChats);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-      window.removeEventListener("vault:chats-changed", refreshSavedChats);
+    const onLockState = (event: Event) => {
+      const detail = (event as CustomEvent<UnlockStatusRead>).detail;
+      if (detail) setUnlockStatus(detail);
+      void refreshLibrary();
     };
-  }, []);
+    window.addEventListener("vault:lock-state", onLockState);
+    return () => {
+      window.removeEventListener("vault:lock-state", onLockState);
+    };
+  }, [refreshLibrary]);
+
+  useEffect(() => setSidebarOpen(false), [pathname]);
 
   const vaultPath = vault?.path ?? null;
-  const savedChats = backendSavedChats;
   const sidebarClusters =
     recentClusters.length > 0
       ? recentClusters.map((cluster) => ({ id: cluster.id, name: cluster.name }))
       : [];
 
-  async function newChat() {
-    try {
-      const vault = (await listVaults())[0];
-      if (vault) {
-        const session = await createChatSession({ vault_id: vault.id, title: "New chat" });
-        navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
-        return;
-      }
-    } catch {
-      // The Chat index still offers local fallback when the backend is not available.
-    }
-    navigate({ to: "/chat" });
-  }
-
   const taskCount = (jobs?.queued ?? 0) + (jobs?.running ?? 0) + (jobs?.failed ?? 0);
 
   return (
     <div className="vault-shell flex-col text-foreground">
+      <div className="vault-mobile-bar">
+        <button
+          type="button"
+          className="vault-icon-button"
+          onClick={() => setSidebarOpen((current) => !current)}
+          aria-label={sidebarOpen ? "Close navigation" : "Open navigation"}
+          aria-expanded={sidebarOpen}
+        >
+          {sidebarOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+        </button>
+        <BrandLogo className="h-6 w-auto" />
+        <StatusLabel tone={backend.status === "online" ? "ready" : backend.status === "degraded" ? "warning" : "neutral"}>
+          {backend.status === "online" ? "Ready" : backend.status === "checking" ? "Checking" : "Offline"}
+        </StatusLabel>
+      </div>
       <div className="flex min-h-0 flex-1">
-        <aside className="vault-sidebar flex flex-col">
+        {sidebarOpen ? <button type="button" className="vault-sidebar-scrim" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} /> : null}
+        <aside className={`vault-sidebar flex flex-col ${sidebarOpen ? "is-open" : ""}`}>
           <div className="px-4 pb-2 pt-4">
             <div className="panel-section-title mb-2">Vault</div>
-            <button className="flex min-h-7 w-full items-start gap-2 text-left text-[12px] text-[var(--text-primary)] hover:text-[var(--primary)]">
+            <button
+              type="button"
+              onClick={() => navigate({ to: "/settings", search: { section: "storage" } })}
+              className="flex min-h-9 w-full items-start gap-2 rounded-md px-1 py-1.5 text-left text-[12px] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] hover:text-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label={vaultPath ? "Change library location" : "Choose a library"}
+            >
               <FolderOpen className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
               <span className="min-w-0 flex-1 break-all">{vaultPath ?? "Choose library"}</span>
             </button>
@@ -273,32 +249,10 @@ export function AppShell() {
               </div>
             )}
 
-            {savedChats.length > 0 && pathname.startsWith("/chat") && (
-              <div className="mt-6 border-t border-[var(--border-default)] pt-5">
-                <div className="panel-section-title flex items-center justify-between px-2.5 pb-2">
-                  <span>Saved chats</span>
-                  <button type="button" onClick={() => void newChat()} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">
-                    <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-                  </button>
-                </div>
-                <div className="space-y-1">
-                  {savedChats.map((c) => (
-                    <Link
-                      key={c.id}
-                      to="/chat/$chatId"
-                      params={{ chatId: c.id }}
-                      className="block break-words rounded-md px-2.5 py-1.5 text-[13px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                    >
-                      {c.title}
-                    </Link>
-                  ))}
-                </div>
-              </div>
-            )}
           </nav>
 
           <div className="border-t border-[var(--border-default)] p-4">
-            <div className="flex items-center gap-3">
+            <Link to="/settings" search={{ section: "profile" }} className="flex min-h-10 items-center gap-3 rounded-md p-1 hover:bg-[var(--bg-hover)]">
               <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--text-primary)] text-[var(--bg-card)]">
                 <UserRound className="h-4 w-4" strokeWidth={1.5} />
               </span>
@@ -310,13 +264,16 @@ export function AppShell() {
                   {vaultPath ?? "No library selected"}
                 </div>
               </div>
-              <ChevronDown className="h-3.5 w-3.5 text-[var(--text-muted)]" strokeWidth={1.5} />
-            </div>
+            </Link>
           </div>
         </aside>
 
         <main className="content-area">
-          <Outlet />
+          {unlockStatus && !unlockStatus.ready && pathname !== "/settings" ? (
+            <LockedState onOpenSettings={() => navigate({ to: "/settings", search: { section: "privacy" } })} />
+          ) : (
+            <Outlet key={unlockStatus?.ready === false ? "locked" : "ready"} />
+          )}
         </main>
       </div>
 
@@ -348,6 +305,15 @@ export function AppShell() {
       </footer>
 
       <CommandPalette open={openPalette} onOpenChange={setOpen} />
+      <AppStatusAnnouncer
+        message={
+          backend.status === "offline"
+            ? "Vault local service is offline."
+            : backend.status === "degraded"
+              ? "Vault local service needs attention."
+              : null
+        }
+      />
     </div>
   );
 }

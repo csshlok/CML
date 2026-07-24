@@ -11,7 +11,7 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { createChatSession, listClusters, listSources, listVaults, type ClusterRecord, type SourceRecord } from "@/lib/backend";
-import { MessageSquare, Layers, Files, Globe2, Settings, Plus, Link2, FolderOpen, Cable } from "lucide-react";
+import { MessageSquare, Layers, Files, Globe2, Settings, Plus, FolderOpen, Cable } from "lucide-react";
 
 interface PaletteState {
   open: boolean;
@@ -100,13 +100,13 @@ export function CommandPalette({
             <Plus className="mr-2 h-4 w-4" /> New chat
           </CommandItem>
           <CommandItem onSelect={() => go(() => navigate({ to: "/clusters" }))}>
-            <Layers className="mr-2 h-4 w-4" /> New cluster
+            <Layers className="mr-2 h-4 w-4" /> Open clusters
           </CommandItem>
           <CommandItem onSelect={() => go(() => navigate({ to: "/sources" }))}>
-            <Link2 className="mr-2 h-4 w-4" /> Add link
+            <Plus className="mr-2 h-4 w-4" /> Add a source
           </CommandItem>
-          <CommandItem onSelect={() => go(() => navigate({ to: "/settings" }))}>
-            <FolderOpen className="mr-2 h-4 w-4" /> Open vault
+          <CommandItem onSelect={() => go(() => navigate({ to: "/settings", search: { section: "storage" } }))}>
+            <FolderOpen className="mr-2 h-4 w-4" /> Library settings
           </CommandItem>
         </CommandGroup>
         <CommandSeparator />
@@ -160,7 +160,7 @@ export function CommandPalette({
               {sources.slice(0, 6).map((s) => (
                 <CommandItem
                   key={s.id}
-                  onSelect={() => go(() => navigate({ to: "/sources" }))}
+                  onSelect={() => go(() => navigate({ to: "/sources", search: { source: s.id } }))}
                 >
                   <Files className="mr-2 h-4 w-4" />
                   {s.title}
