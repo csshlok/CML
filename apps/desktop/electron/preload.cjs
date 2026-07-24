@@ -14,7 +14,11 @@ async function notifyRendererReady(detail) {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
-  void notifyRendererReady(window.location.pathname || "/");
+  // Startup/renderer repair screens are data URLs that also use this preload.
+  // They must not satisfy the packaged-app smoke test or renderer-ready wait.
+  if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+    void notifyRendererReady(window.location.pathname || "/");
+  }
 });
 
 contextBridge.exposeInMainWorld("cmlDesktop", {

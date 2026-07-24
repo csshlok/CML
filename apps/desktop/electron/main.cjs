@@ -678,7 +678,12 @@ async function ensureBackend() {
   }
   writeDesktopRuntimeLog(`starting backend; mode=${backendMode} dataDir=${dataDir}`);
   const backendArgs = ["-s", "-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", String(port)];
-  const backendWaitTimeoutMs = Number(process.env.CML_BACKEND_WAIT_TIMEOUT_MS || 30000);
+  // Packaged cold starts can spend tens of seconds loading the embedded Python
+  // runtime, especially while Windows scans newly extracted binaries.
+  const defaultBackendWaitTimeoutMs = isDev ? 30000 : 90000;
+  const backendWaitTimeoutMs = Number(
+    process.env.CML_BACKEND_WAIT_TIMEOUT_MS || defaultBackendWaitTimeoutMs,
+  );
   const backendStartedAt = Date.now();
   backendProcess = spawn(
     pythonCommand,
