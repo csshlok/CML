@@ -15,6 +15,7 @@
     "test:backend:full": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\backend\\run-tests.ps1 -Tier full",
     "package:win": "npm run package:win --workspace @cml/desktop",
     "security:renderer": "node scripts/security/audit-renderer-html-safety.mjs",
+    "audit:controls": "node scripts/ui/audit-interactive-controls.mjs",
     "security:package": "node scripts/packaging/generate-helper-manifest.cjs && node scripts/packaging/audit-package-layout.cjs apps/desktop/packaging apps/desktop/packaging",
     "security:e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\security\\run-security-e2e.ps1"
   }
