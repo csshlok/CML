@@ -1,5 +1,5 @@
 {
-  "gate_version": "atomic-memory-v2-default-extractor-gates-v1",
+  "gate_version": "atomic-memory-v2-default-extractor-gates-v2",
   "thresholds": {
     "response_schema_compliance_rate_min": 0.98,
     "accepted_citation_validity_rate_min": 0.99,
@@ -14,6 +14,7 @@
   "policy": {
     "cpu_fallback_allowed": false,
     "loopback_endpoint_required": true,
+    "latency_source_token_floor": 1000,
     "threshold_changes_require_new_gate_version": true,
     "fixture_data_may_be_used_for_training": false
   }
