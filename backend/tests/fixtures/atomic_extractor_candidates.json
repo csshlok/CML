@@ -1,0 +1,38 @@
+{
+  "inventory_version": "atomic-extractor-candidates-v1",
+  "runtime": {
+    "name": "llama.cpp-cuda",
+    "build": "9374-491c4d7d2",
+    "quantization": "Q4_K_M",
+    "context_size": 8192
+  },
+  "candidates": [
+    {
+      "label": "qwen2.5-1.5b-gguf",
+      "parameter_count_b": 1.5,
+      "hub_repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+      "hub_revision": "91cad51170dc346986eccefdc2dd33a9da36ead9",
+      "file_sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+      "license": "apache-2.0",
+      "default_distribution_eligible": true
+    },
+    {
+      "label": "qwen2.5-3b-gguf",
+      "parameter_count_b": 3.0,
+      "hub_repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+      "hub_revision": "7dabda4d13d513e3e842b20f0d435c732f172cbe",
+      "file_sha256": "626b4a6678b86442240e33df819e00132d3ba7dddf1cdc4fbb18e0a9615c62d",
+      "license": "qwen-research",
+      "default_distribution_eligible": false
+    },
+    {
+      "label": "qwen3-4b",
+      "parameter_count_b": 4.0,
+      "hub_repo": "Qwen/Qwen3-4B-GGUF",
+      "hub_revision": "bc640142c66e1fdd12af0bd68f40445458f3869b",
+      "file_sha256": "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
+      "license": "apache-2.0",
+      "default_distribution_eligible": true
+    }
+  ]
+}

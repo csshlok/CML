@@ -1,0 +1,21 @@
+{
+  "gate_version": "atomic-memory-v2-semantic-holdout-gates-v1",
+  "thresholds": {
+    "response_schema_compliance_rate_min": 0.98,
+    "accepted_citation_validity_rate_min": 0.99,
+    "micro_precision_min": 0.85,
+    "micro_recall_min": 0.80,
+    "micro_f1_min": 0.82,
+    "macro_f1_min": 0.75,
+    "empty_fixture_false_positive_count_max": 0,
+    "false_completed_action_violation_count_max": 0,
+    "failed_or_truncated_fixture_count_max": 0,
+    "peak_gpu_memory_mib_max": 5632
+  },
+  "policy": {
+    "thresholds_frozen_before_first_holdout_run": true,
+    "cpu_fallback_allowed": false,
+    "holdout_case_details_redacted_by_default": true,
+    "benchmark_datasets_may_not_be_used_for_training_or_prompt_tuning": true
+  }
+}

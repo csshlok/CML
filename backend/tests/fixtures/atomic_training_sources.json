@@ -1,0 +1,126 @@
+{
+  "registry_version": "atomic-training-sources-v1",
+  "created_at": "2026-07-23T00:00:00Z",
+  "policy": {
+    "allowed_split": "train only",
+    "requires_teacher_labels": true,
+    "may_train_directly_from_raw_sources": false,
+    "forbidden_evaluation_sources": [
+      "BEAM",
+      "LoCoMo",
+      "LongMemEval",
+      "atomic_memory_v2_extraction",
+      "atomic_memory_v2_holdout"
+    ]
+  },
+  "approved_sources": [
+    {
+      "source_id": "google-synthetic-persona-chat",
+      "repo_id": "google/Synthetic-Persona-Chat",
+      "source_uri": "https://huggingface.co/datasets/google/Synthetic-Persona-Chat",
+      "revision": "a520ad7f999ca7e6dfdc25fed9f5070bf6f87b42",
+      "license": "CC-BY-4.0",
+      "license_uri": "https://creativecommons.org/licenses/by/4.0/",
+      "split": "train",
+      "row_count": 8938,
+      "intended_use": "Positive conversational memory examples grounded only in actual dialogue turns. Persona fields are hints for sampling and teacher QA, never accepted as source evidence.",
+      "risk_controls": [
+        "synthetic dialogue",
+        "persona statements may be absent from or contradicted by the dialogue",
+        "alternate which synthetic speaker is mapped to the Vault user",
+        "teacher must cite exact dialogue text"
+      ],
+      "files": [
+        {
+          "path": ".tmp/atomic-memory-training-sources/google__Synthetic-Persona-Chat/data/Synthetic-Persona-Chat_train.csv",
+          "bytes": 15889931,
+          "sha256": "a7bb20f1c51fd18cc51b2adc942220994e302b237053110b04fce7b413c812da"
+        },
+        {
+          "path": ".tmp/atomic-memory-training-sources/google__Synthetic-Persona-Chat/README.md",
+          "bytes": 3112,
+          "sha256": "9328a6a18a11a8f1d993cb489d344c3414fb5d64971da1fd29b1278beb150d28"
+        }
+      ]
+    },
+    {
+      "source_id": "multiwoz-2.2",
+      "repo_id": "tuetschek/multi_woz_v22",
+      "source_uri": "https://huggingface.co/datasets/tuetschek/multi_woz_v22",
+      "revision": "15064936406e3a1cb76e084ef976ceb199876e51",
+      "license": "Apache-2.0",
+      "license_uri": "https://www.apache.org/licenses/LICENSE-2.0",
+      "split": "train",
+      "row_count": 8437,
+      "intended_use": "Plans, preferences, quantities, dates, corrections, booking outcomes, and state transitions. Existing slot spans assist teacher QA but do not bypass exact-citation validation.",
+      "risk_controls": [
+        "task-oriented synthetic/crowdsourced distribution",
+        "must never be used for a future MultiWOZ evaluation",
+        "booking references and phone numbers remain synthetic literals",
+        "questions and requests must not become completed actions"
+      ],
+      "files": [
+        {
+          "path": ".tmp/atomic-memory-training-sources/tuetschek__multi_woz_v22/train.json",
+          "bytes": 65264858,
+          "sha256": "3280e58f44dacbbb2abe16aca344818d008cb2302803bfac1538e6ff253fc32f"
+        },
+        {
+          "path": ".tmp/atomic-memory-training-sources/tuetschek__multi_woz_v22/README.md",
+          "bytes": 212,
+          "sha256": "260fac4d2a6b2f1ef12ce687b4f5b9dbd3b72d5b78a83af90d3e9f45ac1eb291"
+        }
+      ]
+    },
+    {
+      "source_id": "hf-everyday-conversations",
+      "repo_id": "HuggingFaceTB/everyday-conversations-llama3.1-2k",
+      "source_uri": "https://huggingface.co/datasets/HuggingFaceTB/everyday-conversations-llama3.1-2k",
+      "revision": "14f543216b9ba42b6b951dc5bd199460d193b162",
+      "license": "Apache-2.0",
+      "license_uri": "https://www.apache.org/licenses/LICENSE-2.0",
+      "split": "train_sft",
+      "row_count": 2260,
+      "intended_use": "Mostly negative and sparse-memory examples so generic teaching, explanations, greetings, and assistant boilerplate do not become durable user memories.",
+      "risk_controls": [
+        "synthetic Llama-3.1-70B conversations",
+        "some conversations contain genuine user preferences and must not be blindly labelled empty",
+        "teacher must distinguish user disclosures from requests for information"
+      ],
+      "files": [
+        {
+          "path": ".tmp/atomic-memory-training-sources/HuggingFaceTB__everyday-conversations-llama3.1-2k/data/train_sft-00000-of-00001.parquet",
+          "bytes": 2050609,
+          "sha256": "4750214d12b4b92d07fca953e0b5cc59e313c575282d08b605c639aa87531daa"
+        },
+        {
+          "path": ".tmp/atomic-memory-training-sources/HuggingFaceTB__everyday-conversations-llama3.1-2k/README.md",
+          "bytes": 3033,
+          "sha256": "7c0b4d4c9c8de6651d3646d91e92638d46beb67f867f7200a996b72f2611d95a"
+        }
+      ]
+    }
+  ],
+  "rejected_sources": [
+    {
+      "repo_id": "knkarthick/dialogsum",
+      "reason": "CC-BY-NC-SA-4.0 is unsuitable for a commercial product training default."
+    },
+    {
+      "repo_id": "knkarthick/samsum",
+      "reason": "CC-BY-NC-ND-4.0 creates non-commercial and derivatives restrictions."
+    },
+    {
+      "repo_id": "mookiezi/Discord-Dialogues",
+      "reason": "Large scraped human chat corpus has avoidable privacy and provenance risk."
+    },
+    {
+      "repo_id": "apptek-com/apptek_callcenter_dialogues",
+      "reason": "Dataset card explicitly states it is intended for evaluation and not training."
+    },
+    {
+      "repo_id": "OpenAssistant/oasst1",
+      "reason": "Valid Apache-2.0 fallback, but the much larger knowledge-QA distribution adds little beyond the smaller curated negative source in v1."
+    }
+  ]
+}

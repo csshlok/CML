@@ -1,0 +1,249 @@
+{
+  "fixture_version": "atomic-memory-v2-independent-holdout-v1",
+  "evaluation_role": "holdout",
+  "minimum_fixture_count": 30,
+  "semantic_similarity_threshold": 0.70,
+  "construction_policy": "Hand-authored, question-independent conversational cases not copied from BEAM, LoCoMo, LongMemEval, or the development fixtures. Frozen before the first model run.",
+  "fixtures": [
+    {
+      "id": "holdout_spouse_description_alias",
+      "critical": true,
+      "session": {"session_id": "h01", "date": "2026-06-01", "turns": [{"role": "user", "content": "My husband Omar handles our travel bookings."}]},
+      "required": ["entity|omar|person", "category|omar|husband", "alias|omar|my husband"],
+      "forbidden": [],
+      "reference_memories": ["Omar is the user's husband.", "Omar handles the user's travel bookings."]
+    },
+    {
+      "id": "holdout_completed_repair",
+      "critical": true,
+      "session": {"session_id": "h02", "date": "2026-06-02", "turns": [{"role": "user", "content": "Yesterday I replaced the battery in my blue bicycle light."}]},
+      "required": ["event|replace_battery|completed"],
+      "forbidden": ["event|replace_battery|planned"],
+      "reference_memories": ["The user replaced the battery in their blue bicycle light yesterday."]
+    },
+    {
+      "id": "holdout_negated_subscription",
+      "critical": true,
+      "session": {"session_id": "h03", "date": "2026-06-03", "turns": [{"role": "user", "content": "I don't subscribe to any printed newspapers."}]},
+      "required": ["relation|subscribes_to|user|printed newspapers|negated"],
+      "forbidden": ["relation|subscribes_to|user|printed newspapers|asserted"],
+      "reference_memories": ["The user does not subscribe to printed newspapers."]
+    },
+    {
+      "id": "holdout_planned_relocation",
+      "critical": true,
+      "session": {"session_id": "h04", "date": "2026-06-04", "turns": [{"role": "user", "content": "We intend to move to Porto after the school year ends."}]},
+      "required": ["event|move|planned"],
+      "forbidden": ["event|move|completed"],
+      "reference_memories": ["The user plans to move to Porto after the school year ends."]
+    },
+    {
+      "id": "holdout_uncertain_enrollment",
+      "critical": true,
+      "session": {"session_id": "h05", "date": "2026-06-05", "turns": [{"role": "user", "content": "I may enroll in the ceramics workshop, but I have not decided."}]},
+      "required": ["event|enroll|uncertain"],
+      "forbidden": ["event|enroll|completed"],
+      "reference_memories": ["The user may enroll in the ceramics workshop but has not decided."]
+    },
+    {
+      "id": "holdout_ongoing_learning",
+      "critical": false,
+      "session": {"session_id": "h06", "date": "2026-06-06", "turns": [{"role": "user", "content": "I am currently learning Brazilian Portuguese with Luisa."}]},
+      "required": ["event|learn|ongoing"],
+      "forbidden": ["event|learn|completed"],
+      "reference_memories": ["The user is currently learning Brazilian Portuguese with Luisa."]
+    },
+    {
+      "id": "holdout_explicit_preference",
+      "critical": false,
+      "session": {"session_id": "h07", "date": "2026-06-07", "turns": [{"role": "user", "content": "For hotels, I prefer quiet rooms away from the elevator."}]},
+      "required": ["relation|prefers|user|quiet rooms away from the elevator|asserted"],
+      "forbidden": [],
+      "reference_memories": ["The user prefers quiet hotel rooms away from the elevator."]
+    },
+    {
+      "id": "holdout_employer_update",
+      "critical": true,
+      "session": {"session_id": "h08", "date": "2026-06-08", "turns": [{"role": "user", "content": "I left Northwind in April and now work at Alder Labs."}]},
+      "required": ["event|leave|completed", "relation|works_at|user|alder labs|asserted"],
+      "forbidden": ["relation|works_at|user|northwind|asserted"],
+      "reference_memories": ["The user left Northwind in April.", "The user now works at Alder Labs."]
+    },
+    {
+      "id": "holdout_completed_quantity",
+      "critical": false,
+      "session": {"session_id": "h09", "date": "2026-06-09", "turns": [{"role": "user", "content": "I donated 12 blankets to the neighborhood shelter last Saturday."}]},
+      "required": ["event|donate|completed", "quantity|event|donate|12|blankets"],
+      "forbidden": [],
+      "reference_memories": ["The user donated 12 blankets to the neighborhood shelter last Saturday."]
+    },
+    {
+      "id": "holdout_individual_recommendation",
+      "critical": false,
+      "session": {"session_id": "h10", "date": "2026-06-10", "turns": [{"role": "assistant", "content": "Because you said stairs worsen your knee pain, I recommend the ground-floor room."}]},
+      "required": ["event|recommend|recommended"],
+      "forbidden": ["event|recommend|completed"],
+      "reference_memories": ["The assistant recommended the ground-floor room because stairs worsen the user's knee pain."]
+    },
+    {
+      "id": "holdout_request_not_completion",
+      "critical": true,
+      "session": {"session_id": "h11", "date": "2026-06-11", "turns": [{"role": "user", "content": "Could you help me schedule a call with the electrician?"}]},
+      "required": ["event|schedule_call|proposed"],
+      "forbidden": ["event|schedule_call|completed"],
+      "reference_memories": ["The user requested help scheduling a call with the electrician."]
+    },
+    {
+      "id": "holdout_conditional_purchase",
+      "critical": true,
+      "session": {"session_id": "h12", "date": "2026-06-12", "turns": [{"role": "user", "content": "If the grant came through, I would buy a larger kiln."}]},
+      "required": ["event|buy|hypothetical"],
+      "forbidden": ["event|buy|completed"],
+      "reference_memories": ["The user would buy a larger kiln if the grant came through."]
+    },
+    {
+      "id": "holdout_correction",
+      "critical": true,
+      "session": {"session_id": "h13", "date": "2026-06-13", "turns": [{"role": "user", "content": "The inspection is on Wednesday, not Tuesday."}]},
+      "required": ["relation|scheduled_for|inspection|wednesday|asserted"],
+      "forbidden": ["relation|scheduled_for|inspection|tuesday|asserted"],
+      "reference_memories": ["The inspection is scheduled for Wednesday, not Tuesday."]
+    },
+    {
+      "id": "holdout_completed_and_planned",
+      "critical": true,
+      "session": {"session_id": "h14", "date": "2026-06-14", "turns": [{"role": "user", "content": "I submitted the permit application today and will pay the fee tomorrow."}]},
+      "required": ["event|submit|completed", "event|pay|planned"],
+      "forbidden": ["event|pay|completed"],
+      "reference_memories": ["The user submitted the permit application today.", "The user plans to pay the permit fee tomorrow."]
+    },
+    {
+      "id": "holdout_third_party_world_fact",
+      "critical": false,
+      "session": {"session_id": "h15", "date": "2026-06-15", "turns": [{"role": "user", "content": "My neighbor Nikhil keeps the spare building key."}]},
+      "required": ["entity|nikhil|person", "relation|keeps|nikhil|the spare building key|asserted"],
+      "forbidden": [],
+      "reference_memories": ["The user's neighbor Nikhil keeps the spare building key."]
+    },
+    {
+      "id": "holdout_assistant_echo_deduplication",
+      "critical": false,
+      "session": {"session_id": "h16", "date": "2026-06-16", "turns": [{"role": "user", "content": "I avoid peanuts because of an allergy."}, {"role": "assistant", "content": "Understood, you avoid peanuts because of your allergy."}]},
+      "required": ["relation|avoids|user|peanuts|asserted"],
+      "forbidden": [],
+      "reference_memories": ["The user avoids peanuts because of an allergy."]
+    },
+    {
+      "id": "holdout_generic_assistant_advice",
+      "critical": true,
+      "session": {"session_id": "h17", "date": "2026-06-17", "turns": [{"role": "assistant", "content": "Many people improve sleep by keeping a regular bedtime and limiting caffeine."}]},
+      "required": [],
+      "forbidden": ["event|limit_caffeine|completed", "relation|keeps|user|a regular bedtime|asserted"],
+      "reference_memories": []
+    },
+    {
+      "id": "holdout_content_free_exchange",
+      "critical": false,
+      "session": {"session_id": "h18", "date": "2026-06-18", "turns": [{"role": "user", "content": "Thanks, that makes sense!"}, {"role": "assistant", "content": "You're welcome."}]},
+      "required": [],
+      "forbidden": ["event|thank|completed"],
+      "reference_memories": []
+    },
+    {
+      "id": "holdout_tool_state",
+      "critical": false,
+      "session": {"session_id": "h19", "date": "2026-06-19", "turns": [{"role": "tool", "content": "Backup completed successfully at 03:15 UTC."}]},
+      "required": ["event|backup|completed"],
+      "forbidden": [],
+      "reference_memories": ["The backup completed successfully at 03:15 UTC."]
+    },
+    {
+      "id": "holdout_table_structure",
+      "critical": false,
+      "session": {"session_id": "h20", "date": "2026-06-20", "turns": [{"role": "assistant", "content": "| Room | Capacity |\n| --- | --- |\n| Cedar | 14 |"}]},
+      "required": ["table|cedar|capacity|14"],
+      "forbidden": [],
+      "reference_memories": []
+    },
+    {
+      "id": "holdout_ordered_list_structure",
+      "critical": false,
+      "session": {"session_id": "h21", "date": "2026-06-21", "turns": [{"role": "user", "content": "Emergency kit: 1. torch 2. batteries 3. whistle"}]},
+      "required": ["relation|includes_item|emergency kit|torch|asserted", "relation|includes_item|emergency kit|batteries|asserted", "relation|includes_item|emergency kit|whistle|asserted"],
+      "forbidden": [],
+      "reference_memories": []
+    },
+    {
+      "id": "holdout_local_coreference",
+      "critical": true,
+      "session": {"session_id": "h22", "date": "2026-06-22", "turns": [{"role": "user", "content": "I adopted a greyhound named Pixel. She sleeps beside my desk."}]},
+      "required": ["entity|pixel|object", "relation|sleeps_beside|pixel|my desk|asserted"],
+      "forbidden": [],
+      "reference_memories": ["The user adopted a greyhound named Pixel.", "Pixel sleeps beside the user's desk."]
+    },
+    {
+      "id": "holdout_explicit_occupation",
+      "critical": false,
+      "session": {"session_id": "h23", "date": "2026-06-23", "turns": [{"role": "user", "content": "Our electrician, Rosa Mendez, installed the new panel."}]},
+      "required": ["category|rosa mendez|electrician", "event|install|completed"],
+      "forbidden": [],
+      "reference_memories": ["Rosa Mendez is the user's electrician.", "Rosa Mendez installed the new panel."]
+    },
+    {
+      "id": "holdout_named_place_visit",
+      "critical": false,
+      "session": {"session_id": "h24", "date": "2026-06-24", "turns": [{"role": "user", "content": "Last winter I spent three days in Tallinn."}]},
+      "required": ["event|stay|completed"],
+      "forbidden": ["event|stay|planned"],
+      "reference_memories": ["The user spent three days in Tallinn last winter."]
+    },
+    {
+      "id": "holdout_negated_choice",
+      "critical": true,
+      "session": {"session_id": "h25", "date": "2026-06-25", "turns": [{"role": "user", "content": "I chose the oak finish; I did not choose walnut."}]},
+      "required": ["relation|chose|user|the oak finish|asserted", "relation|chose|user|walnut|negated"],
+      "forbidden": ["relation|chose|user|walnut|asserted"],
+      "reference_memories": ["The user chose the oak finish.", "The user did not choose walnut."]
+    },
+    {
+      "id": "holdout_current_value_update",
+      "critical": true,
+      "session": {"session_id": "h26", "date": "2026-06-26", "turns": [{"role": "user", "content": "My weekly tutoring load dropped from eight hours to five hours."}]},
+      "required": ["quantity|event|drop|5|hours"],
+      "forbidden": [],
+      "reference_memories": ["The user's weekly tutoring load dropped from eight hours to five hours."]
+    },
+    {
+      "id": "holdout_recurring_preference",
+      "critical": false,
+      "session": {"session_id": "h27", "date": "2026-06-27", "turns": [{"role": "user", "content": "When recipes offer both, I always choose metric measurements."}]},
+      "required": ["relation|prefers|user|metric measurements|asserted"],
+      "forbidden": [],
+      "reference_memories": ["The user prefers metric measurements in recipes."]
+    },
+    {
+      "id": "holdout_decision_not_completion",
+      "critical": true,
+      "session": {"session_id": "h28", "date": "2026-06-28", "turns": [{"role": "user", "content": "We decided to repaint the kitchen in September."}]},
+      "required": ["event|repaint|planned"],
+      "forbidden": ["event|repaint|completed"],
+      "reference_memories": ["The user decided to repaint the kitchen in September."]
+    },
+    {
+      "id": "holdout_recommendation_declined",
+      "critical": true,
+      "session": {"session_id": "h29", "date": "2026-06-29", "turns": [{"role": "assistant", "content": "I recommend switching the meeting to Friday."}, {"role": "user", "content": "No, I will keep it on Thursday."}]},
+      "required": ["event|switch_meeting|recommended", "relation|scheduled_for|meeting|thursday|asserted"],
+      "forbidden": ["event|switch_meeting|completed", "relation|scheduled_for|meeting|friday|asserted"],
+      "reference_memories": ["The assistant recommended switching the meeting to Friday.", "The user will keep the meeting on Thursday."]
+    },
+    {
+      "id": "holdout_multiturn_reference",
+      "critical": true,
+      "session": {"session_id": "h30", "date": "2026-06-30", "turns": [{"role": "user", "content": "The community garden is called Hazel Patch."}, {"role": "assistant", "content": "What are you growing there?"}, {"role": "user", "content": "I planted beans there on Sunday."}]},
+      "required": ["entity|hazel patch|place", "event|plant|completed"],
+      "forbidden": [],
+      "reference_memories": ["The community garden is called Hazel Patch.", "The user planted beans at Hazel Patch on Sunday."]
+    }
+  ]
+}
