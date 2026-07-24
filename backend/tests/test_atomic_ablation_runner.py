@@ -1,9 +1,73 @@
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 
 import scripts.backend.run_longmemeval_atomic_ablation as ablation
+
+
+def test_default_protocol_is_representative_and_full_haystack(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["run_longmemeval_atomic_ablation.py"])
+
+    args = ablation.parse_args()
+
+    assert args.selection_mode == "representative"
+    assert args.atomic_extraction_scope == "full-haystack"
+    assert args.diagnostic_reference_matcher is False
+
+
+def test_answer_blind_oracle_prompt_never_contains_reference_answer() -> None:
+    reference = {
+        "question": "What changed?",
+        "answer": "SECRET GOLD ANSWER",
+        "answer_session_ids": ["s1"],
+        "haystack_session_ids": ["s1"],
+        "haystack_dates": ["2026-01-01"],
+        "haystack_sessions": [
+            [{"role": "user", "content": "I now lead four engineers."}]
+        ],
+    }
+
+    prompt = ablation._evidence_label_prompt(reference)
+
+    assert "SECRET GOLD ANSWER" not in prompt
+    assert "answer-blind" in prompt
+    assert "I now lead four engineers." in prompt
+
+
+def test_extraction_scope_defaults_to_all_haystack_sessions() -> None:
+    reference = {"haystack_session_ids": ["s1", "s2", "s3"]}
+    retrieved = ["s2"]
+
+    assert ablation._extraction_session_ids(
+        SimpleNamespace(), reference, retrieved
+    ) == ["s1", "s2", "s3"]
+    assert ablation._extraction_session_ids(
+        SimpleNamespace(atomic_extraction_scope="retrieved-only"),
+        reference,
+        retrieved,
+    ) == ["s2"]
+
+
+def test_full_haystack_atomic_retrieval_can_add_raw_missed_sessions(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        ablation,
+        "retrieve_atomic_session_ids",
+        lambda _question, _facts, *, limit: ["s3"][:limit],
+    )
+
+    combined, recovered = ablation._atomic_retrieval_session_ids(
+        SimpleNamespace(atomic_extraction_scope="full-haystack"),
+        "Which doctor did I visit?",
+        [],
+        ["s1", "s2"],
+    )
+
+    assert combined == ["s1", "s2", "s3"]
+    assert recovered == ["s3"]
 
 
 def test_bounded_semantic_extraction_is_cached_and_reported(

@@ -17,6 +17,7 @@ from backend.app.core.atomic_memory import (
     materialize_progressive_counters,
     pack_atomic_facts,
     plan_atomic_query,
+    retrieve_atomic_session_ids,
     route_atomic_question,
     source_content_hash,
     validate_atomic_contract,
@@ -877,3 +878,19 @@ def test_entity_membership_normalizes_titles_and_explicit_roles_without_closure(
     assert plan_atomic_query(
         "How many physicians did I visit?"
     ).candidate_aliases == ["clinician", "doctor"]
+
+
+def test_atomic_session_retrieval_is_independent_of_raw_session_ranks() -> None:
+    doctor = _fact(object_text="The user visited doctor Lee.")
+    unrelated = _fact(fact_id="f2", object_text="The user bought a blue lamp.")
+    unrelated.citation = unrelated.citation.model_copy(
+        update={"session_id": "unrelated-session"}
+    )
+
+    selected = retrieve_atomic_session_ids(
+        "Which doctor did the user visit?",
+        [unrelated, doctor],
+        limit=1,
+    )
+
+    assert selected == ["s1"]
