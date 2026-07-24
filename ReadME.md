@@ -248,16 +248,19 @@ Invoke-RestMethod -Uri http://127.0.0.1:7343/health
 
 ## Benchmarks
 
-Vault is evaluated on two public conversational-memory benchmarks. LongMemEval tests memory across long, multi-session histories; LoCoMo tests evidence retrieval and question answering over extended conversations. Odin is not involved in these runs, so the results below measure Vault's memory and context pipeline.
+Vault is evaluated on three public suites. LongMemEval tests memory across long, multi-session histories; LoCoMo tests evidence retrieval and question answering over extended conversations; and Open RAG Bench tests retrieval and grounded QA over scientific documents containing text, images, and tables. Odin is not involved in these runs, so the results below measure Vault's retrieval, evidence-packing, and answer pipeline.
 
 ### Latest headline results
 
 | Benchmark and configuration | Questions | Retrieval | Kimi K2.6 | GPT-5.4 judge | Reader prompt tokens/query | Evaluation cost |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Open RAG Bench, frozen QA prefix pilot | 500 | 0.9380 section Hit@10 | **83.8%** | **73.6%** | **2,672.1** | **$1.9102** |
 | LongMemEval-S, claim-first 10K | 500 | 0.9802 recall@10 | 81.8% | 82.0% | **8,307.1** | **$4.5111** |
 | LoCoMo, ColBERT | 1,540 | **0.7606 recall@10** | **66.75%** | **63.96%** | **650.4** | **$1.7388** |
 
 The claim-first LongMemEval pipeline is Vault's recommended measured configuration. Compared with the previous full-context baseline, it reduced reader prompts by **75.08%**, evaluation cost by **66.39%**, and mean reader latency by **60.68%**. All 500 questions remained within the 10,000-token packed-prompt budget. Historical configurations and their accuracy-efficiency tradeoffs remain documented in the [full benchmark report](BENCHMARK.md).
+
+On all **3,045 Open RAG Bench queries**, Vault reached **64.04% section Hit@1**, **90.11% Hit@5**, **94.84% Hit@10**, and **99.61% document Hit@10**, with **1.060 seconds mean retrieval latency**. The paid QA gate intentionally stopped after the frozen first 500 questions: Kimi accepted 83.8% of answers, GPT-5.4 accepted 73.6%, judge agreement was 86.2%, and the reader used 2,672.1 prompt tokens per question. The lower token count is a useful result for this document-QA workload, but it is not a direct improvement over LongMemEval's 8,307.1 because the datasets and context shapes differ.
 
 ### What that means in a working day
 
@@ -273,7 +276,7 @@ On LoCoMo, the full ColBERT retrieval pass improved recall@10 from 0.6295 to 0.7
 
 ### Cost and comparison boundary
 
-Vault's ingestion used local embeddings and consumed **zero billable API ingestion tokens**. The costs above cover answer generation and two judges, not ordinary local retrieval. They are estimates from recorded provider usage and the prices verified when the runs were completed.
+Vault's ingestion used local embeddings and consumed **zero billable API ingestion tokens**. The costs above cover answer generation and two judges, not ordinary local retrieval. They are estimates from recorded provider usage and the prices verified when the runs were completed. Open RAG's $1.9102 is the sum of its recorded reader and judge component estimates; a stale aggregate field in that artifact incorrectly remained zero and is not used.
 
 Published systems currently report higher LongMemEval answer accuracy, but the results are not a shared leaderboard: readers, judges, context accounting, reasoning settings, and retrieval limits differ.
 
@@ -285,7 +288,7 @@ Published systems currently report higher LongMemEval answer accuracy, but the r
 | **Vault claim-first 10K** | **82.0% independent judge on 500 questions** | **8,307 mean complete reader-prompt tokens** |
 | [Graphify](https://github.com/Graphify-Labs/graphify#benchmarks) | 76% on 50 questions | Not published |
 
-Vault is not yet state of the art in multi-session answer accuracy. Its measured advantages are local-first ingestion with no extraction-API bill, a reproducible dual-judge protocol, bounded and inspectable evidence packets, and one workspace for conversational, document, and Odin project context.
+Vault is not yet state of the art in multi-session answer accuracy. Its measured advantages are local-first ingestion with no extraction-API bill, a reproducible dual-judge protocol, bounded and inspectable evidence packets, strong document-level retrieval on an external scientific corpus, and one workspace for conversational, document, and Odin project context. Open RAG's first-500 QA result is a deterministic prefix pilot rather than a random sample or completed 3,045-question QA run.
 
 Read [Benchmark methodology and full analysis](BENCHMARK.md) for historical baselines, category results, token and cost accounting, confidence information, rejected experiments, retrieval variants, competitive caveats, and artifact locations.
 

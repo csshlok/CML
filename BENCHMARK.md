@@ -37,6 +37,7 @@ This report covers retrieval, answer quality, token use, API cost, latency, inge
 | --- | --- | ---: | --- |
 | **LongMemEval-S** | Official cleaned set | 500 | Long-history recall, knowledge updates, temporal reasoning, and multi-session synthesis |
 | **LoCoMo** | Standard categories 1-4 | 1,540 | Conversational recall, event ordering, open-domain knowledge, and evidence-sensitive QA |
+| **Open RAG Bench** | Full sorted corpus retrieval; frozen first-500 QA gate | 3,045 retrieval / 500 QA | Scientific-document retrieval and grounded QA across text, image, and table evidence |
 
 Each suite follows the same high-level path, while preserving its official dataset structure and scoring rules:
 
@@ -48,9 +49,12 @@ Local ingest  ->  Retrieve candidates  ->  Pack bounded evidence  ->  Generate a
 
 | Benchmark and configuration | Questions | Retrieval | Kimi K2.6 | GPT-5.4 judge | Reader prompt tokens/query | Evaluation cost |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Open RAG Bench, frozen QA prefix pilot | 500 | 0.9380 section Hit@10 | **83.8%** | **73.6%** | **2,672.1** | **$1.9102** |
 | LongMemEval-S, typed-v1 (historical full-context baseline) | 500 | 0.9802 recall@10 | **83.8%** | **83.2%** | 33,331.9 | $13.4211 |
 | LongMemEval-S, claim-first 10K | 500 | 0.9802 recall@10 | 81.8% | 82.0% | **8,307.1** | **$4.5111** |
 | LoCoMo, ColBERT | 1,540 | **0.7606 recall@10** | **66.75%** | **63.96%** | **650.4** | **$1.7388** |
+
+The Open RAG result adds an external general-document workload. On the complete 3,045-question retrieval run, Vault reached 0.9484 section Hit@10 and 0.9961 document Hit@10. Paid QA then stopped at its frozen first-500 gate: Kimi accepted 83.8%, GPT-5.4 accepted 73.6%, and the reader used 2,672.1 prompt tokens/query. This is not a completed full-corpus QA score.
 
 The two LongMemEval rows expose the principal product tradeoff. Typed-v1 is retained as a historical full-context baseline, not as the recommended current configuration. It produced the highest measured Kimi-judged accuracy, while claim-first v2 retained nearly all of that answer quality and cut mean reader prompts by 75.08%, cache-adjusted evaluation cost by 66.39%, and mean reader latency by 60.68%.
 
@@ -103,6 +107,7 @@ xychart-beta
 - **Evaluation cost** includes the reader and both judges using recorded usage. Where provider caching was reported, the table uses the cache-adjusted estimate.
 - Local retrieval and local embedding do not create billable API tokens. CPU, memory, disk, and elapsed time remain real costs.
 - Different products' published results are not directly interchangeable because readers, judges, reasoning settings, context accounting, and retrieval cutoffs differ.
+- Token/query values from different suites are workload measurements, not direct optimization comparisons. Open RAG's 2,672.1 prompt tokens/query must not be substituted for LongMemEval's 8,307.1.
 
 ## Evaluation protocol
 
@@ -345,6 +350,52 @@ Zero billable tokens does not mean zero cost. Vault exchanged ingestion API spen
 The tokenizer-aware chunking projection reduced raw chunk tokens from 89,622,132 to 62,044,014, a 30.8% reduction, while eliminating chunks above the new 240-token target. It projected 269,270 chunks, 2.0% fewer than the original index. This projection validates coverage and index economics; it is not a new answer-accuracy score until the full index is rebuilt and evaluated.
 
 ---
+
+## Open RAG Bench
+
+Open RAG Bench is the first full external document-retrieval corpus in the current report. The frozen dataset revision was `63f6b052ff83508b08e242db42263ee708815c26`.
+
+### Full retrieval result
+
+| Metric | Result |
+| --- | ---: |
+| Questions | 3,045 |
+| Section Hit@1 | 0.640394 |
+| Section Hit@5 | 0.901149 |
+| Section Hit@10 | **0.948440** |
+| Section MRR@10 | 0.750298 |
+| Section NDCG@10 | 0.798876 |
+| Document Hit@1 | 0.939573 |
+| Document Hit@5 | 0.991461 |
+| Document Hit@10 | **0.996059** |
+| Mean query latency | 1.0597 s |
+| P95 query latency | 1.0648 s |
+
+Section Hit@10 was 0.975444 on text questions, 0.899083 on text-image questions, 0.912162 on text-table questions, and 0.909091 on text-table-image questions. The retrieval system usually found the correct document, but multimodal section selection remained materially harder than plain text.
+
+### Frozen 500-question paid QA gate
+
+The paid run used the first 500 questions from the same deterministic sorted order so its results can be reused if the remaining 2,545 questions are later authorized. It was a cost-control gate, not a random sample.
+
+| Measure | Result |
+| --- | ---: |
+| Kimi primary judge | **419/500 (83.8%)** |
+| GPT-5.4 independent judge | **368/500 (73.6%)** |
+| Judge agreement | 86.2% |
+| Cohen's kappa | 0.5947 |
+| Mean token F1 | 0.310842 |
+| Reader input tokens | 1,336,031 |
+| Reader completion tokens | 80,768 |
+| Reader prompt tokens/query | **2,672.1** |
+| Reader total tokens/query | 2,833.6 |
+| Reader plus both judges, total tokens/query | 3,357.6 |
+| Recorded reader and dual-judge component cost | **$1.9102** |
+
+The primary-judge Wilson interval was 80.31%-86.77%; the independent-judge interval was 69.57%-77.27%. Text QA was strongest at 90.65% Kimi / 83.49% GPT. Text-image fell to 72.65% / 53.85%, text-table to 67.86% / 50.00%, and text-table-image to 70.59% / 67.65%. When the annotated section was retrieved, scores were 85.71% / 75.05%; when it was missed, they fell to 54.84% / 51.61%.
+
+The 2,672.1 prompt-token figure is numerically lower than LongMemEval claim-first's 8,307.1, but it measures a different dataset and packet shape. It is therefore reported as Vault's measured Open RAG document-QA packet size, not a 67.8% cross-benchmark optimization claim.
+
+The $1.9102 figure is the sum of the artifact's recorded component estimates: $1.428372 reader, $0.130869 Kimi judge, and $0.350985 GPT judge. A legacy aggregate field incorrectly remained zero; zero is not a valid cost claim.
 
 ## LoCoMo
 
@@ -682,15 +733,22 @@ Benchmark data and checkpoints remain local because they are large and may conta
 - Rejected broad temporal-path run: `.tmp/vault-odin-memory-benchmark/locomo-production-temporal-v2-full1540.json`
 - Frozen activation-only correction: `.tmp/vault-odin-memory-benchmark/locomo-temporal-paired-v3.json`
 
+### Open RAG Bench
+
+- Full 3,045-question retrieval: `.tmp/open-rag-bench/full-qa-v1/retrieval-full.json`
+- Frozen 500-question reader and dual-judge gate: `.tmp/open-rag-bench/full-qa-v1/qa-full.json`
+
 ## Current conclusions
 
-1. LongMemEval retrieval is no longer the main bottleneck; evidence shaping and synthesis are.
-2. LoCoMo remains retrieval-sensitive, and late interaction produced the largest measured improvement.
-3. Smaller prompts are achievable without collapsing answer quality, but compression must protect preference and multi-session evidence.
-4. Local ingestion eliminates billable extraction and embedding API tokens, while shifting cost to local compute and storage.
-5. Prompt-only complexity has diminishing returns. Typed evidence and deterministic reducers are more promising for dates, counts, updates, and provenance.
-6. ColBERT warrants a compressed production proof of concept, not direct activation of the exact in-memory prototype.
-7. Competitive claims should remain qualified until readers, judges, context accounting, and question manifests are matched end to end.
+1. Open RAG proves strong document discovery on a new external corpus: 94.84% section Hit@10 and 99.61% document Hit@10 across all 3,045 queries.
+2. Open RAG's multimodal QA and 10.2-point Kimi/GPT judge gap require further diagnosis; the 500-question prefix must not be presented as full-corpus QA.
+3. LongMemEval retrieval is no longer the main bottleneck; evidence shaping and synthesis are.
+4. LoCoMo remains retrieval-sensitive, and late interaction produced the largest measured improvement.
+5. Smaller prompts are achievable without collapsing answer quality, but compression must protect preference and multi-session evidence.
+6. Local ingestion eliminates billable extraction and embedding API tokens, while shifting cost to local compute and storage.
+7. Prompt-only complexity has diminishing returns. Typed evidence and deterministic reducers are more promising for dates, counts, updates, and provenance.
+8. ColBERT warrants a compressed production proof of concept, not direct activation of the exact in-memory prototype.
+9. Competitive claims should remain qualified until readers, judges, context accounting, and question manifests are matched end to end.
 
 ---
 
