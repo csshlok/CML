@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 45.0
     llm_context_token_budget: int = 1200
     atomic_semantic_enrichment_enabled: bool = False
+    atomic_semantic_extractor_contract: str = "v1"
+    atomic_extractor_model: str = "Qwen/Qwen3-4B-GGUF:Q4_K_M"
+    atomic_v2_retrieval_enabled: bool = False
     atomic_semantic_timeout_seconds: float = 180.0
     atomic_semantic_max_output_tokens: int = 1200
     atomic_semantic_max_source_chars: int = 1000

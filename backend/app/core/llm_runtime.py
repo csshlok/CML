@@ -130,6 +130,7 @@ def generate_local_structured_json(
     *,
     system_prompt: str,
     user_prompt: str,
+    model: str | None = None,
     max_tokens: int | None = None,
     json_schema: dict[str, Any] | None = None,
 ) -> LLMResult:
@@ -139,8 +140,9 @@ def generate_local_structured_json(
         raise LLMRuntimeError(
             "Structured ingestion requires a configured loopback-only local model runtime."
         )
+    selected_model = str(model or settings.llm_model)
     payload = {
-        "model": settings.llm_model,
+        "model": selected_model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -170,7 +172,7 @@ def generate_local_structured_json(
         raise LLMRuntimeError("Local model returned an unexpected JSON response.") from exc
     if not text:
         raise LLMRuntimeError("Local model returned an empty JSON response.")
-    return LLMResult(text=text, provider=settings.llm_provider, model=settings.llm_model)
+    return LLMResult(text=text, provider=settings.llm_provider, model=selected_model)
 
 
 def stream_grounded_answer(
