@@ -10,6 +10,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 import json
 import shutil
+import string
 import threading
 
 from backend.app.core.config import get_settings
@@ -146,6 +147,7 @@ _cancelled_downloads: set[str] = set()
 _MODEL_DISCOVERY_CACHE_LOCK = threading.Lock()
 _MODEL_DISCOVERY_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 MODEL_SCAN_SKIP_DIRS = {
+    "$recycle.bin",
     ".git",
     ".hg",
     ".svn",
@@ -153,9 +155,13 @@ MODEL_SCAN_SKIP_DIRS = {
     "__pycache__",
     "blobs",
     "node_modules",
+    "program files",
+    "program files (x86)",
     "refs",
     "tmp",
+    "system volume information",
     "venv",
+    "windows",
 }
 MODEL_CONFIG_FILES = ("config.json", "tokenizer_config.json", "tokenizer.json")
 
@@ -804,6 +810,8 @@ def installed_model_scan_roots() -> list[Path]:
         appdata / "LM Studio" / "models",
     ]
     roots.extend(path for path in defaults if str(path))
+    if not explicit.strip():
+        roots.extend(_available_drive_roots())
     unique: list[Path] = []
     seen: set[str] = set()
     for root in roots:
@@ -813,6 +821,17 @@ def installed_model_scan_roots() -> list[Path]:
         seen.add(normalized)
         unique.append(root)
     return unique
+
+
+def _available_drive_roots() -> list[Path]:
+    """Return every mounted Windows drive so discovery is not limited to C:."""
+    if os.name != "nt":
+        return []
+    return [
+        Path(f"{letter}:/")
+        for letter in string.ascii_uppercase
+        if os.path.exists(f"{letter}:/")
+    ]
 
 
 def _download_root_for_target(target_dir: str | None) -> Path:
@@ -990,7 +1009,11 @@ def _download_model(model: LocalModel, target_root: Path | None = None) -> None:
         file_name = _resolve_gguf_filename(model)
         _raise_if_cancelled(model.id)
         safe_file_name = _safe_model_file_name(file_name)
-        url = f"https://huggingface.co/{model.hf_repo}/resolve/main/{quote(file_name, safe='')}"
+        revision = _trusted_manifest_revision(model) or "main"
+        url = (
+            f"https://huggingface.co/{model.hf_repo}/resolve/"
+            f"{quote(revision, safe='')}/{quote(file_name, safe='')}"
+        )
         validate_huggingface_url(url)
         target_dir = (target_root or models_dir()) / model.id
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -1245,6 +1268,11 @@ def _trusted_manifest_file_name(model: LocalModel) -> str:
     if not file_name:
         return ""
     return _safe_model_file_name(file_name)
+
+
+def _trusted_manifest_revision(model: LocalModel) -> str:
+    revision = str(_trusted_manifest_model_entry(model).get("repo_commit") or "").strip()
+    return revision if re.fullmatch(r"[0-9a-f]{40}", revision, flags=re.IGNORECASE) else ""
 
 
 def _trusted_manifest_model_entry(model: LocalModel) -> dict[str, Any]:
