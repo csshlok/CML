@@ -66,6 +66,7 @@ function Onboarding() {
   const navigate = useNavigate();
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
   const shellRef = useRef<HTMLElement | null>(null);
+  const embeddingPollFailuresRef = useRef(0);
   const [mounted, setMounted] = useState(false);
 
   const [step, setStep] = useState<Step>(0);
@@ -334,14 +335,28 @@ function Onboarding() {
 
   async function refreshEmbeddingStatus() {
     try {
-      const status = await getEmbeddingRuntimeStatus();
       const downloadStatus = await getEmbeddingDownloadStatus();
-      setEmbeddingRuntime(status);
       setEmbeddingDownload(downloadStatus);
+      embeddingPollFailuresRef.current = 0;
+      setError((current) =>
+        current?.includes("local service is unavailable") ||
+        current?.includes("Memory search status is reconnecting")
+          ? null
+          : current,
+      );
+      if (downloadStatus.status === "queued" || downloadStatus.status === "downloading") {
+        return;
+      }
+      const status = await getEmbeddingRuntimeStatus();
+      setEmbeddingRuntime(status);
       if (status.available) setMessage("Memory search is ready.");
     } catch (err) {
-      setEmbeddingRuntime(null);
-      setError(err instanceof Error ? err.message : "Could not check memory search.");
+      embeddingPollFailuresRef.current += 1;
+      if (embeddingPollFailuresRef.current >= 3) {
+        setError(
+          "Memory search status is reconnecting. An active download will continue while Vault reconnects.",
+        );
+      }
     }
   }
 
@@ -494,6 +509,7 @@ function Onboarding() {
       setEmbeddingDownload(
         await startEmbeddingDownload({
           cache_dir: embeddingCacheDir.trim() || null,
+          model: recommendedEmbeddingModel.id,
         }),
       );
       setMessage(
@@ -954,8 +970,7 @@ function Onboarding() {
                           It does not write chat answers.
                         </p>
                         <div className="mt-2 text-xs text-muted-foreground">
-                          Downloaded from {recommendedEmbeddingModel.source} after you review and
-                          approve it.
+                          Public Apache 2.0 model. No Hugging Face account or token is required.
                         </div>
                       </div>
                     )}
@@ -1223,7 +1238,8 @@ function Onboarding() {
             >
               Vault will download this model from {recommendedEmbeddingModel.source} and save it
               on this device. It creates numeric representations of your library so memory search
-              can find related text. It is not used to generate chat replies.
+              can find related text. It is not used to generate chat replies. The download is
+              anonymous; Vault does not send or request a Hugging Face account token.
             </p>
             <dl className="mt-4 space-y-3 rounded-md border border-border bg-background p-4 text-sm">
               <div>

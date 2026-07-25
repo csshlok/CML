@@ -490,7 +490,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         from backend.app.core.embeddings import cancel_embedding_model_download, start_embedding_model_download
 
         with patch("threading.Thread.start", return_value=None):
-            queued = start_embedding_model_download(str(self.data_dir / "embeddings"), "sentence-transformers/test-model")
+            queued = start_embedding_model_download(str(self.data_dir / "embeddings"))
         cancelled = cancel_embedding_model_download()
 
         self.assertIn(queued["status"], {"queued", "downloading"})
@@ -813,7 +813,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         from backend.app.core.embeddings import embedding_download_status, start_embedding_model_download
 
         with patch("threading.Thread.start", return_value=None):
-            state = start_embedding_model_download(str(self.data_dir / "embeddings"), "sentence-transformers/test-model")
+            state = start_embedding_model_download(str(self.data_dir / "embeddings"))
         current = embedding_download_status()
 
         self.assertIn("bytes_downloaded", state)

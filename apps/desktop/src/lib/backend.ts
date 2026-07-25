@@ -2189,6 +2189,7 @@ export async function configureEmbeddingRuntime(payload: {
   return request<EmbeddingRuntimeStatus>("/api/v1/models/embeddings/configure", {
     method: "POST",
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(120_000),
   });
 }
 
@@ -2472,7 +2473,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       signal: init?.signal ?? AbortSignal.timeout(12_000),
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (
+      error instanceof DOMException &&
+      (error.name === "AbortError" || error.name === "TimeoutError")
+    ) {
       throw new Error("Vault took too long to respond. Try again.");
     }
     throw new Error("Vault's local service is unavailable. Open Health to reconnect.");

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.embeddings import (
+    MANAGED_EMBEDDING_MODELS,
     cancel_embedding_model_download,
     configure_embedding_runtime,
     embedding_download_status,
@@ -135,7 +136,18 @@ def get_embedding_download_status() -> dict:
 
 @router.post("/embeddings/download", response_model=EmbeddingModelDownloadState)
 def download_embedding_model(payload: EmbeddingModelDownloadRequest) -> dict:
-    return start_embedding_model_download(payload.cache_dir, payload.model)
+    if payload.model and payload.model not in MANAGED_EMBEDDING_MODELS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Vault only downloads its curated public memory-search model. "
+                "Use an existing local folder for other embedding models."
+            ),
+        )
+    try:
+        return start_embedding_model_download(payload.cache_dir, payload.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/embeddings/download/cancel", response_model=EmbeddingModelDownloadState)

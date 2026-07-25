@@ -4,6 +4,7 @@ import json
 import math
 import re
 import ast
+from fnmatch import fnmatch
 import threading
 import time
 from pathlib import Path
@@ -26,6 +27,19 @@ CHUNK_OVERLAP_WORDS = 40
 EMBEDDING_TARGET_TOKENS = 240
 EMBEDDING_TOKEN_OVERLAP = 24
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+MANAGED_EMBEDDING_MODELS = frozenset({DEFAULT_EMBEDDING_MODEL})
+MINILM_DOWNLOAD_PATTERNS = (
+    "1_Pooling/config.json",
+    "config.json",
+    "config_sentence_transformers.json",
+    "model.safetensors",
+    "modules.json",
+    "sentence_bert_config.json",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.txt",
+)
 
 TOKEN_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{1,}")
 
@@ -97,12 +111,22 @@ def embedding_download_status() -> dict:
 
 def start_embedding_model_download(cache_dir: str | None = None, model: str | None = None) -> dict:
     target_model = (model or get_settings().embedding_model or DEFAULT_EMBEDDING_MODEL).strip()
+    if target_model not in MANAGED_EMBEDDING_MODELS:
+        raise ValueError(
+            "Vault can only download its curated public memory-search model. "
+            "Import other embedding models from an existing local folder."
+        )
     target_dir = Path(cache_dir).expanduser() if cache_dir and cache_dir.strip() else (
         get_settings().data_dir / "models" / "embeddings"
     )
+    model_dir = target_dir / target_model.rsplit("/", 1)[-1]
     with _EMBEDDING_DOWNLOAD_LOCK:
         global _EMBEDDING_DOWNLOAD_THREAD
-        if _EMBEDDING_DOWNLOAD_STATE["status"] in {"queued", "downloading"}:
+        if (
+            _EMBEDDING_DOWNLOAD_STATE["status"] in {"queued", "downloading"}
+            and _EMBEDDING_DOWNLOAD_THREAD is not None
+            and _EMBEDDING_DOWNLOAD_THREAD.is_alive()
+        ):
             return dict(_EMBEDDING_DOWNLOAD_STATE)
         _EMBEDDING_DOWNLOAD_STATE.update(
             {
@@ -115,7 +139,7 @@ def start_embedding_model_download(cache_dir: str | None = None, model: str | No
                 "download_speed_bps": None,
                 "eta_seconds": None,
                 "file_name": target_model,
-                "local_path": str(target_dir),
+                "local_path": str(model_dir),
                 "error": None,
                 "started_at": utc_now(),
                 "updated_at": utc_now(),
@@ -123,7 +147,7 @@ def start_embedding_model_download(cache_dir: str | None = None, model: str | No
         )
         _EMBEDDING_DOWNLOAD_THREAD = threading.Thread(
             target=_download_embedding_model,
-            args=(target_model, target_dir),
+            args=(target_model, model_dir),
             daemon=True,
             name="cml-embedding-download",
         )
@@ -140,7 +164,7 @@ def cancel_embedding_model_download() -> dict:
         return _normalized_download_state(_EMBEDDING_DOWNLOAD_STATE)
 
 
-def _download_embedding_model(model: str, cache_dir: Path) -> None:
+def _download_embedding_model(model: str, model_dir: Path) -> None:
     with _EMBEDDING_DOWNLOAD_LOCK:
         if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelled":
             return
@@ -149,21 +173,51 @@ def _download_embedding_model(model: str, cache_dir: Path) -> None:
     try:
         if importlib.util.find_spec("sentence_transformers") is None:
             raise RuntimeError("SentenceTransformers is not installed in this Python runtime.")
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        _update_embedding_download_progress(
-            bytes_downloaded=_directory_size(cache_dir),
-            bytes_total=None,
-            started_monotonic=time.monotonic(),
-        )
-        from sentence_transformers import SentenceTransformer
+        model_dir.mkdir(parents=True, exist_ok=True)
+        from huggingface_hub import HfApi, snapshot_download
 
-        SentenceTransformer(model, cache_folder=str(cache_dir))
+        api = HfApi(token=False, library_name="vault-desktop")
+        info = api.model_info(model, files_metadata=True, token=False)
+        expected_size = sum(
+            int(sibling.size or 0)
+            for sibling in info.siblings
+            if any(fnmatch(sibling.rfilename, pattern) for pattern in MINILM_DOWNLOAD_PATTERNS)
+        ) or None
+        started_monotonic = time.monotonic()
+        _update_embedding_download_progress(
+            bytes_downloaded=_directory_size(model_dir),
+            bytes_total=expected_size,
+            started_monotonic=started_monotonic,
+        )
+
+        monitor_stop = threading.Event()
+        monitor = threading.Thread(
+            target=_monitor_embedding_download,
+            args=(model_dir, expected_size, started_monotonic, monitor_stop),
+            daemon=True,
+            name="cml-embedding-download-progress",
+        )
+        monitor.start()
+        try:
+            snapshot_path = snapshot_download(
+                repo_id=model,
+                local_dir=model_dir,
+                allow_patterns=list(MINILM_DOWNLOAD_PATTERNS),
+                token=False,
+                max_workers=4,
+            )
+        finally:
+            monitor_stop.set()
+            monitor.join(timeout=2)
         with _EMBEDDING_DOWNLOAD_LOCK:
             if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelled":
                 return
-        configure_embedding_runtime("sentence-transformers", str(cache_dir), model)
+        from sentence_transformers import SentenceTransformer
+
+        SentenceTransformer(snapshot_path, local_files_only=True)
+        configure_embedding_runtime("sentence-transformers", snapshot_path, model)
         with _EMBEDDING_DOWNLOAD_LOCK:
-            installed_size = _directory_size(cache_dir)
+            installed_size = _directory_size(model_dir)
             _EMBEDDING_DOWNLOAD_STATE.update(
                 {
                     "status": "installed",
@@ -181,7 +235,53 @@ def _download_embedding_model(model: str, cache_dir: Path) -> None:
         with _EMBEDDING_DOWNLOAD_LOCK:
             if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelled":
                 return
-            _EMBEDDING_DOWNLOAD_STATE.update({"status": "failed", "error": str(exc), "updated_at": utc_now()})
+            _EMBEDDING_DOWNLOAD_STATE.update(
+                {
+                    "status": "failed",
+                    "error": _friendly_embedding_download_error(exc),
+                    "updated_at": utc_now(),
+                }
+            )
+
+
+def _monitor_embedding_download(
+    model_dir: Path,
+    expected_size: int | None,
+    started_monotonic: float,
+    stop: threading.Event,
+) -> None:
+    while not stop.wait(0.25):
+        with _EMBEDDING_DOWNLOAD_LOCK:
+            if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelled":
+                return
+        _update_embedding_download_progress(
+            bytes_downloaded=_directory_size(model_dir),
+            bytes_total=expected_size,
+            started_monotonic=started_monotonic,
+        )
+
+
+def _friendly_embedding_download_error(exc: Exception) -> str:
+    try:
+        from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
+    except ImportError:
+        return str(exc)
+    if isinstance(exc, GatedRepoError):
+        return (
+            "This Hugging Face model requires an account or approval. "
+            "Vault onboarding only supports public models that need no account."
+        )
+    if isinstance(exc, RepositoryNotFoundError):
+        return "Vault could not find the approved public memory-search model on Hugging Face."
+    if isinstance(exc, HfHubHTTPError):
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in {401, 403}:
+            return (
+                "Hugging Face requested authentication for this model. "
+                "Vault did not send credentials and stopped the download."
+            )
+        return "Hugging Face could not complete the model download. Check your connection and try again."
+    return str(exc)
 
 
 def _update_embedding_download_progress(
