@@ -28,6 +28,7 @@ import {
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 import { Button } from "@/components/ui/button";
 import { ConfirmAction } from "@/components/product/Feedback";
+import { notify } from "@/components/product/Notifications";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -45,6 +46,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Bookmark,
+  MoreHorizontal,
   MessageSquare,
   Paperclip,
   Quote,
@@ -140,6 +142,11 @@ function ChatView() {
   }, [backendMessages.length, streamText]);
 
   useEffect(() => {
+    if (!lastError) return;
+    notify({ title: "Chat needs attention", description: lastError, tone: "error" });
+  }, [lastError]);
+
+  useEffect(() => {
     void loadBackendContext();
     return () => {
       abortControllerRef.current?.abort();
@@ -183,11 +190,7 @@ function ChatView() {
   }, [chatId, loadingSession, streaming]);
 
   if (loadingSession && !backendSession) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        Loading chat...
-      </div>
-    );
+    return <ChatLoadingSkeleton />;
   }
 
   if (!backendSession) {
@@ -207,6 +210,13 @@ function ChatView() {
   const projectId = backendSession.scope_project_id ?? null;
   const scopeClusterId = backendSession.scope_cluster_id ?? null;
   const saved = backendSession.saved;
+  const chatStatus = !backendReady
+    ? { label: "Library unavailable", tone: "var(--status-error)", settings: false }
+    : runtime && !runtime.available
+      ? { label: "Chat model needs setup", tone: "var(--status-warn)", settings: true }
+      : memoryState === "indexing"
+        ? { label: "Saving conversation memory", tone: "var(--status-info)", settings: false }
+        : { label: "Ready", tone: "var(--status-ready)", settings: false };
 
   const scope = scopeClusterId
     ? (activeClusters.find((c) => c.id === scopeClusterId) ?? null)
@@ -630,24 +640,36 @@ function ChatView() {
               </Button>
             )}
             {lastUserPrompt && !streaming && (
-              <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-1"
-                  onClick={() => void send(lastUserPrompt, [], "expanded")}
-                >
-                  Expanded analysis
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-1"
-                  onClick={() => void send(lastUserPrompt, [], "complete")}
-                >
-                  Complete analysis
-                </Button>
-              </>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="ghost" size="sm" className="gap-1" aria-label="More analysis options">
+                    <MoreHorizontal className="h-4 w-4" />
+                    Analyze again
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-72 p-2">
+                  <button
+                    type="button"
+                    className="w-full rounded-md px-3 py-2 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() => void send(lastUserPrompt, [], "expanded")}
+                  >
+                    <span className="block text-sm font-medium">Expanded analysis</span>
+                    <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
+                      Search a wider set of likely relevant sources.
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="mt-1 w-full rounded-md px-3 py-2 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() => void send(lastUserPrompt, [], "complete")}
+                  >
+                    <span className="block text-sm font-medium">Complete analysis</span>
+                    <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
+                      Review every eligible source. This can take longer.
+                    </span>
+                  </button>
+                </PopoverContent>
+              </Popover>
             )}
             {streaming && (
               <Button variant="outline" size="sm" className="gap-1" onClick={stopStreaming}>
@@ -670,17 +692,14 @@ function ChatView() {
                 Delete
               </Button>
             </ConfirmAction>
-            <span className="break-words rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-              {backendReady ? "Library sources" : "Library unavailable"}
+            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className="h-2 w-2 rounded-full" style={{ background: chatStatus.tone }} />
+              {chatStatus.settings ? (
+                <Link to="/settings" search={{ section: "models" }} className="hover:text-foreground hover:underline">
+                  {chatStatus.label}
+                </Link>
+              ) : chatStatus.label}
             </span>
-            <span className="break-words rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-              {runtime?.available ? `Local model ${runtime.state ?? "ready"}` : "Local model unavailable"}
-            </span>
-            {backendSession && (
-              <span className="break-words rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-                Memory {memoryLabel(memoryState)}
-              </span>
-            )}
           </div>
         </header>
 
@@ -726,9 +745,12 @@ function ChatView() {
                   />
                 ))}
                 {streaming && (
-                  <div className="rounded-md border border-border bg-card p-4">
+                  <div className="rounded-md bg-primary/5 p-4 ring-1 ring-primary/25" aria-live="polite">
                     {streamStatus && (
-                      <div className="mb-2 break-words text-xs text-muted-foreground">{streamStatus}</div>
+                      <div className="mb-2 flex items-center gap-2 break-words text-xs text-muted-foreground">
+                        <span className="h-2 w-2 animate-pulse rounded-full bg-primary motion-reduce:animate-none" />
+                        {streamStatus}
+                      </div>
                     )}
                     <p className="whitespace-pre-wrap text-sm leading-relaxed">
                       {streamText}
@@ -833,6 +855,35 @@ function ChatView() {
             Ctrl/Cmd Enter to send / {scope ? scope.name : "all vault context"} / {latestAnalysisLabel.toLowerCase()} / memory{" "}
             {memoryLabel(memoryState)}
           </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChatLoadingSkeleton() {
+  return (
+    <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] overflow-hidden" aria-label="Loading chat">
+      <aside className="border-r border-border bg-card/30 p-4">
+        <div className="h-8 w-28 animate-pulse rounded-md bg-muted motion-reduce:animate-none" />
+        <div className="mt-5 space-y-3">
+          {[72, 88, 64, 80].map((width) => (
+            <div
+              key={width}
+              className="h-5 animate-pulse rounded bg-muted motion-reduce:animate-none"
+              style={{ width: `${width}%` }}
+            />
+          ))}
+        </div>
+      </aside>
+      <div className="min-w-0">
+        <div className="flex h-14 items-center border-b border-border px-6">
+          <div className="h-5 w-48 animate-pulse rounded bg-muted motion-reduce:animate-none" />
+        </div>
+        <div className="mx-auto max-w-3xl space-y-6 px-6 py-8">
+          <div className="ml-auto h-16 w-2/3 animate-pulse rounded-md bg-muted motion-reduce:animate-none" />
+          <div className="h-32 w-full animate-pulse rounded-md bg-muted motion-reduce:animate-none" />
+          <div className="ml-auto h-12 w-1/2 animate-pulse rounded-md bg-muted motion-reduce:animate-none" />
         </div>
       </div>
     </div>

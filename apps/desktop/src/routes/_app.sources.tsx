@@ -15,12 +15,14 @@ import {
   Mic,
   Plus,
   RefreshCw,
+  Search,
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ClusterDot } from "@/components/ClusterChip";
+import { notify } from "@/components/product/Notifications";
 import {
   sourceStateLabel,
   type Cluster,
@@ -140,7 +142,9 @@ function SourcesView() {
         null,
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Vault could not load your sources.");
+      const message = err instanceof Error ? err.message : "Vault could not load your sources.";
+      setError(message);
+      notify({ title: "Sources could not load", description: message, tone: "error" });
       setActiveVault(null);
     } finally {
       setLoading(false);
@@ -213,6 +217,10 @@ function SourcesView() {
       setTextTitle("Pasted note");
       setTextDialogOpen(false);
       setIngestMessage(`Added "${title}" as a text source.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not add this text source.";
+      setIngestMessage(message);
+      notify({ title: "Text import failed", description: message, tone: "error" });
     } finally {
       setSubmitting(false);
     }
@@ -233,6 +241,10 @@ function SourcesView() {
       setLinkUrl("");
       setLinkDialogOpen(false);
       setIngestMessage("Imported link text.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not import this link.";
+      setIngestMessage(message);
+      notify({ title: "Link import failed", description: message, tone: "error" });
     } finally {
       setSubmitting(false);
     }
@@ -282,6 +294,18 @@ function SourcesView() {
       ? ` Folder scanning stopped at the ${truncatedAt.toLocaleString()}-file safety limit; import remaining files in a second batch.`
       : "";
     setIngestMessage(`${formatImportResult(imported, failures)}${limitNotice}`);
+    if (failures.length > 0) {
+      notify({
+        title: `${failures.length} source${failures.length === 1 ? "" : "s"} could not be imported`,
+        description: failures[0],
+        tone: "error",
+      });
+    } else {
+      notify({
+        title: `${imported} source${imported === 1 ? "" : "s"} imported`,
+        tone: "success",
+      });
+    }
   }
 
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
@@ -323,8 +347,11 @@ function SourcesView() {
           ? `Reindexing “${source.title}” now.`
           : `Queued “${source.title}” for reindexing.`,
       );
+      notify({ title: `Reindexing ${source.title}`, tone: "success" });
     } catch (error) {
-      setIngestMessage(error instanceof Error ? error.message : "Could not queue reindexing.");
+      const message = error instanceof Error ? error.message : "Could not queue reindexing.";
+      setIngestMessage(message);
+      notify({ title: "Reindexing failed", description: message, tone: "error" });
     }
   }
 
@@ -378,7 +405,7 @@ function SourcesView() {
                 onChange={(event) => setQ(event.target.value)}
                 className="h-10 pl-9"
               />
-              <FileText className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             </div>
             <Button onClick={() => void handleAddFiles()} disabled={!vault}>
               <FilePlus2 className="h-4 w-4" /> Add files
@@ -421,16 +448,15 @@ function SourcesView() {
                   : "Choose a library in Settings before adding sources."}
           />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-[760px] w-full text-sm">
+          <div className="min-w-0">
+            <table className="w-full table-fixed text-sm">
               <thead className="sticky top-0 bg-background/95 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
                 <tr className="border-b border-border">
                   <th className="px-3 py-3 font-normal">Name</th>
-                  <th className="px-3 py-3 font-normal">Type</th>
-                  <th className="px-3 py-3 font-normal">State</th>
-                  <th className="px-3 py-3 font-normal">Cluster</th>
-                  <th className="px-3 py-3 font-normal">Status</th>
-                  <th className="px-3 py-3 font-normal">Last indexed</th>
+                  <th className="hidden w-28 px-3 py-3 font-normal 2xl:table-cell">Type</th>
+                  <th className="hidden w-28 px-3 py-3 font-normal xl:table-cell">Status</th>
+                  <th className="hidden w-40 px-3 py-3 font-normal lg:table-cell">Cluster</th>
+                  <th className="hidden w-32 px-3 py-3 font-normal 2xl:table-cell">Last indexed</th>
                 </tr>
               </thead>
               <tbody>
@@ -469,9 +495,11 @@ function SourcesView() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 py-5 text-muted-foreground">{sourceTypeLabel(source)}</td>
-                      <td className="px-3 py-5 text-muted-foreground">{sourceStateLabel[source.state]}</td>
-                      <td className="px-3 py-5">
+                      <td className="hidden px-3 py-5 text-muted-foreground 2xl:table-cell">{sourceTypeLabel(source)}</td>
+                      <td className="hidden px-3 py-5 xl:table-cell">
+                        <StateChip state={source.state} />
+                      </td>
+                      <td className="hidden px-3 py-5 lg:table-cell">
                         {cluster ? (
                           <span className="inline-flex max-w-40 items-center gap-1.5">
                             <ClusterDot tint={cluster.tint} />
@@ -481,10 +509,7 @@ function SourcesView() {
                           <span className="text-muted-foreground">-</span>
                         )}
                       </td>
-                      <td className="px-3 py-5">
-                        <StateChip state={source.state} />
-                      </td>
-                      <td className="px-3 py-5 text-muted-foreground">{lastIndexed(source)}</td>
+                      <td className="hidden px-3 py-5 text-muted-foreground 2xl:table-cell">{lastIndexed(source)}</td>
                     </tr>
                   );
                 })}
@@ -640,10 +665,36 @@ function SourceInspector({
 
       <div className="mt-8 border-b border-border pb-3 text-sm font-medium">Source details</div>
 
+      {source.state === "failed" ? (
+        <section className="mt-6 rounded-md border border-[var(--status-error)]/35 bg-[var(--status-error-bg)] p-4">
+          <div className="font-medium text-[var(--status-error)]">Indexing did not complete</div>
+          <p className="mt-1 break-words text-sm leading-6 text-[var(--text-body)]">
+            {stats?.last_error || "Vault could not finish processing this source. Retry after checking the local model and file access."}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => void onReindex(source)}>
+              <RefreshCw className="h-4 w-4" /> Retry indexing
+            </Button>
+            <ConfirmAction
+              title={`Delete “${source.title}”?`}
+              description="This removes Vault’s indexed copy and extracted context. The original local file is not deleted."
+              confirmLabel="Delete source"
+              onConfirm={() => onRemove(source)}
+            >
+              <Button variant="outline" size="sm" className="border-[var(--status-error)]/40 text-[var(--status-error)]">
+                <Trash2 className="h-4 w-4" /> Remove source
+              </Button>
+            </ConfirmAction>
+          </div>
+        </section>
+      ) : null}
+
       <section className="mt-6">
         <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Description</div>
         <p className="mt-4 break-words text-sm leading-6 text-muted-foreground">
-          {source.summary || source.preview || "Vault has not generated a description for this source yet."}
+          {source.state === "failed"
+            ? "No description is available because indexing did not complete."
+            : source.summary || source.preview || "Vault has not generated a description for this source yet."}
         </p>
       </section>
 
@@ -698,7 +749,7 @@ function SourceInspector({
             className="w-full justify-start gap-2"
             onClick={() => void onReindex(source)}
           >
-            <RefreshCw className="h-4 w-4" /> Reindex
+            <RefreshCw className="h-4 w-4" /> {source.state === "failed" ? "Retry indexing" : "Reindex"}
           </Button>
           <ConfirmAction
             title={`Delete “${source.title}”?`}

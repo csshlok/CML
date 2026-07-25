@@ -873,6 +873,7 @@ export type SourceStatsRecord = {
   page_count: number;
   chunk_count: number;
   size_bytes: number | null;
+  last_error: string | null;
 };
 
 export type ReindexQueueResult = {

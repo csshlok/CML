@@ -635,6 +635,16 @@ def get_source_stats(source_id: str) -> dict:
             """,
             (source_id, source_id),
         ).fetchone()
+        failed_job = conn.execute(
+            """
+            SELECT last_error
+            FROM app_jobs
+            WHERE scope_id = ? AND status = 'failed' AND last_error != ''
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (source_id,),
+        ).fetchone()
     size_bytes = None
     original_path = str(source["original_path"] or "")
     if original_path:
@@ -649,6 +659,7 @@ def get_source_stats(source_id: str) -> dict:
         "page_count": int(counts["page_count"] or 0),
         "chunk_count": int(counts["chunk_count"] or 0),
         "size_bytes": size_bytes,
+        "last_error": str(failed_job["last_error"]) if failed_job is not None else None,
     }
 
 
@@ -661,13 +672,23 @@ def reindex_source(source_id: str) -> dict:
     with connect() as conn:
         source = conn.execute(
             """
-            SELECT id FROM sources
-            WHERE id = ? AND state = 'indexed' AND deleted_at IS NULL
+            SELECT id, state, raw_text, extracted_text FROM sources
+            WHERE id = ? AND state IN ('indexed', 'failed') AND deleted_at IS NULL
             """,
             (source_id,),
         ).fetchone()
         if source is None:
-            raise HTTPException(status_code=409, detail="Only indexed sources can be reindexed.")
+            raise HTTPException(status_code=409, detail="Only indexed or failed sources can be reindexed.")
+        if source["state"] == "failed":
+            if not str(source["extracted_text"] or source["raw_text"] or "").strip():
+                raise HTTPException(
+                    status_code=409,
+                    detail="This source has no extracted content to retry. Remove it and import the original again.",
+                )
+            conn.execute(
+                "UPDATE sources SET state = 'indexed', updated_at = ? WHERE id = ?",
+                (utc_now(), source_id),
+            )
         job = enqueue_job(
             conn,
             job_type="reindex_source",
