@@ -347,6 +347,20 @@ test("packaged static asset server returns 400 for malformed encoded paths", asy
   assert.match(String(response?.body), /bad request/i);
 });
 
+test("packaged static asset server serves bundled brand assets", async () => {
+  const { exported } = loadMainModule();
+  const clientDir = fs.mkdtempSync(path.join(os.tmpdir(), "cml-client-"));
+  const brandDir = path.join(clientDir, "brand");
+  fs.mkdirSync(brandDir, { recursive: true });
+  fs.writeFileSync(path.join(brandDir, "Container.svg"), "<svg></svg>");
+
+  const response = await exported.tryServeStaticAsset(clientDir, "/brand/Container.svg");
+
+  assert.equal(response?.status, 200);
+  assert.equal(response?.headers["content-type"], "image/svg+xml");
+  assert.equal(String(response?.body), "<svg></svg>");
+});
+
 test("verifyRendererUp succeeds when the packaged renderer responds", async () => {
   const { exported } = loadMainModule();
   const server = http.createServer((_request, response) => {

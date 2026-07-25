@@ -955,7 +955,7 @@ async function tryServeStaticAsset(clientDir, pathname) {
     };
   }
   if (!safePathname || safePathname.includes("..")) return null;
-  if (!(safePathname.startsWith("assets/") || safePathname === "brand/logo.svg")) return null;
+  if (!(safePathname.startsWith("assets/") || safePathname.startsWith("brand/"))) return null;
   const target = path.join(clientDir, safePathname);
   if (!target.startsWith(clientDir)) return null;
   try {
