@@ -153,6 +153,18 @@ class AdditionalQACases(unittest.TestCase):
         self.assertGreaterEqual(discovery["compatible_model_count"], 1)
         self.assertTrue(any(item["local_path"] == str(model_dir.resolve()) for item in discovery["models"]))
 
+    def test_windows_model_discovery_includes_every_available_drive(self) -> None:
+        from backend.app.core import model_registry
+
+        available = {"C:/", "D:/", "T:/"}
+        with (
+            patch.object(model_registry.os, "name", "nt"),
+            patch.object(model_registry.os.path, "exists", side_effect=lambda path: path in available),
+        ):
+            roots = model_registry._available_drive_roots()
+
+        self.assertEqual([str(root).replace("\\", "/") for root in roots], ["C:/", "D:/", "T:/"])
+
     def test_discover_installed_models_prioritizes_late_compatible_results_when_rejected_fill_limit(self) -> None:
         from backend.app.core.config import get_settings
         from backend.app.core.model_registry import discover_installed_models, invalidate_model_discovery_cache
@@ -2452,18 +2464,32 @@ class AdditionalQACases(unittest.TestCase):
         settings = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.settings.tsx").read_text(encoding="utf-8")
         backend = (repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
 
-        self.assertIn('Field label="Local model download location"', onboarding)
+        self.assertIn('Field label="Save models in"', onboarding)
         self.assertIn('"Welcome",', onboarding)
         self.assertIn('type Step = 0 | 1 | 2 | 3 | 4 | 5;', onboarding)
-        self.assertIn("<span>Sources</span><span className=\"text-muted-foreground\">Private and local</span>", onboarding)
-        self.assertIn("<span>Search</span><span className=\"text-muted-foreground\">Runs on this device</span>", onboarding)
+        self.assertIn("Start Setup", onboarding)
+        self.assertIn("Welcome to Vault", onboarding)
         self.assertIn('title="Name and locate your library"', onboarding)
+        self.assertIn("lg:h-[520px]", onboarding)
+        self.assertIn("h-[93px] items-center justify-between", onboarding)
+        self.assertIn("vault-step-enter py-10 lg:py-16", onboarding)
+        self.assertIn('"mt-16 space-y-3"', onboarding)
+        self.assertIn('"flex min-w-0 items-center gap-5"', onboarding)
+        self.assertNotIn('"mt-auto space-y-3"', onboarding)
         self.assertNotIn("Continue with Google", onboarding)
         self.assertIn("chooseModelDownloadFolder", onboarding)
-        self.assertIn("target_dir: modelDownloadRoot.trim() || null", onboarding)
+        self.assertIn("target_dir: modelDownloadRoot.trim()", onboarding)
+        self.assertIn("Choose where to save the model before downloading.", onboarding)
+        self.assertIn("recommendedModels.map", onboarding)
+        self.assertIn("modelRecommendations?.recommended_chat_model_id", onboarding)
+        self.assertIn("Confirm skip", onboarding)
         self.assertIn("ModelDownloadToast", onboarding)
         self.assertIn("fixed bottom-4 right-4", onboarding)
         self.assertIn("setInterval", onboarding)
+        self.assertIn("if (!modelDownloadActive) return;", onboarding)
+        self.assertIn("if (!embeddingDownloadActive) return;", onboarding)
+        self.assertIn("formatProgressPercent(progress)", onboarding)
+        self.assertNotIn("progress || 12", onboarding)
         self.assertIn("function isChatSetupProgress", onboarding)
         self.assertIn('model.source_kind === "default_choice"', onboarding)
         self.assertIn('downloadStatus === "resolving" || downloadStatus === "downloading"', onboarding)
@@ -2474,7 +2500,7 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("model.download?.total_bytes ?? model.download?.bytes_total", onboarding)
         self.assertIn("model.compatibility?.chat_role_accepted", onboarding)
         self.assertIn("refreshDetectedModels(true)", onboarding)
-        self.assertIn("You can continue after a chat model is installed, active, or downloading.", onboarding)
+        self.assertIn("Skip for now", onboarding)
         self.assertNotIn("Continue is enabled only after one accepted chat model and one accepted expert checkpoint are active.", onboarding)
         self.assertIn("Local model download location", settings)
         self.assertIn("target_dir: modelDownloadRoot.trim() || null", settings)
