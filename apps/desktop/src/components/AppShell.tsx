@@ -35,6 +35,7 @@ import {
 import { AppStatusAnnouncer, LockedState, StatusLabel } from "@/components/product/Feedback";
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
 import { normalizeTint } from "@/lib/recordAdapters";
+import { displayPath } from "@/lib/displayPath";
 
 type NavItem = {
   to:
@@ -249,7 +250,7 @@ export function AppShell() {
               aria-label={vaultPath ? "Change library location" : "Choose a library"}
             >
               <FolderOpen className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
-              <span className="min-w-0 flex-1 break-all">{vaultPath ?? "Choose library"}</span>
+              <span className="min-w-0 flex-1 break-all">{displayPath(vaultPath) || "Choose library"}</span>
             </button>
             <div className="mt-4">
               <BrandLogo className="h-7 w-auto select-none" />
@@ -331,7 +332,7 @@ export function AppShell() {
                   {vaultPath ? vaultName(vaultPath) : "Local profile"}
                 </div>
                 <div className="break-all text-[12px] text-[var(--text-muted)]">
-                  {vaultPath ?? "No library selected"}
+                  {displayPath(vaultPath) || "No library selected"}
                 </div>
               </div>
             </Link>

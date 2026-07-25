@@ -8,6 +8,7 @@ import {
 } from "@/lib/backend";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { displayPath } from "@/lib/displayPath";
 
 type GraphNode = ProjectGraphNode & { x?: number; y?: number; color?: string };
 type GraphLink = ProjectGraphEdge & { source: string | GraphNode; target: string | GraphNode };
@@ -240,7 +241,7 @@ export function ProjectGraphArtifact({
                 <div className="text-sm font-medium break-words">{selected.label}</div>
                 <div className="text-xs text-muted-foreground">{selected.kind}{selected.language ? ` / ${selected.language}` : ""}</div>
                 <div className="break-all font-mono text-xs leading-5 text-muted-foreground">
-                  {selected.relative_path || "Project root"}{selected.start_line ? `:${selected.start_line}` : ""}
+                  {displayPath(selected.relative_path) || "Project root"}{selected.start_line ? `:${selected.start_line}` : ""}
                 </div>
                 {selected.signature && <div className="w-full break-words border-t border-border pt-2 font-mono text-xs">{selected.signature}</div>}
               </div>

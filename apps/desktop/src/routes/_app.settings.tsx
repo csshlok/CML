@@ -109,6 +109,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { displayPath } from "@/lib/displayPath";
 
 export const Route = createFileRoute("/_app/settings")({
   validateSearch: (search: Record<string, unknown>): { section?: string } => ({
@@ -614,7 +615,7 @@ function SettingsView() {
     setStatusMessage("Creating diagnostic bundle...");
     try {
       const bundle = await createDiagnosticBundle();
-      setStatusMessage(`Diagnostic bundle saved to ${bundle.bundle_path}`);
+      setStatusMessage(`Diagnostic bundle saved to ${displayPath(bundle.bundle_path)}`);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not create diagnostic bundle.");
     }
@@ -1056,7 +1057,7 @@ function SettingsView() {
                     icon={<ShieldCheck className="h-4 w-4" />}
                     label="Library"
                     value={backendVault ? unlockStatus?.ready ? "Ready" : unlockStatus?.state ? formatHealthLabel(unlockStatus.state) : "Checking" : "Not configured"}
-                    detail={backendVault?.path ?? unlockStatus?.message ?? "Create a library to store and index sources."}
+                    detail={displayPath(backendVault?.path) || unlockStatus?.message || "Create a library to store and index sources."}
                     tone={backendVault && unlockStatus?.ready ? "ready" : "warning"}
                   />
                   <HealthStatusRow
@@ -1140,7 +1141,7 @@ function SettingsView() {
                       <span className="text-xs capitalize text-muted-foreground">{project.status}</span>
                     </div>
                     <div className="mt-1 truncate text-xs text-muted-foreground" title={project.root_path}>
-                      {project.root_path}
+                      {displayPath(project.root_path)}
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       {project.source_count.toLocaleString()} files / Code map {formatHealthLabel(project.structure_status)} / Search {formatHealthLabel(project.retrieval_status)}
@@ -1368,8 +1369,8 @@ function SettingsView() {
             <div className="mt-5 grid gap-3 md:grid-cols-[1fr_220px_auto_auto]">
               <Input
                 value={customModelPath}
-                onChange={(event) => setCustomModelPath(event.target.value)}
-                placeholder="D:\\Models\\Qwen3-4B"
+                onChange={(event) => setCustomModelPath(displayPath(event.target.value))}
+                placeholder="D:/Models/Qwen3-4B"
               />
               <Input
                 value={customModelName}
@@ -1406,7 +1407,7 @@ function SettingsView() {
                       <div>
                         <div className="font-medium">{model.name}</div>
                         <div className="mt-1 text-xs text-muted-foreground">
-                          {model.family_name || model.family || "Approved family"} / {model.local_path}
+                          {model.family_name || model.family || "Approved family"} / {displayPath(model.local_path)}
                         </div>
                         <div className="mt-1 text-xs text-muted-foreground">{model.detail}</div>
                       </div>
@@ -1454,7 +1455,7 @@ function SettingsView() {
               <Input
                 value={embeddingCacheDraft}
                 onChange={(event) => setEmbeddingCacheDraft(event.target.value)}
-                placeholder="C:\\AI_Models\\all-MiniLM-L6-v2"
+                placeholder="C:/AI_Models/all-MiniLM-L6-v2"
               />
               <Button variant="outline" onClick={() => void chooseEmbeddingFolder()} disabled={!mounted || !desktop?.selectEmbeddingFolder}>
                 Browse
@@ -1482,7 +1483,7 @@ function SettingsView() {
                   <span className="text-foreground">{embeddingDownload.status}</span>
                 </div>
                 {embeddingDownload.local_path && (
-                  <div className="mt-1 truncate font-mono">{embeddingDownload.local_path}</div>
+                  <div className="mt-1 truncate font-mono">{displayPath(embeddingDownload.local_path)}</div>
                 )}
                 {embeddingDownload.error && (
                   <div className="mt-1 text-destructive">{embeddingDownload.error}</div>
@@ -1514,7 +1515,7 @@ function SettingsView() {
                 label="Image OCR"
                 value={ocrRuntime?.image_ocr_available ? "Ready" : "Missing"}
                 tone={ocrRuntime?.image_ocr_available ? "ready" : "issue"}
-                meta={ocrRuntime?.tesseract_path ?? ""}
+                meta={displayPath(ocrRuntime?.tesseract_path)}
               />
               <RuntimeRow
                 label="PDF OCR"
@@ -1532,13 +1533,13 @@ function SettingsView() {
                 label="Ghostscript"
                 value={ocrRuntime?.ghostscript_path ? "Installed" : "Missing"}
                 tone={ocrRuntime?.ghostscript_path ? "ready" : "issue"}
-                meta={ocrRuntime?.ghostscript_path ?? ""}
+                meta={displayPath(ocrRuntime?.ghostscript_path)}
               />
               <RuntimeRow
                 label="qpdf"
                 value={ocrRuntime?.qpdf_path ? "Installed" : "Missing"}
                 tone={ocrRuntime?.qpdf_path ? "ready" : "issue"}
-                meta={ocrRuntime?.qpdf_path ?? ""}
+                meta={displayPath(ocrRuntime?.qpdf_path)}
               />
             </div>
             {ocrRuntime?.missing.length ? (
@@ -1564,7 +1565,7 @@ function SettingsView() {
                 <Input
                   id="library-storage-path"
                   value={pathDraft}
-                  onChange={(event) => setPathDraft(event.target.value)}
+                  onChange={(event) => setPathDraft(displayPath(event.target.value))}
                 />
                 <Button variant="outline" onClick={() => void saveVaultPath()} disabled={saving}>
                   Change location
@@ -1860,7 +1861,7 @@ function SettingsView() {
                     className="grid gap-3 rounded-md border border-border bg-background px-3 py-3 text-sm md:grid-cols-[1fr_auto]"
                   >
                     <div className="min-w-0">
-                      <div className="truncate font-medium">{record.root_path}</div>
+                      <div className="truncate font-medium">{displayPath(record.root_path)}</div>
                       <div className="mt-1 text-xs text-muted-foreground">
                         {record.integration_type} / {record.supported_count} supported / {record.skipped_count} skipped /{" "}
                         {record.imported_count} new / {record.updated_count} updated / {record.moved_count} moved /{" "}
@@ -2179,7 +2180,7 @@ function ModelDownloadToast({
         </div>
       </div>
       {download.local_path && (
-        <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground">{download.local_path}</div>
+        <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground">{displayPath(download.local_path)}</div>
       )}
       {download.error && <div className="mt-2 text-xs text-destructive">{download.error}</div>}
       {active && (
@@ -2219,7 +2220,7 @@ function ProfileSettings({
           </span>
           <div className="min-w-0 flex-1">
             <h2 className="text-xl font-semibold">{displayName}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">{vaultPath || "No library selected"}</p>
+            <p className="mt-1 text-sm text-muted-foreground">{displayPath(vaultPath) || "No library selected"}</p>
             <div className="mt-3 inline-flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1 text-xs text-primary">
               <ShieldCheck className="h-3.5 w-3.5" />
               Local profile

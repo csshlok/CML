@@ -26,6 +26,7 @@ import {
   statusToneForPartialFailure,
 } from "@/lib/chat-presentation";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
+import { displayPath } from "@/lib/displayPath";
 import { Button } from "@/components/ui/button";
 import { ConfirmAction } from "@/components/product/Feedback";
 import { notify } from "@/components/product/Notifications";
@@ -1029,7 +1030,7 @@ function Message({
                 </PopoverTrigger>
                 <PopoverContent className="w-80 max-w-[calc(100vw-2rem)] text-xs">
                   <div className="mb-1 break-words font-medium">{title}</div>
-                  {cit.relativePath && <div className="mb-2 break-all font-mono text-[11px] text-muted-foreground">{cit.relativePath}{cit.lineStart ? `:${cit.lineStart}${cit.lineEnd && cit.lineEnd !== cit.lineStart ? `-${cit.lineEnd}` : ""}` : ""}</div>}
+                  {cit.relativePath && <div className="mb-2 break-all font-mono text-[11px] text-muted-foreground">{displayPath(cit.relativePath)}{cit.lineStart ? `:${cit.lineStart}${cit.lineEnd && cit.lineEnd !== cit.lineStart ? `-${cit.lineEnd}` : ""}` : ""}</div>}
                   {cit.symbol && <div className="mb-2 text-muted-foreground">Symbol: <span className="font-mono text-foreground">{cit.symbol}</span></div>}
                   {(cit.projectSnapshotId || cit.indexedCommit) && <div className="mb-2 text-muted-foreground">Indexed {cit.indexedCommit ? `at ${cit.indexedCommit.slice(0, 8)}` : "snapshot"}{cit.projectSnapshotId ? ` · ${cit.projectSnapshotId.slice(-8)}` : ""}</div>}
                   {cit.pageNumber ? (

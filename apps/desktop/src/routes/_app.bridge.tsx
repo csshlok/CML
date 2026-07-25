@@ -55,6 +55,7 @@ import {
   type ExtensionPairingRecord,
   type VaultRecord,
 } from "@/lib/backend";
+import { displayPath } from "@/lib/displayPath";
 
 export const Route = createFileRoute("/_app/bridge")({
   head: () => ({ meta: [{ title: "Bridge" }] }),
@@ -1046,7 +1047,7 @@ function BridgeView() {
                         {item.allow_raw_snippets ? "requested" : "off"}
                       </div>
                       <div className="mt-1 break-all text-xs text-muted-foreground">
-                        Path {item.observed_executable_path || item.executable_path_claim || "not provided"}
+                        Path {displayPath(item.observed_executable_path || item.executable_path_claim) || "not provided"}
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">
                         Publisher {item.publisher_name || "not available"} / expires {new Date(item.expires_at).toLocaleString()}
@@ -1123,7 +1124,7 @@ function BridgeView() {
                       {client.signature_status.replace(/_/g, " ")}
                     </div>
                     <div className="mt-1 break-all text-xs text-muted-foreground">
-                      Path {client.observed_executable_path || client.executable_path_claim || "not recorded"}
+                      Path {displayPath(client.observed_executable_path || client.executable_path_claim) || "not recorded"}
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       Requests {client.request_count_total} / bytes {client.response_bytes_total.toLocaleString()}
