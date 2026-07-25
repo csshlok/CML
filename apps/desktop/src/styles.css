@@ -220,6 +220,15 @@
     }
   }
 
+  @keyframes vault-notice-lifetime {
+    0%, 82% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+
   @keyframes vault-word-cycle {
     0%, 20% {
       opacity: 0;
@@ -269,6 +278,10 @@
 
   .vault-step-enter {
     animation: vault-step-enter 260ms ease-out both;
+  }
+
+  .vault-notice-lifetime {
+    animation: vault-notice-lifetime 5.5s ease-out both;
   }
 
   .vault-word-rotator {
