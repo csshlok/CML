@@ -43,17 +43,15 @@ import {
 } from "@/lib/backend";
 import { cn } from "@/lib/utils";
 
-type Step = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type Step = 0 | 1 | 2 | 3 | 4 | 5;
 type ModelChoice = "recommended" | "custom";
 type EmbeddingChoice = "recommended" | "existing";
 
 const steps = [
-  "Privacy",
-  "Name",
-  "Library",
   "Welcome",
-  "Location",
-  "Models",
+  "Profile",
+  "Library",
+  "Chat model",
   "Memory search",
   "Finish",
 ] as const;
@@ -113,10 +111,9 @@ function Onboarding() {
   const canContinue = useMemo(() => {
     if (step === 0) return true;
     if (step === 1) return displayName.trim().length >= 2;
-    if (step === 2) return vaultName.trim().length >= 2;
-    if (step === 4) return vaultPath.trim().length > 0;
-    if (step === 5) return models.some(isChatSetupProgress);
-    if (step === 6) return Boolean(embeddingRuntime?.available);
+    if (step === 2) return vaultName.trim().length >= 2 && vaultPath.trim().length > 0;
+    if (step === 3) return models.some(isChatSetupProgress);
+    if (step === 4) return Boolean(embeddingRuntime?.available);
     return true;
   }, [
     displayName,
@@ -133,16 +130,16 @@ function Onboarding() {
   }, []);
 
   useEffect(() => {
-    if (step !== 5 && step !== 6) return;
+    if (step !== 3 && step !== 4) return;
     void refreshModels();
     void refreshEmbeddingStatus();
-    if (step === 5) {
+    if (step === 3) {
       void refreshDetectedModels();
     }
   }, [step]);
 
   useEffect(() => {
-    if (step !== 5 || !modelDownloadActive) return;
+    if (step !== 3 || !modelDownloadActive) return;
     const id = window.setInterval(() => {
       void refreshModels();
     }, 1500);
@@ -317,7 +314,7 @@ function Onboarding() {
       await desktop?.setActiveVaultFolder?.(vaultPath.trim());
       setVault(created);
       setMessage("Library folder is ready.");
-      setStep(5);
+      setStep(3);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create the vault.");
       setMessage(null);
@@ -437,7 +434,7 @@ function Onboarding() {
   function next() {
     setError(null);
     setMessage(null);
-    setStep(Math.min(step + 1, 7) as Step);
+    setStep(Math.min(step + 1, 5) as Step);
   }
 
   function back() {
@@ -503,12 +500,12 @@ function Onboarding() {
                 {step === 0 && (
                   <SetupPanel
                     icon={<ShieldCheck className="h-5 w-5" />}
-                    title="Your library stays local"
-                    sub="Vault does not require an account. Your profile, sources, and search index stay on this device."
+                    title="Welcome to Vault"
+                    sub="A private knowledge workspace that keeps your sources, search index, and conversations on this device."
                   >
                     <div className="mt-5 divide-y divide-border border-y border-border text-sm">
-                      <div className="flex items-center justify-between gap-4 py-3"><span>Account</span><span className="text-muted-foreground">Not required</span></div>
-                      <div className="flex items-center justify-between gap-4 py-3"><span>Cloud sync</span><span className="text-muted-foreground">Off</span></div>
+                      <div className="flex items-center justify-between gap-4 py-3"><span>Sources</span><span className="text-muted-foreground">Private and local</span></div>
+                      <div className="flex items-center justify-between gap-4 py-3"><span>Search</span><span className="text-muted-foreground">Runs on this device</span></div>
                       <div className="flex items-center justify-between gap-4 py-3"><span>Storage</span><span className="text-muted-foreground">Folder you choose</span></div>
                     </div>
                   </SetupPanel>
@@ -533,9 +530,9 @@ function Onboarding() {
 
                 {step === 2 && (
                   <SetupPanel
-                    icon={<Sparkles className="h-5 w-5" />}
-                    title="Name your library"
-                    sub="A library is the local memory space where your files, links, notes, and chats live."
+                    icon={<FolderOpen className="h-5 w-5" />}
+                    title="Name and locate your library"
+                    sub="Choose a recognizable name and the local folder where its sources, index, and chats will live."
                   >
                     <Field label="Library name">
                       <Input
@@ -545,51 +542,30 @@ function Onboarding() {
                         autoFocus
                       />
                     </Field>
-                  </SetupPanel>
-                )}
-
-                {step === 3 && (
-                  <SetupPanel
-                    icon={<ShieldCheck className="h-5 w-5" />}
-                    title={`Welcome${displayName.trim() ? `, ${displayName.trim()}` : ""}`}
-                    sub="Vault keeps the setup simple: choose a local folder, connect memory search, then start adding context."
-                  >
-                    <div className="grid gap-3 sm:grid-cols-3">
-                      <MiniFact title="Private" body="Stored on this device." />
-                      <MiniFact title="Searchable" body="Powered by a local embedding model." />
-                      <MiniFact title="Ready" body="Chat can use your context after indexing." />
+                    <div className="mt-5">
+                      <Field label="Library location">
+                        <div className="flex flex-col gap-2 sm:flex-row">
+                          <Input
+                            value={vaultPath}
+                            onChange={(event) => {
+                              setVaultPath(event.target.value);
+                              setDiskPreflight(null);
+                            }}
+                            onBlur={(event) => void runVaultDiskPreflight(event.target.value)}
+                            placeholder="C:\\Users\\You\\Documents\\Vault"
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={chooseVaultFolder}
+                            disabled={!mounted || !desktop?.selectVaultFolder}
+                          >
+                            <FolderOpen className="h-4 w-4" />
+                            Browse
+                          </Button>
+                        </div>
+                      </Field>
                     </div>
-                  </SetupPanel>
-                )}
-
-                {step === 4 && (
-                  <SetupPanel
-                    icon={<FolderOpen className="h-5 w-5" />}
-                    title="Choose where Vault lives"
-                    sub="This folder becomes your real storage location. Vault data is written inside a hidden .vault folder there."
-                  >
-                    <Field label="Library location">
-                      <div className="flex flex-col gap-2 sm:flex-row">
-                        <Input
-                          value={vaultPath}
-                          onChange={(event) => {
-                            setVaultPath(event.target.value);
-                            setDiskPreflight(null);
-                          }}
-                          onBlur={(event) => void runVaultDiskPreflight(event.target.value)}
-                          placeholder="C:\\Users\\You\\Documents\\Vault"
-                        />
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={chooseVaultFolder}
-                          disabled={!mounted || !desktop?.selectVaultFolder}
-                        >
-                          <FolderOpen className="h-4 w-4" />
-                          Browse
-                        </Button>
-                      </div>
-                    </Field>
                     {resolvedVaultPath && (
                       <div className="rounded-md border border-border bg-secondary/55 p-4 text-sm">
                         <div className="flex items-center gap-2 font-medium">
@@ -615,7 +591,7 @@ function Onboarding() {
                   </SetupPanel>
                 )}
 
-                {step === 5 && (
+                {step === 3 && (
                   <SetupPanel
                     icon={<PlugZap className="h-5 w-5" />}
                     title="Choose the local chat model"
@@ -824,7 +800,7 @@ function Onboarding() {
                   </SetupPanel>
                 )}
 
-                {step === 6 && (
+                {step === 4 && (
                   <SetupPanel
                     icon={<Sparkles className="h-5 w-5" />}
                     title="Choose the memory-search model"
@@ -944,7 +920,7 @@ function Onboarding() {
                   </SetupPanel>
                 )}
 
-                {step === 7 && (
+                {step === 5 && (
                   <SetupPanel
                     icon={<Check className="h-5 w-5" />}
                     title="Welcome to Vault"
@@ -953,6 +929,13 @@ function Onboarding() {
                     <div className="grid gap-3 sm:grid-cols-2">
                       <SummaryRow label="Profile" value={displayName.trim() || "Local user"} />
                       <SummaryRow label="Library" value={vault?.name ?? vaultName.trim()} />
+                      <SummaryRow
+                        label="Chat model"
+                        value={
+                          models.find((model) => model.id === selectedModelId)?.name ??
+                          selectedModelId
+                        }
+                      />
                       <SummaryRow
                         label="Storage"
                         value={resolvedVaultPath || "Selected library folder"}
@@ -991,7 +974,7 @@ function Onboarding() {
                   <div className="hidden text-xs text-muted-foreground sm:block">
                     {step + 1} of {steps.length}
                   </div>
-                  {step === 4 ? (
+                  {step === 2 ? (
                     <Button
                       onClick={() => void createVaultAfterFolderSelection()}
                       disabled={!canContinue}
@@ -999,7 +982,7 @@ function Onboarding() {
                       Create vault
                       <ArrowRight className="h-4 w-4" />
                     </Button>
-                  ) : step === 7 ? (
+                  ) : step === 5 ? (
                     <Button onClick={finish}>
                       Open Vault
                       <ArrowRight className="h-4 w-4" />
@@ -1142,15 +1125,6 @@ function ChoiceButton({
       </div>
       <div className="mt-2 text-sm leading-5 text-muted-foreground">{description}</div>
     </button>
-  );
-}
-
-function MiniFact({ title, body }: { title: string; body: string }) {
-  return (
-    <div className="vault-card p-4">
-      <div className="text-sm font-medium">{title}</div>
-      <div className="mt-2 text-sm leading-5 text-muted-foreground">{body}</div>
-    </div>
   );
 }
 
