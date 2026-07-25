@@ -60,6 +60,9 @@ class TestingParametersDocCases(unittest.TestCase):
                 409,
             )
             self.assertEqual(client.get("/health").status_code, 200)
+            identity = client.get("/api/v1/system/backend-identity")
+            self.assertEqual(identity.status_code, 200)
+            self.assertEqual(identity.json()["backend_mode"], "pre_vault")
             self.assertEqual(
                 client.post(
                     "/api/v1/system/preflight/disk",
@@ -76,6 +79,7 @@ class TestingParametersDocCases(unittest.TestCase):
         allowed = allowed_pre_vault_paths("/custom/v2")
 
         self.assertIn("/custom/v2/system/startup-status", allowed)
+        self.assertIn("/custom/v2/system/backend-identity", allowed)
         self.assertIn("/custom/v2/models", allowed)
         self.assertNotIn("/api/v1/system/startup-status", allowed)
 

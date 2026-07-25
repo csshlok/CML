@@ -13,6 +13,7 @@ API_PRE_VAULT_SUFFIXES = (
     "/models",
     "/jobs/status",
     "/diagnostics",
+    "/system/backend-identity",
     "/system/startup-status",
     "/system/preflight",
     "/system/hardware",
