@@ -32,7 +32,11 @@ embeddings = [
 ]
 benchmarks = [
   "nltk==3.9.4",
-  "sentence-transformers==5.5.1"
+  "sentence-transformers==5.5.1",
+  "pyarrow==25.0.0"
+]
+test = [
+  "pyarrow==25.0.0"
 ]
 
 [project.scripts]
