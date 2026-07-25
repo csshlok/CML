@@ -8,6 +8,7 @@ const stagingRoot = path.join(desktopRoot, "packaging");
 const outputPath = path.join(stagingRoot, "helper-manifest.json");
 
 const backendFiles = [
+  "docs/model-integrity-manifest.json",
   "backend/app/main.py",
   "backend/app/core/browser_ingestion.py",
   "backend/app/core/browser_worker.py",

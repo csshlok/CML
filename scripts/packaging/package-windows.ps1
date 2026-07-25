@@ -22,6 +22,8 @@ $stagingDir = Join-Path $desktopDir "packaging\backend"
 $runtimeDir = Join-Path $desktopDir "packaging\python-runtime"
 $playwrightBrowserDir = Join-Path $desktopDir "packaging\ms-playwright"
 $packagingRoot = Join-Path $desktopDir "packaging"
+$modelIntegrityManifestPath = Join-Path $repoRoot "docs\model-integrity-manifest.json"
+$modelIntegrityStagingDir = Join-Path $packagingRoot "docs"
 $releaseDir = Join-Path $desktopDir "release"
 $tmpDir = Join-Path $repoRoot ".tmp"
 $helperManifestScript = Join-Path $repoRoot "scripts\packaging\generate-helper-manifest.cjs"
@@ -37,6 +39,9 @@ if (-not (Test-Path -LiteralPath $packageLogoPath)) {
 }
 if (-not (Test-Path -LiteralPath $windowsIconPath)) {
   throw "Windows package icon is missing: $windowsIconPath"
+}
+if (-not (Test-Path -LiteralPath $modelIntegrityManifestPath)) {
+  throw "Managed model integrity manifest is missing: $modelIntegrityManifestPath"
 }
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
@@ -370,6 +375,11 @@ if (Test-Path (Join-Path $backendDir "bin")) {
   Copy-Item -Recurse -Force (Join-Path $backendDir "bin") (Join-Path $stagingDir "bin")
 }
 Copy-Item -Force (Join-Path $backendDir "pyproject.toml") (Join-Path $stagingDir "pyproject.toml")
+if (Test-Path $modelIntegrityStagingDir) {
+  Remove-Item -Recurse -Force $modelIntegrityStagingDir
+}
+New-Item -ItemType Directory -Force -Path $modelIntegrityStagingDir | Out-Null
+Copy-Item -Force $modelIntegrityManifestPath (Join-Path $modelIntegrityStagingDir "model-integrity-manifest.json")
 Remove-PythonCaches $stagingDir
 Complete-PackagePhase $stagingDir
 
@@ -495,6 +505,11 @@ New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
     {
       "from": "packaging/helper-manifest.json",
       "to": "helper-manifest.json"
+    },
+    {
+      "from": "packaging/docs",
+      "to": "docs",
+      "filter": ["model-integrity-manifest.json"]
     }
   ],
   "win": {

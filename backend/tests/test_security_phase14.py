@@ -16,6 +16,10 @@ class SecurityPhase14ScriptTests(unittest.TestCase):
         self.assertIn("package_layout_audit_exists", clean_machine)
         self.assertIn('"from": "packaging/helper-manifest.json"', package_windows)
         self.assertIn('"to": "helper-manifest.json"', package_windows)
+        self.assertIn('"from": "packaging/docs"', package_windows)
+        self.assertIn('"to": "docs"', package_windows)
+        self.assertIn("model-integrity-manifest.json", package_windows)
+        self.assertIn("model_integrity_manifest_exists", clean_machine)
 
     def test_phase14_security_runner_covers_required_smokes(self) -> None:
         runner = (self.repo_root / "scripts" / "security" / "run-security-e2e.ps1").read_text(encoding="utf-8")

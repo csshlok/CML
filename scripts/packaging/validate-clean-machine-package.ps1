@@ -25,6 +25,7 @@ $backend = Join-Path $resources "backend"
 $ocrManifest = Join-Path $backend "bin\ocr\manifest.json"
 $playwrightRuntime = Join-Path $resources "ms-playwright"
 $helperManifest = Join-Path $resources "helper-manifest.json"
+$modelIntegrityManifest = Join-Path $resources "docs\model-integrity-manifest.json"
 $packagedLaunchSmoke = Join-Path $repoRoot "scripts\packaging\smoke-packaged-app-launch.ps1"
 $installedAppSmoke = Join-Path $repoRoot "scripts\packaging\smoke-installed-app.ps1"
 $installerLifecycleSmoke = Join-Path $repoRoot "scripts\packaging\smoke-windows-installer.ps1"
@@ -36,6 +37,7 @@ $checks = @(
   @{ name = "playwright_runtime_exists"; ok = Test-PathPresent $playwrightRuntime; path = $playwrightRuntime },
   @{ name = "ocr_manifest_exists"; ok = Test-PathPresent $ocrManifest; path = $ocrManifest },
   @{ name = "helper_manifest_exists"; ok = Test-PathPresent $helperManifest; path = $helperManifest },
+  @{ name = "model_integrity_manifest_exists"; ok = Test-PathPresent $modelIntegrityManifest; path = $modelIntegrityManifest },
   @{ name = "app_launch_smoke_exists"; ok = Test-PathPresent $packagedLaunchSmoke; path = "scripts/packaging/smoke-packaged-app-launch.ps1" },
   @{ name = "runtime_smoke_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\smoke-packaged-runtime.ps1"); path = "scripts/packaging/smoke-packaged-runtime.ps1" },
   @{ name = "full_vault_smoke_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\smoke-packaged-full-vault.ps1"); path = "scripts/packaging/smoke-packaged-full-vault.ps1" },
