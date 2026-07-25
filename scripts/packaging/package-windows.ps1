@@ -76,19 +76,13 @@ $backendRuntimePackages = @(
 $embeddingRuntimePackages = @(
   "sentence-transformers==5.5.1"
 )
-$effectiveBackendRuntimePackages = @($backendRuntimePackages)
-if ($IncludeEmbeddingRuntime) {
-  $effectiveBackendRuntimePackages += $embeddingRuntimePackages
-}
+$effectiveBackendRuntimePackages = @($backendRuntimePackages) + @($embeddingRuntimePackages)
 
 $script:PackageStartedAt = Get-Date
 $script:PackagePhaseStartedAt = $script:PackageStartedAt
 $script:PackagePhaseIndex = 0
-$script:PackagePhaseCount = 9
+$script:PackagePhaseCount = 10
 if ($Release) {
-  $script:PackagePhaseCount += 1
-}
-if ($IncludeEmbeddingRuntime) {
   $script:PackagePhaseCount += 1
 }
 
@@ -397,9 +391,7 @@ if (-not $Release) {
   $backendRuntimeRequiredPaths = @($runtimePython)
   $backendRuntimeRequiredPaths += (Join-Path $runtimeDir "Lib\site-packages\tree_sitter")
   $backendRuntimeRequiredPaths += (Join-Path $runtimeDir "Lib\site-packages\tree_sitter_typescript")
-  if ($IncludeEmbeddingRuntime) {
-    $backendRuntimeRequiredPaths += (Join-Path $runtimeDir "Lib\site-packages\sentence_transformers")
-  }
+  $backendRuntimeRequiredPaths += (Join-Path $runtimeDir "Lib\site-packages\sentence_transformers")
   $backendRuntimeReady = Test-StagedRuntime `
     -RuntimeDir $runtimeDir `
     -StampPath $backendRuntimeStampPath `
@@ -453,10 +445,8 @@ if ($playwrightReady) {
 }
 Complete-PackagePhase $playwrightBrowserDir
 
-if ($IncludeEmbeddingRuntime) {
-  Start-PackagePhase "Optional embedding runtime" "Embedding runtime is included in the staged backend runtime fingerprint and package set."
-  Complete-PackagePhase "sentence-transformers packaged with backend runtime"
-}
+Start-PackagePhase "Embedding runtime" "SentenceTransformers is included in every packaged backend runtime."
+Complete-PackagePhase "sentence-transformers packaged with backend runtime"
 
 Start-PackagePhase "Helper integrity manifest" "Generating helper-manifest.json for packaged resources."
 node $helperManifestScript

@@ -21,6 +21,7 @@ function Test-PathPresent([string]$PathValue) {
 $packageRootPath = [System.IO.Path]::GetFullPath($PackageRoot)
 $resources = Join-Path $packageRootPath "resources"
 $runtimePython = Join-Path $resources "python-runtime\python.exe"
+$sentenceTransformersRuntime = Join-Path $resources "python-runtime\Lib\site-packages\sentence_transformers"
 $backend = Join-Path $resources "backend"
 $ocrManifest = Join-Path $backend "bin\ocr\manifest.json"
 $playwrightRuntime = Join-Path $resources "ms-playwright"
@@ -34,6 +35,7 @@ $checks = @(
   @{ name = "resources_exists"; ok = Test-PathPresent $resources; path = $resources },
   @{ name = "backend_exists"; ok = Test-PathPresent $backend; path = $backend },
   @{ name = "python_runtime_exists"; ok = Test-PathPresent $runtimePython; path = $runtimePython },
+  @{ name = "sentence_transformers_runtime_exists"; ok = Test-PathPresent $sentenceTransformersRuntime; path = $sentenceTransformersRuntime },
   @{ name = "playwright_runtime_exists"; ok = Test-PathPresent $playwrightRuntime; path = $playwrightRuntime },
   @{ name = "ocr_manifest_exists"; ok = Test-PathPresent $ocrManifest; path = $ocrManifest },
   @{ name = "helper_manifest_exists"; ok = Test-PathPresent $helperManifest; path = $helperManifest },

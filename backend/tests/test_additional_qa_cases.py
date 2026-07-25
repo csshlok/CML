@@ -2080,9 +2080,13 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn('uvicorn[standard]==0.48.0', package_text)
         self.assertIn('ocrmypdf==17.5.0', package_text)
         self.assertIn('sentence-transformers==5.5.1', package_text)
-        self.assertIn('$effectiveBackendRuntimePackages = @($backendRuntimePackages)', package_text)
+        self.assertIn(
+            '$effectiveBackendRuntimePackages = @($backendRuntimePackages) + @($embeddingRuntimePackages)',
+            package_text,
+        )
         self.assertIn('python-runtime-v6', package_text)
-        self.assertIn('Embedding runtime is included in the staged backend runtime fingerprint', package_text)
+        self.assertIn('SentenceTransformers is included in every packaged backend runtime.', package_text)
+        self.assertNotIn('if ($IncludeEmbeddingRuntime)', package_text)
         self.assertNotIn('expert-python-runtime', package_text)
         self.assertNotIn('transformers==5.6.0', package_text)
         self.assertNotIn('peft==0.18.1', package_text)
@@ -2097,6 +2101,7 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("[switch]$RunExecutableSmokes", validate_text)
         self.assertIn("[string]$InstallerPath", validate_text)
         self.assertIn("smoke-windows-installer.ps1", validate_text)
+        self.assertIn("sentence_transformers_runtime_exists", validate_text)
         self.assertNotIn("expert_python_runtime_exists", validate_text)
         self.assertEqual(root_main_text.strip(), 'module.exports = require("./electron/main.cjs");')
         icon_header = desktop_icon.read_bytes()[:6]
@@ -2501,6 +2506,13 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("model.compatibility?.chat_role_accepted", onboarding)
         self.assertIn("refreshDetectedModels(true)", onboarding)
         self.assertIn("Skip for now", onboarding)
+        self.assertIn("recommendedEmbeddingModel", onboarding)
+        self.assertIn("sentence-transformers/all-MiniLM-L6-v2", onboarding)
+        self.assertIn("About 100 MB", onboarding)
+        self.assertIn("Review download", onboarding)
+        self.assertIn("Agree and download", onboarding)
+        self.assertIn("showEmbeddingConsent", onboarding)
+        self.assertIn("It is not used to generate chat replies.", onboarding)
         self.assertNotIn("Continue is enabled only after one accepted chat model and one accepted expert checkpoint are active.", onboarding)
         self.assertIn("Local model download location", settings)
         self.assertIn("target_dir: modelDownloadRoot.trim() || null", settings)
