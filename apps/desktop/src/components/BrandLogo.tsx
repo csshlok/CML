@@ -5,7 +5,7 @@ type BrandLogoProps = {
 };
 
 const brandAssets = {
-  wordmark: "/brand/logo.svg",
+  wordmark: "/brand/Container.svg",
   icon: "/brand/logo.svg",
 } as const;
 
