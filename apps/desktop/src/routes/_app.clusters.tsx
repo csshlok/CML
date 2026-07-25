@@ -31,6 +31,7 @@ function ClustersList() {
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [suggestions, setSuggestions] = useState<ClusterSuggestionRecord[]>([]);
   const [dismissedSuggestions, setDismissedSuggestions] = useState<string[]>([]);
+  const [lastDismissedSuggestion, setLastDismissedSuggestion] = useState<ClusterSuggestionRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -46,6 +47,7 @@ function ClustersList() {
       const activeVault = vaults[0] ?? null;
       setBackendVault(activeVault);
       if (!activeVault) return;
+      setDismissedSuggestions(readDismissedSuggestions(activeVault.id));
       const [clusterRows, sourceRows, suggestionRows, countResult, projectRows] = await Promise.all([
         listClusters(activeVault.id),
         listSources(activeVault.id, { limit: 200 }),
@@ -71,6 +73,12 @@ function ClustersList() {
     setMounted(true);
     void loadData();
   }, []);
+
+  useEffect(() => {
+    if (!lastDismissedSuggestion) return;
+    const timeout = window.setTimeout(() => setLastDismissedSuggestion(null), 6000);
+    return () => window.clearTimeout(timeout);
+  }, [lastDismissedSuggestion]);
 
   const clusters = !mounted ? [] : backendClusters;
   const sources = !mounted ? [] : backendSources;
@@ -120,6 +128,28 @@ function ClustersList() {
     await loadData();
   }
 
+  function dismissSuggestion(suggestion: ClusterSuggestionRecord) {
+    if (!vault) return;
+    const key = suggestionKey(suggestion);
+    setDismissedSuggestions((current) => {
+      const next = Array.from(new Set([...current, key]));
+      writeDismissedSuggestions(vault.id, next);
+      return next;
+    });
+    setLastDismissedSuggestion(suggestion);
+  }
+
+  function undoDismissSuggestion() {
+    if (!vault || !lastDismissedSuggestion) return;
+    const key = suggestionKey(lastDismissedSuggestion);
+    setDismissedSuggestions((current) => {
+      const next = current.filter((item) => item !== key);
+      writeDismissedSuggestions(vault.id, next);
+      return next;
+    });
+    setLastDismissedSuggestion(null);
+  }
+
   return (
     <div className="vault-page-wash h-full overflow-y-auto">
       <div className="mx-auto min-h-full max-w-[1240px]">
@@ -163,13 +193,12 @@ function ClustersList() {
         )}
 
           <section className="mt-9">
-            <div className="overflow-x-auto">
-              <div className="min-w-[760px]">
-                <div className="grid grid-cols-[minmax(0,1fr)_96px_96px_140px_32px] border-b border-border px-2 pb-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            <div className="min-w-0">
+                <div className="grid grid-cols-[minmax(0,1fr)_64px_48px] border-b border-border px-2 pb-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground md:grid-cols-[minmax(0,1fr)_64px_112px_48px] xl:grid-cols-[minmax(0,1fr)_64px_64px_112px_48px]">
                   <span>Name</span>
                   <span>Sources</span>
-                  <span>Indexed</span>
-                  <span>Last activity</span>
+                  <span className="hidden xl:block">Indexed</span>
+                  <span className="hidden md:block">Activity</span>
                   <span />
                 </div>
                 <div>
@@ -180,7 +209,7 @@ function ClustersList() {
                         key={cluster.id}
                         to="/clusters/$clusterId"
                         params={{ clusterId: cluster.id }}
-                        className="grid w-full grid-cols-[minmax(0,1fr)_96px_96px_140px_32px] items-center border-b border-border px-2 py-4 text-left transition-colors hover:bg-card/65"
+                        className="grid w-full grid-cols-[minmax(0,1fr)_64px_48px] items-center border-b border-border px-2 py-4 text-left transition-colors hover:bg-card/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_64px_112px_48px] xl:grid-cols-[minmax(0,1fr)_64px_64px_112px_48px]"
                       >
                         <div className="flex min-w-0 items-center gap-4">
                           <ClusterDocument tint={cluster.tint} />
@@ -199,10 +228,10 @@ function ClustersList() {
                           </div>
                         </div>
                         <span className="text-sm tabular-nums text-muted-foreground">{count}</span>
-                        <span className="text-sm tabular-nums text-muted-foreground">
+                        <span className="hidden text-sm tabular-nums text-muted-foreground xl:block">
                           {(indexedCounts.get(cluster.id) ?? 0).toLocaleString()}
                         </span>
-                        <span className="break-words text-sm text-muted-foreground">{clusterLastActivity(cluster, sources)}</span>
+                        <span className="hidden break-words text-sm text-muted-foreground md:block">{clusterLastActivity(cluster, sources)}</span>
                         <span className="justify-self-end text-xs text-muted-foreground">Open</span>
                       </Link>
                     );
@@ -213,7 +242,6 @@ function ClustersList() {
                     </div>
                   )}
                 </div>
-              </div>
             </div>
           </section>
 
@@ -245,9 +273,7 @@ function ClustersList() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() =>
-                          setDismissedSuggestions((current) => [...current, suggestionKey(suggestion)])
-                        }
+                        onClick={() => dismissSuggestion(suggestion)}
                       >
                         <X className="h-4 w-4" /> Dismiss
                       </Button>
@@ -260,6 +286,17 @@ function ClustersList() {
         </div>
 
       </div>
+      {lastDismissedSuggestion ? (
+        <div
+          className="fixed bottom-10 right-4 z-50 flex max-w-sm items-center gap-3 rounded-md bg-[var(--text-primary)] px-4 py-3 text-sm text-[var(--bg-card)]"
+          role="status"
+        >
+          <span className="min-w-0 flex-1 truncate">Suggestion dismissed</span>
+          <button type="button" className="font-medium underline underline-offset-2" onClick={undoDismissSuggestion}>
+            Undo
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -277,6 +314,23 @@ function ClusterDocument({ tint }: { tint: ClusterTint }) {
 
 function suggestionKey(suggestion: ClusterSuggestionRecord) {
   return `${suggestion.source_id}:${suggestion.suggested_cluster_id}`;
+}
+
+function dismissedSuggestionStorageKey(vaultId: string) {
+  return `vault.clusters.dismissedSuggestions.${vaultId}`;
+}
+
+function readDismissedSuggestions(vaultId: string) {
+  try {
+    const value: unknown = JSON.parse(window.localStorage.getItem(dismissedSuggestionStorageKey(vaultId)) ?? "[]");
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeDismissedSuggestions(vaultId: string, values: string[]) {
+  window.localStorage.setItem(dismissedSuggestionStorageKey(vaultId), JSON.stringify(values));
 }
 
 function nextTint(index: number) {

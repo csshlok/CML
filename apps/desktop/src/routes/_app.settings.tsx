@@ -1781,8 +1781,13 @@ function SettingsView() {
               <Button onClick={() => void unlockVault()} disabled={saving || !backendVault}>
                 {unlockStatus?.secured_vault_count ? "Unlock" : "Initialize security"}
               </Button>
-              <Button variant="outline" onClick={() => void lockCurrentVault()} disabled={saving || unlockStatus?.state !== "ready"}>
-                Lock
+              <Button
+                variant="outline"
+                className="border-[var(--status-warn)]/45 text-[var(--status-warn-ink)]"
+                onClick={() => void lockCurrentVault()}
+                disabled={saving || unlockStatus?.state !== "ready"}
+              >
+                Lock library
               </Button>
             </div>
             {recoveryKey ? (
@@ -2020,10 +2025,11 @@ function SettingsView() {
           {showSection("advanced") && (
             <SettingsCard
               icon={<Lock className="h-4 w-4" />}
-              title="Delete library"
+              title="Danger zone"
               description="Remove this library's database records. Original source files remain in place."
               status="Destructive"
               statusTone="issue"
+              danger
             >
               <Button
                 variant="destructive"
@@ -2074,6 +2080,7 @@ function SettingsCard({
   description,
   status,
   statusTone = "ready",
+  danger = false,
   children,
 }: {
   icon: ReactNode;
@@ -2081,10 +2088,17 @@ function SettingsCard({
   description: string;
   status?: string;
   statusTone?: "ready" | "issue";
+  danger?: boolean;
   children?: ReactNode;
 }) {
   return (
-    <section className="vault-card p-4">
+    <section
+      className={
+        danger
+          ? "rounded-md border border-[var(--status-error)]/40 bg-[var(--status-error-bg)] p-4"
+          : "vault-card p-4"
+      }
+    >
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 flex-1 gap-4">
           <span className="mt-0.5 shrink-0 text-muted-foreground">{icon}</span>

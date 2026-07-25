@@ -1,5 +1,5 @@
 import { type ComponentType, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ExternalLink, List, Network, RotateCcw, Search } from "lucide-react";
+import { ArrowLeft, ExternalLink, List, Network, RotateCcw, Search, ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -40,11 +40,13 @@ export function KnowledgeMap({
   const [selected, setSelected] = useState<MapItemRecord | null>(null);
   const [root, setRoot] = useState<MapNodeRecord | null>(null);
   const [query, setQuery] = useState("");
+  const [kindFilter, setKindFilter] = useState<"all" | MapNodeRecord["kind"]>("all");
   const [listMode, setListMode] = useState(false);
   const [loadingFocus, setLoadingFocus] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [size, setSize] = useState({ width: 900, height: 620 });
   const [viewRevision, setViewRevision] = useState(0);
+  const [zoomLevel, setZoomLevel] = useState(1);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
 
   useEffect(() => {
@@ -79,11 +81,12 @@ export function KnowledgeMap({
   }, [containerElement]);
 
   const visibleNodes = useMemo(() => {
-    if (!deferredQuery) return graph.nodes;
-    return graph.nodes.filter((node) =>
-      `${node.label} ${node.summary} ${node.kind}`.toLowerCase().includes(deferredQuery),
-    );
-  }, [deferredQuery, graph.nodes]);
+    return graph.nodes.filter((node) => {
+      if (kindFilter !== "all" && node.kind !== kindFilter) return false;
+      if (!deferredQuery) return true;
+      return `${node.label} ${node.summary} ${node.kind}`.toLowerCase().includes(deferredQuery);
+    });
+  }, [deferredQuery, graph.nodes, kindFilter]);
   const visibleIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
   const visibleEdges = useMemo(
     () => graph.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
@@ -157,7 +160,16 @@ export function KnowledgeMap({
     );
     instance.centerAt?.(centerX, centerY, duration);
     instance.zoom?.(zoom, duration);
+    setZoomLevel(zoom);
   }, [size.height, size.width]);
+
+  const changeZoom = useCallback((factor: number) => {
+    const instance = graphRef.current;
+    if (!instance) return;
+    const next = Math.max(0.12, Math.min(4, zoomLevel * factor));
+    instance.zoom?.(next, 180);
+    setZoomLevel(next);
+  }, [zoomLevel]);
 
   useEffect(() => {
     if (listMode || !ForceGraph) return;
@@ -210,6 +222,7 @@ export function KnowledgeMap({
     setRoot(null);
     setSelected(null);
     setQuery("");
+    setKindFilter("all");
     setError(null);
     setViewRevision((current) => current + 1);
   }
@@ -235,10 +248,45 @@ export function KnowledgeMap({
               aria-label="Filter map"
             />
           </div>
+          <select
+            value={kindFilter}
+            onChange={(event) => setKindFilter(event.target.value as typeof kindFilter)}
+            className="h-9 rounded-md border border-input bg-card px-2.5 text-xs"
+            aria-label="Filter map item type"
+          >
+            <option value="all">All item types</option>
+            <option value="cluster">Clusters</option>
+            <option value="source">Sources</option>
+            <option value="fact">Facts</option>
+            <option value="collection">Collections</option>
+          </select>
           <Button variant="outline" size="sm" onClick={() => setListMode((current) => !current)}>
             {listMode ? <Network className="h-4 w-4" /> : <List className="h-4 w-4" />}
             {listMode ? "Graph" : "List"}
           </Button>
+          {!listMode ? (
+            <div className="flex h-9 items-center rounded-md border border-input bg-card" aria-label="Map zoom controls">
+              <button
+                type="button"
+                className="flex h-full w-9 items-center justify-center rounded-l-md hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                onClick={() => changeZoom(0.8)}
+                aria-label="Zoom out"
+              >
+                <ZoomOut className="h-3.5 w-3.5" />
+              </button>
+              <span className="w-12 text-center text-[11px] tabular-nums text-muted-foreground">
+                {Math.round(zoomLevel * 100)}%
+              </span>
+              <button
+                type="button"
+                className="flex h-full w-9 items-center justify-center rounded-r-md hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                onClick={() => changeZoom(1.25)}
+                aria-label="Zoom in"
+              >
+                <ZoomIn className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : null}
           <Button variant="outline" size="sm" onClick={resetOverview}>
             <RotateCcw className="h-4 w-4" />
             Reset view
@@ -298,6 +346,7 @@ export function KnowledgeMap({
                 }
                 onNodeClick={(node: MapNodeRecord) => void focus(node)}
                 onNodeRightClick={(node: MapNodeRecord) => void inspect(node)}
+                onZoom={({ k }: { k: number }) => setZoomLevel(k)}
                 cooldownTicks={90}
                 onEngineStop={() => fitGraph(280)}
               />
