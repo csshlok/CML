@@ -74,6 +74,21 @@ class UnlockPhase2Tests(unittest.TestCase):
         self.assertEqual(unlocked.json()["state"], "ready")
         self.assertEqual(after.status_code, 200)
 
+    def test_new_unsecured_vault_starts_ready(self) -> None:
+        client = self._client()
+        try:
+            status = client.get("/api/v1/system/unlock/status")
+            sources = client.get("/api/v1/sources")
+        finally:
+            client.close()
+
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(status.json()["state"], "ready")
+        self.assertTrue(status.json()["ready"])
+        self.assertEqual(status.json()["secured_vault_count"], 0)
+        self.assertIn("Lock protection has not been enabled", status.json()["message"])
+        self.assertEqual(sources.status_code, 200)
+
     def test_phase0_protected_route_families_reject_before_ready(self) -> None:
         self._initialize_security_directly()
         client = self._client()

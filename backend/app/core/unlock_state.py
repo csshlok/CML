@@ -100,6 +100,18 @@ def current_unlock_state() -> dict:
         snapshot = _STATE
     secured = secured_vault_ids()
     result = snapshot.to_dict()
+    if not secured:
+        result.update(
+            {
+                "state": "ready",
+                "vault_id": None,
+                "unlock_mode": "convenience",
+                "pin_enabled": False,
+                "message": "Vault is ready. Lock protection has not been enabled.",
+                "verification_error": "",
+                "ready": True,
+            }
+        )
     result["secured_vault_count"] = len(secured)
     result["secured_vault_ids"] = secured
     result["has_vendor_recovery"] = no_vendor_recovery_available() is False

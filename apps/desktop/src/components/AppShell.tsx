@@ -129,14 +129,19 @@ export function AppShell() {
         setUnlockStatus(null);
         return;
       }
-      const [rows, chats, currentUnlock] = await Promise.all([
+      const currentUnlock = await getUnlockStatus();
+      setUnlockStatus(currentUnlock);
+      if (currentUnlock.secured_vault_count > 0 && !currentUnlock.ready) {
+        setRecentClusters([]);
+        setSavedChats([]);
+        return;
+      }
+      const [rows, chats] = await Promise.all([
         listClusters(activeVault.id),
         listChatSessions(activeVault.id, { limit: 50 }),
-        getUnlockStatus(),
       ]);
       setRecentClusters(rows.slice(0, 5));
       setSavedChats(chats.filter((chat) => chat.saved).slice(0, 5));
-      setUnlockStatus(currentUnlock);
     } catch {
       setRecentClusters([]);
       setSavedChats([]);
@@ -174,6 +179,10 @@ export function AppShell() {
 
   const taskCount = (jobs?.queued ?? 0) + (jobs?.running ?? 0) + (jobs?.failed ?? 0);
   const activeTaskCount = (jobs?.queued ?? 0) + (jobs?.running ?? 0);
+  const securityLockActive =
+    Boolean(unlockStatus) &&
+    (unlockStatus?.secured_vault_count ?? 0) > 0 &&
+    unlockStatus?.ready === false;
   const currentPage =
     [...primaryNav, ...secondaryNav].find((item) => pathname.startsWith(item.to))?.label ?? "Vault";
   const currentVaultName = vault?.name ?? (vaultPath ? vaultName(vaultPath) : "Vault");
@@ -340,10 +349,10 @@ export function AppShell() {
         </aside>
 
         <main ref={contentRef} className="content-area focus:outline-none" tabIndex={-1}>
-          {unlockStatus && !unlockStatus.ready && pathname !== "/settings" ? (
+          {securityLockActive && pathname !== "/settings" ? (
             <LockedState onOpenSettings={() => navigate({ to: "/settings", search: { section: "privacy" } })} />
           ) : (
-            <Outlet key={unlockStatus?.ready === false ? "locked" : "ready"} />
+            <Outlet key={securityLockActive ? "locked" : "ready"} />
           )}
         </main>
       </div>
