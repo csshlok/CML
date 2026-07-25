@@ -183,8 +183,8 @@ function HomeView() {
               />
               <QuickAction
                 icon={<Search className="h-4 w-4" />}
-                title="Run analysis"
-                detail="Ask Vault to analyze a topic"
+                title="Start a chat"
+                detail="Ask a question across your memory"
                 href="/chat"
               />
               <QuickAction
@@ -203,7 +203,7 @@ function HomeView() {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Ask anything or search your memory..."
-              className="min-h-[108px] resize-none border-0 bg-transparent p-3 text-base shadow-none focus-visible:ring-0"
+              className="min-h-[84px] resize-none border-0 bg-transparent p-3 text-base shadow-none focus-visible:ring-0"
               onKeyDown={(event) => {
                 if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
                   event.preventDefault();
@@ -222,6 +222,49 @@ function HomeView() {
             </div>
           </section>
         </div>
+
+        <ProductSection className="mt-8">
+          <ProductSectionHeader
+            title="Suggested clusters"
+            description="Spaces Vault has recently organized or updated."
+            action={<Link to="/clusters" className="text-sm text-primary hover:underline">View all</Link>}
+          />
+          <div className="grid gap-4 p-5 md:grid-cols-2 2xl:grid-cols-4">
+            {clusters.slice(0, 4).map((cluster) => {
+              const metrics = clusterMetrics.get(cluster.id) ?? { total: 0, indexed: 0 };
+              const progress = metrics.total > 0 ? Math.round((metrics.indexed / metrics.total) * 100) : 0;
+              return (
+                <Link
+                  key={cluster.id}
+                  to="/clusters/$clusterId"
+                  params={{ clusterId: cluster.id }}
+                  className="rounded-md border border-border bg-background p-4 transition-colors hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:bg-accent"
+                  style={{ ["--cluster-accent" as string]: `var(--cluster-${cluster.tint})` }}
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[var(--cluster-accent)]/15 text-[var(--cluster-accent)]">
+                      <Sparkles className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="line-clamp-2 break-words text-sm font-semibold">
+                        {cluster.name}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {metrics.total} sources <span className="px-1">/</span> {metrics.indexed} indexed
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-4 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${cluster.name} indexing progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+                    <span
+                      className="block h-full rounded-full bg-[var(--cluster-accent)]"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        </ProductSection>
 
         <ProductSectionStack className="mt-10 pb-10">
           <div className="grid items-start gap-6 xl:grid-cols-2">
@@ -259,49 +302,6 @@ function HomeView() {
               </Link>
             </Panel>
           </div>
-
-          <ProductSection>
-            <ProductSectionHeader
-              title="Suggested clusters"
-              description="Spaces Vault has recently organized or updated."
-              action={<Link to="/clusters" className="text-sm text-primary">View all</Link>}
-            />
-            <div className="grid gap-4 p-5 md:grid-cols-2 2xl:grid-cols-4">
-            {clusters.slice(0, 4).map((cluster) => {
-              const metrics = clusterMetrics.get(cluster.id) ?? { total: 0, indexed: 0 };
-              const progress = metrics.total > 0 ? Math.round((metrics.indexed / metrics.total) * 100) : 0;
-              return (
-                <Link
-                  key={cluster.id}
-                  to="/clusters/$clusterId"
-                  params={{ clusterId: cluster.id }}
-                  className="rounded-md border border-border bg-background p-4 hover:bg-accent/45"
-                  style={{ ["--cluster-accent" as string]: `var(--cluster-${cluster.tint})` }}
-                >
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[var(--cluster-accent)]/15 text-[var(--cluster-accent)]">
-                      <Sparkles className="h-4 w-4" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="line-clamp-2 break-words text-sm font-semibold">
-                        {cluster.name}
-                      </div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        {metrics.total} sources <span className="px-1">/</span> {metrics.indexed} indexed
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-4 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${cluster.name} indexing progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
-                    <span
-                      className="block h-full rounded-full bg-[var(--cluster-accent)]"
-                      style={{ width: `${progress}%` }}
-                    />
-                  </div>
-                </Link>
-              );
-            })}
-            </div>
-          </ProductSection>
 
           <ProductSection>
             <ProductSectionHeader
@@ -408,7 +408,7 @@ function QuickAction({
     <Link
       to={href}
       search={search}
-      className="flex min-h-20 items-center gap-3 bg-card p-4 hover:bg-accent/45"
+      className="flex min-h-20 items-center gap-3 bg-card p-4 transition-colors hover:bg-accent/45 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring active:bg-accent"
     >
       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted text-primary">
         {icon}

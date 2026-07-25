@@ -13,18 +13,19 @@ import {
   Search,
   Settings,
   UserRound,
-  LockKeyhole,
   Menu,
   X,
 } from "lucide-react";
 import { CommandPalette, useCommandPalette } from "@/components/CommandPalette";
 import { BrandLogo } from "@/components/BrandLogo";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   getJobStatus,
+  listChatSessions,
   listClusters,
   listVaults,
   getUnlockStatus,
+  type ChatSessionRecord,
   useBackendHealth,
   type ClusterRecord,
   type JobQueueStatus,
@@ -33,6 +34,7 @@ import {
 } from "@/lib/backend";
 import { AppStatusAnnouncer, LockedState, StatusLabel } from "@/components/product/Feedback";
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
+import { normalizeTint } from "@/lib/recordAdapters";
 
 type NavItem = {
   to:
@@ -49,20 +51,22 @@ type NavItem = {
     | "/settings";
   label: string;
   icon: typeof Home;
-  separated?: boolean;
 };
 
-const nav: NavItem[] = [
+const primaryNav: NavItem[] = [
   { to: "/home", label: "Home", icon: Home },
   { to: "/chat", label: "Chat", icon: MessageSquare },
-  { to: "/search", label: "Search", icon: Search },
   { to: "/sources", label: "Sources", icon: Layers },
-  { to: "/projects", label: "Projects", icon: Code2 },
   { to: "/clusters", label: "Clusters", icon: Boxes },
+  { to: "/search", label: "Search", icon: Search },
+  { to: "/projects", label: "Projects", icon: Code2 },
   { to: "/map", label: "Map", icon: Globe },
+] as const;
+
+const secondaryNav: NavItem[] = [
   { to: "/timeline", label: "Timeline", icon: CalendarDays },
   { to: "/bridge", label: "Bridge", icon: Link2 },
-  { to: "/tasks", label: "Tasks", icon: CheckSquare, separated: true },
+  { to: "/tasks", label: "Tasks", icon: CheckSquare },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
@@ -74,8 +78,10 @@ export function AppShell() {
   const [vault, setVault] = useState<VaultRecord | null>(null);
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
   const [recentClusters, setRecentClusters] = useState<ClusterRecord[]>([]);
+  const [savedChats, setSavedChats] = useState<ChatSessionRecord[]>([]);
   const [unlockStatus, setUnlockStatus] = useState<UnlockStatusRead | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const contentRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -118,17 +124,21 @@ export function AppShell() {
       setVault(activeVault);
       if (!activeVault) {
         setRecentClusters([]);
+        setSavedChats([]);
         setUnlockStatus(null);
         return;
       }
-      const [rows, currentUnlock] = await Promise.all([
+      const [rows, chats, currentUnlock] = await Promise.all([
         listClusters(activeVault.id),
+        listChatSessions(activeVault.id, { limit: 50 }),
         getUnlockStatus(),
       ]);
       setRecentClusters(rows.slice(0, 5));
+      setSavedChats(chats.filter((chat) => chat.saved).slice(0, 5));
       setUnlockStatus(currentUnlock);
     } catch {
       setRecentClusters([]);
+      setSavedChats([]);
     }
   }, []);
 
@@ -142,8 +152,10 @@ export function AppShell() {
       void refreshLibrary();
     };
     window.addEventListener("vault:lock-state", onLockState);
+    window.addEventListener("vault:chats-changed", refreshLibrary);
     return () => {
       window.removeEventListener("vault:lock-state", onLockState);
+      window.removeEventListener("vault:chats-changed", refreshLibrary);
     };
   }, [refreshLibrary]);
 
@@ -152,10 +164,61 @@ export function AppShell() {
   const vaultPath = vault?.path ?? null;
   const sidebarClusters =
     recentClusters.length > 0
-      ? recentClusters.map((cluster) => ({ id: cluster.id, name: cluster.name }))
+      ? recentClusters.map((cluster) => ({
+          id: cluster.id,
+          name: cluster.name,
+          tint: normalizeTint(cluster.color),
+        }))
       : [];
 
   const taskCount = (jobs?.queued ?? 0) + (jobs?.running ?? 0) + (jobs?.failed ?? 0);
+  const activeTaskCount = (jobs?.queued ?? 0) + (jobs?.running ?? 0);
+  const currentPage =
+    [...primaryNav, ...secondaryNav].find((item) => pathname.startsWith(item.to))?.label ?? "Vault";
+  const currentVaultName = vault?.name ?? (vaultPath ? vaultName(vaultPath) : "Vault");
+
+  useEffect(() => {
+    document.title = `${currentVaultName} — ${currentPage}`;
+  }, [currentPage, currentVaultName]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => contentRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [pathname]);
+
+  function handleNavKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const links = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("[data-vault-nav]"));
+    const currentIndex = links.indexOf(document.activeElement as HTMLElement);
+    if (currentIndex < 0) return;
+    event.preventDefault();
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    links[(currentIndex + direction + links.length) % links.length]?.focus();
+  }
+
+  function renderNavItems(items: readonly NavItem[]) {
+    return items.map((item) => {
+      const Icon = item.icon;
+      const active = pathname.startsWith(item.to);
+      return (
+        <Link
+          key={item.to}
+          to={item.to}
+          data-vault-nav
+          data-active={active}
+          className="vault-nav-item flex items-center gap-3 px-2.5 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+        >
+          <Icon className="h-4 w-4" strokeWidth={1.5} />
+          <span className="min-w-0 flex-1 break-words">{item.label}</span>
+          {item.to === "/tasks" && taskCount > 0 ? (
+            <span className="rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)]">
+              {taskCount}
+            </span>
+          ) : null}
+        </Link>
+      );
+    });
+  }
 
   return (
     <div className="vault-shell flex-col text-foreground">
@@ -202,36 +265,43 @@ export function AppShell() {
             </button>
           </div>
 
-          <nav className="flex-1 overflow-y-auto px-4 pb-4 pt-2">
+          <nav
+            className="flex-1 overflow-y-auto px-4 pb-4 pt-2"
+            aria-label="Vault navigation"
+            onKeyDown={handleNavKeyDown}
+          >
             <div className="space-y-1">
-              {nav.map((item) => {
-                const Icon = item.icon;
-                const active = pathname.startsWith(item.to);
-                return (
-                  <div key={item.to} className={item.separated ? "mt-4 border-t border-[var(--border-default)] pt-4" : ""}>
-                    <Link
-                      to={item.to}
-                      data-active={active}
-                      className="vault-nav-item flex items-center gap-3 px-2.5 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                    >
-                      <Icon className="h-4 w-4" strokeWidth={1.5} />
-                      <span className="min-w-0 flex-1 break-words">{item.label}</span>
-                      {item.to === "/tasks" && taskCount > 0 && (
-                        <span className="rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)]">
-                          {taskCount}
-                        </span>
-                      )}
-                    </Link>
-                  </div>
-                );
-              })}
+              {renderNavItems(primaryNav)}
             </div>
+            <div className="mt-5 border-t border-[var(--border-default)] pt-4">
+              <div className="panel-section-title px-2.5 pb-2">More</div>
+              <div className="space-y-1">{renderNavItems(secondaryNav)}</div>
+            </div>
+
+            {savedChats.length > 0 ? (
+              <div className="mt-6 border-t border-[var(--border-default)] pt-5">
+                <div className="panel-section-title px-2.5 pb-2">Saved chats</div>
+                <div className="space-y-1">
+                  {savedChats.map((chat) => (
+                    <Link
+                      key={chat.id}
+                      to="/chat/$chatId"
+                      params={{ chatId: chat.id }}
+                      className="flex min-h-7 items-start gap-2 rounded-md px-2.5 py-1 text-[13px] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                    >
+                      <MessageSquare className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
+                      <span className="min-w-0 flex-1 truncate">{chat.title}</span>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
             {sidebarClusters.length > 0 && (
               <div className="mt-6 border-t border-[var(--border-default)] pt-5">
                 <div className="panel-section-title px-2.5 pb-2">Recent</div>
                 <div className="space-y-1">
-                  {sidebarClusters.map((cluster, index) => (
+                  {sidebarClusters.map((cluster) => (
                     <Link
                       key={cluster.id}
                       to="/clusters/$clusterId"
@@ -240,7 +310,7 @@ export function AppShell() {
                     >
                       <span
                         className="mt-1.5 h-2 w-2 shrink-0 rounded-full"
-                        style={{ background: clusterDot(index) }}
+                        style={{ background: `var(--cluster-${cluster.tint})` }}
                       />
                       <span className="min-w-0 flex-1 break-words">{cluster.name}</span>
                     </Link>
@@ -268,7 +338,7 @@ export function AppShell() {
           </div>
         </aside>
 
-        <main className="content-area">
+        <main ref={contentRef} className="content-area focus:outline-none" tabIndex={-1}>
           {unlockStatus && !unlockStatus.ready && pathname !== "/settings" ? (
             <LockedState onOpenSettings={() => navigate({ to: "/settings", search: { section: "privacy" } })} />
           ) : (
@@ -280,7 +350,7 @@ export function AppShell() {
       <footer className="vault-footer flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-[var(--border-default)] px-4 py-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${backend.status === "online" ? "bg-[var(--status-ready)]" : "bg-[var(--status-muted)]"}`} />
-          <span className="min-w-0 break-all">{vaultPath ?? "No active library"}</span>
+          <span className="min-w-0 truncate">{vault?.name ?? (vaultPath ? vaultName(vaultPath) : "No active library")}</span>
           <span>/</span>
           <span>
             {backend.status === "online"
@@ -292,15 +362,7 @@ export function AppShell() {
                   : "Library service unavailable"}
           </span>
           <span>/</span>
-          <span>{jobs?.running ? `${jobs.running} task running` : jobs?.queued ? `${jobs.queued} queued` : "Tasks idle"}</span>
-        </div>
-        <div className="hidden items-center gap-2 md:flex">
-          <span>Ctrl/Cmd K commands</span>
-          <span>/</span>
-          <span>Ctrl/Cmd N new chat</span>
-          <span>/</span>
-          <LockKeyhole className="h-3 w-3" strokeWidth={1.5} />
-          <span>All data stays on your device</span>
+          <span>{activeTaskCount > 0 ? `${activeTaskCount} active task${activeTaskCount === 1 ? "" : "s"}` : "No active tasks"}</span>
         </div>
       </footer>
 
@@ -320,15 +382,4 @@ export function AppShell() {
 
 function vaultName(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
-}
-
-function clusterDot(index: number) {
-  const colors = [
-    "var(--cluster-sage)",
-    "var(--cluster-terracotta)",
-    "var(--cluster-sky)",
-    "var(--cluster-lavender)",
-    "var(--cluster-sand)",
-  ];
-  return colors[index % colors.length];
 }
