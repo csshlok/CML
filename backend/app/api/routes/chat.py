@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.cluster_bundle import build_cluster_bundle_context
@@ -581,7 +582,16 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                     "Stream ended without a terminal event.",
                 )
 
-    return StreamingResponse(events(), media_type="text/event-stream")
+    source_events = events()
+
+    async def close_aware_events():
+        try:
+            async for event in iterate_in_threadpool(source_events):
+                yield event
+        finally:
+            await run_in_threadpool(source_events.close)
+
+    return StreamingResponse(close_aware_events(), media_type="text/event-stream")
 
 
 def _build_retrieval_context(payload: ChatContextRequest, synthesize: bool = True) -> dict:
