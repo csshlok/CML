@@ -8,14 +8,15 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { NotificationViewport } from "@/components/product/Notifications";
+import { WindowChrome } from "@/components/WindowChrome";
 
 import appCss from "../styles.css?url";
 
 function NotFoundComponent() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+    <div className="flex min-h-full items-center justify-center bg-background px-4">
       <div className="max-w-md text-center">
         <h1 className="text-7xl font-bold text-foreground">404</h1>
         <h2 className="mt-4 text-xl font-semibold text-foreground">Page not found</h2>
@@ -40,7 +41,7 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   const router = useRouter();
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+    <div className="flex min-h-full items-center justify-center bg-background px-4">
       <div className="max-w-md text-center">
         <h1 className="text-xl font-semibold tracking-tight text-foreground">
           This page didn't load
@@ -119,14 +120,24 @@ function RootShell({ children }: { children: React.ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   const pathname = useRouterState({ select: (router) => router.location.pathname });
+  const [hasDesktopChrome, setHasDesktopChrome] = useState(false);
 
   useEffect(() => {
     void window.cmlDesktop?.notifyRendererReady?.(pathname);
   }, [pathname]);
 
+  useEffect(() => {
+    setHasDesktopChrome(Boolean(window.cmlDesktop?.windowControls));
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
-      <Outlet />
+      <div className={hasDesktopChrome ? "vault-desktop-frame" : "h-screen"}>
+        {hasDesktopChrome ? <WindowChrome /> : null}
+        <div className={hasDesktopChrome ? "vault-desktop-content" : undefined}>
+          <Outlet />
+        </div>
+      </div>
       <NotificationViewport />
     </QueryClientProvider>
   );

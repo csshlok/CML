@@ -28,6 +28,10 @@ const {
   updateSetupState,
   writeSetupState,
 } = require("./setup-state.cjs");
+const {
+  attachWindowStateEvents,
+  registerWindowControlHandlers,
+} = require("./window-controls.cjs");
 
 const isDev = !app.isPackaged;
 const devUrl = process.env.CML_DESKTOP_DEV_URL || "http://127.0.0.1:5173";
@@ -169,6 +173,7 @@ async function createWindow() {
     title: "Vault",
     backgroundColor: "#fbfaf6",
     autoHideMenuBar: true,
+    frame: false,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -178,6 +183,7 @@ async function createWindow() {
     },
   });
   mainWindow = window;
+  attachWindowStateEvents(window);
   window.setMenuBarVisibility(false);
 
   window.once("ready-to-show", () => {
@@ -261,6 +267,17 @@ function displayPath(value) {
   return String(value || "").replace(/\\/g, "/").replace(/\/{2,}/g, "/");
 }
 
+function repairWindowChromeMarkup() {
+  return `
+    <header style="position:fixed;inset:0 0 auto 0;height:32px;display:flex;z-index:10;-webkit-app-region:drag;background:#fbfaf6;user-select:none;">
+      <div style="margin-left:auto;height:32px;display:flex;-webkit-app-region:no-drag;">
+        <button aria-label="Minimize" title="Minimize" onclick="window.cmlDesktop?.windowControls?.minimize?.()" style="width:46px;height:32px;border:0;background:transparent;color:#27211d;font-size:17px;line-height:1;">−</button>
+        <button aria-label="Maximize or restore" title="Maximize or restore" onclick="window.cmlDesktop?.windowControls?.toggleMaximize?.()" style="width:46px;height:32px;border:0;background:transparent;color:#27211d;font-size:14px;line-height:1;">□</button>
+        <button aria-label="Close" title="Close" onclick="window.cmlDesktop?.windowControls?.close?.()" style="width:46px;height:32px;border:0;background:transparent;color:#27211d;font-size:18px;line-height:1;">×</button>
+      </div>
+    </header>`;
+}
+
 async function loadStartupFailure(window, error) {
   const status = await readStartupStatus();
   const backendLogs = getBackendLogPaths();
@@ -282,6 +299,7 @@ async function loadStartupFailure(window, error) {
     <meta charset="utf-8" />
     <title>Vault startup issue</title>
     <body style="margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#fbfaf6;color:#1f1a17;">
+      ${repairWindowChromeMarkup()}
       <main style="max-width:760px;margin:10vh auto;padding:32px;">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px;">
           <div style="width:32px;height:32px;border:1px solid #ded6cc;border-radius:8px;display:grid;place-items:center;background:#fffdf9;overflow:hidden;">${startupRepairLogoMarkup}</div>
@@ -349,6 +367,7 @@ async function loadRendererFailure(window, error) {
     <meta charset="utf-8" />
     <title>Vault renderer issue</title>
     <body style="margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#fbfaf6;color:#1f1a17;">
+      ${repairWindowChromeMarkup()}
       <main style="max-width:760px;margin:10vh auto;padding:32px;">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px;">
           <div style="width:32px;height:32px;border:1px solid #ded6cc;border-radius:8px;display:grid;place-items:center;background:#fffdf9;overflow:hidden;">${startupRepairLogoMarkup}</div>
@@ -464,6 +483,7 @@ if (!gotSingleInstanceLock) {
 
 if (gotSingleInstanceLock) {
   app.whenReady().then(async () => {
+    registerWindowControlHandlers({ ipcMain, BrowserWindow });
     try {
       await reconcilePendingVaultDeletion();
     } catch (error) {

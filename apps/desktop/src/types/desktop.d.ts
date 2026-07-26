@@ -22,9 +22,21 @@ declare global {
     updated_at: string;
   }
 
+  interface DesktopWindowState {
+    maximized: boolean;
+    fullScreen: boolean;
+  }
+
   interface Window {
     cmlDesktop?: {
       platform: NodeJS.Platform;
+      windowControls: {
+        getState: () => Promise<DesktopWindowState>;
+        minimize: () => Promise<boolean>;
+        toggleMaximize: () => Promise<DesktopWindowState>;
+        close: () => Promise<boolean>;
+        onStateChanged: (listener: (state: DesktopWindowState) => void) => () => void;
+      };
       openPath: (targetPath: string) => Promise<boolean>;
       openExternal: (url: string) => Promise<boolean>;
       selectSourceFiles: () => Promise<string[]>;

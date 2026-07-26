@@ -292,9 +292,140 @@
     color: var(--brand-coral);
   }
 
-  .vault-shell {
+  .vault-desktop-frame {
     display: flex;
     height: 100vh;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--background);
+  }
+
+  .vault-desktop-content {
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .vault-desktop-content > * {
+    height: 100%;
+  }
+
+  .vault-window-chrome {
+    position: relative;
+    z-index: 100;
+    display: flex;
+    width: 100%;
+    height: 32px;
+    min-height: 32px;
+    align-items: stretch;
+    background: var(--background);
+    user-select: none;
+    -webkit-app-region: drag;
+  }
+
+  .vault-window-controls {
+    display: flex;
+    height: 32px;
+    margin-left: auto;
+    -webkit-app-region: no-drag;
+  }
+
+  .vault-window-control {
+    position: relative;
+    display: grid;
+    width: 46px;
+    height: 32px;
+    place-items: center;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--foreground);
+    transition: background-color 100ms ease, color 100ms ease;
+  }
+
+  .vault-window-control:hover {
+    background: color-mix(in srgb, var(--foreground) 8%, transparent);
+  }
+
+  .vault-window-control:focus-visible {
+    z-index: 1;
+    outline: 2px solid var(--ring);
+    outline-offset: -2px;
+  }
+
+  .vault-window-control-close:hover {
+    background: #c42b1c;
+    color: #fff;
+  }
+
+  .vault-window-icon {
+    position: relative;
+    display: block;
+    width: 10px;
+    height: 10px;
+  }
+
+  .vault-window-icon-minimize::before {
+    position: absolute;
+    right: 0;
+    bottom: 1px;
+    left: 0;
+    height: 1px;
+    background: currentColor;
+    content: "";
+  }
+
+  .vault-window-icon-maximize {
+    border: 1px solid currentColor;
+  }
+
+  .vault-window-icon-restore::before,
+  .vault-window-icon-restore::after {
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    border: 1px solid currentColor;
+    content: "";
+  }
+
+  .vault-window-icon-restore::before {
+    top: 0;
+    right: 0;
+  }
+
+  .vault-window-icon-restore::after {
+    bottom: 0;
+    left: 0;
+    background: var(--background);
+  }
+
+  .vault-window-control:hover .vault-window-icon-restore::after {
+    background: color-mix(in srgb, var(--foreground) 8%, var(--background));
+  }
+
+  .vault-window-icon-close::before,
+  .vault-window-icon-close::after {
+    position: absolute;
+    top: 4px;
+    left: -1px;
+    width: 12px;
+    height: 1px;
+    background: currentColor;
+    content: "";
+  }
+
+  .vault-window-icon-close::before {
+    transform: rotate(45deg);
+  }
+
+  .vault-window-icon-close::after {
+    transform: rotate(-45deg);
+  }
+
+  .vault-shell {
+    display: flex;
+    height: 100%;
     overflow: hidden;
     background: var(--background);
     font-family: var(--font);

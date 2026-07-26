@@ -23,6 +23,24 @@ window.addEventListener("DOMContentLoaded", () => {
 
 contextBridge.exposeInMainWorld("cmlDesktop", {
   platform: process.platform,
+  windowControls: {
+    getState: () => ipcRenderer.invoke("cml:window-get-state"),
+    minimize: () => ipcRenderer.invoke("cml:window-minimize"),
+    toggleMaximize: () => ipcRenderer.invoke("cml:window-toggle-maximize"),
+    close: () => ipcRenderer.invoke("cml:window-close"),
+    onStateChanged: (listener) => {
+      if (typeof listener !== "function") {
+        return () => {};
+      }
+      const wrapped = (_event, state) => {
+        listener(state);
+      };
+      ipcRenderer.on("cml:window-state-changed", wrapped);
+      return () => {
+        ipcRenderer.removeListener("cml:window-state-changed", wrapped);
+      };
+    },
+  },
   openPath: (targetPath) => ipcRenderer.invoke("cml:open-path", targetPath),
   openExternal: (url) => ipcRenderer.invoke("cml:open-external", url),
   selectSourceFiles: () => ipcRenderer.invoke("cml:select-source-files"),
