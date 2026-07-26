@@ -5,6 +5,7 @@ param(
   [string]$GhostscriptExePath = "",
   [switch]$SkipTesseractInstaller,
   [switch]$SkipGhostscriptInstaller,
+  [int]$TesseractInstallTimeoutSeconds = 120,
   [int]$GhostscriptInstallTimeoutSeconds = 120,
   [switch]$AllowPartial
 )
@@ -196,8 +197,32 @@ try {
     Invoke-Download `
       -Uri "https://github.com/tesseract-ocr/tesseract/releases/download/5.5.0/tesseract-ocr-w64-setup-5.5.0.20241111.exe" `
       -OutFile $installer
-    Copy-Item -LiteralPath $installer -Destination (Join-Path $destinationPath "tesseract-installer.exe") -Force
-    $errors.Add("Downloaded Tesseract installer, but no portable tesseract.exe was staged. Pass -TesseractExePath after installing/extracting it, or provide a portable Tesseract source.")
+    $tesseractTarget = Join-Path $cachePath "tesseract-local"
+    if (Test-Path -LiteralPath $tesseractTarget) {
+      Remove-Item -LiteralPath $tesseractTarget -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $tesseractTarget | Out-Null
+    $process = Start-Process `
+      -FilePath $installer `
+      -ArgumentList @("/S", "/D=$tesseractTarget") `
+      -PassThru `
+      -WindowStyle Hidden
+    if (-not $process.WaitForExit($TesseractInstallTimeoutSeconds * 1000)) {
+      try {
+        $process.Kill()
+      } catch {
+        Write-Warning "Could not terminate timed-out Tesseract installer: $($_.Exception.Message)"
+      }
+      throw "Tesseract installer timed out after $TesseractInstallTimeoutSeconds second(s)."
+    }
+    if ($process.ExitCode -ne 0) {
+      throw "Tesseract installer exited with $($process.ExitCode)."
+    }
+    $stagedTesseract = Join-Path $tesseractTarget "tesseract.exe"
+    if (-not (Test-Path -LiteralPath $stagedTesseract)) {
+      throw "tesseract.exe was not found after local install."
+    }
+    Copy-Item -Path (Join-Path $tesseractTarget "*") -Destination $destinationPath -Recurse -Force
   }
 } catch {
   $errors.Add("Could not stage tesseract.exe: $($_.Exception.Message)")

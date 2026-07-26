@@ -32,6 +32,7 @@ $helperManifestScript = Join-Path $repoRoot "scripts\packaging\generate-helper-m
 $packageAuditScript = Join-Path $repoRoot "scripts\packaging\audit-package-layout.cjs"
 $ocrStagingScript = Join-Path $repoRoot "scripts\packaging\stage-ocr-runtime.ps1"
 $llmRuntimeStagingScript = Join-Path $repoRoot "scripts\packaging\stage-llm-runtime.ps1"
+$devBuildCheckScript = Join-Path $repoRoot "scripts\packaging\check-windows-dev-build.ps1"
 $desktopPackage = Get-Content $desktopPackageJsonPath -Raw | ConvertFrom-Json
 $desktopVersion = [string]$desktopPackage.version
 if (-not $desktopVersion) {
@@ -44,9 +45,7 @@ if (-not (Test-Path -LiteralPath $modelIntegrityManifestPath)) {
   throw "Managed model integrity manifest is missing: $modelIntegrityManifestPath"
 }
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
-if (-not (Test-Path $python)) {
-  $python = "python"
-}
+& $devBuildCheckScript
 if (-not (Test-Path -LiteralPath $windowsIconScript)) {
   throw "Windows icon generator is missing: $windowsIconScript"
 }
@@ -457,7 +456,9 @@ Complete-PackagePhase $playwrightBrowserDir
 $llmRuntimeServer = Join-Path $llmRuntimeDir "llama-server.exe"
 Start-PackagePhase "Local chat runtime" "Staging the pinned, verified llama.cpp CPU runtime."
 if (-not (Test-Path -LiteralPath $llmRuntimeServer) -or $Release) {
-  & $llmRuntimeStagingScript -TargetDir $llmRuntimeDir
+  & $llmRuntimeStagingScript `
+    -TargetDir $llmRuntimeDir `
+    -CacheDir (Join-Path $tmpDir "llm-runtime-cache")
 }
 if (-not (Test-Path -LiteralPath $llmRuntimeServer)) {
   throw "Local chat runtime staging did not produce llama-server.exe."

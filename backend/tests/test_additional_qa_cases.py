@@ -2195,8 +2195,11 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("Test-GhostscriptExecutable", stage_text)
         self.assertIn("Copy-GhostscriptRuntime", stage_text)
         self.assertIn("SkipGhostscriptInstaller", stage_text)
+        self.assertIn("TesseractInstallTimeoutSeconds", stage_text)
         self.assertIn("GhostscriptInstallTimeoutSeconds", stage_text)
         self.assertIn('Copy-Item -Path (Join-Path $tesseractDir "*")', stage_text)
+        self.assertIn('"/D=$tesseractTarget"', stage_text)
+        self.assertIn('"tesseract-local"', stage_text)
         self.assertIn("Staging OCR runtime", package_text)
         self.assertIn("AllowPartialOcrRuntime", package_text)
         self.assertIn("SkipGhostscriptInstaller", package_text)
@@ -2241,6 +2244,48 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(icon_header[:4], b"\x00\x00\x01\x00")
         self.assertGreaterEqual(int.from_bytes(icon_header[4:6], "little"), 1)
         self.assertIn("scripts/packaging/stage-ocr-runtime.ps1", readme_text)
+
+    def test_windows_dev_package_is_checkout_portable_and_preflighted(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        package_script = (
+            repo_root / "scripts" / "packaging" / "package-windows.ps1"
+        ).read_text(encoding="utf-8")
+        preflight = (
+            repo_root / "scripts" / "packaging" / "check-windows-dev-build.ps1"
+        ).read_text(encoding="utf-8")
+        package_json = json.loads((repo_root / "package.json").read_text(encoding="utf-8"))
+        commands = (repo_root / "docs" / "WORKING_COMMANDS.md").read_text(encoding="utf-8")
+
+        self.assertIn('& $devBuildCheckScript', package_script)
+        self.assertNotIn('$python = "python"', package_script)
+        self.assertIn('-CacheDir (Join-Path $tmpDir "llm-runtime-cache")', package_script)
+        self.assertIn('.venv\\Scripts\\python.exe', preflight)
+        self.assertIn('requirements\\contributors-backend.txt', preflight)
+        self.assertIn('[Environment]::Is64BitOperatingSystem', preflight)
+        self.assertIn('RecommendedFreeSpaceGB', preflight)
+        self.assertEqual(
+            package_json["scripts"]["package:win:check"],
+            "powershell -NoProfile -ExecutionPolicy Bypass -File "
+            "scripts\\packaging\\check-windows-dev-build.ps1",
+        )
+        self.assertIn("npm run package:win:check", commands)
+        self.assertIn("npm run package:win", commands)
+        self.assertNotIn("expert-python-runtime", commands)
+
+    def test_version_bump_script_updates_every_authoritative_version_surface(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        script = (repo_root / "scripts" / "dev" / "set-version.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("npm version $Version --no-git-tag-version", script)
+        self.assertIn(
+            "npm version $Version --workspace @cml/desktop --no-git-tag-version",
+            script,
+        )
+        self.assertIn('backend\\pyproject.toml', script)
+        self.assertIn("npm install --package-lock-only --ignore-scripts", script)
+        self.assertIn("$originalContent", script)
 
     def test_ocr_benchmark_script_reports_similarity_metrics(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
