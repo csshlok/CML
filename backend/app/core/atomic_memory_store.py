@@ -17,6 +17,7 @@ from backend.app.core.atomic_memory import (
     source_content_hash,
 )
 from backend.app.core.database import utc_now
+from backend.app.core.encrypted_storage import hydrate_chat_message_rows
 
 
 LOCAL_SEMANTIC_EXTRACTOR_VERSION = f"{ATOMIC_MEMORY_VERSION}-local-semantic-v1"
@@ -403,10 +404,10 @@ def persist_local_semantic_extraction(
     extractor_version: str = LOCAL_SEMANTIC_EXTRACTOR_VERSION,
 ) -> dict:
     """Persist validated local-model facts only if the source session is unchanged."""
-    messages = conn.execute(
+    messages = hydrate_chat_message_rows(conn, conn.execute(
         "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at, rowid",
         (session_id,),
-    ).fetchall()
+    ).fetchall())
     session = conn.execute(
         "SELECT id FROM chat_sessions WHERE id = ? AND vault_id = ?",
         (session_id, vault_id),

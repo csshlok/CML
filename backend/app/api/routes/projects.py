@@ -79,14 +79,63 @@ class ProjectContextRequest(BaseModel):
 
 
 @router.get("", response_model=list[ProjectRead])
-def project_list(request: Request, vault_id: str | None = None, limit: int = 200, offset: int = 0) -> list[dict]:
+def project_list(
+    request: Request,
+    vault_id: str | None = None,
+    cluster_id: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[dict]:
     context = getattr(request.state, "cli_auth", None)
     if vault_id:
         _enforce_cli_vault(request, vault_id)
-    rows = list_projects(vault_id=vault_id, limit=limit, offset=offset)
+    rows = list_projects(vault_id=vault_id, cluster_id=cluster_id, limit=limit, offset=offset)
     if context and not vault_id:
         rows = [row for row in rows if row["vault_id"] in context["allowed_vault_ids"]]
     return rows
+
+
+@router.get("/project-run-summary")
+def project_run_summary(limit: int = 200, active_only: bool = False) -> dict:
+    safe_limit = max(1, min(int(limit), 500))
+    status_clause = "AND r.status IN ('queued', 'running')" if active_only else ""
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                p.id AS joined_project_id,
+                p.name AS project_name,
+                p.vault_id AS project_vault_id,
+                r.*
+            FROM project_index_runs r
+            JOIN projects p ON p.id = r.project_id
+            WHERE p.deleted_at IS NULL {status_clause}
+            ORDER BY
+                CASE WHEN r.status IN ('queued', 'running') THEN 0 ELSE 1 END,
+                r.updated_at DESC,
+                r.id DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+    return {
+        "items": [
+            {
+                "project": {
+                    "id": row["joined_project_id"],
+                    "name": row["project_name"],
+                    "vault_id": row["project_vault_id"],
+                },
+                "run": {
+                    key: row[key]
+                    for key in row.keys()
+                    if key not in {"joined_project_id", "project_name", "project_vault_id"}
+                },
+            }
+            for row in rows
+        ],
+        "limit": safe_limit,
+    }
 
 
 @router.post("", response_model=ProjectRead)

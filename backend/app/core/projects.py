@@ -337,11 +337,35 @@ def register_project(
     return get_project(project_id)
 
 
-def list_projects(*, vault_id: str | None = None, limit: int = 200, offset: int = 0) -> list[dict]:
+def list_projects(
+    *,
+    vault_id: str | None = None,
+    cluster_id: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[dict]:
     safe_limit = max(1, min(int(limit), 1000))
     safe_offset = max(0, int(offset))
     with connect() as conn:
-        if vault_id:
+        if cluster_id:
+            clauses = ["p.deleted_at IS NULL", "pcl.cluster_id = ?"]
+            params: list[object] = [cluster_id]
+            if vault_id:
+                clauses.append("p.vault_id = ?")
+                params.append(vault_id)
+            params.extend([safe_limit, safe_offset])
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT p.*
+                FROM projects p
+                JOIN project_cluster_links pcl ON pcl.project_id = p.id
+                WHERE {" AND ".join(clauses)}
+                ORDER BY p.updated_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                tuple(params),
+            ).fetchall()
+        elif vault_id:
             rows = conn.execute(
                 """
                 SELECT * FROM projects

@@ -3,7 +3,11 @@ from uuid import uuid4
 
 from backend.app.core.database import dict_from_row, utc_now
 from backend.app.core.embeddings import reindex_source_chunks
-from backend.app.core.encrypted_storage import store_source_content_fields, update_source_content_fields
+from backend.app.core.encrypted_storage import (
+    hydrate_chat_message_rows,
+    store_source_content_fields,
+    update_source_content_fields,
+)
 from backend.app.core.cluster_lifecycle import mark_cluster_needs_update
 from backend.app.core.memory_card import summarize_text
 
@@ -12,10 +16,10 @@ def upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> N
     session = conn.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
     if session is None:
         return
-    messages = conn.execute(
+    messages = hydrate_chat_message_rows(conn, conn.execute(
         "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC",
         (session_id,),
-    ).fetchall()
+    ).fetchall())
     if not messages:
         return
 

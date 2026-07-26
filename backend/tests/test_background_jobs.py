@@ -124,6 +124,26 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
             row = conn.execute("SELECT status FROM app_jobs WHERE id = 'job-a'").fetchone()
         self.assertEqual(row["status"], "queued")
 
+    def test_running_job_with_pending_cancellation_recovers_as_cancelled(self) -> None:
+        from backend.app.core.background_jobs import recover_interrupted_jobs
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            self._insert_job(conn, "job-a", status="running", restart_policy="requeue")
+            conn.execute(
+                "UPDATE app_jobs SET cancellation_requested = 1 WHERE id = 'job-a'",
+            )
+
+        result = recover_interrupted_jobs()
+
+        self.assertEqual(result["cancelled"], 1)
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT status, completed_at FROM app_jobs WHERE id = 'job-a'",
+            ).fetchone()
+        self.assertEqual(row["status"], "cancelled")
+        self.assertIsNotNone(row["completed_at"])
+
     def test_unknown_job_type_moves_to_manual_review(self) -> None:
         from backend.app.core.background_jobs import run_due_jobs_once
         from backend.app.core.database import connect
@@ -186,7 +206,7 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
 
         self.assertEqual(calls, ["job-a"])
 
-    def test_cancelled_running_job_is_not_requeued_when_worker_later_fails(self) -> None:
+    def test_running_job_cancellation_is_requested_then_acknowledged_by_worker(self) -> None:
         from backend.app.core.background_jobs import _claim_next_job, _mark_job_failed_or_retry, cancel_job
         from backend.app.core.database import connect
 
@@ -202,9 +222,68 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
         with connect() as conn:
             row = conn.execute("SELECT status, status_detail FROM app_jobs WHERE id = 'job-a'").fetchone()
 
-        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual(cancelled["status"], "running")
+        self.assertEqual(cancelled["cancellation_requested"], 1)
+        self.assertIsNone(cancelled["completed_at"])
         self.assertEqual(row["status"], "cancelled")
-        self.assertEqual(row["status_detail"], "Cancelled by user.")
+        self.assertEqual(row["status_detail"], "Cancellation acknowledged by worker.")
+
+    def test_running_cancellation_is_acknowledged_before_handler_writes_commit(self) -> None:
+        import json
+
+        from backend.app.core import background_jobs
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO sources (
+                    id, vault_id, title, source_type, state, raw_text, extracted_text,
+                    created_at, updated_at
+                )
+                VALUES ('source-1', 'vault-1', 'Original', 'note', 'indexed', 'text', 'text', ?, ?)
+                """,
+                (now, now),
+            )
+            self._insert_job(
+                conn,
+                "job-cancel-running",
+                job_type="reindex_source",
+                payload=json.dumps({"source_id": "source-1"}),
+                cancellable=1,
+            )
+
+        claimed = background_jobs._claim_next_job()
+
+        def cancel_before_work(_feature: str) -> None:
+            background_jobs.cancel_job("job-cancel-running")
+
+        def attempted_write(conn, _source) -> None:
+            conn.execute("UPDATE sources SET title = 'Should roll back' WHERE id = 'source-1'")
+
+        with (
+            patch.object(
+                background_jobs,
+                "require_embeddings_available",
+                side_effect=cancel_before_work,
+            ),
+            patch.object(background_jobs, "reindex_source_chunks", side_effect=attempted_write),
+        ):
+            background_jobs._run_claimed_job(claimed)
+
+        with connect() as conn:
+            job = conn.execute(
+                "SELECT status FROM app_jobs WHERE id = 'job-cancel-running'"
+            ).fetchone()
+            source = conn.execute("SELECT title FROM sources WHERE id = 'source-1'").fetchone()
+
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(source["title"], "Original")
 
     def test_claimed_job_returns_current_attempt_count(self) -> None:
         from backend.app.core.background_jobs import _claim_next_job

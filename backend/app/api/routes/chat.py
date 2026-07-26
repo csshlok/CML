@@ -20,7 +20,13 @@ from backend.app.core.embeddings import (
 )
 from backend.app.core.encrypted_storage import (
     delete_source_encrypted_content,
+    hydrate_chat_generation_rows,
+    hydrate_chat_message_rows,
+    is_vault_secured,
+    mark_chat_citations_source_deleted,
     source_from_encrypted_row,
+    store_chat_message_fields,
+    store_chat_generation_prompt,
     store_source_content_fields,
 )
 from backend.app.core.cluster_lifecycle import mark_cluster_needs_update
@@ -419,6 +425,10 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
     def events():
         generation = None
         generation_completed = False
+        answer_parts: list[str] = []
+        clusters_used: list[dict] = []
+        citations: list[dict] = []
+        warnings: list[str] = []
         try:
             if payload.persist:
                 generation = _start_chat_generation(
@@ -433,7 +443,6 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
             else:
                 active_payload = payload
             context = _build_retrieval_context(active_payload, synthesize=False)
-            answer_parts: list[str] = []
             warnings = list(context["warnings"])
             citations = context["citations"]
             clusters_used = context["clusters_used"]
@@ -547,10 +556,30 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                 "memory_status": "indexing" if payload.persist else None,
                 "cluster_profile": context.get("cluster_profile") or {},
             })
+        except GeneratorExit:
+            if generation and not generation_completed:
+                _stop_chat_generation(
+                    generation_id=generation["generation_id"],
+                    session_id=generation["session_id"],
+                    assistant_message_id=generation["assistant_message_id"],
+                    partial_answer="".join(answer_parts).strip(),
+                    clusters_used=clusters_used,
+                    citations=citations,
+                    warnings=[*warnings, "Generation stopped before completion."],
+                )
+                generation_completed = True
+            raise
         except Exception as exc:
             if generation and not generation_completed:
                 _mark_chat_generation_retriable(generation["generation_id"], str(exc))
+                generation_completed = True
             raise
+        finally:
+            if generation and not generation_completed:
+                _mark_chat_generation_retriable(
+                    generation["generation_id"],
+                    "Stream ended without a terminal event.",
+                )
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -1630,6 +1659,25 @@ def _start_chat_generation(
         assistant_message_id = f"msg-{uuid4()}"
         generation_id = f"gen-{uuid4()}"
         runtime = runtime_status()
+        stored_generation_prompt = store_chat_generation_prompt(
+            conn,
+            vault_id=vault_id,
+            generation_id=generation_id,
+            prompt=prompt,
+            now=now,
+        )
+        stored_user = store_chat_message_fields(
+            conn,
+            vault_id=vault_id,
+            message_id=user_message_id,
+            fields={
+                "content": prompt,
+                "clusters_used": "[]",
+                "citations": "[]",
+                "warnings": "[]",
+            },
+            now=now,
+        )
         conn.execute(
             """
             INSERT INTO chat_messages (
@@ -1637,7 +1685,12 @@ def _start_chat_generation(
             )
             VALUES (?, ?, 'user', ?, '[]', '[]', '[]', NULL, 0, ?)
             """,
-            (user_message_id, session_id, prompt, now),
+            (
+                user_message_id,
+                session_id,
+                stored_user["content"],
+                now,
+            ),
         )
         attachment_sources = _ingest_chat_attachments(
             conn,
@@ -1662,7 +1715,7 @@ def _start_chat_generation(
                 session_id,
                 user_message_id,
                 vault_id,
-                prompt,
+                stored_generation_prompt,
                 runtime["provider"],
                 runtime["model"],
                 now,
@@ -1705,6 +1758,18 @@ def _complete_chat_generation(
 ) -> None:
     now = utc_now()
     with connect() as conn:
+        stored_answer = store_chat_message_fields(
+            conn,
+            vault_id=vault_id,
+            message_id=assistant_message_id,
+            fields={
+                "content": answer,
+                "clusters_used": json.dumps(clusters_used),
+                "citations": json.dumps(citations),
+                "warnings": json.dumps(warnings),
+            },
+            now=now,
+        )
         conn.execute(
             """
             INSERT INTO chat_messages (
@@ -1715,24 +1780,25 @@ def _complete_chat_generation(
             (
                 assistant_message_id,
                 session_id,
-                answer,
-                json.dumps(clusters_used),
-                json.dumps(citations),
-                json.dumps(warnings),
+                stored_answer["content"],
+                stored_answer["clusters_used"],
+                stored_answer["citations"],
+                stored_answer["warnings"],
                 now,
             ),
         )
-        _write_retrieval_snapshot(
-            conn,
-            message_id=assistant_message_id,
-            session_id=session_id,
-            vault_id=vault_id,
-            query=prompt,
-            citations=citations,
-            token_budget=token_budget,
-            retrieval_telemetry=retrieval_telemetry or {},
-            now=now,
-        )
+        if not is_vault_secured(conn, vault_id):
+            _write_retrieval_snapshot(
+                conn,
+                message_id=assistant_message_id,
+                session_id=session_id,
+                vault_id=vault_id,
+                query=prompt,
+                citations=citations,
+                token_budget=token_budget,
+                retrieval_telemetry=retrieval_telemetry or {},
+                now=now,
+            )
         conn.execute(
             """
             UPDATE chat_generations
@@ -1765,6 +1831,75 @@ def _mark_chat_generation_retriable(generation_id: str, error: str) -> None:
             WHERE id = ? AND state = 'in_flight'
             """,
             (error[:1000], now, generation_id),
+        )
+
+
+def _stop_chat_generation(
+    *,
+    generation_id: str,
+    session_id: str,
+    assistant_message_id: str,
+    partial_answer: str,
+    clusters_used: list[dict],
+    citations: list[dict],
+    warnings: list[str],
+) -> None:
+    now = utc_now()
+    with connect() as conn:
+        persisted_message_id = None
+        if partial_answer:
+            generation = conn.execute(
+                "SELECT vault_id FROM chat_generations WHERE id = ?",
+                (generation_id,),
+            ).fetchone()
+            if generation is None:
+                raise KeyError(generation_id)
+            stored_partial = store_chat_message_fields(
+                conn,
+                vault_id=str(generation["vault_id"]),
+                message_id=assistant_message_id,
+                fields={
+                    "content": partial_answer,
+                    "clusters_used": json.dumps(clusters_used),
+                    "citations": json.dumps(citations),
+                    "warnings": json.dumps(warnings),
+                },
+                now=now,
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_messages (
+                    id, session_id, role, content, clusters_used, citations, warnings,
+                    useful, saved, created_at
+                )
+                VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, 0, ?)
+                """,
+                (
+                    assistant_message_id,
+                    session_id,
+                    stored_partial["content"],
+                    stored_partial["clusters_used"],
+                    stored_partial["citations"],
+                    stored_partial["warnings"],
+                    now,
+                ),
+            )
+            persisted_message_id = assistant_message_id
+        conn.execute(
+            """
+            UPDATE chat_generations
+            SET state = 'stopped',
+                assistant_message_id = ?,
+                error = 'Generation stopped by the client.',
+                completed_at = ?,
+                updated_at = ?
+            WHERE id = ? AND state = 'in_flight'
+            """,
+            (persisted_message_id, now, now, generation_id),
+        )
+        conn.execute(
+            "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+            (now, session_id),
         )
 
 
@@ -1960,6 +2095,12 @@ def _delete_chat_owned_source(conn, *, session_id: str, source: dict) -> None:
     source_id = str(source["id"])
     vault_id = str(source["vault_id"])
     now = utc_now()
+    mark_chat_citations_source_deleted(
+        conn,
+        vault_id=vault_id,
+        source_id=source_id,
+        now=now,
+    )
     delete_source_encrypted_content(conn, source_id=source_id, vault_id=vault_id)
     conn.execute(
         """
@@ -2067,12 +2208,38 @@ def _session_from_row(row, messages: list[dict]) -> dict:
 
 
 def _messages_from_rows(conn, rows: list[dict]) -> list[dict]:
-    hydrated_messages = [dict_from_row(row) for row in rows]
+    hydrated_messages = hydrate_chat_message_rows(conn, rows)
+    message_ids = [str(message["id"]) for message in hydrated_messages]
+    generation_by_message_id: dict[str, dict] = {}
+    if message_ids:
+        placeholders = ",".join("?" for _ in message_ids)
+        generation_rows = conn.execute(
+            f"""
+            SELECT id, user_message_id, assistant_message_id, state
+            FROM chat_generations
+            WHERE user_message_id IN ({placeholders})
+               OR assistant_message_id IN ({placeholders})
+            """,
+            [*message_ids, *message_ids],
+        ).fetchall()
+        for generation_row in generation_rows:
+            generation = dict_from_row(generation_row)
+            for message_id in (generation.get("user_message_id"), generation.get("assistant_message_id")):
+                if message_id:
+                    generation_by_message_id[str(message_id)] = generation
     snapshot_citations = _snapshot_citations_for_messages(
         conn,
         [message["id"] for message in hydrated_messages if str(message.get("role") or "").strip().lower() == "assistant"],
     )
     for message in hydrated_messages:
+        generation = generation_by_message_id.get(str(message["id"]))
+        message["generation_id"] = generation.get("id") if generation else None
+        message["generation_state"] = generation.get("state") if generation else None
+        message["reply_to_message_id"] = (
+            generation.get("user_message_id")
+            if generation and message.get("role") == "assistant"
+            else None
+        )
         message["clusters_used"] = _json_list(message.get("clusters_used"))
         message["citations"] = snapshot_citations.get(message["id"]) or _json_list(message.get("citations"))
         message["warnings"] = _json_list(message.get("warnings"))
@@ -2212,7 +2379,7 @@ def _chat_messages_window(conn, *, session_id: str, limit: int, offset: int) -> 
 
 def _chat_retriable_generations_window(conn, *, session_id: str, limit: int) -> list[dict]:
     bounded_limit = max(1, min(limit, 1000))
-    return conn.execute(
+    rows = conn.execute(
         """
         SELECT *
         FROM chat_generations
@@ -2222,6 +2389,7 @@ def _chat_retriable_generations_window(conn, *, session_id: str, limit: int) -> 
         """,
         (session_id, bounded_limit),
     ).fetchall()
+    return hydrate_chat_generation_rows(conn, rows)
 
 
 def _json_list(value: str | None) -> list:

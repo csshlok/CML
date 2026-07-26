@@ -845,6 +845,9 @@ class ChatMessageRead(BaseModel):
     useful: bool | None = None
     saved: bool = False
     created_at: str
+    generation_id: str | None = None
+    reply_to_message_id: str | None = None
+    generation_state: str | None = None
 
 
 class ChatMessageUpdate(BaseModel):
@@ -1042,6 +1045,9 @@ class ModelRuntimeStatus(BaseModel):
     state: str = "missing"
     in_flight: int = 0
     detail: str
+    pid: int | None = None
+    error: str | None = None
+    managed: bool = False
 
 
 class EmbeddingRuntimeStatus(BaseModel):
@@ -1340,7 +1346,7 @@ class VaultLockAuditRead(BaseModel):
 class UnlockStatusRead(BaseModel):
     state: str
     vault_id: str | None = None
-    unlock_mode: str = "convenience"
+    unlock_mode: str = "strict"
     pin_enabled: bool = False
     message: str = ""
     verification_error: str = ""
@@ -1354,7 +1360,7 @@ class UnlockStatusRead(BaseModel):
 class UnlockInitializeRequest(BaseModel):
     vault_id: str
     passphrase: str = Field(min_length=MIN_VAULT_PASSPHRASE_LENGTH)
-    unlock_mode: str = "convenience"
+    unlock_mode: str = "strict"
 
 
 class UnlockInitializeResponse(UnlockStatusRead):
@@ -1472,12 +1478,15 @@ class AppJobRead(BaseModel):
     max_attempts: int
     last_error: str
     status_detail: str | None = None
+    cancellation_requested: int = 0
+    cancellation_requested_at: str | None = None
     started_at: str | None = None
     completed_at: str | None = None
     elapsed_seconds: int | None = None
     estimated_remaining_seconds: int | None = None
     created_at: str
     updated_at: str
+    import_outcome: str | None = None
 
 
 class TemporalFactBackfillRequest(BaseModel):

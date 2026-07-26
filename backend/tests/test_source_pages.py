@@ -2491,12 +2491,7 @@ class SourcePageIndexingTests(unittest.TestCase):
 
         with patch("importlib.util.find_spec", return_value=None):
             state = start_embedding_model_download(str(Path(self.tmp.name) / "embeddings"))
-            self.assertIn(state["status"], {"queued", "downloading"})
-            for _ in range(50):
-                current = embedding_download_status()
-                if current["status"] == "failed":
-                    break
-                time.sleep(0.01)
+            self.assertEqual(state["status"], "failed")
 
         self.assertEqual(embedding_download_status()["status"], "failed")
         self.assertIn("SentenceTransformers is not installed", embedding_download_status()["error"])

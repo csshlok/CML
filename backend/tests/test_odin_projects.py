@@ -85,6 +85,42 @@ class OdinProjectTests(unittest.TestCase):
         self.assertEqual(paths, {"package.json", "src/auth.ts", "src/main.ts"})
         self.assertGreaterEqual(node_count, 6)
 
+    def test_project_list_filters_linked_projects_in_one_query(self) -> None:
+        from backend.app.core.projects import link_project, list_projects
+
+        first = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Primary",
+            sync=False,
+        )
+        second_repo = self.root / "second-project"
+        second_repo.mkdir()
+        (second_repo / "main.py").write_text("print('second')\n", encoding="utf-8")
+        second = _register_project(
+            vault_id="vault-odin",
+            root_path=str(second_repo),
+            name="Linked",
+            sync=False,
+        )
+        link_project(second["id"], first["primary_cluster_id"])
+
+        matching = list_projects(
+            vault_id="vault-odin",
+            cluster_id=first["primary_cluster_id"],
+            limit=200,
+        )
+
+        self.assertEqual({project["id"] for project in matching}, {first["id"], second["id"]})
+        self.assertEqual(
+            list_projects(
+                vault_id="vault-odin",
+                cluster_id=second["primary_cluster_id"],
+                limit=200,
+            )[0]["id"],
+            second["id"],
+        )
+
     def test_discovery_scope_filters_context_files_but_keeps_source_like_json(self) -> None:
         from backend.app.core.projects import discover_project
 

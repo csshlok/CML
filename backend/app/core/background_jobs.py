@@ -10,6 +10,7 @@ from backend.app.core.embeddings import content_hash, reindex_source_chunks, req
 from backend.app.core.encrypted_storage import (
     delete_source_encrypted_content,
     delete_source_derived_encrypted_content,
+    hydrate_chat_message_rows,
     plaintext_column_for_text,
     update_source_content_fields,
 )
@@ -58,6 +59,10 @@ PRIORITY_ORDER = {
 }
 _WORKER_STARTED = False
 _WORKER_LOCK = threading.Lock()
+
+
+class JobCancelled(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -412,11 +417,22 @@ def enqueue_job(
 
 def recover_interrupted_jobs() -> dict[str, int]:
     now = utc_now()
-    counts = {"queued": 0, "manual_review": 0}
+    counts = {"queued": 0, "manual_review": 0, "cancelled": 0}
     with connect() as conn:
         rows = conn.execute("SELECT * FROM app_jobs WHERE status = 'running'").fetchall()
         for row in rows:
             job = dict_from_row(row)
+            if int(job.get("cancellation_requested") or 0) == 1:
+                conn.execute(
+                    """
+                    UPDATE app_jobs
+                    SET status = 'cancelled', status_detail = ?, completed_at = ?, updated_at = ?
+                    WHERE id = ? AND status = 'running'
+                    """,
+                    ("Cancellation acknowledged during backend recovery.", now, now, job["id"]),
+                )
+                counts["cancelled"] += 1
+                continue
             restart_policy = job.get("restart_policy") or _job_policy(job["job_type"]).restart_policy
             if restart_policy == "reconcile_then_retry" and job["job_type"] == "project_snapshot_activate":
                 payload = _decode_payload(job.get("payload") or "{}")
@@ -576,16 +592,57 @@ def cancel_job(job_id: str) -> dict:
             raise ValueError("Job is not cancellable")
         if job["status"] not in {"queued", "blocked_by_dependency", "running"}:
             raise ValueError("Only queued, blocked, or running jobs can be cancelled")
+        if job["status"] == "running":
+            conn.execute(
+                """
+                UPDATE app_jobs
+                SET cancellation_requested = 1, cancellation_requested_at = ?,
+                    status_detail = 'Cancellation requested; waiting for the current work unit to stop.',
+                    updated_at = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (now, now, job_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE app_jobs
+                SET status = 'cancelled', cancellation_requested = 1,
+                    cancellation_requested_at = ?, status_detail = 'Cancelled by user.',
+                    completed_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, now, job_id),
+            )
+        updated = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
+    return dict_from_row(updated)
+
+
+def _raise_if_job_cancelled(job_id: str | None) -> None:
+    if not job_id:
+        return
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT status, cancellation_requested FROM app_jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+    if row is None or row["status"] == "cancelled" or int(row["cancellation_requested"] or 0) == 1:
+        raise JobCancelled(job_id)
+
+
+def _acknowledge_job_cancelled(job_id: str) -> None:
+    now = utc_now()
+    with connect() as conn:
         conn.execute(
             """
             UPDATE app_jobs
-            SET status = 'cancelled', status_detail = 'Cancelled by user.', completed_at = ?, updated_at = ?
-            WHERE id = ?
+            SET status = 'cancelled', cancellation_requested = 1,
+                status_detail = 'Cancellation acknowledged by worker.',
+                completed_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'running'
             """,
             (now, now, job_id),
         )
-        updated = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
-    return dict_from_row(updated)
 
 
 def _worker_loop() -> None:
@@ -682,6 +739,7 @@ def _run_claimed_job(job: dict) -> None:
         _mark_job_manual_review(job, f"Unsupported job type: {job['job_type']}")
         return
     try:
+        _raise_if_job_cancelled(job["id"])
         payload = _decode_payload(job["payload"])
         if job["job_type"] in {
             "project_discover", "project_structure_index", "project_retrieval_stage",
@@ -689,15 +747,15 @@ def _run_claimed_job(job: dict) -> None:
         }:
             _run_project_phase(job["job_type"], payload, job["id"])
         elif job["job_type"] == "reindex_source":
-            _run_reindex_source(payload)
+            _run_reindex_source(payload, job["id"])
         elif job["job_type"] == "chat_transcript_memory":
-            _run_chat_transcript_memory(payload)
+            _run_chat_transcript_memory(payload, job["id"])
         elif job["job_type"] == "temporal_fact_backfill":
             _run_temporal_fact_backfill(payload, job["id"])
         elif job["job_type"] == "atomic_semantic_enrichment":
             _run_atomic_semantic_enrichment(payload, job["id"])
         elif job["job_type"] == "refresh_cluster_profile":
-            _run_refresh_cluster_profile(payload)
+            _run_refresh_cluster_profile(payload, job["id"])
         elif job["job_type"] == "ocr_source":
             _run_ocr_source(payload, job["id"])
         elif job["job_type"] == "expanded_analysis":
@@ -705,13 +763,17 @@ def _run_claimed_job(job: dict) -> None:
         elif job["job_type"] == "complete_analysis":
             _run_complete_analysis(payload, job["id"])
         elif job["job_type"] == "delete_source_cleanup":
-            _run_delete_source_cleanup(payload)
+            _run_delete_source_cleanup(payload, job["id"])
         elif job["job_type"] == "vector_reconcile_incremental":
-            _run_vector_reconcile_incremental(payload)
+            _run_vector_reconcile_incremental(payload, job["id"])
         elif job["job_type"] == "integration_refresh":
-            _run_integration_refresh(payload)
+            _run_integration_refresh(payload, job["id"])
         else:
             raise ValueError(f"Unsupported job type: {job['job_type']}")
+        _raise_if_job_cancelled(job["id"])
+    except JobCancelled:
+        _acknowledge_job_cancelled(job["id"])
+        return
     except Exception as exc:
         _mark_job_failed_or_retry(job, str(exc))
         return
@@ -721,13 +783,14 @@ def _run_claimed_job(job: dict) -> None:
             """
             UPDATE app_jobs
             SET status = 'succeeded', completed_at = ?, updated_at = ?, last_error = ''
-            WHERE id = ? AND status = 'running'
+            WHERE id = ? AND status = 'running' AND cancellation_requested = 0
             """,
             (utc_now(), utc_now(), job["id"]),
         )
 
 
-def _run_reindex_source(payload: dict) -> None:
+def _run_reindex_source(payload: dict, job_id: str | None = None) -> None:
+    _raise_if_job_cancelled(job_id)
     require_embeddings_available("Source reindexing")
     source_id = str(payload["source_id"])
     with connect() as conn:
@@ -739,6 +802,7 @@ def _run_reindex_source(payload: dict) -> None:
             conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
             return
         reindex_source_chunks(conn, source)
+        _raise_if_job_cancelled(job_id)
         mark_cluster_needs_update(conn, source.get("cluster_id"), "Source was indexed in the background.")
         rebuild_source_memory(conn, source_id=source_id)
         _refresh_project_retrieval_status(conn, source_id)
@@ -792,7 +856,8 @@ def _refresh_project_retrieval_status(conn, source_id: str) -> None:
             )
 
 
-def _run_chat_transcript_memory(payload: dict) -> None:
+def _run_chat_transcript_memory(payload: dict, job_id: str | None = None) -> None:
+    _raise_if_job_cancelled(job_id)
     require_embeddings_available("Chat transcript memory")
     from backend.app.core.chat_memory import upsert_chat_transcript_sources
 
@@ -805,7 +870,9 @@ def _run_chat_transcript_memory(payload: dict) -> None:
             (now, session_id),
         )
         upsert_chat_transcript_sources(conn, vault_id=vault_id, session_id=session_id)
+        _raise_if_job_cancelled(job_id)
         rebuild_chat_session_memory(conn, vault_id=vault_id, session_id=session_id)
+        _raise_if_job_cancelled(job_id)
         conn.execute(
             "UPDATE chat_sessions SET memory_status = 'indexed', memory_updated_at = ? WHERE id = ?",
             (utc_now(), session_id),
@@ -883,10 +950,10 @@ def _run_atomic_semantic_enrichment(payload: dict, job_id: str) -> None:
         ).fetchone()
         if session is None:
             raise ValueError("chat_session_not_found")
-        messages = conn.execute(
+        messages = hydrate_chat_message_rows(conn, conn.execute(
             "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at, rowid",
             (session_id,),
-        ).fetchall()
+        ).fetchall())
         session_payload = chat_session_atomic_payload(session_id, messages)
     source_hash = atomic_source_content_hash(
         session_payload["session_id"],
@@ -906,6 +973,7 @@ def _run_atomic_semantic_enrichment(payload: dict, job_id: str) -> None:
             ),
         )
         for window in windows:
+            _raise_if_job_cancelled(job_id)
             result = generate_local_structured_json(
                 system_prompt=(
                     "Extract short, durable, question-independent memories as strict JSON. "
@@ -1019,11 +1087,12 @@ def _run_temporal_fact_backfill(payload: dict, job_id: str) -> None:
                 )
                 return
             for session in sessions:
+                _raise_if_job_cancelled(job_id)
                 session_id = str(session["id"])
-                messages = conn.execute(
+                messages = hydrate_chat_message_rows(conn, conn.execute(
                     "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at, rowid",
                     (session_id,),
-                ).fetchall()
+                ).fetchall())
                 state = conn.execute(
                     "SELECT * FROM temporal_fact_session_state WHERE session_id = ? AND vault_id = ?",
                     (session_id, vault_id),
@@ -1062,12 +1131,14 @@ def _run_temporal_fact_backfill(payload: dict, job_id: str) -> None:
             )
 
 
-def _run_refresh_cluster_profile(payload: dict) -> None:
+def _run_refresh_cluster_profile(payload: dict, job_id: str | None = None) -> None:
+    _raise_if_job_cancelled(job_id)
     cluster_id = str(payload.get("cluster_id") or "")
     if not cluster_id:
         return
     with connect() as conn:
         refresh_cluster_profile(conn, cluster_id)
+        _raise_if_job_cancelled(job_id)
 
 
 def _run_ocr_source(payload: dict, job_id: str) -> None:
@@ -1100,6 +1171,7 @@ def _run_ocr_source(payload: dict, job_id: str) -> None:
         delete_source_derived_encrypted_content(conn, source_id=source_id, vault_id=source["vault_id"])
         conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
         for index, page_text in enumerate(pages, start=1):
+            _raise_if_job_cancelled(job_id)
             cleaned = (page_text or "").strip()
             if not cleaned:
                 _update_ocr_page_progress(conn, job_id, index, len(pages), skipped=True)
@@ -1151,6 +1223,7 @@ def _run_ocr_source(payload: dict, job_id: str) -> None:
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
         if row is not None:
             reindex_source_chunks(conn, dict_from_row(row))
+            _raise_if_job_cancelled(job_id)
             mark_cluster_needs_update(conn, row["cluster_id"], "OCR source text was indexed.")
 
 
@@ -1204,6 +1277,7 @@ def _materialize_analysis_packets(payload: dict, job_id: str, *, full_scope: boo
         conn.execute("DELETE FROM analysis_evidence_packets WHERE job_id = ?", (job_id,))
         now = utc_now()
         for packet in packet_bundle["packets"]:
+            _raise_if_job_cancelled(job_id)
             conn.execute(
                 """
                 INSERT INTO analysis_evidence_packets (
@@ -1228,7 +1302,8 @@ def _materialize_analysis_packets(payload: dict, job_id: str, *, full_scope: boo
             )
 
 
-def _run_delete_source_cleanup(payload: dict) -> None:
+def _run_delete_source_cleanup(payload: dict, job_id: str | None = None) -> None:
+    _raise_if_job_cancelled(job_id)
     source_id = str(payload["source_id"])
     with connect() as conn:
         source = conn.execute("SELECT vault_id FROM sources WHERE id = ?", (source_id,)).fetchone()
@@ -1287,7 +1362,8 @@ def _enqueue_due_integration_refresh_jobs() -> None:
             )
 
 
-def _run_vector_reconcile_incremental(payload: dict) -> None:
+def _run_vector_reconcile_incremental(payload: dict, job_id: str | None = None) -> None:
+    _raise_if_job_cancelled(job_id)
     require_embeddings_available("Vector reconciliation")
     vault_id = payload.get("vault_id")
     limit = int(payload.get("limit") or 100)
@@ -1304,7 +1380,8 @@ def _run_vector_reconcile_incremental(payload: dict) -> None:
             )
 
 
-def _run_integration_refresh(payload: dict) -> None:
+def _run_integration_refresh(payload: dict, job_id: str | None = None) -> None:
+    _raise_if_job_cancelled(job_id)
     from backend.app.api.routes.integrations import refresh_integration_import
 
     import_id = str(payload.get("import_id") or "")
@@ -1319,9 +1396,21 @@ def _run_integration_refresh(payload: dict) -> None:
 def _mark_job_failed_or_retry(job: dict, error: str) -> None:
     with connect() as conn:
         current = conn.execute(
-            "SELECT attempts, max_attempts FROM app_jobs WHERE id = ?",
+            "SELECT attempts, max_attempts, cancellation_requested FROM app_jobs WHERE id = ?",
             (job["id"],),
         ).fetchone()
+        if current is not None and int(current["cancellation_requested"] or 0) == 1:
+            now = utc_now()
+            conn.execute(
+                """
+                UPDATE app_jobs
+                SET status = 'cancelled', status_detail = 'Cancellation acknowledged by worker.',
+                    completed_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (now, now, job["id"]),
+            )
+            return
         attempts = int(current["attempts"] if current is not None else job.get("attempts") or 0)
         max_attempts = int(current["max_attempts"] if current is not None else job.get("max_attempts") or 3)
         status = "failed" if attempts >= max_attempts else "queued"

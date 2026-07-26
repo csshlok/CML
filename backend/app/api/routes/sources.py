@@ -10,6 +10,7 @@ from backend.app.core.database import connect, utc_now
 from backend.app.core.embeddings import content_hash, require_embeddings_available
 from backend.app.core.encrypted_storage import (
     delete_source_encrypted_content,
+    mark_chat_citations_source_deleted,
     page_from_encrypted_row,
     source_from_encrypted_row,
     store_source_content_fields,
@@ -43,7 +44,9 @@ def list_sources(
     cluster_id: str | None = None,
     unclustered: bool = False,
     states: str | None = None,
+    source_types: str | None = None,
     q: str | None = None,
+    order: str = "newest",
     limit: int = 500,
     offset: int = 0,
     include_content: bool = False,
@@ -65,6 +68,10 @@ def list_sources(
             raise HTTPException(status_code=400, detail="Invalid source state filter")
         clauses.append(f"state IN ({','.join('?' for _ in state_values)})")
         params.extend(state_values)
+    source_type_values = [item.strip() for item in (source_types or "").split(",") if item.strip()]
+    if source_type_values:
+        clauses.append(f"source_type IN ({','.join('?' for _ in source_type_values)})")
+        params.extend(source_type_values)
     normalized_query = (q or "").strip().lower()
     if normalized_query:
         clauses.append(
@@ -77,10 +84,17 @@ def list_sources(
     where = f"WHERE {' AND '.join(clauses)}"
     safe_limit = max(1, min(int(limit), 1000))
     safe_offset = max(0, int(offset))
+    order_clause = {
+        "newest": "updated_at DESC, id DESC",
+        "oldest": "updated_at ASC, id ASC",
+        "alphabetical": "LOWER(title) ASC, id ASC",
+    }.get(order)
+    if order_clause is None:
+        raise HTTPException(status_code=400, detail="Invalid source order")
     with connect() as conn:
         _validate_source_list_filters(conn, vault_id=vault_id, cluster_id=cluster_id)
         rows = conn.execute(
-            f"SELECT * FROM sources {where} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM sources {where} ORDER BY {order_clause} LIMIT ? OFFSET ?",
             [*params, safe_limit, safe_offset],
         ).fetchall()
         return [source_from_row(row, conn=conn, include_content=include_content) for row in rows]
@@ -92,6 +106,7 @@ def count_sources(
     cluster_id: str | None = None,
     unclustered: bool = False,
     states: str | None = None,
+    source_types: str | None = None,
     q: str | None = None,
 ) -> dict:
     clauses = ["deleted_at IS NULL"]
@@ -111,6 +126,10 @@ def count_sources(
             raise HTTPException(status_code=400, detail="Invalid source state filter")
         clauses.append(f"state IN ({','.join('?' for _ in state_values)})")
         params.extend(state_values)
+    source_type_values = [item.strip() for item in (source_types or "").split(",") if item.strip()]
+    if source_type_values:
+        clauses.append(f"source_type IN ({','.join('?' for _ in source_type_values)})")
+        params.extend(source_type_values)
     normalized_query = (q or "").strip().lower()
     if normalized_query:
         clauses.append(
@@ -297,7 +316,8 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
             """,
             (payload.vault_id, payload.path),
         ).fetchone()
-        if existing is None:
+        created = existing is None
+        if created:
             source = _create_source_record(
                 SourceCreate(
                     vault_id=payload.vault_id,
@@ -415,7 +435,9 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
             ),
         )
     attach_quarantine_record(ingested["quarantine_record_id"], source_id)
-    return get_source(source_id)
+    result = get_source(source_id)
+    result["import_outcome"] = "created" if created else "updated"
+    return result
 
 
 @router.post("/from-text", response_model=SourceRead)
@@ -423,7 +445,7 @@ def create_source_from_text(payload: SourceTextCreate) -> dict:
     text = _sanitize_source_text(payload.text)
     if not text.strip():
         raise HTTPException(status_code=400, detail="No readable text was provided")
-    return create_source(
+    result = create_source(
         SourceCreate(
             vault_id=payload.vault_id,
             cluster_id=payload.cluster_id,
@@ -432,6 +454,8 @@ def create_source_from_text(payload: SourceTextCreate) -> dict:
             raw_text=text,
         )
     )
+    result["import_outcome"] = "created"
+    return result
 
 
 @router.post("/from-url", response_model=SourceRead)
@@ -457,7 +481,8 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
             """,
             (payload.vault_id, sanitized_url),
         ).fetchone()
-        if existing is None:
+        created = existing is None
+        if created:
             source = create_source(
                 SourceCreate(
                     vault_id=payload.vault_id,
@@ -571,7 +596,9 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
                 source_id,
             ),
         )
-    return get_source(source_id)
+    result = get_source(source_id)
+    result["import_outcome"] = "created" if created else "updated"
+    return result
 
 
 @router.get("/link-diagnostics")
@@ -796,6 +823,12 @@ def delete_source(source_id: str) -> None:
         ).fetchone()
         if source is None:
             raise HTTPException(status_code=404, detail="Source not found")
+        mark_chat_citations_source_deleted(
+            conn,
+            vault_id=str(source["vault_id"]),
+            source_id=source_id,
+            now=now,
+        )
         delete_source_encrypted_content(conn, source_id=source_id, vault_id=source["vault_id"])
         result = conn.execute(
             """

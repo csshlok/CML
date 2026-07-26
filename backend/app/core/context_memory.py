@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from backend.app.core.database import dict_from_row, utc_now
 from backend.app.core.embeddings import content_hash
-from backend.app.core.encrypted_storage import source_from_encrypted_row
+from backend.app.core.encrypted_storage import hydrate_chat_message_rows, source_from_encrypted_row
 from backend.app.core.memory_card import summarize_text
 from backend.app.core.atomic_memory_store import load_v2_atomic_memory_items
 from backend.app.core.temporal_facts import (
@@ -31,10 +31,10 @@ def rebuild_chat_session_memory(conn, *, vault_id: str, session_id: str) -> None
     session = conn.execute("SELECT * FROM chat_sessions WHERE id = ? AND vault_id = ?", (session_id, vault_id)).fetchone()
     if session is None:
         return
-    messages = conn.execute(
+    messages = hydrate_chat_message_rows(conn, conn.execute(
         "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC, rowid ASC",
         (session_id,),
-    ).fetchall()
+    ).fetchall())
     if not messages:
         return
     cluster_id = session["scope_cluster_id"]

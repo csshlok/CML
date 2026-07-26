@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.api.routes import bridge, chat, cli_auth, clusters, diagnostics, extension, integrations, jobs, map, memory, models, projects, search, sources, system, vaults
+from backend.app.api.routes import activity, bridge, chat, cli_auth, clusters, diagnostics, extension, integrations, jobs, map, memory, models, projects, search, sources, system, vaults
 from backend.app.core.auth import LocalApiAuthMiddleware
 from backend.app.core.background_jobs import enqueue_startup_reconciliation_jobs, start_background_worker
 from backend.app.core.config import get_settings
@@ -11,6 +11,8 @@ from backend.app.core.database import init_db
 from backend.app.core.generation_recovery import recover_interrupted_generations
 from backend.app.core.logging_setup import setup_logging
 from backend.app.core.migrations import run_migrations
+from backend.app.core.model_registry import active_chat_model_status
+from backend.app.core.model_runtime_supervisor import restore_selected_model, stop_managed_runtime
 from backend.app.core.pre_vault import BackendModeMiddleware
 from backend.app.core.reserved_fields import ReservedChatFieldMiddleware
 from backend.app.core.startup_checks import StartupCheckError, verify_schema_version, verify_sqlite_integrity
@@ -73,6 +75,9 @@ def startup() -> None:
         write_startup_status("reconciliation_queued")
         enqueue_startup_reconciliation_jobs()
         write_startup_status("runtime_detection_running")
+        active_model = active_chat_model_status()
+        if active_model and active_model.get("local_path"):
+            restore_selected_model(str(active_model["id"]), str(active_model["local_path"]))
         start_background_worker()
         write_startup_status("ready", status="ready", message="Full-vault backend is ready.")
     except Exception as exc:
@@ -82,6 +87,7 @@ def startup() -> None:
 
 
 def shutdown() -> None:
+    stop_managed_runtime()
     release_vault_lock()
 
 
@@ -120,6 +126,7 @@ def health() -> dict[str, str]:
 
 
 app.include_router(vaults.router, prefix=settings.api_prefix)
+app.include_router(activity.router, prefix=settings.api_prefix)
 app.include_router(clusters.router, prefix=settings.api_prefix)
 app.include_router(map.router, prefix=settings.api_prefix)
 app.include_router(projects.router, prefix=settings.api_prefix)
