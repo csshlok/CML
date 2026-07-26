@@ -364,6 +364,13 @@ Run the targeted backend tests that have been useful during packaging work:
 .\.venv\Scripts\python.exe -m pytest -q backend/tests/test_parameters_doc_cases.py
 ```
 
+Run the focused managed-model activation and onboarding state checks:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest backend/tests/test_managed_model_runtime.py -q
+.\.venv\Scripts\python.exe -m pytest backend/tests/test_additional_qa_cases.py::AdditionalQACases::test_onboarding_route_uses_internal_scroll_shell_instead_of_hidden_root backend/tests/test_additional_qa_cases.py::AdditionalQACases::test_onboarding_model_download_flow_exposes_location_progress_and_continue -q
+```
+
 Run the focused parser / context-reduction / benchmark / extension-backend tests added for the new benchmark and ingestion work:
 
 ```powershell
@@ -484,3 +491,8 @@ For versioned Windows drops:
 3. Run the rebuild command that matches the release goal
 4. Validate `win-unpacked`
 5. Test the installer on a clean VM
+
+After changing Electron chrome, preload IPC, onboarding downloads, or managed
+runtime activation, a successful renderer build is not package proof. Re-run the
+development package and installer lifecycle so `win-unpacked` and the NSIS
+installer contain the current source revision.

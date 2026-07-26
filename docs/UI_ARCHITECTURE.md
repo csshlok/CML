@@ -1,6 +1,6 @@
 # CML UI Architecture
 
-Last updated: 2026-07-13
+Last updated: 2026-07-26
 
 ## Purpose
 
@@ -94,6 +94,21 @@ The desktop app uses a persistent shell:
 - Optional right panel: contextual inspector for selected cluster, source, map item, job, activity, readiness state, or settings summary.
 - Footer/status strip: vault path, backend state, job state, privacy/local indicator, keyboard hints.
 - Command palette: global actions, navigation, and source/cluster lookup. Global capture is deferred pending redesign.
+
+### Desktop Window Chrome
+
+Windows builds use app-integrated chrome instead of the native title bar:
+
+- Reserve a 32 px strip at the top of every normal, onboarding, and repair surface.
+- The empty strip is draggable; buttons, links, inputs, and menus are non-draggable.
+- Keep minimize, maximize/restore, and close controls at the right edge with
+  familiar hit targets and accessible labels.
+- Keep branding inside the product layout; do not duplicate the Vault logo or page
+  title in the chrome.
+- Main layouts consume the remaining `h-full` area and do not add another
+  viewport-height region below the chrome.
+- Window-control IPC operates on the sending window and exposes no arbitrary
+  window-management API.
 
 Current routes:
 
@@ -610,13 +625,14 @@ Required structure:
 
 Required steps:
 
-1. Welcome/sign-in truthfulness: local profile is enough; do not imply cloud account unless real auth exists.
-2. Name/local profile.
-3. Vault name.
-4. Vault location: folder picker, exact `.vault` path preview, disk preflight.
-5. Local chat setup: recommended model, existing runtime, set up later.
-6. Memory search setup: required real embedding setup, download/link existing cache, test embedding.
-7. Ready summary: vault path, memory search, local chat, OCR, imported items, unresolved setup.
+1. Welcome: sparse identity, one heading, one setup action.
+2. Name: local display name.
+3. Library: vault name and folder, exact `.vault` path preview, and disk preflight.
+4. Models: destination first, then two or three hardware-and-disk-aware choices,
+   existing runtime, or explicit skip.
+5. Memory search: explain the embedding model, obtain download consent, support
+   an existing cache, and require a real test embedding.
+6. Finish: summarize vault, chat-model, memory-search, and storage choices.
 
 Components:
 
@@ -626,6 +642,7 @@ Components:
 - Disk preflight status row.
 - Model choice card.
 - Download progress row.
+- Compact non-blocking download notice with terminal fade-out.
 - Readiness checklist.
 - Startup repair panel.
 
@@ -640,6 +657,9 @@ States:
 - Local chat skipped.
 - Startup repair needed.
 - Vault lock conflict.
+- Initial model recommendations loading.
+- Managed-model download active, installed, cancelled, or failed.
+- Managed-model activation verification.
 
 Style:
 
@@ -648,6 +668,8 @@ Style:
 - Minimal icons.
 - Hairline separators over boxed wizard chrome.
 - No animated marketing hero.
+- Polling must not make loading labels blink. The backend model row is
+  authoritative for progress and terminal state.
 
 ## Home
 
@@ -1672,7 +1694,9 @@ Interactions:
 
 - Settings section nav switches panels without leaving route.
 - Runtime cards support configure/test/copy path/open path where applicable.
-- Model download cards support start/cancel/status/integrity display.
+- Model download cards require a validated destination and support
+  recommendation/start/cancel/status/integrity display. Terminal state replaces
+  stale progress and the compact notice fades out.
 - Embedding setup supports provider/cache path/test/download/cancel.
 - OCR card reports packaged paths and missing components.
 - Local imports support refresh now, watched on/off, tombstone missing, and failure review.

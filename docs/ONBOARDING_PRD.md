@@ -1,10 +1,14 @@
 # Vault Onboarding PRD
 
-Last updated: 2026-05-31
+Last updated: 2026-07-26
 
 ## Purpose
 
-Onboarding should get a first-time Windows user from installed app to a usable local vault with the least possible friction. It should feel like a clean Apple setup flow: calm, minimal, precise, and trustworthy.
+Onboarding should get a first-time Windows user from the installed app to a usable local vault with the least possible friction. It should feel calm, minimal, precise, and trustworthy.
+
+The current production flow has six stages: Welcome, Name, Library, Models,
+Memory search, and Finish. Welcome is intentionally sparse; later stages use the
+left progress rail and one consistently positioned content card.
 
 The user should finish onboarding knowing three things:
 
@@ -20,6 +24,8 @@ The user should finish onboarding knowing three things:
 - Embedding setup is required before entering the main app.
 - Source ingestion starts only after the full vault backend owns the chosen vault folder.
 - The app name shown in the window and setup flow is always `Vault`.
+- Displayed file and folder locations use forward slashes consistently. Internal
+  Windows APIs may still receive native paths.
 - Hash/deterministic embeddings are never offered in production onboarding.
 - The flow should look native, quiet, and intentional, not like an installer wizard or download manager.
 
@@ -143,6 +149,21 @@ Requirements:
 - The UI must show where the model will be stored or which local path/runtime is being used.
 - The UI must show approximate download size and disk-space impact before download.
 - The user must be able to cancel an active model download.
+- The user selects and validates a model destination before model choices appear.
+- Recommendation loading is shown only for the initial request. Background status
+  polling must not flash the loading label.
+- Download progress follows the backend model record. Installed, cancelled, and
+  failed states replace stale renderer progress immediately.
+- The compact download notice briefly shows terminal state, fades after 1.8
+  seconds, and unmounts after 2.4 seconds.
+- Managed chat models are accepted only after checksum verification, runtime
+  startup, and visible generation. Qwen health probes disable thinking and allow
+  enough output tokens for visible text.
+- Before downloading MiniLM, show its friendly name, purpose, size, destination,
+  and local-only behavior and obtain explicit consent.
+- Public Hugging Face artifacts may download without an account. Private or gated
+  artifacts must produce an explanation and an existing-local-model alternative,
+  never a hidden login flow.
 - Hash embeddings do not appear as an option.
 - The installer does not bundle MiniLM or other embedding weights. The user must download Vault's recommended embedding model after installation or link an existing local cache/model path.
 
@@ -282,6 +303,9 @@ Advanced details may expose technical terms when needed for setup or debugging.
 - Embedding setup is compulsory and must pass a real test embedding.
 - Hash embeddings are hidden from production onboarding.
 - Model download has visible size, destination, progress, and cancel.
+- Recommendation polling does not flicker loading UI.
+- Completed or cancelled downloads leave no persistent progress notice.
+- Managed Qwen activation produces visible probe text with thinking disabled.
 - Source ingestion begins only after full-vault backend readiness.
 - User can skip first import.
 - User lands on Mind workspace after setup.

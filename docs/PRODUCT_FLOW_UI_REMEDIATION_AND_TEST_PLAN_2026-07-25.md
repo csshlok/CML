@@ -2871,6 +2871,80 @@ Regression test:
 5. Immediately remove the temporary SQLite directory on Windows to prove no
    stream-owned database handle remains.
 
+### NEW-15: Managed Qwen activation reported an empty generation
+
+Cause:
+
+- The activation probe allowed only four output tokens. Qwen thinking mode spent
+  that budget on hidden reasoning and returned no visible content even though the
+  local engine was functioning.
+
+Fix:
+
+- Send `/no_think`, set `chat_template_kwargs.enable_thinking=false`, and allow 32
+  output tokens while retaining the requirement for non-empty visible text.
+
+Regression test:
+
+- Assert the managed-runtime probe payload disables thinking, contains the
+  no-think instruction, uses the expanded token budget, and still rejects a
+  genuinely empty response.
+
+### NEW-16: Model recommendation loading flashed during polling
+
+Cause:
+
+- Every 750 ms model-status refresh set the same loading flag used by the initial
+  recommendation request.
+
+Fix:
+
+- Track whether the first model list has loaded and reserve the loading message for
+  that initial request. Polling refreshes data without replacing the stable page.
+
+Regression test:
+
+- Render onboarding with repeated delayed status polls. After the first result,
+  assert `Loading model options` never returns and choices remain mounted.
+
+### NEW-17: Completed model downloads left a permanent progress notice
+
+Cause:
+
+- Renderer-side download state could remain `downloading` after the authoritative
+  backend model row reached `installed`; the selector preferred the stale fallback.
+
+Fix:
+
+- Synchronize the tracked download from the matching backend model row, prefer that
+  row in the selector, briefly render terminal state, fade at 1.8 seconds, and
+  unmount at 2.4 seconds. Apply the same lifecycle in onboarding and Settings.
+
+Regression test:
+
+- Render a download at 50%, transition the backend row to installed, and assert the
+  active notice becomes terminal, fades, and disappears. Repeat for cancellation
+  and verify it never covers or disables Continue.
+
+### NEW-18: Native Windows title bar remained in full-screen app layouts
+
+Cause:
+
+- Electron used the default framed `BrowserWindow`, so Windows retained the black
+  operating-system title bar even when Vault filled the available window.
+
+Fix:
+
+- Use a frameless window and a 32 px app-integrated draggable region with
+  minimize, maximize/restore, and close controls. Scope IPC to the sending window
+  and include controls on app, onboarding, and repair surfaces.
+
+Regression test:
+
+- Electron unit tests verify window options, channel allowlisting, sender-window
+  resolution, and maximize state events. Real Windows QA verifies drag,
+  maximize/restore, controls, and absence of the native bar at 125% scaling.
+
 ## 20. Verification Results
 
 ### 20.1 Completed local gates
@@ -2880,10 +2954,13 @@ Regression test:
 | Final backend full suite | 789 passed, 2 skipped, 1 deprecation warning |
 | Backend cancellation-focused suite | 12 passed |
 | PDF ingestion tests after `pypdf` 6.14.2 | 8 passed |
-| Desktop typecheck and Electron shell suite | 52 passed |
+| Desktop typecheck and Electron shell suite | 57 passed |
 | Helper manifest suite | 2 passed |
 | Renderer unsafe-HTML audit | Passed |
-| Interactive-control audit across 41 TSX files | Passed |
+| Interactive-control audit across 42 TSX files | Passed |
+| Managed-runtime activation tests | 4 passed |
+| Focused onboarding model-state QA | 2 passed |
+| Rendered model download active-to-installed transition | Passed with zero console errors |
 | 50,000-file explicit scale gate | Passed |
 | 10k-source/1k-chat/1k-cluster/10k-job scale gate | Passed |
 | Python `pip check` | Passed |
@@ -2993,3 +3070,10 @@ Expected Windows outputs:
 - `apps/desktop/release/win-unpacked/CML.exe` — unpacked application executable.
 
 The unpacked executable is the runnable application, not a second installer.
+
+### 22.1 Post-package source boundary
+
+The frameless shell and NEW-15 through NEW-17 were validated after the 0.1.9
+development/test artifacts listed in Section 20.2 were produced. Re-run
+`npm run package:win` and the installer lifecycle before claiming those existing
+artifacts contain the July 26 changes.

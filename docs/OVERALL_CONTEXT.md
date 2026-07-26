@@ -1,8 +1,37 @@
 # Overall Context
 
-Last updated: 2026-07-24
+Last updated: 2026-07-26
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
+
+## July 26 Desktop Chrome And Model-Onboarding Stabilization
+
+The latest source revision replaces the Windows native title bar with Vault-owned
+window chrome. Electron creates a frameless `BrowserWindow`; the renderer reserves
+a 32 px draggable strip and supplies minimize, maximize/restore, and close controls.
+The IPC bridge resolves the sender's window instead of acting on a global window.
+Onboarding, the normal application shell, and startup-repair screens all retain
+window controls, while interactive controls are excluded from drag regions. Real
+Electron QA at 125% Windows scaling confirmed drag, maximize, and restore behavior
+without the former native title bar.
+
+Managed-model setup also received three state-machine corrections. Recommendation
+loading is limited to the initial request, so the 750 ms status refresh no longer
+flashes `Loading model options`. The backend model row is authoritative for an
+active download, preventing stale renderer progress from masking `installed`.
+Terminal installed/cancelled notices fade after 1.8 seconds and unmount after 2.4
+seconds in both onboarding and Settings. Finally, the Qwen activation probe sends
+`/no_think`, disables thinking through chat-template arguments, and permits 32
+output tokens. Runtime evidence showed that the old four-token probe could spend
+its complete budget on hidden reasoning and then report an empty generation.
+
+Validation includes 57 passing Electron tests, a passing production desktop build,
+four focused managed-runtime tests, two focused onboarding QA tests, an
+interactive-control audit across 42 TSX files, and a rendered Playwright
+active-download-to-installed transition with no console errors. This is source and
+development-build evidence. The existing 0.1.9 installer and unpacked application
+were produced before this delta and must be rebuilt before package claims include
+these changes.
 
 ## Current Source Of Truth
 
@@ -13,7 +42,7 @@ This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.m
 
 ## Current Project Cycle
 
-Vault is currently at version `0.1.7` and in pre-release stabilization and productionization. The core product direction is settled: local-first storage, retrieval-first context delivery, temporal memory, bounded evidence packets, and Odin-backed project context are the active architecture. The current cycle is not a broad feature-discovery phase.
+Vault is currently at version `0.1.9` and in pre-release stabilization and productionization. The core product direction is settled: local-first storage, retrieval-first context delivery, temporal memory, bounded evidence packets, and Odin-backed project context are the active architecture. The current cycle is not a broad feature-discovery phase.
 
 The major scoped implementation passes are complete:
 
@@ -28,19 +57,26 @@ The major scoped implementation passes are complete:
 - production memory benchmarking now includes a frozen evolving-fact suite and an activation-only paired protocol that reuses unchanged answers and judgments;
 - atomic-memory compiler v9 now runs in production chat-session sync, persists lossless facts and terminal source-unit coverage separately from the curated temporal ledger, exposes session-scoped loading, and records conservative named-entity category memberships for future retrieval activation;
 - the public README and benchmark report describe the product and its measured results in user-facing language;
-- the July 24 UI distillation removed redundant cluster inspectors, dead/stale controls and components, duplicate navigation, and several spacing/overflow failures while preserving a smaller explicit accessibility and packaged-desktop backlog.
+- the July 24 UI distillation removed redundant cluster inspectors, dead/stale controls and components, duplicate navigation, and several spacing/overflow failures while preserving a smaller explicit accessibility and packaged-desktop backlog;
+- the July 26 desktop pass added frameless app-integrated Windows controls and corrected managed-model activation, polling, and terminal-notice behavior.
 
 The remaining cycle is release work and quality productionization:
 
-1. stabilize and commit the active 0.1.7 working tree;
-2. rerun the complete backend, desktop, packaging, and security gates from a clean state;
+1. publish the active 0.1.9 frameless-shell and model-onboarding source;
+2. rerun the complete backend, desktop, packaging, and security gates from that clean state;
 3. prove a production-shaped compressed late-interaction index before considering ColBERT activation;
 4. evaluate future memory changes on fresh, preregistered evidence rather than the development-exposed LongMemEval set;
 5. improve Odin's TypeScript/React graph-to-prompt selection and authoritative cross-file relationships;
-6. complete clean Windows installer, account-separation, signing, and package-integrity validation;
+6. rebuild the Windows installer from the latest source and complete
+   account-separation and signing validation;
 7. finish the remaining UI audit work in packaged Electron: accessibility, keyboard/zoom, offline and lock transitions, remaining stale route handlers, and Bridge/Settings decomposition.
 
-The reviewed 0.1.7 pass is published on `main` as 10 commits. GitHub CI run `29682163820` passed the dependency audit, desktop, quick, integration, system, and benchmark jobs; the dispatch-only Odin scale job was correctly skipped. The project remains pre-release because clean-machine installer, account-separation, signing, and package-integrity proof are still outstanding.
+The reviewed 0.1.9 packaging pass is published on `main`. GitHub CI run
+`30182242079` passed the dependency audit, desktop, quick, integration, system,
+and benchmark jobs; the dispatch-only Odin scale job was correctly skipped. The
+development/test installer lifecycle passed. The project remains pre-release
+because the latest source still needs a package rebuild and account-separation
+and signing proof remain outstanding.
 
 The July 21 atomic-memory v8 pass closes the production-ingestion disconnect identified in the v7 review. `sync_chat_session_temporal_facts` now also regenerates a dedicated atomic tier with immutable source hashes, message provenance, source-unit terminal status, compiler-version state, retraction on source edits, and idempotent resync. Existing temporal retrieval remains unchanged. Generic explicit category counts are normalized as closed cardinalities, and conservative progressive counters support an explicit base such as “I have 4 projects” followed by an unambiguous singular increment. A forced, model-free replay of both frozen 200-question development sets preserved 4/200 and 5/200 activation, 100% activated correctness, zero false-safes, and 100% source-unit coverage. This is a production capability improvement, not a benchmark accuracy gain; broader category membership/coreference remains the activation blocker.
 
@@ -101,7 +137,7 @@ Broader regression validation passed:
 
 - current combined backend collection: `644 passed`, `2 skipped`, with only the existing Starlette TestClient deprecation warning;
 - focused backend regression slice: `127 passed`
-- Electron behavior tests: `42 passed`
+- Electron behavior tests: `57 passed` on the July 26 desktop slice
 - backend tests are classified automatically into non-overlapping quick, integration, system, benchmark, and scale tiers
 - quick: `147 passed`; integration: `214 passed`; system: `120 passed`
 - benchmark: `16 passed`, `1 skipped` when optional TurboVec was unavailable
@@ -199,9 +235,10 @@ The migration is complete. Remaining work is divided into release gates and meas
 
 Release gates:
 
-- complete clean-machine packaged validation on Windows;
+- rebuild and repeat clean-machine packaged validation from the latest source;
 - prove account separation, vault protection, package integrity, and signed-installer behavior;
-- rerun the full backend tier matrix, desktop typecheck/build, Electron tests, dependency audit, and packaged smoke tests against the final 0.1.7 tree;
+- rerun the full backend tier matrix, desktop typecheck/build, Electron tests,
+  dependency audit, and packaged smoke tests against the final 0.1.9 tree;
 - monitor the upstream Starlette TestClient compatibility warning and the existing frontend bundle-size warning;
 - keep optional local synthesis setup understandable while preserving retrieval-draft fallback.
 

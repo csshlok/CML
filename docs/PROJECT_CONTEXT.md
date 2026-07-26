@@ -1,6 +1,6 @@
 # Project Context
 
-Last updated: 2026-07-24
+Last updated: 2026-07-26
 
 ## Purpose
 
@@ -15,7 +15,7 @@ Vault is a local-first Windows context-management layer. It turns a user's files
 - Storage: explicit local vaults backed by SQLite and local indexes
 - External access: Bridge, MCP, local HTTP API, and CLI
 - Codebase context: Odin project indexing, retrieval, scoped chat, and request-only graph/tree artifacts
-- Current version: `0.1.7` pre-release
+- Current version: `0.1.9` pre-release
 
 ## Current Project Phase
 
@@ -23,7 +23,7 @@ Vault is in **pre-release stabilization and productionization**.
 
 The scoped RAG migration, temporal memory foundation, Odin project workflow, bounded context pipeline, and primary desktop surfaces are implemented. The project is no longer deciding its core architecture. Current work is about proving release reliability, productionizing the strongest retrieval improvements, improving measured quality without benchmark-specific behavior, distilling the UI around real user journeys, and finishing clean Windows packaging.
 
-The reviewed 0.1.7 product, benchmark, CI, and documentation pass is published on `main` as 10 commits. GitHub CI run `29682163820` passed every automatic job. Version 0.1.7 is still pre-release rather than a release candidate because the manual clean-machine installer, account-separation, signing, and package-integrity gates remain.
+The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
 
 ## Current Architecture
 
@@ -47,8 +47,17 @@ Odin indexes approved repository files without executing or modifying project co
 | Desktop project, task, source, settings, and health surfaces | Implemented |
 | Public README and benchmark report | Updated with LongMemEval, LoCoMo, and Open RAG results and qualified comparisons |
 | ColBERT late-interaction retrieval | Compressed 300K proof measured; scoped path remains experimental and not production-enabled |
-| Windows installer and clean-machine proof | In progress |
-| UI refinement and distillation | Active July 24 pass removed redundant inspectors, duplicate cluster controls, dead/stale components, and layout failures; packaged Electron and accessibility validation remain |
+| Windows installer and clean-machine proof | Development/test 0.1.9 installer lifecycle passed; signing, account separation, and a package rebuilt from the latest source remain |
+| UI refinement and distillation | July 24 audit fixes are implemented; July 26 added app-integrated frameless Windows chrome and stabilized model onboarding; broader accessibility and packaged visual validation remain |
+
+## Recent Desktop And Onboarding Stabilization
+
+- The Windows `BrowserWindow` is frameless. Vault renders one 32 px draggable title region with native-like minimize, maximize/restore, and close controls across the main app, onboarding, and startup-repair surfaces. IPC handlers operate only on the sending window, and interactive controls are explicitly excluded from drag regions.
+- Managed-model recommendation loading is now an initial-load state instead of flashing during the 750 ms status poll.
+- Model download UI follows the backend model row as the authoritative state. A completed install can no longer be masked by a stale renderer-side `downloading` fallback.
+- The compact model-download notice shows a terminal installed/cancelled state briefly, fades after 1.8 seconds, and unmounts after 2.4 seconds. Settings and onboarding use the same behavior.
+- The managed Qwen activation probe now disables thinking, uses `/no_think`, and allows 32 output tokens. This prevents the four-token health probe from spending its complete budget on hidden reasoning and then reporting an empty generation.
+- These changes pass source/build, focused backend, Electron, rendered-browser, and interactive-control validation. The existing `test-0.1.9-Setup.exe` and `win-unpacked` artifacts were built before this July 26 source delta and must not be represented as containing it.
 
 ## Latest Benchmark Snapshot
 
@@ -87,10 +96,10 @@ Open RAG supplies that independent external-corpus check for document retrieval.
 
 - Latest recorded backend suite: `648 passed`, `2 skipped`; one non-blocking Starlette TestClient compatibility warning
 - Desktop TypeScript check and production client/SSR build: passed on the latest recorded product slice
-- Electron behavior tests: `42 passed`
+- Electron behavior tests: `57 passed`
 - Python and npm dependency audits: no known vulnerabilities in the pinned repository environments
 - GitHub CI: current action majors, least-privilege read permission, dependency audit, desktop lint/build, four backend tiers, and manual Odin scale gate
-- Published CI proof: run `29682163820` passed dependency audit, desktop, quick, integration, system, and benchmark jobs; the manual scale job was correctly skipped
+- Published CI proof: run `30182242079` passed dependency audit, desktop, quick, integration, system, and benchmark jobs; the manual scale job was correctly skipped
 - Odin 50,000-file discovery gate: `126.2 s`, `68.3 MiB` peak traced memory
 - Project/task/evidence UI: passed at the 1024 px minimum against an isolated backend
 - npm dependency audit: `0 vulnerabilities`
@@ -101,6 +110,7 @@ Open RAG supplies that independent external-corpus check for document retrieval.
 - Open RAG full retrieval: 3,045/3,045 completed; 0.9484 section Hit@10, 0.9961 document Hit@10, and 1.0597 s mean latency
 - Open RAG paid QA gate: 500/500 completed with no length finishes; 83.8% Kimi, 73.6% GPT-5.4, and 86.2% judge agreement
 - UI distillation browser audit: 46 TSX interaction checks passed; 13 routes rendered at 1440x900 and 768x900 plus the cluster route at 512 px without overflow, unlabeled controls, browser errors, or failed close/reset interactions
+- July 26 desktop/model-onboarding delta: production desktop build passed; 57 Electron tests passed; managed-runtime tests passed 4/4; focused onboarding QA passed 2/2; interactive-control audit passed across 42 TSX files; rendered model-download transition completed with zero console errors
 
 ## Active Decisions And Boundaries
 
@@ -126,7 +136,7 @@ Open RAG supplies that independent external-corpus check for document retrieval.
 
 1. Extend ingestion-time atomic normalization for category membership, implicit singular entities, repeated-event/project identity, structured table relationships, progressive counters, and supersession chains; keep the zero-false-safe gate unchanged. The local Qwen3 pilot did not close categories, while the 12-question GPT-5.4 extraction smoke gained three answers but lost two controls and activated 0/12 safe contracts.
 2. Raise safe atomic activation to at least 10% on both development sets before any reader/judge evaluation, then freeze a genuinely fresh corpus or benchmark split for promotion evidence.
-3. Complete clean-machine Windows installer, account-separation, package-integrity, and signing proof.
+3. Rebuild and retest the 0.1.9 installer from the latest frameless-shell/model-onboarding source, then complete account-separation and signing proof.
 4. Prototype bounded staging plus verified atomic compressed-shard rebuilds, with immediate tombstone filtering, runtime memory-pressure fallback, cross-cluster routing tests, encryption, exact artifact licensing, and a second real corpus before reconsidering ColBERT activation.
 5. Create a fresh, preregistered memory-quality set with genuine distributed preference-synthesis, reversal, state-history, temporal-action, category-count, and cumulative-state cases.
 6. Improve Odin TypeScript/React graph-to-prompt ranking and authoritative cross-file import/re-export/reference coverage, then rerun multi-model external evaluation.

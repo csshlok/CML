@@ -298,7 +298,7 @@ Vault runs as two cooperating local processes:
 
 | Component | Responsibility |
 | --- | --- |
-| Electron + React desktop app | User interface, onboarding, vault selection, and desktop integration |
+| Electron + React desktop app | Frameless Windows shell, user interface, onboarding, vault selection, and desktop integration |
 | FastAPI backend | Ingestion, storage, retrieval, clustering, memory, Bridge, security boundaries, and Odin |
 | SQLite | Authoritative vault metadata and content records |
 | Vector index | Rebuildable semantic-search state |
@@ -346,6 +346,10 @@ npm run package:win
 ```
 
 Packaging and clean-machine validation are still active release-hardening work. See [Working Commands](docs/WORKING_COMMANDS.md) for smoke tests, benchmarks, packaging modes, and versioning.
+
+The latest source uses app-integrated Windows controls and a verified managed-model
+activation flow. Previously generated 0.1.9 development artifacts must be rebuilt
+before they are treated as containing those source changes.
 
 ## Status and roadmap
 
