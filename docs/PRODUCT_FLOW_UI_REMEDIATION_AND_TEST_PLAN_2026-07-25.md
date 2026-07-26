@@ -2812,6 +2812,65 @@ Regression test:
   pin to the project dependency. The final package gate reads the distribution
   version from the bundled interpreter and requires 6.14.2.
 
+### NEW-13: System-tier tests assumed an optional embedding dependency
+
+Cause:
+
+- The GitHub system tier intentionally installs the backend without the optional
+  SentenceTransformers extra. The cancellation and fast-path resolver tests
+  implicitly relied on that extra being present because the developer runtime
+  had it installed.
+
+Risk:
+
+- The complete local suite passed while the isolated GitHub system tier failed.
+  More importantly, the tests were exercising dependency preflight instead of
+  the cancellation and path-resolution behavior named by the tests.
+
+Fix:
+
+- Mock dependency preflight as available in the cancellation state-machine
+  test, and mock module discovery in the fast filesystem-status test. Neither
+  test imports or initializes Torch.
+
+Regression test:
+
+- Run `scripts/backend/run-tests.ps1 -Tier system` in an environment without
+  the embeddings extra. The tier must pass all 125 selected tests while the
+  separate “dependency missing” test continues to require truthful unavailable
+  status.
+
+### NEW-14: Python 3.12 did not reliably close the synchronous chat stream
+
+Cause:
+
+- `StreamingResponse` adapted the synchronous chat-event generator through its
+  generic thread-pool iterator. Closing the response's asynchronous body
+  iterator on Python 3.12 did not deterministically close the underlying
+  synchronous generator.
+
+Risk:
+
+- A disconnected persisted stream could remain `in_flight`; its SQLite work
+  could also survive into teardown and keep the database file locked on
+  Windows. Python 3.14 happened to finalize quickly enough locally, hiding the
+  cross-version failure.
+
+Fix:
+
+- Wrap the source generator in an explicit asynchronous bridge. Its `finally`
+  closes the source generator in the thread pool, guaranteeing that
+  `GeneratorExit` executes the durable stopped/partial-answer transition.
+
+Regression test:
+
+1. Start a persisted streaming response that yields two answer chunks.
+2. Consume the first token and close the asynchronous body iterator.
+3. Assert the generation is terminal `stopped`.
+4. Assert the partial assistant answer is retained.
+5. Immediately remove the temporary SQLite directory on Windows to prove no
+   stream-owned database handle remains.
+
 ## 20. Verification Results
 
 ### 20.1 Completed local gates
@@ -2867,10 +2926,20 @@ supply-chain maintenance item and must not be described as “zero findings.”
 
 ### 20.4 CI scope
 
-The local CI-equivalent gates above prove the working tree. Remote GitHub CI is
-not evidence until the five requested commits are pushed and the resulting
-workflow run completes. A remote result must be added here with its commit SHA;
-local success must not be presented as a remote CI pass.
+GitHub Actions run
+`https://github.com/csshlok/CML/actions/runs/30182242079` completed successfully
+for product-code commit `f36f75e1959ac40b783303316265974f037ae1fb`.
+
+Remote results:
+
+- Desktop typecheck, shell tests, and build: passed.
+- Backend quick: passed.
+- Backend integration: passed.
+- Backend system: passed.
+- Backend benchmark: passed.
+- Dependency audit: passed.
+- Odin scale gate: intentionally skipped by normal-push workflow policy; the
+  explicit local scale runs and measurements are recorded in Section 18.7.
 
 ## 21. Requirement-to-Test Release Checklist
 
