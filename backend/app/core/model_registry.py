@@ -144,6 +144,11 @@ APPROVED_MODEL_FAMILIES: tuple[ApprovedModelFamily, ...] = (
 _download_state: dict[str, dict[str, Any]] = {}
 _download_lock = threading.Lock()
 _cancelled_downloads: set[str] = set()
+_download_threads: dict[str, threading.Thread] = {}
+_download_responses: dict[str, Any] = {}
+_download_done_events: dict[str, threading.Event] = {}
+_download_state_loaded_from: Path | None = None
+_download_state_last_persisted = 0.0
 _MODEL_DISCOVERY_CACHE_LOCK = threading.Lock()
 _MODEL_DISCOVERY_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 MODEL_SCAN_SKIP_DIRS = {
@@ -177,6 +182,80 @@ def imported_models_dir() -> Path:
     path = models_dir() / "imported"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _download_state_path() -> Path:
+    return get_settings().data_dir / "model-downloads.json"
+
+
+def _ensure_download_state_loaded() -> None:
+    global _download_state_loaded_from
+    state_path = _download_state_path()
+    if _download_state_loaded_from == state_path:
+        return
+    # Tests and administrative recovery tools may seed an in-memory state before
+    # changing the configured data directory. Preserve that explicit state.
+    if _download_state:
+        _download_state_loaded_from = state_path
+        return
+    loaded: dict[str, dict[str, Any]] = {}
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        rows = payload.get("downloads", {}) if isinstance(payload, dict) else {}
+        if isinstance(rows, dict):
+            loaded = {
+                str(model_id): dict(state)
+                for model_id, state in rows.items()
+                if isinstance(state, dict)
+            }
+    except (OSError, json.JSONDecodeError):
+        loaded = {}
+    changed = False
+    for state in loaded.values():
+        if state.get("status") in {"resolving", "downloading", "cancelling"}:
+            partial_value = str(state.get("partial_path") or "")
+            partial_path = Path(partial_value) if partial_value else None
+            downloaded = (
+                partial_path.stat().st_size
+                if partial_path is not None and partial_path.is_file()
+                else int(state.get("bytes_downloaded") or 0)
+            )
+            state.update(
+                {
+                    "status": "interrupted",
+                    "bytes_downloaded": downloaded,
+                    "download_speed_bps": None,
+                    "eta_seconds": None,
+                    "resumable": bool(partial_path and partial_path.is_file()),
+                    "error": "The app restarted during this download. Resume or cancel it.",
+                    "updated_at": utc_now(),
+                }
+            )
+            changed = True
+    with _download_lock:
+        _download_state.clear()
+        _download_state.update(loaded)
+        _download_state_loaded_from = state_path
+        if changed:
+            _persist_download_state_locked()
+
+
+def _persist_download_state_locked(*, throttle_seconds: float = 0.0) -> None:
+    global _download_state_last_persisted
+    now = time.monotonic()
+    if throttle_seconds and now - _download_state_last_persisted < throttle_seconds:
+        return
+    state_path = _download_state_path()
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
+    payload = {
+        "schema_version": 1,
+        "updated_at": utc_now(),
+        "downloads": _download_state,
+    }
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temporary.replace(state_path)
+    _download_state_last_persisted = now
 
 
 def registry_state_path() -> Path:
@@ -246,6 +325,7 @@ def invalidate_model_discovery_cache() -> None:
 
 
 def model_status(model_id: str) -> dict[str, Any]:
+    _ensure_download_state_loaded()
     model = get_model(model_id)
     if model is None:
         imported = next((item for item in imported_model_statuses() if item["id"] == model_id), None)
@@ -313,11 +393,68 @@ def set_active_model(model_id: str, role: str = "chat") -> dict[str, Any]:
         raise ValueError("Model is not accepted for the chat role.")
     state["active_chat_model_id"] = model_id
     state["updated_at"] = utc_now()
-    registry_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
+    _write_registry_state(state)
     for row in list_models():
         if row["id"] == model_id:
             return row
     raise KeyError(model_id)
+
+
+def activate_model_runtime(model_id: str, role: str = "chat") -> dict[str, Any]:
+    from backend.app.core.model_runtime_supervisor import (
+        ManagedRuntimeError,
+        activate_managed_model,
+    )
+
+    row = model_status(model_id)
+    role = (role or "chat").strip().lower()
+    if role != "chat":
+        raise ValueError("Unknown model activation role.")
+    if not (row.get("compatibility") or {}).get("chat_role_accepted"):
+        raise ValueError("Model is not accepted for the chat role.")
+    local_path = Path(str(row.get("local_path") or ""))
+    if not local_path.is_file() or local_path.suffix.casefold() != ".gguf":
+        raise ValueError("Only an installed GGUF model can be started by Vault's local model engine.")
+    if row.get("source_kind") == "default_choice":
+        integrity = row.get("integrity") or {}
+        if integrity.get("status") != "verified":
+            raise ValueError(
+                "Vault could not verify this model yet. Download it again before using it for chat."
+            )
+
+    previous_state = registry_state()
+    try:
+        activate_managed_model(model_id, str(local_path))
+    except ManagedRuntimeError as exc:
+        raise ValueError(str(exc)) from exc
+
+    next_state = dict(previous_state)
+    next_state["active_chat_model_id"] = model_id
+    next_state["updated_at"] = utc_now()
+    try:
+        _write_registry_state(next_state)
+    except OSError as exc:
+        previous_model_id = str(previous_state.get("active_chat_model_id") or "")
+        previous_model = (
+            model_status(previous_model_id)
+            if previous_model_id and previous_model_id != model_id
+            else None
+        )
+        if previous_model and previous_model.get("local_path"):
+            try:
+                activate_managed_model(previous_model_id, str(previous_model["local_path"]))
+            except ManagedRuntimeError:
+                pass
+        raise ValueError("Vault could not save the selected model; the previous model was restored.") from exc
+    return model_status(model_id)
+
+
+def _write_registry_state(state: dict[str, Any]) -> None:
+    path = registry_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    temporary.replace(path)
 
 
 def _record_downloaded_model_path(model_id: str, local_path: Path) -> None:
@@ -328,7 +465,7 @@ def _record_downloaded_model_path(model_id: str, local_path: Path) -> None:
     downloaded_paths[model_id] = str(local_path)
     state["downloaded_model_paths"] = downloaded_paths
     state["updated_at"] = utc_now()
-    registry_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
+    _write_registry_state(state)
 
 
 def active_chat_model_status() -> dict[str, Any] | None:
@@ -367,12 +504,13 @@ def active_chat_setup_status() -> dict[str, Any]:
 
 
 def start_model_download(model_id: str, *, target_dir: str | None = None) -> dict[str, Any]:
+    _ensure_download_state_loaded()
     model = get_model(model_id)
     if model is None:
         raise KeyError(model_id)
 
     existing = model_status(model_id)
-    if existing["installed"]:
+    if existing["installed"] and (existing.get("integrity") or {}).get("status") == "verified":
         return {"model_id": model_id, "status": "installed", "local_path": existing["local_path"]}
 
     try:
@@ -381,6 +519,7 @@ def start_model_download(model_id: str, *, target_dir: str | None = None) -> dic
         state = _failed_model_download_state(model_id, f"Could not use selected model download location: {exc}")
         with _download_lock:
             _download_state[model_id] = state
+            _persist_download_state_locked()
         return state
 
     disk_check = _model_disk_preflight(model, target_root=target_root)
@@ -388,6 +527,7 @@ def start_model_download(model_id: str, *, target_dir: str | None = None) -> dic
         state = _failed_model_download_state(model_id, disk_check["message"])
         with _download_lock:
             _download_state[model_id] = state
+            _persist_download_state_locked()
         return state
 
     with _download_lock:
@@ -415,6 +555,7 @@ def start_model_download(model_id: str, *, target_dir: str | None = None) -> dic
                 "updated_at": utc_now(),
             }
             _download_state[model_id] = state
+            _persist_download_state_locked()
             return state
         state = _download_state.get(model_id)
         if state and state["status"] in {"resolving", "downloading"}:
@@ -432,16 +573,29 @@ def start_model_download(model_id: str, *, target_dir: str | None = None) -> dic
             "started_at": utc_now(),
             "updated_at": utc_now(),
         }
+        _persist_download_state_locked()
 
-    thread = threading.Thread(target=_download_model, args=(model, target_root), daemon=True)
+    done_event = threading.Event()
+    thread = threading.Thread(
+        target=_download_model_with_ack,
+        args=(model, target_root, done_event),
+        daemon=True,
+    )
+    with _download_lock:
+        _download_threads[model_id] = thread
+        _download_done_events[model_id] = done_event
     thread.start()
     return _normalized_download_state(_download_state[model_id])
 
 
 def cancel_model_download(model_id: str) -> dict[str, Any]:
+    _ensure_download_state_loaded()
     model = get_model(model_id)
     if model is None:
         raise KeyError(model_id)
+    response = None
+    done_event = None
+    worker_thread = None
     with _download_lock:
         state = _download_state.get(model_id)
         if state and state.get("status") == "installed":
@@ -450,14 +604,17 @@ def cancel_model_download(model_id: str) -> dict[str, Any]:
         if state_local_path is not None:
             _download_state[model_id] = state_local_path
             _cancelled_downloads.discard(model_id)
+            _persist_download_state_locked()
             return state_local_path
         local_path = _find_local_model_file(model)
         if local_path is not None:
             installed = _installed_download_state(model_id, local_path)
             _download_state[model_id] = installed
             _cancelled_downloads.discard(model_id)
+            _persist_download_state_locked()
             return installed
         if not state or state.get("status") not in {"resolving", "downloading"}:
+            _cleanup_partial_download(model)
             _download_state[model_id] = {
                 "model_id": model_id,
                 "status": "cancelled",
@@ -473,10 +630,36 @@ def cancel_model_download(model_id: str) -> dict[str, Any]:
                 "started_at": state.get("started_at") if state else None,
                 "updated_at": utc_now(),
             }
+            _persist_download_state_locked()
             return _download_state[model_id]
         _cancelled_downloads.add(model_id)
         state.update({"status": "cancelling", "updated_at": utc_now()})
-        return state
+        response = _download_responses.get(model_id)
+        done_event = _download_done_events.get(model_id)
+        worker_thread = _download_threads.get(model_id)
+        _persist_download_state_locked()
+    if response is not None:
+        try:
+            response.close()
+        except Exception:
+            pass
+    if done_event is not None and worker_thread is not threading.current_thread():
+        done_event.wait(timeout=5.0)
+    with _download_lock:
+        current = _download_state.get(model_id, state)
+        if current.get("status") == "cancelling":
+            _cleanup_partial_download(model)
+            current.update(
+                {
+                    "status": "cancelled",
+                    "error": None,
+                    "download_speed_bps": None,
+                    "cancellation_acknowledged_at": utc_now(),
+                    "updated_at": utc_now(),
+                }
+            )
+            _persist_download_state_locked()
+        return _normalized_download_state(current)
 
 
 def _model_to_dict(model: LocalModel) -> dict[str, Any]:
@@ -558,7 +741,8 @@ def model_compatibility_report(
     runtime = _runtime_dependency_status()
     hardware = hardware_module.hardware_status()
     reasons: list[str] = []
-    config = _read_transformers_config(target)
+    is_gguf = target.is_file() and target.suffix.casefold() == ".gguf"
+    config = {} if is_gguf else _read_transformers_config(target)
     family = _detect_approved_family(config, registered_family=registered_family, model_path=str(target))
     model_type = str(config.get("model_type") or "")
     architectures = config.get("architectures") or []
@@ -568,10 +752,8 @@ def model_compatibility_report(
         reasons.append("Model path is required.")
     elif not target.exists():
         reasons.append("Model path does not exist.")
-    elif not target.is_dir():
-        reasons.append("Model path must point to a local Transformers checkpoint directory.")
-    elif not _is_transformers_model_dir(target):
-        reasons.append("Checkpoint directory is missing config/tokenizer files required by the local runtime.")
+    elif not is_gguf:
+        reasons.append("Vault's packaged local model engine accepts GGUF model files.")
     if not family:
         reasons.append("Model family is not in the approved Qwen/Phi/Gemma set.")
     if family and not _hardware_supports_family(family, hardware):
@@ -591,7 +773,7 @@ def model_compatibility_report(
         "accepted_roles": accepted_roles,
         "family": family.id if family else "",
         "family_name": family.name if family else "",
-        "model_type": model_type,
+        "model_type": "gguf" if is_gguf else model_type,
         "architecture": architecture,
         "registered_family": registered_family,
         "local_path": str(target) if str(model_path).strip() else "",
@@ -605,7 +787,7 @@ def model_compatibility_report(
         ),
         "replacement_recommendation": replacement_recommendation if not chat_role_accepted else {},
         "detail": (
-            f"Accepted local {family.name} checkpoint for Vault RAG chat."
+            f"Accepted local {family.name} GGUF model for Vault RAG chat."
             if chat_role_accepted and family
             else "; ".join(reasons)
         ),
@@ -632,31 +814,47 @@ def _replacement_recommendation_for_current_hardware(*, family_id: str = "") -> 
 
 
 def import_model_checkpoint(source_path: str | Path, *, name: str | None = None) -> dict[str, Any]:
-    source_dir = Path(source_path).resolve()
-    report = model_compatibility_report(source_dir)
+    source_file = Path(source_path).resolve()
+    report = model_compatibility_report(source_file)
     if not report["accepted"]:
         raise ValueError(report["detail"])
     family = report["family"]
-    destination_name = _safe_import_dir_name(name or source_dir.name or family)
+    destination_name = _safe_import_dir_name(name or source_file.stem or family)
     destination = imported_models_dir() / destination_name
-    if _paths_overlap(source_dir, destination):
+    if _paths_overlap(source_file, destination):
         raise ValueError("Imported checkpoint source and managed destination must be separate directories.")
-    if destination.exists():
-        shutil.rmtree(destination)
-    shutil.copytree(source_dir, destination)
+    staging = imported_models_dir() / f".{destination_name}.staging-{os.getpid()}-{time.time_ns()}"
+    backup = imported_models_dir() / f".{destination_name}.backup-{os.getpid()}-{time.time_ns()}"
     model_id = f"custom-{destination_name}"
+    local_model_path = destination / source_file.name
     metadata = {
         "id": model_id,
-        "name": name or source_dir.name or destination_name,
+        "name": name or source_file.stem or destination_name,
         "family": family,
-        "local_path": str(destination),
-        "source_path": str(source_dir),
+        "local_path": str(local_model_path),
+        "source_path": str(source_file),
         "hf_repo": "",
         "notes": "Imported local checkpoint.",
         "recommended_ram_gb": "",
         "created_at": utc_now(),
     }
-    (destination / "cml-model.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    staging.mkdir(parents=True)
+    try:
+        shutil.copy2(source_file, staging / source_file.name)
+        (staging / "cml-model.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        if destination.exists():
+            destination.replace(backup)
+        staging.replace(destination)
+        if backup.exists():
+            shutil.rmtree(backup)
+    except Exception:
+        if destination.exists() and backup.exists():
+            shutil.rmtree(destination)
+        if backup.exists() and not destination.exists():
+            backup.replace(destination)
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
     invalidate_model_discovery_cache()
     return next(item for item in imported_model_statuses() if item["id"] == model_id)
 
@@ -673,9 +871,7 @@ def preferred_chat_base_model() -> dict[str, Any] | None:
     for root in installed_model_scan_roots():
         if not root.exists():
             continue
-        for candidate in sorted(root.glob("*")):
-            if not candidate.is_dir():
-                continue
+        for candidate in _iter_model_candidates(root, max_depth=2):
             compatibility = model_compatibility_report(candidate, include_replacement_recommendation=False)
             if compatibility.get("chat_role_accepted"):
                 return {
@@ -728,7 +924,7 @@ def discover_installed_models(
             missing_roots.append(str(root))
             continue
         scanned_roots.append(normalized_root)
-        for candidate in _iter_transformers_checkpoint_dirs(root, max_depth=int(settings.model_scan_max_depth)):
+        for candidate in _iter_model_candidates(root, max_depth=int(settings.model_scan_max_depth)):
             normalized = _normalized_path(candidate)
             if normalized in seen_paths:
                 continue
@@ -809,8 +1005,8 @@ def installed_model_scan_roots() -> list[Path]:
         local_appdata / "lm-studio" / "models",
         appdata / "LM Studio" / "models",
     ]
-    roots.extend(path for path in defaults if str(path))
     if not explicit.strip():
+        roots.extend(path for path in defaults if str(path))
         roots.extend(_available_drive_roots())
     unique: list[Path] = []
     seen: set[str] = set()
@@ -881,7 +1077,10 @@ def _detect_approved_family(config: dict[str, Any], *, registered_family: str, m
     repo_hint = str(config.get("_name_or_path") or config.get("name_or_path") or model_path).lower()
     model_type = str(config.get("model_type") or "").lower()
     architectures = [str(item).lower() for item in (config.get("architectures") or []) if item]
+    file_name_hint = Path(model_path).name.lower()
     for family in APPROVED_MODEL_FAMILIES:
+        if family.id in file_name_hint:
+            return family
         if any(repo_hint.startswith(prefix) or prefix in repo_hint for prefix in family.repo_prefixes):
             return family
         if any(model_type.startswith(prefix) for prefix in family.model_type_prefixes):
@@ -922,7 +1121,7 @@ def _find_local_model_file(model: LocalModel) -> Path | None:
     return _downloaded_model_path_from_registry(model.id)
 
 
-def _iter_transformers_checkpoint_dirs(root: Path, *, max_depth: int) -> list[Path]:
+def _iter_model_candidates(root: Path, *, max_depth: int) -> list[Path]:
     discovered: list[Path] = []
     stack: list[tuple[Path, int]] = [(root, 0)]
     seen: set[str] = set()
@@ -940,17 +1139,27 @@ def _iter_transformers_checkpoint_dirs(root: Path, *, max_depth: int) -> list[Pa
         if depth >= max_depth:
             continue
         try:
-            children = sorted(
-                (entry for entry in current.iterdir() if entry.is_dir()),
-                key=lambda item: item.name.lower(),
-            )
+            entries = sorted(current.iterdir(), key=lambda item: item.name.lower())
         except OSError:
             continue
+        for entry in entries:
+            if entry.is_file() and entry.suffix.casefold() == ".gguf":
+                discovered.append(entry)
+        children = [entry for entry in entries if entry.is_dir()]
         for child in reversed(children):
             if child.name.lower() in MODEL_SCAN_SKIP_DIRS:
                 continue
             stack.append((child, depth + 1))
     return discovered
+
+
+def _iter_transformers_checkpoint_dirs(root: Path, *, max_depth: int) -> list[Path]:
+    """Compatibility wrapper retained for diagnostics that only inspect directories."""
+    return [
+        candidate
+        for candidate in _iter_model_candidates(root, max_depth=max_depth)
+        if candidate.is_dir()
+    ]
 
 
 def _discovered_model_metadata(candidate: Path, *, compatibility: dict[str, Any], root: Path) -> dict[str, Any]:
@@ -998,6 +1207,21 @@ def _paths_overlap(first: Path, second: Path) -> bool:
     return common in {first_path, second_path}
 
 
+def _download_model_with_ack(
+    model: LocalModel,
+    target_root: Path | None,
+    done_event: threading.Event,
+) -> None:
+    try:
+        _download_model(model, target_root)
+    finally:
+        with _download_lock:
+            _download_responses.pop(model.id, None)
+            _download_threads.pop(model.id, None)
+            _download_done_events.pop(model.id, None)
+        done_event.set()
+
+
 def _download_model(model: LocalModel, target_root: Path | None = None) -> None:
     try:
         _raise_if_cancelled(model.id)
@@ -1019,6 +1243,7 @@ def _download_model(model: LocalModel, target_root: Path | None = None) -> None:
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / safe_file_name
         partial = target.with_suffix(target.suffix + ".part")
+        partial_metadata = partial.with_suffix(partial.suffix + ".json")
 
         with _download_lock:
             _download_state[model.id].update(
@@ -1026,17 +1251,67 @@ def _download_model(model: LocalModel, target_root: Path | None = None) -> None:
                     "status": "downloading",
                     "file_name": safe_file_name,
                     "local_path": str(target),
+                    "partial_path": str(partial),
                     "updated_at": utc_now(),
                 }
             )
+            _persist_download_state_locked()
 
-        request = Request(url, headers={"User-Agent": "CML-local-backend/0.1"})
+        resume_metadata = _read_partial_metadata(partial_metadata)
+        resume_identity = {
+            "url": url,
+            "expected_sha256": expected_sha256.lower(),
+            "file_name": safe_file_name,
+        }
+        if partial.is_file() and not all(
+            resume_metadata.get(key) == value for key, value in resume_identity.items()
+        ):
+            _quarantine_stale_partial(partial, partial_metadata)
+            resume_metadata = {}
+        existing_bytes = partial.stat().st_size if partial.is_file() else 0
+        headers = {"User-Agent": "CML-local-backend/0.1"}
+        if existing_bytes > 0:
+            headers["Range"] = f"bytes={existing_bytes}-"
+            if resume_metadata.get("etag"):
+                headers["If-Range"] = str(resume_metadata["etag"])
+        request = Request(url, headers=headers)
         with urlopen(request, timeout=30) as response:
-            total = response.headers.get("Content-Length")
-            total_bytes = int(total) if total and total.isdigit() else None
-            downloaded = 0
+            with _download_lock:
+                _download_responses[model.id] = response
+            response_status = int(getattr(response, "status", 200) or 200)
+            resumed = existing_bytes > 0 and response_status == 206
+            content_range = response.headers.get("Content-Range") or ""
+            if resumed:
+                range_match = re.match(r"bytes\s+(\d+)-\d+/(\d+|\*)", content_range, re.IGNORECASE)
+                if range_match is None or int(range_match.group(1)) != existing_bytes:
+                    _quarantine_stale_partial(partial, partial_metadata)
+                    raise RuntimeError("The model host returned an invalid resume range. Retry to start a clean download.")
+            response_etag = response.headers.get("ETag") or response.headers.get("Etag")
+            prior_etag = resume_metadata.get("etag")
+            if resumed and prior_etag and response_etag and str(prior_etag) != str(response_etag):
+                _quarantine_stale_partial(partial, partial_metadata)
+                raise RuntimeError("The model file changed while resuming. Retry to start a verified clean download.")
+            range_total = content_range.rsplit("/", 1)[-1] if "/" in content_range else ""
+            content_length = response.headers.get("Content-Length")
+            if range_total.isdigit():
+                total_bytes = int(range_total)
+            elif content_length and content_length.isdigit():
+                total_bytes = int(content_length) + (existing_bytes if resumed else 0)
+            else:
+                total_bytes = None
+            downloaded = existing_bytes if resumed else 0
+            _write_partial_metadata(
+                partial_metadata,
+                {
+                    **resume_identity,
+                    "etag": response_etag,
+                    "total_bytes": total_bytes,
+                    "updated_at": utc_now(),
+                },
+            )
             started_monotonic = time.monotonic()
-            with partial.open("wb") as file:
+            with partial.open("ab" if resumed else "wb") as file:
+                chunks_since_disk_check = 0
                 while True:
                     _raise_if_cancelled(model.id)
                     chunk = response.read(1024 * 1024)
@@ -1045,13 +1320,24 @@ def _download_model(model: LocalModel, target_root: Path | None = None) -> None:
                         break
                     file.write(chunk)
                     downloaded += len(chunk)
-                    _update_model_download_progress(model.id, downloaded, total_bytes, started_monotonic)
+                    chunks_since_disk_check += 1
+                    if chunks_since_disk_check >= 32:
+                        _ensure_download_disk_space(partial.parent, downloaded, total_bytes)
+                        chunks_since_disk_check = 0
+                    _update_model_download_progress(
+                        model.id,
+                        downloaded,
+                        total_bytes,
+                        started_monotonic,
+                        initial_bytes=existing_bytes if resumed else 0,
+                    )
         actual_sha256 = _sha256_file(partial)
         if actual_sha256.lower() != expected_sha256.lower():
             raise RuntimeError(
                 f"Model integrity check failed for {safe_file_name}: expected {expected_sha256}, got {actual_sha256}"
             )
         partial.replace(target)
+        partial_metadata.unlink(missing_ok=True)
         _write_integrity_manifest(model, target, actual_sha256)
         _record_downloaded_model_path(model.id, target)
         with _download_lock:
@@ -1070,20 +1356,41 @@ def _download_model(model: LocalModel, target_root: Path | None = None) -> None:
                     "updated_at": utc_now(),
                 }
             )
+            _persist_download_state_locked()
     except Exception as exc:
-        if isinstance(exc, DownloadCancelled):
+        with _download_lock:
+            cancelled = model.id in _cancelled_downloads
+        if isinstance(exc, DownloadCancelled) or cancelled:
             _cleanup_partial_download(model)
             with _download_lock:
                 _cancelled_downloads.discard(model.id)
-                _download_state[model.id].update({"status": "cancelled", "error": None, "updated_at": utc_now()})
+                _download_state[model.id].update(
+                    {
+                        "status": "cancelled",
+                        "error": None,
+                        "download_speed_bps": None,
+                        "cancellation_acknowledged_at": utc_now(),
+                        "updated_at": utc_now(),
+                    }
+                )
+                _persist_download_state_locked()
             return
         with _download_lock:
             _download_state[model.id].update({"status": "failed", "error": str(exc), "updated_at": utc_now()})
+            _persist_download_state_locked()
 
 
-def _update_model_download_progress(model_id: str, downloaded: int, total: int | None, started_monotonic: float) -> None:
+def _update_model_download_progress(
+    model_id: str,
+    downloaded: int,
+    total: int | None,
+    started_monotonic: float,
+    *,
+    initial_bytes: int = 0,
+) -> None:
     elapsed = max(0.001, time.monotonic() - started_monotonic)
-    speed = int(downloaded / elapsed) if downloaded > 0 else None
+    transferred = max(0, downloaded - initial_bytes)
+    speed = int(transferred / elapsed) if transferred > 0 else None
     percent = None
     eta = None
     if total and total > 0:
@@ -1099,9 +1406,11 @@ def _update_model_download_progress(model_id: str, downloaded: int, total: int |
                 "progress_percent": percent,
                 "download_speed_bps": speed,
                 "eta_seconds": eta,
+                "heartbeat_at": utc_now(),
                 "updated_at": utc_now(),
             }
         )
+        _persist_download_state_locked(throttle_seconds=0.25)
 
 
 def _normalized_download_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -1119,6 +1428,9 @@ def _normalized_download_state(state: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("updated_at", None)
     payload.setdefault("sha256", None)
     payload.setdefault("integrity_status", None)
+    payload.setdefault("heartbeat_at", payload.get("updated_at"))
+    payload.setdefault("cancellation_acknowledged_at", None)
+    payload.setdefault("resumable", bool(payload.get("partial_path")))
     return payload
 
 
@@ -1198,8 +1510,47 @@ def _cleanup_partial_download(model: LocalModel) -> None:
     partial = Path(str(local_path)).with_suffix(Path(str(local_path)).suffix + ".part")
     try:
         partial.unlink(missing_ok=True)
+        partial.with_suffix(partial.suffix + ".json").unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _read_partial_metadata(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_partial_metadata(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _quarantine_stale_partial(partial: Path, metadata: Path) -> None:
+    suffix = f".stale-{int(time.time())}"
+    try:
+        if partial.exists():
+            partial.replace(partial.with_name(partial.name + suffix))
+        if metadata.exists():
+            metadata.replace(metadata.with_name(metadata.name + suffix))
+    except OSError:
+        partial.unlink(missing_ok=True)
+        metadata.unlink(missing_ok=True)
+
+
+def _ensure_download_disk_space(path: Path, downloaded: int, total: int | None) -> None:
+    if not total or total <= downloaded:
+        return
+    remaining = total - downloaded
+    reserve = 64 * 1024 * 1024
+    if shutil.disk_usage(path).free < remaining + reserve:
+        raise RuntimeError(
+            "The selected drive ran out of safe free space during the model download. "
+            "Free space or choose another location, then resume."
+        )
 
 
 def _resolve_gguf_filename(model: LocalModel) -> str:

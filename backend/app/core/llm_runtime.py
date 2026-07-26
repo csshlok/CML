@@ -9,6 +9,7 @@ import threading
 
 from backend.app.core.config import get_settings
 from backend.app.core.context_packets import build_chat_context_packet, render_context_packet
+from backend.app.core.model_runtime_supervisor import effective_runtime_config, managed_runtime_status
 
 
 @dataclass
@@ -28,6 +29,24 @@ _IN_FLIGHT_GENERATIONS = 0
 
 def runtime_status() -> dict[str, Any]:
     settings = get_settings()
+    managed = managed_runtime_status()
+    if managed.get("model_id") or managed.get("state") in {"starting", "ready", "failed", "stopped"}:
+        in_flight = _in_flight_count()
+        state = str(managed.get("state") or "missing")
+        if in_flight > 0 and managed.get("available"):
+            state = "busy"
+        return {
+            "provider": str(managed.get("provider") or "managed-llama.cpp"),
+            "base_url": str(managed.get("base_url") or ""),
+            "model": str(managed.get("model_id") or ""),
+            "available": bool(managed.get("available")),
+            "state": state,
+            "in_flight": in_flight,
+            "detail": str(managed.get("detail") or "No managed local model is selected."),
+            "pid": managed.get("pid"),
+            "error": managed.get("error"),
+            "managed": True,
+        }
     in_flight = _in_flight_count()
     status = {
         "provider": settings.llm_provider,
@@ -67,8 +86,8 @@ def generate_grounded_answer(
     working_memory: dict | None = None,
     supported_claims: list[str] | None = None,
 ) -> LLMResult:
-    settings = get_settings()
-    if settings.llm_provider == "none":
+    config = _runtime_config()
+    if config["provider"] == "none":
         raise LLMRuntimeError("No local model runtime configured.")
 
     messages = _grounded_messages(
@@ -81,7 +100,7 @@ def generate_grounded_answer(
         supported_claims=supported_claims,
     )
     payload = {
-        "model": settings.llm_model,
+        "model": config["model"],
         "messages": messages,
         "temperature": 0.2,
         "stream": False,
@@ -94,15 +113,15 @@ def generate_grounded_answer(
         raise LLMRuntimeError("Local model returned an unexpected response.") from exc
     if not text:
         raise LLMRuntimeError("Local model returned an empty response.")
-    return LLMResult(text=text, provider=settings.llm_provider, model=settings.llm_model)
+    return LLMResult(text=text, provider=config["provider"], model=config["model"])
 
 
 def generate_direct_answer(*, prompt: str, recent_turns: list[dict[str, str]] | None = None) -> LLMResult:
-    settings = get_settings()
-    if settings.llm_provider == "none":
+    config = _runtime_config()
+    if config["provider"] == "none":
         raise LLMRuntimeError("No local model runtime configured.")
     payload = {
-        "model": settings.llm_model,
+        "model": config["model"],
         "messages": _direct_messages(prompt, recent_turns=recent_turns),
         "temperature": 0.4,
         "stream": False,
@@ -115,14 +134,14 @@ def generate_direct_answer(*, prompt: str, recent_turns: list[dict[str, str]] | 
         raise LLMRuntimeError("Local model returned an unexpected response.") from exc
     if not text:
         raise LLMRuntimeError("Local model returned an empty response.")
-    return LLMResult(text=text, provider=settings.llm_provider, model=settings.llm_model)
+    return LLMResult(text=text, provider=config["provider"], model=config["model"])
 
 
 def local_runtime_configured() -> bool:
-    settings = get_settings()
-    if settings.llm_provider == "none":
+    config = _runtime_config()
+    if config["provider"] == "none":
         return False
-    hostname = (urlparse(settings.llm_base_url).hostname or "").casefold()
+    hostname = (urlparse(config["base_url"]).hostname or "").casefold()
     return hostname in {"127.0.0.1", "::1", "localhost"}
 
 
@@ -136,11 +155,12 @@ def generate_local_structured_json(
 ) -> LLMResult:
     """Generate bounded JSON through a loopback-only model endpoint."""
     settings = get_settings()
+    config = _runtime_config()
     if not local_runtime_configured():
         raise LLMRuntimeError(
             "Structured ingestion requires a configured loopback-only local model runtime."
         )
-    selected_model = str(model or settings.llm_model)
+    selected_model = str(model or config["model"])
     payload = {
         "model": selected_model,
         "messages": [
@@ -172,7 +192,7 @@ def generate_local_structured_json(
         raise LLMRuntimeError("Local model returned an unexpected JSON response.") from exc
     if not text:
         raise LLMRuntimeError("Local model returned an empty JSON response.")
-    return LLMResult(text=text, provider=settings.llm_provider, model=selected_model)
+    return LLMResult(text=text, provider=config["provider"], model=selected_model)
 
 
 def stream_grounded_answer(
@@ -185,8 +205,8 @@ def stream_grounded_answer(
     working_memory: dict | None = None,
     supported_claims: list[str] | None = None,
 ):
-    settings = get_settings()
-    if settings.llm_provider == "none":
+    config = _runtime_config()
+    if config["provider"] == "none":
         raise LLMRuntimeError("No local model runtime configured.")
 
     messages = _grounded_messages(
@@ -199,7 +219,7 @@ def stream_grounded_answer(
         supported_claims=supported_claims,
     )
     payload = {
-        "model": settings.llm_model,
+        "model": config["model"],
         "messages": messages,
         "temperature": 0.2,
         "stream": True,
@@ -209,11 +229,11 @@ def stream_grounded_answer(
 
 
 def stream_direct_answer(*, prompt: str, recent_turns: list[dict[str, str]] | None = None):
-    settings = get_settings()
-    if settings.llm_provider == "none":
+    config = _runtime_config()
+    if config["provider"] == "none":
         raise LLMRuntimeError("No local model runtime configured.")
     payload = {
-        "model": settings.llm_model,
+        "model": config["model"],
         "messages": _direct_messages(prompt, recent_turns=recent_turns),
         "temperature": 0.4,
         "stream": True,
@@ -341,8 +361,8 @@ def _compose_messages(
 
 
 def _openai_get(path: str, timeout: float) -> dict[str, Any]:
-    settings = get_settings()
-    url = settings.llm_base_url.rstrip("/") + path
+    config = _runtime_config()
+    url = config["base_url"].rstrip("/") + path
     request = Request(url, headers={"Accept": "application/json"})
     try:
         with urlopen(request, timeout=timeout) as response:
@@ -352,8 +372,8 @@ def _openai_get(path: str, timeout: float) -> dict[str, Any]:
 
 
 def _openai_post(path: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
-    settings = get_settings()
-    url = settings.llm_base_url.rstrip("/") + path
+    config = _runtime_config()
+    url = config["base_url"].rstrip("/") + path
     data = json.dumps(payload).encode("utf-8")
     request = Request(
         url,
@@ -375,8 +395,8 @@ def _openai_post(path: str, payload: dict[str, Any], timeout: float) -> dict[str
 
 
 def _openai_stream(path: str, payload: dict[str, Any], timeout: float):
-    settings = get_settings()
-    url = settings.llm_base_url.rstrip("/") + path
+    config = _runtime_config()
+    url = config["base_url"].rstrip("/") + path
     data = json.dumps(payload).encode("utf-8")
     request = Request(
         url,
@@ -411,3 +431,15 @@ def _openai_stream(path: str, payload: dict[str, Any], timeout: float):
 
 def _interactive_timeout() -> float:
     return max(float(get_settings().llm_timeout_seconds), 1.0)
+
+
+def _runtime_config() -> dict[str, str]:
+    managed = effective_runtime_config()
+    if managed is not None:
+        return managed
+    settings = get_settings()
+    return {
+        "provider": settings.llm_provider,
+        "base_url": settings.llm_base_url,
+        "model": settings.llm_model,
+    }

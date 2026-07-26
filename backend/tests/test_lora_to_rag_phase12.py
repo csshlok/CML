@@ -54,6 +54,13 @@ class LoraToRagPhase12Tests(unittest.TestCase):
         (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
         return model_dir
 
+    def _write_fake_gguf(self, file_name: str) -> Path:
+        model_root = Path(self.tmp.name) / "gguf-models"
+        model_root.mkdir(parents=True, exist_ok=True)
+        model_path = model_root / file_name
+        model_path.write_bytes(b"GGUF fixture")
+        return model_path
+
     def test_first_run_readiness_is_chat_only(self) -> None:
         from backend.app.core.setup_readiness import first_run_readiness
 
@@ -76,6 +83,9 @@ class LoraToRagPhase12Tests(unittest.TestCase):
             "backend.app.core.setup_readiness.active_chat_model_status",
             return_value={"id": "qwen3-4b-q4_k_m", "compatibility": {"chat_role_accepted": True, "detail": "Accepted."}},
         ), patch(
+            "backend.app.core.setup_readiness.runtime_status",
+            return_value={"state": "ready", "model": "qwen3-4b-q4_k_m", "detail": "Ready."},
+        ), patch(
             "backend.app.core.setup_readiness.model_recommendations",
             return_value={"recommended_chat_model_id": "qwen3-4b-q4_k_m", "detail": "Use the default chat model."},
         ), patch(
@@ -95,11 +105,7 @@ class LoraToRagPhase12Tests(unittest.TestCase):
         from backend.app.core.model_registry import active_chat_model_status, import_model_checkpoint
 
         imported = import_model_checkpoint(
-            self._write_fake_local_transformers_model(
-                "custom-qwen",
-                model_type="qwen2",
-                repo_hint="Qwen/Qwen3-4B",
-            ),
+            self._write_fake_gguf("custom-qwen-q4_k_m.gguf"),
             name="Custom Qwen",
         )
 
@@ -521,20 +527,16 @@ class LoraToRagPhase12Tests(unittest.TestCase):
         from backend.app.core.config import get_settings
         from backend.app.core.model_registry import discover_installed_models, installed_model_scan_roots
 
-        model_dir = self._write_fake_local_transformers_model(
-            "detected-qwen",
-            model_type="qwen2",
-            repo_hint="Qwen/Qwen3-4B",
-        )
-        os.environ["CML_MODEL_SCAN_ROOTS"] = str(model_dir.parent)
+        model_file = self._write_fake_gguf("detected-qwen-q4_k_m.gguf")
+        os.environ["CML_MODEL_SCAN_ROOTS"] = str(model_file.parent)
         get_settings.cache_clear()
 
         roots = installed_model_scan_roots()
         discovery = discover_installed_models(max_results=10, refresh=True)
 
-        self.assertIn(str(model_dir.parent).lower(), {str(path).lower() for path in roots})
+        self.assertIn(str(model_file.parent).lower(), {str(path).lower() for path in roots})
         self.assertGreaterEqual(discovery["compatible_model_count"], 1)
-        self.assertTrue(any(item["local_path"] == str(model_dir.resolve()) for item in discovery["models"]))
+        self.assertTrue(any(item["local_path"] == str(model_file.resolve()) for item in discovery["models"]))
 
     def test_legacy_train_cluster_adapter_jobs_fall_back_to_unsupported_job_handling(self) -> None:
         from backend.app.core.background_jobs import enqueue_job, run_due_jobs_once

@@ -10,6 +10,7 @@ from backend.app.core.embeddings import (
 )
 from backend.app.core.llm_runtime import runtime_status
 from backend.app.core.model_registry import (
+    activate_model_runtime,
     cancel_model_download,
     discover_installed_models,
     import_model_checkpoint,
@@ -18,7 +19,6 @@ from backend.app.core.model_registry import (
     model_integrity_manifest_status,
     model_recommendations,
     model_status,
-    set_active_model,
     start_model_download,
 )
 from backend.app.core.model_recommender.diagnostics import export_recommendation_diagnostics
@@ -117,8 +117,8 @@ def get_model_integrity_manifest_status() -> dict:
 
 
 @router.get("/embeddings", response_model=EmbeddingRuntimeStatus)
-def get_embedding_status() -> dict:
-    return embedding_status()
+def get_embedding_status(probe: bool = False) -> dict:
+    return embedding_status(probe_model=probe)
 
 
 @router.post("/embeddings/configure", response_model=EmbeddingRuntimeStatus)
@@ -180,7 +180,7 @@ def import_local_model(payload: ModelCompatibilityRequest) -> dict:
 def activate_local_model(model_id: str, payload: ModelActivateRequest | None = None) -> dict:
     try:
         role = payload.role if payload is not None else "chat"
-        return set_active_model(model_id, role=role)
+        return activate_model_runtime(model_id, role=role)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Model not found") from exc
     except ValueError as exc:

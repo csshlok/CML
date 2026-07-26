@@ -61,12 +61,18 @@ class ModelRecommenderTests(unittest.TestCase):
     ) -> dict:
         from backend.app.core.model_registry import import_model_checkpoint
 
+        family = "qwen3-4b"
+        normalized_hint = f"{model_type} {repo_hint}".lower()
+        if "phi" in normalized_hint:
+            family = "phi-4-mini-instruct"
+        elif "gemma" in normalized_hint:
+            family = "gemma-3-4b-it"
+        model_root = Path(self.tmp.name) / "imported-models"
+        model_root.mkdir(parents=True, exist_ok=True)
+        model_path = model_root / f"{family}-q4_k_m.gguf"
+        model_path.write_bytes(b"GGUF fixture")
         return import_model_checkpoint(
-            self._write_fake_local_transformers_model(
-                model_name,
-                model_type=model_type,
-                repo_hint=repo_hint,
-            ),
+            model_path,
             name=model_name,
         )
 

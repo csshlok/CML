@@ -4,9 +4,11 @@ import json
 import math
 import re
 import ast
-from fnmatch import fnmatch
 import threading
 import time
+import os
+import subprocess
+import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -40,6 +42,7 @@ MINILM_DOWNLOAD_PATTERNS = (
     "tokenizer_config.json",
     "vocab.txt",
 )
+MINILM_APPROXIMATE_DOWNLOAD_BYTES = 100 * 1024 * 1024
 
 TOKEN_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{1,}")
 
@@ -68,7 +71,18 @@ def embedding_status(*, probe_model: bool = True) -> dict:
     }
     if config["provider"] == "sentence-transformers":
         if importlib.util.find_spec("sentence_transformers") is not None:
-            if probe_model:
+            local_model_path = _find_local_sentence_transformer_path(
+                str(config["model"]),
+                config["cache_dir"],
+            )
+            if local_model_path is None:
+                status["available"] = False
+                status["setup_required"] = True
+                status["detail"] = (
+                    "SentenceTransformers is installed, but the local embedding model files "
+                    "were not found in the selected folder."
+                )
+            elif probe_model:
                 try:
                     _embed_with_sentence_transformers(config["model"], config["cache_dir"], "vault setup test")
                     status["detail"] = "SentenceTransformers embedding model is available."
@@ -77,7 +91,7 @@ def embedding_status(*, probe_model: bool = True) -> dict:
                     status["setup_required"] = True
                     status["detail"] = f"SentenceTransformers is installed, but the embedding model is not ready: {exc}"
             else:
-                status["detail"] = "SentenceTransformers runtime is configured. Full model probe was skipped for this summary."
+                status["detail"] = "The local SentenceTransformers model files are ready."
         else:
             status["available"] = False
             status["setup_required"] = True
@@ -102,14 +116,88 @@ _EMBEDDING_DOWNLOAD_STATE = {
     "updated_at": None,
 }
 _EMBEDDING_DOWNLOAD_THREAD: threading.Thread | None = None
+_EMBEDDING_DOWNLOAD_PROCESS: subprocess.Popen[bytes] | None = None
+_EMBEDDING_DOWNLOAD_STATE_LOADED_FROM: Path | None = None
+_EMBEDDING_DOWNLOAD_LAST_PERSISTED = 0.0
+
+
+def _embedding_download_state_path() -> Path:
+    return get_settings().data_dir / "embedding-download.json"
+
+
+def _ensure_embedding_download_state_loaded() -> None:
+    global _EMBEDDING_DOWNLOAD_STATE_LOADED_FROM
+    state_path = _embedding_download_state_path()
+    if _EMBEDDING_DOWNLOAD_STATE_LOADED_FROM == state_path:
+        return
+    if _EMBEDDING_DOWNLOAD_STATE.get("status") != "idle":
+        _EMBEDDING_DOWNLOAD_STATE_LOADED_FROM = state_path
+        return
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        loaded = payload.get("download", {}) if isinstance(payload, dict) else {}
+        if not isinstance(loaded, dict):
+            loaded = {}
+    except (OSError, json.JSONDecodeError):
+        loaded = {}
+    if loaded:
+        _EMBEDDING_DOWNLOAD_STATE.update(loaded)
+        if _EMBEDDING_DOWNLOAD_STATE.get("status") in {"queued", "downloading"}:
+            local_path_value = str(_EMBEDDING_DOWNLOAD_STATE.get("local_path") or "")
+            local_path = Path(local_path_value) if local_path_value else None
+            downloaded = (
+                _directory_size(local_path)
+                if local_path is not None and local_path.exists()
+                else int(_EMBEDDING_DOWNLOAD_STATE.get("bytes_downloaded") or 0)
+            )
+            _EMBEDDING_DOWNLOAD_STATE.update(
+                {
+                    "status": "interrupted",
+                    "bytes_downloaded": downloaded,
+                    "download_speed_bps": None,
+                    "eta_seconds": None,
+                    "resumable": bool(local_path and local_path.exists()),
+                    "error": "The app restarted during this download. Resume or cancel it.",
+                    "updated_at": utc_now(),
+                }
+            )
+    _EMBEDDING_DOWNLOAD_STATE_LOADED_FROM = state_path
+    if loaded:
+        with _EMBEDDING_DOWNLOAD_LOCK:
+            _persist_embedding_download_state_locked()
+
+
+def _persist_embedding_download_state_locked(*, throttle_seconds: float = 0.0) -> None:
+    global _EMBEDDING_DOWNLOAD_LAST_PERSISTED
+    now = time.monotonic()
+    if throttle_seconds and now - _EMBEDDING_DOWNLOAD_LAST_PERSISTED < throttle_seconds:
+        return
+    state_path = _embedding_download_state_path()
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "updated_at": utc_now(),
+                "download": _EMBEDDING_DOWNLOAD_STATE,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    temporary.replace(state_path)
+    _EMBEDDING_DOWNLOAD_LAST_PERSISTED = now
 
 
 def embedding_download_status() -> dict:
+    _ensure_embedding_download_state_loaded()
     with _EMBEDDING_DOWNLOAD_LOCK:
         return _normalized_download_state(_EMBEDDING_DOWNLOAD_STATE)
 
 
 def start_embedding_model_download(cache_dir: str | None = None, model: str | None = None) -> dict:
+    _ensure_embedding_download_state_loaded()
     target_model = (model or get_settings().embedding_model or DEFAULT_EMBEDDING_MODEL).strip()
     if target_model not in MANAGED_EMBEDDING_MODELS:
         raise ValueError(
@@ -120,6 +208,20 @@ def start_embedding_model_download(cache_dir: str | None = None, model: str | No
         get_settings().data_dir / "models" / "embeddings"
     )
     model_dir = target_dir / target_model.rsplit("/", 1)[-1]
+    dependency_error = _embedding_download_dependency_error()
+    if dependency_error:
+        with _EMBEDDING_DOWNLOAD_LOCK:
+            _EMBEDDING_DOWNLOAD_STATE.update(
+                {
+                    "model_id": target_model,
+                    "status": "failed",
+                    "local_path": str(model_dir),
+                    "error": dependency_error,
+                    "updated_at": utc_now(),
+                }
+            )
+            _persist_embedding_download_state_locked()
+            return _normalized_download_state(_EMBEDDING_DOWNLOAD_STATE)
     with _EMBEDDING_DOWNLOAD_LOCK:
         global _EMBEDDING_DOWNLOAD_THREAD
         if (
@@ -145,6 +247,7 @@ def start_embedding_model_download(cache_dir: str | None = None, model: str | No
                 "updated_at": utc_now(),
             }
         )
+        _persist_embedding_download_state_locked()
         _EMBEDDING_DOWNLOAD_THREAD = threading.Thread(
             target=_download_embedding_model,
             args=(target_model, model_dir),
@@ -156,66 +259,94 @@ def start_embedding_model_download(cache_dir: str | None = None, model: str | No
 
 
 def cancel_embedding_model_download() -> dict:
+    _ensure_embedding_download_state_loaded()
+    process: subprocess.Popen[bytes] | None = None
     with _EMBEDDING_DOWNLOAD_LOCK:
-        if _EMBEDDING_DOWNLOAD_STATE["status"] in {"queued", "downloading"}:
-            _EMBEDDING_DOWNLOAD_STATE["status"] = "cancelled"
-            _EMBEDDING_DOWNLOAD_STATE["error"] = "Cancellation requested. The active Hugging Face request may finish before stopping."
+        if _EMBEDDING_DOWNLOAD_STATE["status"] in {"queued", "downloading", "interrupted"}:
+            _EMBEDDING_DOWNLOAD_STATE["status"] = "cancelling"
+            _EMBEDDING_DOWNLOAD_STATE["error"] = None
             _EMBEDDING_DOWNLOAD_STATE["updated_at"] = utc_now()
+            _persist_embedding_download_state_locked()
+            process = _EMBEDDING_DOWNLOAD_PROCESS
+    if process is not None and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+    with _EMBEDDING_DOWNLOAD_LOCK:
+        if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelling":
+            _EMBEDDING_DOWNLOAD_STATE["status"] = "cancelled"
+            _EMBEDDING_DOWNLOAD_STATE["error"] = "Download cancelled."
+            _EMBEDDING_DOWNLOAD_STATE["updated_at"] = utc_now()
+            _persist_embedding_download_state_locked()
         return _normalized_download_state(_EMBEDDING_DOWNLOAD_STATE)
 
 
 def _download_embedding_model(model: str, model_dir: Path) -> None:
+    global _EMBEDDING_DOWNLOAD_PROCESS
     with _EMBEDDING_DOWNLOAD_LOCK:
         if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelled":
             return
         _EMBEDDING_DOWNLOAD_STATE["status"] = "downloading"
         _EMBEDDING_DOWNLOAD_STATE["updated_at"] = utc_now()
+        _persist_embedding_download_state_locked()
     try:
-        if importlib.util.find_spec("sentence_transformers") is None:
-            raise RuntimeError("SentenceTransformers is not installed in this Python runtime.")
         model_dir.mkdir(parents=True, exist_ok=True)
-        from huggingface_hub import HfApi, snapshot_download
-
-        api = HfApi(token=False, library_name="vault-desktop")
-        info = api.model_info(model, files_metadata=True, token=False)
-        expected_size = sum(
-            int(sibling.size or 0)
-            for sibling in info.siblings
-            if any(fnmatch(sibling.rfilename, pattern) for pattern in MINILM_DOWNLOAD_PATTERNS)
-        ) or None
+        expected_size = MINILM_APPROXIMATE_DOWNLOAD_BYTES
         started_monotonic = time.monotonic()
+        initial_bytes = _directory_size(model_dir)
         _update_embedding_download_progress(
-            bytes_downloaded=_directory_size(model_dir),
+            bytes_downloaded=initial_bytes,
             bytes_total=expected_size,
             started_monotonic=started_monotonic,
+            initial_bytes=initial_bytes,
         )
 
-        monitor_stop = threading.Event()
-        monitor = threading.Thread(
-            target=_monitor_embedding_download,
-            args=(model_dir, expected_size, started_monotonic, monitor_stop),
-            daemon=True,
-            name="cml-embedding-download-progress",
+        _EMBEDDING_DOWNLOAD_PROCESS = subprocess.Popen(
+            [
+                sys.executable,
+                "-s",
+                "-m",
+                "backend.app.core.embedding_download_worker",
+                "--model",
+                model,
+                "--target",
+                str(model_dir),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
-        monitor.start()
-        try:
-            snapshot_path = snapshot_download(
-                repo_id=model,
-                local_dir=model_dir,
-                allow_patterns=list(MINILM_DOWNLOAD_PATTERNS),
-                token=False,
-                max_workers=4,
+        while _EMBEDDING_DOWNLOAD_PROCESS.poll() is None:
+            with _EMBEDDING_DOWNLOAD_LOCK:
+                if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelling":
+                    break
+            _update_embedding_download_progress(
+                bytes_downloaded=_directory_size(model_dir),
+                bytes_total=expected_size,
+                started_monotonic=started_monotonic,
+                initial_bytes=initial_bytes,
             )
-        finally:
-            monitor_stop.set()
-            monitor.join(timeout=2)
+            time.sleep(0.25)
+        return_code = _EMBEDDING_DOWNLOAD_PROCESS.wait(timeout=5)
+        stderr = (
+            _EMBEDDING_DOWNLOAD_PROCESS.stderr.read().decode("utf-8", errors="replace")
+            if _EMBEDDING_DOWNLOAD_PROCESS.stderr is not None
+            else ""
+        )
+        _EMBEDDING_DOWNLOAD_PROCESS = None
         with _EMBEDDING_DOWNLOAD_LOCK:
-            if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelled":
+            if _EMBEDDING_DOWNLOAD_STATE["status"] in {"cancelling", "cancelled"}:
                 return
+        if return_code != 0:
+            raise RuntimeError(stderr.strip() or f"Memory-search download exited with code {return_code}.")
         from sentence_transformers import SentenceTransformer
 
-        SentenceTransformer(snapshot_path, local_files_only=True)
-        configure_embedding_runtime("sentence-transformers", snapshot_path, model)
+        SentenceTransformer(str(model_dir), local_files_only=True)
+        configure_embedding_runtime("sentence-transformers", str(model_dir), model)
         with _EMBEDDING_DOWNLOAD_LOCK:
             installed_size = _directory_size(model_dir)
             _EMBEDDING_DOWNLOAD_STATE.update(
@@ -231,7 +362,9 @@ def _download_embedding_model(model: str, model_dir: Path) -> None:
                     "updated_at": utc_now(),
                 }
             )
+            _persist_embedding_download_state_locked()
     except Exception as exc:
+        _EMBEDDING_DOWNLOAD_PROCESS = None
         with _EMBEDDING_DOWNLOAD_LOCK:
             if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelled":
                 return
@@ -242,26 +375,26 @@ def _download_embedding_model(model: str, model_dir: Path) -> None:
                     "updated_at": utc_now(),
                 }
             )
+            _persist_embedding_download_state_locked()
 
 
-def _monitor_embedding_download(
-    model_dir: Path,
-    expected_size: int | None,
-    started_monotonic: float,
-    stop: threading.Event,
-) -> None:
-    while not stop.wait(0.25):
-        with _EMBEDDING_DOWNLOAD_LOCK:
-            if _EMBEDDING_DOWNLOAD_STATE["status"] == "cancelled":
-                return
-        _update_embedding_download_progress(
-            bytes_downloaded=_directory_size(model_dir),
-            bytes_total=expected_size,
-            started_monotonic=started_monotonic,
-        )
+def _embedding_download_dependency_error() -> str | None:
+    if importlib.util.find_spec("sentence_transformers") is None:
+        return "SentenceTransformers is not installed in this Python runtime."
+    if importlib.util.find_spec("huggingface_hub") is None:
+        return "The Hugging Face download runtime is not installed."
+    return None
 
 
 def _friendly_embedding_download_error(exc: Exception) -> str:
+    message = str(exc)
+    if "CML_HF_AUTH_REQUIRED" in message:
+        return (
+            "Hugging Face requested an account or approval for this model. "
+            "Vault stopped without sending credentials; choose the approved public model or a local folder."
+        )
+    if "CML_HF_DOWNLOAD_FAILED:" in message:
+        return "Hugging Face could not complete the public model download. Check your connection and try again."
     try:
         from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
     except ImportError:
@@ -281,7 +414,7 @@ def _friendly_embedding_download_error(exc: Exception) -> str:
                 "Vault did not send credentials and stopped the download."
             )
         return "Hugging Face could not complete the model download. Check your connection and try again."
-    return str(exc)
+    return message
 
 
 def _update_embedding_download_progress(
@@ -289,9 +422,11 @@ def _update_embedding_download_progress(
     bytes_downloaded: int,
     bytes_total: int | None,
     started_monotonic: float,
+    initial_bytes: int = 0,
 ) -> None:
     elapsed = max(0.001, time.monotonic() - started_monotonic)
-    speed = int(bytes_downloaded / elapsed) if bytes_downloaded > 0 else None
+    transferred = max(0, bytes_downloaded - initial_bytes)
+    speed = int(transferred / elapsed) if transferred > 0 else None
     eta = None
     percent = None
     if bytes_total and bytes_total > 0:
@@ -310,6 +445,7 @@ def _update_embedding_download_progress(
                 "updated_at": utc_now(),
             }
         )
+        _persist_embedding_download_state_locked(throttle_seconds=0.25)
 
 
 def _normalized_download_state(state: dict) -> dict:
@@ -414,7 +550,7 @@ def configure_embedding_runtime(provider: str, cache_dir: str | None = None, mod
     _SENTENCE_TRANSFORMER_MODEL = None
     _SENTENCE_TRANSFORMER_MODEL_NAME = None
     _SENTENCE_TRANSFORMER_CACHE_DIR = None
-    return embedding_status()
+    return embedding_status(probe_model=False)
 
 
 def _embedding_config_path() -> Path:
@@ -471,9 +607,29 @@ def _resolve_sentence_transformer_ref(model_name: str, cache_dir) -> str:
     model_path = Path(cache_dir)
     if not model_path.exists():
         raise RuntimeError(f"embedding model path does not exist: {model_path}")
-    if (model_path / "modules.json").exists() or (model_path / "config.json").exists():
-        return str(model_path)
+    local_model_path = _find_local_sentence_transformer_path(model_name, model_path)
+    if local_model_path is not None:
+        return str(local_model_path)
     return model_name
+
+
+def _find_local_sentence_transformer_path(model_name: str, cache_dir) -> Path | None:
+    if cache_dir is None:
+        return None
+    cache_path = Path(cache_dir)
+    if not cache_path.is_dir():
+        return None
+
+    model_folder_name = model_name.rstrip("/").rsplit("/", 1)[-1]
+    candidates = [cache_path, cache_path / model_folder_name]
+    hub_model_root = cache_path / f"models--{model_name.replace('/', '--')}" / "snapshots"
+    if hub_model_root.is_dir():
+        candidates.extend(path for path in hub_model_root.iterdir() if path.is_dir())
+
+    for candidate in candidates:
+        if (candidate / "modules.json").is_file() or (candidate / "config.json").is_file():
+            return candidate
+    return None
 
 
 def _embed_with_sentence_transformers(model_name: str, cache_dir, text: str) -> list[float]:
