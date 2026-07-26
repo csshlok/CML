@@ -293,10 +293,16 @@ def _probe_generation(
         f"{base_url}/chat/completions",
         payload={
             "model": model_id,
-            "messages": [{"role": "user", "content": "Reply with OK."}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "/no_think\nReply with exactly OK.",
+                }
+            ],
             "temperature": 0,
-            "max_tokens": 4,
+            "max_tokens": 32,
             "stream": False,
+            "chat_template_kwargs": {"enable_thinking": False},
         },
         timeout=max(
             5.0,

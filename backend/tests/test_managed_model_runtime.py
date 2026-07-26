@@ -5,6 +5,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 
 
 class ManagedModelRuntimeTests(unittest.TestCase):
@@ -65,6 +66,25 @@ class ManagedModelRuntimeTests(unittest.TestCase):
 
         self.assertFalse(registry_state().get("active_chat_model_id"))
         self.assertEqual(managed_runtime_status()["state"], "failed")
+
+    def test_generation_probe_disables_thinking_and_allows_a_visible_answer(self) -> None:
+        from backend.app.core.model_runtime_supervisor import _probe_generation
+
+        class RunningProcess:
+            @staticmethod
+            def poll() -> None:
+                return None
+
+        with patch(
+            "backend.app.core.model_runtime_supervisor._json_request",
+            return_value={"choices": [{"message": {"content": "OK"}}]},
+        ) as request:
+            _probe_generation("http://127.0.0.1:1234/v1", "qwen3-4b-q4_k_m", RunningProcess())
+
+        payload = request.call_args.kwargs["payload"]
+        self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertGreaterEqual(payload["max_tokens"], 32)
+        self.assertIn("/no_think", payload["messages"][0]["content"])
 
     def test_missing_runtime_binary_never_marks_installed_model_ready(self) -> None:
         from backend.app.core.model_registry import activate_model_runtime, registry_state

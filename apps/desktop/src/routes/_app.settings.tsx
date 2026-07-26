@@ -111,6 +111,7 @@ import {
 } from "@/components/ui/dialog";
 import { displayPath } from "@/lib/displayPath";
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_app/settings")({
   validateSearch: (search: Record<string, unknown>): { section?: string } => ({
@@ -612,6 +613,13 @@ function SettingsView() {
       getModelRecommendations(),
     ]);
     setModels(modelRows);
+    setModelDownload((current) => {
+      const active = modelRows
+        .map((row) => row.download)
+        .find((download) => isActiveModelDownloadStatus(download?.status));
+      if (!current) return active ?? null;
+      return modelRows.find((row) => row.id === current.model_id)?.download ?? current;
+    });
     setModelRecommendations(recommendations);
   }
 
@@ -1464,7 +1472,9 @@ function SettingsView() {
               )}
             </div>
           </SettingsCard>
-          {activeModelDownload && activeModelDownload.status !== "idle" && (
+          {activeModelDownload &&
+            (isActiveModelDownloadStatus(activeModelDownload.status) ||
+              modelDownload?.model_id === activeModelDownload.model_id) && (
             <ModelDownloadToast
               download={activeModelDownload}
               onCancel={() => void cancelDownload(activeModelDownload.model_id)}
@@ -2170,7 +2180,9 @@ function selectVisibleModelDownload(
     .filter((download): download is NonNullable<LocalModelRecord["download"]> => Boolean(download?.status && download.status !== "idle"));
   return (
     visible.find((download) => isActiveModelDownloadStatus(download.status)) ??
-    (fallback && isActiveModelDownloadStatus(fallback.status) ? fallback : null) ??
+    (fallback
+      ? visible.find((download) => download.model_id === fallback.model_id) ?? fallback
+      : null) ??
     visible[0] ??
     (fallback?.status && fallback.status !== "idle" ? fallback : null)
   );
@@ -2187,6 +2199,8 @@ function ModelDownloadToast({
   download: NonNullable<LocalModelRecord["download"]>;
   onCancel: () => void;
 }) {
+  const [visible, setVisible] = useState(true);
+  const [leaving, setLeaving] = useState(false);
   const totalBytes = download.total_bytes ?? download.bytes_total ?? null;
   const progress = download.progress_percent ?? (
     download.bytes_downloaded && totalBytes
@@ -2196,8 +2210,27 @@ function ModelDownloadToast({
   const active = isActiveModelDownloadStatus(download.status);
   const fallbackProgress = download.status === "installed" ? 100 : 0;
 
+  useEffect(() => {
+    setVisible(true);
+    setLeaving(false);
+    if (active) return;
+    const fadeTimer = window.setTimeout(() => setLeaving(true), 1800);
+    const hideTimer = window.setTimeout(() => setVisible(false), 2400);
+    return () => {
+      window.clearTimeout(fadeTimer);
+      window.clearTimeout(hideTimer);
+    };
+  }, [active, download.model_id, download.status]);
+
+  if (!visible) return null;
+
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-[min(18rem,calc(100vw-2rem))] rounded-md border border-border bg-card p-3 shadow-lg">
+    <div
+      className={cn(
+        "fixed bottom-4 right-4 z-50 w-[min(18rem,calc(100vw-2rem))] rounded-md border border-border bg-card p-3 shadow-lg transition-all duration-500",
+        leaving && "pointer-events-none translate-y-1 opacity-0",
+      )}
+    >
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 truncate text-sm font-medium">{compactModelName(download.model_id)}</div>
         {active ? (

@@ -70,6 +70,7 @@ function Onboarding() {
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
   const shellRef = useRef<HTMLElement | null>(null);
   const embeddingPollFailuresRef = useRef(0);
+  const modelsLoadedRef = useRef(false);
   const modelSelectionDirtyRef = useRef(false);
   const autoActivationAttemptRef = useRef<string | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -251,7 +252,8 @@ function Onboarding() {
   }, [activatingId, models, selectedModelId, step]);
 
   async function refreshModels() {
-    setModelsLoading(true);
+    const showInitialLoading = !modelsLoadedRef.current;
+    if (showInitialLoading) setModelsLoading(true);
     try {
       const [rows, runtime] = await Promise.all([
         listLocalModels(),
@@ -259,13 +261,23 @@ function Onboarding() {
       ]);
       setModels(rows);
       setModelRuntime(runtime);
+      setModelDownload((current) => {
+        const active = rows
+          .map((row) => row.download)
+          .find((download) => isActiveModelDownloadStatus(download?.status));
+        if (!current) return active ?? null;
+        return rows.find((row) => row.id === current.model_id)?.download ?? current;
+      });
       if (!rows.some((row) => row.id === selectedModelId) && rows[0]) {
         setSelectedModelId(rows[0].id);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load local models.");
     } finally {
-      setModelsLoading(false);
+      if (showInitialLoading) {
+        modelsLoadedRef.current = true;
+        setModelsLoading(false);
+      }
     }
   }
 
@@ -692,12 +704,12 @@ function Onboarding() {
   }
 
   if (!setupLoaded) {
-    return <main className="h-screen bg-[#fbfbfb]" aria-label="Loading setup" />;
+    return <main className="h-full bg-[#fbfbfb]" aria-label="Loading setup" />;
   }
 
   if (step === 0) {
     return (
-      <main className="flex h-screen items-center justify-center bg-[#fbfbfb] text-[#171717]">
+      <main className="flex h-full items-center justify-center bg-[#fbfbfb] text-[#171717]">
         <div className="flex -translate-y-28 flex-col items-center">
           <BrandLogo className="h-[132px] w-auto select-none" />
           <h1 className="mt-20 text-[46px] font-bold tracking-[-0.035em]">Welcome to Vault</h1>
@@ -716,7 +728,7 @@ function Onboarding() {
   return (
     <main
       ref={shellRef}
-      className="vault-onboarding-shell h-screen overflow-x-hidden overflow-y-auto bg-background text-foreground"
+      className="vault-onboarding-shell h-full overflow-x-hidden overflow-y-auto bg-background text-foreground"
     >
       <div className="relative z-10 grid min-h-full grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)]">
         <aside className="hidden border-r border-border bg-background px-10 py-10 lg:flex lg:min-h-full lg:flex-col lg:pb-16">
@@ -1324,7 +1336,9 @@ function Onboarding() {
           </div>
         </section>
       </div>
-      {activeModelDownload && isActiveModelDownloadStatus(activeModelDownload.status) && (
+      {activeModelDownload &&
+        (isActiveModelDownloadStatus(activeModelDownload.status) ||
+          modelDownload?.model_id === activeModelDownload.model_id) && (
         <ModelDownloadToast
           download={activeModelDownload}
           onCancel={() => void cancelDownload(activeModelDownload.model_id)}
@@ -1681,7 +1695,9 @@ function selectVisibleModelDownload(
     );
   return (
     visible.find((download) => isActiveModelDownloadStatus(download.status)) ??
-    (fallback && isActiveModelDownloadStatus(fallback.status) ? fallback : null) ??
+    (fallback
+      ? visible.find((download) => download.model_id === fallback.model_id) ?? fallback
+      : null) ??
     visible[0] ??
     (fallback?.status && fallback.status !== "idle" ? fallback : null)
   );
@@ -1698,6 +1714,8 @@ function ModelDownloadToast({
   download: NonNullable<LocalModelRecord["download"]>;
   onCancel: () => void;
 }) {
+  const [visible, setVisible] = useState(true);
+  const [leaving, setLeaving] = useState(false);
   const totalBytes = download.total_bytes ?? download.bytes_total ?? null;
   const progress =
     download.progress_percent ??
@@ -1707,8 +1725,27 @@ function ModelDownloadToast({
   const active = isActiveModelDownloadStatus(download.status);
   const fallbackProgress = download.status === "installed" ? 100 : 0;
 
+  useEffect(() => {
+    setVisible(true);
+    setLeaving(false);
+    if (active) return;
+    const fadeTimer = window.setTimeout(() => setLeaving(true), 1800);
+    const hideTimer = window.setTimeout(() => setVisible(false), 2400);
+    return () => {
+      window.clearTimeout(fadeTimer);
+      window.clearTimeout(hideTimer);
+    };
+  }, [active, download.model_id, download.status]);
+
+  if (!visible) return null;
+
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-[min(18rem,calc(100vw-2rem))] rounded-md border border-border bg-card p-3 shadow-lg">
+    <div
+      className={cn(
+        "fixed bottom-4 right-4 z-50 w-[min(18rem,calc(100vw-2rem))] rounded-md border border-border bg-card p-3 shadow-lg transition-all duration-500",
+        leaving && "pointer-events-none translate-y-1 opacity-0",
+      )}
+    >
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 truncate text-sm font-medium">
           {shortModelName(download.model_id)}

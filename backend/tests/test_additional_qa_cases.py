@@ -2585,7 +2585,7 @@ class AdditionalQACases(unittest.TestCase):
         onboarding = (repo_root / "apps" / "desktop" / "src" / "routes" / "onboarding.tsx").read_text(encoding="utf-8")
         styles = (repo_root / "apps" / "desktop" / "src" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn('vault-onboarding-shell h-screen overflow-x-hidden overflow-y-auto', onboarding)
+        self.assertIn('vault-onboarding-shell h-full overflow-x-hidden overflow-y-auto', onboarding)
         self.assertIn("prepareActiveVaultFolder", onboarding)
         self.assertIn("setActiveVaultFolder", onboarding)
         self.assertIn('min-h-0 flex-1 overflow-y-auto px-6 sm:px-8', onboarding)
@@ -2638,6 +2638,9 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn('status === "resolving" || status === "downloading" || status === "cancelling"', onboarding)
         self.assertIn("function selectVisibleModelDownload", onboarding)
         self.assertIn("visible.find((download) => isActiveModelDownloadStatus(download.status))", onboarding)
+        self.assertIn("modelsLoadedRef", onboarding)
+        self.assertIn("visible.find((download) => download.model_id === fallback.model_id)", onboarding)
+        self.assertIn('leaving && "pointer-events-none translate-y-1 opacity-0"', onboarding)
         self.assertIn('state.status === "failed" || state.status === "blocked"', onboarding)
         self.assertIn("model.download?.progress_percent", onboarding)
         self.assertIn("model.download?.total_bytes ?? model.download?.bytes_total", onboarding)
