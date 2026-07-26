@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import json
 import secrets
 import struct
 from pathlib import Path
@@ -19,8 +20,10 @@ from backend.app.core.vault_crypto import (
 NONCE_BYTES = 12
 BLOB_MAGIC = b"CMLBLOB1"
 BLOB_CHUNK_SIZE = 1024 * 1024
+CONTENT_MIGRATION_BATCH_SIZE = 100
 
 SOURCE_TEXT_FIELDS = ("raw_text", "extracted_text", "summary", "tags")
+CHAT_MESSAGE_FIELDS = ("content", "clusters_used", "citations", "warnings")
 
 
 class EncryptedStorageError(RuntimeError):
@@ -56,6 +59,343 @@ def store_source_content_fields(conn, source: dict, *, now: str | None = None) -
         )
         sanitized[field] = "[]" if field == "tags" else ""
     return sanitized
+
+
+def migrate_existing_plaintext_content(conn, vault_id: str) -> dict[str, int]:
+    """Resume bounded plaintext migration before a vault is reported secured."""
+    counts = {"sources": 0, "pages": 0, "chunks": 0, "chat_messages": 0, "chat_generations": 0}
+    conn.execute(
+        """
+        UPDATE vault_security_metadata
+        SET content_migration_status = 'running',
+            content_migration_updated_at = ?,
+            content_migration_error = ''
+        WHERE vault_id = ?
+        """,
+        (utc_now(), vault_id),
+    )
+    conn.commit()
+
+    while True:
+        rows = conn.execute(
+            """
+            SELECT id, raw_text, extracted_text, summary, tags
+            FROM sources
+            WHERE vault_id = ?
+              AND (raw_text <> '' OR extracted_text <> '' OR summary <> '' OR tags NOT IN ('', '[]'))
+            LIMIT ?
+            """,
+            (vault_id, CONTENT_MIGRATION_BATCH_SIZE),
+        ).fetchall()
+        if not rows:
+            break
+        now = utc_now()
+        for row in rows:
+            for field in SOURCE_TEXT_FIELDS:
+                put_encrypted_text(
+                    conn,
+                    vault_id=vault_id,
+                    entity_type="source",
+                    entity_id=str(row["id"]),
+                    field_name=field,
+                    text=str(row[field] or ""),
+                    now=now,
+                )
+            conn.execute(
+                """
+                UPDATE sources
+                SET raw_text = '', extracted_text = '', summary = '', tags = '[]', updated_at = ?
+                WHERE id = ? AND vault_id = ?
+                """,
+                (now, row["id"], vault_id),
+            )
+        counts["sources"] += len(rows)
+        _commit_migration_batch(conn, vault_id)
+
+    for table, entity_type, text_column, count_key, extra_update in (
+        ("source_pages", "source_page", "raw_text", "pages", ", updated_at = :now"),
+        ("source_chunks", "source_chunk", "text", "chunks", ""),
+    ):
+        while True:
+            rows = conn.execute(
+                f"SELECT id, {text_column} FROM {table} WHERE vault_id = ? AND {text_column} <> '' LIMIT ?",
+                (vault_id, CONTENT_MIGRATION_BATCH_SIZE),
+            ).fetchall()
+            if not rows:
+                break
+            now = utc_now()
+            for row in rows:
+                put_encrypted_text(
+                    conn,
+                    vault_id=vault_id,
+                    entity_type=entity_type,
+                    entity_id=str(row["id"]),
+                    field_name=text_column,
+                    text=str(row[text_column] or ""),
+                    now=now,
+                )
+                conn.execute(
+                    f"UPDATE {table} SET {text_column} = ''{extra_update} WHERE id = :id AND vault_id = :vault_id",
+                    {"id": row["id"], "vault_id": vault_id, "now": now},
+                )
+            counts[count_key] += len(rows)
+            _commit_migration_batch(conn, vault_id)
+
+    while True:
+        rows = conn.execute(
+            """
+            SELECT messages.id, messages.content, messages.clusters_used, messages.citations, messages.warnings
+            FROM chat_messages messages
+            JOIN chat_sessions sessions ON sessions.id = messages.session_id
+            WHERE sessions.vault_id = ?
+              AND (
+                messages.content <> '' OR messages.clusters_used NOT IN ('', '[]')
+                OR messages.citations NOT IN ('', '[]') OR messages.warnings NOT IN ('', '[]')
+              )
+            LIMIT ?
+            """,
+            (vault_id, CONTENT_MIGRATION_BATCH_SIZE),
+        ).fetchall()
+        if not rows:
+            break
+        now = utc_now()
+        for row in rows:
+            for field in CHAT_MESSAGE_FIELDS:
+                put_encrypted_text(
+                    conn,
+                    vault_id=vault_id,
+                    entity_type="chat_message",
+                    entity_id=str(row["id"]),
+                    field_name=field,
+                    text=str(row[field] or ""),
+                    now=now,
+                )
+            conn.execute(
+                "UPDATE chat_messages SET content = '', clusters_used = '[]', citations = '[]', warnings = '[]' WHERE id = ?",
+                (row["id"],),
+            )
+        counts["chat_messages"] += len(rows)
+        _commit_migration_batch(conn, vault_id)
+
+    while True:
+        rows = conn.execute(
+            "SELECT id, prompt FROM chat_generations WHERE vault_id = ? AND prompt <> '' LIMIT ?",
+            (vault_id, CONTENT_MIGRATION_BATCH_SIZE),
+        ).fetchall()
+        if not rows:
+            break
+        now = utc_now()
+        for row in rows:
+            put_encrypted_text(
+                conn,
+                vault_id=vault_id,
+                entity_type="chat_generation",
+                entity_id=str(row["id"]),
+                field_name="prompt",
+                text=str(row["prompt"] or ""),
+                now=now,
+            )
+            conn.execute("UPDATE chat_generations SET prompt = '' WHERE id = ?", (row["id"],))
+        counts["chat_generations"] += len(rows)
+        _commit_migration_batch(conn, vault_id)
+
+    conn.execute("DELETE FROM retrieval_snapshots WHERE vault_id = ?", (vault_id,))
+    conn.execute("DELETE FROM query_evidence_cache WHERE vault_id = ?", (vault_id,))
+    conn.execute(
+        """
+        UPDATE vault_security_metadata
+        SET content_migration_status = 'complete',
+            content_migration_updated_at = ?,
+            content_migration_error = ''
+        WHERE vault_id = ?
+        """,
+        (utc_now(), vault_id),
+    )
+    conn.commit()
+    return counts
+
+
+def _commit_migration_batch(conn, vault_id: str) -> None:
+    conn.execute(
+        """
+        UPDATE vault_security_metadata
+        SET content_migration_updated_at = ?
+        WHERE vault_id = ?
+        """,
+        (utc_now(), vault_id),
+    )
+    conn.commit()
+
+
+def store_chat_message_content(
+    conn,
+    *,
+    vault_id: str,
+    message_id: str,
+    content: str,
+    now: str | None = None,
+) -> str:
+    return plaintext_column_for_text(
+        conn,
+        vault_id=vault_id,
+        entity_type="chat_message",
+        entity_id=message_id,
+        field_name="content",
+        text=content,
+        now=now,
+    )
+
+
+def store_chat_message_fields(
+    conn,
+    *,
+    vault_id: str,
+    message_id: str,
+    fields: dict[str, str],
+    now: str | None = None,
+) -> dict[str, str]:
+    stored = dict(fields)
+    if not is_vault_secured(conn, vault_id):
+        return stored
+    for field in CHAT_MESSAGE_FIELDS:
+        if field not in stored:
+            continue
+        put_encrypted_text(
+            conn,
+            vault_id=vault_id,
+            entity_type="chat_message",
+            entity_id=message_id,
+            field_name=field,
+            text=str(stored[field] or ""),
+            now=now,
+        )
+        stored[field] = "[]" if field != "content" else ""
+    return stored
+
+
+def mark_chat_citations_source_deleted(
+    conn,
+    *,
+    vault_id: str,
+    source_id: str,
+    now: str | None = None,
+) -> int:
+    """Tombstone historical citations before their source is removed.
+
+    Secured vaults do not retain plaintext retrieval snapshots, so their
+    encrypted citation payloads are the durable history that must be updated.
+    """
+    rows = conn.execute(
+        """
+        SELECT messages.id, messages.citations
+        FROM chat_messages messages
+        JOIN chat_sessions sessions ON sessions.id = messages.session_id
+        WHERE sessions.vault_id = ?
+          AND messages.role = 'assistant'
+        """,
+        (vault_id,),
+    ).fetchall()
+    secured = is_vault_secured(conn, vault_id)
+    updated_count = 0
+    for row in rows:
+        serialized = str(row["citations"] or "[]")
+        if secured:
+            serialized = get_encrypted_text(
+                conn,
+                vault_id=vault_id,
+                entity_type="chat_message",
+                entity_id=str(row["id"]),
+                field_name="citations",
+            ) or serialized
+        try:
+            citations = json.loads(serialized)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(citations, list):
+            continue
+        changed = False
+        for citation in citations:
+            if isinstance(citation, dict) and str(citation.get("source_id") or "") == source_id:
+                citation["state"] = "source_deleted"
+                changed = True
+        if not changed:
+            continue
+        stored = store_chat_message_fields(
+            conn,
+            vault_id=vault_id,
+            message_id=str(row["id"]),
+            fields={"citations": json.dumps(citations)},
+            now=now,
+        )
+        conn.execute(
+            "UPDATE chat_messages SET citations = ? WHERE id = ?",
+            (stored["citations"], row["id"]),
+        )
+        updated_count += 1
+    return updated_count
+
+
+def store_chat_generation_prompt(
+    conn,
+    *,
+    vault_id: str,
+    generation_id: str,
+    prompt: str,
+    now: str | None = None,
+) -> str:
+    return plaintext_column_for_text(
+        conn,
+        vault_id=vault_id,
+        entity_type="chat_generation",
+        entity_id=generation_id,
+        field_name="prompt",
+        text=prompt,
+        now=now,
+    )
+
+
+def hydrate_chat_generation_rows(conn, rows) -> list[dict]:
+    generations = [dict_from_row(row) for row in rows]
+    for generation in generations:
+        vault_id = str(generation.get("vault_id") or "")
+        if not vault_id or not is_vault_secured(conn, vault_id):
+            continue
+        generation["prompt"] = get_encrypted_text(
+            conn,
+            vault_id=vault_id,
+            entity_type="chat_generation",
+            entity_id=str(generation["id"]),
+            field_name="prompt",
+        )
+    return generations
+
+
+def hydrate_chat_message_rows(conn, rows) -> list[dict]:
+    messages = [dict_from_row(row) for row in rows]
+    session_ids = sorted({str(message.get("session_id") or "") for message in messages if message.get("session_id")})
+    if not session_ids:
+        return messages
+    placeholders = ",".join("?" for _ in session_ids)
+    session_rows = conn.execute(
+        f"SELECT id, vault_id FROM chat_sessions WHERE id IN ({placeholders})",
+        session_ids,
+    ).fetchall()
+    vault_by_session = {str(row["id"]): str(row["vault_id"]) for row in session_rows}
+    for message in messages:
+        vault_id = vault_by_session.get(str(message.get("session_id") or ""))
+        if not vault_id or not is_vault_secured(conn, vault_id):
+            continue
+        for field in CHAT_MESSAGE_FIELDS:
+            encrypted = get_encrypted_text(
+                conn,
+                vault_id=vault_id,
+                entity_type="chat_message",
+                entity_id=str(message["id"]),
+                field_name=field,
+            )
+            if encrypted:
+                message[field] = encrypted
+    return messages
 
 
 def update_source_content_fields(conn, *, vault_id: str, source_id: str, updates: dict, now: str | None = None) -> dict:

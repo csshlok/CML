@@ -63,6 +63,9 @@ def init_db() -> None:
                 pin_wrapped_unlock_secret TEXT NOT NULL DEFAULT '',
                 active_derived_state_tuple TEXT NOT NULL DEFAULT '{}',
                 previous_verified_tuple TEXT NOT NULL DEFAULT '{}',
+                content_migration_status TEXT NOT NULL DEFAULT 'complete',
+                content_migration_updated_at TEXT NOT NULL DEFAULT '',
+                content_migration_error TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
@@ -381,6 +384,8 @@ def init_db() -> None:
                 max_attempts INTEGER NOT NULL DEFAULT 3,
                 last_error TEXT NOT NULL DEFAULT '',
                 status_detail TEXT NOT NULL DEFAULT '',
+                cancellation_requested INTEGER NOT NULL DEFAULT 0,
+                cancellation_requested_at TEXT,
                 started_at TEXT,
                 completed_at TEXT,
                 created_at TEXT NOT NULL,
@@ -1397,6 +1402,8 @@ def init_db() -> None:
         _add_column_if_missing(conn, "app_jobs", "timeout_action", "TEXT NOT NULL DEFAULT 'fail'")
         _add_column_if_missing(conn, "app_jobs", "depends_on_job_id", "TEXT")
         _add_column_if_missing(conn, "app_jobs", "status_detail", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "app_jobs", "cancellation_requested", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "app_jobs", "cancellation_requested_at", "TEXT")
         _add_column_if_missing(conn, "app_jobs", "started_at", "TEXT")
         _add_column_if_missing(conn, "app_jobs", "completed_at", "TEXT")
         _add_column_if_missing(conn, "extension_clients", "allowed_vault_ids", "TEXT NOT NULL DEFAULT '[]'")
@@ -1806,6 +1813,9 @@ def _ensure_vault_security_metadata_schema(conn: sqlite3.Connection) -> None:
             pin_wrapped_unlock_secret TEXT NOT NULL DEFAULT '',
             active_derived_state_tuple TEXT NOT NULL DEFAULT '{}',
             previous_verified_tuple TEXT NOT NULL DEFAULT '{}',
+            content_migration_status TEXT NOT NULL DEFAULT 'complete',
+            content_migration_updated_at TEXT NOT NULL DEFAULT '',
+            content_migration_error TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
@@ -1826,6 +1836,9 @@ def _ensure_vault_security_metadata_schema(conn: sqlite3.Connection) -> None:
         "pin_wrapped_unlock_secret": "TEXT NOT NULL DEFAULT ''",
         "active_derived_state_tuple": "TEXT NOT NULL DEFAULT '{}'",
         "previous_verified_tuple": "TEXT NOT NULL DEFAULT '{}'",
+        "content_migration_status": "TEXT NOT NULL DEFAULT 'complete'",
+        "content_migration_updated_at": "TEXT NOT NULL DEFAULT ''",
+        "content_migration_error": "TEXT NOT NULL DEFAULT ''",
         "created_at": "TEXT NOT NULL DEFAULT ''",
         "updated_at": "TEXT NOT NULL DEFAULT ''",
     }.items():

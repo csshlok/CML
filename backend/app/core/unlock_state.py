@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import connect, utc_now
+from backend.app.core.encrypted_storage import migrate_existing_plaintext_content
 from backend.app.core.vault_crypto import (
     InvalidVaultSecretError,
     VaultCryptoError,
@@ -87,7 +88,7 @@ _STATE_LOCK = threading.RLock()
 _STATE = UnlockStateSnapshot(
     state="locked",
     vault_id=None,
-    unlock_mode="convenience",
+    unlock_mode="strict",
     pin_enabled=False,
     message="Vault is locked.",
     verification_error="",
@@ -105,7 +106,7 @@ def current_unlock_state() -> dict:
             {
                 "state": "ready",
                 "vault_id": None,
-                "unlock_mode": "convenience",
+                "unlock_mode": "strict",
                 "pin_enabled": False,
                 "message": "Vault is ready. Lock protection has not been enabled.",
                 "verification_error": "",
@@ -145,7 +146,7 @@ def is_locked_safe_path(path: str, method: str = "GET", api_prefix: str | None =
     unlock_endpoint_prefix = _api_path(resolved_api_prefix, "/system/unlock")
     if path == unlock_endpoint_prefix or path.startswith(f"{unlock_endpoint_prefix}/"):
         return True
-    if path == _api_path(resolved_api_prefix, "/vaults") and normalized_method in {"GET", "POST"}:
+    if path == _api_path(resolved_api_prefix, "/vaults") and normalized_method == "GET":
         return True
     for allowed in locked_safe_prefixes(resolved_api_prefix):
         if path == allowed or path.startswith(f"{allowed}/"):
@@ -194,9 +195,34 @@ def unlock_with_recovery(vault_id: str, recovery_key: str) -> dict:
     return _verify_after_unlock(vault_id)
 
 
-def initialize_security_and_unlock(vault_id: str, passphrase: str, unlock_mode: str = "convenience") -> dict:
-    result = initialize_vault_security(vault_id, passphrase, unlock_mode=unlock_mode)  # type: ignore[arg-type]
+def initialize_security_and_unlock(vault_id: str, passphrase: str, unlock_mode: str = "strict") -> dict:
+    if unlock_mode != "strict":
+        raise ValueError("Only full-passphrase protection is currently available.")
+    result = initialize_vault_security(vault_id, passphrase, unlock_mode="strict")
+    try:
+        with connect() as conn:
+            migration = migrate_existing_plaintext_content(conn, vault_id)
+    except Exception as exc:
+        with connect() as conn:
+            conn.execute(
+                """
+                UPDATE vault_security_metadata
+                SET content_migration_status = 'pending',
+                    content_migration_updated_at = ?,
+                    content_migration_error = ?
+                WHERE vault_id = ?
+                """,
+                (utc_now(), str(exc)[:300], vault_id),
+            )
+        _set_state(
+            "repair_required",
+            vault_id=vault_id,
+            message="Security setup was interrupted. Unlock again to resume it.",
+            verification_error=str(exc)[:300],
+        )
+        raise
     state = _verify_after_unlock(vault_id)
+    state["migrated_content"] = migration
     state["recovery_key"] = result.recovery_key
     return state
 
@@ -226,11 +252,13 @@ def verify_sensitive_action(vault_id: str, passphrase: str) -> dict:
 def update_unlock_settings(vault_id: str, *, unlock_mode: str | None = None, pin_enabled: bool | None = None) -> dict:
     updates: dict[str, object] = {"updated_at": utc_now()}
     if unlock_mode is not None:
-        if unlock_mode not in {"convenience", "strict"}:
-            raise ValueError("unlock_mode must be convenience or strict")
-        updates["unlock_mode"] = unlock_mode
+        if unlock_mode != "strict":
+            raise ValueError("Convenience unlock is not available without OS-protected secret storage.")
+        updates["unlock_mode"] = "strict"
     if pin_enabled is not None:
-        updates["pin_enabled"] = 1 if pin_enabled else 0
+        if pin_enabled:
+            raise ValueError("PIN unlock is not available.")
+        updates["pin_enabled"] = 0
     if len(updates) == 1:
         return get_vault_security_metadata(vault_id)
     assignments = ", ".join(f"{key} = :{key}" for key in updates)
@@ -264,6 +292,13 @@ def _verify_after_unlock(vault_id: str) -> dict:
         metadata = get_vault_security_metadata(vault_id)
         if not is_vault_unlocked(vault_id):
             raise UnlockStateError("vault_key_not_loaded")
+        if metadata.get("content_migration_status", "complete") != "complete":
+            _audit("content_migration_resumed", vault_id)
+            with connect() as conn:
+                migrate_existing_plaintext_content(conn, vault_id)
+            metadata = get_vault_security_metadata(vault_id)
+        if metadata.get("content_migration_status", "complete") != "complete":
+            raise UnlockStateError("content_migration_incomplete")
         _validate_compact_tuple(metadata.get("active_derived_state_tuple"))
     except Exception as exc:
         _set_state(

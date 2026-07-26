@@ -8,6 +8,7 @@ from backend.app.core.model_registry import (
     list_models,
 )
 from backend.app.core.ocr import ocr_runtime_status
+from backend.app.core.llm_runtime import runtime_status
 from backend.app.core.startup_status import startup_status_staleness, validate_startup_phase_registry
 
 
@@ -19,6 +20,7 @@ def first_run_readiness() -> dict:
     installed_models = [model for model in list_models() if model.get("installed")]
     discovered = discover_installed_models(max_results=8)
     active_chat_model = active_chat_model_status()
+    chat_runtime = runtime_status()
     recommendation = model_recommendations()
     recommended_setup = {
         "recommended_chat_model_id": recommendation.get("recommended_chat_model_id", ""),
@@ -53,11 +55,16 @@ def first_run_readiness() -> dict:
         },
         {
             "id": "chat_model",
-            "ok": bool(active_chat_model and active_chat_model.get("compatibility", {}).get("chat_role_accepted")),
+            "ok": bool(
+                active_chat_model
+                and active_chat_model.get("compatibility", {}).get("chat_role_accepted")
+                and chat_runtime.get("state") == "ready"
+                and chat_runtime.get("model") == active_chat_model.get("id")
+            ),
             "detail": (
-                active_chat_model.get("compatibility", {}).get("detail", "")
+                chat_runtime.get("detail", "")
                 if active_chat_model
-                else "No accepted chat model is configured."
+                else "No local chat model is ready."
             ),
         },
         {

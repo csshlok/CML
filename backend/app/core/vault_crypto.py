@@ -132,6 +132,9 @@ def initialize_vault_security(
         "pin_wrapped_unlock_secret": "",
         "active_derived_state_tuple": json.dumps(DEFAULT_DERIVED_STATE_TUPLE, sort_keys=True),
         "previous_verified_tuple": "{}",
+        "content_migration_status": "pending",
+        "content_migration_updated_at": now,
+        "content_migration_error": "",
         "created_at": now,
         "updated_at": now,
     }
@@ -148,13 +151,17 @@ def initialize_vault_security(
                 vault_id, security_version, kdf_algorithm, kdf_params_json,
                 passphrase_salt, passphrase_wrapped_vmk, recovery_salt, recovery_wrapped_vmk,
                 unlock_mode, pin_enabled, pin_salt, pin_wrapped_unlock_secret,
-                active_derived_state_tuple, previous_verified_tuple, created_at, updated_at
+                active_derived_state_tuple, previous_verified_tuple,
+                content_migration_status, content_migration_updated_at, content_migration_error,
+                created_at, updated_at
             )
             VALUES (
                 :vault_id, :security_version, :kdf_algorithm, :kdf_params_json,
                 :passphrase_salt, :passphrase_wrapped_vmk, :recovery_salt, :recovery_wrapped_vmk,
                 :unlock_mode, :pin_enabled, :pin_salt, :pin_wrapped_unlock_secret,
-                :active_derived_state_tuple, :previous_verified_tuple, :created_at, :updated_at
+                :active_derived_state_tuple, :previous_verified_tuple,
+                :content_migration_status, :content_migration_updated_at, :content_migration_error,
+                :created_at, :updated_at
             )
             """,
             metadata,

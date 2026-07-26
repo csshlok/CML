@@ -10,6 +10,7 @@ const {
   buildBackendChildEnv,
   defaultWritableRoots,
   packageLayoutAudit,
+  pathsOverlap,
   resolvePackagedHelperPaths,
   verifyHelperManifest,
 } = require("./helper-integrity.cjs");
@@ -20,6 +21,13 @@ const {
   runtimeDescriptorPath,
   writeRuntimeDescriptor,
 } = require("./runtime-descriptor.cjs");
+const {
+  atomicWriteJson,
+  readSetupState,
+  resetSetupState,
+  updateSetupState,
+  writeSetupState,
+} = require("./setup-state.cjs");
 
 const isDev = !app.isPackaged;
 const devUrl = process.env.CML_DESKTOP_DEV_URL || "http://127.0.0.1:5173";
@@ -241,11 +249,16 @@ async function createWindow() {
 
 async function getInitialRendererPath() {
   const activeVaultPath = await getActiveVaultPath();
-  return activeVaultPath ? "/home" : "/onboarding";
+  const setupState = await readSetupState(app.getPath("userData"), { activeVaultPath });
+  return activeVaultPath && setupState.phase === "complete" ? "/home" : "/onboarding";
 }
 
 function ensureTrailingSlash(value) {
   return value.endsWith("/") ? value : `${value}/`;
+}
+
+function displayPath(value) {
+  return String(value || "").replace(/\\/g, "/").replace(/\/{2,}/g, "/");
 }
 
 async function loadStartupFailure(window, error) {
@@ -257,12 +270,12 @@ async function loadStartupFailure(window, error) {
   const diagnosticText = [
     `Phase: ${phase}`,
     `Message: ${detail}`,
-    `Data directory: ${status?.data_dir || "Unknown"}`,
-    `Database: ${status?.database_path || "Unknown"}`,
-    `Startup status: ${getStartupStatusPath()}`,
-    `Backend stdout log: ${backendLogs.stdout}`,
-    `Backend stderr log: ${backendLogs.stderr}`,
-    `Desktop runtime log: ${getDesktopRuntimeLogPath()}`,
+    `Data directory: ${displayPath(status?.data_dir) || "Unknown"}`,
+    `Database: ${displayPath(status?.database_path) || "Unknown"}`,
+    `Startup status: ${displayPath(getStartupStatusPath())}`,
+    `Backend stdout log: ${displayPath(backendLogs.stdout)}`,
+    `Backend stderr log: ${displayPath(backendLogs.stderr)}`,
+    `Desktop runtime log: ${displayPath(getDesktopRuntimeLogPath())}`,
   ].join("\n");
   const html = `
     <!doctype html>
@@ -287,9 +300,9 @@ async function loadStartupFailure(window, error) {
           <dt style="font-size:12px;color:#8b7d72;">Phase</dt>
           <dd style="margin:4px 0 12px;">${escapeHtml(phase)}</dd>
           <dt style="font-size:12px;color:#8b7d72;">Data directory</dt>
-          <dd style="margin:4px 0 12px;word-break:break-all;">${escapeHtml(status?.data_dir || "Unknown")}</dd>
+          <dd style="margin:4px 0 12px;word-break:break-all;">${escapeHtml(displayPath(status?.data_dir) || "Unknown")}</dd>
           <dt style="font-size:12px;color:#8b7d72;">Database</dt>
-          <dd style="margin:4px 0 0;word-break:break-all;">${escapeHtml(status?.database_path || "Unknown")}</dd>
+          <dd style="margin:4px 0 0;word-break:break-all;">${escapeHtml(displayPath(status?.database_path) || "Unknown")}</dd>
         </dl>
         <div style="display:flex;gap:10px;margin-top:22px;flex-wrap:wrap;">
           <button onclick="window.cmlDesktop?.retryStartup?.()" style="height:36px;padding:0 14px;border:0;border-radius:8px;background:#765f4d;color:#fff;font-weight:600;">Try again</button>
@@ -326,10 +339,10 @@ async function loadRendererFailure(window, error) {
     "Phase: renderer_startup_failed",
     `Message: ${error?.message || "Packaged renderer did not become available."}`,
     `Renderer URL: ${rendererUrl || "Unknown"}`,
-    `Startup status: ${getStartupStatusPath()}`,
-    `Backend stdout log: ${getBackendLogPaths().stdout}`,
-    `Backend stderr log: ${getBackendLogPaths().stderr}`,
-    `Desktop runtime log: ${getDesktopRuntimeLogPath()}`,
+    `Startup status: ${displayPath(getStartupStatusPath())}`,
+    `Backend stdout log: ${displayPath(getBackendLogPaths().stdout)}`,
+    `Backend stderr log: ${displayPath(getBackendLogPaths().stderr)}`,
+    `Desktop runtime log: ${displayPath(getDesktopRuntimeLogPath())}`,
   ].join("\n");
   const html = `
     <!doctype html>
@@ -450,7 +463,12 @@ if (!gotSingleInstanceLock) {
 }
 
 if (gotSingleInstanceLock) {
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    try {
+      await reconcilePendingVaultDeletion();
+    } catch (error) {
+      writeDesktopRuntimeLog("pending vault deletion recovery failed", error);
+    }
     ipcMain.handle("cml:open-external", async (_event, rawUrl) => {
       try {
         const url = new URL(String(rawUrl));
@@ -522,6 +540,19 @@ if (gotSingleInstanceLock) {
       return result.filePaths[0] ?? null;
     });
 
+    ipcMain.handle("cml:select-model-checkpoint", async () => {
+      const result = await dialog.showOpenDialog({
+        title: "Choose a GGUF chat model",
+        properties: ["openFile"],
+        filters: [
+          { name: "GGUF models", extensions: ["gguf"] },
+          { name: "All files", extensions: ["*"] },
+        ],
+      });
+      if (result.canceled) return null;
+      return result.filePaths[0] ?? null;
+    });
+
     ipcMain.handle("cml:select-vault-folder", async () => {
       const result = await dialog.showOpenDialog({
         title: "Choose library location",
@@ -570,6 +601,24 @@ if (gotSingleInstanceLock) {
 
     ipcMain.handle("cml:get-backend-url", async () => backendUrl);
     ipcMain.handle("cml:get-backend-token", async () => getBackendApiToken());
+    ipcMain.handle("cml:get-setup-state", async () => {
+      const activeVaultPath = await getActiveVaultPath();
+      return readSetupState(app.getPath("userData"), { activeVaultPath });
+    });
+    ipcMain.handle("cml:update-setup-state", async (_event, patch) => {
+      const activeVaultPath = await getActiveVaultPath();
+      return updateSetupState(app.getPath("userData"), patch, { activeVaultPath });
+    });
+    ipcMain.handle("cml:reset-app-setup", async () => {
+      pendingActiveVaultPath = null;
+      await clearActiveVaultPath();
+      const state = await resetSetupState(app.getPath("userData"));
+      await restartBackend();
+      return state;
+    });
+    ipcMain.handle("cml:finalize-active-vault-deletion", async () => {
+      return finalizeActiveVaultDeletion();
+    });
     ipcMain.handle("cml:renderer-ready", async (_event, detail) => {
       rendererReadyPath = typeof detail === "string" ? detail : "";
       writeDesktopRuntimeLog(`renderer ready signal received path=${rendererReadyPath || "unknown"}`);
@@ -613,6 +662,10 @@ if (gotSingleInstanceLock) {
       await commitActiveVaultPath(targetPath);
       return backendUrl;
     });
+    ipcMain.handle("cml:move-active-vault-folder", async (_event, targetPath) => {
+      if (typeof targetPath !== "string" || targetPath.trim().length === 0) return null;
+      return moveActiveVaultPath(targetPath.trim());
+    });
     ipcMain.handle("cml:clear-active-vault-folder", async () => {
       pendingActiveVaultPath = null;
       await clearActiveVaultPath();
@@ -644,21 +697,28 @@ if (gotSingleInstanceLock) {
 async function ensureBackend() {
   const explicitBackend = process.env.VITE_CML_BACKEND_URL || process.env.CML_BACKEND_URL;
   const token = await getBackendApiToken();
-  const existing = explicitBackend ? await findExistingCurrentBackend(token) : null;
-  if (existing) {
-    await publishOdinRuntimeDescriptor(existing, token);
-    return existing;
-  }
-  if (app.isPackaged) {
-    await verifyPackagedRuntime();
-  }
-
   const activeVaultPath = pendingActiveVaultPath || await getActiveVaultPath();
   const backendMode = activeVaultPath ? "full_vault" : "pre_vault";
   const dataDir = activeVaultPath
     ? path.join(activeVaultPath, ".vault")
     : path.join(app.getPath("userData"), "pre-vault");
   const databasePath = path.join(dataDir, "cml.sqlite3");
+  const expectedIdentity = {
+    backend_mode: backendMode,
+    data_dir: dataDir,
+    database_path: databasePath,
+  };
+  const existing = explicitBackend
+    ? await findExistingCurrentBackend(token, expectedIdentity)
+    : null;
+  if (existing) {
+    await publishOdinRuntimeDescriptor(existing, token, expectedIdentity);
+    return existing;
+  }
+  if (app.isPackaged) {
+    await verifyPackagedRuntime();
+  }
+
   const startupStatusPath = getStartupStatusPath();
   const port = await findOpenPort(7343, 7355);
   const rootDir = isDev ? path.resolve(__dirname, "../../..") : process.resourcesPath;
@@ -668,6 +728,10 @@ async function ensureBackend() {
         pythonRuntime: path.join(rootDir, ".venv"),
         backendPython: path.join(rootDir, ".venv", "Scripts", "python.exe"),
         playwrightRoot: process.env.PLAYWRIGHT_BROWSERS_PATH || "",
+        llmRuntimeRoot: path.join(rootDir, "apps", "desktop", "packaging", "llm-runtime"),
+        llmRuntimeServer:
+          process.env.CML_LLM_RUNTIME_BINARY ||
+          path.join(rootDir, "apps", "desktop", "packaging", "llm-runtime", "llama-server.exe"),
       }
     : resolvePackagedHelperPaths(process.resourcesPath);
   const pythonCommand = isDev
@@ -700,6 +764,7 @@ async function ensureBackend() {
             CML_DATABASE_PATH: databasePath,
             CML_STARTUP_STATUS_PATH: startupStatusPath,
             CML_VAULT_LOCK_OVERRIDE: vaultLockOverrideOnce ? "open_anyway" : "",
+            CML_LLM_RUNTIME_BINARY: helperPaths.llmRuntimeServer,
             PLAYWRIGHT_BROWSERS_PATH: helperPaths.playwrightRoot,
             PYTHONNOUSERSITE: "1",
           }
@@ -726,15 +791,25 @@ async function ensureBackend() {
   vaultLockOverrideOnce = false;
   backendProcess.unref();
   const startedUrl = `http://127.0.0.1:${port}`;
-  await waitForBackend(startedUrl, token, backendWaitTimeoutMs, backendLogPaths, backendProcess);
-  await publishOdinRuntimeDescriptor(startedUrl, token);
+  await waitForBackend(
+    startedUrl,
+    token,
+    backendWaitTimeoutMs,
+    backendLogPaths,
+    backendProcess,
+    expectedIdentity,
+  );
+  await publishOdinRuntimeDescriptor(startedUrl, token, expectedIdentity);
   writeDesktopRuntimeLog(`backend ready after ${Date.now() - backendStartedAt}ms at ${startedUrl}`);
   return startedUrl;
 }
 
-async function publishOdinRuntimeDescriptor(url, token) {
+async function publishOdinRuntimeDescriptor(url, token, expectedIdentity = null) {
   const identity = await httpJson(`${url}${apiPrefix}/system/backend-identity`, 2000, token);
-  if (!identity || identity.service !== "cml-backend" || identity.api_prefix !== apiPrefix || !identity.instance_id) {
+  if (
+    !backendIdentityMatches(identity, expectedIdentity) ||
+    !identity.instance_id
+  ) {
     throw new Error("The backend identity could not be verified for Odin discovery.");
   }
   const descriptor = createRuntimeDescriptor({
@@ -769,6 +844,7 @@ async function verifyPackagedRuntime() {
       helperPaths.backendRoot,
       helperPaths.pythonRuntime,
       helperPaths.playwrightRoot,
+      helperPaths.llmRuntimeRoot,
     ],
     writableRoots: defaultWritableRoots({
       userDataPath: app.getPath("userData"),
@@ -785,11 +861,7 @@ async function verifyPackagedRuntime() {
 
 async function restartBackend() {
   if (odinRuntimeDescriptorPath) await removeRuntimeDescriptor(odinRuntimeDescriptorPath);
-  if (backendProcess && !backendProcess.killed) {
-    backendProcess.kill();
-  }
-  backendProcess = null;
-  closeBackendLogStreams();
+  await stopBackendProcess();
   backendUrl = null;
   backendUrl = await ensureBackend();
   if (mainWindow && backendUrl) {
@@ -798,9 +870,20 @@ async function restartBackend() {
 }
 
 async function prepareActiveVaultPath(targetPath) {
+  const previousPendingPath = pendingActiveVaultPath;
   pendingActiveVaultPath = targetPath;
   await fs.mkdir(path.join(targetPath, ".vault"), { recursive: true });
-  await restartBackend();
+  try {
+    await restartBackend();
+  } catch (error) {
+    pendingActiveVaultPath = previousPendingPath;
+    try {
+      await restartBackend();
+    } catch (rollbackError) {
+      writeDesktopRuntimeLog("failed to restore previous backend after vault prepare failure", rollbackError);
+    }
+    throw error;
+  }
 }
 
 async function commitActiveVaultPath(targetPath) {
@@ -836,11 +919,293 @@ async function getActiveVaultPath() {
 async function setActiveVaultPath(targetPath) {
   await fs.mkdir(path.dirname(getActiveVaultConfigPath()), { recursive: true });
   await fs.mkdir(path.join(targetPath, ".vault"), { recursive: true });
-  await fs.writeFile(
-    getActiveVaultConfigPath(),
-    JSON.stringify({ path: targetPath, updated_at: new Date().toISOString() }, null, 2),
-    "utf8",
+  await atomicWriteJson(getActiveVaultConfigPath(), {
+    schema_version: 1,
+    path: targetPath,
+    updated_at: new Date().toISOString(),
+  });
+}
+
+async function moveActiveVaultPath(targetPath) {
+  const currentPath = await getActiveVaultPath();
+  if (!currentPath) {
+    throw new Error("No active library is available to move.");
+  }
+  const sourceRoot = path.resolve(currentPath);
+  const destinationRoot = path.resolve(targetPath);
+  if (sourceRoot === destinationRoot) {
+    return { backend_url: backendUrl, path: destinationRoot, old_copy_removed: true };
+  }
+  assertSafeVaultMoveRoots(sourceRoot, destinationRoot);
+  const sourceVault = path.join(sourceRoot, ".vault");
+  const destinationVault = path.join(destinationRoot, ".vault");
+  const stagingVault = path.join(
+    destinationRoot,
+    `.vault.move-staging-${process.pid}-${Date.now()}`,
   );
+  let destinationPublished = false;
+  await fs.mkdir(destinationRoot, { recursive: true });
+  if (await pathExists(destinationVault)) {
+    const entries = await fs.readdir(destinationVault);
+    if (entries.length > 0) {
+      throw new Error("The selected folder already contains Vault library data.");
+    }
+    await fs.rmdir(destinationVault);
+  }
+  try {
+    await stopBackendProcess();
+    await fs.cp(sourceVault, stagingVault, {
+      recursive: true,
+      errorOnExist: true,
+      force: false,
+    });
+    await verifyCopiedVault(stagingVault);
+    await fs.rename(stagingVault, destinationVault);
+    destinationPublished = true;
+    pendingActiveVaultPath = null;
+    await setActiveVaultPath(destinationRoot);
+    backendUrl = await ensureBackend();
+    if (mainWindow && backendUrl) {
+      mainWindow.webContents.send("cml:backend-url-changed", backendUrl);
+    }
+    let oldCopyRemoved = true;
+    try {
+      await fs.rm(sourceVault, { recursive: true, force: false });
+    } catch (error) {
+      oldCopyRemoved = false;
+      writeDesktopRuntimeLog("new vault is active but old vault copy could not be removed", error);
+    }
+    const activeVaultPath = await getActiveVaultPath();
+    await updateSetupState(
+      app.getPath("userData"),
+      { vault: { path: destinationRoot } },
+      { activeVaultPath },
+    );
+    return {
+      backend_url: backendUrl,
+      path: destinationRoot,
+      old_copy_removed: oldCopyRemoved,
+    };
+  } catch (error) {
+    pendingActiveVaultPath = null;
+    try {
+      await setActiveVaultPath(sourceRoot);
+      if (destinationPublished && await pathExists(destinationVault)) {
+        await fs.rm(destinationVault, { recursive: true, force: false });
+      }
+      backendUrl = await ensureBackend();
+      if (mainWindow && backendUrl) {
+        mainWindow.webContents.send("cml:backend-url-changed", backendUrl);
+      }
+    } catch (rollbackError) {
+      writeDesktopRuntimeLog("vault move rollback failed", rollbackError);
+    }
+    throw error;
+  } finally {
+    if (await pathExists(stagingVault)) {
+      await fs.rm(stagingVault, { recursive: true, force: true });
+    }
+  }
+}
+
+async function finalizeActiveVaultDeletion() {
+  const activePath = await getActiveVaultPath();
+  if (!activePath) {
+    return { deleted: false, path: "" };
+  }
+  const activeRoot = path.resolve(activePath);
+  assertSafeVaultDataRoot(activeRoot);
+  const vaultData = path.join(activeRoot, ".vault");
+  const tombstone = path.join(
+    activeRoot,
+    `.vault.deleted-${process.pid}-${Date.now()}`,
+  );
+  const userDataPath = app.getPath("userData");
+  const previousSetupState = await readSetupState(userDataPath, {
+    activeVaultPath: activeRoot,
+  });
+  await writeVaultDeletionJournal({
+    phase: "prepared",
+    active_root: activeRoot,
+    vault_data: vaultData,
+    tombstone,
+    updated_at: new Date().toISOString(),
+  });
+  await stopBackendProcess();
+  try {
+    if (await pathExists(vaultData)) {
+      await fs.rename(vaultData, tombstone);
+    }
+    await writeVaultDeletionJournal({
+      phase: "renamed",
+      active_root: activeRoot,
+      vault_data: vaultData,
+      tombstone,
+      updated_at: new Date().toISOString(),
+    });
+    pendingActiveVaultPath = null;
+    await clearActiveVaultPath();
+    await resetSetupState(userDataPath);
+    await writeVaultDeletionJournal({
+      phase: "pointer_cleared",
+      active_root: activeRoot,
+      vault_data: vaultData,
+      tombstone,
+      updated_at: new Date().toISOString(),
+    });
+    backendUrl = await ensureBackend();
+    if (mainWindow && backendUrl) {
+      mainWindow.webContents.send("cml:backend-url-changed", backendUrl);
+    }
+    if (await pathExists(tombstone)) {
+      await fs.rm(tombstone, { recursive: true, force: true });
+    }
+    await clearVaultDeletionJournal();
+    return { deleted: true, path: activeRoot };
+  } catch (error) {
+    await stopBackendProcess();
+    backendUrl = null;
+    if (await pathExists(tombstone) && !(await pathExists(vaultData))) {
+      try {
+        await fs.rename(tombstone, vaultData);
+      } catch (rollbackError) {
+        writeDesktopRuntimeLog("vault deletion rollback rename failed", rollbackError);
+      }
+    }
+    await setActiveVaultPath(activeRoot);
+    await writeSetupState(userDataPath, previousSetupState);
+    try {
+      backendUrl = await ensureBackend();
+    } catch (restartError) {
+      writeDesktopRuntimeLog("vault deletion rollback backend restart failed", restartError);
+    }
+    await clearVaultDeletionJournal();
+    throw error;
+  }
+}
+
+function getVaultDeletionJournalPath() {
+  return path.join(app.getPath("userData"), "vault-deletion.json");
+}
+
+async function writeVaultDeletionJournal(value) {
+  await atomicWriteJson(getVaultDeletionJournalPath(), {
+    schema_version: 1,
+    ...value,
+  });
+}
+
+async function clearVaultDeletionJournal() {
+  try {
+    await fs.unlink(getVaultDeletionJournalPath());
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
+async function reconcilePendingVaultDeletion() {
+  let journal;
+  try {
+    journal = JSON.parse(await fs.readFile(getVaultDeletionJournalPath(), "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  const activeRoot = path.resolve(String(journal.active_root || ""));
+  const vaultData = path.resolve(String(journal.vault_data || ""));
+  const tombstone = path.resolve(String(journal.tombstone || ""));
+  assertSafeVaultDataRoot(activeRoot);
+  if (
+    vaultData !== path.join(activeRoot, ".vault") ||
+    path.dirname(tombstone) !== activeRoot ||
+    !path.basename(tombstone).startsWith(".vault.deleted-")
+  ) {
+    throw new Error("Pending vault deletion journal contains unsafe paths.");
+  }
+  if (journal.phase === "prepared" && (await pathExists(vaultData))) {
+    await clearVaultDeletionJournal();
+    return;
+  }
+  pendingActiveVaultPath = null;
+  await clearActiveVaultPath();
+  await resetSetupState(app.getPath("userData"));
+  if (await pathExists(tombstone)) {
+    await fs.rm(tombstone, { recursive: true, force: true });
+  }
+  await clearVaultDeletionJournal();
+}
+
+function assertSafeVaultDataRoot(candidate) {
+  const parsed = path.parse(candidate);
+  if (!path.isAbsolute(candidate) || candidate === parsed.root) {
+    throw new Error("Refusing to delete Vault data at a drive root.");
+  }
+}
+
+function assertSafeVaultMoveRoots(sourceRoot, destinationRoot) {
+  for (const candidate of [sourceRoot, destinationRoot]) {
+    const parsed = path.parse(candidate);
+    if (!path.isAbsolute(candidate) || candidate === parsed.root) {
+      throw new Error("A library location must be an absolute folder below a drive root.");
+    }
+  }
+  if (pathsOverlap(sourceRoot, destinationRoot)) {
+    throw new Error("The new library folder cannot be inside the current library or contain it.");
+  }
+}
+
+async function verifyCopiedVault(vaultDataPath) {
+  const databasePath = path.join(vaultDataPath, "cml.sqlite3");
+  const handle = await fs.open(databasePath, "r");
+  try {
+    const header = Buffer.alloc(16);
+    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    if (bytesRead !== 16 || header.toString("utf8") !== "SQLite format 3\u0000") {
+      throw new Error("The copied library database did not pass its SQLite header check.");
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function stopBackendProcess(timeoutMs = 5000) {
+  const child = backendProcess;
+  backendProcess = null;
+  if (!child || child.exitCode !== null || child.killed) {
+    closeBackendLogStreams();
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.removeListener("exit", onExit);
+      child.removeListener("error", onError);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onExit = () => finish();
+    const onError = (error) => finish(error);
+    const timeout = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // The process may have exited between the timeout and escalation.
+      }
+      finish(new Error(`Backend did not exit within ${timeoutMs}ms.`));
+    }, timeoutMs);
+    child.once("exit", onExit);
+    child.once("error", onError);
+    try {
+      child.kill();
+    } catch (error) {
+      finish(error);
+    }
+  }).finally(() => {
+    closeBackendLogStreams();
+  });
 }
 
 async function clearActiveVaultPath() {
@@ -1009,7 +1374,7 @@ function contentTypeForPath(targetPath) {
   return "application/octet-stream";
 }
 
-async function findExistingCurrentBackend(token) {
+async function findExistingCurrentBackend(token, expectedIdentity = null) {
   const candidates = [
     process.env.VITE_CML_BACKEND_URL,
     process.env.CML_BACKEND_URL,
@@ -1017,23 +1382,23 @@ async function findExistingCurrentBackend(token) {
     ...Array.from({ length: 13 }, (_value, index) => `http://127.0.0.1:${7343 + index}`),
   ].filter(Boolean);
   for (const candidate of [...new Set(candidates)]) {
-    if (await isCurrentBackend(candidate, token)) return candidate;
+    if (await isCurrentBackend(candidate, token, expectedIdentity)) return candidate;
   }
   return null;
 }
 
-function isCurrentBackend(url, token) {
+function isCurrentBackend(url, token, expectedIdentity = null) {
   if (!token) return Promise.resolve(false);
   return httpJson(`${url}${apiPrefix}/system/backend-identity`, 1200, token)
-    .then((identity) => (
-      identity &&
-      identity.service === "cml-backend" &&
-      identity.api_prefix === apiPrefix
-    ))
+    .then((identity) => backendIdentityMatches(identity, expectedIdentity))
     .catch(async (error) => {
       // In pre-vault mode, private API routes intentionally return 409 until
       // setup completes. That still means the backend is alive and current.
-      if (error instanceof HttpStatusError && error.statusCode === 409) {
+      if (
+        !expectedIdentity &&
+        error instanceof HttpStatusError &&
+        error.statusCode === 409
+      ) {
         try {
           const health = await httpJson(`${url}/health`, 1200);
           return health && health.service === "cml-backend" && health.status === "ok";
@@ -1043,6 +1408,29 @@ function isCurrentBackend(url, token) {
       }
       return false;
     });
+}
+
+function backendIdentityMatches(identity, expectedIdentity = null) {
+  if (
+    !identity ||
+    identity.service !== "cml-backend" ||
+    identity.api_prefix !== apiPrefix
+  ) {
+    return false;
+  }
+  if (!expectedIdentity) return true;
+  return (
+    identity.backend_mode === expectedIdentity.backend_mode &&
+    normalizedIdentityPath(identity.data_dir) === normalizedIdentityPath(expectedIdentity.data_dir) &&
+    normalizedIdentityPath(identity.database_path) ===
+      normalizedIdentityPath(expectedIdentity.database_path)
+  );
+}
+
+function normalizedIdentityPath(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  const resolved = path.resolve(value.trim());
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 function createBackendLaunchError(url, started, status, backendLogPaths = null, processState = null) {
@@ -1069,7 +1457,14 @@ function createBackendLaunchError(url, started, status, backendLogPaths = null, 
   return new Error(messageParts.join(" | "));
 }
 
-async function waitForBackend(url, token, timeoutMs, backendLogPaths = null, childProcess = null) {
+async function waitForBackend(
+  url,
+  token,
+  timeoutMs,
+  backendLogPaths = null,
+  childProcess = null,
+  expectedIdentity = null,
+) {
   const started = Date.now();
   const processState = { exitCode: null, signal: null, error: null };
   const onClose = (code, signal) => {
@@ -1085,7 +1480,7 @@ async function waitForBackend(url, token, timeoutMs, backendLogPaths = null, chi
   }
   try {
     while (Date.now() - started < timeoutMs) {
-      if (await isCurrentBackend(url, token)) return;
+      if (await isCurrentBackend(url, token, expectedIdentity)) return;
       if (processState.error || processState.exitCode !== null || processState.signal) {
         const status = await readStartupStatus();
         throw createBackendLaunchError(url, started, status, backendLogPaths, processState);

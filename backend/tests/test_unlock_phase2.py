@@ -89,6 +89,212 @@ class UnlockPhase2Tests(unittest.TestCase):
         self.assertIn("Lock protection has not been enabled", status.json()["message"])
         self.assertEqual(sources.status_code, 200)
 
+    def test_enabling_security_migrates_existing_source_plaintext_before_ready(self) -> None:
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.unlock_state import initialize_security_and_unlock
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO sources (
+                    id, vault_id, title, source_type, state, raw_text, extracted_text,
+                    summary, tags, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "source-before-security",
+                    "vault-phase2",
+                    "Private note",
+                    "note",
+                    "indexed",
+                    "raw secret",
+                    "extracted secret",
+                    "summary secret",
+                    '["private"]',
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id, vault_id, title, scope_cluster_id, saved, memory_status,
+                    memory_updated_at, created_at, updated_at
+                )
+                VALUES ('session-before-security', 'vault-phase2', 'Private chat', NULL, 0, 'idle', NULL, ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_messages (
+                    id, session_id, role, content, clusters_used, citations, warnings,
+                    useful, saved, created_at
+                )
+                VALUES (
+                    'message-before-security', 'session-before-security', 'user',
+                    'chat secret marker', '[]', '[{"snippet":"citation secret"}]', '[]',
+                    NULL, 0, ?
+                )
+                """,
+                (now,),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_generations (
+                    id, session_id, user_message_id, assistant_message_id, vault_id,
+                    prompt, state, runtime_provider, runtime_model, error, heartbeat_at,
+                    created_at, updated_at, completed_at
+                )
+                VALUES (
+                    'generation-before-security', 'session-before-security',
+                    'message-before-security', NULL, 'vault-phase2', 'generation secret marker',
+                    'retriable', '', '', '', NULL, ?, ?, NULL
+                )
+                """,
+                (now, now),
+            )
+
+        result = initialize_security_and_unlock(
+            "vault-phase2",
+            "CorrectHorseBatteryStaple1!",
+        )
+
+        with connect() as conn:
+            source = conn.execute(
+                "SELECT raw_text, extracted_text, summary, tags FROM sources WHERE id = ?",
+                ("source-before-security",),
+            ).fetchone()
+            encrypted = conn.execute(
+                """
+                SELECT field_name, byte_length
+                FROM encrypted_content
+                WHERE vault_id = ? AND entity_type = 'source' AND entity_id = ?
+                ORDER BY field_name
+                """,
+                ("vault-phase2", "source-before-security"),
+            ).fetchall()
+            chat_message = conn.execute(
+                "SELECT content, clusters_used, citations, warnings FROM chat_messages WHERE id = 'message-before-security'"
+            ).fetchone()
+            generation = conn.execute(
+                "SELECT prompt FROM chat_generations WHERE id = 'generation-before-security'"
+            ).fetchone()
+            chat_encrypted_fields = {
+                row["field_name"]
+                for row in conn.execute(
+                    """
+                    SELECT field_name FROM encrypted_content
+                    WHERE vault_id = 'vault-phase2'
+                      AND entity_type = 'chat_message'
+                      AND entity_id = 'message-before-security'
+                    """
+                ).fetchall()
+            }
+
+        self.assertEqual(result["state"], "ready")
+        self.assertEqual(result["migrated_content"]["sources"], 1)
+        self.assertEqual(result["migrated_content"]["chat_messages"], 1)
+        self.assertEqual(result["migrated_content"]["chat_generations"], 1)
+        self.assertEqual(dict(source), {
+            "raw_text": "",
+            "extracted_text": "",
+            "summary": "",
+            "tags": "[]",
+        })
+        self.assertEqual(
+            {row["field_name"] for row in encrypted},
+            {"raw_text", "extracted_text", "summary", "tags"},
+        )
+        self.assertEqual(dict(chat_message), {
+            "content": "",
+            "clusters_used": "[]",
+            "citations": "[]",
+            "warnings": "[]",
+        })
+        self.assertEqual(generation["prompt"], "")
+        self.assertEqual(chat_encrypted_fields, {"content", "clusters_used", "citations", "warnings"})
+
+    def test_unlock_resumes_interrupted_content_migration_before_ready(self) -> None:
+        from backend.app.core import vault_crypto
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.encrypted_storage import put_encrypted_text
+        from backend.app.core.unlock_state import unlock_with_passphrase
+
+        vault_crypto.initialize_vault_security(
+            "vault-phase2",
+            "phase2-passphrase",
+            kdf_params=vault_crypto.TEST_KDF_PARAMS,
+        )
+        now = utc_now()
+        with connect() as conn:
+            for source_id, marker in (
+                ("already-migrated-source", "first secret marker"),
+                ("pending-migration-source", "second secret marker"),
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO sources (
+                        id, vault_id, title, source_type, state, raw_text, extracted_text,
+                        summary, tags, created_at, updated_at
+                    )
+                    VALUES (?, 'vault-phase2', ?, 'note', 'indexed', ?, ?, ?, '[]', ?, ?)
+                    """,
+                    (source_id, source_id, marker, marker, marker, now, now),
+                )
+            put_encrypted_text(
+                conn,
+                vault_id="vault-phase2",
+                entity_type="source",
+                entity_id="already-migrated-source",
+                field_name="raw_text",
+                text="first secret marker",
+                now=now,
+            )
+            conn.execute(
+                """
+                UPDATE sources
+                SET raw_text = '', extracted_text = '', summary = '', tags = '[]'
+                WHERE id = 'already-migrated-source'
+                """
+            )
+            conn.execute(
+                """
+                UPDATE vault_security_metadata
+                SET content_migration_status = 'running',
+                    content_migration_updated_at = ?
+                WHERE vault_id = 'vault-phase2'
+                """,
+                (now,),
+            )
+        vault_crypto.lock_vault("vault-phase2")
+
+        result = unlock_with_passphrase("vault-phase2", "phase2-passphrase")
+
+        with connect() as conn:
+            metadata = conn.execute(
+                "SELECT content_migration_status FROM vault_security_metadata WHERE vault_id = 'vault-phase2'"
+            ).fetchone()
+            pending_source = conn.execute(
+                "SELECT raw_text, extracted_text, summary FROM sources WHERE id = 'pending-migration-source'"
+            ).fetchone()
+            encrypted_rows = conn.execute(
+                """
+                SELECT entity_id, field_name FROM encrypted_content
+                WHERE vault_id = 'vault-phase2' AND entity_type = 'source'
+                """
+            ).fetchall()
+
+        self.assertEqual(result["state"], "ready")
+        self.assertEqual(metadata["content_migration_status"], "complete")
+        self.assertEqual(dict(pending_source), {"raw_text": "", "extracted_text": "", "summary": ""})
+        encrypted_pairs = {(row["entity_id"], row["field_name"]) for row in encrypted_rows}
+        self.assertIn(("already-migrated-source", "raw_text"), encrypted_pairs)
+        self.assertIn(("pending-migration-source", "raw_text"), encrypted_pairs)
+        self.assertIn(("pending-migration-source", "extracted_text"), encrypted_pairs)
+
     def test_phase0_protected_route_families_reject_before_ready(self) -> None:
         self._initialize_security_directly()
         client = self._client()
@@ -106,13 +312,20 @@ class UnlockPhase2Tests(unittest.TestCase):
                 client.post("/api/v1/integrations/reconciliation-items/item-1/retry"),
                 client.post("/api/v1/diagnostics/bundle"),
                 client.post("/api/v1/jobs/run-once"),
+                client.post(
+                    "/api/v1/vaults",
+                    json={"name": "Should not be created", "path": "C:/blocked"},
+                ),
             ]
+            vaults = client.get("/api/v1/vaults")
         finally:
             client.close()
 
         for response in checks:
             self.assertEqual(response.status_code, 423)
             self.assertEqual(response.json()["detail"], "vault_unlock_required")
+        self.assertEqual(vaults.status_code, 200)
+        self.assertEqual(vaults.json()[0]["path"], "")
 
     def test_lock_returns_to_locked_and_blocks_again(self) -> None:
         self._initialize_security_directly()
@@ -317,7 +530,7 @@ class UnlockPhase2Tests(unittest.TestCase):
         self.assertEqual(processed, 0)
         self.assertEqual(row["status"], "queued")
 
-    def test_unlock_settings_visible_and_mutable(self) -> None:
+    def test_incomplete_pin_mode_is_rejected_while_strict_mode_remains_available(self) -> None:
         self._initialize_security_directly()
         client = self._client()
         try:
@@ -328,19 +541,25 @@ class UnlockPhase2Tests(unittest.TestCase):
                 ).status_code,
                 200,
             )
-            settings = client.patch(
+            rejected_pin = client.patch(
                 "/api/v1/system/unlock/settings",
                 json={"vault_id": "vault-phase2", "unlock_mode": "strict", "pin_enabled": True},
+            )
+            settings = client.patch(
+                "/api/v1/system/unlock/settings",
+                json={"vault_id": "vault-phase2", "unlock_mode": "strict", "pin_enabled": False},
             )
             status = client.get("/api/v1/system/unlock/status")
         finally:
             client.close()
 
         self.assertEqual(settings.status_code, 200)
+        self.assertEqual(rejected_pin.status_code, 400)
+        self.assertIn("PIN unlock is not available", rejected_pin.json()["detail"])
         self.assertEqual(settings.json()["unlock_mode"], "strict")
-        self.assertTrue(settings.json()["pin_enabled"])
+        self.assertFalse(settings.json()["pin_enabled"])
         self.assertEqual(status.json()["unlock_mode"], "strict")
-        self.assertTrue(status.json()["pin_enabled"])
+        self.assertFalse(status.json()["pin_enabled"])
 
     def test_settings_ui_exposes_phase2_unlock_controls(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -349,13 +568,13 @@ class UnlockPhase2Tests(unittest.TestCase):
 
         for required in (
             "Library unlock",
-            "Convenience mode",
-            "Strict locked mode",
-            "Enable PIN setting",
+            "A protected library always starts locked",
             "Offline recovery key",
             "full passphrase",
         ):
             self.assertIn(required, settings_tsx)
+        self.assertNotIn("Convenience mode", settings_tsx)
+        self.assertNotIn("Enable PIN setting", settings_tsx)
         for required in (
             "getUnlockStatus",
             "initializeVaultSecurity",

@@ -32,7 +32,12 @@ def startup_repair_summary(*, apply_recovery: bool = False) -> dict:
 
     try:
         summary["interrupted_migrations"] = _interrupted_migrations()
+        if summary["interrupted_migrations"]:
+            summary["safe_degraded_mode"] = True
+            versions = ", ".join(str(item["version"]) for item in summary["interrupted_migrations"])
+            summary["issues"].append(f"interrupted_migrations_detected: {versions}")
     except Exception as exc:
+        summary["safe_degraded_mode"] = True
         summary["issues"].append(f"migration_status_check_failed: {exc}")
 
     try:

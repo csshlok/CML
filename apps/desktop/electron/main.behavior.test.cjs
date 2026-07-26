@@ -12,7 +12,7 @@ function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, rendererSecurityHeaders, sanitizeRendererBody, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, __setMainWindow: (value) => { mainWindow = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, backendIdentityMatches, rendererSecurityHeaders, sanitizeRendererBody, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, assertSafeVaultMoveRoots, verifyCopiedVault, finalizeActiveVaultDeletion, reconcilePendingVaultDeletion, __setMainWindow: (value) => { mainWindow = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; }, __setEnsureBackend: (value) => { ensureBackend = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -90,6 +90,7 @@ function loadMainModule() {
     appHandlers,
     dialogCalls,
     ipcHandlers,
+    userDataDir,
   };
 }
 
@@ -196,6 +197,73 @@ test("setActiveVaultPath persists unicode vault path and creates .vault director
   assert.equal(fs.existsSync(path.join(vaultPath, ".vault")), true);
 });
 
+test("vault deletion tombstones data before clearing the active pointer", async () => {
+  const { exported, userDataDir } = loadMainModule();
+  const vaultRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "cml-delete-vault-"));
+  await exported.setActiveVaultPath(vaultRoot);
+  await fs.promises.writeFile(path.join(vaultRoot, ".vault", "cml.sqlite3"), "fixture");
+  await fs.promises.writeFile(
+    path.join(userDataDir, "setup-state.json"),
+    JSON.stringify({
+      schema_version: 1,
+      phase: "complete",
+      profile: { display_name: "Ada" },
+      vault: { id: "vault-1", name: "Personal", path: vaultRoot },
+      chat_setup: { status: "skipped", model_id: "" },
+      memory_setup: { status: "skipped", model_id: "" },
+      updated_at: new Date().toISOString(),
+    }),
+  );
+  exported.__setEnsureBackend(async () => "http://127.0.0.1:7343");
+
+  const result = await exported.finalizeActiveVaultDeletion();
+
+  assert.equal(result.deleted, true);
+  assert.equal(await exported.getActiveVaultPath(), null);
+  assert.equal(fs.existsSync(path.join(vaultRoot, ".vault")), false);
+  assert.equal(fs.existsSync(path.join(userDataDir, "vault-deletion.json")), false);
+});
+
+test("vault deletion restores data, pointer, and setup state when pre-vault restart fails", async () => {
+  const { exported, userDataDir } = loadMainModule();
+  const vaultRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "cml-delete-rollback-"));
+  await exported.setActiveVaultPath(vaultRoot);
+  await fs.promises.writeFile(path.join(vaultRoot, ".vault", "cml.sqlite3"), "fixture");
+  const setupState = {
+    schema_version: 1,
+    phase: "complete",
+    profile: { display_name: "Ada" },
+    vault: { id: "vault-1", name: "Personal", path: vaultRoot },
+    chat_setup: { status: "ready", model_id: "model-1" },
+    memory_setup: { status: "ready", model_id: "embedding-1" },
+    updated_at: new Date().toISOString(),
+  };
+  await fs.promises.writeFile(
+    path.join(userDataDir, "setup-state.json"),
+    JSON.stringify(setupState),
+  );
+  let calls = 0;
+  exported.__setEnsureBackend(async () => {
+    calls += 1;
+    if (calls === 1) throw new Error("pre-vault restart failed");
+    return "http://127.0.0.1:7343";
+  });
+
+  await assert.rejects(
+    exported.finalizeActiveVaultDeletion(),
+    /pre-vault restart failed/,
+  );
+
+  assert.equal(await exported.getActiveVaultPath(), vaultRoot);
+  assert.equal(fs.existsSync(path.join(vaultRoot, ".vault", "cml.sqlite3")), true);
+  const restored = JSON.parse(
+    await fs.promises.readFile(path.join(userDataDir, "setup-state.json"), "utf8"),
+  );
+  assert.equal(restored.phase, "complete");
+  assert.equal(restored.vault.path, vaultRoot);
+  assert.equal(fs.existsSync(path.join(userDataDir, "vault-deletion.json")), false);
+});
+
 test("prepared vault folder does not become active until committed", async () => {
   const { exported } = loadMainModule();
   const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-prepared-vault-"));
@@ -220,6 +288,37 @@ test("prepared vault folder does not become active until committed", async () =>
   assert.equal(await exported.getActiveVaultPath(), vaultPath);
   assert.equal(await exported.getInitialRendererPath(), "/home");
   assert.equal(restarts, 1);
+});
+
+test("vault move rejects drive roots and overlapping folders", () => {
+  const { exported } = loadMainModule();
+  const root = path.parse(process.cwd()).root;
+  assert.throws(
+    () => exported.assertSafeVaultMoveRoots(root, path.join(root, "VaultDestination")),
+    /below a drive root/,
+  );
+  assert.throws(
+    () =>
+      exported.assertSafeVaultMoveRoots(
+        path.join(root, "VaultSource"),
+        path.join(root, "VaultSource", "Nested"),
+      ),
+    /cannot be inside/,
+  );
+});
+
+test("copied vault verification requires a SQLite database header", async () => {
+  const { exported } = loadMainModule();
+  const validRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-vault-copy-valid-"));
+  fs.writeFileSync(
+    path.join(validRoot, "cml.sqlite3"),
+    Buffer.concat([Buffer.from("SQLite format 3\0"), Buffer.alloc(64)]),
+  );
+  await exported.verifyCopiedVault(validRoot);
+
+  const invalidRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-vault-copy-invalid-"));
+  fs.writeFileSync(path.join(invalidRoot, "cml.sqlite3"), "not sqlite");
+  await assert.rejects(exported.verifyCopiedVault(invalidRoot), /SQLite header/);
 });
 
 test("stale active vault config falls back to onboarding instead of forcing home", async () => {
@@ -289,6 +388,33 @@ test("isCurrentBackend requires authenticated backend identity", async () => {
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("backend identity must match the intended mode and exact vault paths", () => {
+  const { exported } = loadMainModule();
+  const intended = {
+    backend_mode: "full_vault",
+    data_dir: "C:\\Vaults\\Personal\\.vault",
+    database_path: "C:\\Vaults\\Personal\\.vault\\cml.sqlite3",
+  };
+  const correct = {
+    service: "cml-backend",
+    api_prefix: "/api/v1",
+    ...intended,
+  };
+
+  assert.equal(exported.backendIdentityMatches(correct, intended), true);
+  assert.equal(
+    exported.backendIdentityMatches(
+      { ...correct, data_dir: "C:\\Users\\Ada\\AppData\\Roaming\\Vault\\pre-vault" },
+      intended,
+    ),
+    false,
+  );
+  assert.equal(
+    exported.backendIdentityMatches({ ...correct, backend_mode: "pre_vault" }, intended),
+    false,
+  );
 });
 
 test("isCurrentBackend accepts pre-vault 409 when health still reports cml-backend", async () => {

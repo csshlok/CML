@@ -49,6 +49,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
             "CML_DATA_DIR",
             "CML_STARTUP_STATUS_PATH",
             "CML_EMBEDDING_PROVIDER",
+            "CML_EMBEDDING_CACHE_DIR",
             "CML_ALLOW_HASH_EMBEDDINGS",
             "CML_ALLOW_UNAUTHENTICATED_API",
             "CML_BACKEND_MODE",
@@ -149,6 +150,27 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(status["provider"], "sentence-transformers")
         self.assertFalse(status["available"])
         self.assertTrue(status["setup_required"])
+
+    def test_fast_embedding_status_finds_managed_model_subfolder_without_loading_torch(self) -> None:
+        from backend.app.api.routes.models import get_embedding_status
+        from backend.app.core.config import get_settings
+
+        cache_dir = Path(self.tmp.name) / "embedding-cache"
+        model_dir = cache_dir / "all-MiniLM-L6-v2"
+        model_dir.mkdir(parents=True)
+        (model_dir / "modules.json").write_text("[]", encoding="utf-8")
+        os.environ["CML_EMBEDDING_PROVIDER"] = "sentence-transformers"
+        os.environ["CML_EMBEDDING_CACHE_DIR"] = str(cache_dir)
+        os.environ["CML_ALLOW_HASH_EMBEDDINGS"] = "0"
+        get_settings.cache_clear()
+
+        with patch("backend.app.core.embeddings._embed_with_sentence_transformers") as embed:
+            status = get_embedding_status()
+
+        embed.assert_not_called()
+        self.assertTrue(status["available"])
+        self.assertFalse(status["setup_required"])
+        self.assertIn("files are ready", status["detail"])
 
     def test_semantic_search_returns_409_when_embeddings_unavailable(self) -> None:
         from backend.app.core.database import connect, utc_now
@@ -495,7 +517,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
 
         self.assertIn(queued["status"], {"queued", "downloading"})
         self.assertEqual(cancelled["status"], "cancelled")
-        self.assertIn("Cancellation requested", cancelled["error"])
+        self.assertEqual(cancelled["error"], "Download cancelled.")
 
     def test_local_model_cancel_cleans_partial_file(self) -> None:
         from backend.app.core import model_registry
@@ -609,7 +631,6 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
 
         with (
             patch("backend.app.core.model_registry._find_local_model_file", return_value=None),
-            patch("backend.app.core.model_registry.threading.Thread.start", return_value=None),
             patch("shutil.disk_usage", return_value=FakeUsage()),
         ):
             result = model_registry.start_model_download("gemma-3-12b-it-q4_k_m")
@@ -666,6 +687,32 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
 
         self.assertEqual(cancelled["status"], "installed")
         self.assertTrue(final["installed"])
+
+    def test_unverified_managed_model_can_be_downloaded_again(self) -> None:
+        from backend.app.core import model_registry
+        from backend.app.core.config import get_settings
+
+        model_dir = self.data_dir / "models" / "qwen3-4b-q4_k_m"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        (model_dir / "old-unverified.Q4_K_M.gguf").write_bytes(b"old")
+        os.environ["CML_MODELS_DIR"] = str(self.data_dir / "models")
+        get_settings.cache_clear()
+        model_registry._download_state.clear()
+        model_registry._download_state_loaded_from = None
+        model_registry._cancelled_downloads.clear()
+
+        with (
+            patch(
+                "backend.app.core.model_registry._model_disk_preflight",
+                return_value={"ok": True, "message": ""},
+            ),
+            patch("backend.app.core.model_registry._download_model_with_ack", return_value=None),
+        ):
+            state = model_registry.start_model_download("qwen3-4b-q4_k_m")
+
+        self.assertEqual(state["status"], "resolving")
+        model_registry._download_threads.pop("qwen3-4b-q4_k_m", None)
+        model_registry._download_done_events.pop("qwen3-4b-q4_k_m", None)
 
     def test_model_download_uses_selected_folder_and_persists_installed_path(self) -> None:
         from backend.app.core import model_registry
@@ -1083,6 +1130,8 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
 
         self.assertEqual(summary["interrupted_migrations"][0]["version"], 99)
         self.assertEqual(summary["interrupted_migrations"][0]["status"], "running")
+        self.assertTrue(summary["safe_degraded_mode"])
+        self.assertIn("interrupted_migrations_detected: 99", summary["issues"])
 
     def test_startup_repair_reports_failed_migrations(self) -> None:
         from backend.app.core.database import connect, utc_now
@@ -1115,6 +1164,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(summary["interrupted_migrations"][0]["version"], 100)
         self.assertEqual(summary["interrupted_migrations"][0]["status"], "failed")
         self.assertEqual(summary["interrupted_migrations"][0]["error"], "boom")
+        self.assertTrue(summary["safe_degraded_mode"])
 
     def test_ocr_source_job_writes_page_progress_detail(self) -> None:
         from backend.app.core.background_jobs import _run_ocr_source, enqueue_job

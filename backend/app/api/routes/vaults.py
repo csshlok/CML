@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.sql import build_update_assignments
-from backend.app.core.unlock_state import verify_sensitive_action
+from backend.app.core.unlock_state import current_unlock_state, verify_sensitive_action
 from backend.app.schemas import VaultCreate, VaultDeleteRequest, VaultRead, VaultUpdate
 
 router = APIRouter(prefix="/vaults", tags=["vaults"])
@@ -16,7 +16,11 @@ router = APIRouter(prefix="/vaults", tags=["vaults"])
 def list_vaults() -> list[dict]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM vaults ORDER BY updated_at DESC").fetchall()
-        return [dict_from_row(row) for row in rows]
+        vaults = [dict_from_row(row) for row in rows]
+    unlock = current_unlock_state()
+    if unlock["secured_vault_count"] > 0 and not unlock["ready"]:
+        return [{**vault, "path": ""} for vault in vaults]
+    return vaults
 
 
 @router.post("", response_model=VaultRead)
@@ -86,6 +90,21 @@ def delete_vault(vault_id: str) -> None:
 
 @router.post("/{vault_id}/delete", status_code=204)
 def delete_vault_with_confirmation(vault_id: str, payload: VaultDeleteRequest) -> None:
+    _authorize_vault_deletion(vault_id, payload)
+    with connect() as conn:
+        result = conn.execute("DELETE FROM vaults WHERE id = ?", (vault_id,))
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Vault not found")
+
+
+@router.post("/{vault_id}/delete/authorize")
+def authorize_vault_deletion(vault_id: str, payload: VaultDeleteRequest) -> dict:
+    """Validate a destructive desktop deletion without mutating the open database."""
+    _authorize_vault_deletion(vault_id, payload)
+    return {"authorized": True, "vault_id": vault_id}
+
+
+def _authorize_vault_deletion(vault_id: str, payload: VaultDeleteRequest) -> None:
     with connect() as conn:
         vault = conn.execute("SELECT id, name FROM vaults WHERE id = ?", (vault_id,)).fetchone()
         if vault is None:
@@ -103,10 +122,6 @@ def delete_vault_with_confirmation(vault_id: str, payload: VaultDeleteRequest) -
             verify_sensitive_action(vault_id, payload.passphrase)
         except Exception as exc:
             raise HTTPException(status_code=403, detail="Passphrase verification failed.") from exc
-    with connect() as conn:
-        result = conn.execute("DELETE FROM vaults WHERE id = ?", (vault_id,))
-        if result.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Vault not found")
 
 
 def _normalized_vault_path(path: str) -> str:
