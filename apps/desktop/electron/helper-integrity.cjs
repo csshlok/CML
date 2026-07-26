@@ -73,6 +73,8 @@ function resolvePackagedHelperPaths(resourcesRoot) {
     pythonRuntime: path.join(resourcesRoot, "python-runtime"),
     backendPython: path.join(resourcesRoot, "python-runtime", "python.exe"),
     playwrightRoot: path.join(resourcesRoot, "ms-playwright"),
+    llmRuntimeRoot: path.join(resourcesRoot, "llm-runtime"),
+    llmRuntimeServer: path.join(resourcesRoot, "llm-runtime", "llama-server.exe"),
     helperManifest: path.join(resourcesRoot, HELPER_MANIFEST_NAME),
   };
 }
@@ -148,6 +150,7 @@ function buildBackendChildEnv({
     CML_DATABASE_PATH: databasePath,
     CML_STARTUP_STATUS_PATH: startupStatusPath,
     CML_VAULT_LOCK_OVERRIDE: vaultLockOverride || "",
+    CML_LLM_RUNTIME_BINARY: helperPaths.llmRuntimeServer,
     PLAYWRIGHT_BROWSERS_PATH: helperPaths.playwrightRoot,
     PYTHONPATH: helperPaths.resourcesRoot,
     PYTHONHOME: helperPaths.pythonRuntime,

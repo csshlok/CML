@@ -1,6 +1,7 @@
 param(
   [string]$InstallerPath = "",
-  [int]$TimeoutSeconds = 600
+  [int]$TimeoutSeconds = 600,
+  [string]$InstallDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -84,7 +85,13 @@ Write-Host "Installing CML silently from $installer"
 $electronRunAsNode = $env:ELECTRON_RUN_AS_NODE
 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 try {
-  Invoke-SilentExecutable -Path $installer -Arguments @("/S") -Timeout $TimeoutSeconds
+  $installArguments = @("/S")
+  if ($InstallDirectory) {
+    $installPath = [System.IO.Path]::GetFullPath($InstallDirectory)
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $installPath) | Out-Null
+    $installArguments += "/D=$installPath"
+  }
+  Invoke-SilentExecutable -Path $installer -Arguments $installArguments -Timeout $TimeoutSeconds
 } finally {
   if ($electronRunAsNode -ne $null) {
     $env:ELECTRON_RUN_AS_NODE = $electronRunAsNode

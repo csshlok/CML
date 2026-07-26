@@ -70,6 +70,13 @@ class AdditionalQACases(unittest.TestCase):
         get_settings.cache_clear()
         return model_dir
 
+    def _write_fake_gguf(self, file_name: str) -> Path:
+        model_root = Path(self.tmp.name) / "models"
+        model_root.mkdir(parents=True, exist_ok=True)
+        model_path = model_root / file_name
+        model_path.write_bytes(b"GGUF fixture")
+        return model_path
+
     def _install_default_chat_model(self, model_id: str = "qwen3-4b-q4_k_m") -> Path:
         model_dir = Path(self.tmp.name) / "models" / model_id
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -77,42 +84,122 @@ class AdditionalQACases(unittest.TestCase):
         gguf_path.write_bytes(b"gguf")
         return gguf_path
 
-    def test_model_compatibility_report_accepts_supported_transformers_checkpoint(self) -> None:
-        from backend.app.core.model_registry import model_compatibility_report
+    def test_source_search_and_pagination_cover_matches_beyond_first_hundred(self) -> None:
+        from backend.app.api.routes.sources import count_sources, list_sources
+        from backend.app.core.database import connect, utc_now
 
-        model_dir = self._write_fake_local_transformers_model(
-            "accepted-qwen",
-            model_type="qwen2",
-            repo_hint="Qwen/Qwen3-4B",
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-scale", "Scale", self.tmp.name, now, now),
+            )
+            for index in range(130):
+                conn.execute(
+                    """
+                    INSERT INTO sources (
+                        id, vault_id, title, source_type, state, summary, created_at, updated_at
+                    )
+                    VALUES (?, 'vault-scale', ?, ?, 'indexed', ?, ?, ?)
+                    """,
+                    (
+                        f"source-{index:03d}",
+                        "Needle source" if index == 120 else f"Source {index:03d}",
+                        "note" if index % 2 == 0 else "file",
+                        "deep needle" if index == 120 else "",
+                        now,
+                        now,
+                    ),
+                )
+
+        matches = list_sources(
+            vault_id="vault-scale",
+            q="needle",
+            source_types="note",
+            limit=25,
+            offset=0,
+        )
+        count = count_sources(
+            vault_id="vault-scale",
+            q="needle",
+            source_types="note",
+        )
+        second_page = list_sources(
+            vault_id="vault-scale",
+            limit=30,
+            offset=100,
+            order="alphabetical",
         )
 
-        report = model_compatibility_report(model_dir)
+        self.assertEqual([row["id"] for row in matches], ["source-120"])
+        self.assertEqual(count["total"], 1)
+        self.assertEqual(len(second_page), 30)
+
+    def test_activity_feed_is_globally_sorted_and_server_paginated_at_scale(self) -> None:
+        from backend.app.api.routes.activity import list_activity
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO vaults (id, name, path, created_at, updated_at)
+                VALUES ('vault-activity', 'Activity', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+                """,
+                (self.tmp.name,),
+            )
+            for index in range(150):
+                timestamp = f"2026-01-{(index % 28) + 1:02d}T{index % 24:02d}:00:00Z"
+                conn.execute(
+                    """
+                    INSERT INTO sources (
+                        id, vault_id, title, source_type, state, created_at, updated_at
+                    )
+                    VALUES (?, 'vault-activity', ?, 'note', 'indexed', ?, ?)
+                    """,
+                    (f"activity-source-{index:03d}", f"Source {index:03d}", timestamp, timestamp),
+                )
+
+        first = list_activity("vault-activity", limit=100, offset=0)
+        second = list_activity("vault-activity", limit=100, offset=100)
+
+        self.assertEqual(first["total"], 150)
+        self.assertEqual(len(first["items"]), 100)
+        self.assertEqual(len(second["items"]), 50)
+        combined = [*first["items"], *second["items"]]
+        self.assertEqual(
+            [item["time"] for item in combined],
+            sorted((item["time"] for item in combined), reverse=True),
+        )
+
+    def test_model_compatibility_report_accepts_supported_gguf_checkpoint(self) -> None:
+        from backend.app.core.model_registry import model_compatibility_report
+
+        model_file = Path(self.tmp.name) / "accepted-qwen-q4_k_m.gguf"
+        model_file.write_bytes(b"GGUF fixture")
+
+        report = model_compatibility_report(model_file)
 
         self.assertTrue(report["accepted"])
         self.assertEqual(report["status"], "accepted")
         self.assertEqual(report["family"], "qwen")
 
-    def test_model_compatibility_report_rejects_non_checkpoint_path(self) -> None:
+    def test_model_compatibility_report_rejects_non_gguf_path(self) -> None:
         from backend.app.core.model_registry import model_compatibility_report
 
-        file_path = Path(self.tmp.name) / "model.gguf"
-        file_path.write_bytes(b"gguf")
+        file_path = Path(self.tmp.name) / "qwen-model.bin"
+        file_path.write_bytes(b"not gguf")
 
         report = model_compatibility_report(file_path)
 
         self.assertFalse(report["accepted"])
         self.assertEqual(report["status"], "rejected")
-        self.assertIn("checkpoint directory", report["detail"].lower())
+        self.assertIn("accepts gguf", report["detail"].lower())
 
     def test_import_model_checkpoint_rejects_overlapping_managed_destination(self) -> None:
         from backend.app.core.model_registry import import_model_checkpoint
 
         imported = import_model_checkpoint(
-            self._write_fake_local_transformers_model(
-                "managed-qwen",
-                model_type="qwen2",
-                repo_hint="Qwen/Qwen3-4B",
-            ),
+            self._write_fake_gguf("managed-qwen-q4_k_m.gguf"),
             name="Managed Qwen",
         )
         managed_path = Path(imported["local_path"])
@@ -121,7 +208,7 @@ class AdditionalQACases(unittest.TestCase):
             import_model_checkpoint(managed_path, name="Managed Qwen")
 
         self.assertIn("separate directories", str(raised.exception))
-        self.assertTrue((managed_path / "config.json").exists())
+        self.assertTrue(managed_path.is_file())
 
     def test_rejected_model_compatibility_report_includes_replacement_recommendation(self) -> None:
         from backend.app.core.model_registry import model_compatibility_report
@@ -138,12 +225,8 @@ class AdditionalQACases(unittest.TestCase):
     def test_discover_installed_models_finds_supported_local_checkpoint(self) -> None:
         from backend.app.core.model_registry import discover_installed_models
 
-        model_dir = self._write_fake_local_transformers_model(
-            "detected-qwen",
-            model_type="qwen2",
-            repo_hint="Qwen/Qwen3-4B",
-        )
-        os.environ["CML_MODEL_SCAN_ROOTS"] = str(model_dir.parent)
+        model_file = self._write_fake_gguf("detected-qwen-q4_k_m.gguf")
+        os.environ["CML_MODEL_SCAN_ROOTS"] = str(model_file.parent)
         from backend.app.core.config import get_settings
 
         get_settings.cache_clear()
@@ -151,7 +234,7 @@ class AdditionalQACases(unittest.TestCase):
         discovery = discover_installed_models(max_results=10)
 
         self.assertGreaterEqual(discovery["compatible_model_count"], 1)
-        self.assertTrue(any(item["local_path"] == str(model_dir.resolve()) for item in discovery["models"]))
+        self.assertTrue(any(item["local_path"] == str(model_file.resolve()) for item in discovery["models"]))
 
     def test_windows_model_discovery_includes_every_available_drive(self) -> None:
         from backend.app.core import model_registry
@@ -171,29 +254,21 @@ class AdditionalQACases(unittest.TestCase):
 
         scan_root = Path(self.tmp.name) / "model-scan"
         scan_root.mkdir()
-        rejected_dirs = [
-            self._write_fake_local_transformers_model(
-                f"rejected-{index:02d}",
-                model_type="unknown-family",
-                repo_hint=f"Unknown/Rejected-{index:02d}",
-            )
+        rejected_files = [
+            self._write_fake_gguf(f"rejected-{index:02d}.gguf")
             for index in range(12)
         ]
-        compatible = self._write_fake_local_transformers_model(
-            "zz-compatible-qwen",
-            model_type="qwen2",
-            repo_hint="Qwen/Qwen3-4B",
-        )
-        for model_dir in [*rejected_dirs, compatible]:
-            model_dir.rename(scan_root / model_dir.name)
-        ordered_candidates = [scan_root / path.name for path in rejected_dirs] + [scan_root / compatible.name]
+        compatible = self._write_fake_gguf("zz-compatible-qwen-q4_k_m.gguf")
+        for model_file in [*rejected_files, compatible]:
+            model_file.rename(scan_root / model_file.name)
+        ordered_candidates = [scan_root / path.name for path in rejected_files] + [scan_root / compatible.name]
 
         os.environ["CML_MODEL_SCAN_ROOTS"] = str(scan_root)
         os.environ["CML_MODEL_SCAN_CACHE_SECONDS"] = "0"
         get_settings.cache_clear()
         invalidate_model_discovery_cache()
 
-        with patch("backend.app.core.model_registry._iter_transformers_checkpoint_dirs", return_value=ordered_candidates):
+        with patch("backend.app.core.model_registry._iter_model_candidates", return_value=ordered_candidates):
             discovery = discover_installed_models(max_results=5, include_rejected=True, refresh=True)
 
         self.assertTrue(discovery["truncated"])
@@ -203,12 +278,8 @@ class AdditionalQACases(unittest.TestCase):
         self.assertTrue(discovery["models"][0]["compatibility"]["accepted"])
 
     def test_models_discover_route_returns_detected_models(self) -> None:
-        model_dir = self._write_fake_local_transformers_model(
-            "route-detected-qwen",
-            model_type="qwen2",
-            repo_hint="Qwen/Qwen3-4B",
-        )
-        os.environ["CML_MODEL_SCAN_ROOTS"] = str(model_dir.parent)
+        model_file = self._write_fake_gguf("route-detected-qwen-q4_k_m.gguf")
+        os.environ["CML_MODEL_SCAN_ROOTS"] = str(model_file.parent)
         from backend.app.core.config import get_settings
 
         get_settings.cache_clear()
@@ -222,7 +293,7 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertGreaterEqual(payload["compatible_model_count"], 1)
-        self.assertTrue(any(item["local_path"] == str(model_dir.resolve()) for item in payload["models"]))
+        self.assertTrue(any(item["local_path"] == str(model_file.resolve()) for item in payload["models"]))
 
     def test_benchmark_evidence_inherits_variant_or_lineage_for_custom_import(self) -> None:
         from backend.app.core.model_recommender.benchmark_evidence import resolve_benchmark_evidence
@@ -287,12 +358,8 @@ class AdditionalQACases(unittest.TestCase):
         from backend.app.core.config import get_settings
         from backend.app.core.model_registry import discover_installed_models, invalidate_model_discovery_cache
 
-        model_dir = self._write_fake_local_transformers_model(
-            "cached-detected-qwen",
-            model_type="qwen2",
-            repo_hint="Qwen/Qwen3-4B",
-        )
-        os.environ["CML_MODEL_SCAN_ROOTS"] = str(model_dir.parent)
+        model_file = self._write_fake_gguf("cached-detected-qwen-q4_k_m.gguf")
+        os.environ["CML_MODEL_SCAN_ROOTS"] = str(model_file.parent)
         os.environ["CML_MODEL_SCAN_CACHE_SECONDS"] = "300"
         get_settings.cache_clear()
         invalidate_model_discovery_cache()
@@ -301,9 +368,9 @@ class AdditionalQACases(unittest.TestCase):
 
         def counting_iter(root: Path, *, max_depth: int) -> list[Path]:
             call_counter["count"] += 1
-            return [model_dir]
+            return [model_file]
 
-        with patch("backend.app.core.model_registry._iter_transformers_checkpoint_dirs", side_effect=counting_iter):
+        with patch("backend.app.core.model_registry._iter_model_candidates", side_effect=counting_iter):
             first = discover_installed_models(max_results=10)
             after_first = call_counter["count"]
             second = discover_installed_models(max_results=10)
@@ -809,6 +876,8 @@ class AdditionalQACases(unittest.TestCase):
             ).fetchone()
 
         self.assertEqual(first["id"], second["id"])
+        self.assertEqual(first["import_outcome"], "created")
+        self.assertEqual(second["import_outcome"], "updated")
         self.assertEqual(count, 1)
         self.assertEqual(stored["id"], first["id"])
         self.assertEqual(stored["original_path"], str(target))
@@ -1208,6 +1277,66 @@ class AdditionalQACases(unittest.TestCase):
         retriable = [item for item in timeline["items"] if item["message_type"] == "retriable_generation"]
         self.assertEqual(len(retriable), 1)
         self.assertIn("context build exploded", retriable[0]["error"])
+
+    def test_closing_persisted_stream_saves_partial_answer_and_terminal_stopped_state(self) -> None:
+        import asyncio
+
+        from backend.app.api.routes.chat import get_chat_timeline, stream_chat_context
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ChatContextRequest
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+
+        context = {
+            "answer": "",
+            "clusters_used": [],
+            "citations": [],
+            "coverage_ledger": {"partial_failure_mode": "general_chat_direct"},
+            "intent": "general_chat",
+            "runtime_state": "ready",
+            "warnings": [],
+            "recent_turns": [],
+            "direct_answer_fallback": False,
+        }
+
+        async def read_one_token_then_close(response) -> None:
+            iterator = response.body_iterator
+            async for chunk in iterator:
+                text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+                if "event: token" in text:
+                    break
+            await iterator.aclose()
+
+        with (
+            patch("backend.app.api.routes.chat._build_retrieval_context", return_value=context),
+            patch(
+                "backend.app.api.routes.chat.stream_direct_answer",
+                return_value=iter(["first partial", " should not be consumed"]),
+            ),
+        ):
+            response = stream_chat_context(
+                ChatContextRequest(vault_id="vault-1", prompt="Hello", persist=True)
+            )
+            asyncio.run(read_one_token_then_close(response))
+
+        with connect() as conn:
+            generation = conn.execute("SELECT * FROM chat_generations").fetchone()
+            assistant = conn.execute(
+                "SELECT role, content FROM chat_messages WHERE role = 'assistant'"
+            ).fetchone()
+
+        self.assertEqual(generation["state"], "stopped")
+        self.assertIsNotNone(generation["completed_at"])
+        self.assertEqual(assistant["content"], "first partial")
+        timeline = get_chat_timeline(generation["session_id"])
+        assistant_item = next(item for item in timeline["items"] if item["role"] == "assistant")
+        self.assertEqual(assistant_item["reply_to_message_id"], generation["user_message_id"])
+        self.assertEqual(assistant_item["generation_state"], "stopped")
 
     def test_message_saved_flag_updates_session_saved_state(self) -> None:
         from backend.app.api.routes.chat import update_chat_message
@@ -2084,7 +2213,11 @@ class AdditionalQACases(unittest.TestCase):
             '$effectiveBackendRuntimePackages = @($backendRuntimePackages) + @($embeddingRuntimePackages)',
             package_text,
         )
-        self.assertIn('python-runtime-v6', package_text)
+        self.assertRegex(package_text, r'"python-runtime-v\d+"')
+        self.assertIn(
+            '(Get-Content -LiteralPath (Join-Path $backendDir "pyproject.toml") -Raw)',
+            package_text,
+        )
         self.assertIn('SentenceTransformers is included in every packaged backend runtime.', package_text)
         self.assertNotIn('if ($IncludeEmbeddingRuntime)', package_text)
         self.assertNotIn('expert-python-runtime', package_text)
@@ -2469,6 +2602,9 @@ class AdditionalQACases(unittest.TestCase):
         settings = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.settings.tsx").read_text(encoding="utf-8")
         backend = (repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
         embeddings = (repo_root / "backend" / "app" / "core" / "embeddings.py").read_text(encoding="utf-8")
+        embedding_worker = (
+            repo_root / "backend" / "app" / "core" / "embedding_download_worker.py"
+        ).read_text(encoding="utf-8")
 
         self.assertIn('Field label="Save models in"', onboarding)
         self.assertIn('"Welcome",', onboarding)
@@ -2491,14 +2627,15 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("Confirm skip", onboarding)
         self.assertIn("ModelDownloadToast", onboarding)
         self.assertIn("fixed bottom-4 right-4", onboarding)
-        self.assertIn("setInterval", onboarding)
-        self.assertIn("if (!modelDownloadActive) return;", onboarding)
-        self.assertIn("if (!embeddingDownloadActive) return;", onboarding)
+        self.assertIn("useVisiblePolling(refreshModels, 750, modelDownloadActive)", onboarding)
+        self.assertIn("useVisiblePolling(refreshEmbeddingStatus, 750, embeddingDownloadActive)", onboarding)
+        self.assertNotIn("setInterval", onboarding)
         self.assertIn("formatProgressPercent(progress)", onboarding)
         self.assertNotIn("progress || 12", onboarding)
-        self.assertIn("function isChatSetupProgress", onboarding)
+        self.assertIn('modelRuntime?.state === "ready"', onboarding)
+        self.assertIn("model.id === modelRuntime.model", onboarding)
         self.assertIn('model.source_kind === "default_choice"', onboarding)
-        self.assertIn('downloadStatus === "resolving" || downloadStatus === "downloading"', onboarding)
+        self.assertIn('status === "resolving" || status === "downloading" || status === "cancelling"', onboarding)
         self.assertIn("function selectVisibleModelDownload", onboarding)
         self.assertIn("visible.find((download) => isActiveModelDownloadStatus(download.status))", onboarding)
         self.assertIn('state.status === "failed" || state.status === "blocked"', onboarding)
@@ -2520,8 +2657,8 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("if (downloadStatus.status === \"queued\" || downloadStatus.status === \"downloading\")", onboarding)
         self.assertIn("signal: AbortSignal.timeout(120_000)", backend)
         self.assertIn("MANAGED_EMBEDDING_MODELS", embeddings)
-        self.assertIn("HfApi(token=False", embeddings)
-        self.assertIn("token=False", embeddings)
+        self.assertIn("snapshot_download(", embedding_worker)
+        self.assertIn("token=False", embedding_worker)
         self.assertIn("local_files_only=True", embeddings)
         self.assertIn("MINILM_DOWNLOAD_PATTERNS", embeddings)
         self.assertNotIn("Continue is enabled only after one accepted chat model and one accepted expert checkpoint are active.", onboarding)
@@ -2558,8 +2695,8 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between", bridge)
         self.assertIn("max-w-full break-all rounded-md bg-muted", bridge)
         self.assertIn("break-all font-mono text-xs", bridge)
-        self.assertIn("Path {item.observed_executable_path", bridge)
-        self.assertIn("Path {client.observed_executable_path", bridge)
+        self.assertIn("Path {displayPath(item.observed_executable_path", bridge)
+        self.assertIn("Path {displayPath(client.observed_executable_path", bridge)
         self.assertIn("mt-1 break-all text-xs text-muted-foreground", bridge)
         self.assertIn("mt-1 break-words text-xs text-muted-foreground", bridge)
         self.assertIn("sm:grid-cols-[minmax(0,1fr)_auto]", bridge)
@@ -2674,7 +2811,10 @@ class AdditionalQACases(unittest.TestCase):
         )
 
         self.assertIn("vault-page-wash h-full overflow-y-auto px-4 py-6 sm:px-6 lg:px-8", map_route)
-        self.assertIn("<KnowledgeMap vaultId={vault.id} overview={overview}", map_route)
+        self.assertIn("<KnowledgeMap", map_route)
+        self.assertIn("vaultId={vault.id}", map_route)
+        self.assertIn("overview={overview}", map_route)
+        self.assertIn("persistView", map_route)
         self.assertIn("Vault could not load the map", map_route)
         self.assertIn("Open Health", map_route)
         self.assertNotIn("mapMockData", map_route)
@@ -2793,7 +2933,7 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("Suggested clusters", home)
         self.assertIn("Activity", home)
         self.assertLess(home.index("Quick actions"), home.index("Ask or search your memory"))
-        self.assertLess(home.index("Suggested clusters"), home.index("Activity"))
+        self.assertLess(home.index('title="Suggested clusters"'), home.index('title="Activity"'))
         self.assertNotIn("grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[1fr_326px]", home)
         self.assertNotIn("xl:grid-cols-[minmax(0,1fr)_326px]", home)
         self.assertNotIn("truncate text-sm font-semibold", home)

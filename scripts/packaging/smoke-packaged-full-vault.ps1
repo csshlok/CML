@@ -154,8 +154,16 @@ try {
     -TimeoutSec 10
 
   $reindex = Invoke-RestMethod -Uri "$baseUrl/api/v1/search/reindex/$($vault.id)" -Method Post -Headers $headers -TimeoutSec 15
-  if ($reindex.chunks_indexed -lt 1) {
-    throw "Packaged full-vault reindex did not create source chunks."
+  if ($reindex.status -ne "queued" -or $reindex.jobs_queued -lt 1) {
+    throw "Packaged full-vault reindex did not queue durable source work."
+  }
+  $jobStatus = Invoke-RestMethod `
+    -Uri "$baseUrl/api/v1/jobs/run-once" `
+    -Method Post `
+    -Headers $headers `
+    -TimeoutSec 60
+  if ($jobStatus.failed -gt 0) {
+    throw "Packaged full-vault reindex job failed."
   }
 
   $search = Invoke-RestMethod `
@@ -224,7 +232,7 @@ try {
     package_root = $packagePath
     vault_id = $vault.id
     source_id = $source.id
-    chunks_indexed = $reindex.chunks_indexed
+    reindex_jobs_queued = $reindex.jobs_queued
     semantic_results = $search.results.Count
     ocr_fixtures = $ocrFixtures
     query_cache_prune = $prune

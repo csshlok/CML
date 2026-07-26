@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -73,6 +74,26 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(manifest["app_version"], expected)
         self.assertEqual(manifest["backend_version"], expected)
 
+    def test_packaged_runtime_pypdf_pin_matches_backend_project(self) -> None:
+        import tomllib
+
+        repo_root = Path(__file__).resolve().parents[2]
+        project = tomllib.loads(
+            (repo_root / "backend" / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        expected = next(
+            dependency
+            for dependency in project["project"]["dependencies"]
+            if dependency.lower().startswith("pypdf==")
+        )
+        package_script = (
+            repo_root / "scripts" / "packaging" / "package-windows.ps1"
+        ).read_text(encoding="utf-8")
+        packaged_pin = re.search(r'^\s*"(pypdf==[^"]+)",?\s*$', package_script, re.MULTILINE)
+
+        self.assertIsNotNone(packaged_pin)
+        self.assertEqual(packaged_pin.group(1).lower(), expected.lower())
+
     def test_startup_phase_registry_includes_database_initialization_failure(self) -> None:
         from backend.app.core.startup_status import known_startup_phases
 
@@ -100,7 +121,7 @@ class RuntimeContractTests(unittest.TestCase):
 
         with ZipFile(bundle["bundle_path"]) as archive:
             runtime_summary = json.loads(archive.read("runtime-summary.json").decode("utf-8"))
-        self.assertIn("Full model probe was skipped", runtime_summary["embedding"]["detail"])
+        self.assertIn("SentenceTransformers", runtime_summary["embedding"]["detail"])
 
     def test_diagnostics_bundle_includes_packaged_electron_logs_when_startup_status_points_to_user_data(self) -> None:
         temp_dir = Path(__file__).resolve().parents[2] / ".tmp" / "runtime-contracts-electron-logs"

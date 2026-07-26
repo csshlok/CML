@@ -1,6 +1,7 @@
 param(
   [string]$PackageRoot = "",
-  [int]$TimeoutSeconds = 30
+  [int]$TimeoutSeconds = 30,
+  [string]$UserDataRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,18 +42,16 @@ function Get-AppendedLogText([string]$PathValue, $Snapshot) {
   return $text.Substring([int]$Snapshot.length)
 }
 
-$candidateStatusPaths = @(
-  (Join-Path $env:APPDATA "@cml\desktop\startup-status.json")
-)
-$candidateStdoutLogs = @(
-  (Join-Path $env:APPDATA "@cml\desktop\backend-stdout.log")
-)
-$candidateStderrLogs = @(
-  (Join-Path $env:APPDATA "@cml\desktop\backend-stderr.log")
-)
-$candidateRuntimeLogs = @(
-  (Join-Path $env:APPDATA "@cml\desktop\desktop-runtime.log")
-)
+$userDataPath = if ($UserDataRoot) {
+  [System.IO.Path]::GetFullPath($UserDataRoot)
+} else {
+  Join-Path $env:APPDATA "@cml\desktop"
+}
+New-Item -ItemType Directory -Force -Path $userDataPath | Out-Null
+$candidateStatusPaths = @((Join-Path $userDataPath "startup-status.json"))
+$candidateStdoutLogs = @((Join-Path $userDataPath "backend-stdout.log"))
+$candidateStderrLogs = @((Join-Path $userDataPath "backend-stderr.log"))
+$candidateRuntimeLogs = @((Join-Path $userDataPath "desktop-runtime.log"))
 $statusBefore = @{}
 $fileSnapshots = @{}
 foreach ($candidate in ($candidateStatusPaths + $candidateStdoutLogs + $candidateStderrLogs + $candidateRuntimeLogs)) {
@@ -64,7 +63,8 @@ foreach ($candidate in ($candidateStatusPaths + $candidateStdoutLogs + $candidat
 
 $electronRunAsNode = $env:ELECTRON_RUN_AS_NODE
 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-$process = Start-Process -FilePath $exe -PassThru
+$launchArguments = if ($UserDataRoot) { @("--user-data-dir=$userDataPath") } else { @() }
+$process = Start-Process -FilePath $exe -ArgumentList $launchArguments -PassThru
 try {
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   $status = $null

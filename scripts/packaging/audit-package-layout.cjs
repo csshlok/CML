@@ -22,6 +22,7 @@ async function main() {
       helperPaths.backendRoot,
       helperPaths.pythonRuntime,
       helperPaths.playwrightRoot,
+      helperPaths.llmRuntimeRoot,
     ],
     writableRoots: defaultWritableRoots({
       userDataPath: path.join(packageRoot, "__simulated-userData"),

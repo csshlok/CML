@@ -17,10 +17,12 @@ $desktopDir = Join-Path $repoRoot "apps\desktop"
 $desktopPackageJsonPath = Join-Path $desktopDir "package.json"
 $packageLogoPath = Join-Path $repoRoot "package-logo.png"
 $windowsIconPath = Join-Path $desktopDir "build\icon.ico"
+$windowsIconScript = Join-Path $repoRoot "scripts\packaging\generate-windows-icon.py"
 $backendDir = Join-Path $repoRoot "backend"
 $stagingDir = Join-Path $desktopDir "packaging\backend"
 $runtimeDir = Join-Path $desktopDir "packaging\python-runtime"
 $playwrightBrowserDir = Join-Path $desktopDir "packaging\ms-playwright"
+$llmRuntimeDir = Join-Path $desktopDir "packaging\llm-runtime"
 $packagingRoot = Join-Path $desktopDir "packaging"
 $modelIntegrityManifestPath = Join-Path $repoRoot "docs\model-integrity-manifest.json"
 $modelIntegrityStagingDir = Join-Path $packagingRoot "docs"
@@ -29,6 +31,7 @@ $tmpDir = Join-Path $repoRoot ".tmp"
 $helperManifestScript = Join-Path $repoRoot "scripts\packaging\generate-helper-manifest.cjs"
 $packageAuditScript = Join-Path $repoRoot "scripts\packaging\audit-package-layout.cjs"
 $ocrStagingScript = Join-Path $repoRoot "scripts\packaging\stage-ocr-runtime.ps1"
+$llmRuntimeStagingScript = Join-Path $repoRoot "scripts\packaging\stage-llm-runtime.ps1"
 $desktopPackage = Get-Content $desktopPackageJsonPath -Raw | ConvertFrom-Json
 $desktopVersion = [string]$desktopPackage.version
 if (-not $desktopVersion) {
@@ -37,15 +40,19 @@ if (-not $desktopVersion) {
 if (-not (Test-Path -LiteralPath $packageLogoPath)) {
   throw "Package logo is missing: $packageLogoPath"
 }
-if (-not (Test-Path -LiteralPath $windowsIconPath)) {
-  throw "Windows package icon is missing: $windowsIconPath"
-}
 if (-not (Test-Path -LiteralPath $modelIntegrityManifestPath)) {
   throw "Managed model integrity manifest is missing: $modelIntegrityManifestPath"
 }
 $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
   $python = "python"
+}
+if (-not (Test-Path -LiteralPath $windowsIconScript)) {
+  throw "Windows icon generator is missing: $windowsIconScript"
+}
+& $python $windowsIconScript --source $packageLogoPath --output $windowsIconPath
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $windowsIconPath)) {
+  throw "Could not generate the Windows package icon from $packageLogoPath"
 }
 $basePythonRoot = (& $python -c "import sys; print(sys.base_prefix)") | Select-Object -First 1
 if (-not $basePythonRoot -or -not (Test-Path $basePythonRoot)) {
@@ -58,7 +65,7 @@ $backendRuntimePackages = @(
   "pydantic-settings==2.14.2",
   "cryptography==48.0.1",
   "numpy==2.4.6",
-  "pypdf==6.13.3",
+  "pypdf==6.14.2",
   "python-docx==1.2.0",
   "PyMuPDF==1.26.7",
   "ocrmypdf==17.5.0",
@@ -81,7 +88,7 @@ $effectiveBackendRuntimePackages = @($backendRuntimePackages) + @($embeddingRunt
 $script:PackageStartedAt = Get-Date
 $script:PackagePhaseStartedAt = $script:PackageStartedAt
 $script:PackagePhaseIndex = 0
-$script:PackagePhaseCount = 10
+$script:PackagePhaseCount = 11
 if ($Release) {
   $script:PackagePhaseCount += 1
 }
@@ -295,6 +302,7 @@ if ($Release) {
   Start-PackagePhase "Clear release caches" "Release builds rebuild helper runtimes from scratch."
   Reset-StagedPath $runtimeDir
   Reset-StagedPath $playwrightBrowserDir
+  Reset-StagedPath $llmRuntimeDir
   if (-not $SkipOcrRuntimeDownload) {
     Reset-StagedPath (Join-Path $backendDir "bin\ocr")
   }
@@ -380,10 +388,11 @@ Complete-PackagePhase $stagingDir
 $runtimePython = Join-Path $runtimeDir "python.exe"
 $backendRuntimeStampPath = Join-Path $runtimeDir ".cml-runtime-stamp"
 $backendRuntimeFingerprint = Get-StringFingerprint @(
-  "python-runtime-v6",
+  "python-runtime-v7",
   "base_python_root=$basePythonRoot",
   "prune=docs-tests-pip",
   "dependency_policy=pinned",
+  (Get-Content -LiteralPath (Join-Path $backendDir "pyproject.toml") -Raw),
   ($effectiveBackendRuntimePackages -join "`n")
 )
 $backendRuntimeReady = $false
@@ -445,6 +454,16 @@ if ($playwrightReady) {
 }
 Complete-PackagePhase $playwrightBrowserDir
 
+$llmRuntimeServer = Join-Path $llmRuntimeDir "llama-server.exe"
+Start-PackagePhase "Local chat runtime" "Staging the pinned, verified llama.cpp CPU runtime."
+if (-not (Test-Path -LiteralPath $llmRuntimeServer) -or $Release) {
+  & $llmRuntimeStagingScript -TargetDir $llmRuntimeDir
+}
+if (-not (Test-Path -LiteralPath $llmRuntimeServer)) {
+  throw "Local chat runtime staging did not produce llama-server.exe."
+}
+Complete-PackagePhase $llmRuntimeServer
+
 Start-PackagePhase "Embedding runtime" "SentenceTransformers is included in every packaged backend runtime."
 Complete-PackagePhase "sentence-transformers packaged with backend runtime"
 
@@ -493,6 +512,11 @@ New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
       "filter": ["**/*"]
     },
     {
+      "from": "packaging/llm-runtime",
+      "to": "llm-runtime",
+      "filter": ["**/*"]
+    },
+    {
       "from": "packaging/helper-manifest.json",
       "to": "helper-manifest.json"
     },
@@ -528,18 +552,60 @@ New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
 }
 "@ | Set-Content -Path $builderConfigPath -Encoding ascii
 Write-PackageDetail "Builder config: $builderConfigPath"
+$builderTempDir = Join-Path $tmpDir "electron-builder-temp"
+New-Item -ItemType Directory -Force -Path $builderTempDir | Out-Null
+$previousTemp = $env:TEMP
+$previousTmp = $env:TMP
+$env:TEMP = $builderTempDir
+$env:TMP = $builderTempDir
+Write-PackageDetail "Builder temporary files: $builderTempDir"
 Push-Location $desktopDir
+$successfulBuilderOutput = $null
 try {
   $builderArgs = @("--win", "--x64", "--config", $builderConfigPath)
   if ($PackagedOnly) {
     $builderArgs += "--dir"
   }
-  npx electron-builder @builderArgs
-  if ($LASTEXITCODE -ne 0) {
-    throw "electron-builder failed with exit code $LASTEXITCODE."
+  for ($attempt = 1; $attempt -le 3; $attempt += 1) {
+    $attemptOutput = Join-Path $tmpDir ("electron-builder-output-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $attemptOutput | Out-Null
+    $attemptConfig = Get-Content -LiteralPath $builderConfigPath -Raw | ConvertFrom-Json
+    $attemptConfig.directories.output = $attemptOutput
+    $attemptConfig | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $builderConfigPath -Encoding ascii
+    Write-PackageDetail "electron-builder attempt $attempt/3 uses isolated output: $attemptOutput"
+    npx electron-builder @builderArgs
+    if ($LASTEXITCODE -eq 0) {
+      $successfulBuilderOutput = $attemptOutput
+      break
+    }
+    Write-PackageLine "electron-builder attempt $attempt failed with exit code $LASTEXITCODE; retrying in a fresh output directory." "WARN"
+    Start-Sleep -Seconds ([Math]::Min(3, $attempt))
+  }
+  if (-not $successfulBuilderOutput) {
+    throw "electron-builder failed after 3 isolated attempts."
   }
 } finally {
   Pop-Location
+  if ($null -eq $previousTemp) {
+    Remove-Item Env:\TEMP -ErrorAction SilentlyContinue
+  } else {
+    $env:TEMP = $previousTemp
+  }
+  if ($null -eq $previousTmp) {
+    Remove-Item Env:\TMP -ErrorAction SilentlyContinue
+  } else {
+    $env:TMP = $previousTmp
+  }
+}
+
+$null = robocopy $successfulBuilderOutput $outputDirPath /E /R:3 /W:1 /NFL /NDL /NJH /NJS /NC /NS /NP
+if ($LASTEXITCODE -ge 8) {
+  throw "electron-builder succeeded, but publishing artifacts to $outputDirPath failed with robocopy exit code $LASTEXITCODE."
+}
+try {
+  Remove-Item -LiteralPath $successfulBuilderOutput -Recurse -Force -ErrorAction Stop
+} catch {
+  Write-PackageLine "Could not remove temporary builder output; it can be cleaned later: $successfulBuilderOutput" "WARN"
 }
 Complete-PackagePhase $outputDirPath
 

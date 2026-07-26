@@ -259,7 +259,7 @@ Versioning is split by surface, but backend runtime metadata is centralized now:
 Set the intended version once, then update the root npm package:
 
 ```powershell
-$version = "0.1.8"
+$version = "0.1.9"
 npm version $version --no-git-tag-version
 ```
 

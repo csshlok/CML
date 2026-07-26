@@ -25,6 +25,7 @@ $sentenceTransformersRuntime = Join-Path $resources "python-runtime\Lib\site-pac
 $backend = Join-Path $resources "backend"
 $ocrManifest = Join-Path $backend "bin\ocr\manifest.json"
 $playwrightRuntime = Join-Path $resources "ms-playwright"
+$llmRuntime = Join-Path $resources "llm-runtime\llama-server.exe"
 $helperManifest = Join-Path $resources "helper-manifest.json"
 $modelIntegrityManifest = Join-Path $resources "docs\model-integrity-manifest.json"
 $packagedLaunchSmoke = Join-Path $repoRoot "scripts\packaging\smoke-packaged-app-launch.ps1"
@@ -37,6 +38,7 @@ $checks = @(
   @{ name = "python_runtime_exists"; ok = Test-PathPresent $runtimePython; path = $runtimePython },
   @{ name = "sentence_transformers_runtime_exists"; ok = Test-PathPresent $sentenceTransformersRuntime; path = $sentenceTransformersRuntime },
   @{ name = "playwright_runtime_exists"; ok = Test-PathPresent $playwrightRuntime; path = $playwrightRuntime },
+  @{ name = "llm_runtime_exists"; ok = Test-PathPresent $llmRuntime; path = $llmRuntime },
   @{ name = "ocr_manifest_exists"; ok = Test-PathPresent $ocrManifest; path = $ocrManifest },
   @{ name = "helper_manifest_exists"; ok = Test-PathPresent $helperManifest; path = $helperManifest },
   @{ name = "model_integrity_manifest_exists"; ok = Test-PathPresent $modelIntegrityManifest; path = $modelIntegrityManifest },

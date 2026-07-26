@@ -65,6 +65,10 @@ summary = startup_repair_summary(apply_recovery=False)
 interrupted = summary.get("interrupted_migrations", [])
 if not interrupted or interrupted[0].get("version") != 99:
     raise SystemExit("Interrupted packaged migration was not reported.")
+if not summary.get("safe_degraded_mode"):
+    raise SystemExit("Interrupted packaged migration did not force safe degraded mode.")
+if not any("interrupted_migrations_detected" in issue for issue in summary.get("issues", [])):
+    raise SystemExit("Interrupted packaged migration did not explain the degraded state.")
 print(json.dumps({"drill": "interrupted_migration", "summary": summary}, indent=2))
 '@
 
