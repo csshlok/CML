@@ -12,14 +12,15 @@ import {
 } from "lucide-react";
 import { type Cluster, type Source } from "@/lib/domain";
 import { Button } from "@/components/ui/button";
+import { KnowledgeMap } from "@/components/KnowledgeMap";
 import {
   createChatSession,
   getCluster,
+  getMapNeighborhood,
   listClusterMergeArtifacts,
   listClusters,
   listChatSessions,
   listProjects,
-  listProjectLinks,
   listSources,
   mergeClusterInto,
   refreshClusterProfile,
@@ -28,6 +29,7 @@ import {
   type ClusterMergeArtifact,
   type ChatSessionRecord,
   type ProjectRecord,
+  type MapGraphResponse,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 import { Input } from "@/components/ui/input";
@@ -45,7 +47,7 @@ export const Route = createFileRoute("/_app/clusters/$clusterId")({
   component: ClusterDetail,
 });
 
-const tabs = ["Overview", "Sources", "Chats", "Memory profile"] as const;
+const tabs = ["Overview", "Sources", "Chats", "Map", "Memory profile"] as const;
 
 function ClusterDetail() {
   const { clusterId } = Route.useParams();
@@ -67,6 +69,8 @@ function ClusterDetail() {
   const [linkedProjects, setLinkedProjects] = useState<ProjectRecord[]>([]);
   const [profileRefreshBusy, setProfileRefreshBusy] = useState(false);
   const [profileRefreshMessage, setProfileRefreshMessage] = useState<string | null>(null);
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "not-found" | "error">("loading");
+  const [mapOverview, setMapOverview] = useState<MapGraphResponse | null>(null);
 
   const cluster = backendCluster;
   const activeSources = !mounted ? [] : backendSources;
@@ -78,31 +82,43 @@ function ClusterDetail() {
   useEffect(() => {
     let cancelled = false;
     setMounted(true);
+    setLoadState("loading");
     async function loadBackendCluster() {
       try {
         const clusterRow = await getCluster(clusterId);
+        if (cancelled) return;
         const nextCluster = clusterFromRecord(clusterRow);
-        const [sourceRows, chatRows, clusterRows, artifacts, projectRows] = await Promise.all([
+        setBackendVaultId(clusterRow.vault_id);
+        setBackendCluster(nextCluster);
+        setNameDraft(nextCluster.name);
+        setLoadState("ready");
+
+        const [sourceResult, chatResult, clusterResult, artifactResult, projectResult, mapResult] = await Promise.allSettled([
           listSources(clusterRow.vault_id, { clusterId: clusterRow.id, limit: 1000 }),
           listChatSessions(clusterRow.vault_id),
           listClusters(clusterRow.vault_id),
           listClusterMergeArtifacts(clusterRow.id),
-          listProjects(clusterRow.vault_id),
+          listProjects(clusterRow.vault_id, { clusterId: clusterRow.id, limit: 200 }),
+          getMapNeighborhood(clusterRow.vault_id, clusterRow.id),
         ]);
         if (cancelled) return;
-        setBackendVaultId(clusterRow.vault_id);
-        setBackendCluster(nextCluster);
-        setBackendSources(sourceRows.map(sourceFromRecord));
-        setBackendChats(chatRows.filter((chat) => chat.scope_cluster_id === clusterRow.id));
-        setPeerClusters(
-          clusterRows.filter((item) => item.id !== clusterRow.id).map(clusterFromRecord),
-        );
-        setMergeArtifacts(artifacts.items);
-        setBackendProject(projectRows.find((project) => project.primary_cluster_id === clusterRow.id) ?? null);
-        const linked = await Promise.all(projectRows.map(async (project) => ({ project, links: await listProjectLinks(project.id) })));
-        if (!cancelled) setLinkedProjects(linked.filter(({ links }) => links.some((link) => link.cluster_id === clusterRow.id && link.role === "linked")).map(({ project }) => project));
-        setNameDraft(nextCluster.name);
-      } catch {
+        if (sourceResult.status === "fulfilled") setBackendSources(sourceResult.value.map(sourceFromRecord));
+        if (chatResult.status === "fulfilled") {
+          setBackendChats(chatResult.value.filter((chat) => chat.scope_cluster_id === clusterRow.id));
+        }
+        if (clusterResult.status === "fulfilled") {
+          setPeerClusters(
+            clusterResult.value.filter((item) => item.id !== clusterRow.id).map(clusterFromRecord),
+          );
+        }
+        if (artifactResult.status === "fulfilled") setMergeArtifacts(artifactResult.value.items);
+        if (projectResult.status === "fulfilled") {
+          const primary = projectResult.value.find((project) => project.primary_cluster_id === clusterRow.id) ?? null;
+          setBackendProject(primary);
+          setLinkedProjects(projectResult.value.filter((project) => project.id !== primary?.id));
+        }
+        if (mapResult.status === "fulfilled") setMapOverview(mapResult.value);
+      } catch (error) {
         if (!cancelled) {
           setBackendCluster(null);
           setBackendVaultId(null);
@@ -110,6 +126,9 @@ function ClusterDetail() {
           setBackendChats([]);
           setBackendProject(null);
           setLinkedProjects([]);
+          setLoadState(
+            error instanceof Error && /not found/i.test(error.message) ? "not-found" : "error",
+          );
         }
       }
     }
@@ -120,10 +139,24 @@ function ClusterDetail() {
     };
   }, [clusterId]);
 
+  if (loadState === "loading") {
+    return (
+      <div className="h-full overflow-y-auto p-8" aria-label="Loading cluster">
+        <div className="mx-auto max-w-[1240px] animate-pulse space-y-5">
+          <div className="h-4 w-32 rounded bg-muted" />
+          <div className="h-10 w-2/5 rounded bg-muted" />
+          <div className="h-28 rounded bg-muted" />
+        </div>
+      </div>
+    );
+  }
+
   if (!cluster) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        Cluster not found.
+        {loadState === "not-found"
+          ? "This cluster no longer exists."
+          : "This cluster could not be loaded. Try again from Clusters."}
       </div>
     );
   }
@@ -165,6 +198,15 @@ function ClusterDetail() {
 
   async function mergeCluster() {
     if (!mergeTargetId) return;
+    const target = peerClusters.find((candidate) => candidate.id === mergeTargetId);
+    if (!target) return;
+    const confirmed = window.confirm(
+      `Merge "${clusterNameForActions}" into "${target.name}"? ` +
+        `${clusterSources.length} source${clusterSources.length === 1 ? "" : "s"} and ` +
+        `${clusterChats.length} scoped chat${clusterChats.length === 1 ? "" : "s"} will move. ` +
+        "The original cluster will be archived, and you can undo this merge from the target cluster's Manage panel.",
+    );
+    if (!confirmed) return;
     setManageBusy(true);
     setManageMessage(null);
     try {
@@ -311,6 +353,24 @@ function ClusterDetail() {
 
         {activeTab === "Sources" && <ClusterSourcesPanel sources={clusterSources} />}
         {activeTab === "Chats" && <ClusterChatsPanel chats={clusterChats} />}
+        {activeTab === "Map" && backendVaultId && (
+          <section className="mt-7">
+            {mapOverview ? (
+              <KnowledgeMap
+                vaultId={backendVaultId}
+                overview={mapOverview}
+                initialFocusId={clusterIdForActions}
+                onReload={() => {
+                  void getMapNeighborhood(backendVaultId, clusterIdForActions).then(setMapOverview);
+                }}
+              />
+            ) : (
+              <div className="rounded-md border border-border bg-card p-8 text-sm text-muted-foreground">
+                This cluster map could not be loaded. The rest of the cluster is still available.
+              </div>
+            )}
+          </section>
+        )}
         {activeTab === "Memory profile" && (
           <ClusterMemoryProfile cluster={cluster} sources={clusterSources} />
         )}

@@ -1,6 +1,6 @@
 import { createFileRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { Check, Code2, FileText, Plus, RefreshCw, X } from "lucide-react";
+import { Check, Code2, FileText, Pencil, Plus, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -11,6 +11,7 @@ import {
   listSources,
   listVaults,
   sourceCountsByCluster,
+  updateCluster,
   updateSource,
   type ClusterSuggestionRecord,
   type VaultRecord,
@@ -39,6 +40,9 @@ function ClustersList() {
   const [projectClusterIds, setProjectClusterIds] = useState<Set<string>>(new Set());
   const [newClusterName, setNewClusterName] = useState("");
   const [creatingCluster, setCreatingCluster] = useState(false);
+  const [renamingCluster, setRenamingCluster] = useState<Cluster | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
 
   async function loadData() {
     setLoading(true);
@@ -63,7 +67,7 @@ function ClustersList() {
       setProjectClusterIds(new Set(projectRows.map((project) => project.primary_cluster_id)));
       setMessage(null);
     } catch {
-      setMessage("Vault could not load your clusters. Check Settings → Health, then try again.");
+      setMessage("Vault could not load your clusters. Check Settings / Health, then try again.");
     } finally {
       setLoading(false);
     }
@@ -112,20 +116,49 @@ function ClustersList() {
       return;
     }
     setCreatingCluster(true);
-    await createCluster({
-      vault_id: vault.id,
-      name,
-      description: "",
-      color: nextTint(backendClusters.length),
-    });
-    setNewClusterName("");
-    await loadData().finally(() => setCreatingCluster(false));
+    try {
+      await createCluster({
+        vault_id: vault.id,
+        name,
+        description: "",
+        color: nextTint(backendClusters.length),
+      });
+      setNewClusterName("");
+      await loadData();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not create this cluster.");
+    } finally {
+      setCreatingCluster(false);
+    }
   }
 
   async function acceptSuggestion(suggestion: ClusterSuggestionRecord) {
-    await updateSource(suggestion.source_id, { cluster_id: suggestion.suggested_cluster_id });
-    setMessage(`Moved "${suggestion.source_title}" to ${suggestion.suggested_cluster_name}.`);
-    await loadData();
+    try {
+      await updateSource(suggestion.source_id, { cluster_id: suggestion.suggested_cluster_id });
+      setMessage(`Moved "${suggestion.source_title}" to ${suggestion.suggested_cluster_name}.`);
+      await loadData();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not move this source.");
+    }
+  }
+
+  async function saveRename() {
+    if (!renamingCluster || !renameDraft.trim()) return;
+    setRenameBusy(true);
+    try {
+      const updated = clusterFromRecord(
+        await updateCluster(renamingCluster.id, { name: renameDraft.trim() }),
+      );
+      setBackendClusters((current) =>
+        current.map((cluster) => (cluster.id === updated.id ? updated : cluster)),
+      );
+      setRenamingCluster(null);
+      setMessage(`Renamed cluster to "${updated.name}".`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not rename this cluster.");
+    } finally {
+      setRenameBusy(false);
+    }
   }
 
   function dismissSuggestion(suggestion: ClusterSuggestionRecord) {
@@ -205,12 +238,15 @@ function ClustersList() {
                   {clusters.map((cluster) => {
                     const count = sourceCounts.get(cluster.id) ?? 0;
                     return (
-                      <Link
+                      <div
                         key={cluster.id}
-                        to="/clusters/$clusterId"
-                        params={{ clusterId: cluster.id }}
                         className="grid w-full grid-cols-[minmax(0,1fr)_64px_48px] items-center border-b border-border px-2 py-4 text-left transition-colors hover:bg-card/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_64px_112px_48px] xl:grid-cols-[minmax(0,1fr)_64px_64px_112px_48px]"
                       >
+                        <Link
+                          to="/clusters/$clusterId"
+                          params={{ clusterId: cluster.id }}
+                          className="contents"
+                        >
                         <div className="flex min-w-0 items-center gap-4">
                           <ClusterDocument tint={cluster.tint} />
                           <div className="min-w-0">
@@ -232,8 +268,21 @@ function ClustersList() {
                           {(indexedCounts.get(cluster.id) ?? 0).toLocaleString()}
                         </span>
                         <span className="hidden break-words text-sm text-muted-foreground md:block">{clusterLastActivity(cluster, sources)}</span>
-                        <span className="justify-self-end text-xs text-muted-foreground">Open</span>
-                      </Link>
+                        </Link>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="justify-self-end"
+                          aria-label={`Rename ${cluster.name}`}
+                          title="Rename cluster"
+                          onClick={() => {
+                            setRenamingCluster(cluster);
+                            setRenameDraft(cluster.name);
+                          }}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                      </div>
                     );
                   })}
                   {clusters.length === 0 && (
@@ -295,6 +344,38 @@ function ClustersList() {
           <button type="button" className="font-medium underline underline-offset-2" onClick={undoDismissSuggestion}>
             Undo
           </button>
+        </div>
+      ) : null}
+      {renamingCluster ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rename-cluster-title"
+            className="w-full max-w-sm rounded-md border border-border bg-card p-5 shadow-xl"
+          >
+            <h2 id="rename-cluster-title" className="text-lg font-semibold">
+              Rename cluster
+            </h2>
+            <Input
+              autoFocus
+              className="mt-4"
+              value={renameDraft}
+              onChange={(event) => setRenameDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") setRenamingCluster(null);
+                if (event.key === "Enter") void saveRename();
+              }}
+            />
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setRenamingCluster(null)}>
+                Cancel
+              </Button>
+              <Button disabled={renameBusy || !renameDraft.trim()} onClick={() => void saveRename()}>
+                {renameBusy ? "Saving" : "Save"}
+              </Button>
+            </div>
+          </div>
         </div>
       ) : null}
     </div>

@@ -16,6 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useVisiblePolling } from "@/lib/useVisiblePolling";
 import {
   cancelProjectRun,
   createChatSession,
@@ -77,18 +78,20 @@ function ProjectWorkspace() {
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(async () => {
-      if (!project?.active_run_id) return;
-      try {
-        const run = await getProjectRun(projectId, project.active_run_id);
-        setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
-        if (!["queued", "running"].includes(run.status)) await load();
-      } catch {
-        // A later aggregate refresh will reconcile transient backend restarts.
-      }
-    }, 1500);
-    return () => window.clearInterval(timer);
+  }, [load]);
+
+  const refreshActiveRun = useCallback(async () => {
+    if (!project?.active_run_id) return;
+    try {
+      const run = await getProjectRun(projectId, project.active_run_id);
+      setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
+      if (!["queued", "running"].includes(run.status)) await load();
+    } catch {
+      // A later aggregate refresh will reconcile transient backend restarts.
+    }
   }, [load, project?.active_run_id, projectId]);
+
+  useVisiblePolling(refreshActiveRun, 1500, Boolean(project?.active_run_id));
 
   const activeRun = project?.active_run_id
     ? (runs.find((run) => run.id === project.active_run_id) ?? null)

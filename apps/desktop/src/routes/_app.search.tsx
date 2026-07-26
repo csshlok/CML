@@ -28,6 +28,7 @@ import {
   type SourceType,
 } from "@/lib/domain";
 import {
+  countSources,
   getSource,
   listClusters,
   listSources,
@@ -58,6 +59,7 @@ function SearchView() {
   const [selectedSource, setSelectedSource] = useState<Source | null>(null);
   const [semanticRanks, setSemanticRanks] = useState<Map<string, number>>(new Map());
   const [page, setPage] = useState(1);
+  const [sourceTotal, setSourceTotal] = useState(0);
 
   async function loadVaultData() {
     try {
@@ -65,12 +67,8 @@ function SearchView() {
       const activeVault = vaults[0] ?? null;
       if (!activeVault) return;
       setBackendVault(activeVault);
-      const [clusterRows, sourceRows] = await Promise.all([
-        listClusters(activeVault.id),
-        listSources(activeVault.id, { limit: 100 }),
-      ]);
+      const clusterRows = await listClusters(activeVault.id);
       setBackendClusters(clusterRows.map(clusterFromRecord));
-      setBackendSources(sourceRows.map(sourceFromRecord));
       setBackendReady(true);
     } catch {
       setBackendReady(false);
@@ -83,8 +81,36 @@ function SearchView() {
   }, []);
 
   useEffect(() => {
-    if (query.length === 0) void loadVaultData();
-  }, [query]);
+    if (!vault || !backendReady || query.trim().length >= 3) return;
+    let cancelled = false;
+    const timeout = window.setTimeout(async () => {
+      const options = {
+        limit: PAGE_SIZE,
+        offset: (page - 1) * PAGE_SIZE,
+        query: query.trim() || undefined,
+        unclustered: filter === "unclustered",
+        sourceTypes:
+          filter !== "all" && filter !== "unclustered" ? [filter] : undefined,
+        order: sortMode,
+      } as const;
+      try {
+        const [rows, count] = await Promise.all([
+          listSources(vault.id, options),
+          countSources(vault.id, undefined, options),
+        ]);
+        if (cancelled) return;
+        setBackendSources(rows.map(sourceFromRecord));
+        setSourceTotal(count.total);
+        setSemanticRanks(new Map());
+      } catch {
+        if (!cancelled) setBackendReady(false);
+      }
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [backendReady, filter, page, query, sortMode, vault]);
 
   useEffect(() => {
     if (!vault || !backendReady || query.trim().length < 3) {
@@ -117,6 +143,7 @@ function SearchView() {
             .filter((item): item is NonNullable<typeof item> => item !== null)
             .map(sourceFromRecord),
         );
+        setSourceTotal(resultSources.filter((item) => item !== null).length);
         setSemanticRanks(ranks);
       } catch {
         if (!cancelled) setSemanticRanks(new Map());
@@ -132,6 +159,7 @@ function SearchView() {
   const sources = !mounted ? [] : backendReady ? backendSources : [];
   const clusters = !mounted ? [] : backendReady ? backendClusters : [];
   const deferredQuery = useDeferredValue(query);
+  const semanticQueryActive = deferredQuery.trim().length >= 3;
   const clusterById = useMemo(() => new Map(clusters.map((cluster) => [cluster.id, cluster])), [clusters]);
 
   const visibleSources = useMemo(() => {
@@ -158,10 +186,13 @@ function SearchView() {
       });
   }, [backendReady, deferredQuery, filter, semanticRanks, sortMode, sources]);
 
-  const totalPages = Math.max(1, Math.ceil(visibleSources.length / PAGE_SIZE));
+  const totalResults = semanticQueryActive ? visibleSources.length : sourceTotal;
+  const totalPages = Math.max(1, Math.ceil(totalResults / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
   const pageStart = (currentPage - 1) * PAGE_SIZE;
-  const pageSources = visibleSources.slice(pageStart, pageStart + PAGE_SIZE);
+  const pageSources = semanticQueryActive
+    ? visibleSources.slice(pageStart, pageStart + PAGE_SIZE)
+    : visibleSources;
 
   return (
     <div className="relative h-full overflow-y-auto bg-background">
@@ -240,9 +271,9 @@ function SearchView() {
           )}
           <div className="mb-4 flex flex-col gap-2 text-sm sm:flex-row sm:items-center sm:justify-between">
             <div className="text-muted-foreground">
-              {visibleSources.length === 0
-                ? `0 shown from ${sources.length} sources`
-                : `${pageStart + 1}-${Math.min(pageStart + PAGE_SIZE, visibleSources.length)} of ${visibleSources.length} shown from ${sources.length} sources`}
+              {pageSources.length === 0
+                ? `0 of ${totalResults} sources`
+                : `${pageStart + 1}-${Math.min(pageStart + pageSources.length, totalResults)} of ${totalResults} sources`}
             </div>
             <Button variant="ghost" size="sm" className="gap-2" onClick={() => {
               setSortMode(sortMode === "newest" ? "oldest" : "newest");
@@ -267,7 +298,7 @@ function SearchView() {
             })}
           </div>
 
-          {visibleSources.length > PAGE_SIZE && (
+          {totalResults > PAGE_SIZE && (
             <nav className="mt-5 flex items-center justify-between border-t border-border pt-4" aria-label="Search results pages">
               <Button variant="outline" size="sm" disabled={currentPage === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
                 Previous

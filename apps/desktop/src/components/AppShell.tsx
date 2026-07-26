@@ -15,6 +15,8 @@ import {
   UserRound,
   Menu,
   X,
+  ArrowLeft,
+  ArrowRight,
 } from "lucide-react";
 import { CommandPalette, useCommandPalette } from "@/components/CommandPalette";
 import { BrandLogo } from "@/components/BrandLogo";
@@ -36,6 +38,8 @@ import { AppStatusAnnouncer, LockedState, StatusLabel } from "@/components/produ
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
 import { normalizeTint } from "@/lib/recordAdapters";
 import { displayPath } from "@/lib/displayPath";
+import { Button } from "@/components/ui/button";
+import { flushSync } from "react-dom";
 
 type NavItem = {
   to:
@@ -82,7 +86,27 @@ export function AppShell() {
   const [savedChats, setSavedChats] = useState<ChatSessionRecord[]>([]);
   const [unlockStatus, setUnlockStatus] = useState<UnlockStatusRead | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [tour, setTour] = useState<DesktopSetupState["tour"] | null>(null);
   const contentRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadTour() {
+      const state = await window.cmlDesktop?.getSetupState?.();
+      if (!cancelled && state?.phase === "complete") setTour(state.tour);
+    }
+    void loadTour();
+    const restart = () => {
+      const next = { status: "pending", step: 0, version: 1 } as const;
+      setTour(next);
+      void window.cmlDesktop?.updateSetupState?.({ tour: next });
+    };
+    window.addEventListener("vault:start-tour", restart);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("vault:start-tour", restart);
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -121,17 +145,17 @@ export function AppShell() {
   }, []);
   const refreshLibrary = useCallback(async () => {
     try {
-      const activeVault = (await listVaults())[0] ?? null;
-      setVault(activeVault);
-      if (!activeVault) {
-        setRecentClusters([]);
-        setSavedChats([]);
-        setUnlockStatus(null);
-        return;
-      }
       const currentUnlock = await getUnlockStatus();
       setUnlockStatus(currentUnlock);
       if (currentUnlock.secured_vault_count > 0 && !currentUnlock.ready) {
+        setVault(null);
+        setRecentClusters([]);
+        setSavedChats([]);
+        return;
+      }
+      const activeVault = (await listVaults())[0] ?? null;
+      setVault(activeVault);
+      if (!activeVault) {
         setRecentClusters([]);
         setSavedChats([]);
         return;
@@ -154,7 +178,16 @@ export function AppShell() {
   useEffect(() => {
     const onLockState = (event: Event) => {
       const detail = (event as CustomEvent<UnlockStatusRead>).detail;
-      if (detail) setUnlockStatus(detail);
+      if (detail && !detail.ready) {
+        flushSync(() => {
+          setUnlockStatus(detail);
+          setVault(null);
+          setRecentClusters([]);
+          setSavedChats([]);
+        });
+      } else if (detail) {
+        setUnlockStatus(detail);
+      }
       void refreshLibrary();
     };
     window.addEventListener("vault:lock-state", onLockState);
@@ -215,6 +248,7 @@ export function AppShell() {
           key={item.to}
           to={item.to}
           data-vault-nav
+          data-tour-id={`nav-${item.label.toLowerCase()}`}
           data-active={active}
           className="vault-nav-item flex items-center gap-3 px-2.5 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
         >
@@ -257,6 +291,7 @@ export function AppShell() {
               onClick={() => navigate({ to: "/settings", search: { section: "storage" } })}
               className="flex min-h-9 w-full items-start gap-2 rounded-md px-1 py-1.5 text-left text-[12px] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] hover:text-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label={vaultPath ? "Change library location" : "Choose a library"}
+              data-tour-id="library-location"
             >
               <FolderOpen className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
               <span className="min-w-0 flex-1 break-all">{displayPath(vaultPath) || "Choose library"}</span>
@@ -268,6 +303,7 @@ export function AppShell() {
               type="button"
               onClick={() => setOpen(true)}
               className="mt-4 flex h-8 w-full items-center gap-2 rounded-md border border-[var(--border-input)] bg-[var(--bg-input)] px-3 text-left text-[13px] text-[var(--text-placeholder)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-body)]"
+              data-tour-id="search"
             >
               <Search className="h-3.5 w-3.5" strokeWidth={1.5} />
               <span className="min-w-0 flex-1">Search</span>
@@ -386,6 +422,175 @@ export function AppShell() {
               : null
         }
       />
+      {tour?.status === "pending" && !securityLockActive ? (
+        <FirstUseTour
+          step={tour.step}
+          onStep={async (step) => {
+            const next = { status: "pending", step, version: 1 } as const;
+            setTour(next);
+            await window.cmlDesktop?.updateSetupState?.({ tour: next });
+          }}
+          onFinish={async (status) => {
+            const next = { status, step: tourSteps.length - 1, version: 1 } as const;
+            setTour(next);
+            await window.cmlDesktop?.updateSetupState?.({ tour: next });
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+const tourSteps = [
+  {
+    title: "A quick look around",
+    body: "Vault keeps your sources, chats, and connections together. This short tour points out the five places you will use most.",
+    target: null,
+  },
+  {
+    title: "Find anything",
+    body: "Open Search from here, or press Ctrl/Command + K. Search looks across your local library.",
+    target: "search",
+  },
+  {
+    title: "Add your material",
+    body: "Sources is where you add documents, folders, links, and pasted notes. Vault indexes them locally.",
+    target: "nav-sources",
+  },
+  {
+    title: "Ask your library",
+    body: "Chat answers from your selected sources and keeps citations beside each answer.",
+    target: "nav-chat",
+  },
+  {
+    title: "Keep ideas organized",
+    body: "Clusters group related sources. Vault suggests groups, but you stay in control of every move.",
+    target: "nav-clusters",
+  },
+  {
+    title: "You are ready",
+    body: "Settings holds models, storage, privacy, and health checks. You can restart this tour there at any time.",
+    target: "nav-settings",
+  },
+] as const;
+
+function FirstUseTour({
+  step,
+  onStep,
+  onFinish,
+}: {
+  step: number;
+  onStep: (step: number) => Promise<void>;
+  onFinish: (status: "completed" | "skipped") => Promise<void>;
+}) {
+  const safeStep = Math.max(0, Math.min(tourSteps.length - 1, step));
+  const item = tourSteps[safeStep];
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const [targetRect, setTargetRect] = useState<DOMRect | null>(null);
+
+  useEffect(() => {
+    const target = item.target
+      ? document.querySelector<HTMLElement>(`[data-tour-id="${item.target}"]`)
+      : null;
+    target?.scrollIntoView({ block: "nearest" });
+    const update = () => setTargetRect(target?.getBoundingClientRect() ?? null);
+    update();
+    window.addEventListener("resize", update);
+    const observer = target ? new ResizeObserver(update) : null;
+    if (target) observer?.observe(target);
+    const frame = window.requestAnimationFrame(() => dialogRef.current?.focus());
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", update);
+      observer?.disconnect();
+    };
+  }, [item.target]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") void onFinish("skipped");
+      if (event.key === "ArrowRight" && safeStep < tourSteps.length - 1) {
+        event.preventDefault();
+        void onStep(safeStep + 1);
+      }
+      if (event.key === "ArrowLeft" && safeStep > 0) {
+        event.preventDefault();
+        void onStep(safeStep - 1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onFinish, onStep, safeStep]);
+
+  const viewportWidth = typeof window === "undefined" ? 1280 : window.innerWidth;
+  const viewportHeight = typeof window === "undefined" ? 800 : window.innerHeight;
+  const dialogStyle =
+    targetRect && item.target
+      ? {
+          left: Math.min(viewportWidth - 344, Math.max(16, targetRect.right + 16)),
+          top: Math.min(viewportHeight - 260, Math.max(16, targetRect.top - 8)),
+        }
+      : undefined;
+
+  return (
+    <div className="fixed inset-0 z-[80]" role="presentation">
+      <div className="absolute inset-0 bg-black/35" />
+      {targetRect ? (
+        <div
+          className="pointer-events-none fixed rounded-md border-2 border-white bg-white/10 shadow-[0_0_0_4px_rgba(255,255,255,0.2)]"
+          style={{
+            left: targetRect.left - 4,
+            top: targetRect.top - 4,
+            width: targetRect.width + 8,
+            height: targetRect.height + 8,
+          }}
+        />
+      ) : null}
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="vault-tour-title"
+        tabIndex={-1}
+        className={
+          dialogStyle
+            ? "fixed w-[328px] rounded-md border border-border bg-card p-5 shadow-xl outline-none"
+            : "fixed left-1/2 top-1/2 w-[min(390px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-md border border-border bg-card p-6 shadow-xl outline-none"
+        }
+        style={dialogStyle}
+      >
+        <div className="text-xs text-muted-foreground">
+          {safeStep + 1} of {tourSteps.length}
+        </div>
+        <h2 id="vault-tour-title" className="mt-2 text-xl font-semibold">
+          {item.title}
+        </h2>
+        <p className="mt-3 text-sm leading-6 text-muted-foreground">{item.body}</p>
+        <div className="mt-6 flex items-center justify-between gap-3">
+          <Button variant="ghost" size="sm" onClick={() => void onFinish("skipped")}>
+            Skip tour
+          </Button>
+          <div className="flex gap-2">
+            {safeStep > 0 ? (
+              <Button variant="outline" size="sm" onClick={() => void onStep(safeStep - 1)}>
+                <ArrowLeft className="h-4 w-4" />
+                Back
+              </Button>
+            ) : null}
+            <Button
+              size="sm"
+              onClick={() =>
+                void (safeStep === tourSteps.length - 1
+                  ? onFinish("completed")
+                  : onStep(safeStep + 1))
+              }
+            >
+              {safeStep === tourSteps.length - 1 ? "Done" : "Next"}
+              {safeStep < tourSteps.length - 1 ? <ArrowRight className="h-4 w-4" /> : null}
+            </Button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

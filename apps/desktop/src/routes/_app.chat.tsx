@@ -188,6 +188,11 @@ function ChatIndex() {
           <Plus className="h-4 w-4" /> New chat
         </Button>
         <div className="max-h-56 space-y-1 overflow-y-auto lg:max-h-none">
+          {visibleChats.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm leading-5 text-muted-foreground">
+              No conversations yet. Write your first question to start one.
+            </div>
+          ) : null}
           {visibleChats.map((c) => (
             <div key={c.id} className="group flex items-center gap-1 rounded-md hover:bg-accent/60">
               <Link

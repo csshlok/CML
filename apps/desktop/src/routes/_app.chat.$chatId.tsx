@@ -27,6 +27,7 @@ import {
 } from "@/lib/chat-presentation";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 import { displayPath } from "@/lib/displayPath";
+import { useVisiblePolling } from "@/lib/useVisiblePolling";
 import { Button } from "@/components/ui/button";
 import { ConfirmAction } from "@/components/product/Feedback";
 import { notify } from "@/components/product/Notifications";
@@ -93,7 +94,11 @@ function ChatView() {
   const [runtime, setRuntime] = useState<ModelRuntimeStatus | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [lastUserPrompt, setLastUserPrompt] = useState<string | null>(null);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
+  const messageViewportRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
+  const titleCommitRef = useRef(0);
   const consumedPendingPromptRef = useRef<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -109,14 +114,6 @@ function ChatView() {
       const activeVault = vaults[0] ?? null;
       setVaultRecord(activeVault);
       if (!activeVault) return;
-      const [clusterRows, sourceRows, chatRows] = await Promise.all([
-        listClusters(activeVault.id),
-        listSources(activeVault.id),
-        listChatSessions(activeVault.id),
-      ]);
-      setBackendClusters(clusterRows.map(clusterFromRecord));
-      setBackendSources(sourceRows.map(sourceFromRecord));
-      setBackendChats(chatRows);
       try {
         const session = await getChatSession(chatId);
         const timeline = await getChatTimeline(chatId).catch(() => null);
@@ -124,23 +121,50 @@ function ChatView() {
         setBackendSessionId(session.id);
         setBackendMessages(timeline ? timeline.items.map(messageFromTimelineItem) : session.messages.map(messageFromRecord));
         setMemoryState(session.memory_status ?? "idle");
-      } catch {
-        setBackendSession(null);
-        setBackendMessages([]);
-        setMemoryState("idle");
+      } catch (error) {
+        setLastError(error instanceof Error ? error.message : "This chat could not be loaded.");
+        return;
       }
       setBackendReady(true);
-      void getModelRuntimeStatus().then(setRuntime).catch(() => setRuntime(null));
-    } catch {
+      const optional = await Promise.allSettled([
+        listClusters(activeVault.id, { limit: 500 }),
+        listSources(activeVault.id, { limit: 20, order: "newest" }),
+        listChatSessions(activeVault.id, { limit: 50 }),
+        getModelRuntimeStatus(),
+      ]);
+      if (optional[0].status === "fulfilled") {
+        setBackendClusters(optional[0].value.map(clusterFromRecord));
+      }
+      if (optional[1].status === "fulfilled") {
+        setBackendSources(optional[1].value.map(sourceFromRecord));
+      }
+      if (optional[2].status === "fulfilled") setBackendChats(optional[2].value);
+      if (optional[3].status === "fulfilled") setRuntime(optional[3].value);
+      if (optional.some((result) => result.status === "rejected")) {
+        notify({
+          title: "Some chat details are still loading",
+          description: "The conversation is available, but an optional sidebar or source label could not refresh.",
+          tone: "info",
+        });
+      }
+    } catch (error) {
       setBackendReady(false);
+      setLastError(error instanceof Error ? error.message : "Vault could not load this chat.");
     } finally {
       setLoadingSession(false);
     }
   }
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [backendMessages.length, streamText]);
+    if (!autoScrollRef.current) return;
+    endRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" });
+  }, [backendMessages.length, streamText, streaming]);
+
+  useEffect(() => {
+    if (!attachmentNotice) return;
+    const timeout = window.setTimeout(() => setAttachmentNotice(null), 5500);
+    return () => window.clearTimeout(timeout);
+  }, [attachmentNotice]);
 
   useEffect(() => {
     if (!lastError) return;
@@ -154,28 +178,37 @@ function ChatView() {
     };
   }, [chatId]);
 
-  useEffect(() => {
-    if (!backendReady) return;
-    let cancelled = false;
-    async function refreshRuntime() {
+  useVisiblePolling(
+    async () => {
       try {
-        const status = await getModelRuntimeStatus();
-        if (!cancelled) setRuntime(status);
+        setRuntime(await getModelRuntimeStatus());
       } catch {
-        if (!cancelled) setRuntime(null);
+        setRuntime(null);
       }
-    }
-    void refreshRuntime();
-    const id = window.setInterval(refreshRuntime, 15000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [backendReady]);
+    },
+    15_000,
+    backendReady,
+  );
 
   useEffect(() => {
     setTitleDraft(backendSession?.title ?? "New chat");
   }, [backendSession?.title]);
+
+  useEffect(() => {
+    const onSaveShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
+      if (!backendSession) return;
+      event.preventDefault();
+      void updateChatSession(backendSession.id, { saved: true })
+        .then((updated) => {
+          setBackendSession(updated);
+          window.dispatchEvent(new Event("vault:chats-changed"));
+        })
+        .catch(() => setLastError("Could not save this chat."));
+    };
+    window.addEventListener("keydown", onSaveShortcut);
+    return () => window.removeEventListener("keydown", onSaveShortcut);
+  }, [backendSession]);
 
   useEffect(() => {
     if (loadingSession || streaming || consumedPendingPromptRef.current === chatId) return;
@@ -197,10 +230,17 @@ function ChatView() {
   if (!backendSession) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
-        <p>Chat not found in the active vault.</p>
-        <Button variant="outline" onClick={() => navigate({ to: "/chat" })}>
-          Back to chats
-        </Button>
+        <p>{lastError ?? "Chat not found in the active vault."}</p>
+        <div className="flex gap-2">
+          {lastError ? (
+            <Button variant="outline" onClick={() => void loadBackendContext()}>
+              Retry
+            </Button>
+          ) : null}
+          <Button variant="outline" onClick={() => navigate({ to: "/chat" })}>
+            Back to chats
+          </Button>
+        </div>
       </div>
     );
   }
@@ -278,11 +318,12 @@ function ChatView() {
   const commitTitle = async () => {
     const nextTitle = titleDraft.trim();
     if (!backendSession || !nextTitle || nextTitle === backendSession.title) return;
+    const commitId = ++titleCommitRef.current;
     try {
       const updated = await updateChatSession(backendSession.id, { title: nextTitle });
-      setBackendSession(updated);
+      if (commitId === titleCommitRef.current) setBackendSession(updated);
     } catch {
-      setTitleDraft(backendSession.title);
+      if (commitId === titleCommitRef.current) setTitleDraft(backendSession.title);
     }
   };
 
@@ -301,6 +342,8 @@ function ChatView() {
     const selectedAttachments = attachmentOverride ?? (promptOverride ? [] : attachments);
     const prompt = (promptOverride ?? input).trim() || (selectedAttachments.length > 0 ? "Read and store these attachments." : "");
     if ((!prompt && selectedAttachments.length === 0) || streaming) return;
+    autoScrollRef.current = true;
+    setShowJumpToLatest(false);
     setLastUserPrompt(prompt);
     const attachmentNote =
       selectedAttachments.length > 0
@@ -446,14 +489,6 @@ function ChatView() {
             const timeline = await getChatTimeline(refreshed.id).catch(() => null);
             setBackendMessages(timeline ? timeline.items.map(messageFromTimelineItem) : refreshed.messages.map(messageFromRecord));
             setMemoryState(refreshed.memory_status ?? response.memory_status ?? "indexed");
-            const [clusterRows, sourceRows, chatRows] = await Promise.all([
-              listClusters(vault.id),
-              listSources(vault.id),
-              listChatSessions(vault.id),
-            ]);
-            setBackendClusters(clusterRows.map(clusterFromRecord));
-            setBackendSources(sourceRows.map(sourceFromRecord));
-            setBackendChats(chatRows);
             window.dispatchEvent(new Event("vault:chats-changed"));
             const storedAttachments = streamedDone.attachments_stored ?? streamedMeta.attachments_stored ?? [];
             if (storedAttachments.length > 0) {
@@ -461,9 +496,7 @@ function ChatView() {
                 `Stored ${storedAttachments.map((item) => item.title).join(", ")} in ${scope?.name ?? "the vault"}.`,
               );
             } else if (selectedAttachments.length > 0) {
-              setAttachmentNotice(
-                `Stored ${selectedAttachments.length} attachment${selectedAttachments.length === 1 ? "" : "s"} in ${scope?.name ?? "the vault"}.`,
-              );
+              setAttachmentNotice("Vault did not confirm that the attachment was stored. Review Sources before removing the original file.");
             }
           } catch {
             // Optimistic messages above remain usable until the next refresh.
@@ -471,7 +504,21 @@ function ChatView() {
         }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
-          setStreamStatus("Stopped before saving this answer.");
+          setStreamStatus("Stopped. Saving the partial answer...");
+          try {
+            const refreshed = await getChatSession(backendSession.id);
+            const timeline = await getChatTimeline(refreshed.id).catch(() => null);
+            setBackendSession(refreshed);
+            setBackendMessages(
+              timeline
+                ? timeline.items.map(messageFromTimelineItem)
+                : refreshed.messages.map(messageFromRecord),
+            );
+            setMemoryState(refreshed.memory_status ?? "indexed");
+            setStreamStatus("Stopped. Partial answer saved.");
+          } catch {
+            setStreamStatus("Stopped. Vault will recover the partial answer on refresh.");
+          }
           return;
         }
         setMemoryState("issue");
@@ -540,26 +587,48 @@ function ChatView() {
   };
 
   const retryLastUserMessage = () => {
-    const lastUser = [...messages].reverse().find((message) => message.role === "user");
-    if (lastUser) void send(lastUser.content);
+    const lastRetryable = [...messages].reverse().find(
+      (message) => message.role === "retriable" || message.role === "user",
+    );
+    if (lastRetryable) void send(lastRetryable.prompt ?? lastRetryable.content);
   };
 
   const setBackendMessageUseful = async (messageId: string, value: boolean) => {
-    const updated = await updateChatMessage(messageId, { useful: value });
-    setBackendSession(updated);
-    setBackendMessages(updated.messages.map(messageFromRecord));
+    try {
+      const updated = await updateChatMessage(messageId, { useful: value });
+      setBackendSession(updated);
+      setBackendMessages(updated.messages.map(messageFromRecord));
+    } catch (error) {
+      setLastError(error instanceof Error ? error.message : "Could not save this feedback.");
+    }
   };
 
   const toggleBackendMessageSaved = async (messageId: string, current: boolean) => {
     if (!backendSession) return;
-    const updated = await updateChatMessage(messageId, { saved: !current });
-    setBackendSession(updated);
-    setBackendMessages(updated.messages.map(messageFromRecord));
-    window.dispatchEvent(new Event("vault:chats-changed"));
+    try {
+      const updated = await updateChatMessage(messageId, { saved: !current });
+      setBackendSession(updated);
+      setBackendMessages(updated.messages.map(messageFromRecord));
+      window.dispatchEvent(new Event("vault:chats-changed"));
+    } catch (error) {
+      setLastError(error instanceof Error ? error.message : "Could not update this message.");
+    }
   };
 
   const regenerateFromMessage = (messageId: string) => {
     const index = messages.findIndex((message) => message.id === messageId);
+    const target = messages[index];
+    if (target?.prompt) {
+      void send(target.prompt);
+      return;
+    }
+    if (target?.replyToMessageId) {
+      const linkedUser = messages.find((message) => message.id === target.replyToMessageId);
+      if (linkedUser?.role === "user") {
+        void send(linkedUser.content);
+        return;
+      }
+    }
     const priorUser = messages
       .slice(0, Math.max(0, index))
       .reverse()
@@ -640,7 +709,7 @@ function ChatView() {
                 Retry
               </Button>
             )}
-            {lastUserPrompt && !streaming && (
+            {lastUserPrompt && activeSources.length > 0 && !streaming && (
               <Popover>
                 <PopoverTrigger asChild>
                   <Button variant="ghost" size="sm" className="gap-1" aria-label="More analysis options">
@@ -705,7 +774,17 @@ function ChatView() {
         </header>
 
         <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px]">
-          <div className="min-w-0 flex-1 overflow-y-auto">
+          <div
+            ref={messageViewportRef}
+            className="relative min-w-0 flex-1 overflow-y-auto"
+            onScroll={(event) => {
+              const viewport = event.currentTarget;
+              const nearBottom =
+                viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 120;
+              autoScrollRef.current = nearBottom;
+              setShowJumpToLatest(!nearBottom);
+            }}
+          >
             <div className="mx-auto max-w-3xl px-6 py-8">
               {messages.length === 0 && !streaming && (
                 <div className="text-muted-foreground">
@@ -721,7 +800,7 @@ function ChatView() {
                         key={prompt}
                         type="button"
                         className="block w-full px-4 py-3 text-left text-sm leading-6 text-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-                        onClick={() => setInput(prompt)}
+                        onClick={() => void send(prompt)}
                       >
                         {prompt}
                       </button>
@@ -765,6 +844,21 @@ function ChatView() {
               </div>
               <div ref={endRef} />
             </div>
+            {showJumpToLatest ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="sticky bottom-4 left-1/2 z-10 -translate-x-1/2 shadow-md"
+                onClick={() => {
+                  autoScrollRef.current = true;
+                  setShowJumpToLatest(false);
+                  endRef.current?.scrollIntoView({ behavior: "smooth" });
+                }}
+              >
+                Jump to latest
+              </Button>
+            ) : null}
           </div>
         </div>
 
@@ -927,6 +1021,9 @@ function messageFromRecord(record: ChatMessageRecord): ChatMessage {
     useful: record.useful,
     saved: record.saved,
     warnings: record.warnings,
+    generationId: record.generation_id,
+    replyToMessageId: record.reply_to_message_id,
+    generationState: record.generation_state,
   };
 }
 

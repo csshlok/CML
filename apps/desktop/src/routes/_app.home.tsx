@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowRight,
   Clapperboard,
@@ -26,14 +26,16 @@ import {
 import type { Cluster, Source } from "@/lib/domain";
 import {
   createChatSession,
-  listChatSessions,
+  listActivity,
   listClusters,
   listSources,
+  sourceCountsByCluster,
   listVaults,
-  type ChatSessionRecord,
+  type ActivityRecord,
   type VaultRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
+import { useVisiblePolling } from "@/lib/useVisiblePolling";
 
 export const Route = createFileRoute("/_app/home")({
   head: () => ({ meta: [{ title: "Home" }] }),
@@ -44,48 +46,63 @@ function HomeView() {
   const navigate = useNavigate();
   const [vault, setVault] = useState<VaultRecord | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
+  const [unsortedSources, setUnsortedSources] = useState<Source[]>([]);
   const [clusters, setClusters] = useState<Cluster[]>([]);
-  const [chats, setChats] = useState<ChatSessionRecord[]>([]);
+  const [activityItems, setActivityItems] = useState<ActivityRecord[]>([]);
+  const [clusterCounts, setClusterCounts] = useState<
+    Map<string, { total: number; indexed: number }>
+  >(new Map());
   const [loadError, setLoadError] = useState(false);
   const [query, setQuery] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      try {
-        setLoadError(false);
-        const vaultRows = await listVaults();
-        const activeVault = vaultRows[0] ?? null;
-        if (cancelled) return;
-        if (!activeVault) return;
-        const [sourceRows, clusterRows, chatRows] = await Promise.all([
-          listSources(activeVault.id),
-          listClusters(activeVault.id),
-          listChatSessions(activeVault.id),
-        ]);
-        if (cancelled) return;
-        setVault(activeVault);
-        setSources(sourceRows.map(sourceFromRecord));
-        setClusters(clusterRows.map(clusterFromRecord));
-        setChats(chatRows);
-      } catch {
-        if (!cancelled) {
-          setSources([]);
-          setClusters([]);
-          setChats([]);
-          setLoadError(true);
-        }
+  const load = useCallback(async () => {
+    try {
+      const activeVault = (await listVaults())[0] ?? null;
+      setVault(activeVault);
+      if (!activeVault) return;
+      const results = await Promise.allSettled([
+        listSources(activeVault.id, { limit: 5, order: "newest" }),
+        listSources(activeVault.id, {
+          limit: 4,
+          order: "newest",
+          unclustered: true,
+        }),
+        listClusters(activeVault.id, { limit: 4 }),
+        sourceCountsByCluster(activeVault.id),
+        listActivity(activeVault.id, { limit: 5 }),
+      ]);
+      const [recentResult, unsortedResult, clusterResult, countResult, activityResult] =
+        results;
+      if (recentResult.status === "fulfilled") {
+        setSources(recentResult.value.map(sourceFromRecord));
       }
+      if (unsortedResult.status === "fulfilled") {
+        setUnsortedSources(unsortedResult.value.map(sourceFromRecord));
+      }
+      if (clusterResult.status === "fulfilled") {
+        setClusters(clusterResult.value.map(clusterFromRecord));
+      }
+      if (countResult.status === "fulfilled") {
+        const next = new Map<string, { total: number; indexed: number }>();
+        for (const item of countResult.value.items) {
+          if (!item.cluster_id) continue;
+          const current = next.get(item.cluster_id) ?? { total: 0, indexed: 0 };
+          current.total += item.total;
+          if (item.state === "indexed") current.indexed += item.total;
+          next.set(item.cluster_id, current);
+        }
+        setClusterCounts(next);
+      }
+      if (activityResult.status === "fulfilled") {
+        setActivityItems(activityResult.value.items);
+      }
+      setLoadError(results.some((result) => result.status === "rejected"));
+    } catch {
+      setLoadError(true);
     }
-
-    void load();
-    const id = window.setInterval(load, 30000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
   }, []);
+
+  useVisiblePolling(load, 30_000, true);
 
   const recentSources = useMemo(
     () =>
@@ -95,40 +112,7 @@ function HomeView() {
     [sources],
   );
 
-  const unsorted = sources
-    .filter((source) => !source.clusterId && source.state !== "indexed")
-    .slice(0, 4);
-  const clusterMetrics = useMemo(() => {
-    const metrics = new Map<string, { total: number; indexed: number }>();
-    for (const source of sources) {
-      if (!source.clusterId) continue;
-      const current = metrics.get(source.clusterId) ?? { total: 0, indexed: 0 };
-      current.total += 1;
-      if (source.state === "indexed") current.indexed += 1;
-      metrics.set(source.clusterId, current);
-    }
-    return metrics;
-  }, [sources]);
-
-  const activityItems = [
-    ...recentSources.slice(0, 3).map((source) => ({
-      id: `source:${source.id}`,
-      kind: "source" as const,
-      targetId: source.id,
-      time: formatRelativeDay(source.updatedAt),
-      title:
-        source.state === "indexed" ? `Indexed ${source.title}` : `${source.state} ${source.title}`,
-      state: source.state,
-    })),
-    ...chats.slice(0, 2).map((chat) => ({
-      id: `chat:${chat.id}`,
-      kind: "chat" as const,
-      targetId: chat.id,
-      time: formatRelativeDay(chat.updated_at),
-      title: chat.title,
-      state: null,
-    })),
-  ];
+  const unsorted = unsortedSources;
 
   async function startChat() {
     const text = query.trim();
@@ -161,7 +145,7 @@ function HomeView() {
 
         {loadError ? (
           <div className="mt-6 rounded-md border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
-            Vault could not load your library. Check Settings → Health, then try again.
+            Some library details could not be refreshed. Check Settings / Health, then try again.
           </div>
         ) : null}
 
@@ -231,7 +215,7 @@ function HomeView() {
           />
           <div className="grid gap-4 p-5 md:grid-cols-2 2xl:grid-cols-4">
             {clusters.slice(0, 4).map((cluster) => {
-              const metrics = clusterMetrics.get(cluster.id) ?? { total: 0, indexed: 0 };
+              const metrics = clusterCounts.get(cluster.id) ?? { total: 0, indexed: 0 };
               const progress = metrics.total > 0 ? Math.round((metrics.indexed / metrics.total) * 100) : 0;
               return (
                 <Link
@@ -422,29 +406,21 @@ function QuickAction({
   );
 }
 
-type ActivityItem = {
-  id: string;
-  kind: "source" | "chat";
-  targetId: string;
-  time: string;
-  title: string;
-  state: Source["state"] | null;
-};
-
-function ActivityRow({ item }: { item: ActivityItem }) {
+function ActivityRow({ item }: { item: ActivityRecord }) {
+  const targetId = item.id.split(":", 2)[1] ?? "";
   const content = (
     <>
-      <time className="text-xs text-muted-foreground sm:text-sm">{item.time}</time>
+      <time className="text-xs text-muted-foreground sm:text-sm">
+        {formatRelativeDay(item.time)}
+      </time>
       <span
         className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full ring-4 ring-background"
-        style={{ background: activityColor(item.state) }}
+        style={{ background: activityKindColor(item.kind) }}
         aria-hidden="true"
       />
       <span className="min-w-0">
         <span className="block break-words text-sm font-medium">{item.title}</span>
-        <span className="mt-1 block text-xs text-muted-foreground">
-          {item.kind === "chat" ? "Conversation" : sourceStateTextFromState(item.state)}
-        </span>
+        <span className="mt-1 block break-words text-xs text-muted-foreground">{item.detail}</span>
       </span>
       <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
     </>
@@ -455,13 +431,20 @@ function ActivityRow({ item }: { item: ActivityItem }) {
 
   if (item.kind === "chat") {
     return (
-      <Link to="/chat/$chatId" params={{ chatId: item.targetId }} className={className}>
+      <Link to="/chat/$chatId" params={{ chatId: targetId }} className={className}>
+        {content}
+      </Link>
+    );
+  }
+  if (item.kind === "cluster") {
+    return (
+      <Link to="/clusters/$clusterId" params={{ clusterId: targetId }} className={className}>
         {content}
       </Link>
     );
   }
   return (
-    <Link to="/sources" search={{ source: item.targetId }} className={className}>
+    <Link to="/sources" search={{ source: targetId }} className={className}>
       {content}
     </Link>
   );
@@ -485,14 +468,13 @@ function sourceSummaryText(source: Source) {
   if (source.state === "failed") return "Indexing failed — open Sources to review";
   if (source.summary.trim()) return source.summary;
   const preview = source.preview.trim();
-  if (!preview) return "Indexed and ready to search";
+  if (!preview) return `${source.type} / ${source.state}`;
   return preview.length > 80 ? `${preview.slice(0, 80).trimEnd()}…` : preview;
 }
 
-function activityColor(state: Source["state"] | null) {
-  if (state === "indexed") return "var(--status-ready)";
-  if (state === "failed") return "var(--status-issue)";
-  if (state === "waiting" || state === "processing") return "var(--status-learning)";
+function activityKindColor(kind: ActivityRecord["kind"]) {
+  if (kind === "source") return "var(--status-ready)";
+  if (kind === "cluster") return "var(--status-learning)";
   return "var(--status-paused)";
 }
 
@@ -501,13 +483,6 @@ function sourceStateText(source: Source) {
   if (source.state === "processing") return "Processing";
   if (source.state === "failed") return "Needs review";
   return "Waiting";
-}
-
-function sourceStateTextFromState(state: Source["state"] | null) {
-  if (state === "indexed") return "Source indexed";
-  if (state === "processing") return "Source processing";
-  if (state === "failed") return "Source needs review";
-  return "Source waiting";
 }
 
 function formatRelativeDay(value: string) {

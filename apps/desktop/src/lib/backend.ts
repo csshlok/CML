@@ -530,6 +530,8 @@ export type AppJobRecord = {
   elapsed_seconds?: number | null;
   estimated_remaining_seconds?: number | null;
   status_detail?: string | null;
+  cancellation_requested?: number | null;
+  cancellation_requested_at?: string | null;
   attempts: number;
   max_attempts: number;
   last_error: string;
@@ -609,6 +611,7 @@ export type SourceRecord = {
   cover_image_url: string | null;
   created_at: string;
   updated_at: string;
+  import_outcome?: "created" | "updated" | null;
 };
 
 export type SourcePageRecord = {
@@ -737,6 +740,9 @@ export type ChatMessageRecord = {
   useful: boolean | null;
   saved: boolean;
   created_at: string;
+  generation_id: string | null;
+  reply_to_message_id: string | null;
+  generation_state: string | null;
 };
 
 export type ChatSessionRecord = {
@@ -850,6 +856,12 @@ export type LocalModelRecord = {
   installed: boolean;
   local_path: string | null;
   download: ModelDownloadState | null;
+  integrity?: {
+    status: "missing" | "unverified" | "recorded" | "verified" | "mismatch";
+    sha256?: string | null;
+    expected_sha256?: string | null;
+    detail?: string;
+  } | null;
   active: boolean;
   active_chat: boolean;
   compatibility: ModelCompatibilityRecord | null;
@@ -977,6 +989,10 @@ export type ModelRuntimeStatus = {
   available: boolean;
   state?: string;
   detail: string;
+  in_flight?: number;
+  pid?: number | null;
+  error?: string | null;
+  managed?: boolean;
 };
 
 export type EmbeddingRuntimeStatus = {
@@ -1446,6 +1462,37 @@ export async function updateCluster(
   });
 }
 
+export type ActivityRecord = {
+  id: string;
+  kind: "source" | "chat" | "cluster";
+  time: string;
+  title: string;
+  detail: string;
+  href: string;
+};
+
+export async function listActivity(
+  vaultId: string,
+  options: {
+    kind?: ActivityRecord["kind"];
+    query?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+) {
+  const params = new URLSearchParams({ vault_id: vaultId });
+  if (options.kind) params.set("kind", options.kind);
+  if (options.query?.trim()) params.set("q", options.query.trim());
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.offset !== undefined) params.set("offset", String(options.offset));
+  return request<{
+    items: ActivityRecord[];
+    total: number;
+    limit: number;
+    offset: number;
+  }>(`/api/v1/activity?${params.toString()}`);
+}
+
 export async function getMapOverview(
   vaultId: string,
   options: { limit?: number; offset?: number } = {},
@@ -1479,8 +1526,16 @@ export async function refreshClusterProfile(id: string) {
   );
 }
 
-export async function listProjects(vaultId?: string) {
-  const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
+export async function listProjects(
+  vaultId?: string,
+  options: { clusterId?: string; limit?: number; offset?: number } = {},
+) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (options.clusterId) params.set("cluster_id", options.clusterId);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.offset !== undefined) params.set("offset", String(options.offset));
+  const query = params.size ? `?${params.toString()}` : "";
   return request<ProjectRecord[]>(`/api/v1/projects${query}`);
 }
 
@@ -1560,6 +1615,20 @@ export async function listProjectRuns(id: string, limit = 50, offset = 0) {
   return request<ProjectIndexRunRecord[]>(
     `/api/v1/projects/${encodeURIComponent(id)}/runs?limit=${limit}&offset=${offset}`,
   );
+}
+
+export async function listProjectRunSummary(limit = 200, activeOnly = false) {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    active_only: String(activeOnly),
+  });
+  return request<{
+    items: Array<{
+      project: Pick<ProjectRecord, "id" | "name" | "vault_id">;
+      run: ProjectIndexRunRecord;
+    }>;
+    limit: number;
+  }>(`/api/v1/projects/project-run-summary?${params.toString()}`);
 }
 
 export async function getProjectRun(id: string, runId: string) {
@@ -1703,6 +1772,8 @@ export async function listSources(
     unclustered?: boolean;
     states?: Array<SourceRecord["state"]>;
     query?: string;
+    sourceTypes?: string[];
+    order?: "newest" | "oldest" | "alphabetical";
   } = {},
 ) {
   const params = new URLSearchParams();
@@ -1712,7 +1783,9 @@ export async function listSources(
   if (options.clusterId) params.set("cluster_id", options.clusterId);
   if (options.unclustered) params.set("unclustered", "true");
   if (options.states?.length) params.set("states", options.states.join(","));
+  if (options.sourceTypes?.length) params.set("source_types", options.sourceTypes.join(","));
   if (options.query?.trim()) params.set("q", options.query.trim());
+  if (options.order) params.set("order", options.order);
   const query = params.size ? `?${params.toString()}` : "";
   return request<SourceRecord[]>(`/api/v1/sources${query}`);
 }
@@ -1819,13 +1892,19 @@ export async function deleteCluster(clusterId: string) {
 export async function countSources(
   vaultId?: string,
   clusterId?: string,
-  options: { unclustered?: boolean; states?: Array<SourceRecord["state"]>; query?: string } = {},
+  options: {
+    unclustered?: boolean;
+    states?: Array<SourceRecord["state"]>;
+    query?: string;
+    sourceTypes?: string[];
+  } = {},
 ) {
   const params = new URLSearchParams();
   if (vaultId) params.set("vault_id", vaultId);
   if (clusterId) params.set("cluster_id", clusterId);
   if (options.unclustered) params.set("unclustered", "true");
   if (options.states?.length) params.set("states", options.states.join(","));
+  if (options.sourceTypes?.length) params.set("source_types", options.sourceTypes.join(","));
   if (options.query?.trim()) params.set("q", options.query.trim());
   const query = params.size ? `?${params.toString()}` : "";
   return request<{ total: number }>(`/api/v1/sources/count${query}`);
@@ -1958,6 +2037,7 @@ export async function streamChatContext(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let sawDone = false;
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -1982,8 +2062,22 @@ export async function streamChatContext(
         );
       if (event.event === "token" && typeof event.data.text === "string")
         handlers.onToken(event.data.text);
-      if (event.event === "done") handlers.onDone?.(event.data);
+      if (event.event === "done") {
+        sawDone = true;
+        handlers.onDone?.(event.data);
+      }
     }
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    const event = parseSseEvent(buffer.trim());
+    if (event?.event === "done") {
+      sawDone = true;
+      handlers.onDone?.(event.data);
+    }
+  }
+  if (!sawDone) {
+    throw new Error("The local service closed the answer before confirming it was saved.");
   }
 }
 
@@ -2083,6 +2177,19 @@ export async function getJobStatus() {
 
 export async function runJobsOnce() {
   return request<JobQueueStatus>("/api/v1/jobs/run-once", { method: "POST" });
+}
+
+export async function authorizeVaultDeletion(
+  id: string,
+  payload: { confirmation_name: string; passphrase?: string | null },
+) {
+  return request<{ authorized: boolean; vault_id: string }>(
+    `/api/v1/vaults/${encodeURIComponent(id)}/delete/authorize`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export async function getSource(sourceId: string) {

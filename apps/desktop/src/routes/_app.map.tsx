@@ -83,7 +83,12 @@ function MapView() {
             action={<Button asChild><Link to="/clusters">Create a cluster</Link></Button>}
           />
         ) : (
-          <KnowledgeMap vaultId={vault.id} overview={overview} onReload={() => void load()} />
+          <KnowledgeMap
+            vaultId={vault.id}
+            overview={overview}
+            persistView
+            onReload={() => void load()}
+          />
         )}
       </section>
     </div>

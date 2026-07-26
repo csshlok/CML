@@ -28,6 +28,7 @@ import {
   getEmbeddingDownloadStatus,
   getModelCompatibilityReport,
   getModelRecommendations,
+  getModelRuntimeStatus,
   getEmbeddingRuntimeStatus,
   importLocalModel,
   listLocalModels,
@@ -40,10 +41,12 @@ import {
   type LocalModelRecord,
   type ModelCompatibilityRecord,
   type ModelRecommendationsRecord,
+  type ModelRuntimeStatus,
   type VaultRecord,
 } from "@/lib/backend";
 import { cn } from "@/lib/utils";
 import { displayPath } from "@/lib/displayPath";
+import { useVisiblePolling } from "@/lib/useVisiblePolling";
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
 type ModelChoice = "recommended" | "custom";
@@ -67,7 +70,10 @@ function Onboarding() {
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
   const shellRef = useRef<HTMLElement | null>(null);
   const embeddingPollFailuresRef = useRef(0);
+  const modelSelectionDirtyRef = useRef(false);
+  const autoActivationAttemptRef = useRef<string | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [setupLoaded, setSetupLoaded] = useState(false);
 
   const [step, setStep] = useState<Step>(0);
   const [displayName, setDisplayName] = useState("");
@@ -84,6 +90,7 @@ function Onboarding() {
   const [modelDownload, setModelDownload] = useState<LocalModelRecord["download"] | null>(null);
   const [modelDownloadRoot, setModelDownloadRoot] = useState("");
   const [activatingId, setActivatingId] = useState<string | null>(null);
+  const [modelRuntime, setModelRuntime] = useState<ModelRuntimeStatus | null>(null);
   const [customModelPath, setCustomModelPath] = useState("");
   const [customModelName, setCustomModelName] = useState("");
   const [customModelReport, setCustomModelReport] = useState<ModelCompatibilityRecord | null>(null);
@@ -142,14 +149,66 @@ function Onboarding() {
     if (step === 0) return true;
     if (step === 1) return displayName.trim().length >= 2;
     if (step === 2) return vaultName.trim().length >= 2 && vaultPath.trim().length > 0;
-    if (step === 3) return models.some(isChatSetupProgress);
+    if (step === 3) {
+      return Boolean(
+        modelRuntime?.state === "ready" &&
+          models.some(
+            (model) => model.active_chat && model.id === modelRuntime.model,
+          ),
+      );
+    }
     if (step === 4) return Boolean(embeddingRuntime?.available);
     return true;
-  }, [displayName, embeddingRuntime?.available, models, step, vaultName, vaultPath]);
+  }, [
+    displayName,
+    embeddingRuntime?.available,
+    modelRuntime?.model,
+    modelRuntime?.state,
+    models,
+    step,
+    vaultName,
+    vaultPath,
+  ]);
 
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function resumeSetup() {
+      try {
+        const state = await desktop?.getSetupState?.();
+        if (!state || cancelled) return;
+        if (state.phase === "complete") {
+          await navigate({ to: "/home" });
+          return;
+        }
+        setDisplayName(state.profile.display_name);
+        setVaultName(state.vault.name || "My Library");
+        setVaultPath(state.vault.path);
+        if (state.chat_setup.model_id) {
+          setSelectedModelId(state.chat_setup.model_id);
+          modelSelectionDirtyRef.current = true;
+        }
+        const resumedStep = setupPhaseToStep(state.phase);
+        setStep(resumedStep);
+        if (state.phase === "recovery") {
+          setError("Vault could not read the previous setup progress. Review these choices to continue.");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Could not restore setup progress.");
+        }
+      } finally {
+        if (!cancelled) setSetupLoaded(true);
+      }
+    }
+    void resumeSetup();
+    return () => {
+      cancelled = true;
+    };
+  }, [desktop, navigate]);
 
   useEffect(() => {
     setMessage(null);
@@ -172,27 +231,34 @@ function Onboarding() {
     }
   }, [step]);
 
-  useEffect(() => {
-    if (!modelDownloadActive) return;
-    const id = window.setInterval(() => {
-      void refreshModels();
-    }, 1500);
-    return () => window.clearInterval(id);
-  }, [modelDownloadActive]);
+  useVisiblePolling(refreshModels, 750, modelDownloadActive);
+  useVisiblePolling(refreshEmbeddingStatus, 750, embeddingDownloadActive);
 
   useEffect(() => {
-    if (!embeddingDownloadActive) return;
-    const id = window.setInterval(() => {
-      void refreshEmbeddingStatus();
-    }, 1500);
-    return () => window.clearInterval(id);
-  }, [embeddingDownloadActive]);
+    if (step !== 3 || activatingId) return;
+    const selected = models.find((model) => model.id === selectedModelId);
+    if (
+      !selected?.installed ||
+      selected.integrity?.status !== "verified" ||
+      selected.active_chat ||
+      !selected.compatibility?.chat_role_accepted ||
+      autoActivationAttemptRef.current === selected.id
+    ) {
+      return;
+    }
+    autoActivationAttemptRef.current = selected.id;
+    void activateModel(selected.id);
+  }, [activatingId, models, selectedModelId, step]);
 
   async function refreshModels() {
     setModelsLoading(true);
     try {
-      const rows = await listLocalModels();
+      const [rows, runtime] = await Promise.all([
+        listLocalModels(),
+        getModelRuntimeStatus(),
+      ]);
       setModels(rows);
+      setModelRuntime(runtime);
       if (!rows.some((row) => row.id === selectedModelId) && rows[0]) {
         setSelectedModelId(rows[0].id);
       }
@@ -207,7 +273,7 @@ function Onboarding() {
     try {
       const recommendations = await getModelRecommendations();
       setModelRecommendations(recommendations);
-      if (recommendations.recommended_chat_model_id) {
+      if (recommendations.recommended_chat_model_id && !modelSelectionDirtyRef.current) {
         setSelectedModelId(recommendations.recommended_chat_model_id);
       }
     } catch {
@@ -216,7 +282,7 @@ function Onboarding() {
   }
 
   async function chooseModelFolder() {
-    const selected = await desktop?.selectModelFolder?.();
+    const selected = await desktop?.selectModelCheckpoint?.();
     if (selected) {
       setCustomModelPath(displayPath(selected));
       setCustomModelReport(null);
@@ -325,7 +391,7 @@ function Onboarding() {
     try {
       await activateLocalModel(modelId, "chat");
       await refreshModels();
-      setMessage("Chat model activated.");
+      setMessage("Chat model is ready.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not activate the model.");
     } finally {
@@ -399,8 +465,21 @@ function Onboarding() {
         return;
       }
       await desktop?.prepareActiveVaultFolder?.(vaultPath.trim());
+      await desktop?.updateSetupState?.({
+        phase: "vault_prepared",
+        profile: { display_name: displayName.trim() },
+        vault: { id: "", name: vaultName.trim(), path: vaultPath.trim() },
+      });
       const created = await createVaultWithRetry(vaultName.trim(), vaultPath.trim());
       await desktop?.setActiveVaultFolder?.(vaultPath.trim());
+      await desktop?.updateSetupState?.({
+        phase: "vault_committed",
+        vault: {
+          id: created.id,
+          name: created.name,
+          path: vaultPath.trim(),
+        },
+      });
       setVault(created);
       setMessage("Library folder is ready.");
       setStep(3);
@@ -431,6 +510,9 @@ function Onboarding() {
       setError("Choose where to save the model before downloading.");
       return;
     }
+    modelSelectionDirtyRef.current = true;
+    setSelectedModelId(modelId);
+    autoActivationAttemptRef.current = null;
     setDownloadingId(modelId);
     try {
       const state = await startModelDownload(modelId, {
@@ -530,16 +612,48 @@ function Onboarding() {
     }
   }
 
-  function next() {
+  async function next() {
     setError(null);
     setMessage(null);
+    if (step === 1) {
+      await desktop?.updateSetupState?.({
+        phase: "profile_complete",
+        profile: { display_name: displayName.trim() },
+      });
+    } else if (step === 3) {
+      const selected = models.find((model) => model.id === selectedModelId);
+      await desktop?.updateSetupState?.({
+        phase: "models_complete",
+        chat_setup: {
+          status:
+            selected?.active_chat &&
+            modelRuntime?.state === "ready" &&
+            modelRuntime.model === selected.id
+              ? "ready"
+              : "pending",
+          model_id: selectedModelId,
+        },
+      });
+    } else if (step === 4) {
+      await desktop?.updateSetupState?.({
+        phase: "memory_complete",
+        memory_setup: {
+          status: embeddingRuntime?.available ? "ready" : "pending",
+          model_id: recommendedEmbeddingModel.id,
+        },
+      });
+    }
     setStep(Math.min(step + 1, 5) as Step);
   }
 
-  function confirmSkipModels() {
+  async function confirmSkipModels() {
     setShowSkipModels(false);
     setError(null);
     setMessage(null);
+    await desktop?.updateSetupState?.({
+      phase: "models_complete",
+      chat_setup: { status: "skipped", model_id: "" },
+    });
     setStep(4);
   }
 
@@ -549,15 +663,36 @@ function Onboarding() {
     setStep(Math.max(step - 1, 0) as Step);
   }
 
-  function finish() {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("ctx.onboarded", "1");
-      window.localStorage.setItem("ctx.userName", displayName.trim());
-      window.localStorage.setItem("ctx.vaultName", vaultName.trim());
-      window.localStorage.setItem("ctx.chatModelChoice", modelChoice);
-      window.localStorage.setItem("ctx.chatModelId", selectedModelId);
-    }
-    navigate({ to: "/home" });
+  async function finish() {
+    const readyChatModel = models.find(
+      (model) =>
+        model.active_chat &&
+        modelRuntime?.state === "ready" &&
+        model.id === modelRuntime.model,
+    );
+    await desktop?.updateSetupState?.({
+      phase: "complete",
+      profile: { display_name: displayName.trim() },
+      vault: {
+        id: vault?.id || "",
+        name: vault?.name || vaultName.trim(),
+        path: vaultPath.trim(),
+      },
+      chat_setup: {
+        status: readyChatModel ? "ready" : "skipped",
+        model_id: readyChatModel?.id ?? "",
+      },
+      memory_setup: {
+        status: embeddingRuntime?.available ? "ready" : "skipped",
+        model_id: embeddingRuntime?.available ? recommendedEmbeddingModel.id : "",
+      },
+      tour: { status: "pending", step: 0, version: 1 },
+    });
+    await navigate({ to: "/home" });
+  }
+
+  if (!setupLoaded) {
+    return <main className="h-screen bg-[#fbfbfb]" aria-label="Loading setup" />;
   }
 
   if (step === 0) {
@@ -568,7 +703,7 @@ function Onboarding() {
           <h1 className="mt-20 text-[46px] font-bold tracking-[-0.035em]">Welcome to Vault</h1>
           <Button
             className="mt-11 h-[53px] min-w-[194px] rounded-[3px] bg-[#8d806e] text-white hover:bg-[#786d5f]"
-            onClick={next}
+            onClick={() => void next()}
           >
             Start Setup
             <ArrowRight className="ml-2 h-4 w-4" />
@@ -603,7 +738,7 @@ function Onboarding() {
         </aside>
 
         <section className="flex min-h-full min-w-0 items-start justify-center px-4 py-8 sm:px-8 lg:items-center lg:px-10">
-          <div className="vault-onboarding-card flex w-full max-w-[860px] min-w-0 flex-col overflow-hidden lg:h-[520px]">
+          <div className="vault-onboarding-card flex w-full max-w-[860px] min-w-0 flex-col overflow-hidden lg:h-[520px] lg:max-h-[calc(100vh-4rem)]">
             <div className="shrink-0 px-6 pt-6 sm:px-8 lg:pt-0">
               <MobileHeader step={step} />
 
@@ -779,7 +914,10 @@ function Onboarding() {
                                 busy={downloadingId === model.id}
                                 activating={activatingId === model.id}
                                 roleActive={Boolean(model.active_chat)}
-                                onSelect={() => setSelectedModelId(model.id)}
+                                onSelect={() => {
+                                  modelSelectionDirtyRef.current = true;
+                                  setSelectedModelId(model.id);
+                                }}
                                 onDownload={() => void startDownload(model.id)}
                                 onCancel={() => void cancelDownload(model.id)}
                                 onActivate={() => void activateModel(model.id)}
@@ -855,20 +993,20 @@ function Onboarding() {
                                 )}
                               </div>
                             </div>
-                            <Field label="Model folder">
+                            <Field label="GGUF model file">
                               <div className="flex flex-col gap-2 sm:flex-row">
                                 <Input
                                   value={customModelPath}
                                   onChange={(event) =>
                                     setCustomModelPath(displayPath(event.target.value))
                                   }
-                                  placeholder="D:/Models/Qwen3-4B"
+                                  placeholder="D:/Models/Qwen3-4B-Q4_K_M.gguf"
                                 />
                                 <Button
                                   type="button"
                                   variant="outline"
                                   onClick={() => void chooseModelFolder()}
-                                  disabled={!mounted || !desktop?.selectModelFolder}
+                                  disabled={!mounted || !desktop?.selectModelCheckpoint}
                                 >
                                   <FolderOpen className="h-4 w-4" />
                                   Browse
@@ -978,7 +1116,7 @@ function Onboarding() {
                     <Field
                       label={
                         embeddingChoice === "recommended"
-                          ? "Downloaded model folder"
+                          ? "Save model in"
                           : "Embedding cache folder"
                       }
                     >
@@ -990,7 +1128,7 @@ function Onboarding() {
                           }
                           placeholder={
                             embeddingChoice === "recommended"
-                              ? "Choose a local embedding model folder"
+                              ? "Choose where to save the memory-search model"
                               : "Choose an existing embedding cache folder"
                           }
                         />
@@ -1103,7 +1241,11 @@ function Onboarding() {
                   <SetupPanel
                     icon={<Check className="h-5 w-5" />}
                     title="Welcome to Vault"
-                    sub="Your library is ready. Add sources from the Sources workspace, or start with chat when you want to ask across everything."
+                    sub={
+                      modelRuntime?.state === "ready"
+                        ? "Your library is ready. Add sources, or start a chat when you want to ask across everything."
+                        : "Your library is ready. Add sources now; you can set up chat later in Settings."
+                    }
                   >
                     <div className="grid gap-3 sm:grid-cols-2">
                       <SummaryRow label="Profile" value={displayName.trim() || "Local user"} />
@@ -1111,8 +1253,12 @@ function Onboarding() {
                       <SummaryRow
                         label="Chat model"
                         value={
-                          models.find((model) => model.id === selectedModelId)?.name ??
-                          selectedModelId
+                          models.find(
+                            (model) =>
+                              model.active_chat &&
+                              modelRuntime?.state === "ready" &&
+                              model.id === modelRuntime.model,
+                          )?.name ?? "Skipped — set up later in Settings"
                         }
                       />
                       <SummaryRow
@@ -1162,12 +1308,12 @@ function Onboarding() {
                       <ArrowRight className="h-4 w-4" />
                     </Button>
                   ) : step === 5 ? (
-                    <Button onClick={finish}>
+                    <Button onClick={() => void finish()}>
                       Open Vault
                       <ArrowRight className="h-4 w-4" />
                     </Button>
                   ) : (
-                    <Button onClick={next} disabled={!canContinue}>
+                    <Button onClick={() => void next()} disabled={!canContinue}>
                       Continue
                       <ArrowRight className="h-4 w-4" />
                     </Button>
@@ -1209,7 +1355,7 @@ function Onboarding() {
               <Button variant="outline" onClick={() => setShowSkipModels(false)}>
                 Cancel
               </Button>
-              <Button onClick={confirmSkipModels}>Confirm skip</Button>
+              <Button onClick={() => void confirmSkipModels()}>Confirm skip</Button>
             </div>
           </div>
         </div>
@@ -1238,8 +1384,8 @@ function Onboarding() {
             >
               Vault will download this model from {recommendedEmbeddingModel.source} and save it
               on this device. It creates numeric representations of your library so memory search
-              can find related text. It is not used to generate chat replies. The download is
-              anonymous; Vault does not send or request a Hugging Face account token.
+              can find related text. It is not used to generate chat replies. This is a public
+              download; no Hugging Face account token is sent or requested.
             </p>
             <dl className="mt-4 space-y-3 rounded-md border border-border bg-background p-4 text-sm">
               <div>
@@ -1311,6 +1457,14 @@ function StepRail({ step }: { step: Step }) {
       ))}
     </div>
   );
+}
+
+function setupPhaseToStep(phase: DesktopSetupPhase): Step {
+  if (phase === "profile_complete" || phase === "vault_prepared") return 2;
+  if (phase === "vault_committed") return 3;
+  if (phase === "models_complete") return 4;
+  if (phase === "memory_complete") return 5;
+  return 0;
 }
 
 function SetupPanel({
@@ -1409,6 +1563,10 @@ function ModelRow({
 }) {
   const downloading =
     model.download?.status === "resolving" || model.download?.status === "downloading";
+  const needsVerification =
+    model.installed &&
+    model.source_kind === "default_choice" &&
+    model.integrity?.status !== "verified";
   const totalBytes = model.download?.total_bytes ?? model.download?.bytes_total ?? null;
   const progress =
     model.download?.progress_percent ??
@@ -1442,6 +1600,8 @@ function ModelRow({
                 ? "Ready for chat"
                 : downloading
                   ? "Downloading"
+                  : needsVerification
+                    ? "Needs verification"
                   : model.installed
                     ? "Installed"
                     : "Ready to download"}
@@ -1476,7 +1636,7 @@ function ModelRow({
       )}
 
       <div className="mt-3 flex justify-end gap-2">
-        {model.compatibility?.chat_role_accepted && !roleActive ? (
+        {model.compatibility?.chat_role_accepted && !roleActive && !needsVerification ? (
           <Button variant="outline" size="sm" onClick={onActivate} disabled={activating}>
             {activating ? "Activating" : "Use for chat"}
           </Button>
@@ -1491,26 +1651,22 @@ function ModelRow({
             variant={model.installed ? "outline" : "secondary"}
             size="sm"
             onClick={onDownload}
-            disabled={model.installed || busy}
+            disabled={(model.installed && !needsVerification) || busy}
           >
             <Download className="h-4 w-4" />
-            {roleActive ? "Active" : model.installed ? "Installed" : busy ? "Starting" : "Download"}
+            {roleActive
+              ? "Active"
+              : needsVerification
+                ? "Download again"
+                : model.installed
+                  ? "Installed"
+                  : busy
+                    ? "Starting"
+                    : "Download"}
           </Button>
         )}
       </div>
     </div>
-  );
-}
-
-function isChatSetupProgress(model: LocalModelRecord) {
-  const downloadStatus = model.download?.status;
-  const managedChatDownloadInProgress =
-    model.source_kind === "default_choice" &&
-    (downloadStatus === "resolving" || downloadStatus === "downloading");
-  return Boolean(
-    managedChatDownloadInProgress ||
-    (model.compatibility?.chat_role_accepted &&
-      (model.active_chat || model.installed || downloadStatus === "installed")),
   );
 }
 

@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   CheckCircle2,
@@ -20,6 +20,7 @@ import {
   SlidersHorizontal,
   TerminalSquare,
   UserRound,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,7 +36,7 @@ import {
   createVaultBackup,
   createDiagnosticBundle,
   createVault,
-  deleteVault,
+  authorizeVaultDeletion,
   denyCliPairingChallenge,
   discoverInstalledModels,
   enforceChatEvidenceRetention,
@@ -74,7 +75,6 @@ import {
   startEmbeddingDownload,
   unlockVaultWithPassphrase,
   updateIntegrationImport,
-  updateUnlockSettings,
   updateVault,
   useBackendHealth,
   type ChatEvidenceRetentionPolicy,
@@ -110,6 +110,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { displayPath } from "@/lib/displayPath";
+import { useVisiblePolling } from "@/lib/useVisiblePolling";
 
 export const Route = createFileRoute("/_app/settings")({
   validateSearch: (search: Record<string, unknown>): { section?: string } => ({
@@ -180,7 +181,7 @@ function SettingsView() {
   const [loadingRunItemsId, setLoadingRunItemsId] = useState<string | null>(null);
   const [retryingReconciliationItemId, setRetryingReconciliationItemId] = useState<string | null>(null);
   const [retentionBusy, setRetentionBusy] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [busyActions, setBusyActions] = useState<Set<string>>(() => new Set());
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [healthLoadError, setHealthLoadError] = useState<string | null>(null);
   const [healthCheckedAt, setHealthCheckedAt] = useState<Date | null>(null);
@@ -196,9 +197,25 @@ function SettingsView() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteNameDraft, setDeleteNameDraft] = useState("");
   const [deletePassphrase, setDeletePassphrase] = useState("");
+  const pathDraftDirtyRef = useRef(false);
+  const embeddingDraftDirtyRef = useRef(false);
 
   const activeModelDownload = useMemo(() => selectVisibleModelDownload(models, modelDownload), [modelDownload, models]);
   const modelDownloadActive = isActiveModelDownloadStatus(activeModelDownload?.status);
+  const embeddingDownloadActive =
+    embeddingDownload?.status === "queued" ||
+    embeddingDownload?.status === "downloading" ||
+    embeddingDownload?.status === "cancelling";
+  const isActionBusy = (action: string) => busyActions.has(action);
+
+  function setActionBusy(action: string, busy: boolean) {
+    setBusyActions((current) => {
+      const next = new Set(current);
+      if (busy) next.add(action);
+      else next.delete(action);
+      return next;
+    });
+  }
 
   useEffect(() => {
     setMounted(true);
@@ -223,47 +240,38 @@ function SettingsView() {
     });
   }
 
-  useEffect(() => {
-    if (activeSection !== "odin" || !backendVault) return;
-    let cancelled = false;
-    async function refreshCliAccess() {
-      try {
-        const [pairings, clients] = await Promise.all([listCliPairingChallenges(), listCliClients()]);
-        if (!cancelled) {
-          setCliPairings(pairings);
-          setCliClients(clients);
-          setCliAccessError(null);
-        }
-      } catch (error) {
-        if (!cancelled) setCliAccessError(error instanceof Error ? error.message : "Command-line access could not be loaded.");
-      }
+  const refreshCliAccess = useCallback(async () => {
+    try {
+      const [pairings, clients] = await Promise.all([listCliPairingChallenges(), listCliClients()]);
+      setCliPairings(pairings);
+      setCliClients(clients);
+      setCliAccessError(null);
+    } catch (error) {
+      setCliAccessError(
+        error instanceof Error ? error.message : "Command-line access could not be loaded.",
+      );
     }
-    void refreshCliAccess();
-    const timer = window.setInterval(() => void refreshCliAccess(), 2000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [activeSection, backendVault]);
+  }, []);
 
-  useEffect(() => {
-    let cancelled = false;
+  useVisiblePolling(
+    refreshCliAccess,
+    2000,
+    activeSection === "odin" && Boolean(backendVault),
+  );
 
-    async function load() {
+  const loadSettings = useCallback(async () => {
       try {
         const currentUnlock = await getUnlockStatus();
-        if (cancelled) return;
         setHealthLoadError(null);
         setUnlockStatus(currentUnlock);
         if (currentUnlock.secured_vault_count > 0 && currentUnlock.state !== "ready") {
           const vaultRows = await listVaults();
-          if (cancelled) return;
           const firstVault = vaultRows[0] ?? null;
-          setBackendVault(firstVault);
+          setBackendVault(firstVault ? { ...firstVault, path: "" } : null);
           setTemporalFacts(null);
           setReviewableFacts([]);
           setRetrievalPacking(null);
-          if (firstVault) setPathDraft(firstVault.path);
+          if (!pathDraftDirtyRef.current) setPathDraft("");
           setHealthCheckedAt(new Date());
           setStatusMessage(currentUnlock.message || "Library is locked. Unlock it from Privacy settings.");
           return;
@@ -293,10 +301,9 @@ function SettingsView() {
           getJobStatus(),
           getChatEvidenceRetentionPolicy(),
         ]);
-        if (cancelled) return;
         const firstVault = vaultRows[0] ?? null;
         setBackendVault(firstVault);
-        if (firstVault) {
+        if (firstVault && !pathDraftDirtyRef.current) {
           setPathDraft(firstVault.path);
         }
         const [importRows, projectRows, temporalStatus, factRows, packingStatus] = firstVault
@@ -308,13 +315,14 @@ function SettingsView() {
               getRetrievalPackingDiagnostics(firstVault.id),
             ])
           : [[], [], null, [], null];
-        if (cancelled) return;
         setModels(modelRows);
         setModelRecommendations(recommendations);
         setDiscoveredModels(discoveredRows.models);
         setRuntime(runtimeStatus);
         setEmbeddingRuntime(embeddingStatus);
-        setEmbeddingCacheDraft(embeddingStatus.cache_dir ?? "");
+        if (!embeddingDraftDirtyRef.current) {
+          setEmbeddingCacheDraft(embeddingStatus.cache_dir ?? "");
+        }
         setEmbeddingDownload(embeddingDownloadStatus);
         setOcrRuntime(ocrStatus);
         setHardware(hardwareStatus);
@@ -327,30 +335,27 @@ function SettingsView() {
         setProjects(projectRows);
         setHealthCheckedAt(new Date());
       } catch (error) {
-        if (!cancelled) {
-          const message = error instanceof Error ? error.message : "Vault settings are unavailable. Check Health and try again.";
-          setHealthLoadError(message);
-          setHealthCheckedAt(new Date());
-          setStatusMessage(message);
-        }
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Vault settings are unavailable. Check Health and try again.";
+        setHealthLoadError(message);
+        setHealthCheckedAt(new Date());
+        setStatusMessage(message);
       }
-    }
-
-    void load();
-    const id = window.setInterval(load, 6000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
   }, []);
 
-  useEffect(() => {
-    if (!modelDownloadActive) return;
-    const id = window.setInterval(() => {
-      void refreshModelRows();
-    }, 1500);
-    return () => window.clearInterval(id);
-  }, [modelDownloadActive]);
+  useVisiblePolling(loadSettings, 6000);
+  useVisiblePolling(refreshModelRows, 750, modelDownloadActive);
+  useVisiblePolling(refreshEmbeddingRows, 750, embeddingDownloadActive);
+
+  async function refreshEmbeddingRows() {
+    const download = await getEmbeddingDownloadStatus();
+    setEmbeddingDownload(download);
+    if (!["queued", "downloading", "cancelling"].includes(download.status)) {
+      setEmbeddingRuntime(await getEmbeddingRuntimeStatus());
+    }
+  }
 
   async function unlockVault() {
     const vaultId = backendVault?.id ?? unlockStatus?.secured_vault_ids[0];
@@ -358,11 +363,11 @@ function SettingsView() {
       setStatusMessage("Choose a library and enter the full passphrase.");
       return;
     }
-    setSaving(true);
+    setActionBusy("security", true);
     try {
       const next = unlockStatus?.secured_vault_count
         ? await unlockVaultWithPassphrase({ vault_id: vaultId, passphrase: vaultPassphrase })
-        : await initializeVaultSecurity({ vault_id: vaultId, passphrase: vaultPassphrase, unlock_mode: "convenience" });
+        : await initializeVaultSecurity({ vault_id: vaultId, passphrase: vaultPassphrase, unlock_mode: "strict" });
       setUnlockStatus(next);
       window.dispatchEvent(new CustomEvent("vault:lock-state", { detail: next }));
       const recoveryKey = "recovery_key" in next && typeof next.recovery_key === "string" ? next.recovery_key : null;
@@ -372,12 +377,12 @@ function SettingsView() {
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not unlock library.");
     } finally {
-      setSaving(false);
+      setActionBusy("security", false);
     }
   }
 
   async function lockCurrentVault() {
-    setSaving(true);
+    setActionBusy("security", true);
     try {
       const next = await lockVault(unlockStatus?.vault_id ?? backendVault?.id ?? null);
       setUnlockStatus(next);
@@ -386,54 +391,51 @@ function SettingsView() {
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not lock library.");
     } finally {
-      setSaving(false);
-    }
-  }
-
-  async function setUnlockMode(mode: "convenience" | "strict") {
-    const vaultId = unlockStatus?.vault_id ?? backendVault?.id;
-    if (!vaultId) return;
-    setSaving(true);
-    try {
-      const settings = await updateUnlockSettings({ vault_id: vaultId, unlock_mode: mode });
-      setUnlockStatus((current) => current ? { ...current, unlock_mode: settings.unlock_mode } : current);
-      setStatusMessage(mode === "strict" ? "Strict locked mode enabled." : "Convenience mode enabled.");
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Could not update unlock mode.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function setPinEnabled(enabled: boolean) {
-    const vaultId = unlockStatus?.vault_id ?? backendVault?.id;
-    if (!vaultId) return;
-    setSaving(true);
-    try {
-      const settings = await updateUnlockSettings({ vault_id: vaultId, pin_enabled: enabled });
-      setUnlockStatus((current) => current ? { ...current, pin_enabled: settings.pin_enabled } : current);
-      setStatusMessage(enabled ? "Convenience PIN visibility enabled. Full passphrase remains required for sensitive actions." : "Convenience PIN disabled.");
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Could not update PIN setting.");
-    } finally {
-      setSaving(false);
+      setActionBusy("security", false);
     }
   }
 
   async function saveVaultPath() {
     const path = pathDraft.trim();
     if (!path) return;
-    setSaving(true);
+    if (backendVault && displayPath(backendVault.path) === displayPath(path)) {
+      pathDraftDirtyRef.current = false;
+      setStatusMessage("Library location is already current.");
+      return;
+    }
+    if (
+      backendVault &&
+      !window.confirm(
+        "Move this library to the selected folder? Vault will verify the copied database before switching and will roll back if startup fails.",
+      )
+    ) {
+      return;
+    }
+    setActionBusy("vault-path", true);
     try {
+      let oldCopyRemoved = true;
+      if (backendVault) {
+        const moved = await desktop?.moveActiveVaultFolder?.(path);
+        if (!moved) {
+          throw new Error("Library moves are available only in the installed desktop app.");
+        }
+        oldCopyRemoved = moved.old_copy_removed;
+      }
       const nextVault = backendVault
         ? await updateVault(backendVault.id, { path })
         : await createVault({ name: "Local memory", path });
       setBackendVault(nextVault);
-      setStatusMessage("Library location saved.");
+      setPathDraft(nextVault.path);
+      pathDraftDirtyRef.current = false;
+      setStatusMessage(
+        oldCopyRemoved
+          ? "Library moved and verified."
+          : "Library moved and verified. The old data copy could not be removed; you may remove it after checking the new location.",
+      );
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not save library location.");
     } finally {
-      setSaving(false);
+      setActionBusy("vault-path", false);
     }
   }
 
@@ -443,18 +445,19 @@ function SettingsView() {
       setStatusMessage("Choose the local embedding model folder before saving.");
       return;
     }
-    setSaving(true);
+    setActionBusy("embedding-runtime", true);
     try {
       const nextStatus = await configureEmbeddingRuntime({
         provider: "sentence-transformers",
         cache_dir: modelPath,
       });
       setEmbeddingRuntime(nextStatus);
+      embeddingDraftDirtyRef.current = false;
       setStatusMessage("Embedding model path saved.");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not update embedding settings.");
     } finally {
-      setSaving(false);
+      setActionBusy("embedding-runtime", false);
     }
   }
 
@@ -462,12 +465,13 @@ function SettingsView() {
     const selected = await desktop?.selectEmbeddingFolder?.();
     if (selected) {
       setEmbeddingCacheDraft(selected);
+      embeddingDraftDirtyRef.current = true;
       setStatusMessage("Embedding model folder selected. Test it before using memory search.");
     }
   }
 
   async function downloadEmbeddingModel() {
-    setSaving(true);
+    setActionBusy("embedding-download", true);
     try {
       const state = await startEmbeddingDownload({
         cache_dir: embeddingCacheDraft.trim() || null,
@@ -477,7 +481,7 @@ function SettingsView() {
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not start embedding download.");
     } finally {
-      setSaving(false);
+      setActionBusy("embedding-download", false);
     }
   }
 
@@ -519,7 +523,7 @@ function SettingsView() {
   }
 
   async function chooseModelFolder() {
-    const selected = await desktop?.selectModelFolder?.();
+    const selected = await desktop?.selectModelCheckpoint?.();
     if (selected) {
       setCustomModelPath(selected);
       setCustomModelReport(null);
@@ -776,7 +780,7 @@ function SettingsView() {
   }
 
   async function testRuntimeConnection() {
-    setSaving(true);
+    setActionBusy("runtime-test", true);
     try {
       const nextRuntime = await getModelRuntimeStatus();
       setRuntime(nextRuntime);
@@ -788,38 +792,38 @@ function SettingsView() {
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Runtime connection test failed.");
     } finally {
-      setSaving(false);
+      setActionBusy("runtime-test", false);
     }
   }
 
   async function rebuildEmbeddings() {
     if (!backendVault) return;
-    setSaving(true);
+    setActionBusy("embedding-rebuild", true);
     try {
       const result = await reindexVaultSearch(backendVault.id);
       setStatusMessage(`Queued ${result.jobs_queued ?? 0} source reindex jobs.`);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not queue embedding rebuild.");
     } finally {
-      setSaving(false);
+      setActionBusy("embedding-rebuild", false);
     }
   }
 
   async function createBackup() {
-    setSaving(true);
+    setActionBusy("backup", true);
     try {
       await createVaultBackup();
       setStatusMessage("Created a local vault backup.");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not create a vault backup.");
     } finally {
-      setSaving(false);
+      setActionBusy("backup", false);
     }
   }
 
   async function renameVault(name: string) {
     if (!backendVault || !name.trim()) return;
-    setSaving(true);
+    setActionBusy("rename", true);
     try {
       const updated = await updateVault(backendVault.id, { name: name.trim() });
       setBackendVault(updated);
@@ -827,23 +831,26 @@ function SettingsView() {
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not rename the library.");
     } finally {
-      setSaving(false);
+      setActionBusy("rename", false);
     }
   }
 
   async function deleteCurrentVault() {
     if (!backendVault) return;
-    setSaving(true);
+    setActionBusy("delete", true);
     try {
-      await deleteVault(backendVault.id, {
+      await authorizeVaultDeletion(backendVault.id, {
         confirmation_name: deleteNameDraft.trim(),
         passphrase: deletePassphrase || null,
       });
-      await window.cmlDesktop?.clearActiveVaultFolder?.();
+      const finalized = await window.cmlDesktop?.finalizeActiveVaultDeletion?.();
+      if (!finalized?.deleted) {
+        throw new Error("The library was authorized for deletion, but its local data folder could not be finalized.");
+      }
       window.location.assign("/onboarding");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not delete the library.");
-      setSaving(false);
+      setActionBusy("delete", false);
     }
   }
 
@@ -1027,7 +1034,22 @@ function SettingsView() {
 
         <div className="mt-7 space-y-4">
           {activeSection === "profile" ? (
-            <ProfileSettings vault={backendVault} saving={saving} onRename={renameVault} />
+            <>
+              <ProfileSettings vault={backendVault} saving={isActionBusy("rename")} onRename={renameVault} />
+              <SettingsCard
+                icon={<RotateCcw className="h-4 w-4" />}
+                title="Vault tour"
+                description="Replay the short walkthrough of Search, Sources, Chat, Clusters, and Settings."
+              >
+                <Button
+                  variant="outline"
+                  className="mt-5"
+                  onClick={() => window.dispatchEvent(new Event("vault:start-tour"))}
+                >
+                  Start tour
+                </Button>
+              </SettingsCard>
+            </>
           ) : (
             <>
           {statusMessage && (
@@ -1242,7 +1264,7 @@ function SettingsView() {
             <label className="mt-5 block text-sm font-medium">Connection address</label>
             <div className="mt-2 flex gap-2">
               <Input value={runtime?.base_url ?? "http://localhost:11434"} readOnly />
-              <Button variant="outline" className="gap-2" disabled={saving} onClick={() => void testRuntimeConnection()}>
+              <Button variant="outline" className="gap-2" disabled={isActionBusy("runtime-test")} onClick={() => void testRuntimeConnection()}>
                 Test <Play className="h-4 w-4" />
               </Button>
             </div>
@@ -1307,6 +1329,10 @@ function SettingsView() {
             <div className="mt-5 space-y-3">
               {models.map((model) => {
                 const downloading = model.download?.status === "resolving" || model.download?.status === "downloading";
+                const needsVerification =
+                  model.installed &&
+                  model.source_kind === "default_choice" &&
+                  model.integrity?.status !== "verified";
                 const totalBytes = model.download?.total_bytes ?? model.download?.bytes_total ?? null;
                 const progress = model.download?.progress_percent ?? (
                   model.download?.bytes_downloaded && totalBytes
@@ -1322,7 +1348,11 @@ function SettingsView() {
                           {model.role} / {model.family || "unclassified"} / {model.approximate_download_gb} GB
                         </div>
                         <div className="mt-1 text-xs text-muted-foreground">
-                          chat: {model.compatibility?.chat_role_accepted ? "accepted" : "not accepted"}
+                          {needsVerification
+                            ? "Needs verification before chat"
+                            : model.compatibility?.chat_role_accepted
+                              ? "Ready for chat"
+                              : "Not compatible with chat"}
                         </div>
                         {model.id === recommendedChatModelId ? (
                           <div className="mt-1 text-xs text-primary">
@@ -1338,7 +1368,7 @@ function SettingsView() {
                     </div>
                     {downloading && (
                       <div className="mt-3">
-                        <Progress value={progress ?? 10} className="h-1.5" />
+                        <Progress value={progress ?? 0} className="h-1.5" />
                         <div className="mt-1 flex justify-between gap-3 text-xs text-muted-foreground">
                           <span>{model.download?.status}</span>
                           <span>{progress !== null && progress !== undefined ? `${Math.round(progress)}%` : "Preparing download"}</span>
@@ -1346,9 +1376,13 @@ function SettingsView() {
                       </div>
                     )}
                     <div className="mt-3 flex flex-wrap gap-2">
-                      {!model.installed ? (
+                      {!model.installed || needsVerification ? (
                         <Button variant="outline" onClick={() => void downloadModel(model.id)} disabled={downloadingId === model.id}>
-                          {downloadingId === model.id ? "Starting..." : "Download default"}
+                          {downloadingId === model.id
+                            ? "Starting..."
+                            : needsVerification
+                              ? "Download again"
+                              : "Download"}
                         </Button>
                       ) : null}
                       {downloading ? (
@@ -1356,7 +1390,9 @@ function SettingsView() {
                           Cancel
                         </Button>
                       ) : null}
-                      {model.compatibility?.chat_role_accepted && !model.active_chat ? (
+                      {model.compatibility?.chat_role_accepted &&
+                      !model.active_chat &&
+                      (model.source_kind !== "default_choice" || model.integrity?.status === "verified") ? (
                         <Button variant="outline" onClick={() => void activateModel(model.id)} disabled={activatingId === model.id}>
                           {activatingId === model.id ? "Activating..." : "Use for chat"}
                         </Button>
@@ -1370,7 +1406,7 @@ function SettingsView() {
               <Input
                 value={customModelPath}
                 onChange={(event) => setCustomModelPath(displayPath(event.target.value))}
-                placeholder="D:/Models/Qwen3-4B"
+                placeholder="D:/Models/Qwen3-4B-Q4_K_M.gguf"
               />
               <Input
                 value={customModelName}
@@ -1454,16 +1490,19 @@ function SettingsView() {
             <div className="mt-2 flex flex-wrap gap-2">
               <Input
                 value={embeddingCacheDraft}
-                onChange={(event) => setEmbeddingCacheDraft(event.target.value)}
+                onChange={(event) => {
+                  embeddingDraftDirtyRef.current = true;
+                  setEmbeddingCacheDraft(event.target.value);
+                }}
                 placeholder="C:/AI_Models/all-MiniLM-L6-v2"
               />
               <Button variant="outline" onClick={() => void chooseEmbeddingFolder()} disabled={!mounted || !desktop?.selectEmbeddingFolder}>
                 Browse
               </Button>
-              <Button variant="outline" onClick={() => void saveEmbeddingRuntime()} disabled={saving || !embeddingCacheDraft.trim()}>
+              <Button variant="outline" onClick={() => void saveEmbeddingRuntime()} disabled={isActionBusy("embedding-runtime") || !embeddingCacheDraft.trim()}>
                 Test
               </Button>
-              <Button variant="outline" className="gap-2" onClick={() => void downloadEmbeddingModel()} disabled={saving}>
+              <Button variant="outline" className="gap-2" onClick={() => void downloadEmbeddingModel()} disabled={isActionBusy("embedding-download")}>
                 <Download className="h-4 w-4" />
                 Download recommended
               </Button>
@@ -1494,7 +1533,7 @@ function SettingsView() {
               <Button
                 variant="outline"
                 onClick={() => void rebuildEmbeddings()}
-                disabled={saving || !backendVault}
+                disabled={isActionBusy("embedding-rebuild") || !backendVault}
               >
                 Rebuild search index
               </Button>
@@ -1565,9 +1604,12 @@ function SettingsView() {
                 <Input
                   id="library-storage-path"
                   value={pathDraft}
-                  onChange={(event) => setPathDraft(displayPath(event.target.value))}
+                  onChange={(event) => {
+                    pathDraftDirtyRef.current = true;
+                    setPathDraft(displayPath(event.target.value));
+                  }}
                 />
-                <Button variant="outline" onClick={() => void saveVaultPath()} disabled={saving}>
+                <Button variant="outline" onClick={() => void saveVaultPath()} disabled={isActionBusy("vault-path")}>
                   Change location
                 </Button>
               </div>
@@ -1583,7 +1625,7 @@ function SettingsView() {
                 </Button>
                 <Button
                   variant="outline"
-                  disabled={saving || !backendVault}
+                  disabled={isActionBusy("backup") || !backendVault}
                   onClick={() => void createBackup()}
                 >
                   Create local backup
@@ -1758,14 +1800,15 @@ function SettingsView() {
           <SettingsCard
             icon={<Lock className="h-4 w-4" />}
             title="Library unlock"
-            description="Control the local library unlock boundary. Convenience mode is default; strict locked mode is opt-in."
+            description="Protect this library with a full passphrase. A protected library always starts locked after the app restarts."
             status={unlockStatus?.state ?? "Unknown"}
             statusTone={unlockStatus?.state === "ready" ? "ready" : "issue"}
           >
             <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
               State: <span className="text-foreground">{unlockStatus?.state ?? "unknown"}</span>
-              {" / "}Mode: <span className="text-foreground">{unlockStatus?.unlock_mode ?? "convenience"}</span>
-              {" / "}PIN: <span className="text-foreground">{unlockStatus?.pin_enabled ? "enabled" : "disabled"}</span>
+              {" / "}Protection: <span className="text-foreground">
+                {unlockStatus?.secured_vault_count ? "Full passphrase" : "Not enabled"}
+              </span>
             </div>
             {unlockStatus?.verification_error ? (
               <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -1779,14 +1822,14 @@ function SettingsView() {
                 onChange={(event) => setVaultPassphrase(event.target.value)}
                 placeholder={unlockStatus?.secured_vault_count ? "Library passphrase" : "Create library passphrase"}
               />
-              <Button onClick={() => void unlockVault()} disabled={saving || !backendVault}>
+              <Button onClick={() => void unlockVault()} disabled={isActionBusy("security") || !backendVault}>
                 {unlockStatus?.secured_vault_count ? "Unlock" : "Initialize security"}
               </Button>
               <Button
                 variant="outline"
                 className="border-[var(--status-warn)]/45 text-[var(--status-warn-ink)]"
                 onClick={() => void lockCurrentVault()}
-                disabled={saving || unlockStatus?.state !== "ready"}
+                disabled={isActionBusy("security") || unlockStatus?.state !== "ready"}
               >
                 Lock library
               </Button>
@@ -1797,19 +1840,14 @@ function SettingsView() {
                 <div className="mt-2 break-all font-mono text-xs">{recoveryKey}</div>
               </div>
             ) : null}
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Button variant="outline" onClick={() => void setUnlockMode("convenience")} disabled={saving || unlockStatus?.state !== "ready"}>
-                Convenience mode
-              </Button>
-              <Button variant="outline" onClick={() => void setUnlockMode("strict")} disabled={saving || unlockStatus?.state !== "ready"}>
-                Strict locked mode
-              </Button>
-              <Button variant="outline" onClick={() => void setPinEnabled(!unlockStatus?.pin_enabled)} disabled={saving || unlockStatus?.state !== "ready"}>
-                {unlockStatus?.pin_enabled ? "Disable PIN" : "Enable PIN setting"}
-              </Button>
-            </div>
             <p className="mt-3 text-xs text-muted-foreground">
-              The 6-digit PIN is convenience-only. Sensitive actions still require the full passphrase.
+              Vault does not store your passphrase. Keep the offline recovery key somewhere safe.
+            </p>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">
+              Passphrase protection encrypts source text, extracted pages and chunks, chat
+              message bodies and evidence, and generation prompts. Library and source names,
+              file locations, timestamps, cluster and project labels, and operational metadata
+              remain readable on this device.
             </p>
           </SettingsCard>
           )}
@@ -2035,7 +2073,7 @@ function SettingsView() {
               <Button
                 variant="destructive"
                 className="mt-5"
-                disabled={saving || !backendVault}
+                disabled={isActionBusy("delete") || !backendVault}
                 onClick={() => {
                   setDeleteNameDraft("");
                   setDeletePassphrase("");
@@ -2065,7 +2103,7 @@ function SettingsView() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
-            <Button variant="destructive" disabled={saving || deleteNameDraft.trim() !== backendVault?.name} onClick={() => void deleteCurrentVault()}>
+            <Button variant="destructive" disabled={isActionBusy("delete") || deleteNameDraft.trim() !== backendVault?.name} onClick={() => void deleteCurrentVault()}>
               Delete library
             </Button>
           </DialogFooter>
@@ -2156,18 +2194,22 @@ function ModelDownloadToast({
       : null
   );
   const active = isActiveModelDownloadStatus(download.status);
-  const fallbackProgress = active ? 10 : download.status === "installed" ? 100 : 0;
+  const fallbackProgress = download.status === "installed" ? 100 : 0;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-border bg-card/95 p-4 shadow-2xl backdrop-blur">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-sm font-semibold">Model download</div>
-          <div className="mt-1 truncate text-xs text-muted-foreground">{download.model_id}</div>
-        </div>
-        <span className="rounded-full border border-border bg-background px-2 py-0.5 text-xs capitalize text-muted-foreground">
-          {download.status}
-        </span>
+    <div className="fixed bottom-4 right-4 z-50 w-[min(18rem,calc(100vw-2rem))] rounded-md border border-border bg-card p-3 shadow-lg">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 truncate text-sm font-medium">{compactModelName(download.model_id)}</div>
+        {active ? (
+          <button
+            type="button"
+            className="rounded-sm p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            aria-label="Cancel model download"
+            onClick={onCancel}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        ) : null}
       </div>
       <div className="mt-3">
         <Progress value={progress ?? fallbackProgress} className="h-1.5" />
@@ -2179,15 +2221,7 @@ function ModelDownloadToast({
           </span>
         </div>
       </div>
-      {download.local_path && (
-        <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground">{displayPath(download.local_path)}</div>
-      )}
       {download.error && <div className="mt-2 text-xs text-destructive">{download.error}</div>}
-      {active && (
-        <Button variant="outline" size="sm" className="mt-3 w-full" onClick={onCancel}>
-          Cancel download
-        </Button>
-      )}
     </div>
   );
 }
@@ -2301,6 +2335,14 @@ function RuntimeRow({
       </span>
     </div>
   );
+}
+
+function compactModelName(value: string) {
+  const qwen = value.match(/qwen[-_]?(\d+)[-_]?(\d+)b/i);
+  if (qwen) return `Qwen${qwen[1]}-${qwen[2]}B`;
+  const gemma = value.match(/gemma[-_]?(\d+)[-_]?(\d+)b/i);
+  if (gemma) return `Gemma-${gemma[1]}-${gemma[2]}B`;
+  return value.replace(/q4[_-]k[_-]m/gi, "").replace(/[_-]+/g, " ").trim();
 }
 
 type HealthTone = "ready" | "warning" | "issue" | "neutral";

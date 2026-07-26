@@ -1,14 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Clock3, Pause, Play, RotateCcw, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useVisiblePolling } from "@/lib/useVisiblePolling";
 import {
   cancelJob,
   cancelProjectRun,
   getJobStatus,
-  listProjectRuns,
-  listProjects,
+  listProjectRunSummary,
   reindexProject,
   runJobsOnce,
   type AppJobRecord,
@@ -18,6 +18,9 @@ import {
 } from "@/lib/backend";
 
 export const Route = createFileRoute("/_app/tasks")({
+  validateSearch: (search: Record<string, unknown>): { job?: string } => ({
+    job: typeof search.job === "string" ? search.job : undefined,
+  }),
   head: () => ({ meta: [{ title: "Tasks" }] }),
   component: TasksView,
 });
@@ -26,6 +29,7 @@ type TaskFilter = "running" | "queued" | "failed" | "completed" | "maintenance";
 type ProjectTask = { project: ProjectRecord; run: ProjectIndexRunRecord };
 
 function TasksView() {
+  const { job: requestedJobId } = Route.useSearch();
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
   const [filter, setFilter] = useState<TaskFilter>("running");
   const [query, setQuery] = useState("");
@@ -35,21 +39,29 @@ function TasksView() {
 
   async function load() {
     try {
-      const [status, projects] = await Promise.all([getJobStatus(), listProjects()]);
-      const runGroups = await Promise.all(projects.slice(0, 100).map(async (project) => ({ project, runs: await listProjectRuns(project.id, 8) })));
+      const [status, summary] = await Promise.all([
+        getJobStatus(),
+        listProjectRunSummary(200),
+      ]);
       setJobs(status);
-      setProjectTasks(runGroups.flatMap(({ project, runs }) => runs.map((run) => ({ project, run }))).sort((a, b) => b.run.updated_at.localeCompare(a.run.updated_at)));
-      setSelected((current) => current ?? status.running_jobs[0] ?? status.latest[0] ?? null);
+      setProjectTasks(
+        summary.items
+          .map(({ project, run }) => ({ project: project as ProjectRecord, run }))
+          .sort((a, b) => b.run.updated_at.localeCompare(a.run.updated_at)),
+      );
+      const requested = requestedJobId
+        ? [...status.running_jobs, ...status.latest].find((job) => job.id === requestedJobId)
+        : null;
+      setSelected((current) => requested ?? current ?? status.running_jobs[0] ?? status.latest[0] ?? null);
     } catch {
       setJobs(null);
     }
   }
 
-  useEffect(() => {
-    void load();
-    const id = window.setInterval(load, 5000);
-    return () => window.clearInterval(id);
-  }, []);
+  const hasActiveWork = Boolean(
+    (jobs?.running ?? 0) + (jobs?.queued ?? 0) + (jobs?.blocked_by_dependency ?? 0),
+  );
+  useVisiblePolling(load, hasActiveWork ? 5000 : 30000);
 
   const rows = useMemo(() => {
     const latest = jobs?.latest ?? [];
@@ -80,7 +92,11 @@ function TasksView() {
     try {
       const next = await cancelJob(selected.id);
       setSelected(next);
-      setMessage(`Cancelled ${next.job_type}.`);
+      setMessage(
+        next.status === "cancelled"
+          ? `Cancelled ${next.job_type}.`
+          : `Cancellation requested for ${next.job_type}. It will stop after the current work unit.`,
+      );
       await load();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not cancel this job.");

@@ -56,6 +56,7 @@ import {
   type VaultRecord,
 } from "@/lib/backend";
 import { displayPath } from "@/lib/displayPath";
+import { useVisiblePolling } from "@/lib/useVisiblePolling";
 
 export const Route = createFileRoute("/_app/bridge")({
   head: () => ({ meta: [{ title: "Bridge" }] }),
@@ -99,10 +100,24 @@ function BridgeView() {
     "claude" | "cursor" | "other"
   >("claude");
 
-  async function loadBridgeState(options: { clearOnError?: boolean } = {}) {
+  async function loadBridgeState() {
     if (backend.status !== "online") return;
-    try {
-      const [nextStatus, nextRequests, nextApprovals, nextAuditEvents, nextRotations, nextClients, nextVaults, nextClusters, nextCaptures, nextReviews, nextExtensionClients, nextExtensionCaptures, nextExtensionPairings, nextExtensionAudit] = await Promise.all([
+    const [
+      statusResult,
+      requestsResult,
+      approvalsResult,
+      auditResult,
+      rotationsResult,
+      clientsResult,
+      vaultsResult,
+      clustersResult,
+      capturesResult,
+      reviewsResult,
+      extensionClientsResult,
+      extensionCapturesResult,
+      extensionPairingsResult,
+      extensionAuditResult,
+    ] = await Promise.allSettled([
         getBridgeStatus(),
         listBridgeRequests(),
         listBridgeApprovalRequests(),
@@ -117,7 +132,12 @@ function BridgeView() {
         listExtensionCaptures(),
         listExtensionPairings(),
         listExtensionPermissionAudit(),
-      ]);
+      ] as const);
+    const nextVaults = vaultsResult.status === "fulfilled" ? vaultsResult.value : vaults;
+    const nextClusters =
+      clustersResult.status === "fulfilled" ? clustersResult.value : clusters;
+    if (statusResult.status === "fulfilled") {
+      const nextStatus = statusResult.value;
       const vaultIds = new Set(nextVaults.map((vault) => vault.id));
       const clusterIds = new Set(nextClusters.map((cluster) => cluster.id));
       setStatus({
@@ -125,60 +145,43 @@ function BridgeView() {
         allowed_vault_ids: nextStatus.allowed_vault_ids.filter((id) => vaultIds.has(id)),
         allowed_cluster_ids: nextStatus.allowed_cluster_ids.filter((id) => clusterIds.has(id)),
       });
-      setRequests(nextRequests);
-      setApprovalRequests(nextApprovals);
-      setAuditEvents(nextAuditEvents);
-      setRotations(nextRotations);
-      setClients(nextClients);
-      setVaults(nextVaults);
-      setClusters(nextClusters);
-      setCaptures(nextCaptures);
-      setReviews(nextReviews);
-      setExtensionClients(nextExtensionClients);
-      setExtensionCaptures(nextExtensionCaptures);
-      setExtensionPairings(nextExtensionPairings);
-      setExtensionAudit(nextExtensionAudit);
       if (!captureVaultId && nextStatus.allowed_vault_ids.length > 0) {
         setCaptureVaultId(nextStatus.allowed_vault_ids[0] ?? "");
       }
       if (!extensionVaultId && nextStatus.allowed_vault_ids.length > 0) {
         setExtensionVaultId(nextStatus.allowed_vault_ids[0] ?? "");
       }
-    } catch {
-      if (options.clearOnError) {
-        setStatus(null);
-        setRequests([]);
-        setApprovalRequests([]);
-        setAuditEvents([]);
-        setRotations([]);
-        setClients([]);
-        setVaults([]);
-        setClusters([]);
-        setCaptures([]);
-        setReviews([]);
-        setExtensionClients([]);
-        setExtensionCaptures([]);
-        setExtensionPairings([]);
-        setExtensionAudit([]);
-      }
+    }
+    if (requestsResult.status === "fulfilled") setRequests(requestsResult.value);
+    if (approvalsResult.status === "fulfilled") setApprovalRequests(approvalsResult.value);
+    if (auditResult.status === "fulfilled") setAuditEvents(auditResult.value);
+    if (rotationsResult.status === "fulfilled") setRotations(rotationsResult.value);
+    if (clientsResult.status === "fulfilled") setClients(clientsResult.value);
+    if (vaultsResult.status === "fulfilled") setVaults(vaultsResult.value);
+    if (clustersResult.status === "fulfilled") setClusters(clustersResult.value);
+    if (capturesResult.status === "fulfilled") setCaptures(capturesResult.value);
+    if (reviewsResult.status === "fulfilled") setReviews(reviewsResult.value);
+    if (extensionClientsResult.status === "fulfilled") {
+      setExtensionClients(extensionClientsResult.value);
+    }
+    if (extensionCapturesResult.status === "fulfilled") {
+      setExtensionCaptures(extensionCapturesResult.value);
+    }
+    if (extensionPairingsResult.status === "fulfilled") {
+      setExtensionPairings(extensionPairingsResult.value);
+    }
+    if (extensionAuditResult.status === "fulfilled") {
+      setExtensionAudit(extensionAuditResult.value);
     }
   }
 
+  useVisiblePolling(loadBridgeState, 60_000, backend.status === "online");
+
   useEffect(() => {
-    let cancelled = false;
-
-    async function refreshIfMounted() {
-      if (cancelled) return;
-      await loadBridgeState({ clearOnError: true });
-    }
-
-    void refreshIfMounted();
-    const id = window.setInterval(refreshIfMounted, 60_000);
-    window.addEventListener("vault:bridge-captures-changed", refreshIfMounted);
+    const refresh = () => void loadBridgeState();
+    window.addEventListener("vault:bridge-captures-changed", refresh);
     return () => {
-      cancelled = true;
-      window.clearInterval(id);
-      window.removeEventListener("vault:bridge-captures-changed", refreshIfMounted);
+      window.removeEventListener("vault:bridge-captures-changed", refresh);
     };
   }, [backend.status]);
 
@@ -502,7 +505,7 @@ function BridgeView() {
               disabled={saving || backend.status !== "online"}
               aria-label="Refresh Bridge permissions"
               title="Refresh Bridge permissions"
-              onClick={() => void loadBridgeState({ clearOnError: true })}
+              onClick={() => void loadBridgeState()}
             >
               <RefreshCw className="h-4 w-4" />
             </Button>

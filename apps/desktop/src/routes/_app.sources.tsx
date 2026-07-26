@@ -1,5 +1,5 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useDeferredValue, useEffect, useMemo, useState, type DragEvent } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import {
   CheckCircle2,
   Clapperboard,
@@ -12,6 +12,7 @@ import {
   FolderPlus,
   Image,
   Link2,
+  Loader2,
   Mic,
   Plus,
   RefreshCw,
@@ -78,6 +79,7 @@ const typeIcon = {
 };
 
 function SourcesView() {
+  const navigate = useNavigate();
   const { filter, source: requestedSourceId } = Route.useSearch();
   const inboxOnly = filter === "unsorted";
   const pageSize = 25;
@@ -90,6 +92,7 @@ function SourcesView() {
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ingestMessage, setIngestMessage] = useState<string | null>(null);
   const [textDialogOpen, setTextDialogOpen] = useState(false);
@@ -101,12 +104,17 @@ function SourcesView() {
   const [dragActive, setDragActive] = useState(false);
   const [pageIndex, setPageIndex] = useState(0);
   const [sourceTotal, setSourceTotal] = useState(0);
+  const sourceRequestRef = useRef(0);
+  const hasLoadedSourcesRef = useRef(false);
 
   async function refreshBackendSources() {
-    setLoading(true);
+    const requestId = ++sourceRequestRef.current;
+    setLoading(!hasLoadedSourcesRef.current);
+    setRefreshing(hasLoadedSourcesRef.current);
     setError(null);
     try {
       const vaults = await listVaults();
+      if (requestId !== sourceRequestRef.current) return;
       const activeVault = vaults[0] ?? null;
       setActiveVault(activeVault);
       if (!activeVault) {
@@ -130,6 +138,11 @@ function SourcesView() {
         }),
         requestedSourceId ? getSource(requestedSourceId).catch(() => null) : Promise.resolve(null),
       ]);
+      if (requestId !== sourceRequestRef.current) return;
+      if (count.total > 0 && pageIndex * pageSize >= count.total) {
+        setPageIndex(Math.max(0, Math.ceil(count.total / pageSize) - 1));
+        return;
+      }
       const mappedSources = sourceRows.map(sourceFromRecord);
       const visibleSources = mappedSources;
       setBackendSources(visibleSources);
@@ -138,16 +151,20 @@ function SourcesView() {
       setSelected((current) =>
         (requestedSource ? sourceFromRecord(requestedSource) : null) ??
         visibleSources.find((source) => source.id === current?.id) ??
-        visibleSources[0] ??
         null,
       );
+      hasLoadedSourcesRef.current = true;
     } catch (err) {
+      if (requestId !== sourceRequestRef.current) return;
       const message = err instanceof Error ? err.message : "Vault could not load your sources.";
       setError(message);
       notify({ title: "Sources could not load", description: message, tone: "error" });
       setActiveVault(null);
     } finally {
-      setLoading(false);
+      if (requestId === sourceRequestRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }
 
@@ -167,7 +184,7 @@ function SourcesView() {
 
   const filtered = useMemo(() => sources, [sources]);
 
-  const inspectorSource = selected ?? filtered[0] ?? null;
+  const inspectorSource = selected;
   const inspectorCluster = inspectorSource
     ? clusters.find((cluster) => cluster.id === inspectorSource.clusterId)
     : undefined;
@@ -209,10 +226,10 @@ function SourcesView() {
     try {
       if (!vault) {
         setIngestMessage("Create or open a library before adding text sources.");
-      } else {
-        await createSourceFromText({ vault_id: vault.id, title, text });
-        await refreshBackendSources();
+        return;
       }
+      await createSourceFromText({ vault_id: vault.id, title, text });
+      await refreshBackendSources();
       setTextBody("");
       setTextTitle("Pasted note");
       setTextDialogOpen(false);
@@ -233,14 +250,14 @@ function SourcesView() {
     try {
       if (!vault) {
         setIngestMessage("Create or open a library before adding links.");
-      } else {
-        setIngestMessage("Fetching link text...");
-        await createSourceFromUrl({ vault_id: vault.id, url });
-        await refreshBackendSources();
+        return;
       }
+      setIngestMessage("Fetching link text...");
+      const source = await createSourceFromUrl({ vault_id: vault.id, url });
+      await refreshBackendSources();
       setLinkUrl("");
       setLinkDialogOpen(false);
-      setIngestMessage("Imported link text.");
+      setIngestMessage(source.import_outcome === "updated" ? "Updated the existing link." : "Imported link text.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not import this link.";
       setIngestMessage(message);
@@ -274,14 +291,16 @@ function SourcesView() {
     setIngestMessage(`Importing ${paths.length} file${paths.length === 1 ? "" : "s"}...`);
     const failures: string[] = [];
     let imported = 0;
+    let updated = 0;
     let cursor = 0;
     const workers = Array.from({ length: Math.min(4, paths.length) }, async () => {
       while (cursor < paths.length) {
         const path = paths[cursor];
         cursor += 1;
         try {
-          await createSourceFromPath({ vault_id: vault.id, path });
-          imported += 1;
+          const source = await createSourceFromPath({ vault_id: vault.id, path });
+          if (source.import_outcome === "updated") updated += 1;
+          else imported += 1;
         } catch (error) {
           const reason = error instanceof Error ? error.message : "Import failed";
           failures.push(`${fileNameFromPath(path)}: ${reason}`);
@@ -293,7 +312,7 @@ function SourcesView() {
     const limitNotice = truncatedAt
       ? ` Folder scanning stopped at the ${truncatedAt.toLocaleString()}-file safety limit; import remaining files in a second batch.`
       : "";
-    setIngestMessage(`${formatImportResult(imported, failures)}${limitNotice}`);
+    setIngestMessage(`${formatImportResult(imported, updated, failures)}${limitNotice}`);
     if (failures.length > 0) {
       notify({
         title: `${failures.length} source${failures.length === 1 ? "" : "s"} could not be imported`,
@@ -302,7 +321,10 @@ function SourcesView() {
       });
     } else {
       notify({
-        title: `${imported} source${imported === 1 ? "" : "s"} imported`,
+        title:
+          updated > 0
+            ? `${imported} imported, ${updated} existing source${updated === 1 ? "" : "s"} updated`
+            : `${imported} source${imported === 1 ? "" : "s"} imported`,
         tone: "success",
       });
     }
@@ -342,12 +364,23 @@ function SourcesView() {
     }
     try {
       const result = await reindexSource(source.id);
+      setBackendSources((current) =>
+        current.map((item) =>
+          item.id === source.id ? { ...item, state: "processing" as const } : item,
+        ),
+      );
       setIngestMessage(
         result.status === "running"
           ? `Reindexing “${source.title}” now.`
           : `Queued “${source.title}” for reindexing.`,
       );
-      notify({ title: `Reindexing ${source.title}`, tone: "success" });
+      notify({
+        title: `Reindexing ${source.title}`,
+        description: result.status === "running" ? "Indexing is running now." : "The task is queued.",
+        tone: "success",
+        actionLabel: "Open Tasks",
+        onAction: () => navigate({ to: "/tasks", search: { job: result.job_id } }),
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not queue reindexing.";
       setIngestMessage(message);
@@ -360,9 +393,16 @@ function SourcesView() {
       setIngestMessage("Create or open a library before deleting sources.");
       return;
     }
-    await deleteBackendSource(source.id);
-    if (selected?.id === source.id) setSelected(null);
-    await refreshBackendSources();
+    try {
+      await deleteBackendSource(source.id);
+      if (selected?.id === source.id) setSelected(null);
+      await refreshBackendSources();
+      notify({ title: "Source removed", tone: "success" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not remove this source.";
+      setIngestMessage(message);
+      notify({ title: "Source removal failed", description: message, tone: "error" });
+    }
   }
 
   return (
@@ -403,9 +443,15 @@ function SourcesView() {
                 placeholder="Search sources..."
                 value={q}
                 onChange={(event) => setQ(event.target.value)}
-                className="h-10 pl-9"
+                className="h-10 pl-9 pr-9"
               />
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              {refreshing ? (
+                <Loader2
+                  className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground motion-reduce:animate-none"
+                  aria-label="Refreshing source results"
+                />
+              ) : null}
             </div>
             <Button onClick={() => void handleAddFiles()} disabled={!vault}>
               <FilePlus2 className="h-4 w-4" /> Add files
@@ -839,10 +885,13 @@ function formatFileSize(value?: number | null) {
   return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
-function formatImportResult(imported: number, failures: string[]) {
+function formatImportResult(imported: number, updated: number, failures: string[]) {
   const importedLabel = `Imported ${imported} document${imported === 1 ? "" : "s"}`;
-  if (failures.length === 0) return `${importedLabel}.`;
+  const updatedLabel = updated
+    ? ` Updated ${updated} existing document${updated === 1 ? "" : "s"}.`
+    : "";
+  if (failures.length === 0) return `${importedLabel}.${updatedLabel}`;
   const firstFailure = failures[0];
   const more = failures.length > 1 ? ` and ${failures.length - 1} more` : "";
-  return `${importedLabel}. Failed ${failures.length}: ${firstFailure}${more}.`;
+  return `${importedLabel}.${updatedLabel} Failed ${failures.length}: ${firstFailure}${more}.`;
 }

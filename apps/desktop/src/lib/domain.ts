@@ -84,6 +84,9 @@ export interface ChatMessage {
   intent?: string;
   runtimeState?: string | null;
   coverageLedger?: Record<string, unknown> | null;
+  generationId?: string | null;
+  replyToMessageId?: string | null;
+  generationState?: string | null;
 }
 
 export const clusterLifecycleLabel: Record<ClusterLifecycleStatus, string> = {

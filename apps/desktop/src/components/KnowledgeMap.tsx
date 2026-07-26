@@ -1,4 +1,5 @@
 import { type ComponentType, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { ArrowLeft, ExternalLink, List, Network, RotateCcw, Search, ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,12 +26,20 @@ export function KnowledgeMap({
   vaultId,
   overview,
   onReload,
+  initialFocusId,
+  persistView = false,
 }: {
   vaultId: string;
   overview: MapGraphResponse;
   onReload: () => void;
+  initialFocusId?: string | null;
+  persistView?: boolean;
 }) {
+  const restoredViewRef = useRef(readMapViewFromUrl(persistView));
   const graphRef = useRef<any>(null);
+  const inspectRequestRef = useRef(0);
+  const focusRequestRef = useRef(0);
+  const initialFocusAppliedRef = useRef<string | null>(null);
   const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null);
   const containerRef = useCallback((element: HTMLDivElement | null) => {
     setContainerElement(element);
@@ -46,7 +55,8 @@ export function KnowledgeMap({
   const [error, setError] = useState<string | null>(null);
   const [size, setSize] = useState({ width: 900, height: 620 });
   const [viewRevision, setViewRevision] = useState(0);
-  const [zoomLevel, setZoomLevel] = useState(1);
+  const [zoomLevel, setZoomLevel] = useState(restoredViewRef.current?.zoom ?? 1);
+  const [viewRestored, setViewRestored] = useState(!persistView);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
 
   useEffect(() => {
@@ -185,11 +195,15 @@ export function KnowledgeMap({
   }, [ForceGraph, configureGraph, fitGraph, graphData, listMode, size.height, size.width, viewRevision]);
 
   async function inspect(node: MapNodeRecord) {
+    const requestId = ++inspectRequestRef.current;
     setError(null);
     try {
-      setSelected(await getMapItem(vaultId, node.id));
+      const item = await getMapItem(vaultId, node.id);
+      if (requestId === inspectRequestRef.current) setSelected(item);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Vault could not inspect this item.");
+      if (requestId === inspectRequestRef.current) {
+        setError(reason instanceof Error ? reason.message : "Vault could not inspect this item.");
+      }
     }
   }
 
@@ -198,22 +212,72 @@ export function KnowledgeMap({
       await inspect(node);
       return;
     }
+    const requestId = ++focusRequestRef.current;
+    ++inspectRequestRef.current;
     setLoadingFocus(true);
     setError(null);
     try {
-      const next = await getMapNeighborhood(vaultId, node.id);
+      const [next, item] = await Promise.all([
+        getMapNeighborhood(vaultId, node.id),
+        getMapItem(vaultId, node.id),
+      ]);
+      if (requestId !== focusRequestRef.current) return;
       setGraph(next);
       setRoot(node);
+      setSelected(item);
       setViewRevision((current) => current + 1);
-      await inspect(node);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Vault could not expand this neighborhood.");
+      if (requestId === focusRequestRef.current) {
+        setError(reason instanceof Error ? reason.message : "Vault could not expand this neighborhood.");
+      }
     } finally {
-      setLoadingFocus(false);
+      if (requestId === focusRequestRef.current) setLoadingFocus(false);
     }
   }
 
+  useEffect(() => {
+    if (!initialFocusId || initialFocusAppliedRef.current === initialFocusId) return;
+    const node = overview.nodes.find((candidate) => candidate.id === initialFocusId);
+    if (!node) return;
+    initialFocusAppliedRef.current = initialFocusId;
+    void focus(node);
+  }, [initialFocusId, overview.nodes]);
+
+  useEffect(() => {
+    if (!persistView || viewRestored || initialFocusId) return;
+    const restored = restoredViewRef.current;
+    const rootNode = restored?.rootId
+      ? overview.nodes.find((candidate) => candidate.id === restored.rootId)
+      : null;
+    const selectedNode = restored?.selectedId
+      ? overview.nodes.find((candidate) => candidate.id === restored.selectedId)
+      : null;
+    async function restore() {
+      if (rootNode) await focus(rootNode);
+      else if (selectedNode) await inspect(selectedNode);
+      setViewRestored(true);
+    }
+    void restore();
+  }, [initialFocusId, overview.nodes, persistView, viewRestored]);
+
+  useEffect(() => {
+    if (!persistView || !viewRestored) return;
+    const url = new URL(window.location.href);
+    setOrDelete(url.searchParams, "mapRoot", root?.id);
+    setOrDelete(url.searchParams, "mapSelected", selected?.id);
+    url.searchParams.set("mapZoom", zoomLevel.toFixed(3));
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [persistView, root?.id, selected?.id, viewRestored, zoomLevel]);
+
+  useEffect(() => {
+    if (!persistView || !viewRestored || !ForceGraph || !graphRef.current) return;
+    const timer = window.setTimeout(() => graphRef.current?.zoom?.(zoomLevel, 0), 650);
+    return () => window.clearTimeout(timer);
+  }, [ForceGraph, persistView, viewRestored, viewRevision, zoomLevel]);
+
   function resetOverview() {
+    ++focusRequestRef.current;
+    ++inspectRequestRef.current;
     setGraph({
       ...overview,
       nodes: overview.nodes.map((node) => ({ ...node })),
@@ -454,6 +518,13 @@ function MapInspector({
               <ExternalLink className="h-4 w-4" /> Expand one hop
             </Button>
           ) : null}
+          {selected.kind === "cluster" ? (
+            <Button className="mt-2 w-full" asChild>
+              <Link to="/clusters/$clusterId" params={{ clusterId: selected.id }}>
+                Open cluster
+              </Link>
+            </Button>
+          ) : null}
         </div>
       )}
     </aside>
@@ -558,6 +629,22 @@ type CanvasMapNode = MapNodeRecord & {
   showLabel?: boolean;
   denseGraph?: boolean;
 };
+
+function readMapViewFromUrl(enabled: boolean) {
+  if (!enabled || typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  const zoom = Number(params.get("mapZoom"));
+  return {
+    rootId: params.get("mapRoot"),
+    selectedId: params.get("mapSelected"),
+    zoom: Number.isFinite(zoom) && zoom >= 0.12 && zoom <= 4 ? zoom : 1,
+  };
+}
+
+function setOrDelete(params: URLSearchParams, key: string, value: string | null | undefined) {
+  if (value) params.set(key, value);
+  else params.delete(key);
+}
 
 function formatDate(value: string) {
   const timestamp = Date.parse(value);

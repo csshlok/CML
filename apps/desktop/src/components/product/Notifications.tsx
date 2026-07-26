@@ -8,6 +8,8 @@ type NotificationInput = {
   title: string;
   description?: string;
   tone?: NotificationTone;
+  actionLabel?: string;
+  onAction?: () => void;
 };
 
 type NotificationRecord = NotificationInput & {
@@ -71,6 +73,20 @@ export function NotificationViewport() {
                   {notification.description}
                 </div>
               )}
+              {notification.actionLabel && notification.onAction ? (
+                <button
+                  type="button"
+                  className="mt-2 text-xs font-medium underline underline-offset-2"
+                  onClick={() => {
+                    notification.onAction?.();
+                    setNotifications((current) =>
+                      current.filter((item) => item.id !== notification.id),
+                    );
+                  }}
+                >
+                  {notification.actionLabel}
+                </button>
+              ) : null}
             </div>
             <button
               type="button"
