@@ -164,7 +164,10 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         os.environ["CML_ALLOW_HASH_EMBEDDINGS"] = "0"
         get_settings.cache_clear()
 
-        with patch("backend.app.core.embeddings._embed_with_sentence_transformers") as embed:
+        with (
+            patch("backend.app.core.embeddings.importlib.util.find_spec", return_value=object()),
+            patch("backend.app.core.embeddings._embed_with_sentence_transformers") as embed,
+        ):
             status = get_embedding_status()
 
         embed.assert_not_called()
@@ -511,7 +514,13 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
     def test_cancel_embedding_download_marks_state_cancelled(self) -> None:
         from backend.app.core.embeddings import cancel_embedding_model_download, start_embedding_model_download
 
-        with patch("threading.Thread.start", return_value=None):
+        with (
+            patch(
+                "backend.app.core.embeddings._embedding_download_dependency_error",
+                return_value=None,
+            ),
+            patch("threading.Thread.start", return_value=None),
+        ):
             queued = start_embedding_model_download(str(self.data_dir / "embeddings"))
         cancelled = cancel_embedding_model_download()
 
