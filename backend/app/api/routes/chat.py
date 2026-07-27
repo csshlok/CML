@@ -574,7 +574,12 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
             if generation and not generation_completed:
                 _mark_chat_generation_retriable(generation["generation_id"], str(exc))
                 generation_completed = True
-            raise
+            yield _sse("error", {
+                "message": "Vault could not finish routing this message.",
+                "detail": str(exc)[:300],
+                "retriable": True,
+            })
+            return
         finally:
             if generation and not generation_completed:
                 _mark_chat_generation_retriable(

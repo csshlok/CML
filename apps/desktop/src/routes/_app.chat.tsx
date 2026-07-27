@@ -175,7 +175,12 @@ function ChatIndex() {
 
   return (
     <div
-      className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)] xl:overflow-hidden"
+      className={
+        "vault-page-wash grid h-full grid-cols-1 overflow-y-auto xl:overflow-hidden " +
+        (visibleChats.length > 0
+          ? "lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)]"
+          : "")
+      }
       onDragOver={(event) => {
         event.preventDefault();
         if (backendReady) setDragActive(true);
@@ -183,16 +188,12 @@ function ChatIndex() {
       onDragLeave={() => setDragActive(false)}
       onDrop={(event) => void handleDrop(event)}
     >
+      {visibleChats.length > 0 ? (
       <aside className="border-b border-border bg-card/35 px-4 py-4 sm:px-5 lg:overflow-y-auto lg:border-b-0 lg:border-r lg:py-6">
         <Button variant="ghost" className="mb-5 w-full justify-start gap-2 text-base" onClick={newChat}>
           <Plus className="h-4 w-4" /> New chat
         </Button>
         <div className="max-h-56 space-y-1 overflow-y-auto lg:max-h-none">
-          {visibleChats.length === 0 ? (
-            <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm leading-5 text-muted-foreground">
-              No conversations yet. Write your first question to start one.
-            </div>
-          ) : null}
           {visibleChats.map((c) => (
             <div key={c.id} className="group flex items-center gap-1 rounded-md hover:bg-accent/60">
               <Link
@@ -223,15 +224,15 @@ function ChatIndex() {
           ))}
         </div>
       </aside>
+      ) : null}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="border-b border-border bg-card/35 px-4 py-5 sm:px-6 lg:px-10 lg:py-7">
           <div className="flex min-w-0 items-start gap-3">
             <MessageSquare className="h-5 w-5 text-muted-foreground" />
             <div className="min-w-0">
-              <h1 className="text-base font-semibold">Ask Vault</h1>
+              <h1 className="text-lg font-semibold tracking-[-0.02em]">Ask your library</h1>
               <p className="break-words text-sm text-muted-foreground">
-                Starts with all indexed context. Narrow to a cluster only when the question needs
-                it.
+                Vault finds the relevant sources first, then your local model writes the answer.
               </p>
             </div>
           </div>
@@ -239,6 +240,20 @@ function ChatIndex() {
 
         <main className="flex flex-1 items-center justify-center overflow-y-auto px-4 py-6 sm:px-6 lg:px-10">
           <section className="w-full max-w-[840px]">
+            {visibleChats.length === 0 ? (
+              <div className="mb-8 max-w-2xl">
+                <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                  First conversation
+                </div>
+                <h2 className="mt-3 text-3xl font-semibold tracking-[-0.035em] text-foreground">
+                  Start with a real question.
+                </h2>
+                <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
+                  Ask about a saved source, compare clusters, or attach a file to store it with
+                  your first message.
+                </p>
+              </div>
+            ) : null}
             {dragActive && (
               <div className="mb-2 break-words rounded-md border border-dashed border-primary/50 bg-primary/5 px-3 py-2 text-xs text-foreground">
                 Drop files to attach them to the first message.
@@ -321,9 +336,7 @@ function ChatIndex() {
                 ))}
               </div>
             )}
-            <div className="mt-6 text-sm text-muted-foreground">
-              Ctrl/Cmd Enter sends. Existing chats stay in the left list.
-            </div>
+            <div className="mt-4 text-xs text-muted-foreground">Ctrl/Cmd Enter to send</div>
           </section>
         </main>
       </div>

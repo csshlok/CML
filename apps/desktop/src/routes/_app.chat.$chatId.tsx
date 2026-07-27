@@ -6,7 +6,6 @@ import {
   getModelRuntimeStatus,
   getChatSession,
   getChatTimeline,
-  listChatSessions,
   listClusters,
   listSources,
   listVaults,
@@ -49,7 +48,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import {
   Bookmark,
   MoreHorizontal,
-  MessageSquare,
   Paperclip,
   Quote,
   RotateCcw,
@@ -79,7 +77,6 @@ function ChatView() {
   const [backendSessionId, setBackendSessionId] = useState<string | null>(null);
   const [backendSession, setBackendSession] = useState<ChatSessionRecord | null>(null);
   const [backendMessages, setBackendMessages] = useState<ChatMessage[]>([]);
-  const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
   const [titleDraft, setTitleDraft] = useState("");
   const [memoryState, setMemoryState] = useState("idle");
   const [loadingSession, setLoadingSession] = useState(true);
@@ -129,7 +126,6 @@ function ChatView() {
       const optional = await Promise.allSettled([
         listClusters(activeVault.id, { limit: 500 }),
         listSources(activeVault.id, { limit: 20, order: "newest" }),
-        listChatSessions(activeVault.id, { limit: 50 }),
         getModelRuntimeStatus(),
       ]);
       if (optional[0].status === "fulfilled") {
@@ -138,8 +134,7 @@ function ChatView() {
       if (optional[1].status === "fulfilled") {
         setBackendSources(optional[1].value.map(sourceFromRecord));
       }
-      if (optional[2].status === "fulfilled") setBackendChats(optional[2].value);
-      if (optional[3].status === "fulfilled") setRuntime(optional[3].value);
+      if (optional[2].status === "fulfilled") setRuntime(optional[2].value);
       if (optional.some((result) => result.status === "rejected")) {
         notify({
           title: "Some chat details are still loading",
@@ -328,10 +323,15 @@ function ChatView() {
   };
 
   const deleteCurrentChat = async () => {
-    if (backendSession) {
+    if (!backendSession) return;
+    try {
+      if (streaming) abortControllerRef.current?.abort();
       await deleteChatSession(backendSession.id);
+      window.dispatchEvent(new Event("vault:chats-changed"));
+      await navigate({ to: "/chat" });
+    } catch (error) {
+      setLastError(error instanceof Error ? error.message : "Could not delete this chat.");
     }
-    navigate({ to: "/chat" });
   };
 
   const send = async (
@@ -638,7 +638,7 @@ function ChatView() {
 
   return (
     <div
-      className="grid h-full grid-cols-1 overflow-y-auto lg:grid-cols-[240px_minmax(0,1fr)] xl:grid-cols-[256px_minmax(0,1fr)] xl:overflow-hidden"
+      className="flex h-full min-w-0 flex-col overflow-hidden"
       onDragOver={(event) => {
         event.preventDefault();
         if (backendReady) setDragActive(true);
@@ -646,34 +646,7 @@ function ChatView() {
       onDragLeave={() => setDragActive(false)}
       onDrop={(event) => void handleDrop(event)}
     >
-      <aside className="border-b border-border bg-card/30 p-2 lg:border-b-0 lg:border-r lg:overflow-y-auto">
-        <Button
-          variant="ghost"
-          className="mb-2 w-full justify-start gap-2"
-          onClick={() => navigate({ to: "/chat" })}
-        >
-          <MessageSquare className="h-4 w-4" /> New chat
-        </Button>
-        <div className="max-h-48 space-y-0.5 overflow-y-auto lg:max-h-none">
-          {backendChats.map((session) => (
-            <Link
-              key={session.id}
-              to="/chat/$chatId"
-              params={{ chatId: session.id }}
-              className={
-                "block break-words rounded-md px-2.5 py-1.5 text-sm transition-colors " +
-                (session.id === backendSession?.id
-                  ? "bg-accent text-foreground"
-                  : "text-muted-foreground hover:bg-accent/70 hover:text-foreground")
-              }
-            >
-              {session.title}
-            </Link>
-          ))}
-        </div>
-      </aside>
-
-      <div className="flex min-w-0 flex-col xl:min-h-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="flex flex-wrap items-center gap-3 border-b border-border bg-card/40 px-6 py-3">
           <Input
             value={titleDraft}
