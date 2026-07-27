@@ -333,22 +333,33 @@
   }
 
   .vault-window-chrome {
-    position: relative;
+    position: fixed;
+    top: 0;
+    right: 0;
     z-index: 100;
     display: flex;
-    width: 100%;
+    width: 138px;
     height: 32px;
-    min-height: 32px;
     align-items: stretch;
-    background: var(--background);
+    background: transparent;
     user-select: none;
-    -webkit-app-region: drag;
   }
 
   .vault-window-controls {
     display: flex;
     height: 32px;
     margin-left: auto;
+    -webkit-app-region: no-drag;
+  }
+
+  .vault-sidebar {
+    -webkit-app-region: drag;
+  }
+
+  .vault-sidebar a,
+  .vault-sidebar button,
+  .vault-sidebar input,
+  .vault-sidebar nav {
     -webkit-app-region: no-drag;
   }
 

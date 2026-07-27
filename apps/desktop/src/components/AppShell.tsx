@@ -39,6 +39,7 @@ import { normalizeTint } from "@/lib/recordAdapters";
 import { displayPath } from "@/lib/displayPath";
 import { Button } from "@/components/ui/button";
 import { flushSync } from "react-dom";
+import { useLocalImage } from "@/lib/useLocalImage";
 
 type NavItem = {
   to:
@@ -86,13 +87,18 @@ export function AppShell() {
   const [unlockStatus, setUnlockStatus] = useState<UnlockStatusRead | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tour, setTour] = useState<DesktopSetupState["tour"] | null>(null);
+  const [avatarPath, setAvatarPath] = useState("");
+  const avatarSource = useLocalImage(avatarPath);
   const contentRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let cancelled = false;
     async function loadTour() {
       const state = await window.cmlDesktop?.getSetupState?.();
-      if (!cancelled && state?.phase === "complete") setTour(state.tour);
+      if (!cancelled && state?.phase === "complete") {
+        setTour(state.tour);
+        setAvatarPath(state.profile.avatar_path ?? "");
+      }
     }
     void loadTour();
     const restart = () => {
@@ -159,15 +165,14 @@ export function AppShell() {
         setSavedChats([]);
         return;
       }
-      const [rows, chats] = await Promise.all([
-        listClusters(activeVault.id),
-        listChatSessions(activeVault.id, { limit: 50 }),
+      const [rows, chats] = await Promise.allSettled([
+        listClusters(activeVault.id, { limit: 5 }),
+        listChatSessions(activeVault.id, { saved: true, limit: 5 }),
       ]);
-      setRecentClusters(rows.slice(0, 5));
-      setSavedChats(chats.filter((chat) => chat.saved).slice(0, 5));
+      if (rows.status === "fulfilled") setRecentClusters(rows.value);
+      if (chats.status === "fulfilled") setSavedChats(chats.value);
     } catch {
-      setRecentClusters([]);
-      setSavedChats([]);
+      // Keep the last successful sidebar data during a transient refresh failure.
     }
   }, []);
 
@@ -360,8 +365,12 @@ export function AppShell() {
 
           <div className="border-t border-[var(--border-default)] p-4">
             <Link to="/settings" search={{ section: "profile" }} className="flex min-h-10 items-center gap-3 rounded-md p-1 hover:bg-[var(--bg-hover)]">
-              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--text-primary)] text-[var(--bg-card)]">
-                <UserRound className="h-4 w-4" strokeWidth={1.5} />
+              <span className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-[var(--text-primary)] text-[var(--bg-card)]">
+                {avatarSource ? (
+                  <img src={avatarSource} alt="" className="h-full w-full object-cover" />
+                ) : (
+                  <UserRound className="h-4 w-4" strokeWidth={1.5} />
+                )}
               </span>
               <div className="min-w-0 flex-1">
                 <div className="break-words text-[13px] font-medium text-[var(--text-primary)]">

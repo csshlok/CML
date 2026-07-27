@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
   activateLocalModel,
+  approveModelDiscoveryRoot,
   cancelModelDownload,
   cancelEmbeddingDownload,
   checkDiskPreflight,
@@ -209,6 +210,7 @@ function Onboarding() {
         setVaultName(state.vault.name || "My Library");
         setVaultPath(state.vault.path);
         setSetupVaultId(state.vault.id);
+        setModelDownloadRoot(state.model_storage.download_root);
         if (state.chat_setup.model_id) {
           setSelectedModelId(state.chat_setup.model_id);
           modelSelectionDirtyRef.current = true;
@@ -280,12 +282,14 @@ function Onboarding() {
     const showInitialLoading = !modelsLoadedRef.current;
     if (showInitialLoading) setModelsLoading(true);
     try {
-      const [rows, runtime] = await Promise.all([
+      const [rowsResult, runtimeResult] = await Promise.allSettled([
         listLocalModels(),
         getModelRuntimeStatus(),
       ]);
+      if (rowsResult.status === "rejected") throw rowsResult.reason;
+      const rows = rowsResult.value;
       setModels(rows);
-      setModelRuntime(runtime);
+      if (runtimeResult.status === "fulfilled") setModelRuntime(runtimeResult.value);
       setModelDownload((current) => {
         const active = rows
           .map((row) => row.download)
@@ -332,6 +336,10 @@ function Onboarding() {
       const normalized = displayPath(selected);
       setModelDownloadRoot(normalized);
       setMessage("Model download location selected.");
+      await desktop?.updateSetupState?.({
+        model_storage: { download_root: normalized },
+      });
+      await approveModelDiscoveryRoot(normalized);
       await runModelDiskPreflight(normalized);
     }
   }

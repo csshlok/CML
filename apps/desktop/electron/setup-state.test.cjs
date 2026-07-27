@@ -52,6 +52,16 @@ test("first-use tour progress and completion persist without changing setup phas
   assert.deepEqual(state.tour, { status: "completed", step: 5, version: 1 });
 });
 
+test("selected model storage root persists across setup resume", async () => {
+  const root = await temporaryUserData();
+  await updateSetupState(root, {
+    model_storage: { download_root: "D:\\Vault Models" },
+  });
+
+  const resumed = await readSetupState(root);
+  assert.equal(resumed.model_storage.download_root, "D:\\Vault Models");
+});
+
 test("setup state rejects accidental backward transitions", () => {
   const current = {
     ...defaultSetupState(),

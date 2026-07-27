@@ -48,13 +48,13 @@ export function CommandPalette({
           }
           return;
         }
-        const [clusterRows, sourceRows] = await Promise.all([
+        const [clusterResult, sourceResult] = await Promise.allSettled([
           listClusters(vault.id),
           listSources(vault.id),
         ]);
         if (!cancelled) {
-          setClusters(clusterRows);
-          setSources(sourceRows);
+          setClusters(clusterResult.status === "fulfilled" ? clusterResult.value : []);
+          setSources(sourceResult.status === "fulfilled" ? sourceResult.value : []);
         }
       } catch {
         if (!cancelled) {

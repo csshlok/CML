@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
   activateLocalModel,
+  approveModelDiscoveryRoot,
   approveCliPairingChallenge,
   backfillTemporalFacts,
   cancelModelDownload,
@@ -112,6 +113,7 @@ import {
 } from "@/components/ui/dialog";
 import { displayPath } from "@/lib/displayPath";
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
+import { useLocalImage } from "@/lib/useLocalImage";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_app/settings")({
@@ -178,6 +180,12 @@ function SettingsView() {
   const [cliClients, setCliClients] = useState<CliClientRecord[]>([]);
   const [cliAccessBusyId, setCliAccessBusyId] = useState<string | null>(null);
   const [cliAccessError, setCliAccessError] = useState<string | null>(null);
+  const [odinLauncher, setOdinLauncher] = useState<{
+    launcher_path: string;
+    installed: boolean;
+    needs_repair: boolean;
+  } | null>(null);
+  const [odinLauncherBusy, setOdinLauncherBusy] = useState(false);
   const [integrationImports, setIntegrationImports] = useState<IntegrationImportRecord[]>([]);
   const [reconciliationRunsByImport, setReconciliationRunsByImport] = useState<Record<string, ReconciliationRunRecord[]>>({});
   const [reconciliationItemsByRun, setReconciliationItemsByRun] = useState<Record<string, ReconciliationItemPage>>({});
@@ -236,7 +244,10 @@ function SettingsView() {
 
   useEffect(() => {
     setMounted(true);
-    void desktop?.getSetupState?.().then((state) => setAvatarPath(state?.profile.avatar_path ?? ""));
+    void desktop?.getSetupState?.().then((state) => {
+      setAvatarPath(state?.profile.avatar_path ?? "");
+      setModelDownloadRoot(state?.model_storage.download_root ?? "");
+    });
   }, []);
 
   useEffect(() => {
@@ -255,16 +266,18 @@ function SettingsView() {
   }
 
   const refreshCliAccess = useCallback(async () => {
-    try {
-      const [pairings, clients] = await Promise.all([listCliPairingChallenges(), listCliClients()]);
-      setCliPairings(pairings);
-      setCliClients(clients);
-      setCliAccessError(null);
-    } catch (error) {
-      setCliAccessError(
-        error instanceof Error ? error.message : "Command-line access could not be loaded.",
-      );
-    }
+    const [pairings, clients] = await Promise.allSettled([
+      listCliPairingChallenges(),
+      listCliClients(),
+    ]);
+    const failures: string[] = [];
+    if (pairings.status === "fulfilled") setCliPairings(pairings.value);
+    else failures.push("pairing requests");
+    if (clients.status === "fulfilled") setCliClients(clients.value);
+    else failures.push("connected clients");
+    setCliAccessError(
+      failures.length ? `Could not refresh ${failures.join(" and ")}.` : null,
+    );
   }, []);
 
   useVisiblePolling(
@@ -272,6 +285,13 @@ function SettingsView() {
     2000,
     activeSection === "connections" && Boolean(backendVault),
   );
+
+  useEffect(() => {
+    if (activeSection !== "connections") return;
+    void desktop?.getOdinLauncherStatus?.()
+      .then(setOdinLauncher)
+      .catch(() => setOdinLauncher(null));
+  }, [activeSection, desktop]);
 
   const loadSettings = useCallback(async () => {
       try {
@@ -290,19 +310,7 @@ function SettingsView() {
           setStatusMessage(currentUnlock.message || "Library is locked. Unlock it from Privacy settings.");
           return;
         }
-        const [
-          vaultRows,
-          modelRows,
-          recommendations,
-          discoveredRows,
-          runtimeStatus,
-          embeddingStatus,
-          embeddingDownloadStatus,
-          ocrStatus,
-          hardwareStatus,
-          jobStatus,
-          evidencePolicy,
-        ] = await Promise.all([
+        const results = await Promise.allSettled([
           listVaults(),
           listLocalModels(),
           getModelRecommendations(),
@@ -315,38 +323,70 @@ function SettingsView() {
           getJobStatus(),
           getChatEvidenceRetentionPolicy(),
         ]);
-        const firstVault = vaultRows[0] ?? null;
-        setBackendVault(firstVault);
-        if (firstVault && !pathDraftDirtyRef.current) {
-          setPathDraft(firstVault.path);
+        const failures: string[] = [];
+        const readResult = <T,>(index: number, label: string): T | undefined => {
+          const result = results[index] as PromiseSettledResult<T>;
+          if (result.status === "fulfilled") return result.value;
+          failures.push(label);
+          return undefined;
+        };
+        const vaultRows = readResult<VaultRecord[]>(0, "library");
+        const modelRows = readResult<LocalModelRecord[]>(1, "models");
+        const recommendations = readResult<ModelRecommendationsRecord>(2, "recommendations");
+        const discoveredRows = readResult<{ models: DiscoveredInstalledModelRecord[] }>(3, "model scan");
+        const runtimeStatus = readResult<ModelRuntimeStatus>(4, "model runtime");
+        const embeddingStatus = readResult<EmbeddingRuntimeStatus>(5, "memory search");
+        const embeddingDownloadStatus = readResult<EmbeddingModelDownloadState>(6, "memory download");
+        const ocrStatus = readResult<OCRRuntimeStatusRead>(7, "document reading");
+        const hardwareStatus = readResult<HardwareStatusRead>(8, "hardware");
+        const jobStatus = readResult<JobQueueStatus>(9, "tasks");
+        const evidencePolicy = readResult<ChatEvidenceRetentionPolicy>(10, "chat evidence");
+        const firstVault = vaultRows?.[0];
+        if (vaultRows) {
+          setBackendVault(firstVault ?? null);
+          if (firstVault && !pathDraftDirtyRef.current) setPathDraft(firstVault.path);
         }
-        const [importRows, projectRows, temporalStatus, factRows, packingStatus] = firstVault
-          ? await Promise.all([
+        if (firstVault) {
+          const dependent = await Promise.allSettled([
               listIntegrationImports(firstVault.id),
               listProjects(firstVault.id),
               getTemporalFactStatus(firstVault.id),
               listTemporalFacts(firstVault.id),
               getRetrievalPackingDiagnostics(firstVault.id),
-            ])
-          : [[], [], null, [], null];
-        setModels(modelRows);
-        setModelRecommendations(recommendations);
-        setDiscoveredModels(discoveredRows.models);
-        setRuntime(runtimeStatus);
-        setEmbeddingRuntime(embeddingStatus);
-        if (!embeddingDraftDirtyRef.current) {
+          ]);
+          const readDependent = <T,>(index: number, label: string): T | undefined => {
+            const result = dependent[index] as PromiseSettledResult<T>;
+            if (result.status === "fulfilled") return result.value;
+            failures.push(label);
+            return undefined;
+          };
+          const importRows = readDependent<IntegrationImportRecord[]>(0, "connections");
+          const projectRows = readDependent<ProjectRecord[]>(1, "projects");
+          const temporalStatus = readDependent<TemporalFactDiagnostics>(2, "memory status");
+          const factRows = readDependent<TemporalFactRecord[]>(3, "memory facts");
+          const packingStatus = readDependent<RetrievalPackingDiagnostics>(4, "retrieval");
+          if (importRows) setIntegrationImports(importRows);
+          if (projectRows) setProjects(projectRows);
+          if (temporalStatus) setTemporalFacts(temporalStatus);
+          if (factRows) setReviewableFacts(factRows);
+          if (packingStatus) setRetrievalPacking(packingStatus);
+        }
+        if (modelRows) setModels(modelRows);
+        if (recommendations) setModelRecommendations(recommendations);
+        if (discoveredRows) setDiscoveredModels(discoveredRows.models);
+        if (runtimeStatus) setRuntime(runtimeStatus);
+        if (embeddingStatus) setEmbeddingRuntime(embeddingStatus);
+        if (embeddingStatus && !embeddingDraftDirtyRef.current) {
           setEmbeddingCacheDraft(embeddingStatus.cache_dir ?? "");
         }
-        setEmbeddingDownload(embeddingDownloadStatus);
-        setOcrRuntime(ocrStatus);
-        setHardware(hardwareStatus);
-        setJobs(jobStatus);
-        setTemporalFacts(temporalStatus);
-        setReviewableFacts(factRows);
-        setRetrievalPacking(packingStatus);
-        setRetentionPolicy(evidencePolicy);
-        setIntegrationImports(importRows);
-        setProjects(projectRows);
+        if (embeddingDownloadStatus) setEmbeddingDownload(embeddingDownloadStatus);
+        if (ocrStatus) setOcrRuntime(ocrStatus);
+        if (hardwareStatus) setHardware(hardwareStatus);
+        if (jobStatus) setJobs(jobStatus);
+        if (evidencePolicy) setRetentionPolicy(evidencePolicy);
+        setHealthLoadError(
+          failures.length ? `Some settings could not refresh: ${failures.join(", ")}.` : null,
+        );
         setHealthCheckedAt(new Date());
       } catch (error) {
         const message =
@@ -548,6 +588,10 @@ function SettingsView() {
     const selected = await desktop?.selectModelFolder?.();
     if (selected) {
       setModelDownloadRoot(selected);
+      await desktop?.updateSetupState?.({
+        model_storage: { download_root: selected },
+      });
+      await approveModelDiscoveryRoot(selected);
       setStatusMessage("Model download location selected.");
     }
   }
@@ -621,19 +665,24 @@ function SettingsView() {
   }
 
   async function refreshModelRows() {
-    const [modelRows, recommendations] = await Promise.all([
+    const [modelsResult, recommendationsResult] = await Promise.allSettled([
       listLocalModels(),
       getModelRecommendations(),
     ]);
-    setModels(modelRows);
-    setModelDownload((current) => {
-      const active = modelRows
-        .map((row) => row.download)
-        .find((download) => isActiveModelDownloadStatus(download?.status));
-      if (!current) return active ?? null;
-      return modelRows.find((row) => row.id === current.model_id)?.download ?? current;
-    });
-    setModelRecommendations(recommendations);
+    if (modelsResult.status === "fulfilled") {
+      const modelRows = modelsResult.value;
+      setModels(modelRows);
+      setModelDownload((current) => {
+        const active = modelRows
+          .map((row) => row.download)
+          .find((download) => isActiveModelDownloadStatus(download?.status));
+        if (!current) return active ?? null;
+        return modelRows.find((row) => row.id === current.model_id)?.download ?? current;
+      });
+    }
+    if (recommendationsResult.status === "fulfilled") {
+      setModelRecommendations(recommendationsResult.value);
+    }
   }
 
   async function exportDiagnostics() {
@@ -884,6 +933,7 @@ function SettingsView() {
   async function chooseProfileImage() {
     const selected = await desktop?.selectCoverImage?.();
     if (!selected) return;
+    const previousAvatar = avatarPath;
     setAvatarPath(selected);
     const state = await desktop?.getSetupState?.();
     await desktop?.updateSetupState?.({
@@ -892,7 +942,38 @@ function SettingsView() {
         avatar_path: selected,
       },
     });
+    if (previousAvatar && previousAvatar !== selected) {
+      await desktop?.deleteLocalMedia?.(previousAvatar);
+    }
     setStatusMessage("Profile image updated.");
+  }
+
+  async function installOrRepairOdin() {
+    setOdinLauncherBusy(true);
+    setCliAccessError(null);
+    try {
+      const installed = await desktop?.installOdinLauncher?.();
+      if (!installed) throw new Error("Odin is available only in the desktop app.");
+      setOdinLauncher(installed);
+      setStatusMessage("Odin is ready. New PowerShell windows can use the odin command.");
+    } catch (error) {
+      setCliAccessError(error instanceof Error ? error.message : "Could not install Odin.");
+    } finally {
+      setOdinLauncherBusy(false);
+    }
+  }
+
+  async function startOdinPairing() {
+    setOdinLauncherBusy(true);
+    setCliAccessError(null);
+    try {
+      await desktop?.startOdinPairing?.();
+      setStatusMessage("Odin pairing opened in PowerShell.");
+    } catch (error) {
+      setCliAccessError(error instanceof Error ? error.message : "Could not start Odin pairing.");
+    } finally {
+      setOdinLauncherBusy(false);
+    }
   }
 
   async function deleteCurrentVault() {
@@ -934,14 +1015,16 @@ function SettingsView() {
 
   async function refreshMemoryInsights() {
     if (!backendVault) return;
-    const [status, facts, packing] = await Promise.all([
+    const [statusResult, factsResult, packingResult] = await Promise.allSettled([
       getTemporalFactStatus(backendVault.id),
       listTemporalFacts(backendVault.id),
       getRetrievalPackingDiagnostics(backendVault.id),
     ]);
-    setTemporalFacts(status);
-    setReviewableFacts(facts);
-    setRetrievalPacking(packing);
+    if (statusResult.status === "fulfilled") setTemporalFacts(statusResult.value);
+    if (factsResult.status === "fulfilled") setReviewableFacts(factsResult.value);
+    if (packingResult.status === "fulfilled") setRetrievalPacking(packingResult.value);
+    const failures = [statusResult, factsResult, packingResult].filter((result) => result.status === "rejected");
+    if (failures.length) setStatusMessage("Some memory details could not refresh.");
   }
 
   async function saveFactCorrection(factId: string) {
@@ -1239,6 +1322,35 @@ function SettingsView() {
                   <div className="px-3 py-4 text-sm text-muted-foreground">No code projects are registered in this library.</div>
                 )}
               </div>
+            </SettingsCard>
+
+            <SettingsCard
+              icon={<TerminalSquare className="h-4 w-4" />}
+              title="Odin command"
+              description="Use Odin from PowerShell or your IDE terminal."
+              status={odinLauncher?.installed ? "Ready" : odinLauncher?.needs_repair ? "Repair needed" : "Not installed"}
+              statusTone={odinLauncher?.installed ? "ready" : "issue"}
+            >
+              <div className="mt-5 flex flex-wrap gap-2">
+                <Button onClick={() => void installOrRepairOdin()} disabled={odinLauncherBusy || !desktop?.installOdinLauncher}>
+                  {odinLauncher?.installed ? "Repair Odin" : "Install Odin"}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => void startOdinPairing()}
+                  disabled={odinLauncherBusy || !odinLauncher?.installed}
+                >
+                  Pair Odin
+                </Button>
+              </div>
+              {odinLauncher?.launcher_path ? (
+                <div className="mt-3 break-all font-mono text-xs text-muted-foreground">
+                  {odinLauncher.launcher_path}
+                </div>
+              ) : null}
+              <p className="mt-3 text-xs text-muted-foreground">
+                Open a new PowerShell window after installation, then run <code>odin --help</code>.
+              </p>
             </SettingsCard>
 
             <SettingsCard
@@ -2431,15 +2543,16 @@ function ProfileSettings({
 }) {
   const vaultPath = vault?.path ?? "";
   const [displayName, setDisplayName] = useState(vault?.name ?? (vaultPath ? vaultName(vaultPath) : "Local profile"));
+  const avatarSource = useLocalImage(avatarPath);
   return (
     <>
       <section className="vault-card p-5">
         <div className="flex flex-wrap items-center gap-5">
           <div className="relative">
             <span className="flex h-20 w-20 overflow-hidden rounded-xl bg-foreground text-background">
-              {avatarPath ? (
+              {avatarSource ? (
                 <img
-                  src={profileImageSrc(avatarPath)}
+                  src={avatarSource}
                   alt="Profile"
                   className="h-full w-full object-cover"
                 />
@@ -2483,11 +2596,6 @@ function ProfileSettings({
 
     </>
   );
-}
-
-function profileImageSrc(value: string) {
-  if (/^(data:|https?:|file:)/i.test(value)) return value;
-  return `file:///${value.replace(/\\/g, "/")}`;
 }
 
 function vaultName(path: string) {

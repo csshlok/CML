@@ -39,7 +39,7 @@ import {
   getSource,
   listClusters,
   listSourcePages,
-  listSources,
+  listSourcesPage,
   listVaults,
   reindexSource,
   type SourcePageRecord,
@@ -104,6 +104,8 @@ function SourcesView() {
   const [dragActive, setDragActive] = useState(false);
   const [pageIndex, setPageIndex] = useState(0);
   const [sourceTotal, setSourceTotal] = useState(0);
+  const [pageCursors, setPageCursors] = useState<Array<string | null>>([null]);
+  const [nextSourceCursor, setNextSourceCursor] = useState<string | null>(null);
   const sourceRequestRef = useRef(0);
   const hasLoadedSourcesRef = useRef(false);
 
@@ -122,10 +124,10 @@ function SourcesView() {
         setBackendClusters([]);
         return;
       }
-      const [sourceRows, clusterRows, count, requestedSource] = await Promise.all([
-        listSources(activeVault.id, {
+      const [sourceResult, clusterResult, countResult, requestedResult] = await Promise.allSettled([
+        listSourcesPage(activeVault.id, {
           limit: pageSize,
-          offset: pageIndex * pageSize,
+          cursor: pageCursors[pageIndex] ?? null,
           unclustered: inboxOnly,
           states: inboxOnly ? ["waiting", "processing", "failed"] : undefined,
           query: deferredQuery,
@@ -139,15 +141,29 @@ function SourcesView() {
         requestedSourceId ? getSource(requestedSourceId).catch(() => null) : Promise.resolve(null),
       ]);
       if (requestId !== sourceRequestRef.current) return;
-      if (count.total > 0 && pageIndex * pageSize >= count.total) {
+      if (sourceResult.status === "rejected") throw sourceResult.reason;
+      const sourcePage = sourceResult.value;
+      const clusterRows = clusterResult.status === "fulfilled" ? clusterResult.value : null;
+      const count = countResult.status === "fulfilled" ? countResult.value : null;
+      const requestedSource = requestedResult.status === "fulfilled" ? requestedResult.value : null;
+      if (count && count.total > 0 && sourcePage.items.length === 0 && pageIndex > 0) {
         setPageIndex(Math.max(0, Math.ceil(count.total / pageSize) - 1));
         return;
       }
-      const mappedSources = sourceRows.map(sourceFromRecord);
+      const mappedSources = sourcePage.items.map(sourceFromRecord);
       const visibleSources = mappedSources;
       setBackendSources(visibleSources);
-      setBackendClusters(clusterRows.map(clusterFromRecord));
-      setSourceTotal(count.total);
+      if (clusterRows) setBackendClusters(clusterRows.map(clusterFromRecord));
+      if (count) setSourceTotal(count.total);
+      setNextSourceCursor(sourcePage.next_cursor);
+      if (sourcePage.next_cursor) {
+        setPageCursors((current) => {
+          if (current[pageIndex + 1] === sourcePage.next_cursor) return current;
+          const next = current.slice(0, pageIndex + 1);
+          next[pageIndex + 1] = sourcePage.next_cursor;
+          return next;
+        });
+      }
       setSelected((current) =>
         (requestedSource ? sourceFromRecord(requestedSource) : null) ??
         visibleSources.find((source) => source.id === current?.id) ??
@@ -170,13 +186,17 @@ function SourcesView() {
 
   useEffect(() => {
     void refreshBackendSources();
-  }, [deferredQuery, inboxOnly, pageIndex, requestedSourceId]);
+  }, [deferredQuery, inboxOnly, pageIndex, requestedSourceId, pageCursors]);
 
   useEffect(() => {
     setPageIndex(0);
+    setPageCursors([null]);
   }, [inboxOnly]);
 
-  useEffect(() => setPageIndex(0), [deferredQuery]);
+  useEffect(() => {
+    setPageIndex(0);
+    setPageCursors([null]);
+  }, [deferredQuery]);
 
   const usingBackend = Boolean(vault);
   const sources = usingBackend ? backendSources : [];
@@ -197,13 +217,13 @@ function SourcesView() {
         return;
       }
       try {
-        const [pages, stats] = await Promise.all([
+        const [pagesResult, statsResult] = await Promise.allSettled([
           listSourcePages(inspectorSource.id, { limit: 2 }),
           getSourceStats(inspectorSource.id),
         ]);
         if (!cancelled) {
-          setSelectedPages(pages);
-          setSelectedStats(stats);
+          setSelectedPages(pagesResult.status === "fulfilled" ? pagesResult.value : []);
+          setSelectedStats(statsResult.status === "fulfilled" ? statsResult.value : null);
         }
       } catch {
         if (!cancelled) {
@@ -583,7 +603,7 @@ function SourcesView() {
               type="button"
               className="text-muted-foreground disabled:cursor-not-allowed disabled:opacity-40"
               onClick={() => setPageIndex((current) => current + 1)}
-              disabled={(pageIndex + 1) * pageSize >= sourceTotal}
+              disabled={!nextSourceCursor}
             >
               Next
             </button>

@@ -29,7 +29,7 @@ import {
 } from "@/lib/domain";
 import {
   countSources,
-  getSource,
+  getSources,
   listClusters,
   listSources,
   listVaults,
@@ -37,6 +37,7 @@ import {
   type VaultRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord, sourceStateText } from "@/lib/recordAdapters";
+import { useLocalImage } from "@/lib/useLocalImage";
 
 type FilterType = "all" | "note" | "link" | "file" | "image" | "unclustered";
 type SortMode = "newest" | "oldest" | "alphabetical";
@@ -94,13 +95,18 @@ function SearchView() {
         order: sortMode,
       } as const;
       try {
-        const [rows, count] = await Promise.all([
+        const [rowsResult, countResult] = await Promise.allSettled([
           listSources(vault.id, options),
           countSources(vault.id, undefined, options),
         ]);
         if (cancelled) return;
-        setBackendSources(rows.map(sourceFromRecord));
-        setSourceTotal(count.total);
+        if (rowsResult.status === "fulfilled") {
+          setBackendSources(rowsResult.value.map(sourceFromRecord));
+        } else {
+          setBackendReady(false);
+          return;
+        }
+        if (countResult.status === "fulfilled") setSourceTotal(countResult.value.total);
         setSemanticRanks(new Map());
       } catch {
         if (!cancelled) setBackendReady(false);
@@ -132,18 +138,12 @@ function SearchView() {
           const current = ranks.get(result.source_id) ?? 0;
           ranks.set(result.source_id, Math.max(current, result.score));
         }
-        const resultSources = await Promise.all(
-          Array.from(new Set(response.results.map((result) => result.source_id)))
-            .slice(0, 50)
-            .map((sourceId) => getSource(sourceId).catch(() => null)),
+        const resultSources = await getSources(
+          Array.from(new Set(response.results.map((result) => result.source_id))).slice(0, 50),
         );
         if (cancelled) return;
-        setBackendSources(
-          resultSources
-            .filter((item): item is NonNullable<typeof item> => item !== null)
-            .map(sourceFromRecord),
-        );
-        setSourceTotal(resultSources.filter((item) => item !== null).length);
+        setBackendSources(resultSources.map(sourceFromRecord));
+        setSourceTotal(resultSources.length);
         setSemanticRanks(ranks);
       } catch {
         if (!cancelled) setSemanticRanks(new Map());
@@ -354,7 +354,7 @@ function MemoryCard({
   onOpen: () => void;
 }) {
   const Icon = sourceIcon[source.type] ?? FileText;
-  const coverImageUrl = imageSrc(source.coverImageUrl);
+  const coverImageUrl = useLocalImage(source.coverImageUrl);
 
   return (
     <button
@@ -401,9 +401,9 @@ function SourceDetailDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
+  const coverImageUrl = useLocalImage(source?.coverImageUrl);
 
   if (!source) return null;
-  const coverImageUrl = imageSrc(source.coverImageUrl);
 
   return (
     <Dialog open={Boolean(source)} onOpenChange={onOpenChange}>
@@ -485,12 +485,3 @@ const sourceIcon: Record<SourceType, ComponentType<{ className?: string }>> = {
   external_transcript: Mic,
   external_artifact: FileText,
 };
-
-function imageSrc(value?: string) {
-  if (!value) return undefined;
-  if (/^https:\/\//i.test(value) || value.startsWith("data:") || value.startsWith("file://")) {
-    return value;
-  }
-  return `file:///${value.replace(/\\/g, "/")}`;
-}
-

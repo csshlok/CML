@@ -4,9 +4,12 @@ export function useVisiblePolling(
   task: () => void | Promise<void>,
   intervalMs: number,
   enabled = true,
+  onError?: (error: unknown) => void,
 ) {
   const taskRef = useRef(task);
+  const errorRef = useRef(onError);
   taskRef.current = task;
+  errorRef.current = onError;
 
   useEffect(() => {
     if (!enabled) return;
@@ -14,11 +17,13 @@ export function useVisiblePolling(
     let timer: number | null = null;
     let running = false;
     let rerunRequested = false;
+    let consecutiveFailures = 0;
 
     const schedule = () => {
       if (cancelled) return;
       if (timer !== null) window.clearTimeout(timer);
-      timer = window.setTimeout(run, document.hidden ? intervalMs * 4 : intervalMs);
+      const backoff = Math.min(8, 2 ** consecutiveFailures);
+      timer = window.setTimeout(run, (document.hidden ? intervalMs * 4 : intervalMs) * backoff);
     };
     const run = async () => {
       if (running) {
@@ -36,6 +41,11 @@ export function useVisiblePolling(
       running = true;
       try {
         await taskRef.current();
+        consecutiveFailures = 0;
+      } catch (error) {
+        consecutiveFailures += 1;
+        errorRef.current?.(error);
+        window.dispatchEvent(new CustomEvent("vault:poll-error", { detail: { error } }));
       } finally {
         running = false;
         if (rerunRequested) {
