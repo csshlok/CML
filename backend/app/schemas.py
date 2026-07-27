@@ -325,6 +325,18 @@ class SourceRead(BaseModel):
     updated_at: str
 
 
+class SourceBatchRequest(BaseModel):
+    source_ids: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("source_ids")
+    @classmethod
+    def normalize_source_ids(cls, values: list[str]) -> list[str]:
+        normalized = list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+        if not normalized:
+            raise ValueError("At least one source ID is required")
+        return normalized
+
+
 class SourcePageRead(BaseModel):
     id: str
     source_id: str
@@ -370,6 +382,7 @@ class SemanticSearchResponse(BaseModel):
 
 
 class BridgeStatus(BaseModel):
+    schema_version: int = 1
     enabled: bool
     mcp: str
     http_api: str
@@ -460,6 +473,7 @@ class BridgeExternalTurnCapture(BaseModel):
     context_request_id: str | None = None
     model_name: str | None = None
     metadata: dict = Field(default_factory=dict)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=240, pattern=r"^[A-Za-z0-9._:-]+$")
 
 
 class BridgeArtifactCapture(BaseModel):
@@ -470,6 +484,7 @@ class BridgeArtifactCapture(BaseModel):
     content: str = Field(min_length=1)
     artifact_type: str = "generated_text"
     metadata: dict = Field(default_factory=dict)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=240, pattern=r"^[A-Za-z0-9._:-]+$")
 
 
 class BridgeCaptureResponse(BaseModel):
@@ -502,6 +517,8 @@ class BridgeWritebackReviewRead(BaseModel):
 
 class BridgeWritebackReviewDecision(BaseModel):
     approved: bool
+    expected_updated_at: str | None = Field(default=None, min_length=1, max_length=64)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=240, pattern=r"^[A-Za-z0-9._:-]+$")
 
 
 class BridgeCaptureListItem(BaseModel):
@@ -537,6 +554,7 @@ class BridgeTokenRotationRead(BaseModel):
 
 class BridgeClientCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    capability_profile: Literal["read_only", "read_write"] = "read_write"
     allowed_vault_ids: list[str] = []
     allowed_cluster_ids: list[str] = []
     allow_raw_snippets: bool = False
@@ -549,6 +567,7 @@ class BridgeClientCreate(BaseModel):
 class BridgeClientUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     enabled: bool | None = None
+    capability_profile: Literal["read_only", "read_write"] | None = None
     allowed_vault_ids: list[str] | None = None
     allowed_cluster_ids: list[str] | None = None
     allow_raw_snippets: bool | None = None
@@ -564,6 +583,7 @@ class BridgeClientCreateResponse(BaseModel):
     name: str
     token: str
     enabled: bool
+    capability_profile: Literal["read_only", "read_write"] = "read_write"
     approval_vault_id: str | None = None
     allowed_vault_ids: list[str] = []
     allowed_cluster_ids: list[str] = []
@@ -593,6 +613,7 @@ class BridgeClientRead(BaseModel):
     id: str
     name: str
     enabled: bool
+    capability_profile: Literal["read_only", "read_write"] = "read_write"
     approval_vault_id: str | None = None
     allowed_vault_ids: list[str] = []
     allowed_cluster_ids: list[str] = []
@@ -620,6 +641,7 @@ class BridgeClientRead(BaseModel):
 
 class BridgeApprovalRequestCreate(BaseModel):
     claimed_name: str = Field(min_length=1, max_length=120)
+    capability_profile: Literal["read_only", "read_write"] = "read_only"
     requested_vault_ids: list[str] = []
     requested_cluster_ids: list[str] = []
     allow_raw_snippets: bool = False
@@ -653,6 +675,7 @@ class BridgeApprovalRequestRead(BaseModel):
     vault_id: str
     status: str
     claimed_name: str
+    capability_profile: Literal["read_only", "read_write"] = "read_only"
     requested_vault_ids: list[str] = []
     requested_cluster_ids: list[str] = []
     allow_raw_snippets: bool = False
@@ -677,6 +700,7 @@ class BridgeApprovalRequestRead(BaseModel):
 
 
 class BridgeApprovalDecision(BaseModel):
+    capability_profile: Literal["read_only", "read_write"] | None = None
     allowed_vault_ids: list[str] | None = None
     allowed_cluster_ids: list[str] | None = None
     allow_raw_snippets: bool | None = None
@@ -937,6 +961,20 @@ class ModelRead(BaseModel):
 class ModelCompatibilityRequest(BaseModel):
     path: str
     name: str | None = None
+
+
+class ModelScanRootRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+
+
+class ModelDiscoveryJobRequest(BaseModel):
+    max_results: int = Field(default=32, ge=1, le=200)
+    include_rejected: bool = False
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=240)
+
+
+class DiagnosticBundleJobRequest(BaseModel):
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=240)
 
 
 class ModelActivateRequest(BaseModel):
@@ -1456,6 +1494,7 @@ class AppJobRead(BaseModel):
     job_type: str
     status: str
     payload: str
+    result_json: str = "{}"
     dedupe_key: str | None = None
     priority: str | None = None
     idempotency_class: str | None = None
@@ -1564,6 +1603,8 @@ class RetrievalPackingDiagnosticsRead(BaseModel):
 class JobQueueStatus(BaseModel):
     queued: int
     blocked_by_dependency: int = 0
+    blocked_setup_required: int = 0
+    deferred: int = 0
     running: int
     succeeded: int
     failed: int

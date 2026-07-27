@@ -538,6 +538,59 @@ class LoraToRagPhase12Tests(unittest.TestCase):
         self.assertGreaterEqual(discovery["compatible_model_count"], 1)
         self.assertTrue(any(item["local_path"] == str(model_file.resolve()) for item in discovery["models"]))
 
+    def test_approved_model_scan_root_is_persisted_and_discovered(self) -> None:
+        from backend.app.core.model_registry import (
+            approve_model_scan_root,
+            discover_installed_models,
+            installed_model_scan_roots,
+            registry_state,
+        )
+
+        model_file = self._write_fake_gguf("approved-qwen-q4_k_m.gguf")
+        approval = approve_model_scan_root(model_file.parent)
+        roots = installed_model_scan_roots()
+        discovery = discover_installed_models(max_results=10, refresh=True)
+
+        self.assertTrue(approval["approved"])
+        self.assertIn(str(model_file.parent.resolve()), registry_state()["approved_scan_roots"])
+        self.assertIn(str(model_file.parent).lower(), {str(path).lower() for path in roots})
+        self.assertTrue(any(item["local_path"] == str(model_file.resolve()) for item in discovery["models"]))
+
+    def test_default_model_scan_does_not_include_drive_roots(self) -> None:
+        from backend.app.core.model_registry import installed_model_scan_roots
+
+        roots = installed_model_scan_roots()
+
+        self.assertFalse(any(path.parent == path for path in roots))
+
+    def test_model_import_job_copies_checkpoint_and_records_result(self) -> None:
+        from backend.app.core.background_jobs import enqueue_job, run_due_jobs_once
+        from backend.app.core.database import connect
+
+        model_file = self._write_fake_gguf("job-qwen-q4_k_m.gguf")
+        with connect() as conn:
+            job = enqueue_job(
+                conn,
+                job_type="model_import",
+                payload={"path": str(model_file), "name": "Job Qwen"},
+                dedupe_key="model-import:test",
+                scope_id="test-model",
+                user_initiated=True,
+            )
+
+        self.assertEqual(run_due_jobs_once(limit=1), 1)
+        with connect() as conn:
+            completed = conn.execute(
+                "SELECT status, status_detail FROM app_jobs WHERE id = ?",
+                (job["id"],),
+            ).fetchone()
+
+        detail = json.loads(completed["status_detail"])
+        self.assertEqual(completed["status"], "succeeded")
+        self.assertEqual(detail["phase"], "complete")
+        self.assertEqual(detail["progress_percent"], 100.0)
+        self.assertTrue(Path(detail["local_path"]).is_file())
+
     def test_legacy_train_cluster_adapter_jobs_fall_back_to_unsupported_job_handling(self) -> None:
         from backend.app.core.background_jobs import enqueue_job, run_due_jobs_once
         from backend.app.core.database import connect
