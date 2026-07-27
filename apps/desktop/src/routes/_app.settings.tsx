@@ -112,6 +112,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { displayPath } from "@/lib/displayPath";
+import { isModelRuntimeReady, modelReadinessLabel } from "@/lib/modelState";
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
 import { useLocalImage } from "@/lib/useLocalImage";
 import { cn } from "@/lib/utils";
@@ -563,14 +564,38 @@ function SettingsView() {
     }
   }
 
-  async function activateModel(modelId: string) {
+  async function activateModel(
+    modelId: string,
+    messages?: { success?: string; importedName?: string },
+  ) {
     setActivatingId(modelId);
     try {
-      await activateLocalModel(modelId, "chat");
-      await refreshModelRows();
-      setStatusMessage("Chat model activated.");
+      const activated = await activateLocalModel(modelId, "chat");
+      setModels((current) => {
+        const found = current.some((model) => model.id === activated.id);
+        return found
+          ? current.map((model) => (model.id === activated.id ? activated : model))
+          : [...current, activated];
+      });
+      const [nextRuntime] = await Promise.all([
+        getModelRuntimeStatus(),
+        refreshModelRows(),
+      ]);
+      setRuntime(nextRuntime);
+      if (!isModelRuntimeReady(activated, nextRuntime)) {
+        throw new Error(nextRuntime.error || "Vault could not confirm that the chat model is ready.");
+      }
+      setStatusMessage(messages?.success ?? "Chat model is ready.");
+      return true;
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Could not activate model.");
+      await refreshModelRows();
+      const detail = error instanceof Error ? error.message : "Could not start the chat model.";
+      setStatusMessage(
+        messages?.importedName
+          ? `${messages.importedName} was added, but it could not start. ${detail}`
+          : detail,
+      );
+      return false;
     } finally {
       setActivatingId(null);
     }
@@ -611,13 +636,22 @@ function SettingsView() {
 
   async function importApprovedModel() {
     try {
+      setStatusMessage("Adding model...");
       const imported = await importLocalModel({
         path: customModelPath.trim(),
         name: customModelName.trim() || null,
       });
       await refreshModelRows();
       setCustomModelReport(imported.compatibility);
-      setStatusMessage(`${imported.name} imported.`);
+      if (isModelRuntimeReady(imported, runtime)) {
+        setStatusMessage(`${imported.name} is already ready for chat.`);
+        return;
+      }
+      setStatusMessage(`${imported.name} was added. Starting it now...`);
+      await activateModel(imported.id, {
+        success: `${imported.name} is ready for chat.`,
+        importedName: imported.name,
+      });
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not import model.");
     }
@@ -642,14 +676,24 @@ function SettingsView() {
 
   async function importDiscoveredModel(model: DiscoveredInstalledModelRecord) {
     try {
+      setStatusMessage(`Adding ${model.name}...`);
       const imported = await importLocalModel({
         path: model.local_path,
         name: model.name,
       });
       await refreshModelRows();
       setCustomModelReport(imported.compatibility);
-      await scanInstalledModels();
-      setStatusMessage(`${imported.name} imported.`);
+      const discovery = await discoverInstalledModels({ max_results: 24, refresh: true });
+      setDiscoveredModels(discovery.models);
+      if (isModelRuntimeReady(imported, runtime)) {
+        setStatusMessage(`${imported.name} is already ready for chat.`);
+        return;
+      }
+      setStatusMessage(`${imported.name} was added. Starting it now...`);
+      await activateModel(imported.id, {
+        success: `${imported.name} is ready for chat.`,
+        importedName: imported.name,
+      });
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not import detected model.");
     }
@@ -1528,9 +1572,7 @@ function SettingsView() {
                         <div className="mt-1 text-xs text-muted-foreground">
                           {needsVerification
                             ? "Needs verification before chat"
-                            : model.compatibility?.chat_role_accepted
-                              ? "Ready for chat"
-                              : "Not compatible with chat"}
+                            : modelReadinessLabel(model, runtime)}
                         </div>
                         {model.id === recommendedChatModelId ? (
                           <div className="mt-1 text-xs text-primary">
@@ -1540,7 +1582,7 @@ function SettingsView() {
                       </div>
                       {model.active_chat ? (
                         <span className="text-primary">
-                          Chat
+                          {isModelRuntimeReady(model, runtime) ? "Chat" : "Selected"}
                         </span>
                       ) : null}
                     </div>

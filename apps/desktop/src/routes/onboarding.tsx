@@ -49,6 +49,7 @@ import {
 } from "@/lib/backend";
 import { cn } from "@/lib/utils";
 import { displayPath } from "@/lib/displayPath";
+import { isModelRuntimeReady } from "@/lib/modelState";
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5 | 6;
@@ -150,6 +151,10 @@ function Onboarding() {
     modelRecommendations?.recommended_chat_model_id,
     models,
   ]);
+  const importedModels = useMemo(
+    () => models.filter((model) => model.source_kind === "custom_import"),
+    [models],
+  );
 
   const resolvedVaultPath = useMemo(() => {
     const path = vaultPath.trim();
@@ -161,12 +166,7 @@ function Onboarding() {
     if (step === 1) return displayName.trim().length >= 2;
     if (step === 2) return vaultName.trim().length >= 2 && vaultPath.trim().length > 0;
     if (step === 3) {
-      return Boolean(
-        modelRuntime?.state === "ready" &&
-          models.some(
-            (model) => model.active_chat && model.id === modelRuntime.model,
-          ),
-      );
+      return models.some((model) => isModelRuntimeReady(model, modelRuntime));
     }
     if (step === 4) return Boolean(embeddingRuntime?.available);
     if (step === 5) {
@@ -180,6 +180,7 @@ function Onboarding() {
   }, [
     displayName,
     embeddingRuntime?.available,
+    modelRuntime?.available,
     modelRuntime?.model,
     modelRuntime?.state,
     models,
@@ -387,7 +388,7 @@ function Onboarding() {
         name: customModelName.trim() || null,
       });
       setCustomModelReport(report);
-      setMessage(report.accepted ? "Model accepted." : report.detail);
+      setMessage(report.accepted ? "This model is compatible." : report.detail);
       if (!report.accepted) setError(report.detail);
     } catch (err) {
       setCustomModelReport(null);
@@ -398,15 +399,14 @@ function Onboarding() {
 
   async function importApprovedModel() {
     setError(null);
-    setMessage("Importing approved model...");
+    setMessage("Adding model...");
     try {
       const imported = await importLocalModel({
         path: customModelPath.trim(),
         name: customModelName.trim() || null,
       });
-      setMessage(`${imported.name} imported and ready.`);
       setCustomModelReport(imported.compatibility);
-      await refreshModels();
+      await activateImportedModel(imported);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not import the model.");
       setMessage(null);
@@ -415,14 +415,14 @@ function Onboarding() {
 
   async function importDiscoveredModel(model: DiscoveredInstalledModelRecord) {
     setError(null);
-    setMessage(`Importing ${model.name}...`);
+    setMessage(`Adding ${model.name}...`);
     try {
       const imported = await importLocalModel({
         path: model.local_path,
         name: model.name,
       });
-      setMessage(`${imported.name} imported and ready.`);
-      await refreshModels();
+      setCustomModelReport(imported.compatibility);
+      await activateImportedModel(imported);
       await refreshDetectedModels();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not import the detected model.");
@@ -432,16 +432,61 @@ function Onboarding() {
 
   async function activateModel(modelId: string) {
     setError(null);
+    modelSelectionDirtyRef.current = true;
+    autoActivationAttemptRef.current = modelId;
+    setSelectedModelId(modelId);
     setActivatingId(modelId);
     try {
-      await activateLocalModel(modelId, "chat");
+      const activated = await activateLocalModel(modelId, "chat");
+      setModels((current) => {
+        const found = current.some((model) => model.id === activated.id);
+        return found
+          ? current.map((model) => (model.id === activated.id ? activated : model))
+          : [...current, activated];
+      });
+      const runtime = await getModelRuntimeStatus();
+      setModelRuntime(runtime);
+      if (!isModelRuntimeReady(activated, runtime)) {
+        throw new Error(runtime.error || "Vault could not confirm that the chat model is ready.");
+      }
       await refreshModels();
       setMessage("Chat model is ready.");
+      return true;
     } catch (err) {
+      await refreshModels();
       setError(err instanceof Error ? err.message : "Could not activate the model.");
+      setMessage(null);
+      return false;
     } finally {
       setActivatingId(null);
     }
+  }
+
+  async function activateImportedModel(imported: LocalModelRecord) {
+    modelSelectionDirtyRef.current = true;
+    autoActivationAttemptRef.current = imported.id;
+    setSelectedModelId(imported.id);
+    setModels((current) => {
+      const found = current.some((model) => model.id === imported.id);
+      return found
+        ? current.map((model) => (model.id === imported.id ? imported : model))
+        : [...current, imported];
+    });
+    if (isModelRuntimeReady(imported, modelRuntime)) {
+      setMessage(`${imported.name} is already ready for chat.`);
+      return;
+    }
+    setMessage(`${imported.name} was added. Starting it now...`);
+    const activated = await activateModel(imported.id);
+    if (activated) {
+      setMessage(`${imported.name} is ready for chat.`);
+      return;
+    }
+    setError((current) =>
+      current
+        ? `${imported.name} was added, but it could not start. ${current}`
+        : `${imported.name} was added, but it could not start. Try Use for chat again.`,
+    );
   }
 
   async function refreshEmbeddingStatus() {
@@ -672,11 +717,7 @@ function Onboarding() {
         phase: "models_complete",
         chat_setup: {
           status:
-            selected?.active_chat &&
-            modelRuntime?.state === "ready" &&
-            modelRuntime.model === selected.id
-              ? "ready"
-              : "pending",
+            isModelRuntimeReady(selected, modelRuntime) ? "ready" : "pending",
           model_id: selectedModelId,
         },
       });
@@ -741,10 +782,7 @@ function Onboarding() {
 
   async function finish() {
     const readyChatModel = models.find(
-      (model) =>
-        model.active_chat &&
-        modelRuntime?.state === "ready" &&
-        model.id === modelRuntime.model,
+      (model) => isModelRuntimeReady(model, modelRuntime),
     );
     await desktop?.updateSetupState?.({
       phase: "complete",
@@ -1055,6 +1093,35 @@ function Onboarding() {
                           </div>
                         ) : (
                           <div className="grid gap-4">
+                            {importedModels.length ? (
+                              <div className="grid gap-3">
+                                <div>
+                                  <div className="text-sm font-medium">Added models</div>
+                                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                                    Select a model, then use it for chat. Vault checks that it can
+                                    answer before setup continues.
+                                  </p>
+                                </div>
+                                {importedModels.map((model) => (
+                                  <ModelRow
+                                    key={`imported-${model.id}`}
+                                    model={model}
+                                    recommended={false}
+                                    selected={selectedModelId === model.id}
+                                    busy={false}
+                                    activating={activatingId === model.id}
+                                    roleActive={Boolean(model.active_chat)}
+                                    onSelect={() => {
+                                      modelSelectionDirtyRef.current = true;
+                                      setSelectedModelId(model.id);
+                                    }}
+                                    onDownload={() => undefined}
+                                    onCancel={() => undefined}
+                                    onActivate={() => void activateModel(model.id)}
+                                  />
+                                ))}
+                              </div>
+                            ) : null}
                             <div className="rounded-md border border-border bg-secondary/35 p-4 text-sm">
                               <div className="flex flex-wrap items-center justify-between gap-3">
                                 <div>
@@ -1162,7 +1229,7 @@ function Onboarding() {
                               <div className="rounded-md border border-border bg-card p-4 text-sm">
                                 <div className="font-medium">
                                   {customModelReport.accepted
-                                    ? "Ready to use"
+                                    ? "Compatible model"
                                     : "This model cannot be used"}
                                 </div>
                                 <div className="mt-2 text-muted-foreground">
@@ -1411,7 +1478,7 @@ function Onboarding() {
                     icon={<Check className="h-5 w-5" />}
                     title="Welcome to Vault"
                     sub={
-                      modelRuntime?.state === "ready"
+                      models.some((model) => isModelRuntimeReady(model, modelRuntime))
                         ? "Your library is ready. Add sources, or start a chat when you want to ask across everything."
                         : "Your library is ready. Add sources now; you can set up chat later in Settings."
                     }
@@ -1423,10 +1490,7 @@ function Onboarding() {
                         label="Chat model"
                         value={
                           models.find(
-                            (model) =>
-                              model.active_chat &&
-                              modelRuntime?.state === "ready" &&
-                              model.id === modelRuntime.model,
+                            (model) => isModelRuntimeReady(model, modelRuntime),
                           )?.name ?? "Skipped — set up later in Settings"
                         }
                       />
