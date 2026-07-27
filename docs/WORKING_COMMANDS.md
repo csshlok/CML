@@ -162,8 +162,45 @@ npm run build
 
 ### 3.1 Odin Project Commands
 
-Odin is the Project Graph command surface. Packaged builds expose `odin`; from a source checkout,
-the `odin.ps1` wrapper runs the same CLI:
+Odin is the Project Graph command surface. The packaged command is a thin client: Vault Desktop
+must be running because it owns the encrypted database, indexing service, and authentication.
+
+After installing Vault:
+
+1. Open **Settings > Profile**.
+2. Under **Odin command**, select **Install Odin** (or **Repair Odin** after an update).
+3. Open a new PowerShell window and verify the command:
+
+```powershell
+odin --help
+odin auth pair
+```
+
+Pairing opens a request in Vault for approval. The command never needs a source checkout, activated
+virtual environment, or development API token. If Vault is closed, Odin exits with a short message
+asking you to open it.
+
+Common packaged commands:
+
+```powershell
+odin auth status
+odin project add . --name "My Project" --scope context
+odin project add C:\src\library --name "Library Code" --scope code
+odin project list
+odin project status .
+odin project sync .
+odin project sync . --scope code
+odin project reindex . --layer retrieval
+odin project link . --cluster "Research"
+odin project explain . register_project
+odin project path . register_project build_structure_graph
+odin project graph . --query "project indexing" --depth 2 --format markdown
+odin project tree . --root "backend/app" --format markdown
+odin context "How does project indexing work?" --project .
+odin project remove .
+```
+
+From a source checkout, `odin.ps1` runs the same CLI:
 
 ```powershell
 .\odin.ps1 auth status
@@ -189,9 +226,10 @@ For direct CLI development, use the module form:
 .\.venv\Scripts\python.exe -m backend.app.odin_cli project list
 ```
 
-Odin uses `ODIN_BACKEND_URL` and `ODIN_API_TOKEN`, with the existing `CML_BACKEND_URL` and
-`CML_API_TOKEN` variables as development fallbacks. Normal desktop use pairs the CLI through
-the approval flow and stores its device credential with Windows user-bound protection. Removing
+`ODIN_BACKEND_URL`, `ODIN_API_TOKEN`, `CML_BACKEND_URL`, and `CML_API_TOKEN` are development-only
+fallbacks and direct tokens require an explicit development opt-in. Normal desktop use discovers
+the protected runtime descriptor, pairs through the approval flow, and stores its device credential
+with Windows user-bound protection. Removing
 an Odin project deletes only CML's imported index and never modifies the repository working tree.
 The persisted `context` scope (the default) includes code, supported documentation, manifests, and
 configuration. The `code` scope retains source-like files and code manifests while excluding general
