@@ -1,6 +1,6 @@
 # Project Context
 
-Last updated: 2026-07-26
+Last updated: 2026-07-27
 
 ## Purpose
 
@@ -25,6 +25,49 @@ The scoped RAG migration, temporal memory foundation, Odin project workflow, bou
 
 The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
 
+## July 27 MCP, Tunnel, And Reliability Completion
+
+The latest source completes the local ChatGPT MCP connection implementation and the
+reliability remediation plan. MCP tool contracts, stdio transport, and backend
+handlers are separated across `bridge_mcp_tools.py`, `bridge_mcp_stdio.py`, and
+`bridge_mcp.py`. The transport enforces strict schemas, byte bounds, UTF-8 and Unicode
+control safety, bounded per-class/global concurrency, cancellation, overload rejection,
+graceful EOF, duplicate-ID rejection, safe backend-reset errors, and total serialized
+output limits.
+
+Electron now owns an encrypted, supervised outbound Secure MCP Tunnel lifecycle.
+Credentials are replaced atomically through OS encryption; transient network failures
+retry with bounded jitter while authentication, permission, and version failures stop
+reconnect. Helper integrity rejects symlinks, the MCP child receives a minimal
+environment and a loopback-only backend origin, and no desktop bearer token enters the
+child. Permission edits rotate the scoped Bridge token and refresh an active tunnel.
+Deleting an active vault first forgets the tunnel.
+
+Bridge writes have separate attempted/completed audit events, including read-only and
+scope denials, conflicts, replays, approvals, and successful captures. The numbered
+ChatGPT setup flow reconstructs progress from durable client, scope, tunnel, and audit
+state, detects a successful `list_clusters` verification, and explains the confirmed
+write test and immediate revoke path with simple copy.
+
+Latest source validation is clean:
+
+- backend: 810 passed, 1 optional skip, 2 explicit scale deselections, 0 failed;
+- desktop: TypeScript passed and 91/91 Electron tests passed;
+- MCP Inspector 0.21.2: development stdio read-only and read/write passed;
+- MCP soak: 1,000 calls, initialization 824.159 ms, `list_clusters` p95 86.93 ms,
+  maximum 160.779 ms, and 0 MiB MCP RSS growth;
+- Odin scale: 50,000 files, 68.3 MiB peak memory; the concurrent run took 160.824 s;
+- product scale: 10,000 sources queried in 0.108 s;
+- security: clean, interrupted, offline-at-rest, and 1,200-source encrypted-vault
+  drills passed with zero plaintext marker hits and zero import failures;
+- dependency audits: no known Python or production npm vulnerabilities;
+- diff hygiene: passed with line-ending warnings only.
+
+The existing installer predates these final source changes. The owner will perform the
+package rebuild later, so all post-rebuild packaged Inspector, soak, runtime, UI,
+startup, Odin launcher, install, and uninstall gates remain pending. Real ChatGPT
+workspace and live OpenAI tunnel validation also remain external release gates.
+
 ## Current Architecture
 
 Vault is RAG-only. Retrieval is authoritative for facts, citations, dates, names, numbers, and missing-evidence behavior. Chat and Bridge consume the same bounded retrieval-first packet contract. Clusters are retrieval scopes with cached summaries and glossaries, not trained experts.
@@ -47,8 +90,9 @@ Odin indexes approved repository files without executing or modifying project co
 | Desktop project, task, source, settings, and health surfaces | Implemented |
 | Public README and benchmark report | Updated with LongMemEval, LoCoMo, and Open RAG results and qualified comparisons |
 | ColBERT late-interaction retrieval | Compressed 300K proof measured; scoped path remains experimental and not production-enabled |
-| Windows installer and clean-machine proof | Development/test 0.1.9 installer lifecycle passed; signing, account separation, and a package rebuilt from the latest source remain |
-| UI refinement and distillation | July 24 audit fixes are implemented; July 26 added app-integrated frameless Windows chrome and stabilized model onboarding; broader accessibility and packaged visual validation remain |
+| Windows installer and clean-machine proof | Historical development/test 0.1.9 lifecycle passed; owner-deferred rebuild, post-rebuild validation, signing, and account separation remain |
+| ChatGPT MCP and Secure Tunnel | Source implementation complete; development Inspector, fault/security, and 1,000-call soak pass; rebuilt-package and real-workspace gates remain |
+| UI refinement and distillation | July 24 audit fixes, July 26 frameless chrome/model onboarding, and July 27 resumable ChatGPT setup are implemented; broader accessibility and rebuilt-package visual validation remain |
 
 ## Recent Desktop And Onboarding Stabilization
 
@@ -94,13 +138,20 @@ Open RAG supplies that independent external-corpus check for document retrieval.
 
 ## Validation Snapshot
 
-- Latest recorded backend suite: `648 passed`, `2 skipped`; one non-blocking Starlette TestClient compatibility warning
+- Latest recorded backend suite: `810 passed`, `1 skipped`, `2 scale tests
+  deselected`; one non-blocking Starlette TestClient compatibility warning
 - Desktop TypeScript check and production client/SSR build: passed on the latest recorded product slice
-- Electron behavior tests: `57 passed`
+- Electron behavior tests: `91 passed`
 - Python and npm dependency audits: no known vulnerabilities in the pinned repository environments
 - GitHub CI: current action majors, least-privilege read permission, dependency audit, desktop lint/build, four backend tiers, and manual Odin scale gate
 - Published CI proof: run `30182242079` passed dependency audit, desktop, quick, integration, system, and benchmark jobs; the manual scale job was correctly skipped
-- Odin 50,000-file discovery gate: `126.2 s`, `68.3 MiB` peak traced memory
+- Odin 50,000-file discovery gate: `160.824 s`, `68.3 MiB` peak traced memory
+  while the MCP Inspector ran concurrently; prior isolated result `95.777 s`
+- MCP development Inspector: read-only and read/write profiles passed
+- MCP source soak: 1,000 calls; `list_clusters` p95 `86.93 ms`; 0 MiB RSS growth
+- Product metadata scale: 10,000 sources queried in `0.108 s`
+- Latest source security drills: clean, interrupted, offline-at-rest, and 1,200-source
+  encrypted vault all passed
 - Project/task/evidence UI: passed at the 1024 px minimum against an isolated backend
 - npm dependency audit: `0 vulnerabilities`
 - Claim-packing CI gate enforces budget, answer-session recall, literal containment, and packet size
@@ -136,12 +187,17 @@ Open RAG supplies that independent external-corpus check for document retrieval.
 
 1. Extend ingestion-time atomic normalization for category membership, implicit singular entities, repeated-event/project identity, structured table relationships, progressive counters, and supersession chains; keep the zero-false-safe gate unchanged. The local Qwen3 pilot did not close categories, while the 12-question GPT-5.4 extraction smoke gained three answers but lost two controls and activated 0/12 safe contracts.
 2. Raise safe atomic activation to at least 10% on both development sets before any reader/judge evaluation, then freeze a genuinely fresh corpus or benchmark split for promotion evidence.
-3. Rebuild and retest the 0.1.9 installer from the latest frameless-shell/model-onboarding source, then complete account-separation and signing proof.
+3. Owner: rebuild and retest the 0.1.9 installer from the latest
+   frameless-shell/model-onboarding/MCP source, then complete account-separation and
+   signing proof. Rerun packaged Inspector, soak, runtime, UI, startup, Odin, install,
+   and uninstall gates against that artifact.
 4. Prototype bounded staging plus verified atomic compressed-shard rebuilds, with immediate tombstone filtering, runtime memory-pressure fallback, cross-cluster routing tests, encryption, exact artifact licensing, and a second real corpus before reconsidering ColBERT activation.
 5. Create a fresh, preregistered memory-quality set with genuine distributed preference-synthesis, reversal, state-history, temporal-action, category-count, and cumulative-state cases.
 6. Improve Odin TypeScript/React graph-to-prompt ranking and authoritative cross-file import/re-export/reference coverage, then rerun multi-model external evaluation.
 7. Run the manual Odin scale workflow when the next discovery/indexing change needs promotion evidence.
-8. Finish the remaining UI audit items: source-inspector persistence, stale embedded project/search/chat handlers, Bridge and Settings decomposition, keyboard/accessibility coverage, 200% zoom, offline/locked states, and packaged Electron validation.
+8. Finish the remaining UI audit items: source-inspector persistence, stale embedded project/search/chat handlers, Bridge and Settings decomposition, keyboard/accessibility coverage, 200% zoom, offline/locked states, and rebuilt-package Electron validation.
+9. Execute the seven credentialed ChatGPT/Secure MCP Tunnel gates in
+   `docs/CHATGPT_MCP_CONNECTION_PLAN.md` Section 20.7 before broad rollout.
 
 ## Canonical References
 
