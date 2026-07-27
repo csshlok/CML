@@ -162,6 +162,18 @@ try {
     -Method Post `
     -Headers $headers `
     -TimeoutSec 60
+  $jobDeadline = (Get-Date).AddSeconds(60)
+  while (($jobStatus.queued -gt 0 -or $jobStatus.running -gt 0) -and (Get-Date) -lt $jobDeadline) {
+    Start-Sleep -Milliseconds 250
+    $jobStatus = Invoke-RestMethod `
+      -Uri "$baseUrl/api/v1/jobs/status" `
+      -Method Get `
+      -Headers $headers `
+      -TimeoutSec 10
+  }
+  if ($jobStatus.queued -gt 0 -or $jobStatus.running -gt 0) {
+    throw "Packaged full-vault reindex job did not finish before the timeout."
+  }
   if ($jobStatus.failed -gt 0) {
     throw "Packaged full-vault reindex job failed."
   }
@@ -223,8 +235,28 @@ try {
     throw "Startup phase registry validation failed in packaged full-vault smoke."
   }
 
-  $diagnostics = Invoke-RestMethod -Uri "$baseUrl/api/v1/diagnostics/bundle" -Method Post -Headers $headers -TimeoutSec 15
-  if (-not (Test-Path -LiteralPath $diagnostics.bundle_path)) {
+  $diagnosticJob = Invoke-RestMethod `
+    -Uri "$baseUrl/api/v1/diagnostics/bundle" `
+    -Method Post `
+    -Headers $headers `
+    -ContentType "application/json" `
+    -Body "{}" `
+    -TimeoutSec 15
+  Invoke-RestMethod -Uri "$baseUrl/api/v1/jobs/run-once" -Method Post -Headers $headers -TimeoutSec 10 | Out-Null
+  $diagnosticDeadline = (Get-Date).AddSeconds(60)
+  while ($diagnosticJob.status -in @("queued", "running", "deferred") -and (Get-Date) -lt $diagnosticDeadline) {
+    Start-Sleep -Milliseconds 250
+    $diagnosticJob = Invoke-RestMethod `
+      -Uri "$baseUrl/api/v1/jobs/$($diagnosticJob.id)" `
+      -Method Get `
+      -Headers $headers `
+      -TimeoutSec 10
+  }
+  if ($diagnosticJob.status -ne "succeeded") {
+    throw "Packaged full-vault diagnostic bundle job did not succeed (status=$($diagnosticJob.status))."
+  }
+  $diagnostics = $diagnosticJob.result_json | ConvertFrom-Json
+  if (-not $diagnostics.bundle_path -or -not (Test-Path -LiteralPath $diagnostics.bundle_path)) {
     throw "Packaged full-vault diagnostic bundle was not written."
   }
 

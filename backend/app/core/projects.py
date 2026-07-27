@@ -16,6 +16,7 @@ from backend.app.core.extractor_registry import extractor_fingerprint
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.encrypted_storage import store_source_content_fields, update_source_content_fields
 from backend.app.core.memory_card import summarize_text
+from backend.app.core.pagination import cursor_page, decode_cursor
 from backend.app.core.source_records import source_type_for_suffix
 
 
@@ -360,7 +361,7 @@ def list_projects(
                 FROM projects p
                 JOIN project_cluster_links pcl ON pcl.project_id = p.id
                 WHERE {" AND ".join(clauses)}
-                ORDER BY p.updated_at DESC
+                ORDER BY p.updated_at DESC, p.id DESC
                 LIMIT ? OFFSET ?
                 """,
                 tuple(params),
@@ -370,16 +371,68 @@ def list_projects(
                 """
                 SELECT * FROM projects
                 WHERE vault_id = ? AND deleted_at IS NULL
-                ORDER BY updated_at DESC LIMIT ? OFFSET ?
+                ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?
                 """,
                 (vault_id, safe_limit, safe_offset),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                "SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 (safe_limit, safe_offset),
             ).fetchall()
-        return [_project_from_row(conn, row) for row in rows]
+        return _projects_from_rows(conn, rows)
+
+
+def list_projects_page(
+    *,
+    vault_id: str | None = None,
+    cluster_id: str | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+) -> dict:
+    safe_limit = max(1, min(int(limit), 200))
+    decoded = decode_cursor(cursor)
+    cursor_clause = ""
+    cursor_params: list[object] = []
+    if decoded:
+        updated_at, item_id = decoded
+        cursor_clause = "AND (p.updated_at < ? OR (p.updated_at = ? AND p.id < ?))"
+        cursor_params = [updated_at, updated_at, item_id]
+    with connect() as conn:
+        if cluster_id:
+            clauses = ["p.deleted_at IS NULL", "pcl.cluster_id = ?"]
+            params: list[object] = [cluster_id]
+            if vault_id:
+                clauses.append("p.vault_id = ?")
+                params.append(vault_id)
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT p.*
+                FROM projects p
+                JOIN project_cluster_links pcl ON pcl.project_id = p.id
+                WHERE {' AND '.join(clauses)} {cursor_clause}
+                ORDER BY p.updated_at DESC, p.id DESC
+                LIMIT ?
+                """,
+                [*params, *cursor_params, safe_limit + 1],
+            ).fetchall()
+        else:
+            clauses = ["p.deleted_at IS NULL"]
+            params = []
+            if vault_id:
+                clauses.append("p.vault_id = ?")
+                params.append(vault_id)
+            rows = conn.execute(
+                f"""
+                SELECT p.* FROM projects p
+                WHERE {' AND '.join(clauses)} {cursor_clause}
+                ORDER BY p.updated_at DESC, p.id DESC
+                LIMIT ?
+                """,
+                [*params, *cursor_params, safe_limit + 1],
+            ).fetchall()
+        items = _projects_from_rows(conn, rows)
+    return cursor_page(items, requested_limit=safe_limit, sort_field="updated_at")
 
 
 def get_project(project_id: str) -> dict:
@@ -1264,6 +1317,57 @@ def _project_from_row(conn, row) -> dict:
             snapshot.pop("manifest_json", None)
     result["active_snapshot"] = snapshot
     return result
+
+
+def _projects_from_rows(conn, rows) -> list[dict]:
+    row_list = list(rows)
+    if not row_list:
+        return []
+    project_ids = [str(row["id"]) for row in row_list]
+    placeholders = ",".join("?" for _ in project_ids)
+    count_rows = conn.execute(
+        f"""
+        SELECT project_id, COUNT(*) AS total
+        FROM project_sources
+        WHERE project_id IN ({placeholders})
+        GROUP BY project_id
+        """,
+        project_ids,
+    ).fetchall()
+    source_counts = {str(row["project_id"]): int(row["total"] or 0) for row in count_rows}
+    snapshot_ids = list(
+        dict.fromkeys(
+            str(row["active_manifest_snapshot_id"] or row["active_snapshot_id"])
+            for row in row_list
+            if row["active_manifest_snapshot_id"] or row["active_snapshot_id"]
+        )
+    )
+    snapshots: dict[str, dict] = {}
+    if snapshot_ids:
+        snapshot_placeholders = ",".join("?" for _ in snapshot_ids)
+        snapshot_rows = conn.execute(
+            f"SELECT * FROM project_snapshots WHERE id IN ({snapshot_placeholders})",
+            snapshot_ids,
+        ).fetchall()
+        for snapshot_row in snapshot_rows:
+            snapshot = dict_from_row(snapshot_row)
+            snapshot["dirty_working_tree"] = bool(snapshot["dirty_working_tree"])
+            snapshot.pop("manifest_json", None)
+            snapshots[str(snapshot["id"])] = snapshot
+    results: list[dict] = []
+    for row in row_list:
+        result = dict_from_row(row)
+        result["working_tree_dirty"] = bool(result.get("working_tree_dirty"))
+        compatibility_snapshot_id = result.get("active_snapshot_id")
+        result["active_manifest_snapshot_id"] = result.get("active_manifest_snapshot_id") or compatibility_snapshot_id
+        result["active_structure_snapshot_id"] = result.get("active_structure_snapshot_id") or compatibility_snapshot_id
+        result["active_retrieval_snapshot_id"] = result.get("active_retrieval_snapshot_id") or compatibility_snapshot_id
+        result["languages"] = json.loads(result.pop("languages_json") or "{}")
+        result["entrypoints"] = json.loads(result.pop("entrypoints_json") or "[]")
+        result["source_count"] = source_counts.get(str(result["id"]), 0)
+        result["active_snapshot"] = snapshots.get(str(result.get("active_manifest_snapshot_id") or ""))
+        results.append(result)
+    return results
 
 
 def _project_run_from_row(row) -> dict:

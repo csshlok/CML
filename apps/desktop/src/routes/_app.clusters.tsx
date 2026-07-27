@@ -5,10 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   createCluster,
+  getLatestSourcesByCluster,
+  getProjectClusterMembershipSummary,
   listClusterSuggestions,
-  listClusters,
-  listProjects,
-  listSources,
+  listClustersPage,
   listVaults,
   sourceCountsByCluster,
   updateCluster,
@@ -16,8 +16,8 @@ import {
   type ClusterSuggestionRecord,
   type VaultRecord,
 } from "@/lib/backend";
-import type { Cluster, ClusterTint, Source } from "@/lib/domain";
-import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
+import type { Cluster, ClusterTint } from "@/lib/domain";
+import { clusterFromRecord } from "@/lib/recordAdapters";
 
 export const Route = createFileRoute("/_app/clusters")({
   head: () => ({ meta: [{ title: "Clusters" }] }),
@@ -29,7 +29,9 @@ function ClustersList() {
 
   const [vault, setBackendVault] = useState<VaultRecord | null>(null);
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
-  const [backendSources, setBackendSources] = useState<Source[]>([]);
+  const [latestSources, setLatestSources] = useState<
+    Map<string, { state: string; updatedAt: string }>
+  >(new Map());
   const [suggestions, setSuggestions] = useState<ClusterSuggestionRecord[]>([]);
   const [dismissedSuggestions, setDismissedSuggestions] = useState<string[]>([]);
   const [lastDismissedSuggestion, setLastDismissedSuggestion] = useState<ClusterSuggestionRecord | null>(null);
@@ -43,6 +45,8 @@ function ClustersList() {
   const [renamingCluster, setRenamingCluster] = useState<Cluster | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
+  const [nextClusterCursor, setNextClusterCursor] = useState<string | null>(null);
+  const [loadingMoreClusters, setLoadingMoreClusters] = useState(false);
 
   async function loadData() {
     setLoading(true);
@@ -52,20 +56,33 @@ function ClustersList() {
       setBackendVault(activeVault);
       if (!activeVault) return;
       setDismissedSuggestions(readDismissedSuggestions(activeVault.id));
-      const [clusterRows, sourceRows, suggestionRows, countResult, projectRows] = await Promise.all([
-        listClusters(activeVault.id),
-        listSources(activeVault.id, { limit: 200 }),
+      const [clusterResult, suggestionResult, countResult, projectResult, latestResult] = await Promise.allSettled([
+        listClustersPage(activeVault.id, { limit: 100 }),
         listClusterSuggestions(activeVault.id),
         sourceCountsByCluster(activeVault.id),
-        listProjects(activeVault.id),
+        getProjectClusterMembershipSummary(activeVault.id),
+        getLatestSourcesByCluster(activeVault.id),
       ]);
-      const mappedClusters = clusterRows.map(clusterFromRecord);
+      if (clusterResult.status === "rejected") throw clusterResult.reason;
+      const clusterPage = clusterResult.value;
+      const mappedClusters = clusterPage.items.map(clusterFromRecord);
       setBackendClusters(mappedClusters);
-      setBackendSources(sourceRows.map(sourceFromRecord));
-      setSuggestions(suggestionRows);
-      setSourceCountRows(countResult.items);
-      setProjectClusterIds(new Set(projectRows.map((project) => project.primary_cluster_id)));
-      setMessage(null);
+      setNextClusterCursor(clusterPage.next_cursor);
+      if (latestResult.status === "fulfilled") {
+        setLatestSources(new Map(
+          latestResult.value.items.map((item) => [
+            item.cluster_id,
+            { state: item.state, updatedAt: item.updated_at },
+          ]),
+        ));
+      }
+      if (suggestionResult.status === "fulfilled") setSuggestions(suggestionResult.value);
+      if (countResult.status === "fulfilled") setSourceCountRows(countResult.value.items);
+      if (projectResult.status === "fulfilled") setProjectClusterIds(new Set(projectResult.value.cluster_ids));
+      const degraded = [suggestionResult, countResult, projectResult, latestResult].some(
+        (result) => result.status === "rejected",
+      );
+      setMessage(degraded ? "Some cluster details could not load. You can still open and edit clusters." : null);
     } catch {
       setMessage("Vault could not load your clusters. Check Settings / Health, then try again.");
     } finally {
@@ -85,7 +102,6 @@ function ClustersList() {
   }, [lastDismissedSuggestion]);
 
   const clusters = !mounted ? [] : backendClusters;
-  const sources = !mounted ? [] : backendSources;
   const visibleSuggestions = suggestions.filter(
     (suggestion) => !dismissedSuggestions.includes(suggestionKey(suggestion)),
   );
@@ -129,6 +145,20 @@ function ClustersList() {
       setMessage(error instanceof Error ? error.message : "Could not create this cluster.");
     } finally {
       setCreatingCluster(false);
+    }
+  }
+
+  async function loadMoreClusters() {
+    if (!vault || !nextClusterCursor || loadingMoreClusters) return;
+    setLoadingMoreClusters(true);
+    try {
+      const page = await listClustersPage(vault.id, { limit: 100, cursor: nextClusterCursor });
+      setBackendClusters((current) => [...current, ...page.items.map(clusterFromRecord)]);
+      setNextClusterCursor(page.next_cursor);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load more clusters.");
+    } finally {
+      setLoadingMoreClusters(false);
     }
   }
 
@@ -267,7 +297,7 @@ function ClustersList() {
                         <span className="hidden text-sm tabular-nums text-muted-foreground xl:block">
                           {(indexedCounts.get(cluster.id) ?? 0).toLocaleString()}
                         </span>
-                        <span className="hidden break-words text-sm text-muted-foreground md:block">{clusterLastActivity(cluster, sources)}</span>
+                        <span className="hidden break-words text-sm text-muted-foreground md:block">{clusterLastActivity(cluster, latestSources)}</span>
                         </Link>
                         <Button
                           variant="ghost"
@@ -285,6 +315,17 @@ function ClustersList() {
                       </div>
                     );
                   })}
+                  {nextClusterCursor ? (
+                    <div className="border-b border-border py-4 text-center">
+                      <Button
+                        variant="outline"
+                        disabled={loadingMoreClusters}
+                        onClick={() => void loadMoreClusters()}
+                      >
+                        {loadingMoreClusters ? "Loading..." : "Load more clusters"}
+                      </Button>
+                    </div>
+                  ) : null}
                   {clusters.length === 0 && (
                     <div className="px-5 py-10 text-center text-sm text-muted-foreground">
                       No clusters yet. Create one or add sources so Vault can suggest memory spaces.
@@ -419,10 +460,11 @@ function nextTint(index: number) {
   return tints[index % tints.length];
 }
 
-function clusterLastActivity(cluster: Cluster, sources: Source[]) {
-  const source = sources
-    .filter((item) => item.clusterId === cluster.id)
-    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+function clusterLastActivity(
+  cluster: Cluster,
+  latestSources: Map<string, { state: string; updatedAt: string }>,
+) {
+  const source = latestSources.get(cluster.id);
   if (!source) return "No activity";
   if (source.state === "failed") return "Needs review";
   if (source.state === "processing") return "In progress";

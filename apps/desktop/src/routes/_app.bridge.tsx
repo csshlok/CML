@@ -80,6 +80,7 @@ function BridgeView() {
   const [extensionPairings, setExtensionPairings] = useState<ExtensionPairingRecord[]>([]);
   const [clientName, setClientName] = useState("Local MCP client");
   const [clientToken, setClientToken] = useState<string | null>(null);
+  const [clientTokenClientId, setClientTokenClientId] = useState<string | null>(null);
   const [vaults, setVaults] = useState<VaultRecord[]>([]);
   const [clusters, setClusters] = useState<ClusterRecord[]>([]);
   const [saving, setSaving] = useState(false);
@@ -97,8 +98,22 @@ function BridgeView() {
   const [extensionNotice, setExtensionNotice] = useState<string | null>(null);
   const [extensionVaultId, setExtensionVaultId] = useState("");
   const [mcpSetupClient, setMcpSetupClient] = useState<
-    "claude" | "cursor" | "other"
-  >("claude");
+    "chatgpt" | "claude" | "cursor" | "other"
+  >("chatgpt");
+  const [mcpCapabilityProfile, setMcpCapabilityProfile] = useState<"read_only" | "read_write">("read_only");
+  const [mcpFeatureFlags, setMcpFeatureFlags] = useState<DesktopMcpFeatureFlags>({
+    chatgpt_mcp_setup: true,
+    secure_mcp_tunnel: true,
+    chatgpt_mcp_write_tools: true,
+    mcp_streaming: false,
+    mcp_remote_http: false,
+  });
+  const [mcpLauncher, setMcpLauncher] = useState<DesktopMcpLauncher | null>(null);
+  const [tunnelStatus, setTunnelStatus] = useState<DesktopTunnelStatus | null>(null);
+  const [tunnelId, setTunnelId] = useState("");
+  const [tunnelRuntimeKey, setTunnelRuntimeKey] = useState("");
+  const [tunnelBusy, setTunnelBusy] = useState(false);
+  const [tunnelError, setTunnelError] = useState<string | null>(null);
   const [tourStep, setTourStep] = useState<number | null>(null);
 
   async function loadBridgeState() {
@@ -179,6 +194,40 @@ function BridgeView() {
   useVisiblePolling(loadBridgeState, 60_000, backend.status === "online");
 
   useEffect(() => {
+    void window.cmlDesktop?.getMcpFeatureFlags().then((next) => {
+      setMcpFeatureFlags(next);
+      if (!next.chatgpt_mcp_write_tools) setMcpCapabilityProfile("read_only");
+      if (!next.chatgpt_mcp_setup) setMcpSetupClient("claude");
+    });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.cmlDesktop?.getMcpLauncher(mcpCapabilityProfile).then((launcher) => {
+      if (!cancelled) setMcpLauncher(launcher);
+    }).catch(() => {
+      if (!cancelled) setMcpLauncher(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [backend.url, mcpCapabilityProfile]);
+
+  useEffect(() => {
+    void window.cmlDesktop?.getTunnelStatus().then((next) => {
+      if (!next) return;
+      setTunnelStatus(next);
+      setTunnelId(next.tunnel_id);
+      setMcpCapabilityProfile(next.capability_profile);
+    });
+    return window.cmlDesktop?.onTunnelStatusChanged((next) => {
+      setTunnelStatus(next);
+      setTunnelId(next.tunnel_id);
+      setMcpCapabilityProfile(next.capability_profile);
+    });
+  }, []);
+
+  useEffect(() => {
     const refresh = () => void loadBridgeState();
     window.addEventListener("vault:bridge-captures-changed", refresh);
     return () => {
@@ -220,12 +269,14 @@ function BridgeView() {
     try {
       const created = await createBridgeClient({
         name,
+        capability_profile: mcpCapabilityProfile,
         allowed_vault_ids: status?.allowed_vault_ids ?? [],
         allowed_cluster_ids: status?.allowed_cluster_ids ?? [],
         allow_raw_snippets: Boolean(status?.allow_raw_snippets),
         allow_cluster_profile: Boolean(status?.allow_cluster_profile),
       });
       setClientToken(created.token);
+      setClientTokenClientId(created.id);
       setClientName("Local MCP client");
       await loadBridgeState();
     } finally {
@@ -240,7 +291,14 @@ function BridgeView() {
     setSaving(true);
     try {
       const updated = await updateBridgeClient(client.id, payload);
-      if ("token" in updated) setClientToken(updated.token);
+      if ("token" in updated) {
+        setClientToken(updated.token);
+        setClientTokenClientId(updated.id);
+        if (tunnelStatus?.bridge_client_id === updated.id) {
+          const nextTunnelStatus = await window.cmlDesktop?.reconnectTunnel(updated.token);
+          if (nextTunnelStatus) setTunnelStatus(nextTunnelStatus);
+        }
+      }
       await loadBridgeState();
     } finally {
       setSaving(false);
@@ -250,6 +308,10 @@ function BridgeView() {
   async function removeClient(client: BridgeClientRecord) {
     setSaving(true);
     try {
+      if (tunnelStatus?.bridge_client_id === client.id) {
+        const next = await window.cmlDesktop?.disconnectTunnel(true);
+        if (next) setTunnelStatus(next);
+      }
       await deleteBridgeClient(client.id);
       await loadBridgeState();
     } finally {
@@ -262,6 +324,7 @@ function BridgeView() {
     try {
       const created = await approveBridgeApprovalRequest(requestRow.id);
       setClientToken(created.token);
+      setClientTokenClientId(created.id);
       await loadBridgeState();
     } finally {
       setSaving(false);
@@ -427,21 +490,83 @@ function BridgeView() {
     await navigator.clipboard.writeText(value);
   }
 
+  async function connectChatGptTunnel() {
+    if (!clientToken) {
+      setTunnelError("Create a connection token below first.");
+      return;
+    }
+    setTunnelBusy(true);
+    setTunnelError(null);
+    try {
+      const next = await window.cmlDesktop?.connectTunnel({
+        tunnelId: tunnelId.trim(),
+        runtimeApiKey: tunnelRuntimeKey.trim(),
+        bridgeToken: clientToken,
+        bridgeClientId: clientTokenClientId ?? undefined,
+        capabilityProfile: mcpCapabilityProfile,
+      });
+      if (next) setTunnelStatus(next);
+      setTunnelRuntimeKey("");
+    } catch (error) {
+      setTunnelError(error instanceof Error ? error.message : "Could not connect.");
+    } finally {
+      setTunnelBusy(false);
+    }
+  }
+
+  async function disconnectChatGptTunnel(forget = false) {
+    const connectedClientId = tunnelStatus?.bridge_client_id;
+    setTunnelBusy(true);
+    setTunnelError(null);
+    try {
+      const next = await window.cmlDesktop?.disconnectTunnel(forget);
+      if (next) setTunnelStatus(next);
+      if (forget) {
+        if (connectedClientId) {
+          await deleteBridgeClient(connectedClientId);
+          if (clientTokenClientId === connectedClientId) {
+            setClientToken(null);
+            setClientTokenClientId(null);
+          }
+          await loadBridgeState();
+        }
+        setTunnelId("");
+      }
+    } catch (error) {
+      setTunnelError(error instanceof Error ? error.message : "Could not disconnect.");
+    } finally {
+      setTunnelBusy(false);
+    }
+  }
+
+  async function reconnectChatGptTunnel() {
+    setTunnelBusy(true);
+    setTunnelError(null);
+    try {
+      const next = await window.cmlDesktop?.reconnectTunnel();
+      if (next) setTunnelStatus(next);
+    } catch (error) {
+      setTunnelError(error instanceof Error ? error.message : "Could not reconnect.");
+    } finally {
+      setTunnelBusy(false);
+    }
+  }
+
   const exampleClientToken = clientToken ?? "<approved-client-token>";
   const mcpServerDefinition = {
-    command: ".venv\\Scripts\\python.exe",
-    args: ["-m", "backend.app.bridge_mcp"],
+    command: mcpLauncher?.command ?? "<Vault MCP launcher unavailable>",
+    args: mcpLauncher?.args ?? [],
+    cwd: mcpLauncher?.cwd,
     env: {
-      CML_BACKEND_URL: backend.url,
+      ...(mcpLauncher?.env ?? {}),
       CML_BRIDGE_TOKEN: exampleClientToken,
     },
   };
   const mcpSetupText =
     mcpSetupClient === "other"
       ? [
-          `CML_BACKEND_URL=${backend.url}`,
-          `CML_BRIDGE_TOKEN=${exampleClientToken}`,
-          ".venv\\Scripts\\python.exe -m backend.app.bridge_mcp",
+          ...Object.entries(mcpServerDefinition.env).map(([key, value]) => `${key}=${value}`),
+          `${mcpServerDefinition.command} ${mcpServerDefinition.args.join(" ")}`,
         ].join("\n")
       : JSON.stringify(
           {
@@ -453,6 +578,25 @@ function BridgeView() {
           2,
         );
   const extensionVaultNamesById = new Map(vaults.map((vault) => [vault.id, vault.name]));
+  const chatGptClientId = tunnelStatus?.bridge_client_id ?? clientTokenClientId;
+  const connectedBridgeClient = clients.find((client) => client.id === chatGptClientId);
+  const chatGptScopeReady = Boolean(
+    connectedBridgeClient &&
+      (connectedBridgeClient.allowed_vault_ids.length > 0 ||
+        connectedBridgeClient.allowed_cluster_ids.length > 0),
+  );
+  const chatGptReadVerified = requests.some(
+    (request) =>
+      request.client_id === chatGptClientId &&
+      request.mode === "list_clusters" &&
+      request.decision === "allowed",
+  );
+  const chatGptWriteVerified = requests.some(
+    (request) =>
+      request.client_id === chatGptClientId &&
+      request.mode === "external_artifact" &&
+      request.decision === "captured",
+  );
   const extensionSetupText = extensionToken
     ? buildExtensionSetupText({
         backendUrl: backend.url,
@@ -585,10 +729,13 @@ function BridgeView() {
             <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="MCP client">
               {(
                 [
-                  ["claude", "Claude Desktop"],
-                  ["cursor", "Cursor"],
-                  ["other", "Other"],
-                ] as const
+                  ...(mcpFeatureFlags.chatgpt_mcp_setup
+                    ? ([["chatgpt", "ChatGPT"]] as const)
+                    : []),
+                  ["claude", "Claude Desktop"] as const,
+                  ["cursor", "Cursor"] as const,
+                  ["other", "Other"] as const,
+                ]
               ).map(([id, label]) => (
                 <Button
                   key={id}
@@ -603,32 +750,264 @@ function BridgeView() {
                 </Button>
               ))}
             </div>
-            <p className="mt-4 text-xs text-muted-foreground">
-              {mcpSetupClient === "claude"
-                ? "Paste into claude_desktop_config.json, then restart Claude Desktop."
-                : mcpSetupClient === "cursor"
-                  ? "Paste into your Cursor MCP configuration, then reload Cursor."
-                  : "Set both environment variables and launch Vault's stdio MCP server from the project directory."}
-            </p>
-            <pre className="mt-3 max-h-72 overflow-auto rounded-md border border-border bg-background p-3 text-xs leading-5">
-              <code>{mcpSetupText}</code>
-            </pre>
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => void copyBridgeText(mcpSetupText)}
-              >
-                <Copy className="h-3.5 w-3.5" />
-                Copy configuration
-              </Button>
-              {!clientToken && (
-                <span className="text-xs text-muted-foreground">
-                  The placeholder will be replaced after you create or rotate a client token.
-                </span>
-              )}
-            </div>
+            {mcpSetupClient === "chatgpt" ? (
+              <div className="mt-4 grid gap-4">
+                <div className="rounded-md border border-border bg-background px-4 py-3">
+                  <div className="font-medium">ChatGPT setup</div>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                    Availability depends on your ChatGPT workspace and admin settings. Vault cannot
+                    confirm account eligibility.
+                  </p>
+                  <ol className="mt-3 grid gap-3 text-sm">
+                    <li>
+                      <span className="font-medium">1. Choose access and scope.</span>{" "}
+                      <span className="text-muted-foreground">
+                        {chatGptScopeReady
+                          ? "A connection token has an allowed library or cluster."
+                          : "Choose libraries or clusters, then create a client token below."}
+                      </span>
+                    </li>
+                    <li>
+                      <span className="font-medium">2. Start the secure connection.</span>{" "}
+                      <span className="text-muted-foreground">
+                        {tunnelStatus?.state === "connected"
+                          ? "The tunnel health check passed."
+                          : "Enter the tunnel ID and one-time runtime key, then connect."}
+                      </span>
+                    </li>
+                    <li>
+                      <span className="font-medium">3. Add the app in ChatGPT web.</span>{" "}
+                      <span className="text-muted-foreground">
+                        In Settings, open Apps and enable Developer mode if your workspace allows it.
+                        Create an app, enter the tunnel connection, and scan tools.
+                      </span>
+                    </li>
+                    <li>
+                      <span className="font-medium">4. Test reading.</span>{" "}
+                      <span className="text-muted-foreground">
+                        {chatGptReadVerified
+                          ? "Vault received a successful list_clusters call."
+                          : 'Ask ChatGPT: “Use Vault to list my clusters.” Then refresh this page.'}
+                      </span>
+                    </li>
+                    {mcpCapabilityProfile === "read_write" ? (
+                      <li>
+                        <span className="font-medium">5. Test saving.</span>{" "}
+                        <span className="text-muted-foreground">
+                          {chatGptWriteVerified
+                            ? "Vault received a test save. Review it, then remove it from Sources."
+                            : 'Ask ChatGPT to save an artifact named “Vault connection test.” Confirm the action, review it here, then remove it from Sources.'}
+                        </span>
+                      </li>
+                    ) : null}
+                    <li>
+                      <span className="font-medium">
+                        {mcpCapabilityProfile === "read_write" ? "6" : "5"}. Finish or revoke.
+                      </span>{" "}
+                      <span className="text-muted-foreground">
+                        The connection is ready after the read test. Use Disconnect and revoke below
+                        to remove local access immediately.
+                      </span>
+                    </li>
+                  </ol>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!tunnelId}
+                      onClick={() => void copyBridgeText(tunnelId)}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                      Copy tunnel ID
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={saving}
+                      onClick={() => void loadBridgeState()}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      Refresh checks
+                    </Button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={mcpCapabilityProfile === "read_only" ? "default" : "outline"}
+                    onClick={() => setMcpCapabilityProfile("read_only")}
+                    disabled={tunnelBusy || tunnelStatus?.state === "connected"}
+                  >
+                    Read only
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={mcpCapabilityProfile === "read_write" ? "default" : "outline"}
+                    onClick={() => setMcpCapabilityProfile("read_write")}
+                    disabled={
+                      tunnelBusy ||
+                      tunnelStatus?.state === "connected" ||
+                      !mcpFeatureFlags.chatgpt_mcp_write_tools
+                    }
+                  >
+                    Read and save
+                  </Button>
+                </div>
+                <p className="text-xs leading-5 text-muted-foreground">
+                  {!mcpFeatureFlags.chatgpt_mcp_write_tools
+                    ? "This Vault release allows read only."
+                    : "Start with read only. Read and save requires a ChatGPT workspace that allows write actions."}
+                </p>
+                {!mcpFeatureFlags.secure_mcp_tunnel ? (
+                  <div role="status" className="rounded-md border border-border bg-muted px-3 py-2 text-sm">
+                    ChatGPT connection is unavailable in this Vault release.
+                  </div>
+                ) : null}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="grid gap-1.5 text-xs">
+                    Tunnel ID
+                    <Input
+                      value={tunnelId}
+                      onChange={(event) => setTunnelId(event.target.value)}
+                      placeholder="tunnel_..."
+                      disabled={tunnelBusy || tunnelStatus?.state === "connected"}
+                    />
+                  </label>
+                  <label className="grid gap-1.5 text-xs">
+                    Runtime key
+                    <Input
+                      type="password"
+                      autoComplete="off"
+                      value={tunnelRuntimeKey}
+                      onChange={(event) => setTunnelRuntimeKey(event.target.value)}
+                      placeholder="Shown once in OpenAI Platform"
+                      disabled={tunnelBusy || tunnelStatus?.state === "connected"}
+                    />
+                  </label>
+                </div>
+                <div className="rounded-md border border-border bg-background px-3 py-2 text-sm">
+                  <div className="font-medium">{tunnelStatus?.detail ?? "Not connected"}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {tunnelStatus?.state === "connected"
+                      ? `Access: ${tunnelStatus.capability_profile === "read_write" ? "Read and save" : "Read only"}`
+                      : "Vault uses an outbound-only Secure MCP Tunnel."}
+                  </div>
+                </div>
+                {tunnelError && (
+                  <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                    {tunnelError}
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  {tunnelStatus?.state === "connected" ? (
+                    <>
+                      <Button type="button" size="sm" variant="outline" onClick={() => void window.cmlDesktop?.openTunnelUi()}>
+                        Open connection status
+                      </Button>
+                      <Button type="button" size="sm" variant="outline" disabled={tunnelBusy} onClick={() => void disconnectChatGptTunnel(false)}>
+                        Disconnect
+                      </Button>
+                      <ConfirmAction
+                        title="Disconnect and revoke?"
+                        description="This stops ChatGPT and revokes its Vault access token."
+                        confirmLabel="Disconnect and revoke"
+                        disabled={tunnelBusy}
+                        onConfirm={() => disconnectChatGptTunnel(true)}
+                      >
+                        <Button type="button" size="sm" variant="destructive" disabled={tunnelBusy}>
+                          Disconnect and revoke
+                        </Button>
+                      </ConfirmAction>
+                    </>
+                  ) : (
+                    <>
+                      {tunnelStatus?.tunnel_id ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={tunnelBusy}
+                          onClick={() => void reconnectChatGptTunnel()}
+                        >
+                          {tunnelBusy ? "Connecting..." : "Reconnect"}
+                        </Button>
+                      ) : null}
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={
+                          tunnelBusy ||
+                          !mcpFeatureFlags.secure_mcp_tunnel ||
+                          !tunnelId.trim() ||
+                          !tunnelRuntimeKey.trim() ||
+                          !clientToken
+                        }
+                        onClick={() => void connectChatGptTunnel()}
+                      >
+                        Connect with new details
+                      </Button>
+                    </>
+                  )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void window.cmlDesktop?.openExternal("https://platform.openai.com/settings/organization/tunnels")}
+                  >
+                    Open tunnel settings
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void window.cmlDesktop?.openExternal("https://chatgpt.com/")}
+                  >
+                    Open ChatGPT apps
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+                {!clientToken && (
+                  <span className="text-xs text-muted-foreground">
+                    Create or rotate a connection token below before connecting.
+                  </span>
+                )}
+              </div>
+            ) : (
+              <>
+                <p className="mt-4 text-xs text-muted-foreground">
+                  {mcpSetupClient === "claude"
+                    ? "Paste into claude_desktop_config.json, then restart Claude Desktop."
+                    : mcpSetupClient === "cursor"
+                      ? "Paste into your Cursor MCP configuration, then reload Cursor."
+                      : "Launch Vault's packaged stdio MCP server with this configuration."}
+                </p>
+                <pre className="mt-3 max-h-72 overflow-auto rounded-md border border-border bg-background p-3 text-xs leading-5">
+                  <code>{mcpSetupText}</code>
+                </pre>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={!mcpLauncher}
+                    onClick={() => void copyBridgeText(mcpSetupText)}
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                    Copy configuration
+                  </Button>
+                  {!clientToken && (
+                    <span className="text-xs text-muted-foreground">
+                      The placeholder will be replaced after you create or rotate a client token.
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         </details>
 

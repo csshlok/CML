@@ -23,6 +23,7 @@ $stagingDir = Join-Path $desktopDir "packaging\backend"
 $runtimeDir = Join-Path $desktopDir "packaging\python-runtime"
 $playwrightBrowserDir = Join-Path $desktopDir "packaging\ms-playwright"
 $llmRuntimeDir = Join-Path $desktopDir "packaging\llm-runtime"
+$tunnelRuntimeDir = Join-Path $desktopDir "packaging\tunnel-client"
 $packagingRoot = Join-Path $desktopDir "packaging"
 $modelIntegrityManifestPath = Join-Path $repoRoot "docs\model-integrity-manifest.json"
 $modelIntegrityStagingDir = Join-Path $packagingRoot "docs"
@@ -32,6 +33,7 @@ $helperManifestScript = Join-Path $repoRoot "scripts\packaging\generate-helper-m
 $packageAuditScript = Join-Path $repoRoot "scripts\packaging\audit-package-layout.cjs"
 $ocrStagingScript = Join-Path $repoRoot "scripts\packaging\stage-ocr-runtime.ps1"
 $llmRuntimeStagingScript = Join-Path $repoRoot "scripts\packaging\stage-llm-runtime.ps1"
+$tunnelRuntimeStagingScript = Join-Path $repoRoot "scripts\packaging\stage-tunnel-client.ps1"
 $devBuildCheckScript = Join-Path $repoRoot "scripts\packaging\check-windows-dev-build.ps1"
 $desktopPackage = Get-Content $desktopPackageJsonPath -Raw | ConvertFrom-Json
 $desktopVersion = [string]$desktopPackage.version
@@ -63,6 +65,7 @@ $backendRuntimePackages = @(
   "uvicorn[standard]==0.48.0",
   "pydantic-settings==2.14.2",
   "cryptography==48.0.1",
+  "psutil==7.2.2",
   "numpy==2.4.6",
   "pypdf==6.14.2",
   "python-docx==1.2.0",
@@ -80,14 +83,15 @@ $backendRuntimePackages = @(
   "playwright==1.60.0"
 )
 $embeddingRuntimePackages = @(
-  "sentence-transformers==5.5.1"
+  "sentence-transformers==5.5.1",
+  "transformers==5.6.0"
 )
 $effectiveBackendRuntimePackages = @($backendRuntimePackages) + @($embeddingRuntimePackages)
 
 $script:PackageStartedAt = Get-Date
 $script:PackagePhaseStartedAt = $script:PackageStartedAt
 $script:PackagePhaseIndex = 0
-$script:PackagePhaseCount = 11
+$script:PackagePhaseCount = 12
 if ($Release) {
   $script:PackagePhaseCount += 1
 }
@@ -302,6 +306,7 @@ if ($Release) {
   Reset-StagedPath $runtimeDir
   Reset-StagedPath $playwrightBrowserDir
   Reset-StagedPath $llmRuntimeDir
+  Reset-StagedPath $tunnelRuntimeDir
   if (-not $SkipOcrRuntimeDownload) {
     Reset-StagedPath (Join-Path $backendDir "bin\ocr")
   }
@@ -465,6 +470,23 @@ if (-not (Test-Path -LiteralPath $llmRuntimeServer)) {
 }
 Complete-PackagePhase $llmRuntimeServer
 
+Start-PackagePhase "Secure MCP Tunnel" "Staging the pinned OpenAI tunnel client with checksum verification."
+$tunnelRuntimeBinary = Join-Path $tunnelRuntimeDir "tunnel-client.exe"
+$tunnelRuntimeManifest = Join-Path $tunnelRuntimeDir "manifest.json"
+if (
+  $Release -or
+  -not (Test-Path -LiteralPath $tunnelRuntimeBinary) -or
+  -not (Test-Path -LiteralPath $tunnelRuntimeManifest)
+) {
+  & $tunnelRuntimeStagingScript `
+    -TargetDir $tunnelRuntimeDir `
+    -CacheDir (Join-Path $tmpDir "tunnel-client-cache")
+}
+if (-not (Test-Path -LiteralPath $tunnelRuntimeBinary)) {
+  throw "Secure MCP Tunnel staging did not produce tunnel-client.exe."
+}
+Complete-PackagePhase $tunnelRuntimeBinary
+
 Start-PackagePhase "Embedding runtime" "SentenceTransformers is included in every packaged backend runtime."
 Complete-PackagePhase "sentence-transformers packaged with backend runtime"
 
@@ -516,6 +538,11 @@ New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
       "from": "packaging/llm-runtime",
       "to": "llm-runtime",
       "filter": ["**/*"]
+    },
+    {
+      "from": "packaging/tunnel-client",
+      "to": "tunnel-client",
+      "filter": ["tunnel-client.exe", "manifest.json"]
     },
     {
       "from": "packaging/helper-manifest.json",

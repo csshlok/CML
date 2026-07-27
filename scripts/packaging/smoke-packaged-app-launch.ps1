@@ -64,11 +64,17 @@ foreach ($candidate in ($candidateStatusPaths + $candidateStdoutLogs + $candidat
 $electronRunAsNode = $env:ELECTRON_RUN_AS_NODE
 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 $launchArguments = if ($UserDataRoot) { @("--user-data-dir=$userDataPath") } else { @() }
-$process = Start-Process -FilePath $exe -ArgumentList $launchArguments -PassThru
+$launchStarted = Get-Date
+$process = if ($launchArguments.Count -gt 0) {
+  Start-Process -FilePath $exe -ArgumentList $launchArguments -PassThru
+} else {
+  Start-Process -FilePath $exe -PassThru
+}
 try {
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   $status = $null
   $statusPath = $null
+  $backendReadyAt = $null
   while ((Get-Date) -lt $deadline) {
     foreach ($candidate in $candidateStatusPaths) {
       if (-not (Test-Path -LiteralPath $candidate)) {
@@ -79,6 +85,7 @@ try {
         $statusPath = $candidate
         $status = Get-Content -LiteralPath $candidate -Raw | ConvertFrom-Json
         if ($status.status -eq "ready" -or $status.status -eq "failed") {
+          $backendReadyAt = Get-Date
           break
         }
       }
@@ -124,6 +131,9 @@ try {
   if (-not $rendererReadyDetected) {
     throw "Packaged app reached backend ready but renderer never signaled readiness. runtime=$runtimeLog"
   }
+  $visibleMatch = [regex]::Matches($runtimeLogText, "startup window visible elapsed_ms=(\d+)") |
+    Select-Object -Last 1
+  $windowVisibleElapsedMs = if ($visibleMatch) { [int]$visibleMatch.Groups[1].Value } else { $null }
 
   [ordered]@{
     package_root = $packagePath
@@ -137,6 +147,14 @@ try {
     desktop_runtime_log = $runtimeLog
     renderer_ready_detected = $rendererReadyDetected
     renderer_failure_detected = $rendererFailureDetected
+    window_visible_elapsed_ms = $windowVisibleElapsedMs
+    backend_ready_elapsed_ms = if ($backendReadyAt) {
+      [math]::Round(($backendReadyAt - $launchStarted).TotalMilliseconds, 2)
+    } else {
+      $null
+    }
+    backend_process_elapsed_ms = $status.total_elapsed_ms
+    launch_to_renderer_ready_ms = [math]::Round(((Get-Date) - $launchStarted).TotalMilliseconds, 2)
   } | ConvertTo-Json -Depth 5
 } finally {
   if ($electronRunAsNode -ne $null) {

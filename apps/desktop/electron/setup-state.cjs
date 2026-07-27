@@ -26,6 +26,7 @@ function defaultSetupState() {
     profile: { display_name: "", avatar_path: "" },
     vault: { id: "", name: "", path: "" },
     chat_setup: { status: "pending", model_id: "" },
+    model_storage: { download_root: "" },
     memory_setup: { status: "pending", model_id: "" },
     tour: { status: "pending", step: 0, version: 1 },
     updated_at: new Date(0).toISOString(),
@@ -57,6 +58,9 @@ function normalizeSetupState(value) {
     chat_setup: {
       status: capabilityStatus(value.chat_setup?.status),
       model_id: stringValue(value.chat_setup?.model_id),
+    },
+    model_storage: {
+      download_root: stringValue(value.model_storage?.download_root),
     },
     memory_setup: {
       status: capabilityStatus(value.memory_setup?.status),
@@ -96,6 +100,7 @@ function mergeSetupState(current, patch) {
     profile: { ...base.profile, ...(patch?.profile || {}) },
     vault: { ...base.vault, ...(patch?.vault || {}) },
     chat_setup: { ...base.chat_setup, ...(patch?.chat_setup || {}) },
+    model_storage: { ...base.model_storage, ...(patch?.model_storage || {}) },
     memory_setup: { ...base.memory_setup, ...(patch?.memory_setup || {}) },
     tour: { ...base.tour, ...(patch?.tour || {}) },
     updated_at: new Date().toISOString(),

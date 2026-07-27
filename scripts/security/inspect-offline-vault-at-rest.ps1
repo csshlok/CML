@@ -90,7 +90,7 @@ try {
   Invoke-ApiJson "POST" "$baseUrl/api/v1/system/unlock/initialize" @{
     vault_id = $vault.id
     passphrase = $Passphrase
-    unlock_mode = "convenience"
+    unlock_mode = "strict"
   } $headers | Out-Null
 
   $source = Invoke-ApiJson "POST" "$baseUrl/api/v1/sources/from-path" @{

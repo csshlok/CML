@@ -18,6 +18,7 @@ declare global {
     profile: { display_name: string; avatar_path?: string };
     vault: { id: string; name: string; path: string };
     chat_setup: { status: string; model_id: string };
+    model_storage: { download_root: string };
     memory_setup: { status: string; model_id: string };
     tour: { status: "pending" | "completed" | "skipped"; step: number; version: 1 };
     updated_at: string;
@@ -26,6 +27,37 @@ declare global {
   interface DesktopWindowState {
     maximized: boolean;
     fullScreen: boolean;
+  }
+
+  interface DesktopMcpLauncher {
+    version: 1;
+    app_version: string;
+    command: string;
+    args: string[];
+    cwd: string;
+    env: Record<string, string>;
+    capability_profile: "read_only" | "read_write";
+    packaged: boolean;
+  }
+
+  interface DesktopMcpFeatureFlags {
+    chatgpt_mcp_setup: boolean;
+    secure_mcp_tunnel: boolean;
+    chatgpt_mcp_write_tools: boolean;
+    mcp_streaming: boolean;
+    mcp_remote_http: boolean;
+  }
+
+  interface DesktopTunnelStatus {
+    state: "disconnected" | "connecting" | "connected" | "attention_required";
+    tunnel_id: string;
+    bridge_client_id: string;
+    capability_profile: "read_only" | "read_write";
+    ready: boolean;
+    detail: string;
+    health_url: string;
+    last_connected_at: string | null;
+    last_error_at: string | null;
   }
 
   interface Window {
@@ -44,6 +76,8 @@ declare global {
       selectSourceFolders: () => Promise<string[]>;
       selectEmbeddingFolder: () => Promise<string | null>;
       selectModelFolder: () => Promise<string | null>;
+      readLocalImage: (targetPath: string) => Promise<string | null>;
+      deleteLocalMedia: (mediaId: string) => Promise<boolean>;
       selectModelCheckpoint: () => Promise<string | null>;
       selectVaultFolder: () => Promise<string | null>;
       prepareActiveVaultFolder: (targetPath: string) => Promise<string | null>;
@@ -57,6 +91,41 @@ declare global {
       selectCoverImage: () => Promise<string | null>;
       getBackendUrl: () => Promise<string | null>;
       getBackendToken: () => Promise<string | null>;
+      getMcpFeatureFlags: () => Promise<DesktopMcpFeatureFlags>;
+      getMcpLauncher: (
+        capabilityProfile: "read_only" | "read_write",
+      ) => Promise<DesktopMcpLauncher>;
+      getOdinLauncherStatus: () => Promise<{
+        version: number;
+        launcher_path: string;
+        installed: boolean;
+        needs_repair: boolean;
+        on_current_path: boolean;
+        expected_checksum: string;
+      }>;
+      installOdinLauncher: () => Promise<{
+        version: number;
+        launcher_path: string;
+        installed: boolean;
+        needs_repair: boolean;
+        available_in_new_shell: boolean;
+        help_ok: boolean;
+      }>;
+      startOdinPairing: () => Promise<{ started: boolean }>;
+      getTunnelStatus: () => Promise<DesktopTunnelStatus | null>;
+      connectTunnel: (configuration: {
+        tunnelId: string;
+        runtimeApiKey: string;
+        bridgeToken: string;
+        bridgeClientId?: string;
+        capabilityProfile: "read_only" | "read_write";
+      }) => Promise<DesktopTunnelStatus>;
+      reconnectTunnel: (bridgeToken?: string) => Promise<DesktopTunnelStatus>;
+      disconnectTunnel: (forget?: boolean) => Promise<DesktopTunnelStatus>;
+      openTunnelUi: () => Promise<boolean>;
+      onTunnelStatusChanged: (
+        listener: (status: DesktopTunnelStatus) => void,
+      ) => () => void;
       getSetupState: () => Promise<DesktopSetupState>;
       updateSetupState: (patch: Partial<DesktopSetupState>) => Promise<DesktopSetupState>;
       resetAppSetup: () => Promise<DesktopSetupState>;

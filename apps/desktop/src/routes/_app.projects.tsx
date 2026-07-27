@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowRight, Code2, FolderOpen, GitBranch, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-  listProjects,
+  listProjectsPage,
   listVaults,
   synchronizeProject,
   type ProjectRecord,
@@ -20,12 +20,16 @@ function ProjectsIndex() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const vault = (await listVaults())[0] ?? null;
-      setProjects(vault ? await listProjects(vault.id) : []);
+      const page = vault ? await listProjectsPage(vault.id, { limit: 100 }) : null;
+      setProjects(page?.items ?? []);
+      setNextCursor(page?.next_cursor ?? null);
       setMessage(null);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Vault could not load your projects.");
@@ -51,6 +55,22 @@ function ProjectsIndex() {
       setMessage(error instanceof Error ? error.message : "The project could not be synchronized.");
     } finally {
       setSyncingId(null);
+    }
+  }
+
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const vault = (await listVaults())[0] ?? null;
+      if (!vault) return;
+      const page = await listProjectsPage(vault.id, { limit: 100, cursor: nextCursor });
+      setProjects((current) => [...current, ...page.items]);
+      setNextCursor(page.next_cursor);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Vault could not load more projects.");
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -120,6 +140,13 @@ function ProjectsIndex() {
                 </article>
               );
             })}
+            {nextCursor ? (
+              <div className="py-5 text-center">
+                <Button variant="outline" disabled={loadingMore} onClick={() => void loadMore()}>
+                  {loadingMore ? "Loading..." : "Load more projects"}
+                </Button>
+              </div>
+            ) : null}
           </div>
         )}
       </main>

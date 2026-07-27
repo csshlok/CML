@@ -6,7 +6,12 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.embeddings import content_hash, reindex_source_chunks, require_embeddings_available
+from backend.app.core.embeddings import (
+    content_hash,
+    embedding_status,
+    reindex_source_chunks,
+    require_embeddings_available,
+)
 from backend.app.core.encrypted_storage import (
     delete_source_encrypted_content,
     delete_source_derived_encrypted_content,
@@ -48,7 +53,7 @@ from backend.app.core.unlock_state import should_pause_vault_job
 
 JOB_POLL_SECONDS = 1.0
 JOB_STATUS_RUNNING_LIMIT = 50
-ACTIVE_STATUSES = ("queued", "running", "blocked_by_dependency")
+ACTIVE_STATUSES = ("queued", "running", "blocked_by_dependency", "blocked_setup_required", "deferred")
 TERMINAL_DEPENDENCY_STATUSES = ("failed", "cancelled", "manual_review")
 PRIORITY_ORDER = {
     "critical": 0,
@@ -59,6 +64,16 @@ PRIORITY_ORDER = {
 }
 _WORKER_STARTED = False
 _WORKER_LOCK = threading.Lock()
+_WORKER_WAKE = threading.Event()
+EMBEDDING_JOB_TYPES = {
+    "project_retrieval_stage",
+    "reindex_source",
+    "chat_transcript_memory",
+    "ocr_source",
+    "expanded_analysis",
+    "complete_analysis",
+    "vector_reconcile_incremental",
+}
 
 
 class JobCancelled(RuntimeError):
@@ -300,6 +315,57 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         soft_timeout_seconds=None,
         timeout_action="defer",
     ),
+    "model_import": JobPolicy(
+        priority="high",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="model_registry",
+        concurrency_group="model_storage",
+        resource_cost="heavy",
+        can_run_during_synthesis=True,
+        user_visible=True,
+        user_initiated=True,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=3600,
+        soft_timeout_seconds=600,
+        timeout_action="defer",
+    ),
+    "model_discovery": JobPolicy(
+        priority="high",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="model_registry",
+        concurrency_group="model_storage",
+        resource_cost="medium",
+        can_run_during_synthesis=True,
+        user_visible=True,
+        user_initiated=True,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=1800,
+        soft_timeout_seconds=120,
+        timeout_action="defer",
+    ),
+    "diagnostic_bundle": JobPolicy(
+        priority="normal",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="diagnostics",
+        concurrency_group="diagnostics",
+        resource_cost="medium",
+        can_run_during_synthesis=True,
+        user_visible=True,
+        user_initiated=True,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=900,
+        soft_timeout_seconds=120,
+        timeout_action="defer",
+    ),
     "integration_refresh": JobPolicy(
         priority="normal",
         idempotency_class="idempotent",
@@ -355,7 +421,9 @@ def enqueue_job(
         existing = conn.execute(
             """
             SELECT * FROM app_jobs
-            WHERE dedupe_key = ? AND status IN ('queued', 'running', 'blocked_by_dependency')
+            WHERE dedupe_key = ? AND status IN (
+                'queued', 'running', 'blocked_by_dependency', 'blocked_setup_required', 'deferred'
+            )
             ORDER BY created_at DESC
             LIMIT 1
             """,
@@ -490,14 +558,19 @@ def start_background_worker() -> None:
         _WORKER_STARTED = True
 
 
+def wake_background_worker() -> None:
+    _WORKER_WAKE.set()
+
+
 def enqueue_startup_reconciliation_jobs() -> None:
     with connect() as conn:
-        enqueue_job(
-            conn,
-            job_type="vector_reconcile_incremental",
-            payload={},
-            dedupe_key="vector-reconcile:startup",
-        )
+        if embedding_status(probe_model=False).get("available"):
+            enqueue_job(
+                conn,
+                job_type="vector_reconcile_incremental",
+                payload={},
+                dedupe_key="vector-reconcile:startup",
+            )
         stale_vaults = conn.execute(
             """
             SELECT DISTINCT sessions.vault_id
@@ -526,6 +599,7 @@ def enqueue_startup_reconciliation_jobs() -> None:
 
 
 def run_due_jobs_once(limit: int = 5) -> int:
+    _refresh_setup_prerequisites()
     _refresh_blocked_dependencies()
     _enqueue_due_integration_refresh_jobs()
     processed = 0
@@ -571,6 +645,8 @@ def job_queue_status() -> dict:
     return {
         "queued": counts.get("queued", 0),
         "blocked_by_dependency": counts.get("blocked_by_dependency", 0),
+        "blocked_setup_required": counts.get("blocked_setup_required", 0),
+        "deferred": counts.get("deferred", 0),
         "running": counts.get("running", 0),
         "succeeded": counts.get("succeeded", 0),
         "failed": counts.get("failed", 0),
@@ -590,8 +666,8 @@ def cancel_job(job_id: str) -> dict:
         job = dict_from_row(row)
         if int(job.get("cancellable") or 0) != 1:
             raise ValueError("Job is not cancellable")
-        if job["status"] not in {"queued", "blocked_by_dependency", "running"}:
-            raise ValueError("Only queued, blocked, or running jobs can be cancelled")
+        if job["status"] not in {"queued", "blocked_by_dependency", "blocked_setup_required", "deferred", "running"}:
+            raise ValueError("Only queued, blocked, deferred, or running jobs can be cancelled")
         if job["status"] == "running":
             conn.execute(
                 """
@@ -651,10 +727,12 @@ def _worker_loop() -> None:
             run_due_jobs_once(limit=3)
         except Exception:
             pass
-        time.sleep(JOB_POLL_SECONDS)
+        _WORKER_WAKE.wait(timeout=JOB_POLL_SECONDS)
+        _WORKER_WAKE.clear()
 
 
 def _claim_next_job() -> dict | None:
+    embeddings_available = bool(embedding_status(probe_model=False).get("available"))
     with connect() as conn:
         rows = conn.execute(
             """
@@ -675,6 +753,18 @@ def _claim_next_job() -> dict | None:
         ).fetchall()
         for row in rows:
             job = dict_from_row(row)
+            if job["job_type"] in EMBEDDING_JOB_TYPES and not embeddings_available:
+                conn.execute(
+                    """
+                    UPDATE app_jobs
+                    SET status = 'blocked_setup_required',
+                        status_detail = 'Set up memory search to continue this task.',
+                        updated_at = ?
+                    WHERE id = ? AND status = 'queued'
+                    """,
+                    (utc_now(), job["id"]),
+                )
+                continue
             dependency_ready = _resolve_dependency(conn, job)
             if not dependency_ready:
                 continue
@@ -766,6 +856,12 @@ def _run_claimed_job(job: dict) -> None:
             _run_delete_source_cleanup(payload, job["id"])
         elif job["job_type"] == "vector_reconcile_incremental":
             _run_vector_reconcile_incremental(payload, job["id"])
+        elif job["job_type"] == "model_import":
+            _run_model_import(payload, job["id"])
+        elif job["job_type"] == "model_discovery":
+            _run_model_discovery(payload, job["id"])
+        elif job["job_type"] == "diagnostic_bundle":
+            _run_diagnostic_bundle(payload, job["id"])
         elif job["job_type"] == "integration_refresh":
             _run_integration_refresh(payload, job["id"])
         else:
@@ -775,6 +871,9 @@ def _run_claimed_job(job: dict) -> None:
         _acknowledge_job_cancelled(job["id"])
         return
     except Exception as exc:
+        if job["job_type"] in EMBEDDING_JOB_TYPES and _is_embedding_setup_error(exc):
+            _mark_job_blocked_setup(job)
+            return
         _mark_job_failed_or_retry(job, str(exc))
         return
 
@@ -1380,6 +1479,103 @@ def _run_vector_reconcile_incremental(payload: dict, job_id: str | None = None) 
             )
 
 
+def _run_model_import(payload: dict, job_id: str | None = None) -> None:
+    from backend.app.core.model_registry import import_model_checkpoint
+
+    source_path = str(payload.get("path") or "")
+    name = str(payload.get("name") or "").strip() or None
+    if not source_path:
+        raise ValueError("Model import requires a source path.")
+
+    def update_progress(copied_bytes: int, total_bytes: int) -> None:
+        _raise_if_job_cancelled(job_id)
+        percent = round((copied_bytes / total_bytes) * 100, 2) if total_bytes else 100.0
+        with connect() as conn:
+            _update_job_progress(
+                conn,
+                str(job_id),
+                {
+                    "phase": "copying",
+                    "bytes_copied": copied_bytes,
+                    "bytes_total": total_bytes,
+                    "progress_percent": percent,
+                },
+            )
+
+    imported = import_model_checkpoint(
+        source_path,
+        name=name,
+        progress_callback=update_progress,
+        cancellation_callback=lambda: _raise_if_job_cancelled(job_id),
+    )
+    with connect() as conn:
+        _update_job_progress(
+            conn,
+            str(job_id),
+            {
+                "phase": "complete",
+                "progress_percent": 100.0,
+                "model_id": imported["id"],
+                "model_name": imported["name"],
+                "local_path": imported["local_path"],
+            },
+        )
+
+
+def _set_job_result(job_id: str | None, result: dict, *, detail: str) -> None:
+    if not job_id:
+        return
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE app_jobs
+            SET result_json = ?, status_detail = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                json.dumps(result, separators=(",", ":"), ensure_ascii=False),
+                detail[:500],
+                utc_now(),
+                job_id,
+            ),
+        )
+
+
+def _run_model_discovery(payload: dict, job_id: str | None = None) -> None:
+    _raise_if_job_cancelled(job_id)
+    from backend.app.core.model_registry import discover_installed_models
+
+    def update_progress(progress: dict) -> None:
+        _raise_if_job_cancelled(job_id)
+        if not job_id:
+            return
+        with connect() as conn:
+            _update_job_progress(conn, job_id, progress)
+
+    result = discover_installed_models(
+        max_results=max(1, min(int(payload.get("max_results") or 32), 200)),
+        include_rejected=bool(payload.get("include_rejected")),
+        refresh=True,
+        progress_callback=update_progress,
+        cancellation_callback=lambda: _raise_if_job_cancelled(job_id),
+    )
+    _raise_if_job_cancelled(job_id)
+    _set_job_result(
+        job_id,
+        result,
+        detail=f"Found {len(result.get('models') or [])} compatible local models.",
+    )
+
+
+def _run_diagnostic_bundle(payload: dict, job_id: str | None = None) -> None:
+    _raise_if_job_cancelled(job_id)
+    from backend.app.api.routes.diagnostics import create_diagnostic_bundle
+
+    result = create_diagnostic_bundle()
+    _raise_if_job_cancelled(job_id)
+    _set_job_result(job_id, result, detail="Diagnostic bundle is ready.")
+
+
 def _run_integration_refresh(payload: dict, job_id: str | None = None) -> None:
     _raise_if_job_cancelled(job_id)
     from backend.app.api.routes.integrations import refresh_integration_import
@@ -1387,12 +1583,16 @@ def _run_integration_refresh(payload: dict, job_id: str | None = None) -> None:
     import_id = str(payload.get("import_id") or "")
     if not import_id:
         raise RuntimeError("Integration refresh job requires import_id.")
-    refresh_integration_import(
+    result = refresh_integration_import(
         import_id,
-        import_files=True,
-        tombstone_missing=True,
-        trigger_source="watch_refresh",
+        import_files=bool(payload.get("import_files", True)),
+        tombstone_missing=bool(payload.get("tombstone_missing", True)),
+        trigger_source=str(payload.get("trigger_source") or "watch_refresh"),
     )
+    _raise_if_job_cancelled(job_id)
+    _set_job_result(job_id, result, detail="Integration refresh is complete.")
+
+
 def _mark_job_failed_or_retry(job: dict, error: str) -> None:
     with connect() as conn:
         current = conn.execute(
@@ -1474,6 +1674,97 @@ def _decode_payload(raw: str) -> dict:
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _is_embedding_setup_error(error: Exception) -> bool:
+    message = str(error).casefold()
+    return "embedding" in message or "memory search" in message
+
+
+def _mark_job_blocked_setup(job: dict) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE app_jobs
+            SET status = 'blocked_setup_required',
+                attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+                last_error = '',
+                status_detail = 'Set up memory search to continue this task.',
+                started_at = NULL,
+                updated_at = ?
+            WHERE id = ? AND status = 'running'
+            """,
+            (utc_now(), job["id"]),
+        )
+
+
+def _refresh_setup_prerequisites() -> None:
+    available = bool(embedding_status(probe_model=False).get("available"))
+    now = utc_now()
+    with connect() as conn:
+        previous = conn.execute(
+            "SELECT state, generation FROM scheduler_prerequisites WHERE name = 'embeddings'"
+        ).fetchone()
+        previous_state = str(previous["state"]) if previous else "unknown"
+        generation = int(previous["generation"] or 0) if previous else 0
+        transitioned_to_ready = bool(previous is not None and available and previous_state != "ready")
+        if transitioned_to_ready:
+            generation += 1
+        state = "ready" if available else "setup_required"
+        conn.execute(
+            """
+            INSERT INTO scheduler_prerequisites (name, state, generation, detail, updated_at)
+            VALUES ('embeddings', ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                state = excluded.state,
+                generation = excluded.generation,
+                detail = excluded.detail,
+                updated_at = excluded.updated_at
+            """,
+            (
+                state,
+                generation,
+                "" if available else "Set up memory search to continue vector tasks.",
+                now,
+            ),
+        )
+        if not available:
+            return
+        placeholders = ",".join("?" for _ in EMBEDDING_JOB_TYPES)
+        conn.execute(
+            f"""
+            UPDATE app_jobs
+            SET status = 'queued', status_detail = '', updated_at = ?
+            WHERE status = 'blocked_setup_required'
+              AND job_type IN ({placeholders})
+            """,
+            [now, *sorted(EMBEDDING_JOB_TYPES)],
+        )
+        if transitioned_to_ready:
+            active_reconciliation = conn.execute(
+                """
+                SELECT id
+                FROM app_jobs
+                WHERE job_type = 'vector_reconcile_incremental'
+                  AND status IN (
+                    'queued', 'running', 'blocked_by_dependency',
+                    'blocked_setup_required', 'deferred'
+                  )
+                LIMIT 1
+                """
+            ).fetchone()
+            if active_reconciliation is None:
+                enqueue_job(
+                    conn,
+                    job_type="vector_reconcile_incremental",
+                    payload={},
+                    dedupe_key=f"vector-reconcile:embedding-generation:{generation}",
+                    user_initiated=False,
+                )
+
+
+def notify_embedding_prerequisite_changed() -> None:
+    _refresh_setup_prerequisites()
 
 
 def _refresh_blocked_dependencies() -> None:

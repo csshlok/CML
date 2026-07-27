@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, LoaderCircle, LockKeyhole, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -126,8 +126,32 @@ export function ConfirmAction({
   destructive?: boolean;
   disabled?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+
+  async function confirm() {
+    setPending(true);
+    setError("");
+    try {
+      await onConfirm();
+      setOpen(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The action could not be completed.");
+    } finally {
+      setPending(false);
+    }
+  }
+
   return (
-    <AlertDialog>
+    <AlertDialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (pending) return;
+        setOpen(nextOpen);
+        if (!nextOpen) setError("");
+      }}
+    >
       <AlertDialogTrigger asChild disabled={disabled}>
         {children}
       </AlertDialogTrigger>
@@ -137,12 +161,17 @@ export function ConfirmAction({
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          {error ? <p className="mr-auto text-sm text-destructive" role="alert">{error}</p> : null}
+          <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             className={destructive ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : ""}
-            onClick={() => void onConfirm()}
+            disabled={pending}
+            onClick={(event) => {
+              event.preventDefault();
+              void confirm();
+            }}
           >
-            {confirmLabel}
+            {pending ? <><LoaderCircle className="h-4 w-4 animate-spin" /> Working…</> : confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

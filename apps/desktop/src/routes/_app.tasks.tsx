@@ -8,6 +8,7 @@ import {
   cancelJob,
   cancelProjectRun,
   getJobStatus,
+  listJobsPage,
   listProjectRunSummary,
   reindexProject,
   runJobsOnce,
@@ -36,42 +37,72 @@ function TasksView() {
   const [selected, setSelected] = useState<AppJobRecord | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [projectTasks, setProjectTasks] = useState<ProjectTask[]>([]);
+  const [jobRows, setJobRows] = useState<AppJobRecord[]>([]);
+  const [nextJobCursor, setNextJobCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   async function load() {
-    try {
-      const [status, summary] = await Promise.all([
-        getJobStatus(),
-        listProjectRunSummary(200),
-      ]);
+    const [statusResult, jobsResult, summaryResult] = await Promise.allSettled([
+      getJobStatus(),
+      listJobsPage({ limit: 100 }),
+      listProjectRunSummary(200),
+    ]);
+    if (statusResult.status === "fulfilled") {
+      const status = statusResult.value;
       setJobs(status);
-      setProjectTasks(
-        summary.items
-          .map(({ project, run }) => ({ project: project as ProjectRecord, run }))
-          .sort((a, b) => b.run.updated_at.localeCompare(a.run.updated_at)),
-      );
       const requested = requestedJobId
         ? [...status.running_jobs, ...status.latest].find((job) => job.id === requestedJobId)
         : null;
       setSelected((current) => requested ?? current ?? status.running_jobs[0] ?? status.latest[0] ?? null);
-    } catch {
+    }
+    if (jobsResult.status === "fulfilled") {
+      setJobRows(jobsResult.value.items);
+      setNextJobCursor(jobsResult.value.next_cursor);
+    }
+    if (summaryResult.status === "fulfilled") {
+      setProjectTasks(
+        summaryResult.value.items
+          .map(({ project, run }) => ({ project: project as ProjectRecord, run }))
+          .sort((a, b) => b.run.updated_at.localeCompare(a.run.updated_at)),
+      );
+    }
+    if (statusResult.status === "rejected" && jobsResult.status === "rejected") {
       setJobs(null);
+      setMessage("Tasks are temporarily unavailable.");
     }
   }
 
   const hasActiveWork = Boolean(
-    (jobs?.running ?? 0) + (jobs?.queued ?? 0) + (jobs?.blocked_by_dependency ?? 0),
+    (jobs?.running ?? 0) +
+    (jobs?.queued ?? 0) +
+    (jobs?.blocked_by_dependency ?? 0) +
+    (jobs?.blocked_setup_required ?? 0) +
+    (jobs?.deferred ?? 0),
   );
   useVisiblePolling(load, hasActiveWork ? 5000 : 30000);
 
   const rows = useMemo(() => {
-    const latest = jobs?.latest ?? [];
     const running = jobs?.running_jobs ?? [];
-    const merged = uniqueJobs([...running, ...latest]);
+    const merged = uniqueJobs([...running, ...jobRows, ...(jobs?.latest ?? [])]);
     const normalized = query.trim().toLowerCase();
     return merged
       .filter((job) => matchesFilter(job, filter))
       .filter((job) => !normalized || `${job.job_type} ${job.status} ${job.write_scope ?? ""}`.toLowerCase().includes(normalized));
-  }, [filter, jobs, query]);
+  }, [filter, jobRows, jobs, query]);
+
+  async function loadMoreJobs() {
+    if (!nextJobCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await listJobsPage({ limit: 100, cursor: nextJobCursor });
+      setJobRows((current) => uniqueJobs([...current, ...page.items]));
+      setNextJobCursor(page.next_cursor);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load more tasks.");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
   const visibleProjectTasks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return projectTasks.filter(({ run }) => matchesProjectFilter(run, filter))
@@ -81,7 +112,7 @@ function TasksView() {
   async function runOnce() {
     try {
       setJobs(await runJobsOnce());
-      setMessage("Ran due jobs once.");
+      setMessage("Background work is running.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not run jobs.");
     }
@@ -203,7 +234,7 @@ function TasksView() {
                       <span className="capitalize">{job.status.replace(/_/g, " ")}</span>
                     </span>
                     <span className="font-mono text-xs text-muted-foreground">{formatEstimate(job)}</span>
-                    <span className="text-right text-xs text-muted-foreground">{job.cancellable && ["queued", "running", "blocked_by_dependency"].includes(job.status) ? "Cancel" : "-"}</span>
+                    <span className="text-right text-xs text-muted-foreground">{job.cancellable && ["queued", "running", "blocked_by_dependency", "blocked_setup_required", "deferred"].includes(job.status) ? "Cancel" : "-"}</span>
                   </button>
                 ))}
                 {rows.length === 0 && (
@@ -213,6 +244,13 @@ function TasksView() {
             </div>
           </div>
         </section>
+        {nextJobCursor ? (
+          <div className="mt-4 flex justify-center">
+            <Button variant="outline" onClick={() => void loadMoreJobs()} disabled={loadingMore}>
+              {loadingMore ? "Loading..." : "Load more tasks"}
+            </Button>
+          </div>
+        ) : null}
       </main>
 
       <aside className="min-w-0 border-t border-border bg-card px-4 py-6 sm:px-6 xl:w-[var(--panel-width)] xl:min-w-[var(--panel-width)] xl:overflow-y-auto xl:border-l xl:border-t-0 xl:py-8">
@@ -273,9 +311,9 @@ function uniqueJobs(rows: AppJobRecord[]) {
 
 function matchesFilter(job: AppJobRecord, filter: TaskFilter) {
   if (filter === "running") return job.status === "running";
-  if (filter === "queued") return ["queued", "blocked_by_dependency"].includes(job.status);
+  if (filter === "queued") return ["queued", "blocked_by_dependency", "blocked_setup_required", "deferred"].includes(job.status);
   if (filter === "failed") return ["failed", "manual_review"].includes(job.status);
-  if (filter === "completed") return ["succeeded", "cancelled"].includes(job.status);
+  if (filter === "completed") return ["succeeded", "cancelled"].includes(job.status) && job.user_visible !== 0;
   return ["orphan_vector_cleanup", "artifact_cleanup", "vault_integrity_check", "diagnostic_bundle"].includes(job.job_type);
 }
 

@@ -19,6 +19,7 @@ from backend.app.core.encrypted_storage import (
 from backend.app.core.cluster_lifecycle import mark_cluster_needs_update
 from backend.app.core.extraction import ExtractionError, extract_text_from_url_with_security, link_extraction_diagnostics
 from backend.app.core.memory_card import generate_tags, summarize_text
+from backend.app.core.pagination import cursor_page, decode_cursor
 from backend.app.core.network_security import strip_url_credentials
 from backend.app.core.quarantine import attach_quarantine_record, ingest_file_through_quarantine
 from backend.app.core.retrieval_cache import invalidate_caches_for_source
@@ -27,6 +28,7 @@ from backend.app.core.sql import build_update_assignments
 from backend.app.core.turbovec_runtime import maybe_remove_source_chunks_from_sidecar
 from backend.app.schemas import (
     SourceCreate,
+    SourceBatchRequest,
     SourcePathCreate,
     SourcePageRead,
     SourceRead,
@@ -36,6 +38,47 @@ from backend.app.schemas import (
 )
 
 router = APIRouter(prefix="/sources", tags=["sources"])
+
+
+def _source_list_clauses(
+    *,
+    vault_id: str | None,
+    cluster_id: str | None,
+    unclustered: bool,
+    states: str | None,
+    source_types: str | None,
+    q: str | None,
+) -> tuple[list[str], list[object]]:
+    clauses: list[str] = []
+    params: list[object] = []
+    if vault_id:
+        clauses.append("vault_id = ?")
+        params.append(vault_id)
+    if cluster_id:
+        clauses.append("cluster_id = ?")
+        params.append(cluster_id)
+    elif unclustered:
+        clauses.append("cluster_id IS NULL")
+    state_values = [item.strip() for item in (states or "").split(",") if item.strip()]
+    invalid_states = [item for item in state_values if item not in {"waiting", "processing", "indexed", "failed"}]
+    if invalid_states:
+        raise HTTPException(status_code=400, detail="Invalid source state filter")
+    if state_values:
+        clauses.append(f"state IN ({','.join('?' for _ in state_values)})")
+        params.extend(state_values)
+    source_type_values = [item.strip() for item in (source_types or "").split(",") if item.strip()]
+    if source_type_values:
+        clauses.append(f"source_type IN ({','.join('?' for _ in source_type_values)})")
+        params.extend(source_type_values)
+    normalized_query = (q or "").strip().lower()
+    if normalized_query:
+        clauses.append(
+            "(LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(source_type) LIKE ?)"
+        )
+        match = f"%{normalized_query}%"
+        params.extend([match, match, match, match])
+    clauses.append("deleted_at IS NULL")
+    return clauses, params
 
 
 @router.get("", response_model=list[SourceRead])
@@ -98,6 +141,47 @@ def list_sources(
             [*params, safe_limit, safe_offset],
         ).fetchall()
         return [source_from_row(row, conn=conn, include_content=include_content) for row in rows]
+
+
+@router.get("/page")
+def list_sources_page(
+    vault_id: str | None = None,
+    cluster_id: str | None = None,
+    unclustered: bool = False,
+    states: str | None = None,
+    source_types: str | None = None,
+    q: str | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+    include_content: bool = False,
+) -> dict:
+    clauses, params = _source_list_clauses(
+        vault_id=vault_id,
+        cluster_id=cluster_id,
+        unclustered=unclustered,
+        states=states,
+        source_types=source_types,
+        q=q,
+    )
+    decoded = decode_cursor(cursor)
+    if decoded:
+        updated_at, item_id = decoded
+        clauses.append("(updated_at < ? OR (updated_at = ? AND id < ?))")
+        params.extend([updated_at, updated_at, item_id])
+    safe_limit = max(1, min(int(limit), 200))
+    with connect() as conn:
+        _validate_source_list_filters(conn, vault_id=vault_id, cluster_id=cluster_id)
+        rows = conn.execute(
+            f"""
+            SELECT * FROM sources
+            WHERE {' AND '.join(clauses)}
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            [*params, safe_limit + 1],
+        ).fetchall()
+        items = [source_from_row(row, conn=conn, include_content=include_content) for row in rows]
+    return cursor_page(items, requested_limit=safe_limit, sort_field="updated_at")
 
 
 @router.get("/count")
@@ -165,6 +249,30 @@ def source_counts_by_cluster(vault_id: str) -> dict:
             for row in rows
         ]
     }
+
+
+@router.get("/latest-by-cluster")
+def latest_source_by_cluster(vault_id: str) -> dict:
+    with connect() as conn:
+        _validate_source_list_filters(conn, vault_id=vault_id, cluster_id=None)
+        rows = conn.execute(
+            """
+            WITH ranked AS (
+                SELECT cluster_id, state, updated_at, id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY cluster_id
+                           ORDER BY updated_at DESC, id DESC
+                       ) AS row_number
+                FROM sources
+                WHERE vault_id = ? AND cluster_id IS NOT NULL AND deleted_at IS NULL
+            )
+            SELECT cluster_id, state, updated_at
+            FROM ranked
+            WHERE row_number = 1
+            """,
+            (vault_id,),
+        ).fetchall()
+    return {"items": [dict(row) for row in rows]}
 
 
 @router.post("", response_model=SourceRead)
@@ -604,6 +712,22 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
 @router.get("/link-diagnostics")
 def get_link_diagnostics(url: str) -> dict:
     return link_extraction_diagnostics(url)
+
+
+@router.post("/batch", response_model=list[SourceRead])
+def get_sources_batch(payload: SourceBatchRequest) -> list[dict]:
+    source_ids = payload.source_ids
+    placeholders = ",".join("?" for _ in source_ids)
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM sources WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+            source_ids,
+        ).fetchall()
+        sources_by_id = {
+            row["id"]: source_from_row(row, conn=conn)
+            for row in rows
+        }
+    return [sources_by_id[source_id] for source_id in source_ids if source_id in sources_by_id]
 
 
 @router.get("/{source_id}", response_model=SourceRead)

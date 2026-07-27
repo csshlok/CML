@@ -15,24 +15,46 @@ const BACKEND_CANDIDATES = Array.from(
 );
 let resolvedBackendUrl: string | null = null;
 let resolvedBackendToken: string | null = CONFIGURED_BACKEND_TOKEN || null;
+let backendGeneration = 0;
+let healthCheckPromise: Promise<void> | null = null;
+const desktopManagedBackend = typeof window !== "undefined" && Boolean(window.cmlDesktop);
 
 if (typeof window !== "undefined") {
   const queryBackendUrl = new URLSearchParams(window.location.search).get("backendUrl");
   if (queryBackendUrl) {
     resolvedBackendUrl = queryBackendUrl;
   }
+  const initialGeneration = backendGeneration;
   void window.cmlDesktop?.getBackendUrl?.().then((url) => {
-    if (url) resolvedBackendUrl = url;
+    if (backendGeneration !== initialGeneration) return;
+    if (url) {
+      resolvedBackendUrl = url;
+      publishHealth({ status: "checking", url });
+    }
   });
   void window.cmlDesktop?.getBackendToken?.().then((token) => {
     if (token) resolvedBackendToken = token;
   });
   window.cmlDesktop?.onBackendUrlChanged?.((nextUrl) => {
-    if (nextUrl) resolvedBackendUrl = nextUrl;
+    backendGeneration += 1;
+    resolvedBackendUrl = nextUrl || null;
+    discoveryPromise = null;
+    lastDiscoveryAttempt = 0;
+    publishHealth({
+      status: "checking",
+      url: nextUrl || CONFIGURED_BACKEND_URL,
+    });
+    if (nextUrl) void coordinateHealthCheck();
   });
 }
 
 export type BackendHealthStatus = "checking" | "online" | "degraded" | "offline";
+
+export type CursorPage<T> = {
+  items: T[];
+  next_cursor: string | null;
+  has_more: boolean;
+};
 
 type BackendHealthSnapshot = { status: BackendHealthStatus; url: string };
 let healthSnapshot: BackendHealthSnapshot = {
@@ -60,32 +82,46 @@ function subscribeHealth(listener: () => void) {
 }
 
 async function runHealthCheck() {
+  const generation = backendGeneration;
   const token = await getBackendToken();
-  const candidates = resolvedBackendUrl
-    ? [resolvedBackendUrl, ...BACKEND_CANDIDATES.filter((item) => item !== resolvedBackendUrl)]
-    : BACKEND_CANDIDATES;
+  const candidates = desktopManagedBackend
+    ? (resolvedBackendUrl ? [resolvedBackendUrl] : [])
+    : resolvedBackendUrl
+      ? [resolvedBackendUrl, ...BACKEND_CANDIDATES.filter((item) => item !== resolvedBackendUrl)]
+      : BACKEND_CANDIDATES;
   for (const candidate of candidates) {
     const probe = await probeBackend(candidate, token);
+    if (generation !== backendGeneration) return;
     if (probe.status === "online" || (probe.status === "degraded" && candidate === CONFIGURED_BACKEND_URL)) {
       resolvedBackendUrl = candidate;
       publishHealth({ status: probe.status, url: candidate });
       return;
     }
   }
+  if (generation !== backendGeneration) return;
   resolvedBackendUrl = null;
   publishHealth({ status: "offline", url: CONFIGURED_BACKEND_URL });
+}
+
+function coordinateHealthCheck() {
+  if (!healthCheckPromise) {
+    healthCheckPromise = runHealthCheck().finally(() => {
+      healthCheckPromise = null;
+    });
+  }
+  return healthCheckPromise;
 }
 
 function startHealthCoordinator() {
   if (healthCoordinatorStarted || typeof window === "undefined") return;
   healthCoordinatorStarted = true;
   const schedule = async () => {
-    if (!document.hidden) await runHealthCheck();
+    if (!document.hidden) await coordinateHealthCheck();
     const delay = healthSnapshot.status === "offline" ? 15_000 : 8_000;
     window.setTimeout(schedule, document.hidden ? delay * 4 : delay);
   };
   const onVisibility = () => {
-    if (!document.hidden) void runHealthCheck();
+    if (!document.hidden) void coordinateHealthCheck();
   };
   document.addEventListener("visibilitychange", onVisibility);
   void schedule();
@@ -121,11 +157,15 @@ async function getBackendUrl() {
   const now = Date.now();
   if (!discoveryPromise && now - lastDiscoveryAttempt < 5_000) return CONFIGURED_BACKEND_URL;
   if (!discoveryPromise) {
+    const generation = backendGeneration;
     lastDiscoveryAttempt = now;
     discoveryPromise = (async () => {
       const token = await getBackendToken();
       for (const candidate of BACKEND_CANDIDATES) {
         const probe = await probeBackend(candidate, token);
+        if (generation !== backendGeneration) {
+          return resolvedBackendUrl || CONFIGURED_BACKEND_URL;
+        }
         if (probe.status === "online" || (probe.status === "degraded" && candidate === CONFIGURED_BACKEND_URL)) {
           resolvedBackendUrl = candidate;
           publishHealth({ status: probe.status, url: candidate });
@@ -149,6 +189,7 @@ async function getBackendToken() {
 }
 
 export type BridgeStatus = {
+  schema_version: number;
   enabled: boolean;
   mcp: string;
   http_api: string;
@@ -184,6 +225,7 @@ export type BridgeClientRecord = {
   id: string;
   name: string;
   enabled: boolean;
+  capability_profile: "read_only" | "read_write";
   approval_vault_id?: string | null;
   allowed_vault_ids: string[];
   allowed_cluster_ids: string[];
@@ -215,6 +257,7 @@ export type BridgeApprovalRequest = {
   vault_id: string;
   status: string;
   claimed_name: string;
+  capability_profile: "read_only" | "read_write";
   requested_vault_ids: string[];
   requested_cluster_ids: string[];
   allow_raw_snippets: boolean;
@@ -518,11 +561,13 @@ export type AppJobRecord = {
   job_type: string;
   status: string;
   payload: string;
+  result_json?: string;
   dedupe_key: string | null;
   priority?: string | null;
   write_scope?: string | null;
   scope_id?: string | null;
   resource_cost?: string | null;
+  user_visible?: number | null;
   cancellable?: number | null;
   timeout_seconds?: number | null;
   started_at?: string | null;
@@ -542,6 +587,8 @@ export type AppJobRecord = {
 export type JobQueueStatus = {
   queued: number;
   blocked_by_dependency: number;
+  blocked_setup_required: number;
+  deferred: number;
   running: number;
   succeeded: number;
   failed: number;
@@ -1266,6 +1313,7 @@ export async function listBridgeApprovalRequests(options: { limit?: number; offs
 export async function approveBridgeApprovalRequest(
   requestId: string,
   payload: {
+    capability_profile?: "read_only" | "read_write";
     allowed_vault_ids?: string[];
     allowed_cluster_ids?: string[];
     allow_raw_snippets?: boolean;
@@ -1313,10 +1361,32 @@ export async function listBridgeWritebackReviews(
   return request<BridgeWritebackReview[]>(`/api/v1/bridge/reviews${suffix}`);
 }
 
-export async function decideBridgeWritebackReview(sourceId: string, approved: boolean) {
+export async function listBridgeWritebackReviewsPage(
+  vaultId?: string,
+  pendingOnly = false,
+  options: { limit?: number; cursor?: string | null } = {},
+) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (pendingOnly) params.set("pending_only", "true");
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.cursor) params.set("cursor", options.cursor);
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<CursorPage<BridgeWritebackReview>>(`/api/v1/bridge/reviews/page${suffix}`);
+}
+
+export async function decideBridgeWritebackReview(
+  sourceId: string,
+  approved: boolean,
+  expectedUpdatedAt?: string,
+) {
   return request<BridgeWritebackReview>(`/api/v1/bridge/reviews/${encodeURIComponent(sourceId)}`, {
     method: "POST",
-    body: JSON.stringify({ approved }),
+    body: JSON.stringify({
+      approved,
+      expected_updated_at: expectedUpdatedAt,
+      idempotency_key: crypto.randomUUID(),
+    }),
   });
 }
 
@@ -1325,6 +1395,18 @@ export async function listBridgeCaptures(vaultId?: string, options: { limit?: nu
   if (vaultId) params.set("vault_id", vaultId);
   const suffix = params.size > 0 ? `?${params.toString()}` : "";
   return request<BridgeCaptureRecord[]>(`/api/v1/bridge/captures${suffix}`);
+}
+
+export async function listBridgeCapturesPage(
+  vaultId?: string,
+  options: { limit?: number; cursor?: string | null } = {},
+) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.cursor) params.set("cursor", options.cursor);
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<CursorPage<BridgeCaptureRecord>>(`/api/v1/bridge/captures/page${suffix}`);
 }
 
 export async function captureBridgeArtifact(payload: BridgeArtifactCapturePayload) {
@@ -1343,6 +1425,7 @@ export async function captureBridgeExternalTurn(payload: BridgeExternalTurnPaylo
 
 export async function createBridgeClient(payload: {
   name: string;
+  capability_profile?: "read_only" | "read_write";
   allowed_vault_ids?: string[];
   allowed_cluster_ids?: string[];
   allow_raw_snippets?: boolean;
@@ -1361,6 +1444,7 @@ export async function updateBridgeClient(
       BridgeClientRecord,
       | "name"
       | "enabled"
+      | "capability_profile"
       | "allowed_vault_ids"
       | "allowed_cluster_ids"
       | "allow_raw_snippets"
@@ -1403,7 +1487,15 @@ export async function updateBridgeSettings(
 }
 
 export async function createDiagnosticBundle() {
-  return request<DiagnosticBundleResponse>("/api/v1/diagnostics/bundle", { method: "POST" });
+  const queued = await request<AppJobRecord>("/api/v1/diagnostics/bundle", {
+    method: "POST",
+    body: JSON.stringify({ idempotency_key: crypto.randomUUID() }),
+  });
+  const completed = await waitForAppJob(queued.id);
+  if (completed.status !== "succeeded") {
+    throw new Error(completed.last_error || "The diagnostic bundle did not finish.");
+  }
+  return parseJobResult<DiagnosticBundleResponse>(completed.result_json);
 }
 
 export async function listVaults() {
@@ -1434,6 +1526,18 @@ export async function listClusters(vaultId?: string, options: { limit?: number; 
   if (options.offset) params.set("offset", String(options.offset));
   const query = params.size ? `?${params.toString()}` : "";
   return request<ClusterRecord[]>(`/api/v1/clusters${query}`);
+}
+
+export async function listClustersPage(
+  vaultId?: string,
+  options: { limit?: number; cursor?: string | null } = {},
+) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.cursor) params.set("cursor", options.cursor);
+  const query = params.size ? `?${params.toString()}` : "";
+  return request<CursorPage<ClusterRecord>>(`/api/v1/clusters/page${query}`);
 }
 
 export async function createCluster(payload: {
@@ -1478,6 +1582,7 @@ export async function listActivity(
     query?: string;
     limit?: number;
     offset?: number;
+    cursor?: string | null;
   } = {},
 ) {
   const params = new URLSearchParams({ vault_id: vaultId });
@@ -1485,8 +1590,11 @@ export async function listActivity(
   if (options.query?.trim()) params.set("q", options.query.trim());
   if (options.limit !== undefined) params.set("limit", String(options.limit));
   if (options.offset !== undefined) params.set("offset", String(options.offset));
+  if (options.cursor) params.set("cursor", options.cursor);
   return request<{
     items: ActivityRecord[];
+    next_cursor: string | null;
+    has_more: boolean;
     total: number;
     limit: number;
     offset: number;
@@ -1537,6 +1645,25 @@ export async function listProjects(
   if (options.offset !== undefined) params.set("offset", String(options.offset));
   const query = params.size ? `?${params.toString()}` : "";
   return request<ProjectRecord[]>(`/api/v1/projects${query}`);
+}
+
+export async function listProjectsPage(
+  vaultId?: string,
+  options: { clusterId?: string; limit?: number; cursor?: string | null } = {},
+) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (options.clusterId) params.set("cluster_id", options.clusterId);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.cursor) params.set("cursor", options.cursor);
+  const query = params.size ? `?${params.toString()}` : "";
+  return request<CursorPage<ProjectRecord>>(`/api/v1/projects/page${query}`);
+}
+
+export async function getProjectClusterMembershipSummary(vaultId: string) {
+  return request<{ cluster_ids: string[] }>(
+    `/api/v1/projects/cluster-membership-summary?vault_id=${encodeURIComponent(vaultId)}`,
+  );
 }
 
 export async function getProject(id: string) {
@@ -1788,6 +1915,37 @@ export async function listSources(
   if (options.order) params.set("order", options.order);
   const query = params.size ? `?${params.toString()}` : "";
   return request<SourceRecord[]>(`/api/v1/sources${query}`);
+}
+
+export async function listSourcesPage(
+  vaultId?: string,
+  options: {
+    limit?: number;
+    cursor?: string | null;
+    clusterId?: string;
+    unclustered?: boolean;
+    states?: Array<SourceRecord["state"]>;
+    query?: string;
+    sourceTypes?: string[];
+  } = {},
+) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.cursor) params.set("cursor", options.cursor);
+  if (options.clusterId) params.set("cluster_id", options.clusterId);
+  if (options.unclustered) params.set("unclustered", "true");
+  if (options.states?.length) params.set("states", options.states.join(","));
+  if (options.sourceTypes?.length) params.set("source_types", options.sourceTypes.join(","));
+  if (options.query?.trim()) params.set("q", options.query.trim());
+  const query = params.size ? `?${params.toString()}` : "";
+  return request<CursorPage<SourceRecord>>(`/api/v1/sources/page${query}`);
+}
+
+export async function getLatestSourcesByCluster(vaultId: string) {
+  return request<{
+    items: Array<{ cluster_id: string; state: SourceRecord["state"]; updated_at: string }>;
+  }>(`/api/v1/sources/latest-by-cluster?vault_id=${encodeURIComponent(vaultId)}`);
 }
 
 export async function createSource(payload: {
@@ -2130,13 +2288,30 @@ function parseSseEvent(block: string): { event: string; data: Record<string, unk
   }
 }
 
-export async function listChatSessions(vaultId?: string, options: { limit?: number; offset?: number } = {}) {
+export async function listChatSessions(
+  vaultId?: string,
+  options: { saved?: boolean; limit?: number; offset?: number } = {},
+) {
   const params = new URLSearchParams();
   if (vaultId) params.set("vault_id", vaultId);
+  if (options.saved !== undefined) params.set("saved", String(options.saved));
   if (options.limit) params.set("limit", String(options.limit));
   if (options.offset) params.set("offset", String(options.offset));
   const query = params.size ? `?${params.toString()}` : "";
   return request<ChatSessionRecord[]>(`/api/v1/chat/sessions${query}`);
+}
+
+export async function listChatSessionsPage(
+  vaultId?: string,
+  options: { saved?: boolean; limit?: number; cursor?: string | null } = {},
+) {
+  const params = new URLSearchParams();
+  if (vaultId) params.set("vault_id", vaultId);
+  if (options.saved !== undefined) params.set("saved", String(options.saved));
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.cursor) params.set("cursor", options.cursor);
+  const query = params.size ? `?${params.toString()}` : "";
+  return request<CursorPage<ChatSessionRecord>>(`/api/v1/chat/sessions/page${query}`);
 }
 
 export async function createChatSession(payload: {
@@ -2210,6 +2385,17 @@ export async function getJobStatus() {
   return request<JobQueueStatus>("/api/v1/jobs/status");
 }
 
+export async function listJobsPage(
+  options: { status?: string[]; limit?: number; cursor?: string | null } = {},
+) {
+  const params = new URLSearchParams();
+  if (options.status?.length) params.set("status", options.status.join(","));
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.cursor) params.set("cursor", options.cursor);
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<CursorPage<AppJobRecord>>(`/api/v1/jobs${suffix}`);
+}
+
 export async function runJobsOnce() {
   return request<JobQueueStatus>("/api/v1/jobs/run-once", { method: "POST" });
 }
@@ -2229,6 +2415,14 @@ export async function authorizeVaultDeletion(
 
 export async function getSource(sourceId: string) {
   return request<SourceRecord>(`/api/v1/sources/${encodeURIComponent(sourceId)}`);
+}
+
+export async function getSources(sourceIds: string[]) {
+  if (sourceIds.length === 0) return [];
+  return request<SourceRecord[]>("/api/v1/sources/batch", {
+    method: "POST",
+    body: JSON.stringify({ source_ids: sourceIds.slice(0, 100) }),
+  });
 }
 
 export async function getTemporalFactStatus(vaultId: string) {
@@ -2286,12 +2480,37 @@ export async function discoverInstalledModels(payload?: {
   include_rejected?: boolean;
   refresh?: boolean;
 }) {
+  if (payload?.refresh) {
+    const queued = await request<AppJobRecord>("/api/v1/models/discover/jobs", {
+      method: "POST",
+      body: JSON.stringify({
+        max_results: payload.max_results ?? 32,
+        include_rejected: Boolean(payload.include_rejected),
+        idempotency_key: crypto.randomUUID(),
+      }),
+    });
+    const completed = await waitForAppJob(queued.id);
+    if (completed.status !== "succeeded") {
+      throw new Error(completed.last_error || "The model scan did not finish.");
+    }
+    return parseJobResult<InstalledModelDiscoveryRecord>(completed.result_json);
+  }
   const query = new URLSearchParams();
   if (payload?.max_results) query.set("max_results", String(payload.max_results));
   if (payload?.include_rejected) query.set("include_rejected", "true");
-  if (payload?.refresh) query.set("refresh", "true");
   const suffix = query.toString() ? `?${query.toString()}` : "";
   return request<InstalledModelDiscoveryRecord>(`/api/v1/models/discover${suffix}`);
+}
+
+export async function getJob(jobId: string) {
+  return request<AppJobRecord>(`/api/v1/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export async function approveModelDiscoveryRoot(path: string) {
+  return request<{ path: string; approved: boolean }>("/api/v1/models/discovery-roots", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
 }
 
 export async function getModelCompatibilityReport(payload: { path: string; name?: string | null }) {
@@ -2302,10 +2521,49 @@ export async function getModelCompatibilityReport(payload: { path: string; name?
 }
 
 export async function importLocalModel(payload: { path: string; name?: string | null }) {
-  return request<LocalModelRecord>("/api/v1/models/import", {
+  const queued = await request<AppJobRecord>("/api/v1/models/import/jobs", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+  const completed = await waitForAppJob(queued.id);
+  if (completed.status !== "succeeded") {
+    throw new Error(completed.last_error || "The model import did not finish.");
+  }
+  const detail = parseJobDetail(completed.status_detail);
+  const models = await listLocalModels();
+  const imported = models.find((model) => model.id === detail.model_id);
+  if (!imported) {
+    throw new Error("The model was copied but Vault could not refresh it. Restart Vault and scan again.");
+  }
+  return imported;
+}
+
+async function waitForAppJob(jobId: string): Promise<AppJobRecord> {
+  const terminal = new Set(["succeeded", "failed", "cancelled", "manual_review"]);
+  while (true) {
+    const job = await getJob(jobId);
+    if (terminal.has(job.status)) return job;
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+  }
+}
+
+function parseJobDetail(value?: string | null): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseJobResult<T>(value?: string | null): T {
+  if (!value) throw new Error("Vault finished the job without a result.");
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    throw new Error("Vault returned an unreadable job result.");
+  }
 }
 
 export async function activateLocalModel(modelId: string, role: "chat" = "chat") {
@@ -2463,10 +2721,15 @@ export async function refreshIntegrationImport(
   if (options?.import_files) params.set("import_files", "true");
   if (options?.tombstone_missing) params.set("tombstone_missing", "true");
   const query = params.toString() ? `?${params.toString()}` : "";
-  return request<LocalFolderScanResponse>(
-    `/api/v1/integrations/imports/${encodeURIComponent(importId)}/refresh${query}`,
+  const queued = await request<AppJobRecord>(
+    `/api/v1/integrations/imports/${encodeURIComponent(importId)}/refresh/jobs${query}`,
     { method: "POST" },
   );
+  const completed = await waitForAppJob(queued.id);
+  if (completed.status !== "succeeded") {
+    throw new Error(completed.last_error || "The folder refresh did not finish.");
+  }
+  return parseJobResult<LocalFolderScanResponse>(completed.result_json);
 }
 
 export async function updateIntegrationImport(
@@ -2601,25 +2864,35 @@ export async function cancelModelDownload(modelId: string) {
   );
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+type BackendRequestInit = RequestInit & {
+  timeoutMs?: number;
+};
+
+async function request<T>(path: string, init?: BackendRequestInit): Promise<T> {
   const backendUrl = await getBackendUrl();
   const token = await getBackendToken();
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (token) headers.set("x-cml-api-token", token);
   let response: Response;
+  const { timeoutMs = 12_000, ...fetchInit } = init ?? {};
+  const retrySafe = !fetchInit.method || fetchInit.method.toUpperCase() === "GET";
   try {
     response = await fetch(`${backendUrl}${apiPath(path)}`, {
-      ...init,
+      ...fetchInit,
       headers,
-      signal: init?.signal ?? AbortSignal.timeout(12_000),
+      signal: init?.signal ?? AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     if (
       error instanceof DOMException &&
       (error.name === "AbortError" || error.name === "TimeoutError")
     ) {
-      throw new Error("Vault took too long to respond. Try again.");
+      throw new Error(
+        retrySafe
+          ? `Vault did not finish this request within ${formatTimeout(timeoutMs)}. Try again.`
+          : `Vault did not confirm this action within ${formatTimeout(timeoutMs)}. Check its status before retrying.`,
+      );
     }
     throw new Error("Vault's local service is unavailable. Open Health to reconnect.");
   }
@@ -2635,6 +2908,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+function formatTimeout(timeoutMs: number) {
+  if (timeoutMs >= 60_000 && timeoutMs % 60_000 === 0) {
+    return `${timeoutMs / 60_000} minutes`;
+  }
+  return `${Math.max(1, Math.round(timeoutMs / 1000))} seconds`;
 }
 
 export async function resetVaultPassphrase(payload: {

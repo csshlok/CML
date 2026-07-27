@@ -1,4 +1,7 @@
 import json
+import os
+import time
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -19,12 +22,28 @@ FALLBACK_PHASES = {
     "job_recovery_running",
     "reconciliation_queued",
     "runtime_detection_running",
+    "core_ready",
+    "warming",
     "vault_lock_failed",
     "startup_failed",
     "ready",
 }
 
 TERMINAL_STATUSES = {"ready", "failed"}
+_STARTUP_INSTANCE_ID = uuid.uuid4().hex
+_STARTUP_STARTED_AT = time.monotonic()
+_LAST_PHASE_STARTED_AT = _STARTUP_STARTED_AT
+_LAST_PHASE = ""
+_SEQUENCE = 0
+
+
+def reset_startup_status_timing() -> None:
+    global _STARTUP_INSTANCE_ID, _STARTUP_STARTED_AT, _LAST_PHASE_STARTED_AT, _LAST_PHASE, _SEQUENCE
+    _STARTUP_INSTANCE_ID = uuid.uuid4().hex
+    _STARTUP_STARTED_AT = time.monotonic()
+    _LAST_PHASE_STARTED_AT = _STARTUP_STARTED_AT
+    _LAST_PHASE = ""
+    _SEQUENCE = 0
 
 
 def known_startup_phases() -> set[str]:
@@ -40,13 +59,18 @@ def known_startup_phases() -> set[str]:
 
 
 def write_startup_status(phase: str, *, status: str = "running", message: str = "", error_code: str = "") -> None:
+    global _LAST_PHASE_STARTED_AT, _LAST_PHASE, _SEQUENCE
     settings = get_settings()
     status_path = settings.startup_status_path
     if status_path is None:
         return
     phases = known_startup_phases()
     normalized_phase = phase if phase in phases else "startup_failed"
+    now_monotonic = time.monotonic()
+    _SEQUENCE += 1
     payload = {
+        "startup_instance_id": _STARTUP_INSTANCE_ID,
+        "sequence": _SEQUENCE,
         "phase": normalized_phase,
         "raw_phase": phase,
         "status": status,
@@ -56,10 +80,18 @@ def write_startup_status(phase: str, *, status: str = "running", message: str = 
         "data_dir": str(settings.data_dir),
         "database_path": str(settings.database_path),
         "updated_at": utc_now(),
+        "total_elapsed_ms": round((now_monotonic - _STARTUP_STARTED_AT) * 1000, 2),
+        "previous_phase": _LAST_PHASE,
+        "previous_phase_duration_ms": round((now_monotonic - _LAST_PHASE_STARTED_AT) * 1000, 2),
     }
+    _LAST_PHASE = normalized_phase
+    _LAST_PHASE_STARTED_AT = now_monotonic
     try:
-        Path(status_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(status_path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        target = Path(status_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f"{target.name}.{os.getpid()}.{_SEQUENCE}.tmp")
+        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        temporary.replace(target)
     except OSError:
         # Startup status must never be the reason the backend cannot start.
         return
@@ -90,6 +122,8 @@ def validate_startup_phase_registry() -> dict:
         "job_recovery_running",
         "reconciliation_queued",
         "runtime_detection_running",
+        "core_ready",
+        "warming",
         "ready",
         "startup_failed",
     }

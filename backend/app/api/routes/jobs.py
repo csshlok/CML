@@ -4,9 +4,10 @@ from backend.app.core.background_jobs import (
     cancel_job,
     enqueue_job,
     job_queue_status,
-    run_due_jobs_once,
+    wake_background_worker,
 )
 from backend.app.core.database import connect
+from backend.app.core.pagination import cursor_page, decode_cursor
 from backend.app.core.temporal_facts import temporal_fact_diagnostics
 from backend.app.schemas import (
     AppJobRead,
@@ -25,7 +26,9 @@ def get_job_status() -> dict:
 
 @router.post("/run-once", response_model=JobQueueStatus)
 def run_jobs_once() -> dict:
-    run_due_jobs_once(limit=10)
+    # Wake the durable startup worker and return immediately. Running queued
+    # jobs inside this request made one slow job block the API health path.
+    wake_background_worker()
     return job_queue_status()
 
 
@@ -52,6 +55,53 @@ def backfill_temporal_facts(payload: TemporalFactBackfillRequest) -> dict:
             scope_id=payload.vault_id,
             user_initiated=True,
         )
+
+
+@router.get("")
+def list_app_jobs(
+    status: str | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+) -> dict:
+    clauses: list[str] = []
+    params: list[object] = []
+    if status:
+        statuses = [item.strip() for item in status.split(",") if item.strip()]
+        allowed = {
+            "queued", "running", "succeeded", "failed", "cancelled",
+            "blocked_by_dependency", "blocked_setup_required", "deferred",
+            "manual_review",
+        }
+        if not statuses or any(item not in allowed for item in statuses):
+            raise HTTPException(status_code=400, detail="Invalid job status")
+        clauses.append(f"status IN ({','.join('?' for _ in statuses)})")
+        params.extend(statuses)
+    decoded = decode_cursor(cursor)
+    if decoded:
+        updated_at, item_id = decoded
+        clauses.append("(updated_at < ? OR (updated_at = ? AND id < ?))")
+        params.extend([updated_at, updated_at, item_id])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    safe_limit = max(1, min(int(limit), 200))
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM app_jobs {where} ORDER BY updated_at DESC, id DESC LIMIT ?",
+            [*params, safe_limit + 1],
+        ).fetchall()
+    return cursor_page(
+        [dict(row) for row in rows],
+        requested_limit=safe_limit,
+        sort_field="updated_at",
+    )
+
+
+@router.get("/{job_id}", response_model=AppJobRead)
+def get_app_job(job_id: str) -> dict:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return dict(row)
 
 
 @router.post("/{job_id}/cancel", response_model=AppJobRead)

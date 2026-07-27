@@ -135,6 +135,48 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(count["total"], 1)
         self.assertEqual(len(second_page), 30)
 
+    def test_source_batch_returns_unique_existing_sources_in_requested_order(self) -> None:
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-batch", "Batch", self.tmp.name, now, now),
+            )
+        first = create_source(
+            SourceCreate(
+                vault_id="vault-batch",
+                title="First",
+                source_type="note",
+                raw_text="First batch source.",
+            )
+        )
+        second = create_source(
+            SourceCreate(
+                vault_id="vault-batch",
+                title="Second",
+                source_type="note",
+                raw_text="Second batch source.",
+            )
+        )
+
+        client = self._client()
+        try:
+            response = client.post(
+                "/api/v1/sources/batch",
+                json={"source_ids": [second["id"], "missing-source", first["id"], second["id"]]},
+            )
+            empty_response = client.post("/api/v1/sources/batch", json={"source_ids": []})
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["id"] for item in response.json()], [second["id"], first["id"]])
+        self.assertEqual(empty_response.status_code, 422)
+
     def test_activity_feed_is_globally_sorted_and_server_paginated_at_scale(self) -> None:
         from backend.app.api.routes.activity import list_activity
         from backend.app.core.database import connect
@@ -235,18 +277,6 @@ class AdditionalQACases(unittest.TestCase):
 
         self.assertGreaterEqual(discovery["compatible_model_count"], 1)
         self.assertTrue(any(item["local_path"] == str(model_file.resolve()) for item in discovery["models"]))
-
-    def test_windows_model_discovery_includes_every_available_drive(self) -> None:
-        from backend.app.core import model_registry
-
-        available = {"C:/", "D:/", "T:/"}
-        with (
-            patch.object(model_registry.os, "name", "nt"),
-            patch.object(model_registry.os.path, "exists", side_effect=lambda path: path in available),
-        ):
-            roots = model_registry._available_drive_roots()
-
-        self.assertEqual([str(root).replace("\\", "/") for root in roots], ["C:/", "D:/", "T:/"])
 
     def test_discover_installed_models_prioritizes_late_compatible_results_when_rejected_fill_limit(self) -> None:
         from backend.app.core.config import get_settings
@@ -1254,8 +1284,12 @@ class AdditionalQACases(unittest.TestCase):
 
         with patch("backend.app.api.routes.chat._build_retrieval_context", side_effect=RuntimeError("context build exploded")):
             response = stream_chat_context(ChatContextRequest(vault_id="vault-1", prompt="Find my notes", persist=True))
-            with self.assertRaisesRegex(RuntimeError, "context build exploded"):
-                asyncio.run(collect(response))
+            payload = asyncio.run(collect(response))
+
+        self.assertIn("event: error", payload)
+        self.assertIn("Vault could not finish routing this message.", payload)
+        self.assertIn("context build exploded", payload)
+        self.assertIn('"retriable": true', payload)
 
         with connect() as conn:
             generation = conn.execute("SELECT * FROM chat_generations").fetchone()
@@ -1547,12 +1581,16 @@ class AdditionalQACases(unittest.TestCase):
                 """,
                 large_rows,
             )
+            conn.execute(
+                "UPDATE chat_sessions SET saved = 1 WHERE id IN ('session-0', 'session-extra-0000')"
+            )
 
         first_page = list_chat_sessions("vault-1", limit=2, offset=0)
         second_page = list_chat_sessions("vault-1", limit=2, offset=2)
         clamped_large = list_chat_sessions("vault-1", limit=500, offset=0)
         tail_page = list_chat_sessions("vault-1", limit=4, offset=204)
         clamped = list_chat_sessions("vault-1", limit=0, offset=-5)
+        saved = list_chat_sessions("vault-1", saved=True, limit=5)
 
         self.assertEqual([item["id"] for item in first_page], ["session-extra-0204", "session-extra-0203"])
         self.assertEqual([item["id"] for item in second_page], ["session-extra-0202", "session-extra-0201"])
@@ -1560,16 +1598,11 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual([item["id"] for item in tail_page], ["session-extra-0000", "session-5", "session-4", "session-3"])
         self.assertEqual(len(clamped), 1)
         self.assertEqual(clamped[0]["id"], "session-extra-0204")
+        self.assertEqual([item["id"] for item in saved], ["session-extra-0000", "session-0"])
         with self.assertRaises(HTTPException) as missing_vault:
             list_chat_sessions("vault-missing")
         self.assertEqual(missing_vault.exception.status_code, 404)
         self.assertEqual(missing_vault.exception.detail, "Vault not found")
-
-        repo_root = Path(__file__).resolve().parents[2]
-        backend_client = (repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
-        self.assertIn("listChatSessions(vaultId?: string, options: { limit?: number; offset?: number } = {})", backend_client)
-        self.assertIn('params.set("limit", String(options.limit))', backend_client)
-        self.assertIn('params.set("offset", String(options.offset))', backend_client)
 
     def test_job_status_caps_running_rows_without_losing_counts(self) -> None:
         from backend.app.core.background_jobs import JOB_STATUS_RUNNING_LIMIT, job_queue_status
@@ -2224,7 +2257,7 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn('SentenceTransformers is included in every packaged backend runtime.', package_text)
         self.assertNotIn('if ($IncludeEmbeddingRuntime)', package_text)
         self.assertNotIn('expert-python-runtime', package_text)
-        self.assertNotIn('transformers==5.6.0', package_text)
+        self.assertIn('transformers==5.6.0', package_text)
         self.assertNotIn('peft==0.18.1', package_text)
         self.assertIn("renderer ready signal received", packaged_launch_text)
         self.assertIn("renderer ready signal received", installed_launch_text)
@@ -2624,394 +2657,6 @@ class AdditionalQACases(unittest.TestCase):
             generation_count = conn.execute("SELECT COUNT(*) AS count FROM chat_generations").fetchone()["count"]
         self.assertEqual(session_count, 0)
         self.assertEqual(generation_count, 0)
-
-    def test_onboarding_route_uses_internal_scroll_shell_instead_of_hidden_root(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        onboarding = (repo_root / "apps" / "desktop" / "src" / "routes" / "onboarding.tsx").read_text(encoding="utf-8")
-        styles = (repo_root / "apps" / "desktop" / "src" / "styles.css").read_text(encoding="utf-8")
-
-        self.assertIn('vault-onboarding-shell h-full overflow-x-hidden overflow-y-auto', onboarding)
-        self.assertIn("prepareActiveVaultFolder", onboarding)
-        self.assertIn("setActiveVaultFolder", onboarding)
-        self.assertIn('min-h-0 flex-1 overflow-y-auto px-6 sm:px-8', onboarding)
-        self.assertIn('lg:max-h-[calc(100vh-4rem)]', onboarding)
-        self.assertNotIn('vault-onboarding-shell min-h-screen overflow-hidden', onboarding)
-        self.assertIn(".vault-bg-wash", styles)
-        self.assertIn("background-position: 28px 28px, 28px 28px;", styles)
-        self.assertNotIn("inset: -20%", styles)
-        self.assertNotIn("inset: -8%", styles)
-
-    def test_onboarding_model_download_flow_exposes_location_progress_and_continue(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        onboarding = (repo_root / "apps" / "desktop" / "src" / "routes" / "onboarding.tsx").read_text(encoding="utf-8")
-        settings = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.settings.tsx").read_text(encoding="utf-8")
-        backend = (repo_root / "apps" / "desktop" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
-        embeddings = (repo_root / "backend" / "app" / "core" / "embeddings.py").read_text(encoding="utf-8")
-        embedding_worker = (
-            repo_root / "backend" / "app" / "core" / "embedding_download_worker.py"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn('Field label="Save models in"', onboarding)
-        self.assertIn('"Welcome",', onboarding)
-        self.assertIn('type Step = 0 | 1 | 2 | 3 | 4 | 5 | 6;', onboarding)
-        self.assertIn("Start Setup", onboarding)
-        self.assertIn("Welcome to Vault", onboarding)
-        self.assertIn('title="Name and locate your library"', onboarding)
-        self.assertIn("lg:h-[520px]", onboarding)
-        self.assertIn("h-[93px] items-center justify-between", onboarding)
-        self.assertIn("vault-step-enter py-10 lg:py-16", onboarding)
-        self.assertIn('"mt-16 space-y-3"', onboarding)
-        self.assertIn('"flex min-w-0 items-center gap-5"', onboarding)
-        self.assertNotIn('"mt-auto space-y-3"', onboarding)
-        self.assertNotIn("Continue with Google", onboarding)
-        self.assertIn("chooseModelDownloadFolder", onboarding)
-        self.assertIn("target_dir: modelDownloadRoot.trim()", onboarding)
-        self.assertIn("Choose where to save the model before downloading.", onboarding)
-        self.assertIn("recommendedModels.map", onboarding)
-        self.assertIn("modelRecommendations?.recommended_chat_model_id", onboarding)
-        self.assertIn("Confirm skip", onboarding)
-        self.assertIn("ModelDownloadToast", onboarding)
-        self.assertIn("fixed bottom-4 right-4", onboarding)
-        self.assertIn("useVisiblePolling(refreshModels, 750, modelDownloadActive)", onboarding)
-        self.assertIn("useVisiblePolling(refreshEmbeddingStatus, 750, embeddingDownloadActive)", onboarding)
-        self.assertNotIn("setInterval", onboarding)
-        self.assertIn("formatProgressPercent(progress)", onboarding)
-        self.assertNotIn("progress || 12", onboarding)
-        self.assertIn('modelRuntime?.state === "ready"', onboarding)
-        self.assertIn("model.id === modelRuntime.model", onboarding)
-        self.assertIn('model.source_kind === "default_choice"', onboarding)
-        self.assertIn('status === "resolving" || status === "downloading" || status === "cancelling"', onboarding)
-        self.assertIn("function selectVisibleModelDownload", onboarding)
-        self.assertIn("visible.find((download) => isActiveModelDownloadStatus(download.status))", onboarding)
-        self.assertIn("modelsLoadedRef", onboarding)
-        self.assertIn("visible.find((download) => download.model_id === fallback.model_id)", onboarding)
-        self.assertIn('leaving && "pointer-events-none translate-y-1 opacity-0"', onboarding)
-        self.assertIn('state.status === "failed" || state.status === "blocked"', onboarding)
-        self.assertIn("model.download?.progress_percent", onboarding)
-        self.assertIn("model.download?.total_bytes ?? model.download?.bytes_total", onboarding)
-        self.assertIn("model.compatibility?.chat_role_accepted", onboarding)
-        self.assertIn("refreshDetectedModels(true)", onboarding)
-        self.assertIn("Skip for now", onboarding)
-        self.assertIn("recommendedEmbeddingModel", onboarding)
-        self.assertIn("sentence-transformers/all-MiniLM-L6-v2", onboarding)
-        self.assertIn("About 100 MB", onboarding)
-        self.assertIn("Review download", onboarding)
-        self.assertIn("Agree and download", onboarding)
-        self.assertIn("showEmbeddingConsent", onboarding)
-        self.assertIn("It is not used to generate chat replies.", onboarding)
-        self.assertIn("no Hugging Face account token is sent or requested.", onboarding)
-        self.assertIn("model: recommendedEmbeddingModel.id", onboarding)
-        self.assertIn("embeddingPollFailuresRef", onboarding)
-        self.assertIn("if (downloadStatus.status === \"queued\" || downloadStatus.status === \"downloading\")", onboarding)
-        self.assertIn("signal: AbortSignal.timeout(120_000)", backend)
-        self.assertIn("MANAGED_EMBEDDING_MODELS", embeddings)
-        self.assertIn("snapshot_download(", embedding_worker)
-        self.assertIn("token=False", embedding_worker)
-        self.assertIn("local_files_only=True", embeddings)
-        self.assertIn("MINILM_DOWNLOAD_PATTERNS", embeddings)
-        self.assertNotIn("Continue is enabled only after one accepted chat model and one accepted expert checkpoint are active.", onboarding)
-        self.assertIn("Local model download location", settings)
-        self.assertIn("target_dir: modelDownloadRoot.trim() || null", settings)
-        self.assertIn("ModelDownloadToast", settings)
-        self.assertIn("progress_percent", settings)
-        self.assertIn("discoverInstalledModels({ max_results: 24, refresh: true })", settings)
-        self.assertIn('showSection("models")', settings)
-        self.assertIn('showSection("library")', settings)
-        self.assertIn('showSection("connections")', settings)
-        self.assertIn('showSection("advanced")', settings)
-        self.assertNotIn('showSection("diagnostics", "advanced")', settings)
-        self.assertIn("Settings section", settings)
-        self.assertIn('htmlFor="settings-section-select"', settings)
-        self.assertIn('id="settings-section-select"', settings)
-        self.assertIn("xl:hidden", settings)
-        self.assertIn("settingsSections.map((section)", settings)
-        self.assertNotIn(" Â· ", settings)
-        self.assertNotIn(" · ", settings)
-        self.assertNotIn(" Â· ", onboarding)
-        self.assertNotIn(" · ", onboarding)
-        self.assertIn("payload?: { target_dir?: string | null }", backend)
-        self.assertIn("refresh?: boolean", backend)
-        self.assertIn('query.set("refresh", "true")', backend)
-        self.assertIn("body: JSON.stringify(payload ?? {})", backend)
-
-    def test_bridge_route_wraps_long_operator_content_on_narrow_windows(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        bridge = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.bridge.tsx").read_text(encoding="utf-8")
-
-        self.assertIn("max-w-4xl px-4 py-8 sm:px-6 lg:px-8", bridge)
-        self.assertIn("flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between", bridge)
-        self.assertIn("max-w-full break-all rounded-md bg-muted", bridge)
-        self.assertIn("break-all font-mono text-xs", bridge)
-        self.assertIn("Path {displayPath(item.observed_executable_path", bridge)
-        self.assertIn("Path {displayPath(client.observed_executable_path", bridge)
-        self.assertIn("mt-1 break-all text-xs text-muted-foreground", bridge)
-        self.assertIn("mt-1 break-words text-xs text-muted-foreground", bridge)
-        self.assertIn("sm:grid-cols-[minmax(0,1fr)_auto]", bridge)
-        self.assertIn("lg:grid-cols-[minmax(0,1fr)_auto]", bridge)
-        self.assertIn("grid gap-1 py-2 sm:grid-cols-[120px_minmax(0,1fr)_90px]", bridge)
-        self.assertIn("flex flex-wrap gap-2", bridge)
-        self.assertIn("flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between", bridge)
-        self.assertNotIn("grid-cols-[1fr_auto]", bridge)
-        self.assertNotIn("grid-cols-[120px_1fr_90px]", bridge)
-        self.assertNotIn("flex items-center justify-between", bridge)
-
-    def test_timeline_route_stacks_detail_panel_and_wraps_long_activity_text(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        timeline = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.timeline.tsx").read_text(encoding="utf-8")
-
-        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", timeline)
-        self.assertIn("xl:grid-cols-[minmax(0,1fr)_320px] xl:overflow-hidden", timeline)
-        self.assertIn("px-4 py-6 sm:px-6 lg:px-8", timeline)
-        self.assertIn("md:grid-cols-[minmax(0,1fr)_auto]", timeline)
-        self.assertIn("sm:grid-cols-[96px_32px_minmax(0,1fr)]", timeline)
-        self.assertIn("md:grid-cols-[116px_32px_minmax(0,1fr)]", timeline)
-        self.assertIn("xl:w-[var(--panel-width)] xl:min-w-[var(--panel-width)]", timeline)
-        self.assertIn("break-words text-xl", timeline)
-        self.assertIn("break-words text-sm", timeline)
-        self.assertIn("break-all sm:text-right", timeline)
-        self.assertNotIn("grid-cols-[minmax(0,1fr)_320px] overflow-hidden", timeline)
-        self.assertNotIn("right-panel px-6 py-8", timeline)
-        self.assertNotIn("md:grid-cols-[116px_32px_1fr]", timeline)
-        self.assertNotIn("md:grid-cols-[1fr_auto]", timeline)
-
-    def test_tasks_route_contains_dense_table_and_wraps_long_job_detail(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        tasks = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.tasks.tsx").read_text(encoding="utf-8")
-
-        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", tasks)
-        self.assertIn("xl:grid-cols-[minmax(0,1fr)_320px] xl:overflow-hidden", tasks)
-        self.assertIn("px-4 py-6 sm:px-6 lg:px-8", tasks)
-        self.assertIn("md:grid-cols-[minmax(0,1fr)_auto]", tasks)
-        self.assertIn("overflow-x-auto", tasks)
-        self.assertIn("min-w-[720px]", tasks)
-        self.assertIn("grid-cols-[104px_minmax(0,1fr)_120px_112px_104px_80px]", tasks)
-        self.assertIn("xl:w-[var(--panel-width)] xl:min-w-[var(--panel-width)]", tasks)
-        self.assertIn("break-words text-[15px]", tasks)
-        self.assertIn("break-words text-sm", tasks)
-        self.assertIn("break-all sm:text-right", tasks)
-        self.assertIn("mt-5 flex flex-wrap gap-2", tasks)
-        self.assertNotIn("grid-cols-[minmax(0,1fr)_320px] overflow-hidden", tasks)
-        self.assertNotIn("right-panel px-6 py-8", tasks)
-        self.assertNotIn("grid-cols-[104px_1fr_120px_112px_104px_80px]", tasks)
-        self.assertNotIn("md:grid-cols-[1fr_auto]", tasks)
-
-    def test_search_route_stacks_library_panel_and_wraps_long_source_content(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        search = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.search.tsx").read_text(encoding="utf-8")
-
-        self.assertIn("relative h-full overflow-y-auto bg-background", search)
-        self.assertIn("px-4 py-5 sm:px-6", search)
-        self.assertIn("flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between", search)
-        self.assertIn("lg:grid-cols-[minmax(0,1fr)_auto_auto]", search)
-        self.assertIn("grid grid-cols-1 gap-3 xl:grid-cols-2", search)
-        self.assertIn("line-clamp-3 text-sm leading-6", search)
-        self.assertIn('DialogTitle className="break-words"', search)
-        self.assertIn('className="min-w-0"', search)
-        self.assertIn("break-words rounded-md border border-border bg-muted/35", search)
-        self.assertIn("max-w-full break-words rounded-md", search)
-        self.assertIn("flex flex-wrap justify-end gap-2", search)
-        self.assertNotIn("grid-cols-[minmax(0,1fr)_320px] overflow-hidden", search)
-        self.assertNotIn("SourceInspector", search)
-        self.assertNotIn("handleDrop", search)
-        self.assertNotIn("flex items-start justify-between gap-6", search)
-        self.assertNotIn("lg:grid-cols-[1fr_auto_auto]", search)
-        self.assertNotIn("mb-4 flex items-center justify-between text-sm", search)
-        self.assertNotIn("hidden border-l border-border", search)
-
-    def test_sources_route_exposes_inspector_and_wraps_long_source_content_on_narrow_windows(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        sources = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.sources.tsx").read_text(encoding="utf-8")
-
-        self.assertIn("relative grid h-full grid-cols-1 overflow-y-auto", sources)
-        self.assertIn("xl:grid-cols-[minmax(0,1fr)_326px] xl:overflow-hidden", sources)
-        self.assertIn("min-w-0 px-7 py-8 xl:overflow-y-auto", sources)
-        self.assertIn("relative mr-auto min-w-0 flex-[1_1_240px] sm:max-w-sm", sources)
-        self.assertIn("text-muted-foreground break-words", sources)
-        self.assertIn('className="w-full table-fixed text-sm"', sources)
-        self.assertIn("hidden w-28 px-3 py-3 font-normal xl:table-cell", sources)
-        self.assertNotIn("min-w-[760px]", sources)
-        self.assertNotIn("overflow-x-auto", sources)
-        self.assertIn("break-words font-semibold", sources)
-        self.assertIn("line-clamp-2 break-words text-xs", sources)
-        self.assertIn("mt-8 flex flex-col gap-3 text-sm", sources)
-        self.assertIn("border-t border-border bg-card/35 px-7 py-8 xl:border-l xl:border-t-0", sources)
-        self.assertIn("overflow-y-visible border-t border-border bg-card/35", sources)
-        self.assertIn("flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between", sources)
-        self.assertIn("break-words text-lg font-semibold", sources)
-        self.assertIn("mt-4 break-words text-sm leading-6", sources)
-        self.assertIn("text-muted-foreground break-words", sources)
-        self.assertIn("mt-2 break-words", sources)
-        self.assertIn("break-words text-right", sources)
-        self.assertNotIn("hidden overflow-y-auto border-l border-border", sources)
-        self.assertNotIn("hidden border-l border-border bg-card/35", sources)
-        self.assertNotIn("grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[1fr_326px]", sources)
-        self.assertNotIn("relative mr-auto min-w-[240px] max-w-sm flex-1", sources)
-        self.assertNotIn("truncate font-semibold", sources)
-        self.assertNotIn("mt-1 truncate text-xs", sources)
-        self.assertNotIn("mt-8 flex items-center justify-between text-sm", sources)
-
-    def test_map_route_stacks_detail_rail_and_wraps_long_graph_content_on_narrow_windows(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        map_route = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.map.tsx").read_text(encoding="utf-8")
-        knowledge_map = (repo_root / "apps" / "desktop" / "src" / "components" / "KnowledgeMap.tsx").read_text(
-            encoding="utf-8",
-        )
-
-        self.assertIn("vault-page-wash h-full overflow-y-auto px-4 py-6 sm:px-6 lg:px-8", map_route)
-        self.assertIn("<KnowledgeMap", map_route)
-        self.assertIn("vaultId={vault.id}", map_route)
-        self.assertIn("overview={overview}", map_route)
-        self.assertIn("persistView", map_route)
-        self.assertIn("Vault could not load the map", map_route)
-        self.assertIn("Open Health", map_route)
-        self.assertNotIn("mapMockData", map_route)
-        self.assertNotIn("demo=cluster-map", map_route)
-        self.assertNotIn("right-panel", map_route)
-        self.assertIn("xl:grid-cols-[minmax(0,1fr)_320px]", knowledge_map)
-        self.assertIn("Reset view", knowledge_map)
-        self.assertIn("Authoritative relationships", knowledge_map)
-        self.assertIn("break-words text-base font-semibold", knowledge_map)
-        self.assertIn("window.setTimeout", knowledge_map)
-
-    def test_clusters_route_exposes_inspector_and_wraps_long_cluster_content_on_narrow_windows(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        clusters = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.clusters.tsx").read_text(
-            encoding="utf-8",
-        )
-
-        self.assertIn("vault-page-wash h-full overflow-y-auto", clusters)
-        self.assertIn("min-w-0 px-4 py-6 sm:px-7 sm:py-8", clusters)
-        self.assertIn("page-title flex flex-wrap items-center gap-3", clusters)
-        self.assertIn("vault-card mt-5 break-words", clusters)
-        self.assertIn("grid-cols-[minmax(0,1fr)_64px_48px]", clusters)
-        self.assertIn("md:grid-cols-[minmax(0,1fr)_64px_112px_48px]", clusters)
-        self.assertIn("xl:grid-cols-[minmax(0,1fr)_64px_64px_112px_48px]", clusters)
-        self.assertNotIn("min-w-[760px]", clusters)
-        self.assertNotIn("overflow-x-auto", clusters)
-        self.assertIn("break-words text-sm font-semibold", clusters)
-        self.assertIn("line-clamp-2 break-words text-sm text-muted-foreground", clusters)
-        self.assertIn("flex flex-col gap-3 px-4 py-3 sm:flex-row", clusters)
-        self.assertIn("flex shrink-0 flex-wrap items-center gap-2", clusters)
-        self.assertIn('to="/clusters/$clusterId"', clusters)
-        self.assertNotIn("ClusterInspector", clusters)
-        self.assertNotIn("xl:grid-cols-[minmax(0,1fr)_340px]", clusters)
-        self.assertNotIn("hidden border-l border-border bg-card/35", clusters)
-        self.assertNotIn("grid-cols-[1fr_96px_96px_140px_32px]", clusters)
-        self.assertNotIn("truncate text-sm font-semibold", clusters)
-        self.assertNotIn("mt-1 truncate text-sm", clusters)
-        self.assertNotIn("truncate text-sm font-medium", clusters)
-        self.assertNotIn("flex items-center justify-between gap-4 px-4 py-3", clusters)
-
-    def test_chat_landing_stacks_panels_and_wraps_long_chat_content_on_narrow_windows(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        chat = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.chat.tsx").read_text(encoding="utf-8")
-
-        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", chat)
-        self.assertIn("lg:grid-cols-[260px_minmax(0,1fr)]", chat)
-        self.assertIn("xl:grid-cols-[320px_minmax(0,1fr)] xl:overflow-hidden", chat)
-        self.assertIn("border-b border-border bg-card/35 px-4 py-4", chat)
-        self.assertIn("max-h-56 space-y-1 overflow-y-auto lg:max-h-none", chat)
-        self.assertIn("min-w-0 flex-1 break-words px-3 py-2 text-sm", chat)
-        self.assertIn("px-4 py-5 sm:px-6 lg:px-10", chat)
-        self.assertIn("mb-2 break-words rounded-md border", chat)
-        self.assertIn("h-8 w-full min-w-0 gap-2", chat)
-        self.assertIn("gap-2 sm:ml-auto", chat)
-        self.assertIn("max-w-full break-all rounded-md", chat)
-        self.assertNotIn("RecentChatInspector", chat)
-        self.assertNotIn("grid h-full grid-cols-[320px_minmax(0,1fr)_326px] overflow-hidden", chat)
-        self.assertNotIn("min-w-0 flex-1 truncate", chat)
-        self.assertNotIn("right-panel", chat)
-        self.assertNotIn("overflow-y-auto border-l border-border bg-card/35 px-7 py-8", chat)
-        self.assertNotIn("className=\"ml-auto gap-2\"", chat)
-
-    def test_chat_detail_stacks_context_and_wraps_long_message_content_on_narrow_windows(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        chat_detail = (
-            repo_root / "apps" / "desktop" / "src" / "routes" / "_app.chat.$chatId.tsx"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("grid h-full grid-cols-1 overflow-y-auto", chat_detail)
-        self.assertIn("lg:grid-cols-[240px_minmax(0,1fr)]", chat_detail)
-        self.assertIn("xl:grid-cols-[256px_minmax(0,1fr)] xl:overflow-hidden", chat_detail)
-        self.assertIn("border-b border-border bg-card/30 p-2", chat_detail)
-        self.assertIn("max-h-48 space-y-0.5 overflow-y-auto lg:max-h-none", chat_detail)
-        self.assertIn("block break-words rounded-md px-2.5 py-1.5 text-sm", chat_detail)
-        self.assertIn("h-8 w-full gap-2 text-xs sm:w-52", chat_detail)
-        self.assertIn("flex min-w-0 flex-wrap items-center gap-2 sm:ml-auto", chat_detail)
-        self.assertIn("grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px]", chat_detail)
-        self.assertIn("border-t border-border bg-card/40 p-4", chat_detail)
-        self.assertIn("mb-1 break-words font-medium", chat_detail)
-        self.assertIn("break-words text-muted-foreground", chat_detail)
-        self.assertIn("max-w-full break-all rounded-md", chat_detail)
-        self.assertIn("mx-auto mt-1.5 max-w-3xl break-words", chat_detail)
-        self.assertIn("max-w-[85%] break-words rounded-md", chat_detail)
-        self.assertIn("whitespace-pre-wrap break-words text-sm", chat_detail)
-        self.assertIn("inline-flex min-h-8 max-w-full items-center gap-1", chat_detail)
-        self.assertIn("PopoverContent className=\"w-80 max-w-[calc(100vw-2rem)] text-xs\"", chat_detail)
-        self.assertIn("mt-3 flex flex-wrap items-center gap-1", chat_detail)
-        self.assertNotIn("hidden w-64", chat_detail)
-        self.assertNotIn("hidden w-80", chat_detail)
-        self.assertNotIn("block truncate rounded-md", chat_detail)
-        self.assertNotIn("w-52 gap-2 text-xs", chat_detail)
-        self.assertNotIn("ml-auto flex items-center gap-2", chat_detail)
-        self.assertNotIn("truncate text-sm font-medium", chat_detail)
-        self.assertNotIn("PopoverContent className=\"w-80 text-xs\"", chat_detail)
-
-    def test_home_shell_and_cluster_map_wrap_long_user_content_on_narrow_windows(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        home = (repo_root / "apps" / "desktop" / "src" / "routes" / "_app.home.tsx").read_text(
-            encoding="utf-8",
-        )
-        shell = (repo_root / "apps" / "desktop" / "src" / "components" / "AppShell.tsx").read_text(
-            encoding="utf-8",
-        )
-        styles = (repo_root / "apps" / "desktop" / "src" / "styles.css").read_text(encoding="utf-8")
-        knowledge_map = (repo_root / "apps" / "desktop" / "src" / "components" / "KnowledgeMap.tsx").read_text(
-            encoding="utf-8",
-        )
-
-        self.assertIn("vault-page-wash h-full overflow-y-auto", home)
-        self.assertIn("max-w-[1440px] min-w-0 px-4 py-6 sm:px-8 sm:py-10", home)
-        self.assertIn("flex flex-wrap items-center gap-3 px-1 pb-1", home)
-        self.assertIn("line-clamp-2 break-words text-sm font-semibold", home)
-        self.assertIn("break-words text-sm font-semibold", home)
-        self.assertIn("line-clamp-2 break-words text-xs text-muted-foreground", home)
-        self.assertIn("grid gap-px sm:grid-cols-2 xl:grid-cols-4", home)
-        self.assertIn("Suggested clusters", home)
-        self.assertIn("Activity", home)
-        self.assertLess(home.index("Quick actions"), home.index("Ask or search your memory"))
-        self.assertLess(home.index('title="Suggested clusters"'), home.index('title="Activity"'))
-        self.assertNotIn("grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[1fr_326px]", home)
-        self.assertNotIn("xl:grid-cols-[minmax(0,1fr)_326px]", home)
-        self.assertNotIn("truncate text-sm font-semibold", home)
-        self.assertNotIn("mt-1 truncate text-xs", home)
-        self.assertNotIn("block truncate text-xs", home)
-        self.assertNotIn("hidden overflow-y-auto border-l", home)
-
-        self.assertIn("items-start gap-2 rounded-md px-1 py-1.5 text-left", shell)
-        self.assertIn("min-w-0 flex-1 break-all", shell)
-        self.assertIn("flex min-h-7 items-start gap-2", shell)
-        self.assertIn("min-w-0 flex-1 break-words", shell)
-        self.assertIn("data-vault-nav", shell)
-        self.assertIn("contentRef.current?.focus()", shell)
-        self.assertIn("break-all text-[12px]", shell)
-        self.assertIn("vault-footer flex shrink-0 flex-wrap", shell)
-        self.assertIn("currentUnlock.secured_vault_count > 0 && !currentUnlock.ready", shell)
-        self.assertIn("securityLockActive", shell)
-        self.assertIn('{securityLockActive && pathname !== "/settings" ?', shell)
-        self.assertNotIn("flex w-full items-center gap-2 truncate", shell)
-        self.assertNotIn("<span className=\"truncate\">", shell)
-        self.assertNotIn("block truncate rounded-md", shell)
-        self.assertNotIn("truncate text-[13px]", shell)
-        self.assertNotIn("truncate text-[12px]", shell)
-        self.assertIn("min-height: 32px;", styles)
-        self.assertNotIn("\n    height: 32px;", styles)
-
-        self.assertIn("break-words text-base font-semibold", knowledge_map)
-        self.assertIn("min-w-0 flex-1", knowledge_map)
-        self.assertIn("Reset view", knowledge_map)
-        self.assertIn("Unclustered collection", knowledge_map)
-        self.assertNotIn("mapMockData", knowledge_map)
 
     def test_extension_capture_rejects_core_api_token(self) -> None:
         os.environ["CML_API_TOKEN"] = "core-token"

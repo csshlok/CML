@@ -61,16 +61,22 @@ function ProjectWorkspace() {
   const load = useCallback(async () => {
     try {
       const nextProject = await getProject(projectId);
-      const [nextRuns, nextLinks, nextClusters] = await Promise.all([
+      const [runsResult, linksResult, clustersResult] = await Promise.allSettled([
         listProjectRuns(projectId, 12),
         listProjectLinks(projectId),
         listClusters(nextProject.vault_id),
       ]);
       setProject(nextProject);
-      setRuns(nextRuns);
-      setLinks(nextLinks);
-      setClusters(nextClusters);
+      if (runsResult.status === "fulfilled") setRuns(runsResult.value);
+      if (linksResult.status === "fulfilled") setLinks(linksResult.value);
+      if (clustersResult.status === "fulfilled") setClusters(clustersResult.value);
       setName(nextProject.name);
+      const unavailable = [
+        runsResult.status === "rejected" ? "history" : "",
+        linksResult.status === "rejected" ? "links" : "",
+        clustersResult.status === "rejected" ? "clusters" : "",
+      ].filter(Boolean);
+      setMessage(unavailable.length ? `Some project details are unavailable: ${unavailable.join(", ")}.` : null);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Vault could not load this project.");
     }

@@ -21,11 +21,13 @@ function Test-PathPresent([string]$PathValue) {
 $packageRootPath = [System.IO.Path]::GetFullPath($PackageRoot)
 $resources = Join-Path $packageRootPath "resources"
 $runtimePython = Join-Path $resources "python-runtime\python.exe"
+$psutilRuntime = Join-Path $resources "python-runtime\Lib\site-packages\psutil"
 $sentenceTransformersRuntime = Join-Path $resources "python-runtime\Lib\site-packages\sentence_transformers"
 $backend = Join-Path $resources "backend"
 $ocrManifest = Join-Path $backend "bin\ocr\manifest.json"
 $playwrightRuntime = Join-Path $resources "ms-playwright"
 $llmRuntime = Join-Path $resources "llm-runtime\llama-server.exe"
+$tunnelRuntime = Join-Path $resources "tunnel-client\tunnel-client.exe"
 $helperManifest = Join-Path $resources "helper-manifest.json"
 $modelIntegrityManifest = Join-Path $resources "docs\model-integrity-manifest.json"
 $packagedLaunchSmoke = Join-Path $repoRoot "scripts\packaging\smoke-packaged-app-launch.ps1"
@@ -36,9 +38,11 @@ $checks = @(
   @{ name = "resources_exists"; ok = Test-PathPresent $resources; path = $resources },
   @{ name = "backend_exists"; ok = Test-PathPresent $backend; path = $backend },
   @{ name = "python_runtime_exists"; ok = Test-PathPresent $runtimePython; path = $runtimePython },
+  @{ name = "psutil_runtime_exists"; ok = Test-PathPresent $psutilRuntime; path = $psutilRuntime },
   @{ name = "sentence_transformers_runtime_exists"; ok = Test-PathPresent $sentenceTransformersRuntime; path = $sentenceTransformersRuntime },
   @{ name = "playwright_runtime_exists"; ok = Test-PathPresent $playwrightRuntime; path = $playwrightRuntime },
   @{ name = "llm_runtime_exists"; ok = Test-PathPresent $llmRuntime; path = $llmRuntime },
+  @{ name = "tunnel_client_exists"; ok = Test-PathPresent $tunnelRuntime; path = $tunnelRuntime },
   @{ name = "ocr_manifest_exists"; ok = Test-PathPresent $ocrManifest; path = $ocrManifest },
   @{ name = "helper_manifest_exists"; ok = Test-PathPresent $helperManifest; path = $helperManifest },
   @{ name = "model_integrity_manifest_exists"; ok = Test-PathPresent $modelIntegrityManifest; path = $modelIntegrityManifest },
@@ -48,6 +52,9 @@ $checks = @(
   @{ name = "dynamic_link_smoke_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\smoke-packaged-dynamic-link.ps1"); path = "scripts/packaging/smoke-packaged-dynamic-link.ps1" },
   @{ name = "migration_drill_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\smoke-packaged-migration-drill.ps1"); path = "scripts/packaging/smoke-packaged-migration-drill.ps1" },
   @{ name = "installed_app_smoke_exists"; ok = Test-PathPresent $installedAppSmoke; path = "scripts/packaging/smoke-installed-app.ps1" },
+  @{ name = "odin_launcher_smoke_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\smoke-odin-launcher.ps1"); path = "scripts/packaging/smoke-odin-launcher.ps1" },
+  @{ name = "startup_benchmark_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\benchmark-packaged-startup.ps1"); path = "scripts/packaging/benchmark-packaged-startup.ps1" },
+  @{ name = "rendered_ui_smoke_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\smoke-packaged-ui.py"); path = "scripts/packaging/smoke-packaged-ui.py" },
   @{ name = "installer_lifecycle_smoke_exists"; ok = Test-PathPresent $installerLifecycleSmoke; path = "scripts/packaging/smoke-windows-installer.ps1" },
   @{ name = "package_layout_audit_exists"; ok = Test-PathPresent (Join-Path $repoRoot "scripts\packaging\audit-package-layout.cjs"); path = "scripts/packaging/audit-package-layout.cjs" }
 )
@@ -127,6 +134,9 @@ $report = [ordered]@{
     "Run scripts/packaging/smoke-packaged-migration-drill.ps1 against the package root.",
     "Run node scripts/packaging/audit-package-layout.cjs against the packaged resources root.",
     "Run scripts/packaging/smoke-packaged-app-launch.ps1 against the package root and require renderer ready signal.",
+    "Run scripts/packaging/smoke-odin-launcher.ps1 from a clean shell and require packaged Odin help plus the actionable desktop-offline response.",
+    "Run scripts/packaging/benchmark-packaged-startup.ps1 and enforce the recorded p95 budgets.",
+    "Run the packaged Python interpreter with scripts/packaging/smoke-packaged-ui.py to render the minimum supported viewport and reject console or horizontal-overflow regressions.",
     "Run scripts/packaging/smoke-installed-app.ps1 against the final NSIS installer and require renderer ready signal.",
     "Run scripts/packaging/smoke-windows-installer.ps1 to verify install and uninstall lifecycle.",
     "Run scripts/security/audit-app.ps1 against the installed app and generated diagnostics."
@@ -136,3 +146,6 @@ $report = [ordered]@{
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ReportPath) | Out-Null
 $report | ConvertTo-Json -Depth 6 | Set-Content -Path $ReportPath -Encoding UTF8
 $report | ConvertTo-Json -Depth 6
+if (-not $report.pass) {
+  exit 1
+}

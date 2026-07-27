@@ -459,6 +459,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
             patch.object(main_module, "recover_interrupted_generations"),
             patch.object(main_module, "enqueue_startup_reconciliation_jobs"),
             patch.object(main_module, "start_background_worker"),
+            patch.object(main_module, "start_startup_warming"),
         ):
             main_module.startup()
 
@@ -472,11 +473,70 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
                 "integrity_check_running",
                 "schema_check_running",
                 "job_recovery_running",
-                "reconciliation_queued",
-                "runtime_detection_running",
-                "ready",
+                "core_ready",
             ],
         )
+
+    def test_startup_does_not_queue_vector_reconciliation_without_embeddings(self) -> None:
+        from backend.app.core.background_jobs import enqueue_startup_reconciliation_jobs
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            conn.execute("DELETE FROM app_jobs WHERE job_type = 'vector_reconcile_incremental'")
+
+        with patch(
+            "backend.app.core.background_jobs.embedding_status",
+            return_value={"available": False, "setup_required": True},
+        ):
+            enqueue_startup_reconciliation_jobs()
+
+        with connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM app_jobs WHERE job_type = 'vector_reconcile_incremental'"
+            ).fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_embedding_jobs_block_without_consuming_attempts_and_wake_once_when_ready(self) -> None:
+        from backend.app.core.background_jobs import (
+            enqueue_job,
+            notify_embedding_prerequisite_changed,
+            run_due_jobs_once,
+        )
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            queued = enqueue_job(
+                conn,
+                job_type="reindex_source",
+                payload={"source_id": "source-waits-for-setup"},
+                dedupe_key="reindex-source:source-waits-for-setup",
+            )
+        with patch(
+            "backend.app.core.background_jobs.embedding_status",
+            return_value={"available": False, "setup_required": True},
+        ):
+            run_due_jobs_once(limit=1)
+        with connect() as conn:
+            blocked = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (queued["id"],)).fetchone()
+        self.assertEqual(blocked["status"], "blocked_setup_required")
+        self.assertEqual(blocked["attempts"], 0)
+
+        with patch(
+            "backend.app.core.background_jobs.embedding_status",
+            return_value={"available": True, "setup_required": False},
+        ):
+            notify_embedding_prerequisite_changed()
+            notify_embedding_prerequisite_changed()
+        with connect() as conn:
+            resumed = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (queued["id"],)).fetchone()
+            reconciliation_count = conn.execute(
+                """
+                SELECT COUNT(*) FROM app_jobs
+                WHERE dedupe_key LIKE 'vector-reconcile:embedding-generation:%'
+                """
+            ).fetchone()[0]
+        self.assertEqual(resumed["status"], "queued")
+        self.assertEqual(reconciliation_count, 1)
 
     def test_lock_override_audit_sequence_is_complete(self) -> None:
         import backend.app.core.vault_lock as vault_lock_module

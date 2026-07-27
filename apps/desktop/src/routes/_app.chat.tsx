@@ -1,10 +1,10 @@
 import { createFileRoute, Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { type DragEvent, useEffect, useState } from "react";
 import {
-  listClusters,
+  listClustersPage,
   createChatSession,
   deleteChatSession,
-  listChatSessions,
+  listChatSessionsPage,
   listVaults,
   type ChatSessionRecord,
   type ClusterRecord,
@@ -33,6 +33,9 @@ function ChatIndex() {
   const [vault, setVault] = useState<VaultRecord | null>(null);
   const [backendChats, setBackendChats] = useState<ChatSessionRecord[]>([]);
   const [backendClusters, setBackendClusters] = useState<ClusterRecord[]>([]);
+  const [chatCursor, setChatCursor] = useState<string | null>(null);
+  const [clusterCursor, setClusterCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [backendReady, setBackendReady] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
@@ -47,13 +50,21 @@ function ChatIndex() {
       const activeVault = vaults[0] ?? null;
       setVault(activeVault);
       if (!activeVault) return;
-      const [sessions, clusterRows] = await Promise.all([
-        listChatSessions(activeVault.id),
-        listClusters(activeVault.id),
+      const [sessionResult, clusterResult] = await Promise.allSettled([
+        listChatSessionsPage(activeVault.id, { limit: 100 }),
+        listClustersPage(activeVault.id, { limit: 200 }),
       ]);
-      setBackendChats(sessions);
-      setBackendClusters(clusterRows);
-      setBackendReady(true);
+      if (sessionResult.status === "fulfilled") {
+        setBackendChats(sessionResult.value.items);
+        setChatCursor(sessionResult.value.next_cursor);
+        setBackendReady(true);
+      } else {
+        setBackendReady(false);
+      }
+      if (clusterResult.status === "fulfilled") {
+        setBackendClusters(clusterResult.value.items);
+        setClusterCursor(clusterResult.value.next_cursor);
+      }
     } catch {
       setBackendReady(false);
     }
@@ -69,14 +80,22 @@ function ChatIndex() {
         if (cancelled) return;
         setVault(activeVault);
         if (!activeVault) return;
-        const [sessions, clusterRows] = await Promise.all([
-          listChatSessions(activeVault.id),
-          listClusters(activeVault.id),
+        const [sessionResult, clusterResult] = await Promise.allSettled([
+          listChatSessionsPage(activeVault.id, { limit: 100 }),
+          listClustersPage(activeVault.id, { limit: 200 }),
         ]);
         if (cancelled) return;
-        setBackendChats(sessions);
-        setBackendClusters(clusterRows);
-        setBackendReady(true);
+        if (sessionResult.status === "fulfilled") {
+          setBackendChats(sessionResult.value.items);
+          setChatCursor(sessionResult.value.next_cursor);
+          setBackendReady(true);
+        } else {
+          setBackendReady(false);
+        }
+        if (clusterResult.status === "fulfilled") {
+          setBackendClusters(clusterResult.value.items);
+          setClusterCursor(clusterResult.value.next_cursor);
+        }
       } catch {
         if (!cancelled) setBackendReady(false);
       }
@@ -135,6 +154,30 @@ function ChatIndex() {
       await deleteChatSession(id);
       window.dispatchEvent(new Event("vault:chats-changed"));
       await load();
+    }
+  }
+
+  async function loadMoreChats() {
+    if (!vault || !chatCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await listChatSessionsPage(vault.id, { limit: 100, cursor: chatCursor });
+      setBackendChats((current) => [...current, ...page.items]);
+      setChatCursor(page.next_cursor);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  async function loadMoreClusters() {
+    if (!vault || !clusterCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await listClustersPage(vault.id, { limit: 200, cursor: clusterCursor });
+      setBackendClusters((current) => [...current, ...page.items]);
+      setClusterCursor(page.next_cursor);
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -222,6 +265,11 @@ function ChatIndex() {
               )}
             </div>
           ))}
+          {chatCursor ? (
+            <Button variant="ghost" size="sm" className="w-full" disabled={loadingMore} onClick={() => void loadMoreChats()}>
+              {loadingMore ? "Loading..." : "Load older chats"}
+            </Button>
+          ) : null}
         </div>
       </aside>
       ) : null}
@@ -308,6 +356,11 @@ function ChatIndex() {
                     ))}
                   </SelectContent>
                 </Select>
+                {clusterCursor ? (
+                  <Button variant="ghost" size="sm" disabled={loadingMore} onClick={() => void loadMoreClusters()}>
+                    More clusters
+                  </Button>
+                ) : null}
                 <span className="text-xs text-muted-foreground">
                   {backendReady ? "Your library is ready" : "Create a library to start chatting"}
                 </span>

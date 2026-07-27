@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.database import connect
+from backend.app.core.pagination import cursor_page, decode_cursor
 
 router = APIRouter(prefix="/activity", tags=["activity"])
 
@@ -14,6 +15,7 @@ def list_activity(
     q: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    cursor: str | None = None,
 ) -> dict:
     if kind and kind not in ACTIVITY_KINDS:
         raise HTTPException(status_code=400, detail="Invalid activity kind")
@@ -74,6 +76,13 @@ def list_activity(
         params.append(f"%{normalized_query}%")
     safe_limit = max(1, min(int(limit), 250))
     safe_offset = max(0, int(offset))
+    decoded = decode_cursor(cursor)
+    cursor_where = ""
+    cursor_params: list[object] = []
+    if decoded:
+        cursor_time, cursor_id = decoded
+        cursor_where = "AND (time < ? OR (time = ? AND id < ?))" if where else "WHERE (time < ? OR (time = ? AND id < ?))"
+        cursor_params = [cursor_time, cursor_time, cursor_id]
     with connect() as conn:
         total_row = conn.execute(
             f"SELECT COUNT(*) AS total FROM ({union_sql}) activity {where}",
@@ -83,15 +92,20 @@ def list_activity(
             f"""
             SELECT id, kind, time, title, detail, href
             FROM ({union_sql}) activity
-            {where}
+            {where} {cursor_where}
             ORDER BY time DESC, id DESC
             LIMIT ? OFFSET ?
             """,
-            [*params, safe_limit, safe_offset],
+            [*params, *cursor_params, safe_limit + 1, 0 if cursor else safe_offset],
         ).fetchall()
+    page = cursor_page(
+        [dict(row) for row in rows],
+        requested_limit=safe_limit,
+        sort_field="time",
+    )
     return {
-        "items": [dict(row) for row in rows],
+        **page,
         "total": int(total_row["total"] or 0),
         "limit": safe_limit,
-        "offset": safe_offset,
+        "offset": 0 if cursor else safe_offset,
     }

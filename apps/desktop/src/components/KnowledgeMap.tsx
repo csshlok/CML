@@ -217,15 +217,19 @@ export function KnowledgeMap({
     setLoadingFocus(true);
     setError(null);
     try {
-      const [next, item] = await Promise.all([
+      const [nextResult, itemResult] = await Promise.allSettled([
         getMapNeighborhood(vaultId, node.id),
         getMapItem(vaultId, node.id),
       ]);
       if (requestId !== focusRequestRef.current) return;
-      setGraph(next);
+      if (nextResult.status === "rejected") throw nextResult.reason;
+      setGraph(nextResult.value);
       setRoot(node);
-      setSelected(item);
+      if (itemResult.status === "fulfilled") setSelected(itemResult.value);
       setViewRevision((current) => current + 1);
+      if (itemResult.status === "rejected") {
+        setError("The map expanded, but details for this item are unavailable.");
+      }
     } catch (reason) {
       if (requestId === focusRequestRef.current) {
         setError(reason instanceof Error ? reason.message : "Vault could not expand this neighborhood.");

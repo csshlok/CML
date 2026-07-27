@@ -12,7 +12,7 @@ function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, backendIdentityMatches, rendererSecurityHeaders, sanitizeRendererBody, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, assertSafeVaultMoveRoots, verifyCopiedVault, finalizeActiveVaultDeletion, reconcilePendingVaultDeletion, __setMainWindow: (value) => { mainWindow = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; }, __setEnsureBackend: (value) => { ensureBackend = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, backendIdentityMatches, rendererSecurityHeaders, sanitizeRendererBody, imageMimeType, imageDimensions, resolveApprovedMediaTarget, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, assertSafeVaultMoveRoots, verifyCopiedVault, finalizeActiveVaultDeletion, reconcilePendingVaultDeletion, __setMainWindow: (value) => { mainWindow = value; }, __setTunnelManager: (value) => { tunnelManager = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; }, __setEnsureBackend: (value) => { ensureBackend = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -197,8 +197,58 @@ test("setActiveVaultPath persists unicode vault path and creates .vault director
   assert.equal(fs.existsSync(path.join(vaultPath, ".vault")), true);
 });
 
+test("local image sniffing accepts supported raster formats and rejects disguised text", () => {
+  const { exported } = loadMainModule();
+
+  assert.equal(
+    exported.imageMimeType(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
+    "image/png",
+  );
+  assert.equal(exported.imageMimeType(Buffer.from([255, 216, 255, 224, 0, 16])), "image/jpeg");
+  assert.equal(exported.imageMimeType(Buffer.from("GIF89a", "ascii")), "image/gif");
+  assert.equal(exported.imageMimeType(Buffer.from("<svg onload=alert(1)>", "utf8")), null);
+});
+
+test("profile media IDs are opaque, traversal-safe, and resolve only inside managed media", () => {
+  const { exported, userDataDir } = loadMainModule();
+  const digest = "a".repeat(64);
+  assert.equal(
+    exported.resolveApprovedMediaTarget(`media:profile:${digest}.png`),
+    path.join(userDataDir, "media", "profiles", `${digest}.png`),
+  );
+  assert.equal(exported.resolveApprovedMediaTarget("media:profile:../../secret.png"), null);
+  assert.equal(exported.resolveApprovedMediaTarget(`media:source:${digest}.png`), null);
+  assert.equal(exported.resolveApprovedMediaTarget(`media:profile:${digest}.svg`), null);
+});
+
+test("image dimensions are read from headers without decoding untrusted pixels", () => {
+  const { exported } = loadMainModule();
+  const png = Buffer.alloc(24);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png);
+  png.writeUInt32BE(800, 16);
+  png.writeUInt32BE(600, 20);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(exported.imageDimensions(png, "image/png"))),
+    { width: 800, height: 600 },
+  );
+
+  const gif = Buffer.alloc(10);
+  gif.write("GIF89a", 0, "ascii");
+  gif.writeUInt16LE(320, 6);
+  gif.writeUInt16LE(240, 8);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(exported.imageDimensions(gif, "image/gif"))),
+    { width: 320, height: 240 },
+  );
+  assert.equal(exported.imageDimensions(Buffer.from("not an image"), "image/png"), null);
+});
+
 test("vault deletion tombstones data before clearing the active pointer", async () => {
   const { exported, userDataDir } = loadMainModule();
+  const tunnelEvents = [];
+  exported.__setTunnelManager({
+    disconnect: async (options) => tunnelEvents.push(options),
+  });
   const vaultRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "cml-delete-vault-"));
   await exported.setActiveVaultPath(vaultRoot);
   await fs.promises.writeFile(path.join(vaultRoot, ".vault", "cml.sqlite3"), "fixture");
@@ -222,6 +272,7 @@ test("vault deletion tombstones data before clearing the active pointer", async 
   assert.equal(await exported.getActiveVaultPath(), null);
   assert.equal(fs.existsSync(path.join(vaultRoot, ".vault")), false);
   assert.equal(fs.existsSync(path.join(userDataDir, "vault-deletion.json")), false);
+  assert.equal(JSON.stringify(tunnelEvents), JSON.stringify([{ forget: true }]));
 });
 
 test("vault deletion restores data, pointer, and setup state when pre-vault restart fails", async () => {

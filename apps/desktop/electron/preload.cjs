@@ -54,8 +54,26 @@ contextBridge.exposeInMainWorld("cmlDesktop", {
   moveActiveVaultFolder: (targetPath) => ipcRenderer.invoke("cml:move-active-vault-folder", targetPath),
   clearActiveVaultFolder: () => ipcRenderer.invoke("cml:clear-active-vault-folder"),
   selectCoverImage: () => ipcRenderer.invoke("cml:select-cover-image"),
+  readLocalImage: (targetPath) => ipcRenderer.invoke("cml:read-local-image", targetPath),
+  deleteLocalMedia: (mediaId) => ipcRenderer.invoke("cml:delete-local-media", mediaId),
   getBackendUrl: () => ipcRenderer.invoke("cml:get-backend-url"),
   getBackendToken: () => ipcRenderer.invoke("cml:get-backend-token"),
+  getMcpFeatureFlags: () => ipcRenderer.invoke("cml:get-mcp-feature-flags"),
+  getMcpLauncher: (capabilityProfile) => ipcRenderer.invoke("cml:get-mcp-launcher", capabilityProfile),
+  getOdinLauncherStatus: () => ipcRenderer.invoke("cml:get-odin-launcher-status"),
+  installOdinLauncher: () => ipcRenderer.invoke("cml:install-odin-launcher"),
+  startOdinPairing: () => ipcRenderer.invoke("cml:start-odin-pairing"),
+  getTunnelStatus: () => ipcRenderer.invoke("cml:get-tunnel-status"),
+  connectTunnel: (configuration) => ipcRenderer.invoke("cml:connect-tunnel", configuration),
+  reconnectTunnel: (bridgeToken) => ipcRenderer.invoke("cml:reconnect-tunnel", bridgeToken),
+  disconnectTunnel: (forget) => ipcRenderer.invoke("cml:disconnect-tunnel", forget),
+  openTunnelUi: () => ipcRenderer.invoke("cml:open-tunnel-ui"),
+  onTunnelStatusChanged: (listener) => {
+    if (typeof listener !== "function") return () => {};
+    const wrapped = (_event, status) => listener(status);
+    ipcRenderer.on("cml:tunnel-status-changed", wrapped);
+    return () => ipcRenderer.removeListener("cml:tunnel-status-changed", wrapped);
+  },
   getSetupState: () => ipcRenderer.invoke("cml:get-setup-state"),
   updateSetupState: (patch) => ipcRenderer.invoke("cml:update-setup-state", patch),
   resetAppSetup: () => ipcRenderer.invoke("cml:reset-app-setup"),

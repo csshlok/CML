@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.cluster_suggestions import suggest_source_cluster_moves
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.pagination import cursor_page, decode_cursor
 from backend.app.core.cluster_lifecycle import mark_cluster_needs_update, refresh_cluster_profile
 from backend.app.core.retrieval_cache import invalidate_caches_for_source
 from backend.app.core.sql import build_update_assignments
@@ -40,6 +41,34 @@ def list_clusters(vault_id: str | None = None, limit: int = 500, offset: int = 0
                 (safe_limit, safe_offset),
             ).fetchall()
         return [dict_from_row(row) for row in rows]
+
+
+@router.get("/page")
+def list_clusters_page(vault_id: str | None = None, limit: int = 100, cursor: str | None = None) -> dict:
+    clauses: list[str] = []
+    params: list[object] = []
+    if vault_id:
+        clauses.append("vault_id = ?")
+        params.append(vault_id)
+    decoded = decode_cursor(cursor)
+    if decoded:
+        updated_at, item_id = decoded
+        clauses.append("(updated_at < ? OR (updated_at = ? AND id < ?))")
+        params.extend([updated_at, updated_at, item_id])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    safe_limit = max(1, min(int(limit), 200))
+    with connect() as conn:
+        if vault_id and conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone() is None:
+            raise HTTPException(status_code=404, detail="Vault not found")
+        rows = conn.execute(
+            f"SELECT * FROM clusters {where} ORDER BY updated_at DESC, id DESC LIMIT ?",
+            [*params, safe_limit + 1],
+        ).fetchall()
+    return cursor_page(
+        [dict_from_row(row) for row in rows],
+        requested_limit=safe_limit,
+        sort_field="updated_at",
+    )
 
 
 @router.post("", response_model=ClusterRead)

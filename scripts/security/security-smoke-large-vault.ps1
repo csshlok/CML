@@ -79,6 +79,19 @@ function Invoke-ApiJson([string]$Method, [string]$Uri, [object]$Payload = $null,
   return Invoke-RestMethod @params
 }
 
+function Wait-DurableJobs([string]$BaseUrl, [hashtable]$Headers, [int]$TimeoutSeconds = 900) {
+  Invoke-ApiJson "POST" "$BaseUrl/api/v1/jobs/run-once" $null $Headers 30 | Out-Null
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  do {
+    $status = Invoke-ApiJson "GET" "$BaseUrl/api/v1/jobs/status" $null $Headers 30
+    if ($status.queued -eq 0 -and $status.running -eq 0) {
+      return $status
+    }
+    Start-Sleep -Milliseconds 250
+  } while ((Get-Date) -lt $deadline)
+  throw "Durable jobs did not finish within $TimeoutSeconds seconds."
+}
+
 try {
   $baseUrl = "http://127.0.0.1:$Port"
   $headers = @{ "x-cml-api-token" = $apiToken }
@@ -92,7 +105,7 @@ try {
   Invoke-ApiJson "POST" "$baseUrl/api/v1/system/unlock/initialize" @{
     vault_id = $vault.id
     passphrase = $Passphrase
-    unlock_mode = "convenience"
+    unlock_mode = "strict"
   } $headers | Out-Null
 
   $scanStarted = Get-Date
@@ -109,7 +122,11 @@ try {
 
   $reindexStarted = Get-Date
   $reindex = Invoke-ApiJson "POST" "$baseUrl/api/v1/search/reindex/$($vault.id)" $null $headers 900
+  $jobStatus = Wait-DurableJobs $baseUrl $headers
   $reindexSeconds = ((Get-Date) - $reindexStarted).TotalSeconds
+  if ($jobStatus.failed -gt 0) {
+    throw "A large-vault indexing job failed."
+  }
 
   $queryStarted = Get-Date
   $search = Invoke-ApiJson "POST" "$baseUrl/api/v1/search/semantic" @{
@@ -128,7 +145,8 @@ try {
     supported_count = $scan.supported_count
     imported_count = $refresh.imported_count
     failed_count = $refresh.failed_count
-    chunks_indexed = $reindex.chunks_indexed
+    reindex_jobs_queued = $reindex.jobs_queued
+    jobs_succeeded = $jobStatus.succeeded
     scan_seconds = [math]::Round($scanSeconds, 2)
     refresh_seconds = [math]::Round($refreshSeconds, 2)
     reindex_seconds = [math]::Round($reindexSeconds, 2)
@@ -139,7 +157,8 @@ try {
       $scan.supported_count -eq $Sources -and
       $refresh.imported_count -eq $Sources -and
       $refresh.failed_count -eq 0 -and
-      $reindex.chunks_indexed -ge $Sources -and
+      $reindex.jobs_queued -ge $Sources -and
+      $jobStatus.succeeded -ge $reindex.jobs_queued -and
       $search.results.Count -ge 1 -and
       $runs.Count -ge 1 -and
       $runs[0].detail_count -ge [math]::Min($Sources, 2000)

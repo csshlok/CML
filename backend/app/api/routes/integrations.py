@@ -33,6 +33,7 @@ from backend.app.core.memory_card import generate_tags, summarize_text
 from backend.app.core.retrieval_cache import invalidate_caches_for_source
 from backend.app.core.source_records import file_checksum, replace_source_pages, source_type_for_suffix
 from backend.app.schemas import (
+    AppJobRead,
     IntegrationImportRead,
     IntegrationImportUpdate,
     LocalFolderScanRequest,
@@ -255,6 +256,31 @@ def retry_import_reconciliation_item(item_id: str) -> dict:
         "new_run": new_run,
         "new_item": new_item,
     }
+
+
+@router.post("/imports/{import_id}/refresh/jobs", response_model=AppJobRead, status_code=202)
+def queue_integration_refresh(
+    import_id: str,
+    import_files: bool = False,
+    tombstone_missing: bool = False,
+) -> dict:
+    with connect() as conn:
+        row = conn.execute("SELECT id, vault_id FROM integration_imports WHERE id = ?", (import_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Integration import not found")
+        return enqueue_job(
+            conn,
+            job_type="integration_refresh",
+            payload={
+                "import_id": import_id,
+                "import_files": import_files,
+                "tombstone_missing": tombstone_missing,
+                "trigger_source": "manual_refresh",
+            },
+            dedupe_key=f"integration-refresh:{import_id}",
+            scope_id=str(row["vault_id"] or import_id),
+            user_initiated=True,
+        )
 
 
 @router.post("/imports/{import_id}/refresh", response_model=LocalFolderScanResponse)

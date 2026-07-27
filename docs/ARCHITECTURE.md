@@ -16,7 +16,7 @@ Electron is the first desktop shell choice because Node is already available in 
 Key architecture references:
 
 - [JOB_AND_MAINTENANCE_ARCHITECTURE.md](JOB_AND_MAINTENANCE_ARCHITECTURE.md) defines the target background job taxonomy, scheduler rules, dependency model, and startup recovery state transitions for ingestion, indexing, diagnostics, cleanup, and merge repair. Its legacy expert-training rows are historical and not part of the live RAG-only product.
-- Odin project context is implemented through `backend/app/core/projects.py`, `backend/app/core/project_graph.py`, `backend/app/api/routes/projects.py`, and the desktop project workspace. Scoped authentication, asynchronous sync lifecycle, broader parser coverage, and supporting UI remain release work.
+- Odin project context is implemented through `backend/app/core/projects.py`, `backend/app/core/project_graph.py`, `backend/app/api/routes/projects.py`, and the desktop project workspace. It includes scoped pairing, durable sync, bounded tree/graph/context APIs, a packaged thin-client launcher, and desktop project UI.
 
 ## Odin Project Context
 
@@ -35,9 +35,11 @@ During development:
 
 In packaged builds:
 
-1. Electron loads the bundled UI assets.
-2. The app starts or connects to the bundled local backend service.
-3. Runtime data stays under the selected local vault and app data directories.
+1. Electron shows a local startup surface immediately, then loads the bundled UI assets.
+2. The app verifies and starts the bundled Python backend from absolute packaged paths.
+3. Optional packaged helpers provide OCR, local model serving, browser extraction, Odin, MCP, and the outbound Secure MCP Tunnel.
+4. The backend remains loopback-only. The tunnel launches the packaged stdio MCP server and does not expose the backend token or an inbound public port.
+5. Runtime data stays under the selected local vault and app data directories.
 
 ## Context Layer Shape
 

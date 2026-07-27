@@ -1,8 +1,92 @@
 # Overall Context
 
-Last updated: 2026-07-26
+Last updated: 2026-07-27
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
+
+## July 27 ChatGPT MCP, Tunnel, And Reliability Completion
+
+The latest source completes the locally executable implementation in
+`docs/CHATGPT_MCP_CONNECTION_PLAN.md`. The remaining release boundary is now explicit:
+the owner-deferred Windows package rebuild and its post-build checks, followed by tests
+that require an authorized ChatGPT workspace and live OpenAI tunnel credentials.
+
+MCP is divided into three layers. `bridge_mcp_tools.py` owns transport-independent
+contracts, annotations, capability filtering, and strict argument validation.
+`bridge_mcp_stdio.py` owns bounded newline JSON-RPC framing and concurrent dispatch.
+`bridge_mcp.py` owns backend calls, safe error mapping, and result formatting. The
+stdio path handles malformed and invalid UTF-8 input, oversized frames, partial EOF,
+notifications, duplicate request IDs, cancellation, and overload. Retrieval, writes,
+and lightweight calls have separate bounded capacities. Unsafe Unicode controls and
+surrogates are rejected, backend resets are mapped to retriable safe errors, and the
+entire serialized tool result—not merely one text field—is bounded without cutting
+UTF-8 sequences.
+
+The Electron tunnel manager stages only verified packaged helpers, passes a minimal
+child environment, rejects non-loopback backend origins and symlinked manifest entries,
+and sends the OpenAI runtime key through a temporary file rather than process arguments.
+Windows safe storage protects the durable runtime and Bridge credentials. Credential
+replacement is atomic, preserves the previous encrypted file on disk-full failure, and
+fails closed when OS encryption is unavailable or a newer schema is present. Tunnel
+readiness is loopback-only and monotonic-time bounded. Transient DNS, TLS, reset, 429,
+and 5xx failures retry with exponential jitter; 401, 403, and version failures stop
+automatic reconnect. Rapid disconnect, crash, stale-owner reconciliation, and orphan
+cleanup have regression coverage.
+
+Bridge settings and tunnel metadata have explicit compatibility schemas. Existing
+Claude Desktop and Cursor clients survive database reopen. A newer Bridge schema is
+refused rather than downgraded. Permission-sensitive Bridge client edits rotate the
+token automatically; when that client owns the live tunnel, Electron reconnects with
+the new token. Resetting setup or deleting the active vault disconnects and forgets
+tunnel credentials first. Feature flags exist in both Electron and backend code for
+ChatGPT setup, secure tunnel, write tools, future streaming, and future remote HTTP.
+Write-disabled deployments downgrade to read-only rather than exposing unusable tools.
+
+Write audit semantics were strengthened. Every recognized client write attempt is
+recorded before authorization, including capability and scope denials, stale review
+decisions, idempotent replays, and conflicting retries. Successful source captures and
+review decisions also record completion. The lightweight `list_clusters` call records
+client identity, source count, bytes, and success, allowing the desktop to detect an
+actual ChatGPT verification call.
+
+The ChatGPT setup interface is a numbered, resumable flow. It reconstructs its state
+from persisted Bridge clients, allowed scope, tunnel metadata, and request history
+instead of storing credentials or fragile renderer checkpoints. Copy explains that
+workspace eligibility is controlled by ChatGPT and the workspace administrator. It
+guides read-only/read-write selection, explicit scope, tunnel health, app/tool scanning,
+a harmless `list_clusters` request, a confirmed test artifact for write mode, cleanup,
+and immediate disconnect-and-revoke.
+
+The latest source evidence is:
+
+| Gate | Result |
+| --- | --- |
+| Full backend | 810 passed, 1 optional skip, 2 scale deselections, 0 failed; 286.55 s |
+| Focused post-fix MCP/Bridge | 49 passed |
+| Desktop | TypeScript passed; 91/91 Electron tests passed |
+| MCP Inspector 0.21.2 | Development stdio read-only and read/write passed |
+| MCP source soak | 1,000/1,000 calls; init 824.159 ms; tool list 1.552 ms; list p95 86.93 ms; max 160.779 ms; RSS growth 0 MiB |
+| Odin scale | 50,000 files; 68.3 MiB peak; 160.824 s under concurrent Inspector load |
+| Product scale | 10,000 sources queried in 0.108 s |
+| Clean security drill | Pass; locked sources 423; revoked Bridge client 401 |
+| Offline-at-rest drill | Pass; zero plaintext marker hits |
+| Interrupted-flow drill | Pass before and after recovery |
+| Large encrypted vault | 1,200/1,200 imported; 0 failed; query 195.14 ms; reconciliation complete |
+| Dependencies | No known Python or production npm vulnerabilities |
+| Diff hygiene | Pass; line-ending warnings only |
+
+The first full-suite attempt exposed a direct-call edge case in the new audit preflight:
+FastAPI's `Header(None)` sentinel reached token-length validation. The token boundary now
+accepts strings only, the focused regression passed, and the clean full rerun produced
+the result above. This is retained because it demonstrates why the post-change full
+suite cannot be replaced by focused MCP tests.
+
+Machine-readable source evidence is in `tmp/local-validation-20260727/`. Historical
+packaged results remain under `tmp/`, but the existing installer predates the final
+transport, audit, feature-flag, credential, scope-rotation, and setup-flow changes.
+Those artifacts are not proof for the latest source. After the owner rebuilds, packaged
+Inspector, soak, runtime/full-vault/OCR/migration, startup, rendered UI, Odin launcher,
+package layout, install, and uninstall gates must all be repeated.
 
 ## July 26 Desktop Chrome And Model-Onboarding Stabilization
 
@@ -62,8 +146,9 @@ The major scoped implementation passes are complete:
 
 The remaining cycle is release work and quality productionization:
 
-1. publish the active 0.1.9 frameless-shell and model-onboarding source;
-2. rerun the complete backend, desktop, packaging, and security gates from that clean state;
+1. publish the active 0.1.9 frameless-shell, model-onboarding, and MCP source;
+2. preserve the completed backend, desktop, Inspector, security, scale, dependency,
+   and source-soak evidence while the owner prepares the package rebuild;
 3. prove a production-shaped compressed late-interaction index before considering ColBERT activation;
 4. evaluate future memory changes on fresh, preregistered evidence rather than the development-exposed LongMemEval set;
 5. improve Odin's TypeScript/React graph-to-prompt selection and authoritative cross-file relationships;
@@ -135,9 +220,11 @@ Live isolated validation passed:
 
 Broader regression validation passed:
 
-- current combined backend collection: `644 passed`, `2 skipped`, with only the existing Starlette TestClient deprecation warning;
+- current combined backend collection: `810 passed`, `1 optional skip`, and `2`
+  explicit scale deselections, with only the existing Starlette TestClient
+  deprecation warning;
 - focused backend regression slice: `127 passed`
-- Electron behavior tests: `57 passed` on the July 26 desktop slice
+- Electron behavior tests: `91 passed` on the July 27 source slice
 - backend tests are classified automatically into non-overlapping quick, integration, system, benchmark, and scale tiers
 - quick: `147 passed`; integration: `214 passed`; system: `120 passed`
 - benchmark: `16 passed`, `1 skipped` when optional TurboVec was unavailable

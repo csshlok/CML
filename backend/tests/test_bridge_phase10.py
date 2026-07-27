@@ -63,6 +63,43 @@ class BridgePhase10Tests(unittest.TestCase):
             os.environ.pop(key, None)
         self.tmp.cleanup()
 
+    def test_bridge_settings_use_an_explicit_schema_and_refuse_newer_versions(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.bridge import bridge_status
+        from backend.app.core.database import connect
+
+        current = bridge_status()
+        self.assertEqual(current["schema_version"], 1)
+        with connect() as conn:
+            conn.execute(
+                "UPDATE bridge_settings SET schema_version = 99 WHERE id = 'default'"
+            )
+        with self.assertRaises(HTTPException) as mismatch:
+            bridge_status()
+        self.assertEqual(mismatch.exception.status_code, 409)
+        self.assertEqual(mismatch.exception.detail, "bridge_version_mismatch")
+
+    def test_database_reopen_preserves_existing_claude_and_cursor_clients(self) -> None:
+        from backend.app.api.routes.bridge import create_bridge_client, list_bridge_clients
+        from backend.app.core.database import init_db
+        from backend.app.schemas import BridgeClientCreate
+
+        for name in ("Claude Desktop", "Cursor"):
+            create_bridge_client(
+                BridgeClientCreate(
+                    name=name,
+                    capability_profile="read_only",
+                    allowed_vault_ids=["vault-1"],
+                    allowed_cluster_ids=["cluster-1"],
+                )
+            )
+        init_db()
+        clients = {item["name"]: item for item in list_bridge_clients()}
+        self.assertEqual(set(clients), {"Claude Desktop", "Cursor"})
+        self.assertEqual(clients["Claude Desktop"]["allowed_vault_ids"], ["vault-1"])
+        self.assertEqual(clients["Cursor"]["allowed_cluster_ids"], ["cluster-1"])
+
     def test_public_bridge_approval_request_bypasses_local_api_token_but_admin_list_does_not(self) -> None:
         from backend.app.api.routes.bridge import update_bridge_settings
         from backend.app.schemas import BridgeSettingsUpdate
@@ -350,6 +387,210 @@ class BridgePhase10Tests(unittest.TestCase):
         self.assertEqual(len(response["clusters"]), 1)
         self.assertEqual(response["clusters"][0]["id"], "cluster-1")
 
+    def test_read_only_bridge_client_can_read_but_backend_rejects_write_tools(self) -> None:
+        from backend.app.api.routes.bridge import create_bridge_client, update_bridge_settings
+        from backend.app.core.database import connect
+        from backend.app.schemas import BridgeClientCreate, BridgeSettingsUpdate
+
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True))
+        read_only = create_bridge_client(
+            BridgeClientCreate(
+                name="ChatGPT read only",
+                capability_profile="read_only",
+                allowed_vault_ids=["vault-1"],
+            )
+        )
+        read_write = create_bridge_client(
+            BridgeClientCreate(
+                name="ChatGPT read write",
+                capability_profile="read_write",
+                allowed_vault_ids=["vault-1"],
+            )
+        )
+        with connect() as conn:
+            now = conn.execute("SELECT updated_at FROM vaults WHERE id = 'vault-1'").fetchone()[0]
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-out-of-scope", "Secondary", str(self.data_dir / "secondary"), now, now),
+            )
+
+        http_client = self._client()
+        try:
+            clusters = http_client.get(
+                "/api/v1/bridge/clusters",
+                headers={"x-cml-bridge-token": read_only["token"]},
+            )
+            denied = http_client.post(
+                "/api/v1/bridge/artifacts",
+                headers={"x-cml-bridge-token": read_only["token"]},
+                json={
+                    "vault_id": "vault-1",
+                    "client_name": "chatgpt",
+                    "title": "Denied",
+                    "content": "This must not be stored.",
+                },
+            )
+            allowed = http_client.post(
+                "/api/v1/bridge/artifacts",
+                headers={"x-cml-bridge-token": read_write["token"]},
+                json={
+                    "vault_id": "vault-1",
+                    "client_name": "chatgpt",
+                    "title": "Allowed",
+                    "content": "This may be stored.",
+                },
+            )
+            scope_denied = http_client.post(
+                "/api/v1/bridge/artifacts",
+                headers={"x-cml-bridge-token": read_write["token"]},
+                json={
+                    "vault_id": "vault-out-of-scope",
+                    "client_name": "chatgpt",
+                    "title": "Wrong vault",
+                    "content": "This must not be stored.",
+                },
+            )
+        finally:
+            http_client.close()
+
+        self.assertEqual(clusters.status_code, 200)
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.json()["detail"], "capability_denied")
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(scope_denied.status_code, 403)
+        self.assertEqual(scope_denied.json()["detail"], "vault_not_allowed")
+        with connect() as conn:
+            read_only_audit = dict(
+                conn.execute(
+                    """
+                    SELECT event_type, COUNT(*) AS count
+                    FROM bridge_audit_events
+                    WHERE client_id = ?
+                    GROUP BY event_type
+                    """,
+                    (read_only["id"],),
+                ).fetchall()
+            )
+            read_write_audit = dict(
+                conn.execute(
+                    """
+                    SELECT event_type, COUNT(*) AS count
+                    FROM bridge_audit_events
+                    WHERE client_id = ?
+                    GROUP BY event_type
+                    """,
+                    (read_write["id"],),
+                ).fetchall()
+            )
+            attempted_requests = conn.execute(
+                """
+                SELECT COUNT(*) FROM bridge_requests
+                WHERE client_id IN (?, ?) AND decision = 'attempted'
+                """,
+                (read_only["id"], read_write["id"]),
+            ).fetchone()[0]
+            list_request = conn.execute(
+                """
+                SELECT decision, source_count FROM bridge_requests
+                WHERE client_id = ? AND mode = 'list_clusters'
+                """,
+                (read_only["id"],),
+            ).fetchone()
+        self.assertEqual(read_only_audit["write_attempted"], 1)
+        self.assertEqual(read_only_audit["capability_denied"], 1)
+        self.assertEqual(read_write_audit["write_attempted"], 2)
+        self.assertEqual(read_write_audit["write_completed"], 1)
+        self.assertEqual(attempted_requests, 3)
+        self.assertEqual(list_request["decision"], "allowed")
+        self.assertEqual(list_request["source_count"], 1)
+
+    def test_bridge_writes_are_idempotent_and_review_decisions_detect_stale_state(self) -> None:
+        from backend.app.api.routes.bridge import create_bridge_client, update_bridge_settings
+        from backend.app.core.database import connect
+        from backend.app.schemas import BridgeClientCreate, BridgeSettingsUpdate
+
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True))
+        bridge_client = create_bridge_client(
+            BridgeClientCreate(
+                name="Idempotent connector",
+                capability_profile="read_write",
+                allowed_vault_ids=["vault-1"],
+            )
+        )
+        headers = {"x-cml-bridge-token": bridge_client["token"]}
+        artifact = {
+            "vault_id": "vault-1",
+            "client_name": "chatgpt",
+            "title": "Stable capture",
+            "content": "Save this exactly once.",
+            "idempotency_key": "capture-request-0001",
+        }
+        http_client = self._client()
+        try:
+            first = http_client.post("/api/v1/bridge/artifacts", headers=headers, json=artifact)
+            replay = http_client.post("/api/v1/bridge/artifacts", headers=headers, json=artifact)
+            conflict = http_client.post(
+                "/api/v1/bridge/artifacts",
+                headers=headers,
+                json={**artifact, "content": "Different payload."},
+            )
+            reviews = http_client.get("/api/v1/bridge/reviews", headers=headers)
+            expected_updated_at = reviews.json()[0]["updated_at"]
+            decision = {
+                "approved": True,
+                "expected_updated_at": expected_updated_at,
+                "idempotency_key": "review-decision-0001",
+            }
+            approved = http_client.post(
+                f"/api/v1/bridge/reviews/{first.json()['source_id']}",
+                headers=headers,
+                json=decision,
+            )
+            approved_replay = http_client.post(
+                f"/api/v1/bridge/reviews/{first.json()['source_id']}",
+                headers=headers,
+                json=decision,
+            )
+            stale = http_client.post(
+                f"/api/v1/bridge/reviews/{first.json()['source_id']}",
+                headers=headers,
+                json={
+                    "approved": False,
+                    "expected_updated_at": expected_updated_at,
+                    "idempotency_key": "review-decision-0002",
+                },
+            )
+        finally:
+            http_client.close()
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(replay.json(), first.json())
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(conflict.json()["detail"], "idempotency_key_reused")
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(approved_replay.json(), approved.json())
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.json()["detail"], "bridge_review_changed")
+        with connect() as conn:
+            capture_count = conn.execute(
+                "SELECT COUNT(*) FROM sources WHERE source_type = 'external_artifact'"
+            ).fetchone()[0]
+            audit_counts = dict(
+                conn.execute(
+                    """
+                    SELECT event_type, COUNT(*) AS count
+                    FROM bridge_audit_events
+                    WHERE client_id = ?
+                    GROUP BY event_type
+                    """,
+                    (bridge_client["id"],),
+                ).fetchall()
+            )
+        self.assertEqual(capture_count, 1)
+        self.assertEqual(audit_counts["write_attempted"], 6)
+        self.assertEqual(audit_counts["write_completed"], 2)
+
     def test_cluster_scoped_manual_client_is_anchored_to_single_vault(self) -> None:
         from backend.app.api.routes.bridge import create_bridge_client, list_bridge_clients, update_bridge_settings
         from backend.app.core.database import connect
@@ -426,16 +667,21 @@ class BridgePhase10Tests(unittest.TestCase):
         self.assertIsNone(row["revoked_at"])
 
     def test_updating_approved_client_scope_keeps_anchor_and_identity_metadata(self) -> None:
+        from fastapi import HTTPException
+
         from backend.app.api.routes.bridge import (
             approve_bridge_approval_request,
+            build_context,
             create_bridge_approval_request,
             update_bridge_client,
             update_bridge_settings,
         )
+        from backend.app.core.database import connect
         from backend.app.schemas import (
             BridgeApprovalDecision,
             BridgeApprovalRequestCreate,
             BridgeClientUpdate,
+            BridgeContextRequest,
             BridgeSettingsUpdate,
         )
 
@@ -459,6 +705,27 @@ class BridgePhase10Tests(unittest.TestCase):
         self.assertEqual(updated["approval_vault_id"], "vault-1")
         self.assertEqual(updated["observed_executable_path"], str(executable.resolve()))
         self.assertNotEqual(updated["signature_status"], "not_provided")
+        self.assertTrue(updated["token"])
+        with self.assertRaises(HTTPException) as old_token:
+            build_context(
+                BridgeContextRequest(vault_id="vault-1", query="old token"),
+                x_cml_bridge_token=approved["token"],
+            )
+        refreshed = build_context(
+            BridgeContextRequest(vault_id="vault-1", query="new token"),
+            x_cml_bridge_token=updated["token"],
+        )
+        with connect() as conn:
+            rotation = conn.execute(
+                """
+                SELECT reason FROM bridge_client_token_rotations
+                WHERE client_id = ? ORDER BY rotated_at DESC LIMIT 1
+                """,
+                (approved["id"],),
+            ).fetchone()
+        self.assertEqual(old_token.exception.detail, "bridge_token_invalid")
+        self.assertEqual(refreshed["query"], "new token")
+        self.assertEqual(rotation["reason"], "permissions_changed")
 
     def test_revoked_approved_client_token_is_blocked_and_shared_token_is_disabled_for_secured_vaults(self) -> None:
         from backend.app.api.routes.bridge import (

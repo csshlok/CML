@@ -171,6 +171,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS bridge_settings (
                 id TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL DEFAULT 1,
                 enabled INTEGER NOT NULL DEFAULT 0,
                 allowed_vault_ids TEXT NOT NULL DEFAULT '[]',
                 allowed_cluster_ids TEXT NOT NULL DEFAULT '[]',
@@ -194,6 +195,7 @@ def init_db() -> None:
                 name TEXT NOT NULL,
                 token_hash TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                capability_profile TEXT NOT NULL DEFAULT 'read_write',
                 approval_vault_id TEXT,
                 allowed_vault_ids TEXT NOT NULL DEFAULT '[]',
                 allowed_cluster_ids TEXT NOT NULL DEFAULT '[]',
@@ -250,6 +252,17 @@ def init_db() -> None:
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
                 FOREIGN KEY (client_id) REFERENCES bridge_clients(id) ON DELETE SET NULL,
                 FOREIGN KEY (approval_request_id) REFERENCES bridge_approval_requests(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS bridge_idempotency (
+                principal_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                response_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (principal_id, operation, idempotency_key)
             );
 
             CREATE TABLE IF NOT EXISTS bridge_rate_limits (
@@ -362,6 +375,7 @@ def init_db() -> None:
                 job_type TEXT NOT NULL,
                 status TEXT NOT NULL,
                 payload TEXT NOT NULL DEFAULT '{}',
+                result_json TEXT NOT NULL DEFAULT '{}',
                 dedupe_key TEXT,
                 priority TEXT NOT NULL DEFAULT 'normal',
                 idempotency_class TEXT NOT NULL DEFAULT 'idempotent',
@@ -494,6 +508,14 @@ def init_db() -> None:
                 warnings TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS scheduler_prerequisites (
+                name TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                generation INTEGER NOT NULL DEFAULT 0,
+                detail TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS temporal_facts (
@@ -1353,6 +1375,7 @@ def init_db() -> None:
         _add_column_if_missing(conn, "clusters", "profile_source_hash", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "clusters", "indexed_source_count", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "bridge_settings", "bridge_token", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "bridge_settings", "schema_version", "INTEGER NOT NULL DEFAULT 1")
         _add_column_if_missing(conn, "bridge_requests", "client_id", "TEXT")
         _add_column_if_missing(conn, "bridge_requests", "decision", "TEXT NOT NULL DEFAULT 'allowed'")
         _add_column_if_missing(conn, "bridge_requests", "source_count", "INTEGER NOT NULL DEFAULT 0")
@@ -1385,6 +1408,7 @@ def init_db() -> None:
             "ON source_chunks(project_id, project_snapshot_id, activation_state)"
         )
         _add_column_if_missing(conn, "app_jobs", "priority", "TEXT NOT NULL DEFAULT 'normal'")
+        _add_column_if_missing(conn, "app_jobs", "result_json", "TEXT NOT NULL DEFAULT '{}'")
         _add_column_if_missing(conn, "app_jobs", "idempotency_class", "TEXT NOT NULL DEFAULT 'idempotent'")
         _add_column_if_missing(conn, "app_jobs", "restart_policy", "TEXT NOT NULL DEFAULT 'requeue'")
         _add_column_if_missing(conn, "app_jobs", "dependency_failure_policy", "TEXT NOT NULL DEFAULT 'cancel'")
@@ -1414,6 +1438,7 @@ def init_db() -> None:
         _rebuild_clusters_table_without_expert_status(conn)
         _rebuild_bridge_settings_without_allow_expert_calls(conn)
         _rebuild_bridge_clients_without_allow_expert_calls(conn)
+        _add_column_if_missing(conn, "bridge_clients", "capability_profile", "TEXT NOT NULL DEFAULT 'read_write'")
         _drop_legacy_expert_tables(conn)
         _backfill_cluster_rag_lifecycle(conn)
         conn.executescript(
@@ -1447,6 +1472,16 @@ def init_db() -> None:
                 FOREIGN KEY (client_id) REFERENCES bridge_clients(id) ON DELETE SET NULL,
                 FOREIGN KEY (approval_request_id) REFERENCES bridge_approval_requests(id) ON DELETE SET NULL
             );
+            CREATE TABLE IF NOT EXISTS bridge_idempotency (
+                principal_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                response_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (principal_id, operation, idempotency_key)
+            );
             CREATE TABLE IF NOT EXISTS bridge_rate_limits (
                 scope_type TEXT NOT NULL,
                 scope_id TEXT NOT NULL,
@@ -1477,6 +1512,8 @@ def init_db() -> None:
                 ON bridge_approval_requests(vault_id, status, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_bridge_audit_events_created
                 ON bridge_audit_events(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_bridge_idempotency_created
+                ON bridge_idempotency(created_at);
             CREATE INDEX IF NOT EXISTS idx_source_quarantine_vault
                 ON source_quarantine_records(vault_id, validation_status, parser_status, updated_at);
             CREATE INDEX IF NOT EXISTS idx_sources_checksum
@@ -1644,6 +1681,7 @@ def _rebuild_bridge_settings_without_allow_expert_calls(conn: sqlite3.Connection
         """
         CREATE TABLE bridge_settings (
             id TEXT PRIMARY KEY,
+            schema_version INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0,
             allowed_vault_ids TEXT NOT NULL DEFAULT '[]',
             allowed_cluster_ids TEXT NOT NULL DEFAULT '[]',
@@ -1658,11 +1696,12 @@ def _rebuild_bridge_settings_without_allow_expert_calls(conn: sqlite3.Connection
     conn.execute(
         """
         INSERT INTO bridge_settings (
-            id, enabled, allowed_vault_ids, allowed_cluster_ids, allow_raw_snippets,
+            id, schema_version, enabled, allowed_vault_ids, allowed_cluster_ids, allow_raw_snippets,
             allow_style_profile, bridge_token, created_at, updated_at
         )
         SELECT
             id,
+            1,
             enabled,
             allowed_vault_ids,
             allowed_cluster_ids,
@@ -1690,6 +1729,7 @@ def _rebuild_bridge_clients_without_allow_expert_calls(conn: sqlite3.Connection)
                 name TEXT NOT NULL,
                 token_hash TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                capability_profile TEXT NOT NULL DEFAULT 'read_write',
                 approval_vault_id TEXT,
                 allowed_vault_ids TEXT NOT NULL DEFAULT '[]',
                 allowed_cluster_ids TEXT NOT NULL DEFAULT '[]',
@@ -1711,7 +1751,7 @@ def _rebuild_bridge_clients_without_allow_expert_calls(conn: sqlite3.Connection)
         conn.execute(
             """
             INSERT INTO bridge_clients_new (
-                id, name, token_hash, enabled, approval_vault_id, allowed_vault_ids,
+                id, name, token_hash, enabled, capability_profile, approval_vault_id, allowed_vault_ids,
                 allowed_cluster_ids, allow_raw_snippets, allow_style_profile, metadata_json,
                 approval_request_id, approved_at, revoked_at, last_request_at,
                 request_count_total, response_bytes_total, created_at, updated_at
@@ -1721,6 +1761,7 @@ def _rebuild_bridge_clients_without_allow_expert_calls(conn: sqlite3.Connection)
                 name,
                 token_hash,
                 enabled,
+                'read_write',
                 approval_vault_id,
                 allowed_vault_ids,
                 allowed_cluster_ids,
