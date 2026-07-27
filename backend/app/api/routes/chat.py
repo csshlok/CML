@@ -10,6 +10,7 @@ from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.cluster_bundle import build_cluster_bundle_context
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.pagination import cursor_page, decode_cursor
 from backend.app.core.derived_state import chunk_eligibility_sql, query_epoch_snapshot_conn
 from backend.app.core.embeddings import (
     content_hash,
@@ -80,12 +81,20 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.get("/sessions", response_model=list[ChatSessionRead])
-def list_chat_sessions(vault_id: str | None = None, limit: int = 100, offset: int = 0) -> list[dict]:
+def list_chat_sessions(
+    vault_id: str | None = None,
+    saved: bool | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
     clauses: list[str] = []
     params: list[object] = []
     if vault_id:
         clauses.append("vault_id = ?")
         params.append(vault_id)
+    if saved is not None:
+        clauses.append("saved = ?")
+        params.append(1 if saved else 0)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     bounded_limit = max(1, min(limit, 200))
     bounded_offset = max(offset, 0)
@@ -98,6 +107,39 @@ def list_chat_sessions(vault_id: str | None = None, limit: int = 100, offset: in
             [*params, bounded_limit, bounded_offset],
         ).fetchall()
     return [_session_from_row(row, messages=[]) for row in rows]
+
+
+@router.get("/sessions/page")
+def list_chat_sessions_page(
+    vault_id: str | None = None,
+    saved: bool | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+) -> dict:
+    clauses: list[str] = []
+    params: list[object] = []
+    if vault_id:
+        clauses.append("vault_id = ?")
+        params.append(vault_id)
+    if saved is not None:
+        clauses.append("saved = ?")
+        params.append(1 if saved else 0)
+    decoded = decode_cursor(cursor)
+    if decoded:
+        updated_at, item_id = decoded
+        clauses.append("(updated_at < ? OR (updated_at = ? AND id < ?))")
+        params.extend([updated_at, updated_at, item_id])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    safe_limit = max(1, min(int(limit), 200))
+    with connect() as conn:
+        if vault_id:
+            _ensure_vault(conn, vault_id)
+        rows = conn.execute(
+            f"SELECT * FROM chat_sessions {where} ORDER BY updated_at DESC, id DESC LIMIT ?",
+            [*params, safe_limit + 1],
+        ).fetchall()
+    items = [_session_from_row(row, messages=[]) for row in rows]
+    return cursor_page(items, requested_limit=safe_limit, sort_field="updated_at")
 
 
 @router.post("/sessions", response_model=ChatSessionRead)

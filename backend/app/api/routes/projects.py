@@ -25,6 +25,7 @@ from backend.app.core.projects import (
     list_project_links,
     list_project_runs,
     list_projects,
+    list_projects_page,
     register_project,
     reindex_project,
     remove_project,
@@ -95,6 +96,31 @@ def project_list(
     return rows
 
 
+@router.get("/page")
+def project_list_page(
+    request: Request,
+    vault_id: str | None = None,
+    cluster_id: str | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+) -> dict:
+    context = getattr(request.state, "cli_auth", None)
+    if vault_id:
+        _enforce_cli_vault(request, vault_id)
+    page = list_projects_page(
+        vault_id=vault_id,
+        cluster_id=cluster_id,
+        limit=limit,
+        cursor=cursor,
+    )
+    if context and not vault_id:
+        allowed = set(context["allowed_vault_ids"])
+        page["items"] = [row for row in page["items"] if row["vault_id"] in allowed]
+        # A scoped CLI may need to continue past a page containing only projects
+        # outside its allowlist, so preserve the underlying continuation token.
+    return page
+
+
 @router.get("/project-run-summary")
 def project_run_summary(limit: int = 200, active_only: bool = False) -> dict:
     safe_limit = max(1, min(int(limit), 500))
@@ -136,6 +162,24 @@ def project_run_summary(limit: int = 200, active_only: bool = False) -> dict:
         ],
         "limit": safe_limit,
     }
+
+
+@router.get("/cluster-membership-summary")
+def project_cluster_membership_summary(request: Request, vault_id: str) -> dict:
+    _enforce_cli_vault(request, vault_id)
+    with connect() as conn:
+        if conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone() is None:
+            raise HTTPException(status_code=404, detail="Vault not found")
+        rows = conn.execute(
+            """
+            SELECT DISTINCT primary_cluster_id AS cluster_id
+            FROM projects
+            WHERE vault_id = ? AND deleted_at IS NULL
+            ORDER BY primary_cluster_id
+            """,
+            (vault_id,),
+        ).fetchall()
+    return {"cluster_ids": [str(row["cluster_id"]) for row in rows]}
 
 
 @router.post("", response_model=ProjectRead)
