@@ -112,6 +112,97 @@ class LoraToRagPhase12Tests(unittest.TestCase):
         self.assertEqual(imported["source_kind"], "custom_import")
         self.assertIsNone(active_chat_model_status())
 
+    def test_importing_same_checkpoint_under_another_name_reuses_managed_copy(self) -> None:
+        from backend.app.core.model_registry import import_model_checkpoint, imported_model_statuses
+
+        source = self._write_fake_gguf("same-qwen-q4_k_m.gguf")
+        first = import_model_checkpoint(source, name="Qwen first")
+        second = import_model_checkpoint(source, name="Qwen second")
+
+        self.assertEqual(second["id"], first["id"])
+        self.assertEqual(len(imported_model_statuses()), 1)
+        imported_dirs = [
+            item
+            for item in (Path(self.tmp.name) / "models" / "imported").iterdir()
+            if item.is_dir() and not item.name.startswith(".")
+        ]
+        self.assertEqual(len(imported_dirs), 1)
+
+    def test_importing_identical_checkpoint_copy_reuses_content_match(self) -> None:
+        from backend.app.core.model_registry import import_model_checkpoint, imported_model_statuses
+
+        first_source = self._write_fake_gguf("first-qwen-q4_k_m.gguf")
+        second_source = self._write_fake_gguf("second-qwen-q4_k_m.gguf")
+        first = import_model_checkpoint(first_source, name="First Qwen")
+        second = import_model_checkpoint(second_source, name="Second Qwen")
+
+        self.assertEqual(second["id"], first["id"])
+        self.assertEqual(len(imported_model_statuses()), 1)
+
+    def test_changed_checkpoint_at_same_path_creates_a_distinct_import(self) -> None:
+        from backend.app.core.model_registry import import_model_checkpoint, imported_model_statuses
+
+        source = self._write_fake_gguf("changed-qwen-q4_k_m.gguf")
+        first = import_model_checkpoint(source, name="Original Qwen")
+        source.write_bytes(b"GGUF changed")
+        stat = source.stat()
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        second = import_model_checkpoint(source, name="Updated Qwen")
+
+        self.assertNotEqual(second["id"], first["id"])
+        self.assertEqual(len(imported_model_statuses()), 2)
+
+    def test_discovery_marks_original_checkpoint_as_already_imported(self) -> None:
+        from backend.app.core.config import get_settings
+        from backend.app.core.model_registry import discover_installed_models, import_model_checkpoint
+
+        source = self._write_fake_gguf("discovered-qwen-q4_k_m.gguf")
+        import_model_checkpoint(source, name="Discovered Qwen")
+        os.environ["CML_MODEL_SCAN_ROOTS"] = str(source.parent)
+        get_settings.cache_clear()
+
+        discovery = discover_installed_models(max_results=10, refresh=True)
+        discovered = next(row for row in discovery["models"] if row["local_path"] == str(source))
+
+        self.assertTrue(discovered["already_imported"])
+
+    def test_legacy_duplicate_imports_render_as_one_active_model(self) -> None:
+        from backend.app.core.model_registry import imported_model_statuses, registry_state_path
+
+        source = self._write_fake_gguf("legacy-qwen-q4_k_m.gguf")
+        imported_root = Path(self.tmp.name) / "models" / "imported"
+        first_local_path: Path | None = None
+        for model_id, folder_name in (
+            ("custom-qwen-one", "qwen-one"),
+            ("custom-qwen-two", "qwen-two"),
+        ):
+            folder = imported_root / folder_name
+            folder.mkdir(parents=True)
+            local_path = folder / source.name
+            local_path.write_bytes(source.read_bytes())
+            (folder / "cml-model.json").write_text(
+                json.dumps(
+                    {
+                        "id": model_id,
+                        "name": model_id,
+                        "family": "qwen",
+                        "local_path": str(local_path),
+                        "source_path": str(first_local_path or source),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            first_local_path = first_local_path or local_path
+        registry_state_path().write_text(
+            json.dumps({"active_chat_model_id": "custom-qwen-two"}),
+            encoding="utf-8",
+        )
+
+        rows = imported_model_statuses()
+
+        self.assertEqual([row["id"] for row in rows], ["custom-qwen-two"])
+        self.assertTrue(rows[0]["active_chat"])
+
     def test_active_chat_setup_status_accepts_single_chat_model_in_rag_only_mode(self) -> None:
         from backend.app.core.model_registry import active_chat_setup_status, set_active_model
 

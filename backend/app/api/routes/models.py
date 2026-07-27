@@ -218,7 +218,7 @@ def queue_local_model_import(payload: ModelCompatibilityRequest) -> dict:
         raise HTTPException(status_code=400, detail=report["detail"])
     stat = source.stat()
     identity = hashlib.sha256(
-        f"{source}|{stat.st_size}|{stat.st_mtime_ns}|{payload.name or ''}".encode("utf-8")
+        f"{source}|{stat.st_size}|{stat.st_mtime_ns}".encode("utf-8")
     ).hexdigest()
     with connect() as conn:
         return enqueue_job(

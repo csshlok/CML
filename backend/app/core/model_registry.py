@@ -150,6 +150,7 @@ _download_state_loaded_from: Path | None = None
 _download_state_last_persisted = 0.0
 _MODEL_DISCOVERY_CACHE_LOCK = threading.Lock()
 _MODEL_DISCOVERY_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
+_MODEL_IMPORT_LOCK = threading.Lock()
 MODEL_SCAN_SKIP_DIRS = {
     "$recycle.bin",
     ".git",
@@ -278,13 +279,7 @@ def get_model(model_id: str) -> LocalModel | None:
 def imported_model_statuses() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     state = registry_state()
-    for metadata_path in sorted(imported_models_dir().glob("*/cml-model.json")):
-        try:
-            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(payload, dict):
-            continue
+    for metadata_path, payload in _canonical_import_records(state):
         model_id = str(payload.get("id") or "")
         local_path = str(payload.get("local_path") or "")
         family = str(payload.get("family") or "")
@@ -305,7 +300,7 @@ def imported_model_statuses() -> list[dict[str, Any]]:
                 "recommended_ram_gb": payload.get("recommended_ram_gb") or "",
                 "notes": str(payload.get("notes") or "Imported local checkpoint."),
                 "llama_cpp_ref": "",
-                "installed": True,
+                "installed": Path(local_path).is_file(),
                 "local_path": local_path,
                 "download": None,
                 "integrity": {"status": "imported", "sha256": None, "expected_sha256": None},
@@ -316,6 +311,114 @@ def imported_model_statuses() -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _read_imported_model_records() -> list[tuple[Path, dict[str, Any]]]:
+    records: list[tuple[Path, dict[str, Any]]] = []
+    for metadata_path in sorted(imported_models_dir().glob("*/cml-model.json")):
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        records.append((metadata_path, payload))
+    return records
+
+
+def _import_record_identity(
+    payload: dict[str, Any],
+    metadata_path: Path,
+    records_by_local_path: dict[str, tuple[Path, dict[str, Any]]] | None = None,
+    visited: set[str] | None = None,
+) -> str:
+    content_sha256 = str(payload.get("content_sha256") or "").strip().lower()
+    if content_sha256:
+        return f"sha256:{content_sha256}"
+    source_path = str(payload.get("source_path") or "").strip()
+    if source_path:
+        normalized_source = _normalized_path(Path(source_path))
+        parent_record = (records_by_local_path or {}).get(normalized_source)
+        current_key = _normalized_path(metadata_path)
+        seen = set(visited or ())
+        if parent_record is not None and current_key in seen:
+            return f"cycle:{min(seen | {current_key})}"
+        if parent_record is not None:
+            seen.add(current_key)
+            return _import_record_identity(
+                parent_record[1],
+                parent_record[0],
+                records_by_local_path,
+                seen,
+            )
+        return f"source:{normalized_source}"
+    local_path = str(payload.get("local_path") or "").strip()
+    if local_path:
+        return f"local:{_normalized_path(Path(local_path))}"
+    return f"metadata:{_normalized_path(metadata_path)}"
+
+
+def _canonical_import_records(
+    state: dict[str, Any] | None = None,
+) -> list[tuple[Path, dict[str, Any]]]:
+    registry = state or registry_state()
+    active_model_id = str(registry.get("active_chat_model_id") or "")
+    selected: dict[str, tuple[Path, dict[str, Any]]] = {}
+    records = _read_imported_model_records()
+    records_by_local_path = {
+        _normalized_path(Path(str(payload.get("local_path")))): (metadata_path, payload)
+        for metadata_path, payload in records
+        if str(payload.get("local_path") or "").strip()
+    }
+    for metadata_path, payload in records:
+        identity = _import_record_identity(payload, metadata_path, records_by_local_path)
+        current = selected.get(identity)
+        if current is None:
+            selected[identity] = (metadata_path, payload)
+            continue
+        current_id = str(current[1].get("id") or "")
+        candidate_id = str(payload.get("id") or "")
+        if candidate_id == active_model_id and current_id != active_model_id:
+            selected[identity] = (metadata_path, payload)
+    return sorted(selected.values(), key=lambda item: str(item[0]).lower())
+
+
+def _existing_import_for_source(source_file: Path) -> dict[str, Any] | None:
+    normalized_source = _normalized_path(source_file)
+    source_stat = source_file.stat()
+    source_size = source_stat.st_size
+    for _metadata_path, payload in _canonical_import_records():
+        local_path = str(payload.get("local_path") or "").strip()
+        if local_path and _normalized_path(Path(local_path)) == normalized_source:
+            return payload
+        original_path = str(payload.get("source_path") or "").strip()
+        if not original_path or _normalized_path(Path(original_path)) != normalized_source:
+            continue
+        recorded_size = payload.get("source_size_bytes")
+        if recorded_size is not None and int(recorded_size) != source_size:
+            continue
+        recorded_mtime = payload.get("source_mtime_ns")
+        if recorded_mtime is not None and int(recorded_mtime) != source_stat.st_mtime_ns:
+            continue
+        managed_path = Path(local_path) if local_path else None
+        if recorded_size is None and managed_path is not None:
+            try:
+                if managed_path.stat().st_size != source_size:
+                    continue
+            except OSError:
+                continue
+        return payload
+    return None
+
+
+def _existing_import_for_digest(content_sha256: str) -> dict[str, Any] | None:
+    digest = content_sha256.strip().lower()
+    if not digest:
+        return None
+    for _metadata_path, payload in _canonical_import_records():
+        if str(payload.get("content_sha256") or "").strip().lower() == digest:
+            return payload
+    return None
 
 
 def invalidate_model_discovery_cache() -> None:
@@ -842,24 +945,59 @@ def import_model_checkpoint(
     cancellation_callback: Any | None = None,
 ) -> dict[str, Any]:
     source_file = Path(source_path).resolve()
+    with _MODEL_IMPORT_LOCK:
+        return _import_model_checkpoint_locked(
+            source_file,
+            name=name,
+            progress_callback=progress_callback,
+            cancellation_callback=cancellation_callback,
+        )
+
+
+def _import_model_checkpoint_locked(
+    source_file: Path,
+    *,
+    name: str | None,
+    progress_callback: Any | None,
+    cancellation_callback: Any | None,
+) -> dict[str, Any]:
     report = model_compatibility_report(source_file)
     if not report["accepted"]:
         raise ValueError(report["detail"])
+    if _paths_overlap(source_file, imported_models_dir()):
+        raise ValueError("Imported checkpoint source and managed destination must be separate directories.")
+    existing_payload = _existing_import_for_source(source_file)
+    if existing_payload is not None:
+        existing_id = str(existing_payload.get("id") or "")
+        existing = next(
+            (item for item in imported_model_statuses() if item["id"] == existing_id),
+            None,
+        )
+        if existing is not None:
+            return existing
+
     family = report["family"]
     destination_name = _safe_import_dir_name(name or source_file.stem or family)
     destination = imported_models_dir() / destination_name
     if _paths_overlap(source_file, destination):
         raise ValueError("Imported checkpoint source and managed destination must be separate directories.")
+    if destination.exists():
+        source_key = hashlib.sha256(_normalized_path(source_file).encode("utf-8")).hexdigest()[:10]
+        destination_name = f"{destination_name}-{source_key}"
+        destination = imported_models_dir() / destination_name
     staging = imported_models_dir() / f".{destination_name}.staging-{os.getpid()}-{time.time_ns()}"
     backup = imported_models_dir() / f".{destination_name}.backup-{os.getpid()}-{time.time_ns()}"
     model_id = f"custom-{destination_name}"
     local_model_path = destination / source_file.name
+    source_stat = source_file.stat()
     metadata = {
         "id": model_id,
         "name": name or source_file.stem or destination_name,
         "family": family,
         "local_path": str(local_model_path),
         "source_path": str(source_file),
+        "source_size_bytes": source_stat.st_size,
+        "source_mtime_ns": source_stat.st_mtime_ns,
         "hf_repo": "",
         "notes": "Imported local checkpoint.",
         "recommended_ram_gb": "",
@@ -868,8 +1006,9 @@ def import_model_checkpoint(
     staging.mkdir(parents=True)
     try:
         staged_file = staging / source_file.name
-        total_bytes = source_file.stat().st_size
+        total_bytes = source_stat.st_size
         copied_bytes = 0
+        content_hasher = hashlib.sha256()
         with source_file.open("rb") as source, staged_file.open("wb") as target:
             while True:
                 if cancellation_callback is not None:
@@ -878,10 +1017,22 @@ def import_model_checkpoint(
                 if not chunk:
                     break
                 target.write(chunk)
+                content_hasher.update(chunk)
                 copied_bytes += len(chunk)
                 if progress_callback is not None:
                     progress_callback(copied_bytes, total_bytes)
         shutil.copystat(source_file, staged_file)
+        metadata["content_sha256"] = content_hasher.hexdigest()
+        duplicate_payload = _existing_import_for_digest(str(metadata["content_sha256"]))
+        if duplicate_payload is not None:
+            shutil.rmtree(staging)
+            duplicate_id = str(duplicate_payload.get("id") or "")
+            duplicate = next(
+                (item for item in imported_model_statuses() if item["id"] == duplicate_id),
+                None,
+            )
+            if duplicate is not None:
+                return duplicate
         (staging / "cml-model.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         if destination.exists():
             destination.replace(backup)
@@ -956,7 +1107,12 @@ def discover_installed_models(
     seen_paths: set[str] = set()
     compatible_count = 0
     truncated = False
-    imported_paths = {item["local_path"] for item in imported_model_statuses()}
+    imported_paths: set[str] = set()
+    for _metadata_path, payload in _canonical_import_records():
+        for key in ("local_path", "source_path"):
+            candidate = str(payload.get(key) or "").strip()
+            if candidate:
+                imported_paths.add(_normalized_path(Path(candidate)))
 
     for root, scan_depth in locations:
         if cancellation_callback is not None:
@@ -982,7 +1138,7 @@ def discover_installed_models(
             if not include_rejected and not accepted:
                 continue
             metadata = _discovered_model_metadata(candidate, compatibility=compatibility, root=root)
-            if metadata["local_path"] in imported_paths:
+            if _normalized_path(Path(metadata["local_path"])) in imported_paths:
                 metadata["already_imported"] = True
             if len(models) < max_results:
                 models.append(metadata)
