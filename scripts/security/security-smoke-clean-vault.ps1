@@ -89,6 +89,19 @@ function Get-ResponseStatusCode([scriptblock]$Action) {
   }
 }
 
+function Wait-DurableJobs([string]$BaseUrl, [hashtable]$Headers, [int]$TimeoutSeconds = 120) {
+  Invoke-ApiJson "POST" "$BaseUrl/api/v1/jobs/run-once" $null $Headers | Out-Null
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  do {
+    $status = Invoke-ApiJson "GET" "$BaseUrl/api/v1/jobs/status" $null $Headers
+    if ($status.queued -eq 0 -and $status.running -eq 0) {
+      return $status
+    }
+    Start-Sleep -Milliseconds 250
+  } while ((Get-Date) -lt $deadline)
+  throw "Durable jobs did not finish within $TimeoutSeconds seconds."
+}
+
 try {
   $baseUrl = "http://127.0.0.1:$Port"
   $headers = @{ "x-cml-api-token" = $apiToken }
@@ -102,7 +115,7 @@ try {
   $initialized = Invoke-ApiJson "POST" "$baseUrl/api/v1/system/unlock/initialize" @{
     vault_id = $vault.id
     passphrase = $Passphrase
-    unlock_mode = "convenience"
+    unlock_mode = "strict"
   } $headers
 
   $source = Invoke-ApiJson "POST" "$baseUrl/api/v1/sources/from-path" @{
@@ -111,6 +124,10 @@ try {
   } $headers
 
   $reindex = Invoke-ApiJson "POST" "$baseUrl/api/v1/search/reindex/$($vault.id)" $null $headers
+  $jobStatus = Wait-DurableJobs $baseUrl $headers
+  if ($jobStatus.failed -gt 0) {
+    throw "A clean-vault indexing job failed."
+  }
   $search = Invoke-ApiJson "POST" "$baseUrl/api/v1/search/semantic" @{
     vault_id = $vault.id
     query = "bridge approval search smoke"
@@ -161,7 +178,8 @@ try {
     vault_id = $vault.id
     source_id = $source.id
     unlock_state = $initialized.state
-    chunks_indexed = $reindex.chunks_indexed
+    reindex_jobs_queued = $reindex.jobs_queued
+    jobs_succeeded = $jobStatus.succeeded
     search_results = $search.results.Count
     bridge_request_id = $approval.request_id
     bridge_client_id = $approved.id
@@ -170,7 +188,8 @@ try {
     revoked_bridge_status = $revokedStatus
     pass = (
       $initialized.state -eq "ready" -and
-      $reindex.chunks_indexed -ge 1 -and
+      $reindex.jobs_queued -ge 1 -and
+      $jobStatus.succeeded -ge $reindex.jobs_queued -and
       $search.results.Count -ge 1 -and
       @($bridgeContext.source_snippets).Count -ge 1 -and
       $lockedStatus -eq 423 -and

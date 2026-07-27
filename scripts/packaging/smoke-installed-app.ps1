@@ -1,8 +1,9 @@
 param(
   [string]$InstallerPath = "",
   [string]$InstallDir = "",
-  [int]$InstallerTimeoutSeconds = 600,
-  [int]$TimeoutSeconds = 45
+  [int]$InstallerTimeoutSeconds = 1200,
+  [int]$TimeoutSeconds = 120,
+  [string]$UserDataRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,9 +15,13 @@ if (-not $InstallerPath) {
 if (-not $InstallDir) {
   $InstallDir = Join-Path $env:TEMP ("cml-installed-smoke-" + [guid]::NewGuid().ToString("n"))
 }
+if (-not $UserDataRoot) {
+  $UserDataRoot = Join-Path $env:TEMP ("cml-installed-user-data-" + [guid]::NewGuid().ToString("n"))
+}
 
 $installer = [System.IO.Path]::GetFullPath($InstallerPath)
 $installRoot = [System.IO.Path]::GetFullPath($InstallDir)
+$userDataPath = [System.IO.Path]::GetFullPath($UserDataRoot)
 if (-not (Test-Path -LiteralPath $installer)) {
   throw "Installer not found: $installer"
 }
@@ -118,18 +123,19 @@ if (-not (Test-Path -LiteralPath $exe)) {
 }
 
 $installerAutostartProcesses = Stop-InstalledRuntimeProcesses $installRoot
+New-Item -ItemType Directory -Force -Path $userDataPath | Out-Null
 
 $candidateStatusPaths = @(
-  (Join-Path $env:APPDATA "@cml\desktop\startup-status.json")
+  (Join-Path $userDataPath "startup-status.json")
 )
 $candidateStdoutLogs = @(
-  (Join-Path $env:APPDATA "@cml\desktop\backend-stdout.log")
+  (Join-Path $userDataPath "backend-stdout.log")
 )
 $candidateStderrLogs = @(
-  (Join-Path $env:APPDATA "@cml\desktop\backend-stderr.log")
+  (Join-Path $userDataPath "backend-stderr.log")
 )
 $candidateRuntimeLogs = @(
-  (Join-Path $env:APPDATA "@cml\desktop\desktop-runtime.log")
+  (Join-Path $userDataPath "desktop-runtime.log")
 )
 
 $statusBefore = @{}
@@ -143,7 +149,7 @@ foreach ($candidate in ($candidateStatusPaths + $candidateStdoutLogs + $candidat
 
 $electronRunAsNode = $env:ELECTRON_RUN_AS_NODE
 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-$process = Start-Process -FilePath $exe -PassThru
+$process = Start-Process -FilePath $exe -ArgumentList @("--user-data-dir=$userDataPath") -PassThru
 try {
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   $status = $null
@@ -206,6 +212,7 @@ try {
   [ordered]@{
     installer = $installer
     install_dir = $installRoot
+    user_data_dir = $userDataPath
     launched_exe = $exe
     startup_status_path = $statusPath
     startup_status = $status.status
@@ -225,5 +232,17 @@ try {
   Stop-InstalledRuntimeProcesses $installRoot | Out-Null
   if ($process -and -not $process.HasExited) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+  }
+  $uninstaller = Join-Path $installRoot "Uninstall CML.exe"
+  if (Test-Path -LiteralPath $uninstaller) {
+    Invoke-SilentInstaller -Path $uninstaller -Arguments @("/S", "/currentuser") -Timeout $InstallerTimeoutSeconds
+    $cleanupDeadline = (Get-Date).AddSeconds(60)
+    while ((Test-Path -LiteralPath $installRoot) -and (Get-Date) -lt $cleanupDeadline) {
+      Start-Sleep -Seconds 1
+    }
+    if (Test-Path -LiteralPath $installRoot) {
+      $remainingFiles = @(Get-ChildItem -LiteralPath $installRoot -Recurse -File -ErrorAction SilentlyContinue).Count
+      throw "Installed-app smoke cleanup left $remainingFiles file(s) in $installRoot"
+    }
   }
 }

@@ -1,6 +1,6 @@
 param(
   [string]$InstallerPath = "",
-  [int]$TimeoutSeconds = 600,
+  [int]$TimeoutSeconds = 1200,
   [string]$InstallDirectory = ""
 )
 
@@ -166,6 +166,14 @@ for ($i = 0; $i -lt $TimeoutSeconds; $i++) {
 
 if (Test-Path -LiteralPath $installedExe) {
   throw "Installed executable still exists after uninstall: $installedExe"
+}
+$cleanupDeadline = (Get-Date).AddSeconds(60)
+while ((Test-Path -LiteralPath $installLocation) -and (Get-Date) -lt $cleanupDeadline) {
+  Start-Sleep -Seconds 1
+}
+if (Test-Path -LiteralPath $installLocation) {
+  $remainingFiles = @(Get-ChildItem -LiteralPath $installLocation -Recurse -File -ErrorAction SilentlyContinue).Count
+  throw "Uninstall left $remainingFiles file(s) in $installLocation"
 }
 
 [ordered]@{

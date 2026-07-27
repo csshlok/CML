@@ -35,6 +35,7 @@ async function buildManifest() {
   await collectEntries(entries, "ocr-tools", path.join("backend", "bin", "ocr"), new Set([".exe", ".dll", ".traineddata", ".json"]));
   await collectEntries(entries, "browser-runtime", "ms-playwright", new Set([".exe", ".dll"]));
   await collectEntries(entries, "llm-runtime", "llm-runtime", new Set([".exe", ".dll", ".json"]));
+  await collectEntries(entries, "tunnel-client", "tunnel-client", new Set([".exe", ".json"]));
   return {
     generated_at: new Date().toISOString(),
     entry_count: entries.length,
