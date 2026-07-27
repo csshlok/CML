@@ -42,6 +42,23 @@ function Get-AppendedLogText([string]$PathValue, $Snapshot) {
   return $text.Substring([int]$Snapshot.length)
 }
 
+function Get-DiagnosticExcerpt([string]$Text, [int]$MaxLines = 12, [int]$LineLimit = 300) {
+  if (-not $Text) {
+    return ""
+  }
+  $lines = @($Text -split "\r?\n" | Where-Object { $_ })
+  $start = [Math]::Max(0, $lines.Count - $MaxLines)
+  $bounded = for ($index = $start; $index -lt $lines.Count; $index += 1) {
+    $line = [string]$lines[$index]
+    if ($line.Length -le $LineLimit) {
+      $line
+    } else {
+      $line.Substring(0, $LineLimit) + "... [line truncated]"
+    }
+  }
+  return $bounded -join [Environment]::NewLine
+}
+
 $userDataPath = if ($UserDataRoot) {
   [System.IO.Path]::GetFullPath($UserDataRoot)
 } else {
@@ -76,6 +93,9 @@ try {
   $statusPath = $null
   $backendReadyAt = $null
   while ((Get-Date) -lt $deadline) {
+    if ($process.HasExited) {
+      break
+    }
     foreach ($candidate in $candidateStatusPaths) {
       if (-not (Test-Path -LiteralPath $candidate)) {
         continue
@@ -103,7 +123,9 @@ try {
 
   if (-not $status) {
     $known = $candidateStatusPaths -join ", "
-    throw "Packaged app did not write fresh startup status. Checked: $known stderr=$stderrLog runtime=$runtimeLog"
+    $exitDetail = if ($process.HasExited) { "exit_code=$($process.ExitCode)" } else { "process_still_running=true" }
+    $runtimeExcerpt = Get-DiagnosticExcerpt $runtimeLogText
+    throw "Packaged app did not write fresh startup status. $exitDetail Checked: $known stderr=$stderrLog runtime=$runtimeLog runtime_tail=$runtimeExcerpt"
   }
   if ($status.status -ne "ready") {
     throw "Packaged app startup did not reach ready: $($status | ConvertTo-Json -Compress)"

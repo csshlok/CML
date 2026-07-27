@@ -1,8 +1,54 @@
 # Overall Context
 
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
+
+## July 28 Packaged Launch Failure And Model Import Reconciliation
+
+The July 28 `0.1.9` package completed NSIS generation, but neither
+`win-unpacked\CML.exe` nor an installed copy opened. An isolated launch reproduced the
+failure before any startup-status file was written. `desktop-runtime.log` identified
+the exact boundary: `loadStartupProgress` passed Chromium a roughly 2.2 MB encoded
+HTML URL and `BrowserWindow.loadURL` failed with `ERR_INVALID_URL (-300)`.
+
+The oversized URL came from embedding the 1,639,177-byte onboarding
+`brand/Container.svg` as base64 inside a second percent-encoded HTML `data:` URL.
+Installer success was unrelated because NSIS had correctly copied the same broken
+application payload. Startup now loads the small packaged
+`electron/startup.html` file directly. Its logo is the same
+`dist/client/brand/Container.svg` asset used by onboarding, referenced rather than
+duplicated. The main process retains a bounded inline repair mark only for a damaged
+package missing the startup document. Tests cap the startup document/fallback size and
+verify that the full wordmark is never embedded in the HTML URL.
+
+Two diagnostic scaling issues were fixed with the launch path. Desktop runtime log
+values are capped so one invalid URL or stack cannot append megabytes per launch. The
+package launch smoke test detects an early process exit instead of waiting for the
+full timeout and reports a bounded runtime-log tail with the exit code. The original
+artifact was rerun with isolated user data and reproduced the expected pre-fix
+failure; it remains unchanged because the owner is performing the package rebuild.
+
+The same work period corrected model state reconciliation. The UI previously showed
+an import as ready even when no usable active model existed, kept Continue disabled,
+and allowed repeated imports. That produced duplicate Qwen registry rows that still
+could not run. Backend reconciliation now canonicalizes duplicate entries by identity
+and artifact location, distinguishes imported from usable/active state, and avoids
+advertising broken entries. Onboarding and Settings share the same model-state
+derivation so a usable existing import can be selected, while interrupted or invalid
+imports remain actionable without being called ready.
+
+Validation evidence for the combined source state:
+
+| Gate | Result |
+| --- | --- |
+| Full backend | 816 passed, 2 optional skips |
+| Desktop | TypeScript passed; 94/94 Electron tests passed |
+| Production renderer build | Passed |
+| Renderer HTML safety | Passed |
+| Diff hygiene | Passed; line-ending warnings only |
+| Old packaged artifact reproduction | Expected failure confirmed: `ERR_INVALID_URL (-300)` |
+| Fixed package launch | Pending owner-deferred rebuild |
 
 ## July 27 ChatGPT MCP, Tunnel, And Reliability Completion
 

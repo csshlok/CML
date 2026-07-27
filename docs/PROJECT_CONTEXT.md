@@ -1,6 +1,6 @@
 # Project Context
 
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 
 ## Purpose
 
@@ -24,6 +24,32 @@ Vault is in **pre-release stabilization and productionization**.
 The scoped RAG migration, temporal memory foundation, Odin project workflow, bounded context pipeline, and primary desktop surfaces are implemented. The project is no longer deciding its core architecture. Current work is about proving release reliability, productionizing the strongest retrieval improvements, improving measured quality without benchmark-specific behavior, distilling the UI around real user journeys, and finishing clean Windows packaging.
 
 The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
+
+## July 28 Package-Launch And Model-State Fixes
+
+The July 28 development package exposed a deterministic launch failure in both the
+unpacked executable and an installed copy. The main process embedded the 1.64 MB
+onboarding wordmark inside an HTML `data:` URL; the resulting roughly 2.2 MB startup
+URL was rejected by Chromium with `ERR_INVALID_URL (-300)` before backend startup or
+window display. Startup now loads a small `electron/startup.html` document from
+`app.asar`, and that document references the same bundled `Container.svg` used by
+onboarding. A bounded inline mark remains available if the startup document is
+missing. Runtime logging now truncates oversized URL/stack fields, and the packaged
+launch smoke test exits promptly with the process exit code and a bounded log tail.
+
+The model onboarding and settings paths now derive readiness from canonical backend
+model state rather than treating import completion as activation. Duplicate imports
+are reconciled by model identity and artifact path, unusable entries are not presented
+as ready, and an already imported usable model can be selected without importing it
+again. Regression coverage includes duplicate legacy records and interrupted or
+inactive imports.
+
+Current source validation after these changes is clean: the full backend suite passed
+with 816 tests and 2 optional skips; desktop TypeScript and all 94 Electron tests pass;
+the production renderer build and renderer HTML safety audit pass; and diff hygiene
+passes with line-ending warnings only. The existing July 28 installer/unpacked
+artifact is intentionally still the failing pre-fix build. The owner-deferred rebuild
+and the complete post-rebuild package gates remain required.
 
 ## July 27 MCP, Tunnel, And Reliability Completion
 

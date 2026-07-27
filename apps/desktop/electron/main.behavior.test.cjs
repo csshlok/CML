@@ -12,7 +12,7 @@ function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, backendIdentityMatches, rendererSecurityHeaders, sanitizeRendererBody, imageMimeType, imageDimensions, resolveApprovedMediaTarget, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, collectSupportedFiles, findOpenPort, loadStartupFailure, loadRendererFailure, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, assertSafeVaultMoveRoots, verifyCopiedVault, finalizeActiveVaultDeletion, reconcilePendingVaultDeletion, __setMainWindow: (value) => { mainWindow = value; }, __setTunnelManager: (value) => { tunnelManager = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; }, __setEnsureBackend: (value) => { ensureBackend = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, backendIdentityMatches, rendererSecurityHeaders, sanitizeRendererBody, imageMimeType, imageDimensions, resolveApprovedMediaTarget, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, collectSupportedFiles, findOpenPort, loadStartupProgress, loadStartupFailure, loadRendererFailure, truncateDesktopLogValue, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, assertSafeVaultMoveRoots, verifyCopiedVault, finalizeActiveVaultDeletion, reconcilePendingVaultDeletion, __setMainWindow: (value) => { mainWindow = value; }, __setTunnelManager: (value) => { tunnelManager = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; }, __setEnsureBackend: (value) => { ensureBackend = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -536,6 +536,57 @@ test("packaged static asset server serves bundled brand assets", async () => {
   assert.equal(response?.status, 200);
   assert.equal(response?.headers["content-type"], "image/svg+xml");
   assert.equal(String(response?.body), "<svg></svg>");
+});
+
+test("startup progress loads a small packaged document that references the onboarding wordmark", async () => {
+  const { exported } = loadMainModule();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cml-startup-brand-large-"));
+  const electronDir = path.join(root, "electron");
+  fs.mkdirSync(electronDir, { recursive: true });
+  const startupPath = path.join(electronDir, "startup.html");
+  fs.copyFileSync(path.join(__dirname, "startup.html"), startupPath);
+  let loadedFile = "";
+  const window = {
+    loadFile: async (filePath) => {
+      loadedFile = filePath;
+    },
+  };
+
+  await exported.loadStartupProgress(window, electronDir);
+
+  assert.equal(loadedFile, startupPath);
+  const html = fs.readFileSync(startupPath, "utf8");
+  assert.ok(html.length < 20_000, `startup document was unexpectedly large: ${html.length}`);
+  assert.match(html, /\.\.\/dist\/client\/brand\/Container\.svg/);
+  assert.doesNotMatch(html, /data:image\/svg\+xml;base64/);
+});
+
+test("startup progress keeps a bounded repair mark when its document is missing", async () => {
+  const { exported } = loadMainModule();
+  const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-startup-brand-empty-"));
+  let loadedUrl = "";
+  const window = {
+    loadURL: async (url) => {
+      loadedUrl = url;
+    },
+  };
+
+  await exported.loadStartupProgress(window, path.join(emptyRoot, "electron"));
+
+  assert.match(loadedUrl, /^data:text\/html;charset=utf-8,/);
+  assert.ok(loadedUrl.length < 20_000, `fallback startup URL was unexpectedly large: ${loadedUrl.length}`);
+  assert.match(decodeURIComponent(loadedUrl.split(",", 2)[1]), /startup-brand-logo-fallback/);
+});
+
+test("desktop runtime logging bounds oversized URL and stack details", () => {
+  const { exported } = loadMainModule();
+  const oversized = `data:text/html,${"x".repeat(20_000)}`;
+
+  const truncated = exported.truncateDesktopLogValue(oversized, 1000);
+
+  assert.ok(truncated.length < 1100);
+  assert.match(truncated, /^data:text\/html,/);
+  assert.match(truncated, /\[truncated \d+ characters\]$/);
 });
 
 test("verifyRendererUp succeeds when the packaged renderer responds", async () => {
