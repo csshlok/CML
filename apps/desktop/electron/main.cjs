@@ -1,5 +1,6 @@
 const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } = require("electron");
 const { spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const http = require("node:http");
@@ -8,11 +9,13 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const {
   buildBackendChildEnv,
+  buildMcpChildEnv,
   defaultWritableRoots,
+  isPathWithinRoot,
   packageLayoutAudit,
   pathsOverlap,
   resolvePackagedHelperPaths,
-  verifyHelperManifest,
+  verifyHelperManifestCached,
 } = require("./helper-integrity.cjs");
 const { createTokenStore, getOrCreateToken } = require("./token-store.cjs");
 const {
@@ -32,10 +35,19 @@ const {
   attachWindowStateEvents,
   registerWindowControlHandlers,
 } = require("./window-controls.cjs");
+const { TunnelManager } = require("./tunnel-manager.cjs");
+const { resolveMcpFeatureFlags } = require("./mcp-feature-flags.cjs");
+const {
+  getLauncherStatus: getOdinLauncherStatus,
+  installLauncher: installOdinLauncher,
+  runLauncher: runOdinLauncher,
+} = require("./odin-launcher.cjs");
 
 const isDev = !app.isPackaged;
+const desktopProcessStartedAt = Date.now();
 const devUrl = process.env.CML_DESKTOP_DEV_URL || "http://127.0.0.1:5173";
 const apiPrefix = normalizeApiPrefix(process.env.CML_API_PREFIX);
+const mcpFeatureFlags = resolveMcpFeatureFlags(process.env);
 let backendProcess = null;
 let backendUrl = process.env.VITE_CML_BACKEND_URL || process.env.CML_BACKEND_URL || null;
 let backendApiToken = process.env.CML_API_TOKEN || null;
@@ -49,6 +61,7 @@ let backendStderrStream = null;
 let rendererReadyPath = null;
 let pendingActiveVaultPath = null;
 let odinRuntimeDescriptorPath = null;
+let tunnelManager = null;
 const startupRepairLogoMarkup = `
   <img
     src="data:image/png;base64,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"
@@ -158,13 +171,7 @@ process.on("unhandledRejection", (error) => {
 
 async function createWindow() {
   rendererReadyPath = null;
-  let startupError = null;
   const initialRendererPath = await getInitialRendererPath();
-  try {
-    backendUrl = await ensureBackend();
-  } catch (error) {
-    startupError = error;
-  }
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -189,6 +196,7 @@ async function createWindow() {
   window.once("ready-to-show", () => {
     window.setTitle("Vault");
     window.show();
+    writeDesktopRuntimeLog(`startup window visible elapsed_ms=${Date.now() - desktopProcessStartedAt}`);
   });
 
   window.on("page-title-updated", (event) => {
@@ -225,6 +233,20 @@ async function createWindow() {
     }
   });
 
+  await loadStartupProgress(window);
+  let startupError = null;
+  const packagedRendererPromise = isDev
+    ? Promise.resolve({ ok: true, url: null })
+    : startPackagedRendererServer().then(async (url) => {
+        await verifyRendererUp(url, 10000);
+        return { ok: true, url };
+      }).catch((error) => ({ ok: false, error }));
+  try {
+    backendUrl = await ensureBackend();
+  } catch (error) {
+    startupError = error;
+  }
+
   if (isDev) {
     if (startupError) {
       await loadStartupFailure(window, startupError);
@@ -240,8 +262,9 @@ async function createWindow() {
       return;
     }
     try {
-      rendererUrl = rendererUrl || await startPackagedRendererServer();
-      await verifyRendererUp(rendererUrl, 10000);
+      const rendererResult = await packagedRendererPromise;
+      if (!rendererResult.ok) throw rendererResult.error;
+      rendererUrl = rendererUrl || rendererResult.url;
       const url = new URL(initialRendererPath, rendererUrl);
       if (backendUrl) url.searchParams.set("backendUrl", backendUrl);
       await window.loadURL(url.toString());
@@ -251,6 +274,36 @@ async function createWindow() {
       await loadRendererFailure(window, error);
     }
   }
+}
+
+async function loadStartupProgress(window) {
+  const html = `<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="color-scheme" content="light">
+        <title>Vault</title>
+        <style>
+          * { box-sizing: border-box; }
+          body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #fbfaf6; color: #27211d; font-family: "Segoe UI", sans-serif; }
+          main { width: min(420px, calc(100vw - 48px)); text-align: center; }
+          img { width: 180px; height: auto; }
+          p { margin: 24px 0 0; color: #766b64; font-size: 14px; }
+          .track { width: 100%; height: 3px; margin-top: 18px; overflow: hidden; border-radius: 999px; background: #e8e1d8; }
+          .bar { width: 35%; height: 100%; border-radius: inherit; background: #27211d; animation: move 1.4s ease-in-out infinite; }
+          @keyframes move { 0% { transform: translateX(-110%); } 100% { transform: translateX(390%); } }
+          @media (prefers-reduced-motion: reduce) { .bar { width: 100%; animation: none; opacity: .55; } }
+        </style>
+      </head>
+      <body>
+        <main role="status" aria-live="polite">
+          ${startupRepairLogoMarkup}
+          <p>Opening your library…</p>
+          <div class="track" aria-hidden="true"><div class="bar"></div></div>
+        </main>
+      </body>
+    </html>`;
+  await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 }
 
 async function getInitialRendererPath() {
@@ -484,6 +537,38 @@ if (!gotSingleInstanceLock) {
 if (gotSingleInstanceLock) {
   app.whenReady().then(async () => {
     registerWindowControlHandlers({ ipcMain, BrowserWindow });
+    tunnelManager = new TunnelManager({
+      appDataDir: app.getPath("userData"),
+      safeStorage,
+      launcherProvider: getMcpLauncherDescriptor,
+      tunnelBinaryProvider: async () => {
+        if (process.env.CML_TUNNEL_CLIENT_BINARY) {
+          return path.resolve(process.env.CML_TUNNEL_CLIENT_BINARY);
+        }
+        return app.isPackaged
+          ? resolvePackagedHelperPaths(process.resourcesPath).tunnelRuntimeClient
+          : path.resolve(__dirname, "../packaging/tunnel-client/tunnel-client.exe");
+      },
+      environmentProvider: () => ({
+        SystemRoot: process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows",
+        ComSpec: process.env.ComSpec || process.env.COMSPEC || "C:\\Windows\\System32\\cmd.exe",
+        PATHEXT: process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD",
+        TEMP: process.env.TEMP || app.getPath("temp"),
+        TMP: process.env.TMP || process.env.TEMP || app.getPath("temp"),
+        USERPROFILE: process.env.USERPROFILE || "",
+        LOCALAPPDATA: process.env.LOCALAPPDATA || "",
+        APPDATA: process.env.APPDATA || "",
+      }),
+      onStatus: (status) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("cml:tunnel-status-changed", status);
+        }
+      },
+    });
+    await tunnelManager.initialize({
+      allowAutoConnect:
+        mcpFeatureFlags.chatgpt_mcp_setup && mcpFeatureFlags.secure_mcp_tunnel,
+    });
     try {
       await reconcilePendingVaultDeletion();
     } catch (error) {
@@ -616,11 +701,81 @@ if (gotSingleInstanceLock) {
         ],
       });
       if (result.canceled) return null;
-      return result.filePaths[0];
+      return copyProfileImage(result.filePaths[0]);
+    });
+
+    ipcMain.handle("cml:read-local-image", async (_event, targetPath) => {
+      return readApprovedLocalImage(targetPath);
+    });
+    ipcMain.handle("cml:delete-local-media", async (_event, mediaId) => {
+      const target = resolveApprovedMediaTarget(mediaId);
+      if (!target) return false;
+      await fs.unlink(target).catch(() => {});
+      return true;
     });
 
     ipcMain.handle("cml:get-backend-url", async () => backendUrl);
     ipcMain.handle("cml:get-backend-token", async () => getBackendApiToken());
+    ipcMain.handle("cml:get-mcp-feature-flags", async () => ({ ...mcpFeatureFlags }));
+    ipcMain.handle("cml:get-mcp-launcher", async (_event, requestedProfile) => {
+      return getMcpLauncherDescriptor(requestedProfile);
+    });
+    ipcMain.handle("cml:get-odin-launcher-status", async () => {
+      return getOdinLauncherStatus(getOdinLauncherConfiguration());
+    });
+    ipcMain.handle("cml:install-odin-launcher", async () => {
+      const configuration = getOdinLauncherConfiguration();
+      const installed = await installOdinLauncher(configuration);
+      const help = runOdinLauncher(installed.launcher_path, ["--help"], {
+        cwd: app.getPath("home"),
+      });
+      if (help.exit_code !== 0 || !help.stdout.toLowerCase().includes("odin")) {
+        throw new Error("Odin was installed, but its help check failed. Repair Vault and try again.");
+      }
+      return { ...installed, help_ok: true };
+    });
+    ipcMain.handle("cml:start-odin-pairing", async () => {
+      const configuration = getOdinLauncherConfiguration();
+      const status = await getOdinLauncherStatus(configuration);
+      if (!status.installed) throw new Error("Install Odin before pairing.");
+      return runOdinLauncher(status.launcher_path, [], {
+        cwd: app.getPath("home"),
+        visible: true,
+      });
+    });
+    ipcMain.handle("cml:get-tunnel-status", async () => tunnelManager?.getStatus() ?? null);
+    ipcMain.handle("cml:connect-tunnel", async (_event, configuration) => {
+      if (!mcpFeatureFlags.chatgpt_mcp_setup || !mcpFeatureFlags.secure_mcp_tunnel) {
+        throw new Error("ChatGPT connection is unavailable in this Vault release.");
+      }
+      return tunnelManager.connect({
+        ...configuration,
+        capabilityProfile:
+          configuration?.capabilityProfile === "read_write" &&
+          mcpFeatureFlags.chatgpt_mcp_write_tools
+            ? "read_write"
+            : "read_only",
+      });
+    });
+    ipcMain.handle("cml:reconnect-tunnel", async (_event, bridgeToken) => {
+      if (!mcpFeatureFlags.chatgpt_mcp_setup || !mcpFeatureFlags.secure_mcp_tunnel) {
+        throw new Error("ChatGPT connection is unavailable in this Vault release.");
+      }
+      return tunnelManager.reconnect(bridgeToken);
+    });
+    ipcMain.handle("cml:disconnect-tunnel", async (_event, forget = false) => {
+      return tunnelManager.disconnect({ forget: Boolean(forget) });
+    });
+    ipcMain.handle("cml:open-tunnel-ui", async () => {
+      const healthUrl = tunnelManager?.getStatus()?.health_url;
+      if (!healthUrl) return false;
+      const parsed = new URL(healthUrl);
+      if (parsed.protocol !== "http:" || !["127.0.0.1", "localhost", "::1"].includes(parsed.hostname)) {
+        return false;
+      }
+      await shell.openExternal(`${parsed.origin}/ui`);
+      return true;
+    });
     ipcMain.handle("cml:get-setup-state", async () => {
       const activeVaultPath = await getActiveVaultPath();
       const state = await readSetupState(app.getPath("userData"), { activeVaultPath });
@@ -635,6 +790,7 @@ if (gotSingleInstanceLock) {
     });
     ipcMain.handle("cml:reset-app-setup", async () => {
       pendingActiveVaultPath = null;
+      await tunnelManager?.disconnect({ forget: true });
       await clearActiveVaultPath();
       const state = await resetSetupState(app.getPath("userData"));
       await restartBackend();
@@ -716,6 +872,203 @@ if (gotSingleInstanceLock) {
       }
     });
   });
+}
+
+async function copyProfileImage(sourcePath) {
+  const source = path.resolve(String(sourcePath || ""));
+  const sourceStat = await fs.stat(source);
+  if (!sourceStat.isFile() || sourceStat.size > 10 * 1024 * 1024) {
+    throw new Error("Choose a PNG, JPEG, WebP, or GIF image smaller than 10 MB.");
+  }
+  const bytes = await fs.readFile(source);
+  const mimeType = imageMimeType(bytes);
+  const dimensions = imageDimensions(bytes, mimeType);
+  if (
+    !mimeType ||
+    !dimensions ||
+    dimensions.width < 1 ||
+    dimensions.height < 1 ||
+    dimensions.width > 8192 ||
+    dimensions.height > 8192 ||
+    dimensions.width * dimensions.height > 40_000_000 ||
+    bytes.length > 10 * 1024 * 1024
+  ) {
+    throw new Error("Choose a PNG, JPEG, WebP, or GIF image smaller than 10 MB.");
+  }
+  const extension = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+  }[mimeType];
+  const digest = crypto.createHash("sha256").update(bytes).digest("hex");
+  const mediaRoot = path.join(app.getPath("userData"), "media", "profiles");
+  await fs.mkdir(mediaRoot, { recursive: true });
+  const destination = path.join(mediaRoot, `${digest}${extension}`);
+  try {
+    await fs.writeFile(destination, bytes, { flag: "wx" });
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+  return `media:profile:${digest}${extension}`;
+}
+
+async function getMcpLauncherDescriptor(requestedProfile) {
+  if (!backendUrl) {
+    throw new Error("Vault is still starting. Try again in a moment.");
+  }
+  const capabilityProfile =
+    requestedProfile === "read_write" && mcpFeatureFlags.chatgpt_mcp_write_tools
+      ? "read_write"
+      : "read_only";
+  const rootDir = isDev ? path.resolve(__dirname, "../../..") : process.resourcesPath;
+  const helperPaths = isDev
+    ? {
+        resourcesRoot: rootDir,
+        pythonRuntime: path.join(rootDir, ".venv"),
+        backendPython: path.join(rootDir, ".venv", "Scripts", "python.exe"),
+      }
+    : resolvePackagedHelperPaths(process.resourcesPath);
+  if (!isDev) {
+    await verifyPackagedRuntime();
+  }
+  const pythonCommand = (await pathExists(helperPaths.backendPython))
+    ? helperPaths.backendPython
+    : (isDev ? "python" : helperPaths.backendPython);
+  if (!isDev && !(await pathExists(pythonCommand))) {
+    throw new Error("The packaged MCP runtime is missing. Repair Vault and try again.");
+  }
+  const env = isDev
+    ? {
+        CML_BACKEND_URL: backendUrl,
+        CML_API_PREFIX: apiPrefix,
+        CML_MCP_CAPABILITY_PROFILE: capabilityProfile,
+      }
+    : buildMcpChildEnv({
+        inheritedEnv: process.env,
+        helperPaths,
+        backendUrl,
+        apiPrefix,
+        capabilityProfile,
+        featureFlags: mcpFeatureFlags,
+      });
+  return {
+    version: 1,
+    app_version: app.getVersion(),
+    command: pythonCommand,
+    args: ["-s", "-m", "backend.app.bridge_mcp_stdio"],
+    cwd: rootDir,
+    env,
+    capability_profile: capabilityProfile,
+    packaged: app.isPackaged,
+  };
+}
+
+function getOdinLauncherConfiguration() {
+  const resourcesRoot = isDev ? path.resolve(__dirname, "../../..") : process.resourcesPath;
+  const pythonPath = isDev
+    ? path.join(resourcesRoot, ".venv", "Scripts", "python.exe")
+    : resolvePackagedHelperPaths(resourcesRoot).backendPython;
+  return {
+    binDir: path.join(app.getPath("localAppData"), "CML", "bin"),
+    pythonPath,
+    resourcesRoot,
+  };
+}
+
+async function readApprovedLocalImage(targetPath) {
+  const resolvedMediaTarget = resolveApprovedMediaTarget(targetPath);
+  const target = resolvedMediaTarget || path.resolve(String(targetPath || ""));
+  const mediaRoot = path.resolve(path.join(app.getPath("userData"), "media"));
+  try {
+    const [realMediaRoot, realTarget] = await Promise.all([
+      fs.realpath(mediaRoot),
+      fs.realpath(target),
+    ]);
+    if (!isPathWithinRoot(realMediaRoot, realTarget)) return null;
+    const stat = await fs.stat(target);
+    if (!stat.isFile() || stat.size > 10 * 1024 * 1024) return null;
+    const bytes = await fs.readFile(target);
+    const mimeType = imageMimeType(bytes);
+    return mimeType ? `data:${mimeType};base64,${bytes.toString("base64")}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveApprovedMediaTarget(mediaId) {
+  const match = /^media:profile:([a-f0-9]{64}\.(?:png|jpg|webp|gif))$/i.exec(String(mediaId || ""));
+  if (!match) return null;
+  return path.join(app.getPath("userData"), "media", "profiles", match[1].toLowerCase());
+}
+
+function imageMimeType(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 6) return null;
+  if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return "image/png";
+  if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return "image/jpeg";
+  if (bytes.subarray(0, 6).toString("ascii") === "GIF87a" || bytes.subarray(0, 6).toString("ascii") === "GIF89a") {
+    return "image/gif";
+  }
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP") {
+    return "image/webp";
+  }
+  return null;
+}
+
+function imageDimensions(bytes, mimeType) {
+  try {
+    if (mimeType === "image/png" && bytes.length >= 24) {
+      return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+    }
+    if (mimeType === "image/gif" && bytes.length >= 10) {
+      return { width: bytes.readUInt16LE(6), height: bytes.readUInt16LE(8) };
+    }
+    if (mimeType === "image/webp" && bytes.length >= 30) {
+      const kind = bytes.subarray(12, 16).toString("ascii");
+      if (kind === "VP8X") {
+        return {
+          width: 1 + bytes.readUIntLE(24, 3),
+          height: 1 + bytes.readUIntLE(27, 3),
+        };
+      }
+      if (kind === "VP8 " && bytes.length >= 30 && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
+        return {
+          width: bytes.readUInt16LE(26) & 0x3fff,
+          height: bytes.readUInt16LE(28) & 0x3fff,
+        };
+      }
+      if (kind === "VP8L" && bytes.length >= 25 && bytes[20] === 0x2f) {
+        const bits = bytes.readUInt32LE(21);
+        return {
+          width: (bits & 0x3fff) + 1,
+          height: ((bits >>> 14) & 0x3fff) + 1,
+        };
+      }
+    }
+    if (mimeType === "image/jpeg") {
+      let offset = 2;
+      while (offset + 8 < bytes.length) {
+        if (bytes[offset] !== 0xff) {
+          offset += 1;
+          continue;
+        }
+        const marker = bytes[offset + 1];
+        if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
+          return { width: bytes.readUInt16BE(offset + 7), height: bytes.readUInt16BE(offset + 5) };
+        }
+        if (marker === 0xd8 || marker === 0xd9) {
+          offset += 2;
+          continue;
+        }
+        const segmentLength = bytes.readUInt16BE(offset + 2);
+        if (segmentLength < 2) return null;
+        offset += 2 + segmentLength;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 async function ensureBackend() {
@@ -853,7 +1206,13 @@ async function verifyPackagedRuntime() {
   }
   const helperPaths = resolvePackagedHelperPaths(process.resourcesPath);
   const activeVaultPath = pendingActiveVaultPath || await getActiveVaultPath();
-  const manifestReport = await verifyHelperManifest(process.resourcesPath);
+  const manifestReport = await verifyHelperManifestCached(process.resourcesPath, {
+    receiptPath: path.join(app.getPath("userData"), "helper-verification-v1.json"),
+    packageVersion: app.getVersion(),
+  });
+  writeDesktopRuntimeLog(
+    `helper verification ${manifestReport.cached ? "cache hit" : "full scan"}; entries=${manifestReport.entry_count}`,
+  );
   if (!manifestReport.ok) {
     const failingEntry = manifestReport.entries.find((entry) => !entry.ok);
     const detail = failingEntry
@@ -869,6 +1228,7 @@ async function verifyPackagedRuntime() {
       helperPaths.pythonRuntime,
       helperPaths.playwrightRoot,
       helperPaths.llmRuntimeRoot,
+      helperPaths.tunnelRuntimeRoot,
     ],
     writableRoots: defaultWritableRoots({
       userDataPath: app.getPath("userData"),
@@ -1037,6 +1397,7 @@ async function finalizeActiveVaultDeletion() {
   if (!activePath) {
     return { deleted: false, path: "" };
   }
+  await tunnelManager?.disconnect({ forget: true });
   const activeRoot = path.resolve(activePath);
   assertSafeVaultDataRoot(activeRoot);
   const vaultData = path.join(activeRoot, ".vault");
@@ -1704,6 +2065,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  tunnelManager?.shutdownSync();
   if (odinRuntimeDescriptorPath) {
     try {
       fsSync.rmSync(odinRuntimeDescriptorPath, { force: true });
