@@ -14,6 +14,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+import psutil
+
 
 EXIT_BACKEND_UNAVAILABLE = 3
 EXIT_AUTHENTICATION = 4
@@ -572,11 +574,11 @@ def _validate_runtime_descriptor(descriptor: dict, *, explicit_backend: str | No
 
 def _process_exists(process_id: int) -> bool:
     try:
-        os.kill(process_id, 0)
+        process = psutil.Process(process_id)
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except psutil.AccessDenied:
         return True
-    except PermissionError:
-        return True
-    except OSError:
+    except (psutil.NoSuchProcess, psutil.ZombieProcess, ValueError):
         return False
 
 

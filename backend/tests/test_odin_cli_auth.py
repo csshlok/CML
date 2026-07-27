@@ -1,4 +1,6 @@
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,6 +54,21 @@ class OdinCliAuthTests(unittest.TestCase):
         ):
             os.environ.pop(key, None)
         self.tmp.cleanup()
+
+    def test_process_probe_never_terminates_a_live_process(self) -> None:
+        from backend.app.odin_cli import _process_exists
+
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            self.assertTrue(_process_exists(child.pid))
+            self.assertIsNone(child.poll())
+        finally:
+            child.terminate()
+            child.wait(timeout=5)
 
     def _paired_session(self, *, scopes: list[str], vault_ids: list[str]) -> tuple[dict, dict, str]:
         import secrets
