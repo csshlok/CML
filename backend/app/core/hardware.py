@@ -17,11 +17,16 @@ def hardware_status() -> dict:
     available_memory = _available_memory_bytes()
     usable_memory = _usable_memory_bytes(total_memory)
     cpu_count = os.cpu_count() or 1
-    tier = _hardware_tier(cpu_count, total_memory, avx2)
-    supported = avx2 is True and tier != "unsupported"
-    detail = _hardware_detail(avx2, tier)
-    disk_free = _disk_free_bytes()
     gpus = _detect_gpus()
+    tier = _hardware_tier(cpu_count, total_memory, avx2, gpus)
+    detection_failures = []
+    if total_memory is None:
+        detection_failures.append("system_memory")
+    if avx2 is None:
+        detection_failures.append("avx2")
+    supported = avx2 is True and tier != "unsupported"
+    detail = _hardware_detail(avx2, tier, detection_failures)
+    disk_free = _disk_free_bytes()
     return {
         "os": platform.system(),
         "machine": platform.machine(),
@@ -35,10 +40,16 @@ def hardware_status() -> dict:
         "avx2_detection_method": avx2_detection_method,
         "avx512": avx512,
         "hardware_tier": tier,
+        "compatibility_detection": "failed" if detection_failures else "complete",
+        "detection_failures": detection_failures,
         "training_supported": supported,
         "detail": detail,
         "gpus": gpus,
-        "warnings": [],
+        "warnings": (
+            ["Vault could not fully detect this device. Retry the hardware check before choosing a model."]
+            if detection_failures
+            else []
+        ),
     }
 
 
@@ -84,7 +95,7 @@ def _total_memory_bytes() -> int | None:
 
         return int(psutil.virtual_memory().total)
     except Exception:
-        return None
+        return _native_memory_status()[0]
 
 
 def _available_memory_bytes() -> int | None:
@@ -93,7 +104,38 @@ def _available_memory_bytes() -> int | None:
 
         return int(psutil.virtual_memory().available)
     except Exception:
-        return None
+        return _native_memory_status()[1]
+
+
+def _native_memory_status() -> tuple[int | None, int | None]:
+    if platform.system().lower() == "windows":
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [
+                ("length", ctypes.c_ulong),
+                ("memory_load", ctypes.c_ulong),
+                ("total_physical", ctypes.c_ulonglong),
+                ("available_physical", ctypes.c_ulonglong),
+                ("total_page_file", ctypes.c_ulonglong),
+                ("available_page_file", ctypes.c_ulonglong),
+                ("total_virtual", ctypes.c_ulonglong),
+                ("available_virtual", ctypes.c_ulonglong),
+                ("available_extended_virtual", ctypes.c_ulonglong),
+            ]
+
+        try:
+            status = MemoryStatus()
+            status.length = ctypes.sizeof(MemoryStatus)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.total_physical), int(status.available_physical)
+        except Exception:
+            return None, None
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        total_pages = int(os.sysconf("SC_PHYS_PAGES"))
+        available_pages = int(os.sysconf("SC_AVPHYS_PAGES"))
+        return page_size * total_pages, page_size * available_pages
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None, None
 
 
 def _usable_memory_bytes(total_memory: int | None) -> int | None:
@@ -111,22 +153,38 @@ def _disk_free_bytes() -> int:
         return 0
 
 
-def _hardware_tier(cpu_count: int, total_memory: int | None, avx2: bool | None) -> str:
+def _hardware_tier(
+    cpu_count: int,
+    total_memory: int | None,
+    avx2: bool | None,
+    gpus: list[dict] | None = None,
+) -> str:
     if avx2 is False:
         return "unsupported"
-    gib = (total_memory or 0) / (1024**3)
-    if gib >= 24 and cpu_count >= 12:
-        return "gpu_or_high_spec_candidate"
-    if gib >= 16 and cpu_count >= 8:
-        return "cpu_high_spec"
-    if gib >= 8 and cpu_count >= 4:
-        return "cpu_minimum_spec"
     if total_memory is None or avx2 is None:
         return "unknown"
+    gib = (total_memory or 0) / (1024**3)
+    dedicated_gpu_bytes = max(
+        (
+            int(gpu.get("usable_vram_bytes") or 0)
+            for gpu in (gpus or [])
+            if not bool(gpu.get("shared_memory"))
+        ),
+        default=0,
+    )
+    if (gib >= 22.5 and cpu_count >= 12) or dedicated_gpu_bytes >= 4 * _GIB:
+        return "gpu_or_high_spec_candidate"
+    if gib >= 15 and cpu_count >= 8:
+        return "cpu_high_spec"
+    if gib >= 7.5 and cpu_count >= 4:
+        return "cpu_minimum_spec"
     return "unsupported"
 
 
-def _hardware_detail(avx2: bool | None, tier: str) -> str:
+def _hardware_detail(avx2: bool | None, tier: str, detection_failures: list[str] | None = None) -> str:
+    if detection_failures:
+        missing = ", ".join(detection_failures)
+        return f"Vault could not detect required hardware values: {missing}."
     if avx2 is False:
         return "AVX2 is not available. Local adapter training should remain disabled on this device."
     if avx2 is None:

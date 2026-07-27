@@ -7,7 +7,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import APIRouter
 
-from backend.app.core.background_jobs import job_queue_status
+from backend.app.core.background_jobs import enqueue_job, job_queue_status
 from backend.app.core.config import get_settings
 from backend.app.core.database import connect, utc_now
 from backend.app.core.embeddings import embedding_download_status, embedding_status
@@ -20,7 +20,7 @@ from backend.app.core.version import app_version
 from backend.app.core.storage_accounting import storage_accounting
 from backend.app.core.vault_crypto import redact_security_material
 from backend.app.core.vector_maintenance import embedding_index_policy, vector_repair_plan
-from backend.app.schemas import DiagnosticBundleResponse
+from backend.app.schemas import AppJobRead, DiagnosticBundleJobRequest, DiagnosticBundleResponse
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 
@@ -28,7 +28,6 @@ BUNDLE_FORMAT_VERSION = 1
 BACKEND_VERSION = app_version()
 
 
-@router.post("/bundle", response_model=DiagnosticBundleResponse)
 def create_diagnostic_bundle() -> dict:
     settings = get_settings()
     generated_at = utc_now()
@@ -79,6 +78,19 @@ def create_diagnostic_bundle() -> dict:
         "schema_version": schema_version,
         "included_files": included_files,
     }
+
+
+@router.post("/bundle", response_model=AppJobRead, status_code=202)
+def queue_diagnostic_bundle(payload: DiagnosticBundleJobRequest | None = None) -> dict:
+    request = payload or DiagnosticBundleJobRequest()
+    with connect() as conn:
+        return enqueue_job(
+            conn,
+            job_type="diagnostic_bundle",
+            payload={},
+            dedupe_key=request.idempotency_key or "diagnostic-bundle:active",
+            user_initiated=True,
+        )
 
 
 def _schema_version() -> int:

@@ -27,7 +27,12 @@ def paginated_messages(session_id: str, *, limit: int = 50, cursor: str | None =
     next_cursor = None
     if len(rows) > safe_limit and items:
         next_cursor = _format_message_cursor(items[-1]["created_at"], items[-1]["id"])
-    return {"session_id": session_id, "items": items, "next_cursor": next_cursor}
+    return {
+        "session_id": session_id,
+        "items": items,
+        "next_cursor": next_cursor,
+        "has_more": next_cursor is not None,
+    }
 
 
 def _format_message_cursor(created_at: str, message_id: str) -> str:

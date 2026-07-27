@@ -5,13 +5,15 @@ class StartupCheckError(RuntimeError):
     pass
 
 
-def verify_sqlite_integrity() -> None:
+def verify_sqlite_integrity(*, full: bool = True) -> None:
     with connect() as conn:
-        rows = conn.execute("PRAGMA integrity_check").fetchall()
+        pragma = "integrity_check" if full else "quick_check"
+        rows = conn.execute(f"PRAGMA {pragma}").fetchall()
     values = [row[0] for row in rows]
     if values != ["ok"]:
         detail = "; ".join(str(value) for value in values[:10])
-        raise StartupCheckError(f"SQLite integrity check failed: {detail}")
+        check_name = "integrity check" if full else "quick check"
+        raise StartupCheckError(f"SQLite {check_name} failed: {detail}")
 
 
 def verify_schema_version() -> None:

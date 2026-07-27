@@ -34,6 +34,8 @@ def _is_public_path(path: str, method: str, api_prefix: str = "/api/v1") -> bool
         _api_path(api_prefix, "/bridge/clusters"),
         _api_path(api_prefix, "/bridge/external-turn"),
         _api_path(api_prefix, "/bridge/artifacts"),
+        _api_path(api_prefix, "/bridge/captures"),
+        _api_path(api_prefix, "/bridge/reviews"),
     )
     for prefix in public_bridge_prefixes:
         if path == prefix or path.startswith(f"{prefix}/"):
@@ -59,7 +61,25 @@ class LocalApiAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         settings = get_settings()
         token = settings.api_token
-        if _is_public_path(request.url.path, request.method, settings.api_prefix):
+        is_public = _is_public_path(request.url.path, request.method, settings.api_prefix)
+        bridge_runtime_roots = tuple(
+            _api_path(settings.api_prefix, suffix)
+            for suffix in (
+                "/bridge/context",
+                "/bridge/clusters",
+                "/bridge/external-turn",
+                "/bridge/artifacts",
+                "/bridge/captures",
+                "/bridge/reviews",
+            )
+        )
+        requires_bridge_token = any(
+            request.url.path == root or request.url.path.startswith(f"{root}/")
+            for root in bridge_runtime_roots
+        )
+        has_bridge_token = bool(request.headers.get("x-cml-bridge-token", ""))
+        if is_public and (not requires_bridge_token or has_bridge_token):
+            request.state.auth_kind = "bridge" if requires_bridge_token else "public"
             return await call_next(request)
         if not token:
             if settings.allow_unauthenticated_api:

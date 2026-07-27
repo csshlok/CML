@@ -1,3 +1,6 @@
+import hashlib
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.embeddings import (
@@ -9,8 +12,11 @@ from backend.app.core.embeddings import (
     start_embedding_model_download,
 )
 from backend.app.core.llm_runtime import runtime_status
+from backend.app.core.background_jobs import enqueue_job, notify_embedding_prerequisite_changed
+from backend.app.core.database import connect
 from backend.app.core.model_registry import (
     activate_model_runtime,
+    approve_model_scan_root,
     cancel_model_download,
     discover_installed_models,
     import_model_checkpoint,
@@ -33,6 +39,7 @@ from backend.app.schemas import (
     ModelCompatibilityRead,
     ModelCompatibilityRequest,
     ModelActivateRequest,
+    AppJobRead,
     ModelDownloadRequest,
     ModelDownloadStart,
     ModelRecommendationMeasurementRunRequest,
@@ -41,6 +48,8 @@ from backend.app.schemas import (
     ModelRecommendationRead,
     ModelRead,
     ModelRuntimeStatus,
+    ModelScanRootRequest,
+    ModelDiscoveryJobRequest,
 )
 
 router = APIRouter(prefix="/models", tags=["models"])
@@ -106,6 +115,29 @@ def discover_local_models(max_results: int = 32, include_rejected: bool = False,
     )
 
 
+@router.post("/discover/jobs", response_model=AppJobRead, status_code=202)
+def queue_model_discovery(payload: ModelDiscoveryJobRequest) -> dict:
+    with connect() as conn:
+        return enqueue_job(
+            conn,
+            job_type="model_discovery",
+            payload={
+                "max_results": payload.max_results,
+                "include_rejected": payload.include_rejected,
+            },
+            dedupe_key=payload.idempotency_key or "model-discovery:active",
+            user_initiated=True,
+        )
+
+
+@router.post("/discovery-roots")
+def add_model_discovery_root(payload: ModelScanRootRequest) -> dict:
+    try:
+        return approve_model_scan_root(payload.path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/runtime", response_model=ModelRuntimeStatus)
 def get_runtime_status() -> dict:
     return runtime_status()
@@ -124,7 +156,9 @@ def get_embedding_status(probe: bool = False) -> dict:
 @router.post("/embeddings/configure", response_model=EmbeddingRuntimeStatus)
 def configure_embeddings(payload: EmbeddingRuntimeConfigure) -> dict:
     try:
-        return configure_embedding_runtime(payload.provider, payload.cache_dir, payload.model)
+        result = configure_embedding_runtime(payload.provider, payload.cache_dir, payload.model)
+        notify_embedding_prerequisite_changed()
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -174,6 +208,27 @@ def import_local_model(payload: ModelCompatibilityRequest) -> dict:
         return import_model_checkpoint(payload.path, name=payload.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/import/jobs", response_model=AppJobRead, status_code=202)
+def queue_local_model_import(payload: ModelCompatibilityRequest) -> dict:
+    source = Path(payload.path).expanduser().resolve()
+    report = model_compatibility_report(source)
+    if not report["accepted"]:
+        raise HTTPException(status_code=400, detail=report["detail"])
+    stat = source.stat()
+    identity = hashlib.sha256(
+        f"{source}|{stat.st_size}|{stat.st_mtime_ns}|{payload.name or ''}".encode("utf-8")
+    ).hexdigest()
+    with connect() as conn:
+        return enqueue_job(
+            conn,
+            job_type="model_import",
+            payload={"path": str(source), "name": payload.name},
+            dedupe_key=f"model-import:{identity}",
+            scope_id=identity,
+            user_initiated=True,
+        )
 
 
 @router.post("/{model_id}/activate", response_model=ModelRead)

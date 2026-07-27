@@ -10,7 +10,6 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 import json
 import shutil
-import string
 import threading
 
 from backend.app.core.config import get_settings
@@ -371,11 +370,12 @@ def registry_state() -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"active_chat_model_id": ""}
+        return {"active_chat_model_id": "", "approved_scan_roots": []}
     if not isinstance(payload, dict):
-        return {"active_chat_model_id": ""}
+        return {"active_chat_model_id": "", "approved_scan_roots": []}
     legacy_active = str(payload.get("active_model_id") or "")
     payload.setdefault("active_chat_model_id", legacy_active)
+    payload.setdefault("approved_scan_roots", [])
     return payload
 
 
@@ -468,6 +468,26 @@ def _record_downloaded_model_path(model_id: str, local_path: Path) -> None:
     _write_registry_state(state)
 
 
+def approve_model_scan_root(root_path: str | Path) -> dict[str, Any]:
+    raw = str(root_path or "").strip()
+    if not raw:
+        raise ValueError("Choose a model folder first.")
+    root = Path(raw).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError("The selected model folder is not available.")
+    state = registry_state()
+    current = state.get("approved_scan_roots")
+    approved = [str(item) for item in current] if isinstance(current, list) else []
+    normalized = _normalized_path(root)
+    if normalized not in {_normalized_path(Path(item)) for item in approved}:
+        approved.append(str(root))
+    state["approved_scan_roots"] = approved
+    state["updated_at"] = utc_now()
+    _write_registry_state(state)
+    invalidate_model_discovery_cache()
+    return {"path": str(root), "approved": True}
+
+
 def active_chat_model_status() -> dict[str, Any] | None:
     active_model_id = str(registry_state().get("active_chat_model_id") or "")
     if not active_model_id:
@@ -515,6 +535,7 @@ def start_model_download(model_id: str, *, target_dir: str | None = None) -> dic
 
     try:
         target_root = _download_root_for_target(target_dir)
+        approve_model_scan_root(target_root)
     except OSError as exc:
         state = _failed_model_download_state(model_id, f"Could not use selected model download location: {exc}")
         with _download_lock:
@@ -813,7 +834,13 @@ def _replacement_recommendation_for_current_hardware(*, family_id: str = "") -> 
     }
 
 
-def import_model_checkpoint(source_path: str | Path, *, name: str | None = None) -> dict[str, Any]:
+def import_model_checkpoint(
+    source_path: str | Path,
+    *,
+    name: str | None = None,
+    progress_callback: Any | None = None,
+    cancellation_callback: Any | None = None,
+) -> dict[str, Any]:
     source_file = Path(source_path).resolve()
     report = model_compatibility_report(source_file)
     if not report["accepted"]:
@@ -840,7 +867,21 @@ def import_model_checkpoint(source_path: str | Path, *, name: str | None = None)
     }
     staging.mkdir(parents=True)
     try:
-        shutil.copy2(source_file, staging / source_file.name)
+        staged_file = staging / source_file.name
+        total_bytes = source_file.stat().st_size
+        copied_bytes = 0
+        with source_file.open("rb") as source, staged_file.open("wb") as target:
+            while True:
+                if cancellation_callback is not None:
+                    cancellation_callback()
+                chunk = source.read(4 * 1024 * 1024)
+                if not chunk:
+                    break
+                target.write(chunk)
+                copied_bytes += len(chunk)
+                if progress_callback is not None:
+                    progress_callback(copied_bytes, total_bytes)
+        shutil.copystat(source_file, staged_file)
         (staging / "cml-model.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         if destination.exists():
             destination.replace(backup)
@@ -891,13 +932,14 @@ def discover_installed_models(
     max_results: int = 32,
     include_rejected: bool = False,
     refresh: bool = False,
+    progress_callback: Any | None = None,
+    cancellation_callback: Any | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
-    roots = installed_model_scan_roots()
+    locations = installed_model_scan_locations()
     cache_ttl = max(0, int(getattr(settings, "model_scan_cache_seconds", 30) or 0))
     cache_key = (
-        tuple(_normalized_path(root) for root in roots),
-        int(settings.model_scan_max_depth),
+        tuple((_normalized_path(root), depth) for root, depth in locations),
         bool(include_rejected),
         int(max_results),
     )
@@ -916,7 +958,9 @@ def discover_installed_models(
     truncated = False
     imported_paths = {item["local_path"] for item in imported_model_statuses()}
 
-    for root in roots:
+    for root, scan_depth in locations:
+        if cancellation_callback is not None:
+            cancellation_callback()
         normalized_root = _normalized_path(root)
         if normalized_root in scanned_roots:
             continue
@@ -924,7 +968,9 @@ def discover_installed_models(
             missing_roots.append(str(root))
             continue
         scanned_roots.append(normalized_root)
-        for candidate in _iter_model_candidates(root, max_depth=int(settings.model_scan_max_depth)):
+        for candidate in _iter_model_candidates(root, max_depth=scan_depth):
+            if cancellation_callback is not None:
+                cancellation_callback()
             normalized = _normalized_path(candidate)
             if normalized in seen_paths:
                 continue
@@ -956,6 +1002,15 @@ def discover_installed_models(
                     truncated = True
             else:
                 truncated = True
+            if progress_callback is not None and len(seen_paths) % 25 == 0:
+                progress_callback(
+                    {
+                        "phase": "scanning",
+                        "roots_scanned": len(scanned_roots),
+                        "candidates_checked": len(seen_paths),
+                        "models_found": len(models),
+                    }
+                )
 
     models.sort(
         key=lambda item: (
@@ -983,51 +1038,59 @@ def discover_installed_models(
 
 
 def installed_model_scan_roots() -> list[Path]:
+    return [root for root, _depth in installed_model_scan_locations()]
+
+
+def installed_model_scan_locations() -> list[tuple[Path, int]]:
     settings = get_settings()
-    roots: list[Path] = []
+    configured_depth = max(0, int(settings.model_scan_max_depth))
+    locations: list[tuple[Path, int]] = [(models_dir(), configured_depth)]
     explicit = str(getattr(settings, "model_scan_roots", "") or "")
     for raw in explicit.split(os.pathsep):
         text = raw.strip()
         if text:
-            roots.append(Path(text).expanduser())
+            locations.append((Path(text).expanduser(), configured_depth))
 
-    home = Path.home()
-    user_profile = Path(os.environ.get("USERPROFILE", str(home)))
-    local_appdata = Path(os.environ.get("LOCALAPPDATA", ""))
-    appdata = Path(os.environ.get("APPDATA", ""))
-    defaults = [
-        home / ".cache" / "huggingface" / "hub",
-        home / ".cache" / "lm-studio" / "models",
-        home / ".lmstudio" / "models",
-        user_profile / ".cache" / "huggingface" / "hub",
-        user_profile / ".cache" / "lm-studio" / "models",
-        local_appdata / "HuggingFace" / "hub",
-        local_appdata / "lm-studio" / "models",
-        appdata / "LM Studio" / "models",
-    ]
     if not explicit.strip():
-        roots.extend(path for path in defaults if str(path))
-        roots.extend(_available_drive_roots())
-    unique: list[Path] = []
+        home = Path.home()
+        user_profile = Path(os.environ.get("USERPROFILE", str(home)))
+        local_appdata = Path(os.environ.get("LOCALAPPDATA", ""))
+        appdata = Path(os.environ.get("APPDATA", ""))
+        defaults = [
+            home / ".cache" / "huggingface" / "hub",
+            home / ".cache" / "lm-studio" / "models",
+            home / ".lmstudio" / "models",
+            user_profile / ".cache" / "huggingface" / "hub",
+            user_profile / ".cache" / "lm-studio" / "models",
+            local_appdata / "HuggingFace" / "hub",
+            local_appdata / "lm-studio" / "models",
+            appdata / "LM Studio" / "models",
+        ]
+        locations.extend((path, configured_depth) for path in defaults if str(path))
+    state = registry_state()
+    approved = state.get("approved_scan_roots")
+    if isinstance(approved, list):
+        locations.extend(
+            (Path(str(path)).expanduser(), configured_depth)
+            for path in approved
+            if str(path).strip()
+        )
+    downloaded_paths = state.get("downloaded_model_paths")
+    if isinstance(downloaded_paths, dict):
+        for value in downloaded_paths.values():
+            model_path = Path(str(value))
+            if str(value).strip() and len(model_path.parents) >= 2:
+                locations.append((model_path.parents[1], configured_depth))
+
+    unique: list[tuple[Path, int]] = []
     seen: set[str] = set()
-    for root in roots:
+    for root, depth in locations:
         normalized = _normalized_path(root)
         if normalized in seen:
             continue
         seen.add(normalized)
-        unique.append(root)
+        unique.append((root, depth))
     return unique
-
-
-def _available_drive_roots() -> list[Path]:
-    """Return every mounted Windows drive so discovery is not limited to C:."""
-    if os.name != "nt":
-        return []
-    return [
-        Path(f"{letter}:/")
-        for letter in string.ascii_uppercase
-        if os.path.exists(f"{letter}:/")
-    ]
 
 
 def _download_root_for_target(target_dir: str | None) -> Path:

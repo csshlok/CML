@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import threading
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +18,7 @@ from backend.app.core.pre_vault import BackendModeMiddleware
 from backend.app.core.reserved_fields import ReservedChatFieldMiddleware
 from backend.app.core.startup_checks import StartupCheckError, verify_schema_version, verify_sqlite_integrity
 from backend.app.core.unlock_middleware import UnlockGateMiddleware
-from backend.app.core.startup_status import write_startup_status
+from backend.app.core.startup_status import reset_startup_status_timing, write_startup_status
 from backend.app.core.version import app_version
 from backend.app.core.vault_lock import VaultLockError, acquire_vault_lock, release_vault_lock
 from backend.app.schemas import HealthResponse
@@ -26,6 +27,7 @@ settings = get_settings()
 
 
 def startup() -> None:
+    reset_startup_status_timing()
     write_startup_status("starting")
     failure_status_written = False
     try:
@@ -55,9 +57,9 @@ def startup() -> None:
             )
             failure_status_written = True
             raise
-        write_startup_status("integrity_check_running")
+        write_startup_status("integrity_check_running", message="Running the fast database check.")
         try:
-            verify_sqlite_integrity()
+            verify_sqlite_integrity(full=False)
         except StartupCheckError as exc:
             write_startup_status("integrity_check_failed", status="failed", message=str(exc), error_code=exc.__class__.__name__)
             failure_status_written = True
@@ -72,18 +74,36 @@ def startup() -> None:
             raise
         write_startup_status("job_recovery_running")
         recover_interrupted_generations()
-        write_startup_status("reconciliation_queued")
+        start_background_worker()
+        write_startup_status("core_ready", status="ready", message="Your library is ready.")
+        start_startup_warming()
+    except Exception as exc:
+        if not failure_status_written:
+            write_startup_status("startup_failed", status="failed", message=str(exc), error_code=exc.__class__.__name__)
+        raise
+
+
+def start_startup_warming() -> None:
+    thread = threading.Thread(target=_run_startup_warming, name="cml-startup-warming", daemon=True)
+    thread.start()
+
+
+def _run_startup_warming() -> None:
+    try:
+        write_startup_status("warming", message="Finishing background setup.")
         enqueue_startup_reconciliation_jobs()
         write_startup_status("runtime_detection_running")
         active_model = active_chat_model_status()
         if active_model and active_model.get("local_path"):
             restore_selected_model(str(active_model["id"]), str(active_model["local_path"]))
-        start_background_worker()
-        write_startup_status("ready", status="ready", message="Full-vault backend is ready.")
+        write_startup_status("ready", status="ready", message="Vault is ready.")
     except Exception as exc:
-        if not failure_status_written:
-            write_startup_status("startup_failed", status="failed", message=str(exc), error_code=exc.__class__.__name__)
-        raise
+        write_startup_status(
+            "ready",
+            status="ready",
+            message="Your library is ready. Some background setup needs attention.",
+            error_code=exc.__class__.__name__,
+        )
 
 
 def shutdown() -> None:

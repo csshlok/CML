@@ -12,6 +12,8 @@
   "job_recovery_running",
   "reconciliation_queued",
   "runtime_detection_running",
+  "core_ready",
+  "warming",
   "ready",
   "startup_failed"
 ]
