@@ -4,7 +4,6 @@ import {
   CalendarDays,
   CheckSquare,
   Code2,
-  FolderOpen,
   Globe,
   Home,
   Layers,
@@ -211,7 +210,6 @@ export function AppShell() {
       : [];
 
   const taskCount = (jobs?.queued ?? 0) + (jobs?.running ?? 0) + (jobs?.failed ?? 0);
-  const activeTaskCount = (jobs?.queued ?? 0) + (jobs?.running ?? 0);
   const securityLockActive =
     Boolean(unlockStatus) &&
     (unlockStatus?.secured_vault_count ?? 0) > 0 &&
@@ -284,21 +282,14 @@ export function AppShell() {
       <div className="flex min-h-0 flex-1">
         {sidebarOpen ? <button type="button" className="vault-sidebar-scrim" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} /> : null}
         <aside className={`vault-sidebar flex flex-col ${sidebarOpen ? "is-open" : ""}`}>
-          <div className="px-4 pb-2 pt-4">
-            <div className="panel-section-title mb-2">Vault</div>
-            <button
-              type="button"
-              onClick={() => navigate({ to: "/settings", search: { section: "storage" } })}
-              className="flex min-h-9 w-full items-start gap-2 rounded-md px-1 py-1.5 text-left text-[12px] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] hover:text-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label={vaultPath ? "Change library location" : "Choose a library"}
-              data-tour-id="library-location"
+          <div className="px-4 pb-2 pt-5">
+            <Link
+              to="/home"
+              aria-label="Vault home"
+              className="inline-flex rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <FolderOpen className="h-3.5 w-3.5 shrink-0" strokeWidth={1.5} />
-              <span className="min-w-0 flex-1 break-all">{displayPath(vaultPath) || "Choose library"}</span>
-            </button>
-            <div className="mt-4">
-              <BrandLogo className="h-7 w-auto select-none" />
-            </div>
+              <BrandLogo className="h-10 w-auto select-none" />
+            </Link>
             <button
               type="button"
               onClick={() => setOpen(true)}
@@ -392,25 +383,6 @@ export function AppShell() {
           )}
         </main>
       </div>
-
-      <footer className="vault-footer flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-[var(--border-default)] px-4 py-2">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-          <span className={`h-2 w-2 rounded-full ${backend.status === "online" ? "bg-[var(--status-ready)]" : "bg-[var(--status-muted)]"}`} />
-          <span className="min-w-0 truncate">{vault?.name ?? (vaultPath ? vaultName(vaultPath) : "No active library")}</span>
-          <span>/</span>
-          <span>
-            {backend.status === "online"
-              ? "Library service available"
-              : backend.status === "degraded"
-                ? "Library service needs attention"
-                : backend.status === "checking"
-                  ? "Checking library service"
-                  : "Library service unavailable"}
-          </span>
-          <span>/</span>
-          <span>{activeTaskCount > 0 ? `${activeTaskCount} active task${activeTaskCount === 1 ? "" : "s"}` : "No active tasks"}</span>
-        </div>
-      </footer>
 
       <CommandPalette open={openPalette} onOpenChange={setOpen} />
       <AppStatusAnnouncer

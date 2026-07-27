@@ -415,15 +415,11 @@ function SourceDetailDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4">
-          <div className="overflow-hidden rounded-md border border-border bg-muted">
-            {coverImageUrl ? (
+          {coverImageUrl ? (
+            <div className="overflow-hidden rounded-md border border-border bg-muted">
               <img src={coverImageUrl} alt="" className="h-44 w-full object-cover" />
-            ) : (
-              <div className="flex h-28 items-center justify-center text-sm text-muted-foreground">
-                No card image selected.
-              </div>
-            )}
-          </div>
+            </div>
+          ) : null}
           <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
             <span>{source.type}</span>
             <span>/</span>

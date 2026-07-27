@@ -131,3 +131,4 @@ artifacts/
 .playwright-cli/
 docs/onwards.md
 docs/ATOMIC_MEMORY_V2_EXECUTION_PLAN.md
+docs/CHATGPT_MCP_CONNECTION_PLAN.md

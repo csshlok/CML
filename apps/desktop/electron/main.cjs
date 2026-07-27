@@ -623,7 +623,11 @@ if (gotSingleInstanceLock) {
     ipcMain.handle("cml:get-backend-token", async () => getBackendApiToken());
     ipcMain.handle("cml:get-setup-state", async () => {
       const activeVaultPath = await getActiveVaultPath();
-      return readSetupState(app.getPath("userData"), { activeVaultPath });
+      const state = await readSetupState(app.getPath("userData"), { activeVaultPath });
+      if (!activeVaultPath && state.phase === "complete" && state.vault?.path) {
+        return { ...state, phase: "recovery" };
+      }
+      return state;
     });
     ipcMain.handle("cml:update-setup-state", async (_event, patch) => {
       const activeVaultPath = await getActiveVaultPath();

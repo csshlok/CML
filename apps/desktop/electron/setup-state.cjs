@@ -10,6 +10,7 @@ const SETUP_PHASES = Object.freeze([
   "vault_committed",
   "models_complete",
   "memory_complete",
+  "security_complete",
   "complete",
   "recovery",
 ]);
@@ -22,7 +23,7 @@ function defaultSetupState() {
   return {
     schema_version: SETUP_SCHEMA_VERSION,
     phase: "fresh",
-    profile: { display_name: "" },
+    profile: { display_name: "", avatar_path: "" },
     vault: { id: "", name: "", path: "" },
     chat_setup: { status: "pending", model_id: "" },
     memory_setup: { status: "pending", model_id: "" },
@@ -46,6 +47,7 @@ function normalizeSetupState(value) {
     phase: value.phase,
     profile: {
       display_name: stringValue(value.profile?.display_name),
+      avatar_path: stringValue(value.profile?.avatar_path),
     },
     vault: {
       id: stringValue(value.vault?.id),

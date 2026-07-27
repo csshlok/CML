@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   ArrowRight,
+  AlertTriangle,
   Check,
   Download,
   FolderOpen,
@@ -31,6 +32,7 @@ import {
   getModelRuntimeStatus,
   getEmbeddingRuntimeStatus,
   importLocalModel,
+  initializeVaultSecurity,
   listLocalModels,
   startEmbeddingDownload,
   startModelDownload,
@@ -48,11 +50,11 @@ import { cn } from "@/lib/utils";
 import { displayPath } from "@/lib/displayPath";
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
 
-type Step = 0 | 1 | 2 | 3 | 4 | 5;
+type Step = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 type ModelChoice = "recommended" | "custom";
 type EmbeddingChoice = "recommended" | "existing";
 
-const steps = ["Welcome", "Name", "Library", "Models", "Memory search", "Finish"] as const;
+const steps = ["Welcome", "Name", "Library", "Models", "Memory search", "Security", "Finish"] as const;
 const recommendedEmbeddingModel = {
   id: "sentence-transformers/all-MiniLM-L6-v2",
   name: "all-MiniLM-L6-v2",
@@ -75,12 +77,14 @@ function Onboarding() {
   const autoActivationAttemptRef = useRef<string | null>(null);
   const [mounted, setMounted] = useState(false);
   const [setupLoaded, setSetupLoaded] = useState(false);
+  const [missingLibraryPath, setMissingLibraryPath] = useState("");
 
   const [step, setStep] = useState<Step>(0);
   const [displayName, setDisplayName] = useState("");
   const [vaultName, setVaultName] = useState("My Library");
   const [vaultPath, setVaultPath] = useState("");
   const [vault, setVault] = useState<VaultRecord | null>(null);
+  const [setupVaultId, setSetupVaultId] = useState("");
   const [models, setModels] = useState<LocalModelRecord[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelRecommendations, setModelRecommendations] =
@@ -109,6 +113,11 @@ function Onboarding() {
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
   const [showSkipModels, setShowSkipModels] = useState(false);
   const [showEmbeddingConsent, setShowEmbeddingConsent] = useState(false);
+  const [showSkipSecurity, setShowSkipSecurity] = useState(false);
+  const [securityPassphrase, setSecurityPassphrase] = useState("");
+  const [securityPassphraseConfirm, setSecurityPassphraseConfirm] = useState("");
+  const [securitySaving, setSecuritySaving] = useState(false);
+  const [securityRecoveryKey, setSecurityRecoveryKey] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -159,6 +168,13 @@ function Onboarding() {
       );
     }
     if (step === 4) return Boolean(embeddingRuntime?.available);
+    if (step === 5) {
+      return (
+        securityPassphrase.length >= 12 &&
+        securityPassphrase === securityPassphraseConfirm &&
+        Boolean(vault?.id || setupVaultId)
+      );
+    }
     return true;
   }, [
     displayName,
@@ -167,6 +183,10 @@ function Onboarding() {
     modelRuntime?.state,
     models,
     step,
+    securityPassphrase,
+    securityPassphraseConfirm,
+    setupVaultId,
+    vault?.id,
     vaultName,
     vaultPath,
   ]);
@@ -188,6 +208,7 @@ function Onboarding() {
         setDisplayName(state.profile.display_name);
         setVaultName(state.vault.name || "My Library");
         setVaultPath(state.vault.path);
+        setSetupVaultId(state.vault.id);
         if (state.chat_setup.model_id) {
           setSelectedModelId(state.chat_setup.model_id);
           modelSelectionDirtyRef.current = true;
@@ -195,7 +216,11 @@ function Onboarding() {
         const resumedStep = setupPhaseToStep(state.phase);
         setStep(resumedStep);
         if (state.phase === "recovery") {
-          setError("Vault could not read the previous setup progress. Review these choices to continue.");
+          if (state.vault.path) {
+            setMissingLibraryPath(state.vault.path);
+          } else {
+            setError("Vault could not read the previous setup progress. Review these choices to continue.");
+          }
         }
       } catch (err) {
         if (!cancelled) {
@@ -493,6 +518,7 @@ function Onboarding() {
         },
       });
       setVault(created);
+      setSetupVaultId(created.id);
       setMessage("Library folder is ready.");
       setStep(3);
     } catch (err) {
@@ -655,7 +681,31 @@ function Onboarding() {
         },
       });
     }
-    setStep(Math.min(step + 1, 5) as Step);
+    if (step === 5) {
+      const vaultId = vault?.id || setupVaultId;
+      if (!vaultId) {
+        setError("Vault could not find the library to protect. Go back and check the library step.");
+        return;
+      }
+      setSecuritySaving(true);
+      try {
+        if (!securityRecoveryKey) {
+          const result = await initializeVaultSecurity({
+            vault_id: vaultId,
+            passphrase: securityPassphrase,
+            unlock_mode: "strict",
+          });
+          setSecurityRecoveryKey(result.recovery_key);
+        }
+        await desktop?.updateSetupState?.({ phase: "security_complete" });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not protect this library.");
+        return;
+      } finally {
+        setSecuritySaving(false);
+      }
+    }
+    setStep(Math.min(step + 1, 6) as Step);
   }
 
   async function confirmSkipModels() {
@@ -667,6 +717,12 @@ function Onboarding() {
       chat_setup: { status: "skipped", model_id: "" },
     });
     setStep(4);
+  }
+
+  async function confirmSkipSecurity() {
+    setShowSkipSecurity(false);
+    await desktop?.updateSetupState?.({ phase: "security_complete" });
+    setStep(6);
   }
 
   function back() {
@@ -703,8 +759,55 @@ function Onboarding() {
     await navigate({ to: "/home" });
   }
 
+  async function restartAfterMissingLibrary() {
+    await desktop?.resetAppSetup?.();
+    setMissingLibraryPath("");
+    setDisplayName("");
+    setVaultName("My Library");
+    setVaultPath("");
+    setVault(null);
+    setSetupVaultId("");
+    setStep(0);
+  }
+
   if (!setupLoaded) {
     return <main className="h-full bg-[#fbfbfb]" aria-label="Loading setup" />;
+  }
+
+  if (missingLibraryPath) {
+    return (
+      <main className="flex h-full items-center justify-center bg-[#fbfbfb] px-6 text-[#171717]">
+        <section className="w-full max-w-xl rounded-lg border border-[#dedbd5] bg-white p-8 shadow-[0_18px_60px_rgba(50,43,35,0.08)]">
+          <BrandLogo className="h-12 w-auto select-none" />
+          <div className="mt-10 flex h-11 w-11 items-center justify-center rounded-md bg-[#f4e9dc] text-[#9a5d26]">
+            <AlertTriangle className="h-5 w-5" />
+          </div>
+          <h1 className="mt-5 text-2xl font-semibold tracking-[-0.025em]">Your library data is missing</h1>
+          <p className="mt-3 max-w-lg text-sm leading-6 text-[#655f58]">
+            Vault found your completed setup, but the <code>.vault</code> folder is no longer at
+            the saved location. It may have been moved or deleted.
+          </p>
+          <div className="mt-5 rounded-md bg-[#f6f4f0] px-3 py-2 font-mono text-xs text-[#655f58]">
+            {displayPath(missingLibraryPath)}/.vault
+          </div>
+          <div className="mt-7 flex flex-wrap gap-3">
+            <Button onClick={() => void restartAfterMissingLibrary()}>
+              Start setup again
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => void desktop?.openPath?.(missingLibraryPath)}
+            >
+              Open saved location
+            </Button>
+          </div>
+          <p className="mt-4 text-xs leading-5 text-[#777069]">
+            Starting again clears the broken setup pointer. It does not delete downloaded models
+            or files outside the missing library folder.
+          </p>
+        </section>
+      </main>
+    );
   }
 
   if (step === 0) {
@@ -1199,7 +1302,7 @@ function Onboarding() {
                             <div className="mt-2">
                               <Progress
                                 value={embeddingDownload.progress_percent ?? 0}
-                                className="h-1.5"
+                                className="download-progress-active h-1.5"
                               />
                               <div className="mt-1 flex items-center justify-between gap-3">
                                 <span>
@@ -1251,6 +1354,52 @@ function Onboarding() {
 
                 {step === 5 && (
                   <SetupPanel
+                    icon={<HardDrive className="h-5 w-5" />}
+                    title="Protect your library"
+                    sub="Add a passphrase so Vault starts locked after you close it. You can skip this and turn protection on later."
+                  >
+                    <div className="max-w-xl space-y-4">
+                      <Field label="Passphrase">
+                        <Input
+                          type="password"
+                          autoComplete="new-password"
+                          value={securityPassphrase}
+                          onChange={(event) => setSecurityPassphrase(event.target.value)}
+                          placeholder="Create a passphrase"
+                        />
+                      </Field>
+                      <p className="-mt-2 text-xs text-muted-foreground">
+                        Use at least 12 characters. Vault cannot recover it for you.
+                      </p>
+                      <Field label="Confirm passphrase">
+                        <Input
+                          type="password"
+                          autoComplete="new-password"
+                          value={securityPassphraseConfirm}
+                          onChange={(event) => setSecurityPassphraseConfirm(event.target.value)}
+                          placeholder="Type it again"
+                        />
+                      </Field>
+                      {securityPassphraseConfirm && securityPassphrase !== securityPassphraseConfirm ? (
+                        <p className="text-xs text-destructive">The passphrases do not match.</p>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                        onClick={() => setShowSkipSecurity(true)}
+                      >
+                        Skip protection for now
+                      </button>
+                      <p className="text-xs leading-5 text-muted-foreground">
+                        A 6-digit PIN is not offered yet because destructive actions currently
+                        require the full passphrase.
+                      </p>
+                    </div>
+                  </SetupPanel>
+                )}
+
+                {step === 6 && (
+                  <SetupPanel
                     icon={<Check className="h-5 w-5" />}
                     title="Welcome to Vault"
                     sub={
@@ -1282,6 +1431,15 @@ function Onboarding() {
                         value={embeddingRuntime?.available ? "Ready" : "Needs setup"}
                       />
                     </div>
+                    {securityRecoveryKey ? (
+                      <div className="mt-5 rounded-md border border-[var(--status-learning)]/35 bg-[var(--status-learning)]/10 p-4">
+                        <div className="text-sm font-medium">Save your recovery key now</div>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                          This is the only way to change a forgotten passphrase.
+                        </p>
+                        <code className="mt-3 block break-all text-xs">{securityRecoveryKey}</code>
+                      </div>
+                    ) : null}
                   </SetupPanel>
                 )}
               </div>
@@ -1319,14 +1477,14 @@ function Onboarding() {
                       Create vault
                       <ArrowRight className="h-4 w-4" />
                     </Button>
-                  ) : step === 5 ? (
+                  ) : step === 6 ? (
                     <Button onClick={() => void finish()}>
                       Open Vault
                       <ArrowRight className="h-4 w-4" />
                     </Button>
                   ) : (
-                    <Button onClick={() => void next()} disabled={!canContinue}>
-                      Continue
+                    <Button onClick={() => void next()} disabled={!canContinue || securitySaving}>
+                      {step === 5 ? "Protect and continue" : "Continue"}
                       <ArrowRight className="h-4 w-4" />
                     </Button>
                   )}
@@ -1370,6 +1528,36 @@ function Onboarding() {
                 Cancel
               </Button>
               <Button onClick={() => void confirmSkipModels()}>Confirm skip</Button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showSkipSecurity && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target) setShowSkipSecurity(false);
+          }}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="skip-security-title"
+            className="w-full max-w-md rounded-md border border-border bg-card p-6 shadow-xl"
+          >
+            <h2 id="skip-security-title" className="text-lg font-semibold">
+              Continue without library protection?
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+              Vault will open without asking for a passphrase. You can add one later in Settings
+              under Library &amp; security.
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <Button variant="outline" onClick={() => setShowSkipSecurity(false)}>
+                Go back
+              </Button>
+              <Button onClick={() => void confirmSkipSecurity()}>Confirm skip</Button>
             </div>
           </div>
         </div>
@@ -1478,6 +1666,7 @@ function setupPhaseToStep(phase: DesktopSetupPhase): Step {
   if (phase === "vault_committed") return 3;
   if (phase === "models_complete") return 4;
   if (phase === "memory_complete") return 5;
+  if (phase === "security_complete") return 6;
   return 0;
 }
 
@@ -1638,7 +1827,7 @@ function ModelRow({
 
       {downloading && (
         <div className="mt-3">
-          <Progress value={progress} className="h-1.5" />
+          <Progress value={progress} className="download-progress-active h-1.5" />
           <div className="mt-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
             <span>{model.download?.status}</span>
             <span>{formatProgressPercent(progress)}</span>
@@ -1649,7 +1838,7 @@ function ModelRow({
         <p className="mt-3 text-xs text-destructive">{model.download.error}</p>
       )}
 
-      <div className="mt-3 flex justify-end gap-2">
+      <div className="mt-4 flex flex-wrap justify-end gap-3">
         {model.compatibility?.chat_role_accepted && !roleActive && !needsVerification ? (
           <Button variant="outline" size="sm" onClick={onActivate} disabled={activating}>
             {activating ? "Activating" : "Use for chat"}
@@ -1762,7 +1951,10 @@ function ModelDownloadToast({
         )}
       </div>
       <div className="mt-2">
-        <Progress value={progress ?? fallbackProgress} className="h-1.5" />
+        <Progress
+          value={progress ?? fallbackProgress}
+          className={cn("h-1.5", active && "download-progress-active")}
+        />
         <div className="mt-1.5 flex items-center justify-between gap-3 text-xs text-muted-foreground">
           <span>
             {progress !== null && progress !== undefined
@@ -1771,6 +1963,11 @@ function ModelDownloadToast({
           </span>
           <span className="capitalize">{download.status}</span>
         </div>
+        {active ? (
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            Download active. The percentage may pause while Vault verifies a file.
+          </div>
+        ) : null}
       </div>
       {download.error && <div className="mt-2 text-xs text-destructive">{download.error}</div>}
     </div>

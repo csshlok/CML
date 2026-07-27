@@ -2,6 +2,27 @@
 @source "../src";
 @import "tw-animate-css";
 
+@keyframes vault-download-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(320%); }
+}
+
+.download-progress-active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 32%;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.55), transparent);
+  animation: vault-download-sweep 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .download-progress-active::after {
+    animation: none;
+    opacity: 0.35;
+  }
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

@@ -8,13 +8,14 @@ declare global {
     | "vault_committed"
     | "models_complete"
     | "memory_complete"
+    | "security_complete"
     | "complete"
     | "recovery";
 
   interface DesktopSetupState {
     schema_version: 1;
     phase: DesktopSetupPhase;
-    profile: { display_name: string };
+    profile: { display_name: string; avatar_path?: string };
     vault: { id: string; name: string; path: string };
     chat_setup: { status: string; model_id: string };
     memory_setup: { status: string; model_id: string };
