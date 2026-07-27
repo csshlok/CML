@@ -2039,7 +2039,7 @@ export async function streamChatContext(
   let buffer = "";
   let sawDone = false;
   while (true) {
-    const { value, done } = await reader.read();
+    const { value, done } = await readStreamChunk(reader, 90_000);
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const events = buffer.split("\n\n");
@@ -2062,6 +2062,14 @@ export async function streamChatContext(
         );
       if (event.event === "token" && typeof event.data.text === "string")
         handlers.onToken(event.data.text);
+      if (event.event === "error") {
+        const message =
+          typeof event.data.message === "string"
+            ? event.data.message
+            : "Vault could not finish this answer.";
+        const detail = typeof event.data.detail === "string" ? ` ${event.data.detail}` : "";
+        throw new Error(`${message}${detail}`.trim());
+      }
       if (event.event === "done") {
         sawDone = true;
         handlers.onDone?.(event.data);
@@ -2078,6 +2086,33 @@ export async function streamChatContext(
   }
   if (!sawDone) {
     throw new Error("The local service closed the answer before confirming it was saved.");
+  }
+}
+
+async function readStreamChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array<ArrayBufferLike>>,
+  timeoutMs: number,
+) {
+  let timeoutId: number | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(
+          () => {
+            void reader.cancel("Chat routing timed out");
+            reject(
+              new Error(
+                "Vault received no routing update for 90 seconds. The request was stopped; retry it or test the chat model in Settings.",
+              ),
+            );
+          },
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
   }
 }
 
@@ -2600,6 +2635,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+export async function resetVaultPassphrase(payload: {
+  vault_id: string;
+  recovery_key: string;
+  new_passphrase: string;
+}) {
+  return request<UnlockStatusRead>("/api/v1/system/unlock/recovery/reset", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function userFacingError(detail: string, status?: number) {

@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
-  CheckCircle2,
+  Camera,
   Database,
   Download,
   FileText,
@@ -56,6 +56,7 @@ import {
   getRetrievalPackingDiagnostics,
   getTemporalFactStatus,
   pruneQueryCache,
+  resetVaultPassphrase,
   reindexVaultSearch,
   listLocalModels,
   listIntegrationImports,
@@ -123,16 +124,28 @@ export const Route = createFileRoute("/_app/settings")({
 
 const settingsSections = [
   { id: "profile", label: "Profile", icon: UserRound },
-  { id: "health", label: "Health", icon: HeartPulse },
-  { id: "storage", label: "Library storage", icon: Database },
-  { id: "models", label: "Local models", icon: TerminalSquare },
-  { id: "embeddings", label: "Memory search", icon: Layers },
-  { id: "ocr", label: "OCR", icon: Settings2 },
-  { id: "odin", label: "Code projects", icon: Folder },
-  { id: "diagnostics", label: "Diagnostics", icon: Activity },
-  { id: "privacy", label: "Privacy", icon: Lock },
+  { id: "library", label: "Library & security", icon: Database },
+  { id: "models", label: "Models & search", icon: TerminalSquare },
+  { id: "connections", label: "Code connections", icon: Folder },
+  { id: "health", label: "System health", icon: HeartPulse },
   { id: "advanced", label: "Advanced", icon: SlidersHorizontal },
 ] as const;
+
+const settingsAliases: Record<string, (typeof settingsSections)[number]["id"]> = {
+  storage: "library",
+  privacy: "library",
+  embeddings: "models",
+  ocr: "models",
+  odin: "connections",
+  diagnostics: "advanced",
+};
+
+function canonicalSettingsSection(value?: string) {
+  const candidate = value ? settingsAliases[value] ?? value : "profile";
+  return settingsSections.some((item) => item.id === candidate)
+    ? (candidate as (typeof settingsSections)[number]["id"])
+    : "profile";
+}
 
 function SettingsView() {
   const { section } = Route.useSearch();
@@ -140,9 +153,7 @@ function SettingsView() {
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
   const backendHealth = useBackendHealth();
   const [mounted, setMounted] = useState(false);
-  const [activeSection, setActiveSection] = useState(() =>
-    settingsSections.some((item) => item.id === section) ? section! : "profile",
-  );
+  const [activeSection, setActiveSection] = useState(() => canonicalSettingsSection(section));
   const [backendVault, setBackendVault] = useState<VaultRecord | null>(null);
   const [pathDraft, setPathDraft] = useState("");
   const [models, setModels] = useState<LocalModelRecord[]>([]);
@@ -177,6 +188,9 @@ function SettingsView() {
   const [unlockStatus, setUnlockStatus] = useState<UnlockStatusRead | null>(null);
   const [vaultPassphrase, setVaultPassphrase] = useState("");
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
+  const [recoveryKeyDraft, setRecoveryKeyDraft] = useState("");
+  const [newPassphraseDraft, setNewPassphraseDraft] = useState("");
+  const [newPassphraseConfirm, setNewPassphraseConfirm] = useState("");
   const [refreshingImportId, setRefreshingImportId] = useState<string | null>(null);
   const [loadingImportHistoryId, setLoadingImportHistoryId] = useState<string | null>(null);
   const [loadingRunItemsId, setLoadingRunItemsId] = useState<string | null>(null);
@@ -198,6 +212,8 @@ function SettingsView() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteNameDraft, setDeleteNameDraft] = useState("");
   const [deletePassphrase, setDeletePassphrase] = useState("");
+  const [destructiveAction, setDestructiveAction] = useState<"delete" | "restart">("delete");
+  const [avatarPath, setAvatarPath] = useState("");
   const pathDraftDirtyRef = useRef(false);
   const embeddingDraftDirtyRef = useRef(false);
 
@@ -220,19 +236,16 @@ function SettingsView() {
 
   useEffect(() => {
     setMounted(true);
+    void desktop?.getSetupState?.().then((state) => setAvatarPath(state?.profile.avatar_path ?? ""));
   }, []);
 
   useEffect(() => {
-    const nextSection = settingsSections.some((item) => item.id === section)
-      ? section!
-      : "models";
+    const nextSection = canonicalSettingsSection(section);
     setActiveSection(nextSection);
   }, [section]);
 
   function selectSettingsSection(nextSection: string) {
-    const validSection = settingsSections.some((item) => item.id === nextSection)
-      ? nextSection
-      : "models";
+    const validSection = canonicalSettingsSection(nextSection);
     setActiveSection(validSection);
     void navigate({
       to: "/settings",
@@ -257,7 +270,7 @@ function SettingsView() {
   useVisiblePolling(
     refreshCliAccess,
     2000,
-    activeSection === "odin" && Boolean(backendVault),
+    activeSection === "connections" && Boolean(backendVault),
   );
 
   const loadSettings = useCallback(async () => {
@@ -843,6 +856,45 @@ function SettingsView() {
     }
   }
 
+  async function changeVaultPassphrase() {
+    const vaultId = backendVault?.id ?? unlockStatus?.vault_id;
+    if (!vaultId || newPassphraseDraft !== newPassphraseConfirm) {
+      setStatusMessage("Enter the recovery key and matching new passphrases.");
+      return;
+    }
+    setActionBusy("passphrase-reset", true);
+    try {
+      const next = await resetVaultPassphrase({
+        vault_id: vaultId,
+        recovery_key: recoveryKeyDraft.trim(),
+        new_passphrase: newPassphraseDraft,
+      });
+      setUnlockStatus(next);
+      setRecoveryKeyDraft("");
+      setNewPassphraseDraft("");
+      setNewPassphraseConfirm("");
+      setStatusMessage("Library passphrase changed.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not change the passphrase.");
+    } finally {
+      setActionBusy("passphrase-reset", false);
+    }
+  }
+
+  async function chooseProfileImage() {
+    const selected = await desktop?.selectCoverImage?.();
+    if (!selected) return;
+    setAvatarPath(selected);
+    const state = await desktop?.getSetupState?.();
+    await desktop?.updateSetupState?.({
+      profile: {
+        display_name: state?.profile.display_name ?? backendVault?.name ?? "",
+        avatar_path: selected,
+      },
+    });
+    setStatusMessage("Profile image updated.");
+  }
+
   async function deleteCurrentVault() {
     if (!backendVault) return;
     setActionBusy("delete", true);
@@ -1043,7 +1095,13 @@ function SettingsView() {
         <div className="mt-7 space-y-4">
           {activeSection === "profile" ? (
             <>
-              <ProfileSettings vault={backendVault} saving={isActionBusy("rename")} onRename={renameVault} />
+              <ProfileSettings
+                vault={backendVault}
+                avatarPath={avatarPath}
+                saving={isActionBusy("rename")}
+                onRename={renameVault}
+                onChooseImage={chooseProfileImage}
+              />
               <SettingsCard
                 icon={<RotateCcw className="h-4 w-4" />}
                 title="Vault tour"
@@ -1149,7 +1207,7 @@ function SettingsView() {
             </>
           )}
 
-          {showSection("odin") && (<>
+          {showSection("connections") && (<>
             <SettingsCard
               icon={<Folder className="h-4 w-4" />}
               title="Odin code projects"
@@ -1376,7 +1434,7 @@ function SettingsView() {
                     </div>
                     {downloading && (
                       <div className="mt-3">
-                        <Progress value={progress ?? 0} className="h-1.5" />
+                        <Progress value={progress ?? 0} className="download-progress-active h-1.5" />
                         <div className="mt-1 flex justify-between gap-3 text-xs text-muted-foreground">
                           <span>{model.download?.status}</span>
                           <span>{progress !== null && progress !== undefined ? `${Math.round(progress)}%` : "Preparing download"}</span>
@@ -1483,7 +1541,7 @@ function SettingsView() {
           </>
           )}
 
-          {showSection("embeddings") && (
+          {showSection("models") && (
           <SettingsCard
             icon={<Layers className="h-4 w-4" />}
             title="Memory search model"
@@ -1551,7 +1609,7 @@ function SettingsView() {
           </SettingsCard>
           )}
 
-          {showSection("ocr") && (
+          {showSection("models") && (
           <SettingsCard
             icon={<Settings2 className="h-4 w-4" />}
             title="OCR"
@@ -1602,7 +1660,7 @@ function SettingsView() {
           </SettingsCard>
           )}
 
-          {showSection("storage") && (<>
+          {showSection("library") && (<>
           <SettingsCard
             icon={<Database className="h-4 w-4" />}
             title="Library storage"
@@ -1806,7 +1864,7 @@ function SettingsView() {
           </SettingsCard>
           </>)}
 
-          {showSection("privacy") && (
+          {showSection("library") && (
           <SettingsCard
             icon={<Lock className="h-4 w-4" />}
             title="Library unlock"
@@ -1859,10 +1917,51 @@ function SettingsView() {
               file locations, timestamps, cluster and project labels, and operational metadata
               remain readable on this device.
             </p>
+            {unlockStatus?.secured_vault_count ? (
+              <details className="mt-5 rounded-md border border-border bg-background">
+                <summary className="cursor-pointer px-3 py-3 text-sm font-medium">
+                  Change a forgotten passphrase
+                </summary>
+                <div className="space-y-3 border-t border-border p-3">
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    Use the offline recovery key created when protection was enabled.
+                  </p>
+                  <Input
+                    value={recoveryKeyDraft}
+                    onChange={(event) => setRecoveryKeyDraft(event.target.value)}
+                    placeholder="Recovery key"
+                  />
+                  <Input
+                    type="password"
+                    value={newPassphraseDraft}
+                    onChange={(event) => setNewPassphraseDraft(event.target.value)}
+                    placeholder="New passphrase"
+                  />
+                  <Input
+                    type="password"
+                    value={newPassphraseConfirm}
+                    onChange={(event) => setNewPassphraseConfirm(event.target.value)}
+                    placeholder="Confirm new passphrase"
+                  />
+                  <Button
+                    variant="outline"
+                    disabled={
+                      isActionBusy("passphrase-reset") ||
+                      !recoveryKeyDraft.trim() ||
+                      newPassphraseDraft.length < 12 ||
+                      newPassphraseDraft !== newPassphraseConfirm
+                    }
+                    onClick={() => void changeVaultPassphrase()}
+                  >
+                    Change passphrase
+                  </Button>
+                </div>
+              </details>
+            ) : null}
           </SettingsCard>
           )}
 
-          {showSection("privacy", "advanced") && (
+          {showSection("library", "advanced") && (
           <SettingsCard
             icon={<ShieldCheck className="h-4 w-4" />}
             title="Evidence retention"
@@ -1890,7 +1989,7 @@ function SettingsView() {
           </SettingsCard>
           )}
 
-          {showSection("storage", "advanced") && (
+          {showSection("library", "advanced") && (
           <SettingsCard
             icon={<Folder className="h-4 w-4" />}
             title="Local imports"
@@ -2060,7 +2159,7 @@ function SettingsView() {
           </SettingsCard>
           )}
 
-          {showSection("diagnostics", "advanced") && (
+          {showSection("advanced") && (
           <SettingsCard
             icon={<Activity className="h-4 w-4" />}
             title="Diagnostics"
@@ -2074,24 +2173,42 @@ function SettingsView() {
           {showSection("advanced") && (
             <SettingsCard
               icon={<Lock className="h-4 w-4" />}
-              title="Danger zone"
-              description="Remove this library's database records. Original source files remain in place."
+              title="Reset or remove"
+              description="Delete this library without removing downloaded models or your original source files."
               status="Destructive"
               statusTone="issue"
               danger
             >
-              <Button
-                variant="destructive"
-                className="mt-5"
-                disabled={isActionBusy("delete") || !backendVault}
-                onClick={() => {
-                  setDeleteNameDraft("");
-                  setDeletePassphrase("");
-                  setDeleteDialogOpen(true);
-                }}
-              >
-                Delete library…
-              </Button>
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Button
+                  variant="outline"
+                  disabled={isActionBusy("delete") || !backendVault}
+                  onClick={() => {
+                    setDestructiveAction("delete");
+                    setDeleteNameDraft("");
+                    setDeletePassphrase("");
+                    setDeleteDialogOpen(true);
+                  }}
+                >
+                  Delete library…
+                </Button>
+                <Button
+                  variant="destructive"
+                  disabled={isActionBusy("delete") || !backendVault}
+                  onClick={() => {
+                    setDestructiveAction("restart");
+                    setDeleteNameDraft("");
+                    setDeletePassphrase("");
+                    setDeleteDialogOpen(true);
+                  }}
+                >
+                  Restart setup…
+                </Button>
+              </div>
+              <p className="mt-3 text-xs leading-5 text-muted-foreground">
+                Restart setup wipes this library and returns to onboarding. Downloaded model files
+                and original documents stay where they are, so they can be reused.
+              </p>
             </SettingsCard>
           )}
             </>
@@ -2099,22 +2216,51 @@ function SettingsView() {
         </div>
       </main>
 
-      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+      <Dialog
+        open={deleteDialogOpen}
+        onOpenChange={(open) => {
+          setDeleteDialogOpen(open);
+          if (!open && !isActionBusy("delete")) {
+            setDeleteNameDraft("");
+            setDeletePassphrase("");
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete this library?</DialogTitle>
+            <DialogTitle>
+              {destructiveAction === "restart" ? "Wipe this library and restart setup?" : "Delete this library?"}
+            </DialogTitle>
             <DialogDescription>
-              This removes the library database records. Original source files remain in their current locations. Enter the exact library name and, for a secured library, the full passphrase.
+              {destructiveAction === "restart"
+                ? "Vault will remove this library's database and setup choices, then open onboarding. Downloaded models and original source files remain in place."
+                : "This removes the library database. Downloaded models and original source files remain in place."}{" "}
+              Enter the exact library name
+              {unlockStatus?.secured_vault_count ? " and the full passphrase." : "."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <Input value={deleteNameDraft} onChange={(event) => setDeleteNameDraft(event.target.value)} placeholder={backendVault?.name ?? "Library name"} />
-            <Input type="password" value={deletePassphrase} onChange={(event) => setDeletePassphrase(event.target.value)} placeholder="Full library passphrase" />
+            {unlockStatus?.secured_vault_count ? (
+              <Input type="password" value={deletePassphrase} onChange={(event) => setDeletePassphrase(event.target.value)} placeholder="Full library passphrase" />
+            ) : null}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
-            <Button variant="destructive" disabled={isActionBusy("delete") || deleteNameDraft.trim() !== backendVault?.name} onClick={() => void deleteCurrentVault()}>
-              Delete library
+            <Button variant="outline" disabled={isActionBusy("delete")} onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={
+                isActionBusy("delete") ||
+                deleteNameDraft.trim() !== backendVault?.name ||
+                (Boolean(unlockStatus?.secured_vault_count) && !deletePassphrase)
+              }
+              onClick={() => void deleteCurrentVault()}
+            >
+              {isActionBusy("delete")
+                ? "Removing…"
+                : destructiveAction === "restart"
+                  ? "Wipe and restart"
+                  : "Delete library"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2245,7 +2391,10 @@ function ModelDownloadToast({
         ) : null}
       </div>
       <div className="mt-3">
-        <Progress value={progress ?? fallbackProgress} className="h-1.5" />
+        <Progress
+          value={progress ?? fallbackProgress}
+          className={cn("h-1.5", active && "download-progress-active")}
+        />
         <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
           <span>{progress !== null && progress !== undefined ? `${Math.round(progress)}%` : "Preparing download"}</span>
           <span>
@@ -2269,12 +2418,16 @@ function formatBytes(value: number) {
 
 function ProfileSettings({
   vault,
+  avatarPath,
   saving,
   onRename,
+  onChooseImage,
 }: {
   vault: VaultRecord | null;
+  avatarPath: string;
   saving: boolean;
   onRename: (name: string) => Promise<void>;
+  onChooseImage: () => Promise<void>;
 }) {
   const vaultPath = vault?.path ?? "";
   const [displayName, setDisplayName] = useState(vault?.name ?? (vaultPath ? vaultName(vaultPath) : "Local profile"));
@@ -2282,16 +2435,35 @@ function ProfileSettings({
     <>
       <section className="vault-card p-5">
         <div className="flex flex-wrap items-center gap-5">
-          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-foreground text-background">
-            <UserRound className="h-7 w-7" />
-          </span>
+          <div className="relative">
+            <span className="flex h-20 w-20 overflow-hidden rounded-xl bg-foreground text-background">
+              {avatarPath ? (
+                <img
+                  src={profileImageSrc(avatarPath)}
+                  alt="Profile"
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <span className="flex h-full w-full items-center justify-center">
+                  <UserRound className="h-8 w-8" />
+                </span>
+              )}
+            </span>
+            <button
+              type="button"
+              onClick={() => void onChooseImage()}
+              className="absolute -bottom-2 -right-2 flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card shadow-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Choose profile image"
+            >
+              <Camera className="h-4 w-4" />
+            </button>
+          </div>
           <div className="min-w-0 flex-1">
             <h2 className="text-xl font-semibold">{displayName}</h2>
             <p className="mt-1 text-sm text-muted-foreground">{displayPath(vaultPath) || "No library selected"}</p>
-            <div className="mt-3 inline-flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1 text-xs text-primary">
-              <ShieldCheck className="h-3.5 w-3.5" />
-              Local profile
-            </div>
+            <Button variant="outline" size="sm" className="mt-3" onClick={() => void onChooseImage()}>
+              Change photo
+            </Button>
           </div>
         </div>
       </section>
@@ -2309,24 +2481,13 @@ function ProfileSettings({
         </div>
       </section>
 
-      <section className="vault-card p-5">
-        <h2 className="text-sm font-semibold">Local privacy</h2>
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
-          {[
-            "Profile metadata stays on this device",
-            "No telemetry is attached to your identity",
-            "Vault backups are controlled by you",
-            "Cloud connectors require explicit permission",
-          ].map((item) => (
-            <div key={item} className="flex items-center gap-3 rounded-md bg-background px-3 py-3 text-sm">
-              <CheckCircle2 className="h-4 w-4 text-primary" />
-              {item}
-            </div>
-          ))}
-        </div>
-      </section>
     </>
   );
+}
+
+function profileImageSrc(value: string) {
+  if (/^(data:|https?:|file:)/i.test(value)) return value;
+  return `file:///${value.replace(/\\/g, "/")}`;
 }
 
 function vaultName(path: string) {

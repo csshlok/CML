@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { Cable, Copy, ExternalLink, Plus, RefreshCw, Shield, Terminal, Trash2 } from "lucide-react";
+import { Cable, Copy, ExternalLink, HelpCircle, Plus, RefreshCw, Shield, Terminal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmAction } from "@/components/product/Feedback";
 import { Input } from "@/components/ui/input";
@@ -99,6 +99,7 @@ function BridgeView() {
   const [mcpSetupClient, setMcpSetupClient] = useState<
     "claude" | "cursor" | "other"
   >("claude");
+  const [tourStep, setTourStep] = useState<number | null>(null);
 
   async function loadBridgeState() {
     if (backend.status !== "online") return;
@@ -473,8 +474,8 @@ function BridgeView() {
             </div>
             <h1 className="page-title mt-2">Bridge</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Let local AI tools request selected context from this library. New clients now request
-              approval first, and approved clients keep their own scope, token, and identity notes.
+              Connect an outside AI app to Vault so it can read only the libraries and clusters you
+              choose.
             </p>
             <div className="mt-2 text-xs text-muted-foreground">
               Permissions refresh every minute. Pending approvals {status?.approval_requests_pending ?? 0}. Last checked{" "}
@@ -482,7 +483,12 @@ function BridgeView() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 rounded-md border border-border bg-card p-3 lg:shrink-0">
+          <div className="flex flex-wrap items-center gap-2 lg:shrink-0">
+            <Button variant="outline" className="gap-2" onClick={() => setTourStep(0)}>
+              <HelpCircle className="h-4 w-4" />
+              How to connect
+            </Button>
+            <div className="flex items-center gap-2 rounded-md border border-border bg-card p-3">
             <div className="flex items-center gap-3">
               <Switch
                 aria-label="Enable Bridge"
@@ -509,6 +515,7 @@ function BridgeView() {
             >
               <RefreshCw className="h-4 w-4" />
             </Button>
+            </div>
           </div>
         </div>
 
@@ -1364,6 +1371,54 @@ function BridgeView() {
           )}
         </section>
       </div>
+      {tourStep !== null ? (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/35 p-4">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="bridge-tour-title"
+            className="w-full max-w-lg rounded-lg border border-border bg-card p-6 shadow-2xl"
+          >
+            <div className="text-xs font-medium text-primary">Bridge setup {tourStep + 1} of 3</div>
+            <h2 id="bridge-tour-title" className="mt-2 text-xl font-semibold">
+              {[
+                "Choose what the AI app can read",
+                "Create a private connection",
+                "Paste the setup into your AI app",
+              ][tourStep]}
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+              {[
+                "Turn Bridge on, then select at least one library. Cluster access is optional and narrows what the app can see.",
+                "Open Clients, name the outside app, and create it. Vault shows its token once, so copy it before leaving.",
+                "Return to Overview, choose Claude Desktop, Cursor, or Other, then copy the configuration. Paste it into that app's MCP settings and restart the app.",
+              ][tourStep]}
+            </p>
+            <div className="mt-6 flex items-center justify-between gap-3">
+              <Button variant="ghost" onClick={() => setTourStep(null)}>Close</Button>
+              <div className="flex gap-2">
+                {tourStep > 0 ? (
+                  <Button variant="outline" onClick={() => setTourStep(tourStep - 1)}>Back</Button>
+                ) : null}
+                <Button
+                  onClick={() => {
+                    if (tourStep === 2) {
+                      setBridgeView("overview");
+                      setTourStep(null);
+                    } else {
+                      const next = tourStep + 1;
+                      setBridgeView(next === 1 ? "clients" : "overview");
+                      setTourStep(next);
+                    }
+                  }}
+                >
+                  {tourStep === 2 ? "Show configuration" : "Next"}
+                </Button>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }
