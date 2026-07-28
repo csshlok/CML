@@ -25,6 +25,36 @@ The scoped RAG migration, temporal memory foundation, Odin project workflow, bou
 
 The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
 
+## July 28 Durable File-Import Progress
+
+File and folder imports now run as durable background jobs rather than a renderer-only
+loop. Sources shows exact processed/total counts, percentage, current file, bounded
+failure details, and a progress bar where its former “Importing files” message
+appeared. A second compact progress surface is mounted above application routes, so
+the same authoritative job remains visible after navigation. It can be dismissed
+without affecting the import.
+
+Users can pause and resume imports or stop them after a confirmation. Pause and stop
+prevent new work from starting; up to four files already being processed may finish
+and remain safely imported. Per-file completion is persisted, so a backend restart or
+resume skips confirmed work. One active batch is allowed per vault, duplicate paths
+within a batch are removed, filesystem paths are not exposed in displayed failure
+details, and batches remain bounded by the desktop's 10,000-file scan limit.
+
+The Sources detail panel no longer reserves right-side space before a source is
+selected. At desktop width it transitions from a zero-width grid track to the
+existing 326 px inspector, provides an explicit close action, and disables motion
+when reduced motion is requested. Narrow layouts retain a single content column.
+
+Focused scheduler and import tests, all 113 desktop behavior tests, and all 407
+selected quick-tier backend tests pass. TypeScript, the production web build,
+renderer HTML safety, interactive-control auditing, and Python compilation also
+pass. Rendered QA covered 1440×900 and 900×800, navigation persistence,
+pause/resume, confirmed stop, dismissal, progress accessibility, inspector
+open/close, and a clean console. It used an intercepted local API and did not import
+real files. The Windows package remains intentionally unbuilt pending the
+owner-managed rebuild.
+
 ## July 28 Settings Feedback And Single-Source Cluster Moves
 
 Settings action feedback now uses the application-wide notification viewport instead

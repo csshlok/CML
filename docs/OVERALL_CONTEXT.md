@@ -4,6 +4,67 @@ Last updated: 2026-07-28
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
+## July 28 Durable File Imports And On-Demand Source Details
+
+The Sources route previously launched up to four direct `from-path` requests and
+stored only a short local message such as “Importing 20 files.” Leaving the route
+unmounted the owner of that work and removed all feedback even though backend
+requests could still be running. There was no persisted batch identity, aggregate
+progress, pause, resume, or safe stop boundary.
+
+File and folder selections now create one `source_import_batch` application job. Its
+payload is bounded to 10,000 absolute paths and duplicate paths are removed while
+preserving order. A partial unique index and an API-level check allow one queued,
+running, or paused batch per vault. The worker keeps the established maximum of four
+concurrent file operations, records every completed index plus created, updated, and
+failed counts after each work unit, and resumes only unconfirmed indices after a
+pause or backend restart. Individual file failures are contained rather than failing
+the whole batch. The displayed failure list is capped at 100 entries and stores file
+names and safe errors, not full filesystem paths.
+
+Pause changes the durable job state immediately and prevents replacement work from
+being scheduled; files already active are allowed to finish before the worker
+releases the job. Resume returns the same job to the queue. Stop uses the existing
+cooperative cancellation contract: queued or paused work is cancelled immediately,
+while a running batch finishes already-active files and then acknowledges
+cancellation. The UI explains this boundary in a confirmation dialog rather than
+implying unsafe mid-parser termination. Paused jobs are included in queue counts,
+task filters, cancellation rules, recovery behavior, and the sidebar task count.
+
+The application route now owns a shared import-progress controller. It polls the
+durable job, publishes terminal source-change events, and renders a compact,
+dismissible progress surface fixed to the user's frame. Sources consumes the same
+state for its inline bar. Both show processed/total files, integer percentage,
+current file, failures, and folder-scan truncation. Pause, resume, and stop remain
+available after navigation. Dismissing the global surface changes only its
+visibility; it does not mutate or stop the job.
+
+Sources previously always reserved a 326 px inspector track and rendered “Select a
+source to inspect it” in the empty panel. The grid now defaults to
+`minmax(0, 1fr) 0`, mounts the inspector only after row activation, transitions the
+track to 326 px over 200 ms, and restores the full content width through an explicit
+close control. Reduced-motion users receive an immediate state change. The 900 px
+layout remains one column.
+
+Validation evidence for this unbuilt source delta:
+
+| Gate | Result |
+| --- | --- |
+| Focused source-import backend tests | 4/4 passed, including active pause/resume and duplicate-batch protection |
+| Focused scheduler plus import tests | 16/16 passed |
+| Focused desktop contracts | 3/3 passed |
+| Complete desktop behavior run | 113/113 passed |
+| Quick backend tier | 407/407 selected tests passed |
+| Desktop TypeScript and production web build | Passed |
+| Renderer HTML safety and interactive-control audit | Passed |
+| Python compilation | Passed |
+| Rendered import controls | Counts, percentage, progress, pause/resume, confirmed stop, and dismissal passed |
+| Rendered persistence | Progress remained available after Sources → Tasks navigation |
+| Rendered source inspector | Zero-width default and 326 px selected track passed at 1440×900; narrow layout passed at 900×800 |
+| Console | 0 warnings and 0 errors after mocked reload |
+| Real vault mutation | None; rendered API calls were intercepted |
+| Rebuilt Windows package | Pending owner rebuild |
+
 ## July 28 Frame Notifications And Single-Source Cluster Moves
 
 Settings previously rendered operation results in a full-width message above its
