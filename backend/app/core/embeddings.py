@@ -9,6 +9,8 @@ import time
 import os
 import subprocess
 import sys
+import types
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 from uuid import uuid4
 
@@ -70,7 +72,10 @@ def embedding_status(*, probe_model: bool = True) -> dict:
         "cache_dir": str(config["cache_dir"]) if config["cache_dir"] else None,
     }
     if config["provider"] == "sentence-transformers":
-        if importlib.util.find_spec("sentence_transformers") is not None:
+        if (
+            importlib.util.find_spec("torch") is not None
+            and importlib.util.find_spec("transformers") is not None
+        ):
             local_model_path = _find_local_sentence_transformer_path(
                 str(config["model"]),
                 config["cache_dir"],
@@ -95,7 +100,7 @@ def embedding_status(*, probe_model: bool = True) -> dict:
         else:
             status["available"] = False
             status["setup_required"] = True
-            status["detail"] = "SentenceTransformers is not installed in this Python runtime."
+            status["detail"] = "Torch and Transformers are not installed in this Python runtime."
     return status
 
 
@@ -343,9 +348,7 @@ def _download_embedding_model(model: str, model_dir: Path) -> None:
                 return
         if return_code != 0:
             raise RuntimeError(stderr.strip() or f"Memory-search download exited with code {return_code}.")
-        from sentence_transformers import SentenceTransformer
-
-        SentenceTransformer(str(model_dir), local_files_only=True)
+        _embed_with_sentence_transformers(model, str(model_dir), "vault setup test")
         configure_embedding_runtime("sentence-transformers", str(model_dir), model)
         with _EMBEDDING_DOWNLOAD_LOCK:
             installed_size = _directory_size(model_dir)
@@ -588,17 +591,105 @@ def _get_sentence_transformer(model_name: str, cache_dir=None):
     ):
         return _SENTENCE_TRANSFORMER_MODEL
     try:
-        from sentence_transformers import SentenceTransformer
+        _SENTENCE_TRANSFORMER_MODEL = _LocalSentenceTransformer(
+            _resolve_sentence_transformer_ref(model_name, cache_dir)
+        )
     except ImportError as exc:
-        raise RuntimeError("install sentence-transformers to use real local embeddings") from exc
-    model_ref = _resolve_sentence_transformer_ref(model_name, cache_dir)
-    kwargs = {"local_files_only": True}
-    if cache_dir and model_ref == model_name:
-        kwargs["cache_folder"] = str(cache_dir)
-    _SENTENCE_TRANSFORMER_MODEL = SentenceTransformer(model_ref, **kwargs)
+        raise RuntimeError("install torch and transformers to use real local embeddings") from exc
     _SENTENCE_TRANSFORMER_MODEL_NAME = model_name
     _SENTENCE_TRANSFORMER_CACHE_DIR = cache_key
     return _SENTENCE_TRANSFORMER_MODEL
+
+
+class _LocalSentenceTransformer:
+    def __init__(self, model_ref: str) -> None:
+        import torch
+
+        self._torch = torch
+        _install_transformers_optional_dependency_stubs()
+        self.tokenizer, self.model = _load_local_embedding_model(model_ref)
+        self.model.eval()
+        self.max_seq_length = _local_sentence_transformer_max_seq_length(Path(model_ref), self.tokenizer)
+
+    def encode(self, text: str, normalize_embeddings: bool = True):
+        with self._torch.no_grad():
+            encoded = self.tokenizer(
+                text or "",
+                padding=True,
+                truncation=True,
+                max_length=self.max_seq_length,
+                return_tensors="pt",
+            )
+            output = self.model(**encoded)
+            token_embeddings = output.last_hidden_state
+            attention_mask = encoded["attention_mask"].unsqueeze(-1).expand(token_embeddings.size()).float()
+            summed = (token_embeddings * attention_mask).sum(dim=1)
+            counts = attention_mask.sum(dim=1).clamp(min=1e-9)
+            vector = summed / counts
+            if normalize_embeddings:
+                vector = self._torch.nn.functional.normalize(vector, p=2, dim=1)
+            return vector[0].detach().cpu().numpy()
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return int(getattr(self.model.config, "hidden_size", 0) or 0)
+
+
+def _install_transformers_optional_dependency_stubs() -> None:
+    if "sklearn" in sys.modules or "sklearn.metrics" in sys.modules:
+        return
+
+    def _unavailable_roc_curve(*_args, **_kwargs):
+        raise RuntimeError("sklearn metrics are not available in the embedding runtime")
+
+    sklearn_module = types.ModuleType("sklearn")
+    metrics_module = types.ModuleType("sklearn.metrics")
+    sklearn_module.__spec__ = ModuleSpec("sklearn", loader=None)
+    metrics_module.__spec__ = ModuleSpec("sklearn.metrics", loader=None)
+    metrics_module.roc_curve = _unavailable_roc_curve
+    sklearn_module.metrics = metrics_module
+    sys.modules["sklearn"] = sklearn_module
+    sys.modules["sklearn.metrics"] = metrics_module
+
+
+def _load_local_embedding_model(model_ref: str):
+    config_path = Path(model_ref) / "config.json"
+    model_type = ""
+    if config_path.is_file():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            model_type = str(config.get("model_type") or "")
+        except (OSError, TypeError, json.JSONDecodeError):
+            model_type = ""
+    if model_type == "bert":
+        from transformers.models.bert.modeling_bert import BertModel
+        from transformers.models.bert.tokenization_bert import BertTokenizer
+
+        return (
+            BertTokenizer.from_pretrained(model_ref, local_files_only=True),
+            BertModel.from_pretrained(model_ref, local_files_only=True),
+        )
+    from transformers import AutoModel, AutoTokenizer
+
+    return (
+        AutoTokenizer.from_pretrained(model_ref, local_files_only=True),
+        AutoModel.from_pretrained(model_ref, local_files_only=True),
+    )
+
+
+def _local_sentence_transformer_max_seq_length(model_path: Path, tokenizer) -> int:
+    config_path = model_path / "sentence_bert_config.json"
+    if config_path.is_file():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            max_seq_length = int(config.get("max_seq_length") or 0)
+            if max_seq_length > 0:
+                return max_seq_length
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+    tokenizer_limit = int(getattr(tokenizer, "model_max_length", 0) or 0)
+    if 0 < tokenizer_limit < 100_000:
+        return tokenizer_limit
+    return 256
 
 
 def _resolve_sentence_transformer_ref(model_name: str, cache_dir) -> str:

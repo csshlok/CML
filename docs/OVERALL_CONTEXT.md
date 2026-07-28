@@ -55,7 +55,7 @@ as primary user copy.
 
 The canonical `Container.svg` opening-library wordmark now drives `BrandLogo`, the
 favicon, startup, repair, route errors, and server-render errors. Legacy
-`logo.svg` and unused `Frame 8.png` assets were deleted. The large embedded startup
+`logo.svg` and application references to the README-only `Frame 8.png` asset were deleted. The large embedded startup
 artwork was removed from the Electron main process. A missing startup document now
 routes through the packaged branded repair page; a tiny text-only page is reserved
 for the more severe case where both startup and repair documents are absent.

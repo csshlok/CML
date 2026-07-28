@@ -515,11 +515,15 @@ function FirstUseTour({
 
   const viewportWidth = typeof window === "undefined" ? 1280 : window.innerWidth;
   const viewportHeight = typeof window === "undefined" ? 800 : window.innerHeight;
+  const dialogWidth = Math.min(328, Math.max(0, viewportWidth - 32));
   const dialogStyle =
     targetRect && item.target
       ? {
-          left: Math.min(viewportWidth - 344, Math.max(16, targetRect.right + 16)),
-          top: Math.min(viewportHeight - 260, Math.max(16, targetRect.top - 8)),
+          left: Math.max(
+            16,
+            Math.min(viewportWidth - dialogWidth - 16, targetRect.right + 16),
+          ),
+          top: Math.max(16, Math.min(viewportHeight - 260, targetRect.top - 8)),
         }
       : undefined;
 
@@ -545,7 +549,7 @@ function FirstUseTour({
         tabIndex={-1}
         className={
           dialogStyle
-            ? "fixed w-[328px] rounded-md border border-border bg-card p-5 shadow-xl outline-none"
+            ? "fixed max-h-[calc(100vh-2rem)] w-[min(328px,calc(100vw-2rem))] overflow-y-auto rounded-md border border-border bg-card p-5 shadow-xl outline-none"
             : "fixed left-1/2 top-1/2 w-[min(390px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-md border border-border bg-card p-6 shadow-xl outline-none"
         }
         style={dialogStyle}

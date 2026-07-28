@@ -1058,7 +1058,8 @@ function SettingsView() {
     setOdinLauncherBusy(true);
     setCliAccessError(null);
     try {
-      await desktop?.startOdinPairing?.();
+      const result = await desktop?.startOdinPairing?.();
+      if (!result?.started) throw new Error("CML could not confirm that PowerShell opened.");
       setStatusMessage("Odin pairing opened in PowerShell.");
     } catch (error) {
       setCliAccessError(error instanceof Error ? error.message : "Could not start Odin pairing.");
@@ -2051,7 +2052,7 @@ function SettingsView() {
           <SettingsCard
             icon={<Lock className="h-4 w-4" />}
             title="Library unlock"
-            description="Use a passphrase to lock source text and conversations. Vault locks again when the app closes."
+            description="A protected library always starts locked. Use the passphrase to unlock source text and conversations for this session."
             status={
               unlockStatus?.secured_vault_count
                 ? unlockStatus.state === "ready"

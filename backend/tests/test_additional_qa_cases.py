@@ -2329,6 +2329,8 @@ class AdditionalQACases(unittest.TestCase):
         self.assertIn("SkipGhostscriptInstaller", stage_text)
         self.assertIn("TesseractInstallTimeoutSeconds", stage_text)
         self.assertIn("GhostscriptInstallTimeoutSeconds", stage_text)
+        self.assertIn("System.Text.UTF8Encoding($false)", stage_text)
+        self.assertIn("[System.IO.File]::WriteAllText", stage_text)
         self.assertIn('Copy-Item -Path (Join-Path $tesseractDir "*")', stage_text)
         self.assertIn('"/D=$tesseractTarget"', stage_text)
         self.assertIn('"tesseract-local"', stage_text)

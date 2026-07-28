@@ -118,15 +118,17 @@ def consume_pairing(challenge_id: str, verifier: str) -> dict:
 def list_pairing_challenges(*, status: str = "pending", limit: int = 50) -> list[dict]:
     safe_limit = max(1, min(int(limit), 200))
     with connect() as conn:
-        _expire_pairings(conn)
         rows = conn.execute(
             """
             SELECT * FROM cli_pairing_challenges
-            WHERE status = ? ORDER BY created_at DESC LIMIT ?
+            ORDER BY created_at DESC
             """,
-            (status, safe_limit),
         ).fetchall()
-        return [_public_challenge(dict_from_row(row), include_request=True) for row in rows]
+        challenges = [
+            _public_challenge(dict_from_row(row), include_request=True)
+            for row in rows
+        ]
+        return [challenge for challenge in challenges if challenge["status"] == status][:safe_limit]
 
 
 def approve_pairing(challenge_id: str, *, scopes: list[str], allowed_vault_ids: list[str]) -> dict:
@@ -338,7 +340,6 @@ def cli_auth_me(context: dict) -> dict:
 
 
 def _verified_challenge(conn, challenge_id: str, verifier: str):
-    _expire_pairings(conn)
     row = conn.execute("SELECT * FROM cli_pairing_challenges WHERE id = ?", (challenge_id,)).fetchone()
     if row is None:
         raise CliAuthError("pairing_not_found", status_code=404)
@@ -353,8 +354,7 @@ def _verified_challenge(conn, challenge_id: str, verifier: str):
             (utc_now(), challenge_id),
         )
         raise CliAuthError("invalid_pairing_verifier", status_code=401)
-    conn.execute("UPDATE cli_pairing_challenges SET last_polled_at = ? WHERE id = ?", (utc_now(), challenge_id))
-    if row["status"] == "expired":
+    if _effective_challenge_status(dict_from_row(row)) == "expired":
         raise CliAuthError("pairing_expired", status_code=410)
     return row
 
@@ -382,7 +382,7 @@ def _normalize_scopes(scopes: list[str]) -> list[str]:
 def _public_challenge(row: dict, *, include_request: bool = False) -> dict:
     result = {
         "id": row["id"],
-        "status": row["status"],
+        "status": _effective_challenge_status(row),
         "created_at": row["created_at"],
         "expires_at": row["expires_at"],
         "approved_at": row.get("approved_at"),
@@ -397,6 +397,13 @@ def _public_challenge(row: dict, *, include_request: bool = False) -> dict:
             "client_id": row.get("client_id"),
         })
     return result
+
+
+def _effective_challenge_status(row: dict) -> str:
+    status = str(row["status"])
+    if status in {"pending", "approved"} and _parse_time(str(row["expires_at"])) <= datetime.now(UTC):
+        return "expired"
+    return status
 
 
 def _public_client(row: dict) -> dict:

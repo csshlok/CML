@@ -157,8 +157,8 @@ def repair_vectors(vault_id: str | None = None, *, limit: int = 100) -> dict:
     source_ids = [*plan["missing_vector_source_ids"], *plan["stale_vector_source_ids"]][:limit]
     chunks_indexed = 0
     repaired = 0
-    with connect() as conn:
-        for source_id in source_ids:
+    for source_id in source_ids:
+        with connect() as conn:
             row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
             if row is None:
                 continue

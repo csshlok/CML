@@ -21,6 +21,9 @@ test("Odin launcher uses absolute packaged paths and preserves the caller workin
   });
   assert.match(contents, /python-runtime\\python\.exe" -s -m backend\.app\.odin_cli %\*/);
   assert.match(contents, /PYTHONPATH=C:\\Program Files\\CML\\resources/);
+  assert.match(contents, /PYTHONSAFEPATH=1/);
+  assert.match(contents, /CML_ODIN_PAIRING_CONSOLE/);
+  assert.match(contents, /start "" powershell\.exe/);
   assert.doesNotMatch(contents, /\bcd\b|\bpushd\b|\.venv/);
 });
 
@@ -110,4 +113,35 @@ test("Odin help probe is bounded and does not invoke a command shell", () => {
   assert.match(invocation.args[3], /odin\.cmd" --help/);
   assert.equal(invocation.options.shell, false);
   assert.equal(invocation.options.cwd, "C:\\work");
+});
+
+test("visible Odin pairing uses Windows start to create an independent PowerShell console", () => {
+  let invocation = null;
+  const result = runLauncher("C:\\Users\\Me\\CML\\bin\\odin.cmd", [], {
+    cwd: "C:\\Users\\Me",
+    visible: true,
+    runner(command, args, options) {
+      invocation = { command, args, options };
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+
+  assert.deepEqual(result, { started: true });
+  assert.equal(invocation.command, "cmd.exe");
+  assert.deepEqual(invocation.args.slice(0, 3), ["/d", "/s", "/c"]);
+  assert.match(invocation.args[3], /^start "" powershell\.exe /);
+  assert.match(invocation.args[3], /-NoExit -EncodedCommand [A-Za-z0-9+/=]+$/);
+  assert.equal(invocation.options.windowsHide, true);
+  assert.equal(invocation.options.cwd, "C:\\Users\\Me");
+});
+
+test("visible Odin pairing reports a failed Windows handoff", () => {
+  assert.throws(
+    () =>
+      runLauncher("C:\\Users\\Me\\CML\\bin\\odin.cmd", [], {
+        visible: true,
+        runner: () => ({ status: 1, stdout: "", stderr: "failed" }),
+      }),
+    /could not open PowerShell/i,
+  );
 });

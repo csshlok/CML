@@ -985,6 +985,51 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertGreater(repaired["chunks_indexed"], 0)
         self.assertEqual(compacted["orphan_chunks_removed"], 1)
 
+    def test_vector_repair_commits_each_source_independently(self) -> None:
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.vector_maintenance import repair_vectors
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.data_dir), now, now),
+            )
+            for source_id in ("source-first", "source-second"):
+                conn.execute(
+                    """
+                    INSERT INTO sources (
+                        id, vault_id, title, source_type, state, raw_text, extracted_text, created_at, updated_at
+                    )
+                    VALUES (?, 'vault-1', ?, 'note', 'indexed', 'text', 'text', ?, ?)
+                    """,
+                    (source_id, source_id, now, now),
+                )
+
+        def repair_then_fail(conn, source):
+            if source["id"] == "source-second":
+                raise RuntimeError("embedding failed")
+            conn.execute("UPDATE sources SET title = 'repaired' WHERE id = ?", (source["id"],))
+            return 1
+
+        plan = {
+            "missing_vector_source_ids": ["source-first", "source-second"],
+            "stale_vector_source_ids": [],
+            "repair_source_count": 2,
+        }
+        with (
+            patch("backend.app.core.vector_maintenance.vector_repair_plan", return_value=plan),
+            patch("backend.app.core.vector_maintenance.reindex_source_chunks", side_effect=repair_then_fail),
+            self.assertRaisesRegex(RuntimeError, "embedding failed"),
+        ):
+            repair_vectors("vault-1")
+
+        with connect() as conn:
+            first = conn.execute("SELECT title FROM sources WHERE id = 'source-first'").fetchone()
+            second = conn.execute("SELECT title FROM sources WHERE id = 'source-second'").fetchone()
+        self.assertEqual(first["title"], "repaired")
+        self.assertEqual(second["title"], "source-second")
+
     def test_vector_policy_transition_is_atomic_and_readable(self) -> None:
         from backend.app.core.vector_maintenance import (
             activate_embedding_index,

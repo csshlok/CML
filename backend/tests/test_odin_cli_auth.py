@@ -1,9 +1,14 @@
 import os
+import io
+import json
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from urllib.error import HTTPError
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -192,6 +197,129 @@ class OdinCliAuthTests(unittest.TestCase):
                 allowed_vault_ids=["vault-a"],
             )
         self.assertEqual(scope_error.exception.code, "scope_not_requested")
+
+    def test_pairing_refresh_is_read_only_and_filters_expired_requests(self) -> None:
+        import secrets
+        from datetime import UTC, datetime, timedelta
+
+        from backend.app.core.cli_auth import (
+            create_pairing_challenge,
+            list_pairing_challenges,
+            token_hash,
+        )
+        from backend.app.core.database import connect
+        from backend.app.core.runtime_identity import BACKEND_INSTANCE_ID
+
+        verifier = secrets.token_urlsafe(40)
+        challenge = create_pairing_challenge(
+            verifier_hash=token_hash(verifier),
+            requested_scopes=["project:read"],
+            requester_name="Odin",
+            executable_fingerprint="c" * 64,
+            runtime_instance_id=BACKEND_INSTANCE_ID,
+        )
+        with connect() as conn:
+            conn.execute(
+                "UPDATE cli_pairing_challenges SET expires_at = ? WHERE id = ?",
+                ((datetime.now(UTC) - timedelta(seconds=1)).isoformat(), challenge["id"]),
+            )
+
+        lock = sqlite3.connect(self.data_dir / "test.sqlite3", timeout=0.1)
+        try:
+            lock.execute("BEGIN IMMEDIATE")
+            self.assertEqual(list_pairing_challenges(status="pending"), [])
+            self.assertEqual(
+                [item["id"] for item in list_pairing_challenges(status="expired")],
+                [challenge["id"]],
+            )
+        finally:
+            lock.rollback()
+            lock.close()
+
+    def test_odin_retries_temporary_pairing_store_contention(self) -> None:
+        from backend.app.odin_cli import OdinClient
+
+        busy = HTTPError(
+            "http://127.0.0.1/api/v1/cli-auth/pairing-challenges",
+            503,
+            "Service Unavailable",
+            {},
+            io.BytesIO(json.dumps({"detail": "cli_auth_store_busy"}).encode("utf-8")),
+        )
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"id":"cli-pair-test","status":"pending"}'
+
+        with (
+            patch("backend.app.odin_cli.urlopen", side_effect=[busy, Response()]) as request,
+            patch("backend.app.odin_cli.time.sleep") as sleep,
+        ):
+            result = OdinClient("http://127.0.0.1:7343", "").request(
+                "POST",
+                "cli-auth/pairing-challenges",
+                {"requester_name": "Odin"},
+            )
+
+        self.assertEqual(result["id"], "cli-pair-test")
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once()
+
+    def test_odin_reports_exhausted_store_contention_as_backend_unavailable(self) -> None:
+        from backend.app.odin_cli import (
+            BUSY_RETRY_ATTEMPTS,
+            EXIT_BACKEND_UNAVAILABLE,
+            OdinClient,
+            OdinClientError,
+        )
+
+        def busy_response():
+            return HTTPError(
+                "http://127.0.0.1/api/v1/cli-auth/pairing-challenges",
+                503,
+                "Service Unavailable",
+                {},
+                io.BytesIO(json.dumps({"detail": "cli_auth_store_busy"}).encode("utf-8")),
+            )
+
+        with (
+            patch(
+                "backend.app.odin_cli.urlopen",
+                side_effect=[busy_response() for _ in range(BUSY_RETRY_ATTEMPTS)],
+            ) as request,
+            patch("backend.app.odin_cli.time.sleep") as sleep,
+            self.assertRaises(OdinClientError) as failure,
+        ):
+            OdinClient("http://127.0.0.1:7343", "").request(
+                "POST",
+                "cli-auth/pairing-challenges",
+                {"requester_name": "Odin"},
+            )
+
+        self.assertEqual(failure.exception.exit_code, EXIT_BACKEND_UNAVAILABLE)
+        self.assertIn("busy indexing", str(failure.exception))
+        self.assertEqual(request.call_count, BUSY_RETRY_ATTEMPTS)
+        self.assertEqual(sleep.call_count, BUSY_RETRY_ATTEMPTS - 1)
+
+    def test_pairing_route_exposes_database_contention_as_retryable(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.cli_auth import _call
+
+        def locked():
+            raise sqlite3.OperationalError("database is locked")
+
+        with self.assertRaises(HTTPException) as response:
+            _call(locked)
+
+        self.assertEqual(response.exception.status_code, 503)
+        self.assertEqual(response.exception.detail, "cli_auth_store_busy")
 
     def test_middleware_enforces_scope_endpoint_allowlist_and_vault_boundary(self) -> None:
         from backend.app.api.routes import cli_auth, projects

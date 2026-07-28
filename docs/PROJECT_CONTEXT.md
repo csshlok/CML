@@ -50,7 +50,7 @@ still awaits the owner-managed rebuild.
 
 Every dedicated startup, repair, route-not-found, React error-boundary, and
 server-render failure screen now uses the same `Container.svg` wordmark as Opening
-your library and onboarding. The old `logo.svg`, the unused `Frame 8.png`, the
+your library and onboarding. The old `logo.svg` and application references to `Frame 8.png` were
 favicon reference to the legacy mark, and the embedded emergency startup artwork
 were removed. If the startup document is missing, Vault now opens the branded
 repair document; only a text-only bounded page remains for a package missing both

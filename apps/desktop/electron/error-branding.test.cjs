@@ -20,15 +20,14 @@ test("dedicated error pages use the opening-library wordmark", () => {
   assert.match(repairPage, /dist\/client\/brand\/Container\.svg/);
 });
 
-test("legacy brand assets and embedded startup artwork are removed", () => {
+test("legacy app branding and embedded startup artwork are removed", () => {
   const brandDirectory = path.join(desktopRoot, "public", "brand");
   const mainSource = readDesktopFile("electron", "main.cjs");
   const brandSource = readDesktopFile("src", "components", "BrandLogo.tsx");
 
   assert.equal(fs.existsSync(path.join(brandDirectory, "logo.svg")), false);
-  assert.equal(fs.existsSync(path.join(brandDirectory, "Frame 8.png")), false);
   assert.doesNotMatch(mainSource, /startupRepairLogoMarkup|data:image\/png;base64/);
-  assert.doesNotMatch(brandSource, /brand\/logo\.svg|variant/);
+  assert.doesNotMatch(brandSource, /brand\/(?:logo\.svg|Frame 8\.png)|variant/);
 });
 
 test("error-page copy is concise and keeps technical details out of the primary message", () => {

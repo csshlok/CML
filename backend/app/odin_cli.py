@@ -32,6 +32,8 @@ class OdinClientError(RuntimeError):
 
 
 DEFAULT_CLI_SCOPES = ["cluster:link", "context:read", "project:read", "project:write", "source:read"]
+BUSY_RETRY_ATTEMPTS = 4
+BUSY_RETRY_SECONDS = 1.0
 
 
 class OdinClient:
@@ -55,19 +57,32 @@ class OdinClient:
             headers=request_headers,
             method=method,
         )
-        try:
-            with urlopen(request, timeout=120) as response:
-                raw = response.read()
-                return json.loads(raw.decode("utf-8")) if raw else None
-        except HTTPError as exc:
-            detail = _http_error_detail(exc)
-            code = EXIT_AUTHENTICATION if exc.code in {401, 403} else EXIT_INVALID_INPUT
-            raise OdinClientError(detail, code) from exc
-        except URLError as exc:
-            raise OdinClientError(
-                "CML is not running. Open CML and retry, or start the local backend.",
-                EXIT_BACKEND_UNAVAILABLE,
-            ) from exc
+        for attempt in range(BUSY_RETRY_ATTEMPTS):
+            try:
+                with urlopen(request, timeout=120) as response:
+                    raw = response.read()
+                    return json.loads(raw.decode("utf-8")) if raw else None
+            except HTTPError as exc:
+                detail = _http_error_detail(exc)
+                if exc.code == 503 and detail == "cli_auth_store_busy":
+                    if attempt + 1 < BUSY_RETRY_ATTEMPTS:
+                        time.sleep(BUSY_RETRY_SECONDS)
+                        continue
+                    raise OdinClientError(
+                        "CML is busy indexing. Wait a moment and retry Odin pairing.",
+                        EXIT_BACKEND_UNAVAILABLE,
+                    ) from exc
+                code = EXIT_AUTHENTICATION if exc.code in {401, 403} else EXIT_INVALID_INPUT
+                raise OdinClientError(detail, code) from exc
+            except URLError as exc:
+                raise OdinClientError(
+                    "CML is not running. Open CML and retry, or start the local backend.",
+                    EXIT_BACKEND_UNAVAILABLE,
+                ) from exc
+        raise OdinClientError(
+            "CML is busy indexing. Wait a moment and retry Odin pairing.",
+            EXIT_BACKEND_UNAVAILABLE,
+        )
 
     def projects(self, vault_id: str | None = None) -> list[dict]:
         query = f"?{urlencode({'vault_id': vault_id})}" if vault_id else ""
