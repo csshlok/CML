@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="apps/desktop/public/brand/Container.svg" width="420" alt="Vault">
+  <img src="apps/desktop/public/brand/Frame%208.png" width="420" alt="Vault">
 </p>
 
 <h1 align="center">Vault</h1>
