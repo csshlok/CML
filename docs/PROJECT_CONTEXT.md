@@ -51,6 +51,31 @@ passes with line-ending warnings only. The existing July 28 installer/unpacked
 artifact is intentionally still the failing pre-fix build. The owner-deferred rebuild
 and the complete post-rebuild package gates remain required.
 
+## July 28 Profile, Startup, And Chat Reliability Fixes
+
+The durable onboarding profile is now the single authority for the user's display
+name and avatar. Settings saves through Electron setup state, the sidebar subscribes
+to the same state, and profile media resolves through the managed-media API. The
+vault folder name is no longer used as the user name. The startup progress page uses
+one onboarding wordmark rather than rendering a second duplicate logo.
+
+Packaged chat logs also exposed a request-stream lifecycle bug. A legacy middleware
+originally used to reserve an unfinished chat field still consumed the request body
+and replayed the same `http.request` message indefinitely. After the field became
+supported the middleware no longer enforced anything, but Starlette's disconnect
+listener still received the replayed body and closed otherwise successful answers
+before the terminal `done` event. The obsolete middleware has been removed. A new
+full-ASGI regression sends a persisted chat request through the real middleware stack
+and requires `meta`, `token`, and `done` plus a `completed` generation. The renderer
+also reloads the durable timeline if a connection closes at the terminal boundary,
+showing a saved or partial answer once instead of appending a false context-error
+message.
+
+Current local validation for this source delta is green: 100/100 additional backend
+QA tests, including normal completion and client-disconnect persistence; desktop
+TypeScript and 95/95 Electron behavior tests; the production renderer build; Python
+compile checks; and diff hygiene. The package was not rebuilt, by owner request.
+
 ## July 27 MCP, Tunnel, And Reliability Completion
 
 The latest source completes the local ChatGPT MCP connection implementation and the

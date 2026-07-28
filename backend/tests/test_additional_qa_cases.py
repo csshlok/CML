@@ -1218,6 +1218,59 @@ class AdditionalQACases(unittest.TestCase):
         self.assertLess(payload.index("event: meta"), payload.index("event: token"))
         self.assertLess(payload.index("event: token"), payload.index("event: done"))
 
+    def test_stream_chat_context_reaches_done_through_full_asgi_middleware_stack(self) -> None:
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+
+        context = {
+            "answer": "",
+            "clusters_used": [],
+            "citations": [],
+            "coverage_ledger": {"partial_failure_mode": "general_chat_direct"},
+            "intent": "general_chat",
+            "runtime_state": "ready",
+            "warnings": [],
+            "recent_turns": [],
+            "direct_answer_fallback": False,
+            "cluster_profile": {},
+        }
+
+        client = self._client()
+        try:
+            with (
+                patch("backend.app.api.routes.chat._build_retrieval_context", return_value=context),
+                patch(
+                    "backend.app.api.routes.chat.stream_direct_answer",
+                    return_value=iter(["Hello", " from the local model"]),
+                ),
+            ):
+                response = client.post(
+                    "/api/v1/chat/context/stream",
+                    json={
+                        "vault_id": "vault-1",
+                        "session_id": None,
+                        "prompt": "Hello",
+                        "persist": True,
+                    },
+                )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: meta", response.text)
+        self.assertIn("event: token", response.text)
+        self.assertIn("event: done", response.text)
+        self.assertNotIn("event: error", response.text)
+        with connect() as conn:
+            generation = conn.execute("SELECT state FROM chat_generations").fetchone()
+        self.assertEqual(generation["state"], "completed")
+
     def test_stream_chat_context_uses_direct_answer_fallback_when_retrieval_has_no_grounding(self) -> None:
         import asyncio
 

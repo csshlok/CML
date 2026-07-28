@@ -2149,6 +2149,13 @@ export async function buildChatContext(payload: {
   });
 }
 
+export class ChatStreamInterruptedError extends Error {
+  constructor() {
+    super("The local service closed the answer before confirming it was saved.");
+    this.name = "ChatStreamInterruptedError";
+  }
+}
+
 export async function streamChatContext(
   payload: {
     vault_id: string;
@@ -2200,6 +2207,7 @@ export async function streamChatContext(
     const { value, done } = await readStreamChunk(reader, 90_000);
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
+    buffer = buffer.replace(/\r\n/g, "\n");
     const events = buffer.split("\n\n");
     buffer = events.pop() ?? "";
     for (const eventBlock of events) {
@@ -2243,7 +2251,7 @@ export async function streamChatContext(
     }
   }
   if (!sawDone) {
-    throw new Error("The local service closed the answer before confirming it was saved.");
+    throw new ChatStreamInterruptedError();
   }
 }
 
@@ -2275,13 +2283,15 @@ async function readStreamChunk(
 }
 
 function parseSseEvent(block: string): { event: string; data: Record<string, unknown> } | null {
-  const eventLine = block.split("\n").find((line) => line.startsWith("event:"));
-  const dataLine = block.split("\n").find((line) => line.startsWith("data:"));
+  const lines = block.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const eventLine = lines.find((line) => line.startsWith("event:"));
+  const dataLines = lines.filter((line) => line.startsWith("data:"));
+  const dataLine = dataLines.map((line) => line.slice(5).trimStart()).join("\n");
   if (!eventLine || !dataLine) return null;
   try {
     return {
       event: eventLine.slice(6).trim(),
-      data: JSON.parse(dataLine.slice(5).trim()),
+      data: JSON.parse(dataLine),
     };
   } catch {
     return null;

@@ -12,6 +12,7 @@ import {
   streamChatContext,
   updateChatMessage,
   updateChatSession,
+  ChatStreamInterruptedError,
   type ChatContextResponse,
   type ChatMessageRecord,
   type ChatTimelineItem,
@@ -520,6 +521,54 @@ function ChatView() {
             setStreamStatus("Stopped. Vault will recover the partial answer on refresh.");
           }
           return;
+        }
+        if (error instanceof ChatStreamInterruptedError) {
+          try {
+            const refreshed = await getChatSession(backendSession.id);
+            const timeline = await getChatTimeline(refreshed.id);
+            let persistedPromptIndex = -1;
+            timeline.items.forEach((item, index) => {
+              if (
+                item.message_type === "user_message" &&
+                item.content === prompt
+              ) {
+                persistedPromptIndex = index;
+              }
+            });
+            const terminalItem =
+              persistedPromptIndex >= 0
+                ? timeline.items
+                    .slice(persistedPromptIndex + 1)
+                    .find(
+                      (item) =>
+                        item.message_type === "assistant_message" ||
+                        item.message_type === "retriable_generation",
+                    )
+                : undefined;
+            if (terminalItem) {
+              setBackendSession(refreshed);
+              setBackendSessionId(refreshed.id);
+              setBackendMessages(timeline.items.map(messageFromTimelineItem));
+              setMemoryState(refreshed.memory_status ?? "indexed");
+              setLastError(null);
+              setStreamStatus(
+                terminalItem.message_type === "retriable_generation"
+                  ? "Answer interrupted. Retry when you're ready."
+                  : terminalItem.generation_state === "stopped"
+                    ? "Partial answer saved."
+                    : "Answer saved.",
+              );
+              if (selectedAttachments.length > 0) {
+                setAttachmentNotice(
+                  "Check Sources to confirm the attachment was stored.",
+                );
+              }
+              window.dispatchEvent(new Event("vault:chats-changed"));
+              return;
+            }
+          } catch {
+            // Fall through to the normal error state when no durable answer can be recovered.
+          }
         }
         setMemoryState("issue");
         const message = error instanceof Error ? error.message : "Could not retrieve local context.";

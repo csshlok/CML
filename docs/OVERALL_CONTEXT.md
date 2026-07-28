@@ -4,6 +4,48 @@ Last updated: 2026-07-28
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
+## July 28 Profile Authority And Chat Stream Repair
+
+Profile state had three competing identities: onboarding setup state, Settings
+renderer state, and a sidebar fallback derived from the vault directory name. Saving a
+display name could therefore appear to succeed without becoming authoritative, while
+an updated avatar remained absent from the sidebar. The renderer now reads and writes
+the durable Electron setup profile, broadcasts profile changes, and resolves opaque
+managed-media IDs consistently in Settings and the application shell. Partial updates
+preserve the onboarding name and avatar. The opening-library page now displays only
+the onboarding wordmark.
+
+The chat failure reported as “The local service closed the answer before confirming
+it was saved” was traced from packaged stderr to Starlette's
+`StreamingResponse.listen_for_disconnect`. The obsolete
+`ReservedChatFieldMiddleware` had read the JSON body and replaced the ASGI receive
+callable with one that returned the same terminal `http.request` forever. It had once
+rejected the then-reserved complete-analysis field; after complete analysis shipped,
+its validation was removed but the unsafe replay remained. The streaming response
+expected `http.disconnect`, received the stale body, raised
+`RuntimeError: Unexpected message received: http.request`, and canceled the answer
+before the renderer observed `done`.
+
+The middleware and its dead path helper are removed. Regression coverage now exercises
+the actual FastAPI application and all remaining middleware, not only the route's body
+iterator. It requires the full SSE sequence and verifies that durable generation state
+is `completed`. Existing disconnect coverage still requires a terminal `stopped`
+generation with exactly one saved partial answer. On the client, SSE parsing accepts
+CRLF and multi-line data framing, and an incomplete persisted stream triggers a
+timeline reload; completed, stopped, or retriable state is rendered from SQLite
+instead of inventing a second assistant error message.
+
+Validation for the combined unbuilt source delta:
+
+| Gate | Result |
+| --- | --- |
+| Additional backend QA | 100/100 passed |
+| Focused chat lifecycle | 3/3 passed |
+| Desktop | TypeScript passed; 95/95 Electron tests passed |
+| Production renderer build | Passed |
+| Python compile and diff hygiene | Passed |
+| Rebuilt Windows package | Pending owner rebuild |
+
 ## July 28 Packaged Launch Failure And Model Import Reconciliation
 
 The July 28 `0.1.9` package completed NSIS generation, but neither

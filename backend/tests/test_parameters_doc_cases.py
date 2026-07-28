@@ -92,15 +92,6 @@ class TestingParametersDocCases(unittest.TestCase):
         )
         self.assertFalse(_is_public_path("/api/v1/bridge/context", "POST", "/custom/v2"))
 
-    def test_reserved_chat_field_paths_follow_custom_api_prefix(self) -> None:
-        from backend.app.core.reserved_fields import chat_context_paths
-
-        paths = chat_context_paths("/custom/v2")
-
-        self.assertIn("/custom/v2/chat/context", paths)
-        self.assertIn("/custom/v2/chat/context/stream", paths)
-        self.assertNotIn("/api/v1/chat/context", paths)
-
     def test_chat_evidence_policy_prune_endpoint_follows_custom_api_prefix(self) -> None:
         os.environ["CML_API_PREFIX"] = "custom/v2/"
         from backend.app.core.config import get_settings
