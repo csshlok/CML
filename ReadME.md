@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="apps/desktop/public/brand/Frame%208.png" width="420" alt="Vault logo">
+  <img src="apps/desktop/public/brand/Container.svg" width="420" alt="Vault">
 </p>
 
 <h1 align="center">Vault</h1>
@@ -17,9 +17,9 @@
   <img src="https://img.shields.io/badge/storage-local--first-2f855a.svg" alt="Local-first storage">
 </p>
 
-Vault gives AI a durable memory outside the chat window. Add the material you already work with, ask questions in plain language, and get answers grounded in your own sources—with citations you can inspect.
+Vault gives AI a durable memory outside the chat window. Add the material you already work with, organize it around the way you work, and ask questions in plain language. Vault returns answers grounded in your sources, with citations you can inspect.
 
-It is a local-first Windows desktop app, a retrieval system, and a controlled bridge between your private context and the AI tools you choose to use.
+It is a local-first Windows desktop app, a retrieval system, and a controlled bridge between your private context and the AI tools you choose to use. A configurable Home workspace keeps active work, imports, recent sources, clusters, projects, and conversations within reach without turning the app into a crowded dashboard.
 
 > [!IMPORTANT]
 > Vault is pre-release software. The repository is currently the supported way to run it; a public installer is not ready yet.
@@ -43,23 +43,30 @@ Vault keeps that context outside the model and retrieves only what a question ne
 ## What you can do
 
 - **Build a private knowledge base** from files, folders, notes, links, screenshots, PDFs, and transcripts.
+- **Import files naturally** with the file picker, folder import, or desktop drag and drop.
+- **Track large imports from any screen** with file counts, percentage, current-file details, and controls to pause, resume, or stop safely.
 - **Ask grounded questions** and inspect the source passages used to answer them.
 - **Group related work into clusters** for projects, clients, research topics, or areas of responsibility.
+- **Move one source between clusters** without merging or reorganizing the rest of either cluster.
 - **Search across your context** without remembering where a detail was originally stored.
+- **Shape Home around your workflow** with Focused, Library, and Activity presets, type and sort controls, density choices, and reorderable sections.
+- **Continue where you left off** across recently opened sources, chats, clusters, and projects.
 - **Index codebases with Odin** and ask how a project works without browsing every file manually.
 - **Request graphs and trees when needed** while keeping the normal interface focused on useful summaries and answers.
-- **Connect external tools deliberately** through Bridge, MCP, and the local API.
+- **Connect ChatGPT and other tools deliberately** through authenticated Bridge, MCP, the local API, and approved command-line clients.
+- **Use a profile that stays consistent** across onboarding, Settings, and the sidebar, including your display name and profile photo.
 - **Keep control of your data** with explicit vault locations, local storage, and reviewable access boundaries.
 
 ## A typical workflow
 
 1. Create a vault in a folder you control.
 2. Add files, folders, links, notes, screenshots, or a code project.
-3. Vault extracts the content, creates searchable chunks, and builds a local index.
-4. Organize related sources into clusters or let Vault suggest useful groupings.
-5. Ask a question from Home or Chat.
-6. Vault retrieves the strongest supporting evidence and builds a bounded context packet.
-7. The answer includes citations so you can inspect the original material.
+3. Follow ingestion progress while Vault extracts the content, creates searchable chunks, and builds a local index.
+4. Pause or resume a large import when needed without losing confirmed work.
+5. Organize related sources into clusters, move individual sources, or let Vault suggest useful groupings.
+6. Ask a question from Home or Chat, scoped to the complete vault or a selected cluster.
+7. Vault retrieves the strongest supporting evidence and builds a bounded context packet.
+8. The answer includes citations so you can inspect the original material.
 
 ```text
 Your sources
@@ -88,50 +95,50 @@ Vault currently supports:
 - source code and complete repositories through Odin
 - browser captures through the companion extension
 
-Every source remains reviewable and removable. Vault does not silently scan your device.
+Files can be selected normally or dropped into the desktop app from File Explorer. Every source remains reviewable and removable. Vault does not silently scan your device.
 
 ## Odin: understand a codebase without reading all of it
 
 Odin is Vault's project-context layer. It registers a repository as a first-class project, indexes its files, extracts deterministic structure, connects it to retrieval, and exposes the result to Vault and approved outside tools.
 
-From PowerShell in a source checkout:
+Install Odin command-line access from Vault Settings, approve the computer, and then run it from a project folder:
 
 ```powershell
-.\odin.ps1 project add . --name "My Project" --scope context
+odin project add . --name "My Project" --scope context
 ```
 
-The default `context` scope includes source code plus useful repository documentation and configuration. Use `--scope code` when you want a source-focused index, or change the persisted choice during a later sync:
+When running Vault from a source checkout, `.\odin.ps1` provides the same commands. The default `context` scope includes source code plus useful repository documentation and configuration. Use `--scope code` when you want a source-focused index, or change the persisted choice during a later sync:
 
 ```powershell
-.\odin.ps1 project add . --name "My Project" --scope code
-.\odin.ps1 project sync . --scope context
+odin project add . --name "My Project" --scope code
+odin project sync . --scope context
 ```
 
 Then ask questions or inspect the project:
 
 ```powershell
 # See registered projects and indexing state
-.\odin.ps1 project list
-.\odin.ps1 project status .
+odin project list
+odin project status .
 
 # Update or rebuild the index
-.\odin.ps1 project sync .
-.\odin.ps1 project reindex . --layer retrieval
+odin project sync .
+odin project reindex . --layer retrieval
 
 # Ask about the project
-.\odin.ps1 context "How does authentication work?" --project .
-.\odin.ps1 project explain . register_project
-.\odin.ps1 project path . register_project build_structure_graph
+odin context "How does authentication work?" --project .
+odin project explain . register_project
+odin project path . register_project build_structure_graph
 
 # Request structural output
-.\odin.ps1 project graph . --query "project indexing" --depth 2 --format markdown
-.\odin.ps1 project tree . --root "backend/app" --format markdown
+odin project graph . --query "project indexing" --depth 2 --format markdown
+odin project tree . --root "backend/app" --format markdown
 
 # Remove Vault's imported index; repository files are never deleted
-.\odin.ps1 project remove .
+odin project remove .
 ```
 
-Odin never executes imported code and never writes into the registered repository. Scope changes build a candidate snapshot while the last usable snapshot remains active. Graph and tree views stay out of the way until you explicitly request them.
+Odin never executes imported code and never writes into the registered repository. Scope changes build a candidate snapshot while the last usable snapshot remains active. Graph and tree views stay out of the way until you explicitly request them. Registered computers and command-line clients remain visible and revocable in Settings.
 
 ## How retrieval works
 
@@ -168,12 +175,15 @@ Vault can provide approved context to other applications without handing them an
 
 The current integration surfaces are:
 
+- a guided ChatGPT connection with authenticated secure-tunnel support
 - a local Bridge HTTP API
 - an MCP server
-- PowerShell and Python command-line helpers
+- approved Odin, PowerShell, and Python command-line clients
 - browser-extension capture flows
 
 Bridge returns shaped context packets containing relevant citations, snippets, memory items, cluster profiles, token estimates, and warnings. This lets another model work with the same evidence as Vault's own chat.
+
+Connections start with explicit approval and a visible capability profile. Read-only access can retrieve approved context without changing the vault. Read/write access remains a separate choice, and incoming captures can be held for review before they become trusted reusable context. Credentials stay protected by the operating system and can be rotated or revoked from Vault.
 
 Development entry points:
 
@@ -182,6 +192,24 @@ $env:CML_BRIDGE_TOKEN = "<bridge-token>"
 .\scripts\bridge\cml-bridge.ps1 "What changed in the project plan?"
 .\.venv\Scripts\python.exe -m backend.app.bridge_mcp
 ```
+
+## A workspace that stays out of the way
+
+Home is designed as a working overview rather than a wall of equal-sized cards. The default Focused layout keeps Ask Vault, items that need attention, recent work, active clusters, and a small quick-action row in view. Library and Activity presets reveal more browsing or operational detail when needed.
+
+Type and Sort controls change the sources shown across the overview. Customize opens a compact panel for choosing a preset, comfortable or compact density, list or grid presentation, visible sections, and section order. These choices are saved for the active profile.
+
+Long-running ingestion remains visible after leaving Sources. The compact progress notice shows processed and total files, percentage, and the current file. It can be dismissed without cancelling the job, paused and resumed safely, or stopped after confirmation. The Sources detail panel stays closed until a source is selected, leaving the default workspace open for browsing.
+
+Vault also keeps routine feedback lightweight. Successful saves, connection results, and other short updates appear as small notifications at the bottom of the app window and fade automatically. Locked libraries report an incorrect passphrase clearly, imported models are reconciled before they are shown as ready, and duplicate model registrations are prevented from appearing as separate working installations.
+
+Settings gives each feature one clear location, keeps explanations directly below
+their headings, and places longer technical detail behind optional disclosures.
+Display-name and profile-photo changes are shared with the sidebar instead of
+creating a second profile state. Grounded chat confirms that a completed answer is
+stored locally before reporting success.
+
+Startup and recovery screens use the same Vault identity as onboarding and the sidebar. If Vault cannot open, the recovery screen gives a short explanation, offers a safe next step, and keeps technical diagnostic details available to copy without placing them in the main message.
 
 ## Install from source
 
@@ -347,13 +375,17 @@ npm run package:win
 
 Packaging and clean-machine validation are still active release-hardening work. See [Working Commands](docs/WORKING_COMMANDS.md) for smoke tests, benchmarks, packaging modes, and versioning.
 
-The latest source uses app-integrated Windows controls and a verified managed-model
-activation flow. Previously generated 0.1.9 development artifacts must be rebuilt
-before they are treated as containing those source changes.
+The current source includes the frameless Windows shell, durable import controls,
+profile-synced Home preferences, managed-model reconciliation, native file drops,
+branded recovery screens, Odin command-line installation, and the guided ChatGPT
+MCP connection. Build a fresh package from the current revision before distributing
+these features.
 
 ## Status and roadmap
 
-The core local workflow is implemented: vaults, ingestion, indexing, retrieval, grounded chat, clusters, memory, Bridge/MCP delivery, and the Odin foundation.
+The core local workflow is implemented: vaults, durable ingestion, indexing,
+retrieval, grounded chat, clusters, source moves, memory, configurable Home
+workspaces, Bridge/MCP delivery, approved command-line access, and Odin projects.
 
 Before a public V1 release, the project still needs:
 
@@ -379,6 +411,18 @@ No. The live architecture is retrieval-based. Vault finds relevant evidence and 
 
 Yes. Vault supports local model configuration. If no synthesis runtime is available, grounded retrieval can still return a retrieval-draft response instead of pretending a generated answer succeeded.
 
+### Can I leave Sources while a large import is running?
+
+Yes. Import progress remains visible across the app. You can dismiss the progress
+notice without cancelling the job, pause and resume the import, or stop it after
+confirmation. Files already confirmed as complete are retained.
+
+### Can I connect Vault to ChatGPT without sharing the complete library?
+
+Yes. Vault provides approved, bounded context through its authenticated MCP and
+Bridge surfaces. Connections have an explicit capability profile, and read-only
+access can retrieve context without changing the vault.
+
 ### Does Odin modify or execute my repository?
 
 No. Odin reads approved project files to build its index. It does not execute imported code, and project removal only deletes Vault's imported state.
@@ -389,7 +433,9 @@ Not for V1. Windows is the current public target.
 
 ### Is there a stable installer?
 
-Not yet. Source setup is the supported path while packaging and clean-machine validation are completed.
+Not yet. Pre-release Windows builds may be shared with repository collaborators
+through GitHub Releases, while source setup remains the supported path during
+packaging and clean-machine validation.
 
 ## License
 
