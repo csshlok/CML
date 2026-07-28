@@ -919,7 +919,13 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
             "error": None,
         }
 
-        with patch("backend.app.core.model_registry._find_local_model_file", return_value=None):
+        with (
+            patch("backend.app.core.model_registry._find_local_model_file", return_value=None),
+            patch(
+                "backend.app.core.model_registry._model_disk_preflight",
+                return_value={"ok": True, "message": "Enough disk space is available."},
+            ),
+        ):
             result = model_registry.start_model_download("qwen3-4b-q4_k_m")
 
         self.assertEqual(result["status"], "blocked")

@@ -3,7 +3,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
-const LAUNCHER_VERSION = 3;
+const LAUNCHER_VERSION = 4;
 
 function quoteCmd(value) {
   return `"${String(value).replaceAll('"', '""')}"`;
@@ -20,8 +20,9 @@ function launcherContents({ pythonPath, resourcesRoot }) {
     'set "PYTHONNOUSERSITE=1"',
     'set "PYTHONSAFEPATH=1"',
     `set "CML_ODIN_LAUNCHER_VERSION=${LAUNCHER_VERSION}"`,
+    'set "CML_ODIN_PAIRING_LAUNCHER=%~f0"',
     'if /I "%~1"=="auth" if /I "%~2"=="pair" if not defined CML_ODIN_PAIRING_CONSOLE (',
-    `  start "" powershell.exe -NoLogo -NoProfile -NoExit -Command "$env:CML_ODIN_PAIRING_CONSOLE='1'; & '%~f0' auth pair"`,
+    `  start "" powershell.exe -NoLogo -NoProfile -NoExit -Command "$env:CML_ODIN_PAIRING_CONSOLE='1'; & $env:CML_ODIN_PAIRING_LAUNCHER auth pair"`,
     "  exit /b %ERRORLEVEL%",
     ")",
     `${python} -s -m backend.app.odin_cli %*`,

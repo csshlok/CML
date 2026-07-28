@@ -117,18 +117,26 @@ def consume_pairing(challenge_id: str, verifier: str) -> dict:
 
 def list_pairing_challenges(*, status: str = "pending", limit: int = 50) -> list[dict]:
     safe_limit = max(1, min(int(limit), 200))
+    now = utc_now()
     with connect() as conn:
         rows = conn.execute(
             """
             SELECT * FROM cli_pairing_challenges
+            WHERE (
+                CASE
+                    WHEN status IN ('pending', 'approved') AND expires_at <= ? THEN 'expired'
+                    ELSE status
+                END
+            ) = ?
             ORDER BY created_at DESC
+            LIMIT ?
             """,
+            (now, status, safe_limit),
         ).fetchall()
-        challenges = [
+        return [
             _public_challenge(dict_from_row(row), include_request=True)
             for row in rows
         ]
-        return [challenge for challenge in challenges if challenge["status"] == status][:safe_limit]
 
 
 def approve_pairing(challenge_id: str, *, scopes: list[str], allowed_vault_ids: list[str]) -> dict:

@@ -23,6 +23,9 @@ test("Odin launcher uses absolute packaged paths and preserves the caller workin
   assert.match(contents, /PYTHONPATH=C:\\Program Files\\CML\\resources/);
   assert.match(contents, /PYTHONSAFEPATH=1/);
   assert.match(contents, /CML_ODIN_PAIRING_CONSOLE/);
+  assert.match(contents, /set "CML_ODIN_PAIRING_LAUNCHER=%~f0"/);
+  assert.match(contents, /& \$env:CML_ODIN_PAIRING_LAUNCHER auth pair/);
+  assert.doesNotMatch(contents, /& '%~f0'/);
   assert.match(contents, /start "" powershell\.exe/);
   assert.doesNotMatch(contents, /\bcd\b|\bpushd\b|\.venv/);
 });
