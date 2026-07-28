@@ -25,6 +25,17 @@ strings. All three drop surfaces consume that array before invoking the existing
 bounded supported-file scan. Focused tests cover multi-file drops, one unreadable
 entry among valid files, one-time consumption, and preload wiring.
 
+The locked-library form also exposed an error-locality problem. The API already
+returned a safe 401 code for an invalid passphrase, but the generic client formatter
+rendered “Invalid Vault Secret.” in a Settings-wide banner above the active section.
+Users working in the Library & Security section could not see whether the attempt had
+failed. The client now maps that code to “Incorrect passphrase. Try again.” and the
+form owns a dedicated inline error linked through `aria-describedby` and
+`aria-invalid`. Editing clears stale feedback, Enter submits, other service failures
+remain inline, and successful unlock clears the secret and error. The Unlock action
+also remains available when the secured vault ID comes from lock status while ordinary
+vault metadata is intentionally restricted.
+
 The chat failure reported as “The local service closed the answer before confirming
 it was saved” was traced from packaged stderr to Starlette's
 `StreamingResponse.listen_for_disconnect`. The obsolete
@@ -53,6 +64,7 @@ Validation for the combined unbuilt source delta:
 | Focused chat lifecycle | 3/3 passed |
 | Desktop | TypeScript passed; 98/98 Electron tests passed |
 | External-drop boundary | 3/3 focused tests passed |
+| Unlock feedback | 2/2 focused contracts plus rendered wrong/correct interaction passed |
 | Production renderer build and HTML safety | Passed |
 | Python compile and diff hygiene | Passed |
 | Rebuilt Windows package | Pending owner rebuild |

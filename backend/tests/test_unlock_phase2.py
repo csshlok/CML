@@ -571,6 +571,11 @@ class UnlockPhase2Tests(unittest.TestCase):
             "A protected library always starts locked",
             "Offline recovery key",
             "full passphrase",
+            "library-unlock-error",
+            'role="alert"',
+            'aria-invalid={Boolean(unlockError)}',
+            '"current-password"',
+            'event.key === "Enter"',
         ):
             self.assertIn(required, settings_tsx)
         self.assertNotIn("Convenience mode", settings_tsx)
@@ -581,6 +586,7 @@ class UnlockPhase2Tests(unittest.TestCase):
             "unlockVaultWithPassphrase",
             "lockVault",
             "updateUnlockSettings",
+            "Incorrect passphrase. Try again.",
         ):
             self.assertIn(required, backend_ts)
 

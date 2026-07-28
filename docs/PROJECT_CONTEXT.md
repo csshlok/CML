@@ -65,6 +65,12 @@ plain strings are exposed to React. Sources, new-chat attachments, and existing-
 attachments consume the same single-use path store. One unreadable entry does not
 discard other files in the drop, and consumed paths cannot leak into a later drop.
 
+Locked-library authentication now reports passphrase failures beside the field instead
+of only writing a technical message to the page-level Settings banner. The backend's
+safe `invalid_vault_secret` response maps to “Incorrect passphrase. Try again.” The
+field is linked to an accessible alert, retains the attempted value for correction,
+clears the alert on edit, accepts Enter, and clears after a successful unlock.
+
 Packaged chat logs also exposed a request-stream lifecycle bug. A legacy middleware
 originally used to reserve an unfinished chat field still consumed the request body
 and replayed the same `http.request` message indefinitely. After the field became
@@ -80,8 +86,10 @@ message.
 Current local validation for this source delta is green: 100/100 additional backend
 QA tests, including normal completion and client-disconnect persistence; desktop
 TypeScript and 98/98 Electron behavior tests; three focused native-drop boundary
-tests; the production renderer build and renderer security audit; Python compile
-checks; and diff hygiene. The package was not rebuilt, by owner request.
+tests; two focused unlock contract tests; rendered wrong/correct-passphrase checks at
+1440×900 with no final-state console errors; the production renderer build and
+renderer security audit; Python compile checks; and diff hygiene. The package was not
+rebuilt, by owner request.
 
 ## July 27 MCP, Tunnel, And Reliability Completion
 

@@ -203,6 +203,7 @@ function SettingsView() {
   const [retentionResult, setRetentionResult] = useState<ChatEvidenceRetentionResult | null>(null);
   const [unlockStatus, setUnlockStatus] = useState<UnlockStatusRead | null>(null);
   const [vaultPassphrase, setVaultPassphrase] = useState("");
+  const [unlockError, setUnlockError] = useState<string | null>(null);
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [recoveryKeyDraft, setRecoveryKeyDraft] = useState("");
   const [newPassphraseDraft, setNewPassphraseDraft] = useState("");
@@ -423,9 +424,14 @@ function SettingsView() {
   async function unlockVault() {
     const vaultId = backendVault?.id ?? unlockStatus?.secured_vault_ids[0];
     if (!vaultId || !vaultPassphrase.trim()) {
-      setStatusMessage("Choose a library and enter the full passphrase.");
+      setUnlockError(
+        vaultId
+          ? "Enter your library passphrase."
+          : "Choose a library before unlocking.",
+      );
       return;
     }
+    setUnlockError(null);
     setActionBusy("security", true);
     try {
       const next = unlockStatus?.secured_vault_count
@@ -436,9 +442,12 @@ function SettingsView() {
       const recoveryKey = "recovery_key" in next && typeof next.recovery_key === "string" ? next.recovery_key : null;
       if (recoveryKey) setRecoveryKey(recoveryKey);
       setVaultPassphrase("");
+      setUnlockError(null);
       setStatusMessage(next.state === "ready" ? "Library ready." : next.message);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Could not unlock library.");
+      setUnlockError(
+        error instanceof Error ? error.message : "Could not unlock library.",
+      );
     } finally {
       setActionBusy("security", false);
     }
@@ -2049,13 +2058,52 @@ function SettingsView() {
               </div>
             ) : null}
             <div className="mt-4 grid gap-2 md:grid-cols-[1fr_auto_auto]">
-              <Input
-                type="password"
-                value={vaultPassphrase}
-                onChange={(event) => setVaultPassphrase(event.target.value)}
-                placeholder={unlockStatus?.secured_vault_count ? "Library passphrase" : "Create library passphrase"}
-              />
-              <Button onClick={() => void unlockVault()} disabled={isActionBusy("security") || !backendVault}>
+              <div>
+                <Input
+                  type="password"
+                  autoComplete={
+                    unlockStatus?.secured_vault_count
+                      ? "current-password"
+                      : "new-password"
+                  }
+                  aria-label={
+                    unlockStatus?.secured_vault_count
+                      ? "Library passphrase"
+                      : "Create library passphrase"
+                  }
+                  aria-invalid={Boolean(unlockError)}
+                  aria-describedby={unlockError ? "library-unlock-error" : undefined}
+                  value={vaultPassphrase}
+                  onChange={(event) => {
+                    setVaultPassphrase(event.target.value);
+                    if (unlockError) setUnlockError(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !isActionBusy("security")) {
+                      event.preventDefault();
+                      void unlockVault();
+                    }
+                  }}
+                  disabled={isActionBusy("security")}
+                  placeholder={unlockStatus?.secured_vault_count ? "Library passphrase" : "Create library passphrase"}
+                />
+                {unlockError ? (
+                  <p
+                    id="library-unlock-error"
+                    className="mt-1.5 text-sm text-destructive"
+                    role="alert"
+                  >
+                    {unlockError}
+                  </p>
+                ) : null}
+              </div>
+              <Button
+                onClick={() => void unlockVault()}
+                disabled={
+                  isActionBusy("security") ||
+                  !(backendVault?.id ?? unlockStatus?.secured_vault_ids[0])
+                }
+              >
                 {unlockStatus?.secured_vault_count ? "Unlock" : "Initialize security"}
               </Button>
               <Button

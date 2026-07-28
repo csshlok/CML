@@ -2940,6 +2940,9 @@ export async function resetVaultPassphrase(payload: {
 
 export function userFacingError(detail: string, status?: number) {
   const text = String(detail || "").trim();
+  if (text === "invalid_vault_secret") {
+    return "Incorrect passphrase. Try again.";
+  }
   if (!text) {
     if (status === 401 || status === 403) return "Vault needs permission before it can do that.";
     if (status === 404) return "That item is no longer available.";
