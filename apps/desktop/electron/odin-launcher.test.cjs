@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
@@ -9,6 +10,7 @@ const {
   launcherContents,
   pathContains,
   registerUserPath,
+  resolveOdinBinDir,
   runLauncher,
 } = require("./odin-launcher.cjs");
 
@@ -46,6 +48,38 @@ test("Odin launcher installs atomically and detects a launcher that needs repair
 test("PATH matching is case-insensitive and does not use prefix matches", () => {
   assert.equal(pathContains("C:\\Tools;C:\\Users\\Me\\CML\\bin", "c:\\users\\me\\cml\\BIN"), true);
   assert.equal(pathContains("C:\\Users\\Me\\CML\\binary", "C:\\Users\\Me\\CML\\bin"), false);
+});
+
+test("Odin bin resolves from Windows local app data without unsupported Electron paths", () => {
+  assert.equal(
+    resolveOdinBinDir({
+      localAppData: "C:\\Users\\Person\\AppData\\Local",
+      appData: "C:\\Users\\Person\\AppData\\Roaming",
+    }),
+    path.join("C:\\Users\\Person\\AppData\\Local", "CML", "bin"),
+  );
+  assert.equal(
+    resolveOdinBinDir({
+      localAppData: "",
+      appData: "C:\\Users\\Person\\AppData\\Roaming",
+    }),
+    path.join("C:\\Users\\Person\\AppData\\Local", "CML", "bin"),
+  );
+  assert.equal(
+    resolveOdinBinDir({
+      localAppData: "relative\\path",
+      appData: "C:\\Users\\Person\\AppData\\Roaming",
+    }),
+    path.join("C:\\Users\\Person\\AppData\\Local", "CML", "bin"),
+  );
+});
+
+test("the desktop main process only requests supported Electron app paths", () => {
+  const mainSource = fsSync.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+
+  assert.doesNotMatch(mainSource, /getPath\(["']localAppData["']\)/);
+  assert.match(mainSource, /getPath\(["']appData["']\)/);
+  assert.match(mainSource, /resolveOdinBinDir/);
 });
 
 test("PATH registration broadcasts the Windows environment change", () => {

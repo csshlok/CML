@@ -1,5 +1,6 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 const { createDroppedFilePathStore } = require("./dropped-files.cjs");
+const { invokeWithCleanError } = require("./ipc-errors.cjs");
 
 let rendererReadySent = false;
 const droppedFilePaths = createDroppedFilePathStore(window, (file) =>
@@ -65,8 +66,18 @@ contextBridge.exposeInMainWorld("cmlDesktop", {
   getMcpFeatureFlags: () => ipcRenderer.invoke("cml:get-mcp-feature-flags"),
   getMcpLauncher: (capabilityProfile) => ipcRenderer.invoke("cml:get-mcp-launcher", capabilityProfile),
   getOdinLauncherStatus: () => ipcRenderer.invoke("cml:get-odin-launcher-status"),
-  installOdinLauncher: () => ipcRenderer.invoke("cml:install-odin-launcher"),
-  startOdinPairing: () => ipcRenderer.invoke("cml:start-odin-pairing"),
+  installOdinLauncher: () =>
+    invokeWithCleanError(
+      ipcRenderer,
+      "cml:install-odin-launcher",
+      "Could not install Odin.",
+    ),
+  startOdinPairing: () =>
+    invokeWithCleanError(
+      ipcRenderer,
+      "cml:start-odin-pairing",
+      "Could not start Odin pairing.",
+    ),
   getTunnelStatus: () => ipcRenderer.invoke("cml:get-tunnel-status"),
   connectTunnel: (configuration) => ipcRenderer.invoke("cml:connect-tunnel", configuration),
   reconnectTunnel: (bridgeToken) => ipcRenderer.invoke("cml:reconnect-tunnel", bridgeToken),

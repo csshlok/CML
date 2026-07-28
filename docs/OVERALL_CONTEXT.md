@@ -4,6 +4,39 @@ Last updated: 2026-07-28
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
+## July 28 Odin Launcher Path Repair
+
+The Settings action for installing Odin failed with `Failed to get 'localAppData'
+path`. Electron's `app.getPath` API does not define a `localAppData` key, so both the
+launcher status probe and install handler failed while constructing configuration,
+before atomic launcher creation, PATH registration, or the bounded `odin --help`
+verification could run.
+
+The launcher now resolves its per-user bin directory from the absolute
+`LOCALAPPDATA` environment value and falls back to Electron's supported `appData`
+path. On normal Windows layouts the fallback maps
+`...\AppData\Roaming` to sibling `...\AppData\Local`, preserving the established
+`%LOCALAPPDATA%\CML\bin\odin.cmd` contract. Relative environment values are rejected,
+and the same resolver feeds status, install, repair, and pairing.
+
+The preload now normalizes rejected Odin IPC calls. Users see a concise install or
+pairing error rather than Electron's remote-method transport prefix, while successful
+results remain unchanged. A source-level regression prevents reintroducing
+`app.getPath("localAppData")`; resolver tests cover direct, missing, and invalid
+environment values; existing launcher tests continue to cover atomic repair, exact
+PATH matching, environment broadcast, and shell-free bounded help probing.
+
+Validation for this unbuilt source delta:
+
+| Gate | Result |
+| --- | --- |
+| Focused Odin launcher and IPC tests | 9/9 passed |
+| Desktop | TypeScript passed; 102/102 Electron tests passed |
+| Production renderer build | Passed |
+| Renderer HTML safety and interactive controls | Passed |
+| Diff hygiene | Passed with line-ending notices only |
+| Rebuilt Windows package and physical Odin install | Pending owner rebuild |
+
 ## July 28 Profile Authority And Chat Stream Repair
 
 Profile state had three competing identities: onboarding setup state, Settings

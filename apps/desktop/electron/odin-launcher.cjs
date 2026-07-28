@@ -41,6 +41,20 @@ function pathContains(pathValue, target) {
   return splitPath(pathValue).some((item) => path.resolve(item).toLowerCase() === expected);
 }
 
+function resolveOdinBinDir({ localAppData, appData }) {
+  const configured = String(localAppData || "").trim();
+  if (configured && path.isAbsolute(configured)) {
+    return path.join(path.resolve(configured), "CML", "bin");
+  }
+
+  const roamingRoot = path.resolve(String(appData || ""));
+  const localRoot =
+    path.basename(roamingRoot).toLowerCase() === "roaming"
+      ? path.join(path.dirname(roamingRoot), "Local")
+      : roamingRoot;
+  return path.join(localRoot, "CML", "bin");
+}
+
 function powershellPathScript() {
   return [
     "$target = [IO.Path]::GetFullPath($args[0])",
@@ -162,6 +176,7 @@ module.exports = {
   launcherContents,
   pathContains,
   registerUserPath,
+  resolveOdinBinDir,
   runLauncher,
   splitPath,
 };

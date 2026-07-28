@@ -25,6 +25,22 @@ The scoped RAG migration, temporal memory foundation, Odin project workflow, bou
 
 The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
 
+## July 28 Odin Launcher Install Fix
+
+Odin installation failed before writing the launcher because the desktop main process
+requested `app.getPath("localAppData")`, which is not a supported Electron path name.
+The launcher configuration now uses `%LOCALAPPDATA%\CML\bin` when the absolute
+environment path is available and derives the equivalent Local directory from
+Electron's supported `appData` path as a safe fallback. Install and status therefore
+share the intended per-user location without relying on an invalid Electron API.
+
+Odin install and pairing failures are also cleaned at the preload boundary, so the UI
+shows the actionable cause rather than Electron's
+`Error invoking remote method ...` wrapper. Focused launcher and IPC coverage passes
+9/9 cases; desktop TypeScript and all 102 Electron tests pass; the production renderer
+build, renderer HTML safety audit, interactive-control audit, and diff hygiene pass.
+The Windows package remains intentionally unbuilt pending the owner-managed rebuild.
+
 ## July 28 Package-Launch And Model-State Fixes
 
 The July 28 development package exposed a deterministic launch failure in both the

@@ -40,6 +40,7 @@ const { resolveMcpFeatureFlags } = require("./mcp-feature-flags.cjs");
 const {
   getLauncherStatus: getOdinLauncherStatus,
   installLauncher: installOdinLauncher,
+  resolveOdinBinDir,
   runLauncher: runOdinLauncher,
 } = require("./odin-launcher.cjs");
 
@@ -985,7 +986,10 @@ function getOdinLauncherConfiguration() {
     ? path.join(resourcesRoot, ".venv", "Scripts", "python.exe")
     : resolvePackagedHelperPaths(resourcesRoot).backendPython;
   return {
-    binDir: path.join(app.getPath("localAppData"), "CML", "bin"),
+    binDir: resolveOdinBinDir({
+      localAppData: process.env.LOCALAPPDATA,
+      appData: app.getPath("appData"),
+    }),
     pythonPath,
     resourcesRoot,
   };
