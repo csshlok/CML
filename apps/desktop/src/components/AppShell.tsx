@@ -176,8 +176,8 @@ export function AppShell() {
         return;
       }
       const [rows, chats] = await Promise.allSettled([
-        listClusters(activeVault.id, { limit: 5 }),
-        listChatSessions(activeVault.id, { saved: true, limit: 5 }),
+        listClusters(activeVault.id, { limit: 3 }),
+        listChatSessions(activeVault.id, { saved: true, limit: 3 }),
       ]);
       if (rows.status === "fulfilled") setRecentClusters(rows.value);
       if (chats.status === "fulfilled") setSavedChats(chats.value);
@@ -309,7 +309,10 @@ export function AppShell() {
               aria-label="Vault home"
               className="inline-flex rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <BrandLogo className="h-10 w-auto select-none" />
+              <BrandLogo
+                variant="wordmark"
+                className="h-auto w-[132px] select-none"
+              />
             </Link>
             <button
               type="button"
@@ -336,9 +339,9 @@ export function AppShell() {
               <div className="space-y-1">{renderNavItems(secondaryNav)}</div>
             </div>
 
-            {savedChats.length > 0 ? (
+            {savedChats.length > 0 || sidebarClusters.length > 0 ? (
               <div className="mt-6 border-t border-[var(--border-default)] pt-5">
-                <div className="panel-section-title px-2.5 pb-2">Saved chats</div>
+                <div className="panel-section-title px-2.5 pb-2">Recent</div>
                 <div className="space-y-1">
                   {savedChats.map((chat) => (
                     <Link
@@ -351,14 +354,6 @@ export function AppShell() {
                       <span className="min-w-0 flex-1 truncate">{chat.title}</span>
                     </Link>
                   ))}
-                </div>
-              </div>
-            ) : null}
-
-            {sidebarClusters.length > 0 && (
-              <div className="mt-6 border-t border-[var(--border-default)] pt-5">
-                <div className="panel-section-title px-2.5 pb-2">Recent</div>
-                <div className="space-y-1">
                   {sidebarClusters.map((cluster) => (
                     <Link
                       key={cluster.id}
@@ -375,7 +370,7 @@ export function AppShell() {
                   ))}
                 </div>
               </div>
-            )}
+            ) : null}
 
           </nav>
 

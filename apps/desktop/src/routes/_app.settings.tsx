@@ -1413,7 +1413,7 @@ function SettingsView() {
             <SettingsCard
               icon={<TerminalSquare className="h-4 w-4" />}
               title="Odin command"
-              description="Use Odin from PowerShell or your IDE terminal."
+              description="Install Odin, then open a new PowerShell window and run odin --help."
               status={odinLauncher?.installed ? "Ready" : odinLauncher?.needs_repair ? "Repair needed" : "Not installed"}
               statusTone={odinLauncher?.installed ? "ready" : "issue"}
             >
@@ -1430,13 +1430,11 @@ function SettingsView() {
                 </Button>
               </div>
               {odinLauncher?.launcher_path ? (
-                <div className="mt-3 break-all font-mono text-xs text-muted-foreground">
-                  {odinLauncher.launcher_path}
-                </div>
+                <details className="mt-3 text-xs text-muted-foreground">
+                  <summary className="cursor-pointer">Installed location</summary>
+                  <div className="mt-2 break-all font-mono">{odinLauncher.launcher_path}</div>
+                </details>
               ) : null}
-              <p className="mt-3 text-xs text-muted-foreground">
-                Open a new PowerShell window after installation, then run <code>odin --help</code>.
-              </p>
             </SettingsCard>
 
             <SettingsCard
@@ -1569,11 +1567,6 @@ function SettingsView() {
                   {modelRecommendations.warnings[0]}
                 </div>
               ) : null}
-            </div>
-            <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
-              {activeChatModel
-                ? `Active model: ${activeChatModel.name}. Retrieval remains the citation source.`
-                : "Pick one accepted chat model. Retrieval remains the citation source."}
             </div>
             <label className="mt-5 block text-sm font-medium">Local model download location</label>
             <div className="mt-2 flex flex-wrap gap-2">
@@ -1895,15 +1888,12 @@ function SettingsView() {
                   Create local backup
                 </Button>
               </div>
-              <p className="mt-3 text-xs text-muted-foreground">
-                Storage usage totals are not available yet.
-              </p>
             </div>
           </SettingsCard>
           <SettingsCard
             icon={<MessageSquare className="h-4 w-4" />}
             title="Memory history"
-            description="Keep dated conversation facts and preferences aligned with your saved chats. This runs locally."
+            description="Review dated facts and correct what Vault remembers from saved chats. Older versions stay available for dated questions."
             status={
               temporalBackfillActive
                 ? "Refreshing"
@@ -2054,9 +2044,6 @@ function SettingsView() {
                 </p>
               )}
             </div>
-            <p className="mt-3 text-xs text-muted-foreground">
-              Suggestions remain separate from actions. Corrections preserve the older version for dated questions and audit history.
-            </p>
           </SettingsCard>
           </>)}
 
@@ -2064,21 +2051,35 @@ function SettingsView() {
           <SettingsCard
             icon={<Lock className="h-4 w-4" />}
             title="Library unlock"
-            description="Protect this library with a full passphrase. A protected library always starts locked after the app restarts."
-            status={unlockStatus?.state ?? "Unknown"}
-            statusTone={unlockStatus?.state === "ready" ? "ready" : "issue"}
+            description="Use a passphrase to lock source text and conversations. Vault locks again when the app closes."
+            status={
+              unlockStatus?.secured_vault_count
+                ? unlockStatus.state === "ready"
+                  ? "Unlocked"
+                  : "Locked"
+                : "Not protected"
+            }
+            statusTone={
+              unlockStatus?.secured_vault_count
+                ? unlockStatus.state === "ready"
+                  ? "ready"
+                  : "issue"
+                : "neutral"
+            }
           >
-            <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
-              State: <span className="text-foreground">{unlockStatus?.state ?? "unknown"}</span>
-              {" / "}Protection: <span className="text-foreground">
-                {unlockStatus?.secured_vault_count ? "Full passphrase" : "Not enabled"}
-              </span>
-            </div>
             {unlockStatus?.verification_error ? (
-              <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <div className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 Repair required: {unlockStatus.verification_error}
               </div>
             ) : null}
+            <details className="mt-4 text-xs text-muted-foreground">
+              <summary className="cursor-pointer font-medium text-foreground">What the passphrase protects</summary>
+              <p className="mt-2 max-w-[70ch] leading-5">
+                Source text, extracted pages, chats, evidence, and prompts are encrypted.
+                Names, file locations, timestamps, cluster labels, and operational details
+                remain readable on this device.
+              </p>
+            </details>
             <div className="mt-4 grid gap-2 md:grid-cols-[1fr_auto_auto]">
               <div>
                 <Input
@@ -2126,7 +2127,7 @@ function SettingsView() {
                   !(backendVault?.id ?? unlockStatus?.secured_vault_ids[0])
                 }
               >
-                {unlockStatus?.secured_vault_count ? "Unlock" : "Initialize security"}
+                {unlockStatus?.secured_vault_count ? "Unlock" : "Set passphrase"}
               </Button>
               <Button
                 variant="outline"
@@ -2143,15 +2144,6 @@ function SettingsView() {
                 <div className="mt-2 break-all font-mono text-xs">{recoveryKey}</div>
               </div>
             ) : null}
-            <p className="mt-3 text-xs text-muted-foreground">
-              Vault does not store your passphrase. Keep the offline recovery key somewhere safe.
-            </p>
-            <p className="mt-2 text-xs leading-5 text-muted-foreground">
-              Passphrase protection encrypts source text, extracted pages and chunks, chat
-              message bodies and evidence, and generation prompts. Library and source names,
-              file locations, timestamps, cluster and project labels, and operational metadata
-              remain readable on this device.
-            </p>
             {unlockStatus?.secured_vault_count ? (
               <details className="mt-5 rounded-md border border-border bg-background">
                 <summary className="cursor-pointer px-3 py-3 text-sm font-medium">
@@ -2409,7 +2401,7 @@ function SettingsView() {
             <SettingsCard
               icon={<Lock className="h-4 w-4" />}
               title="Reset or remove"
-              description="Delete this library without removing downloaded models or your original source files."
+              description="Delete library data or restart setup. Models and original files stay in place."
               status="Destructive"
               statusTone="issue"
               danger
@@ -2440,10 +2432,6 @@ function SettingsView() {
                   Restart setup…
                 </Button>
               </div>
-              <p className="mt-3 text-xs leading-5 text-muted-foreground">
-                Restart setup wipes this library and returns to onboarding. Downloaded model files
-                and original documents stay where they are, so they can be reused.
-              </p>
             </SettingsCard>
           )}
             </>
@@ -2517,7 +2505,7 @@ function SettingsCard({
   title: string;
   description: string;
   status?: string;
-  statusTone?: "ready" | "issue";
+  statusTone?: "ready" | "issue" | "neutral";
   danger?: boolean;
   children?: ReactNode;
 }) {
@@ -2541,7 +2529,14 @@ function SettingsCard({
           <span className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground">
             <span
               className="h-2 w-2 rounded-full"
-              style={{ background: statusTone === "ready" ? "var(--status-ready)" : "var(--status-issue)" }}
+              style={{
+                background:
+                  statusTone === "ready"
+                    ? "var(--status-ready)"
+                    : statusTone === "issue"
+                      ? "var(--status-issue)"
+                      : "var(--status-muted)",
+              }}
             />
             {status}
           </span>

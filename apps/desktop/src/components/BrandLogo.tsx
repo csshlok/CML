@@ -4,8 +4,10 @@ type BrandLogoProps = {
   alt?: string;
 };
 
+export const VAULT_OPENING_WORDMARK = "/brand/Container.svg";
+
 const brandAssets = {
-  wordmark: "/brand/Container.svg",
+  wordmark: VAULT_OPENING_WORDMARK,
   icon: "/brand/logo.svg",
 } as const;
 
