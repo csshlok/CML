@@ -4,6 +4,31 @@ Last updated: 2026-07-28
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
+## July 28 0.1.11 Integration And Release Hardening
+
+PR #5, `Fix grounded RAG, Odin pairing, and release reliability`, was merged into
+`main` at merge commit `5f04b90dca7625ebf16ef4833ba16abb2bc29088` after all
+hosted checks passed. Local review passed desktop TypeScript and 125 Electron
+behavior tests plus the focused Odin authentication suite. One model-download test
+failed only in a clean worktree because it used the host's nearly full C: temp
+drive for a real multi-gigabyte preflight; the test now mocks that unrelated
+preflight and verifies the concurrency behavior deterministically.
+
+Before the release bump, three additional edge cases were closed:
+
+- pairing-list refresh remains read-only but now filters and limits inside SQLite
+  instead of materializing every historical pairing request;
+- the installed Odin launcher passes its command path through an environment
+  variable, so a Windows user or installation path containing an apostrophe cannot
+  break the PowerShell handoff;
+- the Odin launcher contract version advanced so existing launchers are repaired
+  on the next install/status flow.
+
+Focused follow-up validation passed all nine Odin launcher tests and eleven
+pairing/model-download backend tests. Repository version metadata is `0.1.11`.
+Packaging and release artifact creation are intentionally pending the owner-run
+Windows rebuild.
+
 ## July 28 Packaged Preload Failure And Static Recovery Shell
 
 The failing 0.1.10 unpacked runtime log identified the direct packaged-app cause:

@@ -15,7 +15,7 @@ Vault is a local-first Windows context-management layer. It turns a user's files
 - Storage: explicit local vaults backed by SQLite and local indexes
 - External access: Bridge, MCP, local HTTP API, and CLI
 - Codebase context: Odin project indexing, retrieval, scoped chat, and request-only graph/tree artifacts
-- Current version: `0.1.10` pre-release
+- Current version: `0.1.11` release candidate
 
 ## Current Project Phase
 
@@ -24,6 +24,16 @@ Vault is in **pre-release stabilization and productionization**.
 The scoped RAG migration, temporal memory foundation, Odin project workflow, bounded context pipeline, and primary desktop surfaces are implemented. The project is no longer deciding its core architecture. Current work is about proving release reliability, productionizing the strongest retrieval improvements, improving measured quality without benchmark-specific behavior, distilling the UI around real user journeys, and finishing clean Windows packaging.
 
 The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
+
+## July 28 0.1.11 Release Candidate
+
+PR #5 is reviewed and merged into `main`. It restores grounded local RAG, hardens
+Odin pairing during indexing load, makes vector repair durable per source, repairs
+the packaged OCR manifest, and keeps the first-use tour inside small viewports.
+Release follow-up work bounds pairing refreshes in SQL, safely launches Odin from
+Windows paths containing apostrophes, and makes the model-download concurrency test
+independent of host disk space. Version metadata is now `0.1.11`; the Windows
+package and GitHub release remain owner-run steps.
 
 ## July 28 Packaged Preload And Startup Chrome Repair
 
