@@ -13,9 +13,21 @@ const {
   updateSetupState,
 } = require("./setup-state.cjs");
 
+const temporaryDirectories = new Set();
+
 async function temporaryUserData() {
-  return fs.mkdtemp(path.join(os.tmpdir(), "cml-setup-state-"));
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cml-setup-state-"));
+  temporaryDirectories.add(directory);
+  return directory;
 }
+
+test.after(async () => {
+  await Promise.all(
+    [...temporaryDirectories].map((directory) =>
+      fs.rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }),
+    ),
+  );
+});
 
 test("new profile starts fresh and resumes durable setup progress", async () => {
   const root = await temporaryUserData();

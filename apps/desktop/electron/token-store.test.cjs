@@ -6,9 +6,21 @@ const path = require("node:path");
 
 const { createTokenStore, getOrCreateToken } = require("./token-store.cjs");
 
+const temporaryDirectories = new Set();
+
 async function makeTempDir() {
-  return fs.mkdtemp(path.join(os.tmpdir(), "cml-token-store-"));
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cml-token-store-"));
+  temporaryDirectories.add(directory);
+  return directory;
 }
+
+test.after(async () => {
+  await Promise.all(
+    [...temporaryDirectories].map((directory) =>
+      fs.rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }),
+    ),
+  );
+});
 
 test("token store set/get/clear roundtrip", async () => {
   const dir = await makeTempDir();

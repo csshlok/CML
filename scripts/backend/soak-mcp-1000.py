@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -296,6 +297,7 @@ def main() -> int:
         terminate(mcp)
         terminate(backend)
         backend_log.close()
+        shutil.rmtree(work, ignore_errors=True)
 
 
 if __name__ == "__main__":

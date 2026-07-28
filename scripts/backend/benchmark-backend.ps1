@@ -16,7 +16,9 @@ $env:CML_ALLOW_HASH_EMBEDDINGS = "1"
 $env:CML_BACKEND_BENCH_REPORT = $ReportPath
 
 @"
+import atexit
 import os
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -24,6 +26,7 @@ from pathlib import Path
 from backend.app.core.config import get_settings
 
 root = Path(tempfile.mkdtemp(prefix="cml-backend-benchmark-"))
+atexit.register(shutil.rmtree, root, ignore_errors=True)
 os.environ["CML_DATA_DIR"] = str(root / "data")
 os.environ["CML_DATABASE_PATH"] = str(root / "data" / "benchmark.sqlite3")
 os.environ["CML_EMBEDDING_PROVIDER"] = "hash"

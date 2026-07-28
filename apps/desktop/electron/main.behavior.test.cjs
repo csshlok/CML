@@ -8,6 +8,26 @@ const path = require("node:path");
 const { EventEmitter } = require("node:events");
 const vm = require("node:vm");
 
+const temporaryDirectories = new Set();
+
+function makeTempDir(prefix) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  temporaryDirectories.add(directory);
+  return directory;
+}
+
+async function makeTempDirAsync(prefix) {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
+  temporaryDirectories.add(directory);
+  return directory;
+}
+
+test.after(() => {
+  for (const directory of temporaryDirectories) {
+    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
 function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
@@ -17,7 +37,7 @@ function loadMainModule() {
   const appHandlers = {};
   const dialogCalls = [];
   const ipcHandlers = {};
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cml-electron-"));
+  const userDataDir = makeTempDir("cml-electron-");
   const electronStub = {
     app: {
       isPackaged: false,
@@ -187,7 +207,7 @@ test("second-instance without vault arg focuses existing window without dialog",
 
 test("setActiveVaultPath persists unicode vault path and creates .vault directory", async () => {
   const { exported } = loadMainModule();
-  const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-vault path-"));
+  const targetRoot = makeTempDir("cml-vault path-");
   const vaultPath = path.join(targetRoot, "研究 Vault 😀", "nested folder");
 
   await exported.setActiveVaultPath(vaultPath);
@@ -249,7 +269,7 @@ test("vault deletion tombstones data before clearing the active pointer", async 
   exported.__setTunnelManager({
     disconnect: async (options) => tunnelEvents.push(options),
   });
-  const vaultRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "cml-delete-vault-"));
+  const vaultRoot = await makeTempDirAsync("cml-delete-vault-");
   await exported.setActiveVaultPath(vaultRoot);
   await fs.promises.writeFile(path.join(vaultRoot, ".vault", "cml.sqlite3"), "fixture");
   await fs.promises.writeFile(
@@ -277,7 +297,7 @@ test("vault deletion tombstones data before clearing the active pointer", async 
 
 test("vault deletion restores data, pointer, and setup state when pre-vault restart fails", async () => {
   const { exported, userDataDir } = loadMainModule();
-  const vaultRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "cml-delete-rollback-"));
+  const vaultRoot = await makeTempDirAsync("cml-delete-rollback-");
   await exported.setActiveVaultPath(vaultRoot);
   await fs.promises.writeFile(path.join(vaultRoot, ".vault", "cml.sqlite3"), "fixture");
   const setupState = {
@@ -317,7 +337,7 @@ test("vault deletion restores data, pointer, and setup state when pre-vault rest
 
 test("prepared vault folder does not become active until committed", async () => {
   const { exported } = loadMainModule();
-  const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-prepared-vault-"));
+  const targetRoot = makeTempDir("cml-prepared-vault-");
   const vaultPath = path.join(targetRoot, "prepared-vault");
   let restarts = 0;
   exported.__setRestartBackend(async () => {
@@ -360,21 +380,21 @@ test("vault move rejects drive roots and overlapping folders", () => {
 
 test("copied vault verification requires a SQLite database header", async () => {
   const { exported } = loadMainModule();
-  const validRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-vault-copy-valid-"));
+  const validRoot = makeTempDir("cml-vault-copy-valid-");
   fs.writeFileSync(
     path.join(validRoot, "cml.sqlite3"),
     Buffer.concat([Buffer.from("SQLite format 3\0"), Buffer.alloc(64)]),
   );
   await exported.verifyCopiedVault(validRoot);
 
-  const invalidRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-vault-copy-invalid-"));
+  const invalidRoot = makeTempDir("cml-vault-copy-invalid-");
   fs.writeFileSync(path.join(invalidRoot, "cml.sqlite3"), "not sqlite");
   await assert.rejects(exported.verifyCopiedVault(invalidRoot), /SQLite header/);
 });
 
 test("stale active vault config falls back to onboarding instead of forcing home", async () => {
   const { exported } = loadMainModule();
-  const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-stale-vault-"));
+  const targetRoot = makeTempDir("cml-stale-vault-");
   const vaultPath = path.join(targetRoot, "stale-vault");
 
   await exported.setActiveVaultPath(vaultPath);
@@ -386,8 +406,8 @@ test("stale active vault config falls back to onboarding instead of forcing home
 
 test("collectSupportedFiles skips symlinks and build folders", async () => {
   const { exported } = loadMainModule();
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cml-collect-"));
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "cml-outside-"));
+  const root = makeTempDir("cml-collect-");
+  const outside = makeTempDir("cml-outside-");
   fs.writeFileSync(path.join(root, "note.md"), "# kept\n", "utf8");
   fs.mkdirSync(path.join(root, "node_modules"));
   fs.writeFileSync(path.join(root, "node_modules", "ignored.md"), "# ignored\n", "utf8");
@@ -516,7 +536,7 @@ test("startup failure page renders a real copy button instead of malformed inlin
 
 test("packaged static asset server returns 400 for malformed encoded paths", async () => {
   const { exported } = loadMainModule();
-  const clientDir = fs.mkdtempSync(path.join(os.tmpdir(), "cml-client-"));
+  const clientDir = makeTempDir("cml-client-");
 
   const response = await exported.tryServeStaticAsset(clientDir, "/assets/%E0%A4%A");
 
@@ -526,7 +546,7 @@ test("packaged static asset server returns 400 for malformed encoded paths", asy
 
 test("packaged static asset server serves bundled brand assets", async () => {
   const { exported } = loadMainModule();
-  const clientDir = fs.mkdtempSync(path.join(os.tmpdir(), "cml-client-"));
+  const clientDir = makeTempDir("cml-client-");
   const brandDir = path.join(clientDir, "brand");
   fs.mkdirSync(brandDir, { recursive: true });
   fs.writeFileSync(path.join(brandDir, "Container.svg"), "<svg></svg>");
@@ -540,7 +560,7 @@ test("packaged static asset server serves bundled brand assets", async () => {
 
 test("startup progress loads a small packaged document that references the onboarding wordmark", async () => {
   const { exported } = loadMainModule();
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cml-startup-brand-large-"));
+  const root = makeTempDir("cml-startup-brand-large-");
   const electronDir = path.join(root, "electron");
   fs.mkdirSync(electronDir, { recursive: true });
   const startupPath = path.join(electronDir, "startup.html");
@@ -565,7 +585,7 @@ test("startup progress loads a small packaged document that references the onboa
 
 test("startup progress keeps a bounded repair mark when its document is missing", async () => {
   const { exported } = loadMainModule();
-  const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-startup-brand-empty-"));
+  const emptyRoot = makeTempDir("cml-startup-brand-empty-");
   let loadedUrl = "";
   const window = {
     loadURL: async (url) => {
@@ -661,7 +681,7 @@ test("waitForBackend fails fast when the backend child exits before readiness", 
 
 test("resolvePackagedServerEntry falls back to dist/server/server.js when index.js is absent", async () => {
   const { exported } = loadMainModule();
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cml-renderer-entry-"));
+  const tempRoot = makeTempDir("cml-renderer-entry-");
   const electronDir = path.join(tempRoot, "electron");
   const serverDir = path.join(tempRoot, "dist", "server");
   fs.mkdirSync(electronDir, { recursive: true });

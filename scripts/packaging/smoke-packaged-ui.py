@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -189,6 +190,7 @@ def main() -> int:
         return 0 if pass_value else 1
     finally:
         stop_tree(process.pid)
+        shutil.rmtree(user_data, ignore_errors=True)
 
 
 if __name__ == "__main__":

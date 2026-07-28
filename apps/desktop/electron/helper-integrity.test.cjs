@@ -16,8 +16,22 @@ const {
   verifyHelperManifestCached,
 } = require("./helper-integrity.cjs");
 
+const temporaryDirectories = new Set();
+
+function makeTempDir(prefix) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  temporaryDirectories.add(directory);
+  return directory;
+}
+
+test.after(() => {
+  for (const directory of temporaryDirectories) {
+    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
 test("verifyHelperManifest detects modified helper payloads", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cml-helper-manifest-"));
+  const root = makeTempDir("cml-helper-manifest-");
   const helperPath = path.join(root, "python-runtime");
   fs.mkdirSync(helperPath, { recursive: true });
   const pythonExe = path.join(helperPath, "python.exe");
@@ -42,7 +56,7 @@ test("verifyHelperManifest detects modified helper payloads", async () => {
 });
 
 test("verifyHelperManifest rejects a symlinked helper even when its target hash matches", async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cml-helper-symlink-"));
+  const root = makeTempDir("cml-helper-symlink-");
   const helperPath = path.join(root, "python-runtime");
   fs.mkdirSync(helperPath, { recursive: true });
   const target = path.join(root, "trusted-target.exe");
@@ -72,7 +86,7 @@ test("verifyHelperManifest rejects a symlinked helper even when its target hash 
 });
 
 test("verifyHelperManifestCached reuses a valid receipt and invalidates changed files", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cml-helper-cache-"));
+  const root = makeTempDir("cml-helper-cache-");
   const helperPath = path.join(root, "python-runtime");
   const receiptPath = path.join(root, "user-data", "helper-verification-v1.json");
   fs.mkdirSync(helperPath, { recursive: true });
