@@ -123,6 +123,7 @@ import {
   subscribeDesktopProfile,
   type DesktopProfile,
 } from "@/lib/profileState";
+import { notify } from "@/components/product/Notifications";
 
 export const Route = createFileRoute("/_app/settings")({
   validateSearch: (search: Record<string, unknown>): { section?: string } => ({
@@ -155,6 +156,12 @@ function canonicalSettingsSection(value?: string) {
   return settingsSections.some((item) => item.id === candidate)
     ? (candidate as (typeof settingsSections)[number]["id"])
     : "profile";
+}
+
+function settingsNoticeIsError(message: string) {
+  return /\b(could not|failed|failure|invalid|unavailable|incorrect|error)\b/i.test(
+    message,
+  );
 }
 
 function SettingsView() {
@@ -214,7 +221,24 @@ function SettingsView() {
   const [retryingReconciliationItemId, setRetryingReconciliationItemId] = useState<string | null>(null);
   const [retentionBusy, setRetentionBusy] = useState(false);
   const [busyActions, setBusyActions] = useState<Set<string>>(() => new Set());
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const lastPollingNoticeRef = useRef<string | null>(null);
+  const setStatusMessage = useCallback((message: string | null | undefined) => {
+    const normalized = message?.trim();
+    if (!normalized) return;
+    notify({
+      title: normalized,
+      tone: settingsNoticeIsError(normalized) ? "error" : "info",
+    });
+  }, []);
+  const setPollingStatusMessage = useCallback(
+    (message: string | null | undefined) => {
+      const normalized = message?.trim();
+      if (!normalized || lastPollingNoticeRef.current === normalized) return;
+      lastPollingNoticeRef.current = normalized;
+      setStatusMessage(normalized);
+    },
+    [setStatusMessage],
+  );
   const [healthLoadError, setHealthLoadError] = useState<string | null>(null);
   const [healthCheckedAt, setHealthCheckedAt] = useState<Date | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -317,7 +341,9 @@ function SettingsView() {
           setRetrievalPacking(null);
           if (!pathDraftDirtyRef.current) setPathDraft("");
           setHealthCheckedAt(new Date());
-          setStatusMessage(currentUnlock.message || "Library is locked. Unlock it from Privacy settings.");
+          setPollingStatusMessage(
+            currentUnlock.message || "Library is locked. Unlock it from Privacy settings.",
+          );
           return;
         }
         const results = await Promise.allSettled([
@@ -398,6 +424,7 @@ function SettingsView() {
           failures.length ? `Some settings could not refresh: ${failures.join(", ")}.` : null,
         );
         setHealthCheckedAt(new Date());
+        lastPollingNoticeRef.current = null;
       } catch (error) {
         const message =
           error instanceof Error
@@ -405,9 +432,9 @@ function SettingsView() {
             : "Vault settings are unavailable. Check Health and try again.";
         setHealthLoadError(message);
         setHealthCheckedAt(new Date());
-        setStatusMessage(message);
+        setPollingStatusMessage(message);
       }
-  }, []);
+  }, [setPollingStatusMessage]);
 
   useVisiblePolling(loadSettings, 6000);
   useVisiblePolling(refreshModelRows, 750, modelDownloadActive);
@@ -1240,11 +1267,6 @@ function SettingsView() {
         </select>
 
         <div className="mt-7 space-y-4">
-          {statusMessage && (
-            <div className="rounded-md border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
-              {statusMessage}
-            </div>
-          )}
           {activeSection === "profile" ? (
             <>
               <ProfileSettings
