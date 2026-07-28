@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowRight,
   FileText,
+  FolderInput,
   MessageSquare,
   MoreHorizontal,
   Plus,
@@ -18,15 +19,17 @@ import {
   getCluster,
   getMapNeighborhood,
   listClusterMergeArtifacts,
-  listClusters,
+  listClustersPage,
   listChatSessions,
   listProjects,
   listSources,
   mergeClusterInto,
   refreshClusterProfile,
   rollbackClusterMerge,
+  updateSource,
   updateCluster,
   type ClusterMergeArtifact,
+  type ClusterRecord,
   type ChatSessionRecord,
   type ProjectRecord,
   type MapGraphResponse,
@@ -41,6 +44,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { notify } from "@/components/product/Notifications";
 
 export const Route = createFileRoute("/_app/clusters/$clusterId")({
   head: () => ({ meta: [{ title: "Cluster" }] }),
@@ -48,6 +52,25 @@ export const Route = createFileRoute("/_app/clusters/$clusterId")({
 });
 
 const tabs = ["Overview", "Sources", "Chats", "Map", "Memory profile"] as const;
+
+async function listAllVaultClusters(vaultId: string) {
+  const clusters: ClusterRecord[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+
+  do {
+    const page = await listClustersPage(vaultId, { limit: 200, cursor });
+    clusters.push(...page.items);
+    if (!page.next_cursor) break;
+    if (seenCursors.has(page.next_cursor)) {
+      throw new Error("Cluster pagination did not advance.");
+    }
+    seenCursors.add(page.next_cursor);
+    cursor = page.next_cursor;
+  } while (cursor);
+
+  return clusters;
+}
 
 function ClusterDetail() {
   const { clusterId } = Route.useParams();
@@ -71,6 +94,10 @@ function ClusterDetail() {
   const [profileRefreshMessage, setProfileRefreshMessage] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "not-found" | "error">("loading");
   const [mapOverview, setMapOverview] = useState<MapGraphResponse | null>(null);
+  const [sourceToMove, setSourceToMove] = useState<Source | null>(null);
+  const [moveTargetId, setMoveTargetId] = useState("");
+  const [moveSourceBusy, setMoveSourceBusy] = useState(false);
+  const [moveSourceError, setMoveSourceError] = useState<string | null>(null);
 
   const cluster = backendCluster;
   const activeSources = !mounted ? [] : backendSources;
@@ -96,7 +123,7 @@ function ClusterDetail() {
         const [sourceResult, chatResult, clusterResult, artifactResult, projectResult, mapResult] = await Promise.allSettled([
           listSources(clusterRow.vault_id, { clusterId: clusterRow.id, limit: 1000 }),
           listChatSessions(clusterRow.vault_id),
-          listClusters(clusterRow.vault_id),
+          listAllVaultClusters(clusterRow.vault_id),
           listClusterMergeArtifacts(clusterRow.id),
           listProjects(clusterRow.vault_id, { clusterId: clusterRow.id, limit: 200 }),
           getMapNeighborhood(clusterRow.vault_id, clusterRow.id),
@@ -248,6 +275,60 @@ function ClusterDetail() {
     }
   }
 
+  function openMoveSource(source: Source) {
+    setSourceToMove(source);
+    setMoveTargetId("");
+    setMoveSourceError(null);
+  }
+
+  async function moveSource() {
+    if (!sourceToMove || !moveTargetId || !backendVaultId) return;
+    const target = peerClusters.find((candidate) => candidate.id === moveTargetId);
+    if (!target) {
+      setMoveSourceError("Choose an available destination cluster.");
+      return;
+    }
+
+    setMoveSourceBusy(true);
+    setMoveSourceError(null);
+    try {
+      const moved = await updateSource(sourceToMove.id, {
+        cluster_id: target.id,
+      });
+      if (moved.cluster_id !== target.id) {
+        throw new Error("Vault could not confirm the new cluster.");
+      }
+
+      setBackendSources((current) =>
+        current.filter((source) => source.id !== sourceToMove.id),
+      );
+      setSourceToMove(null);
+      setMoveTargetId("");
+      notify({
+        title: "Source moved",
+        description: `${sourceToMove.title} is now in ${target.name}.`,
+        tone: "success",
+      });
+
+      const [clusterResult, mapResult] = await Promise.allSettled([
+        getCluster(clusterIdForActions),
+        getMapNeighborhood(backendVaultId, clusterIdForActions),
+      ]);
+      if (clusterResult.status === "fulfilled") {
+        setBackendCluster(clusterFromRecord(clusterResult.value));
+      }
+      if (mapResult.status === "fulfilled") {
+        setMapOverview(mapResult.value);
+      }
+    } catch (error) {
+      setMoveSourceError(
+        error instanceof Error ? error.message : "Could not move this source.",
+      );
+    } finally {
+      setMoveSourceBusy(false);
+    }
+  }
+
   return (
     <div className="vault-page-wash h-full overflow-y-auto">
       <main className="mx-auto min-h-full w-full max-w-[1240px] min-w-0 px-4 py-6 sm:px-6 lg:px-9">
@@ -351,7 +432,13 @@ function ClusterDetail() {
           </section>
         )}
 
-        {activeTab === "Sources" && <ClusterSourcesPanel sources={clusterSources} />}
+        {activeTab === "Sources" && (
+          <ClusterSourcesPanel
+            sources={clusterSources}
+            peerClusters={peerClusters}
+            onMove={openMoveSource}
+          />
+        )}
         {activeTab === "Chats" && <ClusterChatsPanel chats={clusterChats} />}
         {activeTab === "Map" && backendVaultId && (
           <section className="mt-7">
@@ -434,6 +521,69 @@ function ClusterDetail() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog
+        open={Boolean(sourceToMove)}
+        onOpenChange={(open) => {
+          if (!open && !moveSourceBusy) {
+            setSourceToMove(null);
+            setMoveTargetId("");
+            setMoveSourceError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Move source</DialogTitle>
+            <DialogDescription>
+              Move <span className="break-words font-medium text-foreground">{sourceToMove?.title}</span>{" "}
+              to another cluster. The original file and saved source content stay unchanged.
+            </DialogDescription>
+          </DialogHeader>
+          <div>
+            <label className="text-sm font-medium" htmlFor="move-source-target">
+              Destination cluster
+            </label>
+            <select
+              id="move-source-target"
+              className="mt-2 h-9 w-full rounded-md border border-input bg-card px-3 text-sm"
+              value={moveTargetId}
+              onChange={(event) => {
+                setMoveTargetId(event.target.value);
+                if (moveSourceError) setMoveSourceError(null);
+              }}
+              disabled={moveSourceBusy}
+            >
+              <option value="">Choose a cluster</option>
+              {peerClusters.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+            {moveSourceError ? (
+              <p className="mt-2 text-sm text-destructive" role="alert">
+                {moveSourceError}
+              </p>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setSourceToMove(null)}
+              disabled={moveSourceBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void moveSource()}
+              disabled={moveSourceBusy || !moveTargetId}
+            >
+              {moveSourceBusy ? "Moving…" : "Move source"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -507,7 +657,15 @@ function RecentChats({ chats }: { chats: Array<ChatSessionRecord | { id: string;
   );
 }
 
-function ClusterSourcesPanel({ sources }: { sources: Source[] }) {
+function ClusterSourcesPanel({
+  sources,
+  peerClusters,
+  onMove,
+}: {
+  sources: Source[];
+  peerClusters: Cluster[];
+  onMove: (source: Source) => void;
+}) {
   return (
     <section className="mt-7">
       <div className="flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-center sm:justify-between">
@@ -519,12 +677,11 @@ function ClusterSourcesPanel({ sources }: { sources: Source[] }) {
       </div>
       <div className="mt-5 grid gap-3">
         {sources.map((source) => (
-          <Link
+          <div
             key={source.id}
-            to="/sources"
-            className="grid min-h-[74px] grid-cols-1 gap-3 rounded-md border border-border bg-card px-4 py-3 text-sm hover:border-primary/40 sm:grid-cols-[minmax(0,1fr)_104px_112px] sm:items-center sm:gap-5"
+            className="grid min-h-[74px] grid-cols-1 gap-3 rounded-md border border-border bg-card px-4 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_90px_100px_auto] sm:items-center sm:gap-4"
           >
-            <span className="flex min-w-0 items-start gap-3">
+            <Link to="/sources" className="flex min-w-0 items-start gap-3 hover:text-primary">
               <FileText className="mt-1 h-4 w-4 shrink-0 text-[var(--cluster-sky)]" />
               <span className="min-w-0">
                 <span className="block break-words font-medium">{source.title}</span>
@@ -532,10 +689,26 @@ function ClusterSourcesPanel({ sources }: { sources: Source[] }) {
                   {source.summary || source.preview || "No extracted preview yet."}
                 </span>
               </span>
-            </span>
+            </Link>
             <span className="text-muted-foreground">{source.type.toUpperCase()}</span>
             <span className="text-muted-foreground sm:text-right">{source.state}</span>
-          </Link>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-fit gap-2"
+              onClick={() => onMove(source)}
+              disabled={peerClusters.length === 0}
+              title={
+                peerClusters.length === 0
+                  ? "Create another cluster before moving this source."
+                  : `Move ${source.title}`
+              }
+              aria-label={`Move ${source.title} to another cluster`}
+            >
+              <FolderInput className="h-4 w-4" />
+              Move
+            </Button>
+          </div>
         ))}
         {sources.length === 0 && (
           <div className="py-10 text-sm text-muted-foreground">No sources are linked to this cluster yet.</div>
