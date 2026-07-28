@@ -162,7 +162,11 @@ class LoraToRagPhase12Tests(unittest.TestCase):
         get_settings.cache_clear()
 
         discovery = discover_installed_models(max_results=10, refresh=True)
-        discovered = next(row for row in discovery["models"] if row["local_path"] == str(source))
+        discovered = next(
+            row
+            for row in discovery["models"]
+            if Path(row["local_path"]).resolve() == source.resolve()
+        )
 
         self.assertTrue(discovered["already_imported"])
 
@@ -625,7 +629,10 @@ class LoraToRagPhase12Tests(unittest.TestCase):
         roots = installed_model_scan_roots()
         discovery = discover_installed_models(max_results=10, refresh=True)
 
-        self.assertIn(str(model_file.parent).lower(), {str(path).lower() for path in roots})
+        self.assertIn(
+            model_file.parent.resolve(),
+            {path.resolve() for path in roots},
+        )
         self.assertGreaterEqual(discovery["compatible_model_count"], 1)
         self.assertTrue(any(item["local_path"] == str(model_file.resolve()) for item in discovery["models"]))
 
@@ -644,7 +651,10 @@ class LoraToRagPhase12Tests(unittest.TestCase):
 
         self.assertTrue(approval["approved"])
         self.assertIn(str(model_file.parent.resolve()), registry_state()["approved_scan_roots"])
-        self.assertIn(str(model_file.parent).lower(), {str(path).lower() for path in roots})
+        self.assertIn(
+            model_file.parent.resolve(),
+            {path.resolve() for path in roots},
+        )
         self.assertTrue(any(item["local_path"] == str(model_file.resolve()) for item in discovery["models"]))
 
     def test_default_model_scan_does_not_include_drive_roots(self) -> None:

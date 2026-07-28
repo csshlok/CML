@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     llm_provider: str = "none"
     llm_base_url: str = "http://127.0.0.1:8080/v1"
     llm_model: str = "Qwen/Qwen3-4B-GGUF:Q4_K_M"
-    llm_timeout_seconds: float = 45.0
+    llm_timeout_seconds: float = 180.0
     llm_context_token_budget: int = 1200
     atomic_semantic_enrichment_enabled: bool = False
     atomic_semantic_extractor_contract: str = "v1"

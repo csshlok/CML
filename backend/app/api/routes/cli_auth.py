@@ -1,4 +1,5 @@
 import ipaddress
+import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -145,3 +146,7 @@ def _call(function, *args, **kwargs):
         return function(*args, **kwargs)
     except CliAuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+    except sqlite3.OperationalError as exc:
+        if "database is locked" in str(exc).lower():
+            raise HTTPException(status_code=503, detail="cli_auth_store_busy") from exc
+        raise

@@ -75,6 +75,12 @@ def normalize_tuple(
     )
     if embedding_model_id in {"unset", "hash"} and fallback_embedding_model_id:
         embedding_model_id = fallback_embedding_model_id
+    if (
+        embedding_model_id == "hash-dev"
+        and fallback_embedding_model_id
+        and fallback_embedding_model_id not in {"hash", "hash-dev"}
+    ):
+        embedding_model_id = fallback_embedding_model_id
     snapshot = {
         "normalization_version": str(parsed.get("normalization_version") or DEFAULT_NORMALIZATION_VERSION),
         "embedding_model_id": str(embedding_model_id),

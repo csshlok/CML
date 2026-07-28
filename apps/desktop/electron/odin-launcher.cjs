@@ -3,7 +3,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
-const LAUNCHER_VERSION = 1;
+const LAUNCHER_VERSION = 3;
 
 function quoteCmd(value) {
   return `"${String(value).replaceAll('"', '""')}"`;
@@ -18,7 +18,12 @@ function launcherContents({ pythonPath, resourcesRoot }) {
     `set "PYTHONPATH=${backendRoot}"`,
     'set "PYTHONHOME="',
     'set "PYTHONNOUSERSITE=1"',
+    'set "PYTHONSAFEPATH=1"',
     `set "CML_ODIN_LAUNCHER_VERSION=${LAUNCHER_VERSION}"`,
+    'if /I "%~1"=="auth" if /I "%~2"=="pair" if not defined CML_ODIN_PAIRING_CONSOLE (',
+    `  start "" powershell.exe -NoLogo -NoProfile -NoExit -Command "$env:CML_ODIN_PAIRING_CONSOLE='1'; & '%~f0' auth pair"`,
+    "  exit /b %ERRORLEVEL%",
+    ")",
     `${python} -s -m backend.app.odin_cli %*`,
     "exit /b %ERRORLEVEL%",
     "",
@@ -139,13 +144,27 @@ function runLauncher(launcherPath, args, {
     throw new Error("Only the Odin help probe can run silently.");
   }
   if (visible) {
-    const command = `& ${quotePowerShell(path.resolve(launcherPath))} auth pair`;
-    const child = childProcess.spawn(
-      "powershell.exe",
-      ["-NoProfile", "-NoExit", "-Command", command],
-      { cwd, detached: true, stdio: "ignore", windowsHide: false },
+    const powershellCommand =
+      `$env:CML_ODIN_PAIRING_CONSOLE='1'; & ${quotePowerShell(path.resolve(launcherPath))} auth pair`;
+    const encodedCommand = Buffer.from(powershellCommand, "utf16le").toString("base64");
+    const result = runner(
+      "cmd.exe",
+      [
+        "/d",
+        "/s",
+        "/c",
+        `start "" powershell.exe -NoLogo -NoProfile -NoExit -EncodedCommand ${encodedCommand}`,
+      ],
+      {
+        cwd,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 10_000,
+      },
     );
-    child.unref();
+    if (result.error || result.status !== 0) {
+      throw new Error("Windows could not open PowerShell for Odin pairing.");
+    }
     return { started: true };
   }
   const command = `""${path.resolve(launcherPath).replaceAll('"', '""')}" --help"`;

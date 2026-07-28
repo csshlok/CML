@@ -311,7 +311,10 @@ $manifest = [ordered]@{
   ghostscript = $bundledGhostscript -ne $null -and (Test-GhostscriptExecutable -Path $bundledGhostscript.FullName)
   errors = @($errors)
 }
-$manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $destinationPath "manifest.json") -Encoding UTF8
+$manifestPath = Join-Path $destinationPath "manifest.json"
+$manifestJson = $manifest | ConvertTo-Json -Depth 5
+$utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($manifestPath, $manifestJson, $utf8WithoutBom)
 
 if ($errors.Count -gt 0) {
   $errors | ForEach-Object { Write-Warning $_ }
