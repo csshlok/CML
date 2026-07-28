@@ -4,6 +4,59 @@ Last updated: 2026-07-28
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
+## July 28 Frame Notifications And Single-Source Cluster Moves
+
+Settings previously rendered operation results in a full-width message above its
+content. That feedback moved when the document scrolled, displaced the page, and
+could be far from the control that initiated an action. Settings now publishes to
+the notification system already mounted at the application root. The viewport is
+fixed to the bottom center of the user's visible frame with pointer events limited
+to each compact notification. Notices begin fading at 5,000 ms and are removed at
+5,500 ms, honor reduced-motion preferences, remain manually dismissible, and keep
+the existing status live region. The bottom-center placement also avoids the
+bottom-right model-download status surface.
+
+Settings refreshes service state every six seconds. Routing its previous polling
+banner directly to notifications would therefore have created an endless sequence
+of identical toasts during an outage. Poll-generated notices are deduplicated until
+the underlying message changes or a complete Settings load succeeds; direct user
+actions still produce feedback on every attempt. Rendered validation confirmed the
+toast remains attached to the window rather than the page and is absent after 6.2
+seconds.
+
+Cluster merging already combined every source in two clusters, but there was no
+direct way to correct one misplaced source. The cluster Sources tab now provides a
+row-level Move action. Its dialog lists peer clusters in the same vault, excludes the
+current cluster, disables the action when no destination exists, and keeps failures
+inline so auto-expiring notifications cannot hide a blocked operation. Source title
+navigation and the row action are separate interactive elements rather than an
+invalid nested button inside a link.
+
+The move deliberately reuses `PATCH /api/v1/sources/{id}` instead of introducing a
+second membership mechanism. The source table has one authoritative `cluster_id`;
+the backend checks that the destination belongs to the same vault, updates that
+single value transactionally, invalidates relevant caches, queues summary refreshes
+for both clusters, and reindexes an already indexed source. The UI requires the
+returned `cluster_id` to match the requested destination before removing the row.
+This prevents optimistic UI drift when a request is rejected or a stale service
+responds unexpectedly. Destination discovery follows the backend's stable cursor
+pages in 200-row batches and rejects a repeated cursor, so libraries with more than
+1,000 clusters remain complete without risking an infinite pagination loop.
+
+Validation evidence for this unbuilt source delta:
+
+| Gate | Result |
+| --- | --- |
+| Focused source-move backend tests | 2/2 passed, including cross-vault rejection |
+| Focused notification and move Electron tests | 6/6 passed |
+| Complete desktop behavior run | TypeScript and 110/110 Electron tests passed |
+| Quick backend tier | 403/403 selected tests passed; 417 slow/optional cases deselected by tier |
+| Production build and renderer audits | Build, HTML safety, and 42-file interactive-control audit passed |
+| Rendered Settings notification | Fixed-frame placement, expiry, and polling deduplication passed |
+| Rendered source move | Desktop and 900x800 checks passed with mocked API; 0 console warnings/errors |
+| Real vault mutation | None; rendered requests were intercepted |
+| Rebuilt Windows package | Pending owner rebuild |
+
 ## July 28 Settings Section Deduplication
 
 Settings used `showSection("library", "advanced")` for two complete cards. This made

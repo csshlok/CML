@@ -25,6 +25,32 @@ The scoped RAG migration, temporal memory foundation, Odin project workflow, bou
 
 The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
 
+## July 28 Settings Feedback And Single-Source Cluster Moves
+
+Settings action feedback now uses the application-wide notification viewport instead
+of occupying space above the page. Notifications are fixed to the bottom center of
+the visible app frame, remain readable while the page scrolls, start fading after
+five seconds, and are removed after 5.5 seconds. They retain manual dismissal and
+accessible live-region semantics. Repeated Settings polling errors are deduplicated
+so an unavailable service cannot create a new notification every six seconds.
+
+Cluster detail now supports moving one source without merging its whole cluster. The
+Sources tab exposes a Move action and a destination dialog containing other clusters
+from the same vault. The existing authoritative source-update API performs the move,
+validates vault ownership, refreshes old and new cluster profiles, invalidates
+retrieval caches, and reindexes an indexed source. The renderer removes the source
+from the current cluster only after the backend confirms the destination. Failed
+moves remain visible in the dialog and can be retried.
+
+Focused backend and Electron regressions pass. The complete desktop behavior run
+passes 110/110 tests, the quick backend tier passes 403/403 selected tests, and
+TypeScript, the production build, renderer HTML safety, and interactive-control
+audits pass. Rendered checks cover notification expiry, polling deduplication, valid
+destination selection, successful source removal, narrow-window usability, and a
+clean console. Rendered move validation used an intercepted local API and did not
+mutate a real vault. The Windows package remains intentionally unbuilt pending the
+owner-managed rebuild.
+
 ## July 28 Settings Information Architecture Cleanup
 
 The Settings renderer previously mapped both Local imports and Evidence retention to
