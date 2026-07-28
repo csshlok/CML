@@ -559,6 +559,8 @@ test("startup progress loads a small packaged document that references the onboa
   assert.ok(html.length < 20_000, `startup document was unexpectedly large: ${html.length}`);
   assert.match(html, /\.\.\/dist\/client\/brand\/Container\.svg/);
   assert.doesNotMatch(html, /data:image\/svg\+xml;base64/);
+  assert.doesNotMatch(html, /brand-fallback/);
+  assert.equal((html.match(/alt="Vault"/g) || []).length, 1);
 });
 
 test("startup progress keeps a bounded repair mark when its document is missing", async () => {

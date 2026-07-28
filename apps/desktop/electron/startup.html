@@ -31,18 +31,6 @@
         height: auto;
         user-select: none;
       }
-      .brand-fallback {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        font-size: 34px;
-        font-weight: 800;
-        letter-spacing: -1px;
-      }
-      .brand-fallback svg {
-        width: 72px;
-        height: 72px;
-      }
       p {
         margin: 24px 0 0;
         color: #766b64;
@@ -80,18 +68,8 @@
           src="../dist/client/brand/Container.svg"
           alt="Vault"
           draggable="false"
-          onerror="this.hidden=true;this.nextElementSibling.hidden=false"
+          onerror="this.hidden=true"
         >
-        <div class="brand-fallback" hidden aria-label="Vault">
-          <svg viewBox="0 0 72 72" aria-hidden="true">
-            <g fill="none" stroke="currentColor" stroke-width="4">
-              <path d="M36 2v20M36 50v20M2 36h20M50 36h20M12 12l14 14M46 46l14 14M60 12L46 26M26 46L12 60"/>
-              <path d="M23 6l8 18M41 48l8 18M6 23l18 8M48 41l18 8M49 6l-8 18M31 48l-8 18M66 23l-18 8M24 41L6 49"/>
-              <circle cx="36" cy="36" r="12" fill="#fbfaf6"/>
-            </g>
-          </svg>
-          <span>VAULT</span>
-        </div>
       </div>
       <p>Opening your library…</p>
       <div class="track" aria-hidden="true"><div class="bar"></div></div>
