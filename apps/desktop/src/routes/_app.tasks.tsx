@@ -146,7 +146,7 @@ function TasksView() {
               <h1 className="page-title">Tasks</h1>
               <p className="mt-2 text-sm text-muted-foreground">Background work that keeps your vault current.</p>
             </div>
-            <Button className="w-full sm:w-auto" onClick={() => void runOnce()}>
+            <Button className="desktop-window-action w-full sm:w-auto" onClick={() => void runOnce()}>
               <Play className="h-4 w-4" />
               Run due jobs
             </Button>

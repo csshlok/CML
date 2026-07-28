@@ -136,7 +136,7 @@ function HomeView() {
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="desktop-window-action flex flex-wrap items-center gap-2">
             <Button variant="outline" className="gap-2" asChild>
               <Link to="/search"><Settings2 className="h-4 w-4" /> Search filters</Link>
             </Button>

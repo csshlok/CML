@@ -4,29 +4,26 @@ Last updated: 2026-07-28
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
-## July 28 Desktop Titlebar Ownership
+## July 28 Compact Window-Control Exclusion
 
-Vault uses a frameless Electron window with three custom controls fixed to the
-top-right. The control container was previously only 138 px wide and occupied no
-layout space. Route content still began at y=0, which placed top-right actions such
-as Search's Manage sources button partly beneath the 32 px control hit area. Similar
-collisions were possible anywhere a route placed an action near its upper edge.
+The frameless desktop keeps its invisible top drag behavior; no full-width titlebar
+row is reserved. The three Windows buttons remain 138×32 px at the upper-right, and
+their transparent chrome container is now 150×44 px. The extra 12 px at the left and
+bottom is intentionally inert so nearby application actions cannot lead directly
+into a minimize or maximize hit target.
 
-The desktop frame now defines one `--vault-titlebar-height` of 32 px and gives that
-space to `vault-desktop-content` before any route renders. `vault-window-chrome`
-spans the full width as the native drag region, while `vault-window-controls`
-retains `-webkit-app-region: no-drag`. This establishes one safe-area contract
-instead of page-specific padding and keeps the web build unchanged because the
-desktop wrapper is conditional on the Electron bridge.
-
-At 1280×720 the control group occupies y=0–32 and Manage sources begins at y=52,
-leaving 20 px of visible separation. At 900×700 the responsive header stacks the
-action below its page copy and no interactive content enters the titlebar. A route
-scan over Home, Search, Sources, Chat, Map, Tasks, and Settings found no visible
-interactive control above y=32. Search → Manage sources navigation was exercised
-and reached Sources successfully. The 113-test desktop run, TypeScript, production
-web build, renderer HTML safety audit, and interactive-control audit pass; the
-Windows package remains pending the owner-managed rebuild.
+Only action groups that can occupy the upper-right use
+`desktop-window-action`. Inside the Electron frame and above the desktop breakpoint,
+that utility reserves the same 150 px horizontally. It is applied to Search, Home,
+Sources inbox, Map, Projects, Tasks, Bridge, and Clusters. This avoids route-specific
+magic numbers while preserving each page's original y-position, the invisible
+titlebar, and the unmodified web layout. In the compact application header, the
+brand remains centered and the service-status label reserves the same right-side
+zone instead of appearing beneath the Windows buttons. Rendered checks confirmed
+that route content still begins at y=0, Manage sources ends before the no-go area,
+compact actions stay below the controls, and Search → Sources navigation remains
+clickable. The 113-test desktop run, TypeScript, production web build, and
+interactive-control audit pass.
 
 ## July 28 Durable File Imports And On-Demand Source Details
 

@@ -25,23 +25,22 @@ The scoped RAG migration, temporal memory foundation, Odin project workflow, bou
 
 The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
 
-## July 28 Desktop Chrome Safe Area
+## July 28 Window-Control Exclusion Zone
 
-The frameless Windows controls no longer float over route content. The desktop frame
-now reserves a shared 32 px titlebar row before rendering the application shell, so
-top-right page actions cannot sit beneath or immediately against minimize, maximize,
-or close. The complete empty titlebar area is a native drag region while the three
-window buttons remain explicitly interactive.
+The invisible frameless titlebar remains part of the product layout and route content
+still begins at the top of the window. A compact 150×44 px no-go area now surrounds
+the 138×32 px minimize, maximize, and close group, adding a 12 px buffer to its left
+and below without introducing a full-width strip.
 
-This is a root-layout correction shared by Search, Home, Sources, Chat, Map, Tasks,
-Settings, onboarding, and every other desktop route; individual page headers do not
-carry one-off offsets. Web rendering remains unchanged because the safe area is only
-mounted when the Electron window-control bridge exists. Rendered validation at
-1280×720 and 900×700 confirmed that Search's Manage sources action has no overlap,
-remains clickable, and that visible controls across representative routes stay
-outside the titlebar. The focused window-control contract and desktop TypeScript
-validation pass. The complete 113-test desktop run, production web build, renderer
-HTML safety audit, and interactive-control audit also pass.
+Top-edge action groups use one desktop-only exclusion utility that moves them left
+of this area while leaving their vertical rhythm and all lower page content
+unchanged. Search's Manage sources action and the corresponding top actions on Home,
+Sources, Map, Projects, Tasks, Bridge, and Clusters use the same contract. Narrow
+responsive layouts do not receive the page-action offset because their actions
+already stack below the window controls. Their centered logo stays centered while
+the status indicator stops before the same exclusion zone. Rendered desktop and
+compact checks, all 113 desktop tests, TypeScript, the production web build, and the
+interactive-control audit pass.
 
 ## July 28 Durable File-Import Progress
 

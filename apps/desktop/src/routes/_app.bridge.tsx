@@ -627,7 +627,7 @@ function BridgeView() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 lg:shrink-0">
+          <div className="desktop-window-action flex flex-wrap items-center gap-2 lg:shrink-0">
             <Button variant="outline" className="gap-2" onClick={() => setTourStep(0)}>
               <HelpCircle className="h-4 w-4" />
               How to connect

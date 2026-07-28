@@ -205,7 +205,7 @@ function SearchView() {
                 Search saved sources, review unclustered items, and open the context you need.
               </p>
             </div>
-            <Button variant="outline" asChild>
+            <Button variant="outline" className="desktop-window-action" asChild>
               <Link to="/sources">Manage sources</Link>
             </Button>
           </div>

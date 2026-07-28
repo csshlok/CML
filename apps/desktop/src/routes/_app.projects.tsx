@@ -84,7 +84,7 @@ function ProjectsIndex() {
               Ask questions across code you have indexed with Odin. Repository files stay local and are never executed or modified.
             </p>
           </div>
-          <Button variant="outline" asChild>
+          <Button variant="outline" className="desktop-window-action" asChild>
             <Link to="/settings" search={{ section: "odin" }}>
               <Code2 className="h-4 w-4" /> Set up Odin
             </Link>

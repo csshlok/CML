@@ -461,7 +461,7 @@ function SourcesView() {
               <Link
                 to="/sources"
                 search={{}}
-                className="text-sm text-primary hover:underline"
+                className="desktop-window-action text-sm text-primary hover:underline"
               >
                 View all sources
               </Link>

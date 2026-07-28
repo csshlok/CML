@@ -138,14 +138,39 @@ test("desktop window and preload are wired to the custom frameless chrome", () =
   assert.match(preloadSource, /cml:window-state-changed/);
   assert.match(
     stylesSource,
-    /\.vault-desktop-content\s*\{[^}]*padding-top:\s*var\(--vault-titlebar-height\)/s,
+    /\.vault-window-chrome\s*\{[^}]*width:\s*150px;[^}]*height:\s*44px;/s,
   );
   assert.match(
     stylesSource,
-    /\.vault-window-chrome\s*\{[^}]*left:\s*0;[^}]*-webkit-app-region:\s*drag/s,
+    /\.vault-desktop-frame \.desktop-window-action\s*\{[^}]*margin-right:\s*150px;/s,
   );
   assert.match(
     stylesSource,
     /\.vault-window-controls\s*\{[^}]*-webkit-app-region:\s*no-drag/s,
   );
+  assert.doesNotMatch(
+    stylesSource,
+    /\.vault-desktop-content\s*\{[^}]*padding-top:/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.vault-desktop-frame \.vault-mobile-status\s*\{[^}]*margin-right:\s*150px;/s,
+  );
+
+  for (const routeName of [
+    "_app.search.tsx",
+    "_app.home.tsx",
+    "_app.sources.tsx",
+    "_app.map.tsx",
+    "_app.projects.tsx",
+    "_app.tasks.tsx",
+    "_app.bridge.tsx",
+    "_app.clusters.tsx",
+  ]) {
+    const routeSource = fs.readFileSync(
+      path.join(__dirname, "..", "src", "routes", routeName),
+      "utf8",
+    );
+    assert.match(routeSource, /desktop-window-action/, `${routeName} must avoid window controls`);
+  }
 });

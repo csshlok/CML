@@ -293,10 +293,12 @@ export function AppShell() {
         >
           {sidebarOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
         </button>
-        <BrandLogo className="h-6 w-auto" />
-        <StatusLabel tone={backend.status === "online" ? "ready" : backend.status === "degraded" ? "warning" : "neutral"}>
-          {backend.status === "online" ? "Ready" : backend.status === "checking" ? "Checking" : "Offline"}
-        </StatusLabel>
+        <BrandLogo className="vault-mobile-logo h-6 w-auto" />
+        <div className="vault-mobile-status">
+          <StatusLabel tone={backend.status === "online" ? "ready" : backend.status === "degraded" ? "warning" : "neutral"}>
+            {backend.status === "online" ? "Ready" : backend.status === "checking" ? "Checking" : "Offline"}
+          </StatusLabel>
+        </div>
       </div>
       <div className="flex min-h-0 flex-1">
         {sidebarOpen ? <button type="button" className="vault-sidebar-scrim" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} /> : null}

@@ -229,7 +229,7 @@ function ClustersList() {
               Your memory spaces. Organized. Private. Under your control.
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="desktop-window-action flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => void loadData()} disabled={loading}>
               <RefreshCw className="h-4 w-4" /> Refresh
             </Button>

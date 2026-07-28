@@ -51,7 +51,7 @@ function MapView() {
           </p>
         </div>
         {overview?.truncated ? (
-          <span className="text-xs text-muted-foreground">
+          <span className="desktop-window-action text-xs text-muted-foreground">
             Showing {overview.nodes.length} of {overview.total?.toLocaleString()} clusters
           </span>
         ) : null}
