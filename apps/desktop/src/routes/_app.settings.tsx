@@ -116,6 +116,13 @@ import { isModelRuntimeReady, modelReadinessLabel } from "@/lib/modelState";
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
 import { useLocalImage } from "@/lib/useLocalImage";
 import { cn } from "@/lib/utils";
+import {
+  normalizeDesktopProfile,
+  profileDisplayName,
+  saveDesktopProfile,
+  subscribeDesktopProfile,
+  type DesktopProfile,
+} from "@/lib/profileState";
 
 export const Route = createFileRoute("/_app/settings")({
   validateSearch: (search: Record<string, unknown>): { section?: string } => ({
@@ -222,7 +229,7 @@ function SettingsView() {
   const [deleteNameDraft, setDeleteNameDraft] = useState("");
   const [deletePassphrase, setDeletePassphrase] = useState("");
   const [destructiveAction, setDestructiveAction] = useState<"delete" | "restart">("delete");
-  const [avatarPath, setAvatarPath] = useState("");
+  const [profile, setProfile] = useState<DesktopProfile>(() => normalizeDesktopProfile(null));
   const pathDraftDirtyRef = useRef(false);
   const embeddingDraftDirtyRef = useRef(false);
 
@@ -246,9 +253,10 @@ function SettingsView() {
   useEffect(() => {
     setMounted(true);
     void desktop?.getSetupState?.().then((state) => {
-      setAvatarPath(state?.profile.avatar_path ?? "");
+      setProfile(normalizeDesktopProfile(state?.profile));
       setModelDownloadRoot(state?.model_storage.download_root ?? "");
     });
+    return subscribeDesktopProfile(setProfile);
   }, []);
 
   useEffect(() => {
@@ -935,17 +943,17 @@ function SettingsView() {
     }
   }
 
-  async function renameVault(name: string) {
-    if (!backendVault || !name.trim()) return;
-    setActionBusy("rename", true);
+  async function saveDisplayName(name: string) {
+    const displayName = name.trim();
+    if (!displayName) return;
+    setActionBusy("profile-name", true);
     try {
-      const updated = await updateVault(backendVault.id, { name: name.trim() });
-      setBackendVault(updated);
-      setStatusMessage("Library name updated.");
+      setProfile(await saveDesktopProfile({ display_name: displayName }));
+      setStatusMessage("Display name saved.");
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Could not rename the library.");
+      setStatusMessage(error instanceof Error ? error.message : "Could not save the display name.");
     } finally {
-      setActionBusy("rename", false);
+      setActionBusy("profile-name", false);
     }
   }
 
@@ -977,19 +985,22 @@ function SettingsView() {
   async function chooseProfileImage() {
     const selected = await desktop?.selectCoverImage?.();
     if (!selected) return;
-    const previousAvatar = avatarPath;
-    setAvatarPath(selected);
-    const state = await desktop?.getSetupState?.();
-    await desktop?.updateSetupState?.({
-      profile: {
-        display_name: state?.profile.display_name ?? backendVault?.name ?? "",
-        avatar_path: selected,
-      },
-    });
-    if (previousAvatar && previousAvatar !== selected) {
-      await desktop?.deleteLocalMedia?.(previousAvatar);
+    const previousAvatar = profile.avatar_path;
+    setActionBusy("profile-photo", true);
+    try {
+      setProfile(await saveDesktopProfile({ avatar_path: selected }));
+      if (previousAvatar && previousAvatar !== selected) {
+        await desktop?.deleteLocalMedia?.(previousAvatar);
+      }
+      setStatusMessage("Profile photo saved.");
+    } catch (error) {
+      if (selected !== previousAvatar) {
+        await desktop?.deleteLocalMedia?.(selected);
+      }
+      setStatusMessage(error instanceof Error ? error.message : "Could not save the profile photo.");
+    } finally {
+      setActionBusy("profile-photo", false);
     }
-    setStatusMessage("Profile image updated.");
   }
 
   async function installOrRepairOdin() {
@@ -1220,13 +1231,19 @@ function SettingsView() {
         </select>
 
         <div className="mt-7 space-y-4">
+          {statusMessage && (
+            <div className="rounded-md border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+              {statusMessage}
+            </div>
+          )}
           {activeSection === "profile" ? (
             <>
               <ProfileSettings
-                vault={backendVault}
-                avatarPath={avatarPath}
-                saving={isActionBusy("rename")}
-                onRename={renameVault}
+                profile={profile}
+                vaultPath={backendVault?.path ?? ""}
+                savingName={isActionBusy("profile-name")}
+                savingPhoto={isActionBusy("profile-photo")}
+                onSaveName={saveDisplayName}
                 onChooseImage={chooseProfileImage}
               />
               <SettingsCard
@@ -1245,12 +1262,6 @@ function SettingsView() {
             </>
           ) : (
             <>
-          {statusMessage && (
-            <div className="rounded-md border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
-              {statusMessage}
-            </div>
-          )}
-
           {showSection("health") && (
             <>
               <SettingsCard
@@ -2571,21 +2582,26 @@ function formatBytes(value: number) {
 }
 
 function ProfileSettings({
-  vault,
-  avatarPath,
-  saving,
-  onRename,
+  profile,
+  vaultPath,
+  savingName,
+  savingPhoto,
+  onSaveName,
   onChooseImage,
 }: {
-  vault: VaultRecord | null;
-  avatarPath: string;
-  saving: boolean;
-  onRename: (name: string) => Promise<void>;
+  profile: DesktopProfile;
+  vaultPath: string;
+  savingName: boolean;
+  savingPhoto: boolean;
+  onSaveName: (name: string) => Promise<void>;
   onChooseImage: () => Promise<void>;
 }) {
-  const vaultPath = vault?.path ?? "";
-  const [displayName, setDisplayName] = useState(vault?.name ?? (vaultPath ? vaultName(vaultPath) : "Local profile"));
-  const avatarSource = useLocalImage(avatarPath);
+  const [displayName, setDisplayName] = useState(profile.display_name);
+  const avatarSource = useLocalImage(profile.avatar_path);
+  useEffect(() => {
+    setDisplayName(profile.display_name);
+  }, [profile.display_name]);
+  const savedDisplayName = profileDisplayName(profile);
   return (
     <>
       <section className="vault-card p-5">
@@ -2595,7 +2611,7 @@ function ProfileSettings({
               {avatarSource ? (
                 <img
                   src={avatarSource}
-                  alt="Profile"
+                  alt={`${savedDisplayName} profile`}
                   className="h-full w-full object-cover"
                 />
               ) : (
@@ -2607,17 +2623,18 @@ function ProfileSettings({
             <button
               type="button"
               onClick={() => void onChooseImage()}
+              disabled={savingPhoto}
               className="absolute -bottom-2 -right-2 flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card shadow-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label="Choose profile image"
+              aria-label="Choose profile photo"
             >
               <Camera className="h-4 w-4" />
             </button>
           </div>
           <div className="min-w-0 flex-1">
-            <h2 className="text-xl font-semibold">{displayName}</h2>
+            <h2 className="text-xl font-semibold">{displayName.trim() || savedDisplayName}</h2>
             <p className="mt-1 text-sm text-muted-foreground">{displayPath(vaultPath) || "No library selected"}</p>
-            <Button variant="outline" size="sm" className="mt-3" onClick={() => void onChooseImage()}>
-              Change photo
+            <Button variant="outline" size="sm" className="mt-3" disabled={savingPhoto} onClick={() => void onChooseImage()}>
+              {savingPhoto ? "Saving…" : "Change photo"}
             </Button>
           </div>
         </div>
@@ -2626,22 +2643,26 @@ function ProfileSettings({
       <section className="vault-card p-5">
         <h2 className="text-sm font-semibold">Display name</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          This name appears in the sidebar, diagnostics, and local chat transcripts.
+          This name appears in your profile and sidebar.
         </p>
         <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
           <Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
-          <Button variant="outline" disabled={saving || !vault || !displayName.trim()} onClick={() => void onRename(displayName)}>
-            Save
+          <Button
+            variant="outline"
+            disabled={
+              savingName ||
+              !displayName.trim() ||
+              displayName.trim() === profile.display_name
+            }
+            onClick={() => void onSaveName(displayName)}
+          >
+            {savingName ? "Saving…" : "Save"}
           </Button>
         </div>
       </section>
 
     </>
   );
-}
-
-function vaultName(path: string) {
-  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
 function RuntimeRow({

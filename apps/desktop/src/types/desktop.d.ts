@@ -24,6 +24,20 @@ declare global {
     updated_at: string;
   }
 
+  type DesktopSetupStatePatch = Partial<
+    Omit<
+      DesktopSetupState,
+      "profile" | "vault" | "chat_setup" | "model_storage" | "memory_setup" | "tour"
+    >
+  > & {
+    profile?: Partial<DesktopSetupState["profile"]>;
+    vault?: Partial<DesktopSetupState["vault"]>;
+    chat_setup?: Partial<DesktopSetupState["chat_setup"]>;
+    model_storage?: Partial<DesktopSetupState["model_storage"]>;
+    memory_setup?: Partial<DesktopSetupState["memory_setup"]>;
+    tour?: Partial<DesktopSetupState["tour"]>;
+  };
+
   interface DesktopWindowState {
     maximized: boolean;
     fullScreen: boolean;
@@ -127,7 +141,7 @@ declare global {
         listener: (status: DesktopTunnelStatus) => void,
       ) => () => void;
       getSetupState: () => Promise<DesktopSetupState>;
-      updateSetupState: (patch: Partial<DesktopSetupState>) => Promise<DesktopSetupState>;
+      updateSetupState: (patch: DesktopSetupStatePatch) => Promise<DesktopSetupState>;
       resetAppSetup: () => Promise<DesktopSetupState>;
       finalizeActiveVaultDeletion: () => Promise<{ deleted: boolean; path: string }>;
       notifyRendererReady: (detail?: string) => Promise<boolean>;

@@ -708,7 +708,7 @@ if (gotSingleInstanceLock) {
 
     ipcMain.handle("cml:select-cover-image", async () => {
       const result = await dialog.showOpenDialog({
-        title: "Choose card image",
+        title: "Choose profile photo",
         properties: ["openFile"],
         filters: [
           { name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif"] },

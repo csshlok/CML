@@ -62,6 +62,32 @@ test("selected model storage root persists across setup resume", async () => {
   assert.equal(resumed.model_storage.download_root, "D:\\Vault Models");
 });
 
+test("partial profile updates preserve the onboarding name and saved avatar", async () => {
+  const root = await temporaryUserData();
+  await updateSetupState(root, {
+    phase: "profile_complete",
+    profile: { display_name: "Ada", avatar_path: "media/avatar-one.png" },
+  });
+
+  await updateSetupState(root, {
+    profile: { avatar_path: "media/avatar-two.png" },
+  });
+  let state = await readSetupState(root);
+  assert.deepEqual(state.profile, {
+    display_name: "Ada",
+    avatar_path: "media/avatar-two.png",
+  });
+
+  await updateSetupState(root, {
+    profile: { display_name: "Ada Lovelace" },
+  });
+  state = await readSetupState(root);
+  assert.deepEqual(state.profile, {
+    display_name: "Ada Lovelace",
+    avatar_path: "media/avatar-two.png",
+  });
+});
+
 test("setup state rejects accidental backward transitions", () => {
   const current = {
     ...defaultSetupState(),

@@ -40,6 +40,12 @@ import { displayPath } from "@/lib/displayPath";
 import { Button } from "@/components/ui/button";
 import { flushSync } from "react-dom";
 import { useLocalImage } from "@/lib/useLocalImage";
+import {
+  normalizeDesktopProfile,
+  profileDisplayName,
+  subscribeDesktopProfile,
+  type DesktopProfile,
+} from "@/lib/profileState";
 
 type NavItem = {
   to:
@@ -87,20 +93,23 @@ export function AppShell() {
   const [unlockStatus, setUnlockStatus] = useState<UnlockStatusRead | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tour, setTour] = useState<DesktopSetupState["tour"] | null>(null);
-  const [avatarPath, setAvatarPath] = useState("");
-  const avatarSource = useLocalImage(avatarPath);
+  const [profile, setProfile] = useState<DesktopProfile>(() => normalizeDesktopProfile(null));
+  const avatarSource = useLocalImage(profile.avatar_path);
   const contentRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let cancelled = false;
     async function loadTour() {
       const state = await window.cmlDesktop?.getSetupState?.();
+      if (!cancelled) {
+        setProfile(normalizeDesktopProfile(state?.profile));
+      }
       if (!cancelled && state?.phase === "complete") {
         setTour(state.tour);
-        setAvatarPath(state.profile.avatar_path ?? "");
       }
     }
     void loadTour();
+    const unsubscribeProfile = subscribeDesktopProfile(setProfile);
     const restart = () => {
       const next = { status: "pending", step: 0, version: 1 } as const;
       setTour(next);
@@ -109,6 +118,7 @@ export function AppShell() {
     window.addEventListener("vault:start-tour", restart);
     return () => {
       cancelled = true;
+      unsubscribeProfile();
       window.removeEventListener("vault:start-tour", restart);
     };
   }, []);
@@ -374,7 +384,7 @@ export function AppShell() {
               </span>
               <div className="min-w-0 flex-1">
                 <div className="break-words text-[13px] font-medium text-[var(--text-primary)]">
-                  {vaultPath ? vaultName(vaultPath) : "Local profile"}
+                  {profileDisplayName(profile)}
                 </div>
                 <div className="break-all text-[12px] text-[var(--text-muted)]">
                   {displayPath(vaultPath) || "No library selected"}
