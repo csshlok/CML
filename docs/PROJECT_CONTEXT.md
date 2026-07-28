@@ -15,7 +15,7 @@ Vault is a local-first Windows context-management layer. It turns a user's files
 - Storage: explicit local vaults backed by SQLite and local indexes
 - External access: Bridge, MCP, local HTTP API, and CLI
 - Codebase context: Odin project indexing, retrieval, scoped chat, and request-only graph/tree artifacts
-- Current version: `0.1.9` pre-release
+- Current version: `0.1.10` pre-release
 
 ## Current Project Phase
 
@@ -24,6 +24,46 @@ Vault is in **pre-release stabilization and productionization**.
 The scoped RAG migration, temporal memory foundation, Odin project workflow, bounded context pipeline, and primary desktop surfaces are implemented. The project is no longer deciding its core architecture. Current work is about proving release reliability, productionizing the strongest retrieval improvements, improving measured quality without benchmark-specific behavior, distilling the UI around real user journeys, and finishing clean Windows packaging.
 
 The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
+
+## July 28 Packaged Preload And Startup Chrome Repair
+
+The latest unpacked build exposed a packaged-only startup failure. Electron's
+sandboxed preload attempted to require two local CommonJS helpers from
+`app.asar`; sandboxed preloads cannot load arbitrary local modules, so the preload
+failed before exposing `cmlDesktop`. The renderer therefore could not signal
+readiness, external drops lost their native-path bridge, and every custom window
+control or repair action became unavailable. The preload entry is now
+self-contained while `sandbox: true`, context isolation, and disabled renderer Node
+integration remain intact. A regression assertion rejects future local preload
+imports.
+
+The opening-library document and the repair document now share visible, accessible
+minimize, maximize/restore, and close controls. Repair screens load from a packaged
+local HTML file instead of a generated `data:` URL, receive structured state through
+`loadFile`, and bind actions through external scripts under a restrictive CSP. This
+also removes silent inline handlers and the oversized recovery URL from new runtime
+logs. Desktop TypeScript, all 118 Electron tests, the production renderer build,
+diff hygiene, and rendered 1280×820 startup/repair checks pass. The Windows package
+still awaits the owner-managed rebuild.
+
+## July 28 Error-State Branding And Copy
+
+Every dedicated startup, repair, route-not-found, React error-boundary, and
+server-render failure screen now uses the same `Container.svg` wordmark as Opening
+your library and onboarding. The old `logo.svg`, the unused `Frame 8.png`, the
+favicon reference to the legacy mark, and the embedded emergency startup artwork
+were removed. If the startup document is missing, Vault now opens the branded
+repair document; only a text-only bounded page remains for a package missing both
+documents.
+
+Primary error copy now states what failed and the next safe action in plain
+language. Backend and renderer messages, paths, and logs remain available through
+Copy details instead of appearing in the main explanation. The repair page keeps
+the frameless window controls and uses a readable wordmark, fixed type sizes, and
+the existing restrained product colors. All 122 Electron tests, desktop TypeScript,
+the renderer HTML safety audit, the interactive-control audit, and the production
+renderer build pass. The recovery page was also visually checked at 1280x820. The
+package still awaits the owner-managed rebuild.
 
 ## July 28 Configurable Home And UI Distillation
 

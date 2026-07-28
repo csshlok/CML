@@ -4,6 +4,77 @@ Last updated: 2026-07-28
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
+## July 28 Packaged Preload Failure And Static Recovery Shell
+
+The failing 0.1.10 unpacked runtime log identified the direct packaged-app cause:
+`preload.cjs` could not resolve `./dropped-files.cjs` from the sandbox bundle.
+Electron limits `require` inside a sandboxed preload, so the failure occurred before
+Vault exposed its desktop API. The HTTP renderer loaded, but it could not emit
+`cml:renderer-ready`; ten seconds later the main process replaced it with the repair
+screen. Because the same missing bridge backed minimize, maximize, close, retry,
+copy, native drop paths, and other desktop actions, the apparent UI failures shared
+one architectural cause.
+
+The small dropped-file capture and readable-IPC-error helpers are now embedded in
+the preload entry. This preserves the sandbox and avoids weakening Electron's
+security model. A source-level packaging regression test requires the sandboxed
+preload to have no relative `require` calls.
+
+Startup and recovery chrome is now a static shared shell:
+
+- `startup.html` renders the same 44 px three-button control group used by recovery.
+- `repair.html` replaces dynamic `data:` recovery documents and loads through
+  `BrowserWindow.loadFile`, allowing the packaged preload to run normally.
+- Dynamic diagnostics are serialized as a query state object and inserted only with
+  `textContent`; no backend error text becomes markup.
+- Retry, copy, open-anyway, and close use external event listeners under a
+  restrictive local-file CSP and report failure instead of silently doing nothing.
+- Window glyphs are drawn with CSS, avoiding Unicode/font corruption in packaged
+  builds, and maximize/restore state follows the main-process state event.
+
+Validation evidence for this unbuilt source delta:
+
+| Gate | Result |
+| --- | --- |
+| Runtime evidence | Confirmed sandbox preload rejection and missing readiness signal in the packaged desktop log |
+| Desktop behavior | TypeScript and 118/118 Electron tests passed |
+| Preload packaging regression | Passed; no relative imports remain in `preload.cjs` |
+| Production renderer | Built successfully |
+| Static startup and repair rendering | Controls visible at 1280×820; wordmark and action hierarchy verified |
+| Rebuilt Windows package | Pending owner rebuild |
+
+## July 28 Unified Error Branding And Recovery Language
+
+The dedicated error paths previously diverged even after the opening-library screen
+was corrected. The React not-found and error boundaries had no brand mark, the
+server-render fallback used generic centered copy, the favicon and dormant
+`BrandLogo` icon variant still referenced the legacy `logo.svg`, and the
+last-resort startup HTML embedded a second old mark. Repair pages also exposed terms
+such as renderer, packaged UI, backend readiness, schema state, and database health
+as primary user copy.
+
+The canonical `Container.svg` opening-library wordmark now drives `BrandLogo`, the
+favicon, startup, repair, route errors, and server-render errors. Legacy
+`logo.svg` and unused `Frame 8.png` assets were deleted. The large embedded startup
+artwork was removed from the Electron main process. A missing startup document now
+routes through the packaged branded repair page; a tiny text-only page is reserved
+for the more severe case where both startup and repair documents are absent.
+
+Recovery screens now say that Vault or the current page could not open, then present
+Try again and Return home/Close Vault actions. Package and service terminology is
+kept out of the primary message. Exact phase, backend or renderer errors, database
+paths, and log locations remain in the structured diagnostic text copied by the
+user. Integrity, schema-update, and library-lock cases retain distinct safe guidance
+without promising automated repair.
+
+Focused branding, startup fallback, Electron recovery, Home-brand consistency, and
+window-control tests pass (56/56), as does the complete 122-test Electron run.
+Desktop TypeScript, the renderer HTML safety audit, interactive-control audit,
+production renderer build, and diff hygiene also pass. A 1280x820 rendered recovery
+check confirmed the new wordmark, hierarchy, readable copy, and visible window
+controls. The Windows package remains intentionally unbuilt pending the
+owner-managed rebuild.
+
 ## July 28 Working-Overview Home And Cross-App Decluttering
 
 The previous Home split similar recency and navigation actions across clusters,
@@ -339,9 +410,10 @@ Installer success was unrelated because NSIS had correctly copied the same broke
 application payload. Startup now loads the small packaged
 `electron/startup.html` file directly. Its logo is the same
 `dist/client/brand/Container.svg` asset used by onboarding, referenced rather than
-duplicated. The main process retains a bounded inline repair mark only for a damaged
-package missing the startup document. Tests cap the startup document/fallback size and
-verify that the full wordmark is never embedded in the HTML URL.
+duplicated. A package missing the startup document now opens the branded repair
+document; only a package missing both documents receives a bounded text-only page.
+Tests cap the startup document/fallback size and verify that the full wordmark is
+never embedded in the HTML URL.
 
 Two diagnostic scaling issues were fixed with the launch path. Desktop runtime log
 values are capped so one invalid URL or stack cannot append megabytes per launch. The
@@ -908,7 +980,11 @@ The CI workflow is now aligned with the incoming tree:
 
 The first pushed run exposed a platform-sensitive test assumption: it compared an absolute Windows source path even though Odin's canonical relationship is the normalized project-relative path. The test now resolves the source through `project_sources.relative_path`, verifies that the new active membership excludes it, and accepts either a retained tombstone or final physical cleanup. After 10 repeated local passes, the replacement GitHub run passed the quick tier and the complete automatic workflow.
 
-The unreferenced `apps/desktop/public/brand/Container.svg` is a 1.6 MB SVG wrapper around an embedded raster and is not used by the product or documentation. It remains outside the intended commit set rather than being silently deleted or published.
+`apps/desktop/public/brand/Container.svg` is a 1.6 MB SVG wrapper around an embedded
+raster. It is now the canonical product wordmark for onboarding, startup, recovery,
+the sidebar, and dedicated error screens. Because its size previously caused an
+oversized encoded startup URL, it must remain a referenced packaged asset and must
+not be embedded into generated HTML.
 
 ## July 20 Temporal Activation Isolation
 
