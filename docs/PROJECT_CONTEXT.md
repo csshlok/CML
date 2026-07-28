@@ -25,6 +25,40 @@ The scoped RAG migration, temporal memory foundation, Odin project workflow, bou
 
 The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
 
+## July 28 Configurable Home And UI Distillation
+
+Home is now a configurable working overview instead of four equally weighted,
+partly repetitive dashboard groups. The default Focused preset contains Ask Vault,
+actionable Needs attention, a unified Continue working feed, recently active
+clusters, and a restrained quick-action row. Library and Activity presets expose
+the alternate source, inbox, type, timeline, task, and conversation views without
+adding metric tiles or decorative charts.
+
+Type and Sort controls apply to Home content. Customize is a non-modal popover with
+layout preset, density, list/grid view, section visibility, keyboard-accessible
+ordering, and reset. The panel has a bounded, scrollable body and pinned footer so
+Reset remains reachable in shorter windows. Preferences are schema-validated and
+stored locally under the active vault/profile identifier; malformed or older local
+state falls back safely. Source-type totals use one grouped backend query rather
+than issuing a request for every type.
+
+The sidebar now uses the exact `Container.svg` wordmark from the opening-library
+screen, limits recent items, and combines saved chats and clusters under one Recent
+group. Shared section/table labels no longer use small all-caps tracking, decorative
+cluster-edge stripes were removed, and dense Settings explanations were moved under
+their headings or into optional disclosures. Library unlock now reports only
+Unlocked, Locked, or Not protected instead of repeating technical state/protection
+copy.
+
+Validation is green: desktop TypeScript and all 118 Electron tests pass; focused
+backend count, pagination, and activity-scale tests pass; Python compilation and
+diff hygiene pass; and the production renderer build succeeds. Rendered Playwright
+checks covered the default and Library presets, the full Customize interaction,
+reset accessibility at 1280x800, and the compact 760x760 layout. The web-only
+rendered harness showed expected local-service connection failures because it does
+not carry the Electron backend runtime. The Windows package remains intentionally
+unbuilt pending the owner-managed rebuild.
+
 ## July 28 Window-Control Exclusion Zone
 
 The invisible frameless titlebar remains part of the product layout and route content

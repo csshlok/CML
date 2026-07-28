@@ -4,6 +4,67 @@ Last updated: 2026-07-28
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
+## July 28 Working-Overview Home And Cross-App Decluttering
+
+The previous Home split similar recency and navigation actions across clusters,
+recent sources, inbox, and activity, giving all of them equivalent visual weight.
+It also fetched a small arbitrary cluster slice and had no durable user control over
+the composition. Home now treats those surfaces as sections in a versioned
+preference model. The recommended Focused order is Ask Vault, conditional Needs
+attention, Continue working, Active clusters, and Quick actions. Library and
+Activity presets recompose the same system for browsing or operational monitoring.
+
+Ask Vault remains the dominant action and can target the entire vault or one cluster.
+Needs attention does not render when there is no work; it derives direct links for
+failed sources, unsorted sources, paused or failed tasks, and local-service issues.
+Continue working combines source, chat, cluster, and project activity. Active
+clusters are ordered by the selected Home sort and display source count, indexing
+state, and latest update rather than taking the first four backend rows. Type
+filtering covers documents, notes, links, media, and code; sorting covers updated,
+added, alphabetical, and attention-first modes.
+
+Customize uses a Radix popover rather than a modal. It provides Focused, Library,
+and Activity presets; comfortable or compact density; list or grid presentation;
+section switches; up/down ordering controls with accessible names; and reset. The
+header and reset footer stay fixed while the section list scrolls inside a
+viewport-bounded panel. This addresses a rendered 800 px-height failure in which
+Reset was initially outside the click viewport. Preferences are normalized against
+known enum and section values before read or write. Hidden-section normalization is
+separate from order normalization so a valid empty hidden list remains “show all”
+instead of being expanded to “hide all.” Each active vault ID namespaces its local
+preference key, preventing settings from leaking between profiles/libraries.
+
+The Home overview remains server-bounded. It requests limited source, activity,
+chat, project, and cluster lists in parallel and uses grouped count APIs for totals.
+The new `/sources/counts-by-type` endpoint performs one indexed aggregate query and
+excludes tombstoned sources, avoiding one HTTP count request per type. `created_at`
+now reaches the renderer domain model so Recently added is distinct from Recently
+updated.
+
+The same pass distilled nearby shared UI. Sidebar branding explicitly uses the
+opening-library `Container.svg` wordmark; saved chats and cluster shortcuts share a
+single Recent group with three entries of each type. Small tracked uppercase shared
+labels and decorative cluster side stripes were removed. Settings no longer repeats
+storage placeholders, active-model explanations, destructive-action consequences,
+or library-protection state. Essential protection coverage is available immediately
+below the Library unlock heading in a disclosure, while status copy is reduced to
+Unlocked, Locked, or Not protected. Odin usage help and memory-correction behavior
+also sit under their headings, with technical paths disclosed only on demand.
+
+Validation evidence for this unbuilt source delta:
+
+| Gate | Result |
+| --- | --- |
+| Home preference and presentation regressions | 5/5 passed, including profile-scoped persistence and invalid-state recovery |
+| Complete desktop behavior run | TypeScript and 118/118 Electron tests passed |
+| Focused backend scale/count tests | 3/3 passed |
+| Python compilation and diff hygiene | Passed |
+| Production renderer build | Passed |
+| Rendered desktop Home | Focused and Library presets, Customize, reorder controls, and Reset passed at 1280x800 |
+| Rendered compact Home | Header, controls, primary composer, and flat sections passed at 760x760 |
+| Rendered console | Only expected `127.0.0.1:7343` connection refusals in the web-only harness |
+| Rebuilt Windows package | Pending owner rebuild |
+
 ## July 28 Compact Window-Control Exclusion
 
 The frameless desktop keeps its invisible top drag behavior; no full-width titlebar
