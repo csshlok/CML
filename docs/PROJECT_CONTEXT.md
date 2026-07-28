@@ -25,6 +25,19 @@ The scoped RAG migration, temporal memory foundation, Odin project workflow, bou
 
 The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
 
+## July 28 Settings Information Architecture Cleanup
+
+The Settings renderer previously mapped both Local imports and Evidence retention to
+Library & security and Advanced, so the same live controls appeared under two
+navigation destinations. Each card now has one owner: Local imports is in Library &
+security, while Evidence retention is in Advanced. No state or action was duplicated
+or removed.
+
+A regression rejects any Settings card condition that targets multiple tabs. Focused
+coverage passes 2/2 cases; desktop TypeScript and all 104 Electron tests pass; the
+production renderer build, renderer HTML safety audit, and interactive-control audit
+pass. Rendered navigation was verified at 1280×720 and 900×800.
+
 ## July 28 Odin Launcher Install Fix
 
 Odin installation failed before writing the launcher because the desktop main process

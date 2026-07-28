@@ -4,6 +4,33 @@ Last updated: 2026-07-28
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
+## July 28 Settings Section Deduplication
+
+Settings used `showSection("library", "advanced")` for two complete cards. This made
+Local imports and Evidence retention appear unchanged in both destinations and left
+users without a clear mental model of where those controls belonged. The duplication
+was presentation-only—the cards still operated on the same state and backend
+actions—but it made the navigation look unfinished.
+
+Local imports now belongs only to Library & security, alongside storage, memory
+history, and library protection. Evidence retention now belongs only to Advanced,
+alongside diagnostics and destructive maintenance. A source-level regression rejects
+multi-section card conditions and asserts both canonical homes.
+
+Rendered Playwright checks followed both desktop navigation buttons and the
+narrow-width section selector. Each destination contained one expected card and none
+of the other. The web-only harness reported expected backend 401 responses because it
+does not have Electron's local API token; it produced no framework overlay or
+renderer exception.
+
+| Gate | Result |
+| --- | --- |
+| Focused Settings information-architecture tests | 2/2 passed |
+| Desktop | TypeScript passed; 104/104 Electron tests passed |
+| Production renderer build | Passed |
+| Renderer HTML safety and interactive controls | Passed |
+| Rendered Settings navigation | Passed at 1280×720 and 900×800 |
+
 ## July 28 Odin Launcher Path Repair
 
 The Settings action for installing Odin failed with `Failed to get 'localAppData'

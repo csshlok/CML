@@ -2174,7 +2174,7 @@ function SettingsView() {
           </SettingsCard>
           )}
 
-          {showSection("library", "advanced") && (
+          {showSection("advanced") && (
           <SettingsCard
             icon={<ShieldCheck className="h-4 w-4" />}
             title="Evidence retention"
@@ -2202,7 +2202,7 @@ function SettingsView() {
           </SettingsCard>
           )}
 
-          {showSection("library", "advanced") && (
+          {showSection("library") && (
           <SettingsCard
             icon={<Folder className="h-4 w-4" />}
             title="Local imports"
