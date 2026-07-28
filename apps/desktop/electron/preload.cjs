@@ -1,6 +1,50 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
-const { createDroppedFilePathStore } = require("./dropped-files.cjs");
-const { invokeWithCleanError } = require("./ipc-errors.cjs");
+
+// Sandboxed Electron preloads can only require a small built-in module set.
+// Keep this entry point self-contained so the packaged app does not lose its
+// desktop bridge when app.asar is loaded.
+function createDroppedFilePathStore(target, getPathForFile) {
+  let pendingPaths = [];
+  target.addEventListener(
+    "drop",
+    (event) => {
+      const files = event?.dataTransfer?.files;
+      pendingPaths = files
+        ? Array.from(files)
+            .map((file) => {
+              try {
+                return getPathForFile(file);
+              } catch {
+                return "";
+              }
+            })
+            .filter(Boolean)
+        : [];
+    },
+    true,
+  );
+  return {
+    consume() {
+      const paths = pendingPaths;
+      pendingPaths = [];
+      return paths;
+    },
+  };
+}
+
+function cleanIpcErrorMessage(error, fallback) {
+  const raw = error instanceof Error ? error.message : String(error || "");
+  const remotePrefix = /^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/i;
+  return raw.replace(remotePrefix, "").trim() || fallback;
+}
+
+async function invokeWithCleanError(renderer, channel, fallback) {
+  try {
+    return await renderer.invoke(channel);
+  } catch (error) {
+    throw new Error(cleanIpcErrorMessage(error, fallback));
+  }
+}
 
 let rendererReadySent = false;
 const droppedFilePaths = createDroppedFilePathStore(window, (file) =>
@@ -19,8 +63,8 @@ async function notifyRendererReady(detail) {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
-  // Startup/renderer repair screens are data URLs that also use this preload.
-  // They must not satisfy the packaged-app smoke test or renderer-ready wait.
+  // Static startup and repair documents use this preload too, but only the
+  // packaged HTTP renderer can satisfy the renderer-ready wait.
   if (window.location.protocol === "http:" || window.location.protocol === "https:") {
     void notifyRendererReady(window.location.pathname || "/");
   }
