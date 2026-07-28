@@ -1,11 +1,11 @@
-{
-  "generated_at": "2026-06-12T00:00:00Z",
-  "layout": "self-contained-ocr-runtime-v1",
-  "tesseract": false,
-  "eng_traineddata": false,
-  "qpdf": false,
-  "ghostscript": false,
-  "errors": [
-    "Source checkout OCR runtime is not staged. Run scripts/packaging/stage-ocr-runtime.ps1 before packaging."
-  ]
+﻿{
+    "generated_at":  "2026-07-28T08:54:55.5227501Z",
+    "layout":  "self-contained-ocr-runtime-v1",
+    "tesseract":  true,
+    "eng_traineddata":  true,
+    "qpdf":  true,
+    "ghostscript":  true,
+    "errors":  [
+
+               ]
 }
