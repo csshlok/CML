@@ -5,6 +5,8 @@
     <meta name="color-scheme" content="light">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Vault</title>
+    <link rel="stylesheet" href="./static-window-chrome.css">
+    <script defer src="./static-window-chrome.js"></script>
     <style>
       * { box-sizing: border-box; }
       body {
@@ -61,6 +63,19 @@
     </style>
   </head>
   <body>
+    <header class="vault-static-window-chrome" aria-label="Window controls">
+      <div class="vault-static-window-controls">
+        <button class="vault-static-window-control" type="button" data-action="minimize" aria-label="Minimize" title="Minimize">
+          <span class="vault-static-window-control-icon" aria-hidden="true"></span>
+        </button>
+        <button class="vault-static-window-control" type="button" data-action="maximize" aria-label="Maximize" title="Maximize">
+          <span class="vault-static-window-control-icon" aria-hidden="true"></span>
+        </button>
+        <button class="vault-static-window-control" type="button" data-action="close" aria-label="Close" title="Close">
+          <span class="vault-static-window-control-icon" aria-hidden="true"></span>
+        </button>
+      </div>
+    </header>
     <main role="status" aria-live="polite">
       <div class="brand">
         <img

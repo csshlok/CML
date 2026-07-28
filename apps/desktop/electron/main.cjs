@@ -64,14 +64,6 @@ let pendingActiveVaultPath = null;
 let odinRuntimeDescriptorPath = null;
 let tunnelManager = null;
 const desktopRuntimeLogValueLimit = 8000;
-const startupRepairLogoMarkup = `
-  <img
-    src="data:image/png;base64,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"
-    alt=""
-    aria-hidden="true"
-    style="display:block;width:100%;height:100%;object-fit:cover;"
-  />
-`;
 
 function normalizeApiPrefix(value) {
   const raw = String(value || "/api/v1").trim();
@@ -292,6 +284,19 @@ async function loadStartupProgress(window, baseDir = __dirname) {
     await window.loadFile(startupDocumentPath);
     return;
   }
+  const repairDocumentPath = path.join(baseDir, "repair.html");
+  if (fsSync.existsSync(repairDocumentPath)) {
+    await loadRepairDocument(window, {
+      heading: "Vault could not open.",
+      detail: "Some app files are missing.",
+      guidanceTitle: "Reinstall Vault.",
+      guidanceBody: "Your library files will stay in place.",
+      diagnosticText: `Missing app file: ${displayPath(startupDocumentPath)}`,
+      showFields: false,
+      allowOpenAnyway: false,
+    }, baseDir);
+    return;
+  }
   const html = `<!doctype html>
     <html>
       <head>
@@ -302,8 +307,7 @@ async function loadStartupProgress(window, baseDir = __dirname) {
           * { box-sizing: border-box; }
           body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #fbfaf6; color: #27211d; font-family: "Segoe UI", sans-serif; }
           main { width: min(420px, calc(100vw - 48px)); text-align: center; }
-          .startup-brand-logo { display: block; width: min(260px, 100%); height: auto; margin: 0 auto; user-select: none; }
-          .startup-brand-logo-fallback { width: 72px; height: 72px; }
+          h1 { margin: 0; font-size: 24px; letter-spacing: -.02em; }
           p { margin: 24px 0 0; color: #766b64; font-size: 14px; }
           .track { width: 100%; height: 3px; margin-top: 18px; overflow: hidden; border-radius: 999px; background: #e8e1d8; }
           .bar { width: 35%; height: 100%; border-radius: inherit; background: #27211d; animation: move 1.4s ease-in-out infinite; }
@@ -313,7 +317,7 @@ async function loadStartupProgress(window, baseDir = __dirname) {
       </head>
       <body>
         <main role="status" aria-live="polite">
-          <div class="startup-brand-logo startup-brand-logo-fallback">${startupRepairLogoMarkup}</div>
+          <h1>Vault</h1>
           <p>Opening your library…</p>
           <div class="track" aria-hidden="true"><div class="bar"></div></div>
         </main>
@@ -336,18 +340,17 @@ function displayPath(value) {
   return String(value || "").replace(/\\/g, "/").replace(/\/{2,}/g, "/");
 }
 
-function repairWindowChromeMarkup() {
-  return `
-    <header style="position:fixed;inset:0 0 auto 0;height:32px;display:flex;z-index:10;-webkit-app-region:drag;background:#fbfaf6;user-select:none;">
-      <div style="margin-left:auto;height:32px;display:flex;-webkit-app-region:no-drag;">
-        <button aria-label="Minimize" title="Minimize" onclick="window.cmlDesktop?.windowControls?.minimize?.()" style="width:46px;height:32px;border:0;background:transparent;color:#27211d;font-size:17px;line-height:1;">−</button>
-        <button aria-label="Maximize or restore" title="Maximize or restore" onclick="window.cmlDesktop?.windowControls?.toggleMaximize?.()" style="width:46px;height:32px;border:0;background:transparent;color:#27211d;font-size:14px;line-height:1;">□</button>
-        <button aria-label="Close" title="Close" onclick="window.cmlDesktop?.windowControls?.close?.()" style="width:46px;height:32px;border:0;background:transparent;color:#27211d;font-size:18px;line-height:1;">×</button>
-      </div>
-    </header>`;
+async function loadRepairDocument(window, state, baseDir = __dirname) {
+  const repairDocumentPath = path.join(baseDir, "repair.html");
+  if (!fsSync.existsSync(repairDocumentPath)) {
+    throw new Error(`Vault repair document is missing: ${repairDocumentPath}`);
+  }
+  await window.loadFile(repairDocumentPath, {
+    query: { state: JSON.stringify(state) },
+  });
 }
 
-async function loadStartupFailure(window, error) {
+async function loadStartupFailure(window, error, baseDir = __dirname) {
   const status = await readStartupStatus();
   const backendLogs = getBackendLogPaths();
   const detail = status?.message || error?.message || "Vault could not start its local backend.";
@@ -363,65 +366,21 @@ async function loadStartupFailure(window, error) {
     `Backend stderr log: ${displayPath(backendLogs.stderr)}`,
     `Desktop runtime log: ${displayPath(getDesktopRuntimeLogPath())}`,
   ].join("\n");
-  const html = `
-    <!doctype html>
-    <meta charset="utf-8" />
-    <title>Vault startup issue</title>
-    <body style="margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#fbfaf6;color:#1f1a17;">
-      ${repairWindowChromeMarkup()}
-      <main style="max-width:760px;margin:10vh auto;padding:32px;">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px;">
-          <div style="width:32px;height:32px;border:1px solid #ded6cc;border-radius:8px;display:grid;place-items:center;background:#fffdf9;overflow:hidden;">${startupRepairLogoMarkup}</div>
-          <div>
-            <div style="font-weight:650;font-size:14px;">Vault</div>
-            <div style="font-size:12px;color:#7c6f65;">Startup repair</div>
-          </div>
-        </div>
-        <h1 style="font-size:30px;line-height:1.15;margin:0 0 12px;">Vault needs attention before it can open.</h1>
-        <p style="line-height:1.65;color:#5f524b;margin:0;max-width:620px;">${escapeHtml(detail)}</p>
-        <div style="margin-top:22px;padding:16px;border:1px solid #d7cfc5;border-radius:8px;background:#fffdf9;">
-          <div style="font-weight:600;font-size:14px;">${escapeHtml(action.title)}</div>
-          <div style="margin-top:6px;font-size:13px;line-height:1.55;color:#5f524b;">${escapeHtml(action.body)}</div>
-        </div>
-        <dl style="margin-top:18px;padding:16px;border:1px solid #ded6cc;border-radius:8px;background:#fff;">
-          <dt style="font-size:12px;color:#8b7d72;">Phase</dt>
-          <dd style="margin:4px 0 12px;">${escapeHtml(phase)}</dd>
-          <dt style="font-size:12px;color:#8b7d72;">Data directory</dt>
-          <dd style="margin:4px 0 12px;word-break:break-all;">${escapeHtml(displayPath(status?.data_dir) || "Unknown")}</dd>
-          <dt style="font-size:12px;color:#8b7d72;">Database</dt>
-          <dd style="margin:4px 0 0;word-break:break-all;">${escapeHtml(displayPath(status?.database_path) || "Unknown")}</dd>
-        </dl>
-        <div style="display:flex;gap:10px;margin-top:22px;flex-wrap:wrap;">
-          <button onclick="window.cmlDesktop?.retryStartup?.()" style="height:36px;padding:0 14px;border:0;border-radius:8px;background:#765f4d;color:#fff;font-weight:600;">Try again</button>
-          ${phase === "vault_lock_failed" ? '<button onclick="window.cmlDesktop?.openVaultAnyway?.()" style="height:36px;padding:0 14px;border:1px solid #9b6a4f;border-radius:8px;background:#fff7ed;color:#7c2d12;font-weight:600;">Open anyway</button>' : ""}
-          <button id="copy-details-button" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Copy details</button>
-          <button onclick="window.close()" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Close Vault</button>
-        </div>
-      </main>
-      <script>
-        const copyButton = document.getElementById("copy-details-button");
-        if (copyButton) {
-          copyButton.addEventListener("click", async () => {
-            try {
-              if (window.cmlDesktop?.copyText) {
-                await window.cmlDesktop.copyText(${JSON.stringify(diagnosticText)});
-              } else if (navigator.clipboard?.writeText) {
-                await navigator.clipboard.writeText(${JSON.stringify(diagnosticText)});
-              } else {
-                throw new Error("Clipboard bridge unavailable");
-              }
-              copyButton.textContent = "Copied details";
-            } catch {
-              copyButton.textContent = "Copy failed";
-            }
-          });
-        }
-      </script>
-    </body>`;
-  await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  await loadRepairDocument(window, {
+    heading: "Vault could not open.",
+    detail: "The local service did not start.",
+    guidanceTitle: action.title,
+    guidanceBody: action.body,
+    phase,
+    dataDirectory: displayPath(status?.data_dir) || "Unknown",
+    database: displayPath(status?.database_path) || "Unknown",
+    diagnosticText,
+    showFields: true,
+    allowOpenAnyway: phase === "vault_lock_failed",
+  }, baseDir);
 }
 
-async function loadRendererFailure(window, error) {
+async function loadRendererFailure(window, error, baseDir = __dirname) {
   const diagnosticText = [
     "Phase: renderer_startup_failed",
     `Message: ${error?.message || "Packaged renderer did not become available."}`,
@@ -431,77 +390,39 @@ async function loadRendererFailure(window, error) {
     `Backend stderr log: ${displayPath(getBackendLogPaths().stderr)}`,
     `Desktop runtime log: ${displayPath(getDesktopRuntimeLogPath())}`,
   ].join("\n");
-  const html = `
-    <!doctype html>
-    <meta charset="utf-8" />
-    <title>Vault renderer issue</title>
-    <body style="margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#fbfaf6;color:#1f1a17;">
-      ${repairWindowChromeMarkup()}
-      <main style="max-width:760px;margin:10vh auto;padding:32px;">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px;">
-          <div style="width:32px;height:32px;border:1px solid #ded6cc;border-radius:8px;display:grid;place-items:center;background:#fffdf9;overflow:hidden;">${startupRepairLogoMarkup}</div>
-          <div>
-            <div style="font-weight:650;font-size:14px;">Vault</div>
-            <div style="font-size:12px;color:#7c6f65;">Renderer repair</div>
-          </div>
-        </div>
-        <h1 style="font-size:30px;line-height:1.15;margin:0 0 12px;">Vault could not load its packaged UI.</h1>
-        <p style="line-height:1.65;color:#5f524b;margin:0;max-width:620px;">${escapeHtml(error?.message || "The local renderer did not become ready.")}</p>
-        <div style="margin-top:22px;padding:16px;border:1px solid #d7cfc5;border-radius:8px;background:#fffdf9;">
-          <div style="font-weight:600;font-size:14px;">The backend may already be healthy.</div>
-          <div style="margin-top:6px;font-size:13px;line-height:1.55;color:#5f524b;">Check the desktop runtime log path below for renderer startup details before rebuilding.</div>
-        </div>
-        <div style="display:flex;gap:10px;margin-top:22px;flex-wrap:wrap;">
-          <button onclick="window.cmlDesktop?.retryStartup?.()" style="height:36px;padding:0 14px;border:0;border-radius:8px;background:#765f4d;color:#fff;font-weight:600;">Try again</button>
-          <button id="copy-details-button" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Copy details</button>
-          <button onclick="window.close()" style="height:36px;padding:0 14px;border:1px solid #ded6cc;border-radius:8px;background:#fffdf9;color:#1f1a17;">Close Vault</button>
-        </div>
-      </main>
-      <script>
-        const copyButton = document.getElementById("copy-details-button");
-        if (copyButton) {
-          copyButton.addEventListener("click", async () => {
-            try {
-              if (window.cmlDesktop?.copyText) {
-                await window.cmlDesktop.copyText(${JSON.stringify(diagnosticText)});
-              } else if (navigator.clipboard?.writeText) {
-                await navigator.clipboard.writeText(${JSON.stringify(diagnosticText)});
-              } else {
-                throw new Error("Clipboard bridge unavailable");
-              }
-              copyButton.textContent = "Copied details";
-            } catch {
-              copyButton.textContent = "Copy failed";
-            }
-          });
-        }
-      </script>
-    </body>`;
-  await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  await loadRepairDocument(window, {
+    heading: "Vault could not open.",
+    detail: "The app interface did not finish loading.",
+    guidanceTitle: "Try opening Vault again.",
+    guidanceBody: "If the same message returns, copy the details before closing Vault.",
+    diagnosticText,
+    showFields: false,
+    allowOpenAnyway: false,
+  }, baseDir);
 }
 
 function repairActionForPhase(phase) {
   if (phase === "integrity_check_failed") {
     return {
-      title: "The library database did not pass its health check.",
-      body: "Do not keep retrying if this repeats. The next repair pass should export diagnostics and offer backup or restore options before any write recovery.",
+      title: "Your library needs to be checked.",
+      body: "Vault stopped before making changes. Keep your current library files unchanged and copy the details.",
     };
   }
   if (phase === "schema_check_failed") {
     return {
-      title: "The library schema or migration state is incomplete.",
-      body: "Vault stopped before accepting traffic so it does not mutate a half-migrated database.",
+      title: "Vault could not finish updating your library.",
+      body: "Try again once. If the same message returns, copy the details.",
     };
   }
   if (phase === "vault_lock_failed") {
     return {
-      title: "Another Vault process may own this vault.",
-      body: "Close other Vault windows before retrying. Opening the same vault twice can corrupt local data.",
+      title: "This library is already open.",
+      body: "Close any other Vault window using this library, then try again.",
     };
   }
   return {
-    title: "The local backend did not reach a ready state.",
-    body: "Retry once. If it repeats, keep this screen open and use the shown path when collecting diagnostics.",
+    title: "Vault's local service did not start.",
+    body: "Try again. If the same message returns, copy the details before closing Vault.",
   };
 }
 
@@ -516,14 +437,6 @@ async function readStartupStatus() {
 
 function getStartupStatusPath() {
   return path.join(app.getPath("userData"), "startup-status.json");
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();

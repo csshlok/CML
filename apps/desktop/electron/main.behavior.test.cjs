@@ -182,8 +182,8 @@ test("startup repair messages are phase-specific", () => {
   const integrity = exported.repairActionForPhase("integrity_check_failed");
   const lock = exported.repairActionForPhase("vault_lock_failed");
 
-  assert.match(integrity.title, /health check/i);
-  assert.match(lock.body, /corrupt|close other vault windows/i);
+  assert.match(integrity.title, /library needs to be checked/i);
+  assert.match(lock.body, /close any other Vault window/i);
 });
 
 test("second-instance without vault arg focuses existing window without dialog", async () => {
@@ -514,24 +514,25 @@ test("isCurrentBackend accepts pre-vault 409 when health still reports cml-backe
   }
 });
 
-test("startup failure page renders a real copy button instead of malformed inline HTML", async () => {
+test("startup failure uses the packaged repair document and passes safe structured state", async () => {
   const { exported } = loadMainModule();
-  let loadedUrl = "";
+  let loadedFile = "";
+  let loadedOptions = null;
   const window = {
-    loadURL: async (url) => {
-      loadedUrl = url;
+    loadFile: async (filePath, options) => {
+      loadedFile = filePath;
+      loadedOptions = options;
     },
   };
 
   await exported.loadStartupFailure(window, new Error("backend boot failed"));
 
-  const html = decodeURIComponent(String(loadedUrl).replace(/^data:text\/html;charset=utf-8,/, ""));
-  assert.match(html, /id="copy-details-button"/);
-  assert.match(html, /addEventListener\("click"/);
-  assert.match(html, /window\.cmlDesktop\?\.copyText/);
-  assert.match(html, /window\.cmlDesktop\?\.retryStartup/);
-  assert.match(html, /backend-stderr\.log/);
-  assert.doesNotMatch(html, /this\.textContent='Copied details'/);
+  assert.equal(loadedFile, path.join(__dirname, "repair.html"));
+  const state = JSON.parse(loadedOptions.query.state);
+  assert.equal(state.heading, "Vault could not open.");
+  assert.equal(state.detail, "The local service did not start.");
+  assert.equal(state.showFields, true);
+  assert.match(state.diagnosticText, /backend-stderr\.log/);
 });
 
 test("packaged static asset server returns 400 for malformed encoded paths", async () => {
@@ -578,14 +579,39 @@ test("startup progress loads a small packaged document that references the onboa
   const html = fs.readFileSync(startupPath, "utf8");
   assert.ok(html.length < 20_000, `startup document was unexpectedly large: ${html.length}`);
   assert.match(html, /\.\.\/dist\/client\/brand\/Container\.svg/);
+  assert.match(html, /vault-static-window-controls/);
+  assert.match(html, /static-window-chrome\.js/);
   assert.doesNotMatch(html, /data:image\/svg\+xml;base64/);
   assert.doesNotMatch(html, /brand-fallback/);
   assert.equal((html.match(/alt="Vault"/g) || []).length, 1);
 });
 
-test("startup progress keeps a bounded repair mark when its document is missing", async () => {
+test("startup progress uses the branded repair page when its document is missing", async () => {
   const { exported } = loadMainModule();
   const emptyRoot = makeTempDir("cml-startup-brand-empty-");
+  const electronDir = path.join(emptyRoot, "electron");
+  fs.mkdirSync(electronDir, { recursive: true });
+  fs.copyFileSync(path.join(__dirname, "repair.html"), path.join(electronDir, "repair.html"));
+  let loadedFile = "";
+  let loadedOptions = null;
+  const window = {
+    loadFile: async (filePath, options) => {
+      loadedFile = filePath;
+      loadedOptions = options;
+    },
+  };
+
+  await exported.loadStartupProgress(window, electronDir);
+
+  assert.equal(loadedFile, path.join(electronDir, "repair.html"));
+  const state = JSON.parse(loadedOptions.query.state);
+  assert.equal(state.heading, "Vault could not open.");
+  assert.equal(state.guidanceTitle, "Reinstall Vault.");
+});
+
+test("startup progress keeps its last-resort page small and free of legacy artwork", async () => {
+  const { exported } = loadMainModule();
+  const emptyRoot = makeTempDir("cml-startup-all-missing-");
   let loadedUrl = "";
   const window = {
     loadURL: async (url) => {
@@ -597,7 +623,9 @@ test("startup progress keeps a bounded repair mark when its document is missing"
 
   assert.match(loadedUrl, /^data:text\/html;charset=utf-8,/);
   assert.ok(loadedUrl.length < 20_000, `fallback startup URL was unexpectedly large: ${loadedUrl.length}`);
-  assert.match(decodeURIComponent(loadedUrl.split(",", 2)[1]), /startup-brand-logo-fallback/);
+  const html = decodeURIComponent(loadedUrl.split(",", 2)[1]);
+  assert.match(html, /<h1>Vault<\/h1>/);
+  assert.doesNotMatch(html, /data:image|startup-brand-logo/);
 });
 
 test("desktop runtime logging bounds oversized URL and stack details", () => {
@@ -643,21 +671,25 @@ test("verifyRendererUp accepts redirect responses from the packaged router", asy
   }
 });
 
-test("renderer failure page offers retry and copy diagnostics", async () => {
+test("renderer failure uses the packaged repair document with retry diagnostics", async () => {
   const { exported } = loadMainModule();
-  let loadedUrl = "";
+  let loadedFile = "";
+  let loadedOptions = null;
   const window = {
-    loadURL: async (url) => {
-      loadedUrl = url;
+    loadFile: async (filePath, options) => {
+      loadedFile = filePath;
+      loadedOptions = options;
     },
   };
 
   await exported.loadRendererFailure(window, new Error("renderer not available"));
 
-  const html = decodeURIComponent(String(loadedUrl).replace(/^data:text\/html;charset=utf-8,/, ""));
-  assert.match(html, /window\.cmlDesktop\?\.retryStartup/);
-  assert.match(html, /window\.cmlDesktop\?\.copyText/);
-  assert.match(html, /desktop-runtime\.log/);
+  assert.equal(loadedFile, path.join(__dirname, "repair.html"));
+  const state = JSON.parse(loadedOptions.query.state);
+  assert.equal(state.heading, "Vault could not open.");
+  assert.equal(state.detail, "The app interface did not finish loading.");
+  assert.doesNotMatch(state.detail, /renderer/i);
+  assert.match(state.diagnosticText, /desktop-runtime\.log/);
 });
 
 test("waitForBackend fails fast when the backend child exits before readiness", async () => {

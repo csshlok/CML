@@ -124,6 +124,12 @@ test("window controls reject events without a BrowserWindow sender", async () =>
 test("desktop window and preload are wired to the custom frameless chrome", () => {
   const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   const preloadSource = fs.readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
+  const startupSource = fs.readFileSync(path.join(__dirname, "startup.html"), "utf8");
+  const repairSource = fs.readFileSync(path.join(__dirname, "repair.html"), "utf8");
+  const staticChromeSource = fs.readFileSync(
+    path.join(__dirname, "static-window-chrome.js"),
+    "utf8",
+  );
   const stylesSource = fs.readFileSync(
     path.join(__dirname, "..", "src", "styles.css"),
     "utf8",
@@ -132,10 +138,21 @@ test("desktop window and preload are wired to the custom frameless chrome", () =
   assert.match(mainSource, /frame:\s*false/);
   assert.match(mainSource, /attachWindowStateEvents\(window\)/);
   assert.match(mainSource, /registerWindowControlHandlers\(\{\s*ipcMain,\s*BrowserWindow\s*\}\)/);
-  assert.match(mainSource, /repairWindowChromeMarkup\(\)/);
+  assert.match(mainSource, /loadRepairDocument\(window/);
+  assert.match(mainSource, /window\.loadFile\(repairDocumentPath/);
+  assert.match(startupSource, /vault-static-window-controls/);
+  assert.match(repairSource, /vault-static-window-controls/);
+  assert.match(staticChromeSource, /bridge\.minimize\(\)/);
+  assert.match(staticChromeSource, /bridge\.toggleMaximize\(\)/);
+  assert.match(staticChromeSource, /bridge\.close\(\)/);
   assert.match(preloadSource, /windowControls:\s*\{/);
   assert.match(preloadSource, /cml:window-toggle-maximize/);
   assert.match(preloadSource, /cml:window-state-changed/);
+  assert.doesNotMatch(
+    preloadSource,
+    /require\(["']\.{1,2}\//,
+    "sandboxed preload must not require local files",
+  );
   assert.match(
     stylesSource,
     /\.vault-window-chrome\s*\{[^}]*width:\s*150px;[^}]*height:\s*44px;/s,

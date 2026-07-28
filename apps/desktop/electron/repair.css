@@ -1,0 +1,139 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #fbfaf6;
+  color: #1f1a17;
+  font-family: "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+}
+
+main {
+  width: min(760px, calc(100vw - 48px));
+  margin: 0 auto;
+  padding: max(84px, 10vh) 0 48px;
+}
+
+.repair-logo {
+  display: block;
+  width: 220px;
+  height: auto;
+  margin-bottom: 40px;
+  user-select: none;
+}
+
+h1 {
+  max-width: 700px;
+  margin: 0 0 14px;
+  font-size: 32px;
+  line-height: 1.12;
+  letter-spacing: -0.025em;
+}
+
+#repair-detail {
+  max-width: 680px;
+  margin: 0;
+  color: #5f524b;
+  font-size: 16px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.repair-guidance,
+dl {
+  margin: 24px 0 0;
+  padding: 18px 20px;
+  border: 1px solid #d7cfc5;
+  border-radius: 10px;
+  background: #fffdf9;
+}
+
+.repair-guidance strong {
+  font-size: 14px;
+}
+
+.repair-guidance p {
+  margin: 7px 0 0;
+  color: #5f524b;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+dl {
+  display: grid;
+  gap: 14px;
+  background: #fff;
+}
+
+dl[hidden] {
+  display: none;
+}
+
+dt {
+  color: #8b7d72;
+  font-size: 12px;
+}
+
+dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.repair-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.repair-actions button {
+  height: 40px;
+  padding: 0 16px;
+  border: 1px solid #ded6cc;
+  border-radius: 8px;
+  background: #fffdf9;
+  color: #1f1a17;
+  font: inherit;
+}
+
+.repair-actions button:hover:not(:disabled) {
+  border-color: #bcaea2;
+  background: #f7f2eb;
+}
+
+.repair-actions button:focus-visible {
+  outline: 2px solid #765f4d;
+  outline-offset: 2px;
+}
+
+.repair-actions button.primary {
+  border-color: #765f4d;
+  background: #765f4d;
+  color: #fff;
+  font-weight: 600;
+}
+
+.repair-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.repair-status {
+  min-height: 20px;
+  margin: 12px 0 0;
+  color: #7c6f65;
+  font-size: 13px;
+}
+
+@media (max-width: 560px) {
+  main {
+    width: min(100% - 32px, 760px);
+    padding-top: 72px;
+  }
+
+  h1 {
+    font-size: 28px;
+  }
+}

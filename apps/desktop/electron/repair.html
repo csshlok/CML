@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="color-scheme" content="light">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'"
+    >
+    <title>Vault could not open</title>
+    <link rel="stylesheet" href="./static-window-chrome.css">
+    <link rel="stylesheet" href="./repair.css">
+    <script defer src="./static-window-chrome.js"></script>
+    <script defer src="./repair.js"></script>
+  </head>
+  <body>
+    <header class="vault-static-window-chrome" aria-label="Window controls">
+      <div class="vault-static-window-controls">
+        <button class="vault-static-window-control" type="button" data-action="minimize" aria-label="Minimize" title="Minimize">
+          <span class="vault-static-window-control-icon" aria-hidden="true"></span>
+        </button>
+        <button class="vault-static-window-control" type="button" data-action="maximize" aria-label="Maximize" title="Maximize">
+          <span class="vault-static-window-control-icon" aria-hidden="true"></span>
+        </button>
+        <button class="vault-static-window-control" type="button" data-action="close" aria-label="Close" title="Close">
+          <span class="vault-static-window-control-icon" aria-hidden="true"></span>
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <img class="repair-logo" src="../dist/client/brand/Container.svg" alt="Vault">
+
+      <h1 id="repair-heading">Vault could not open.</h1>
+      <p id="repair-detail"></p>
+
+      <section class="repair-guidance">
+        <strong id="guidance-title"></strong>
+        <p id="guidance-body"></p>
+      </section>
+
+      <dl id="repair-fields" hidden>
+        <div>
+          <dt>Phase</dt>
+          <dd id="repair-phase"></dd>
+        </div>
+        <div>
+          <dt>Data directory</dt>
+          <dd id="repair-data-directory"></dd>
+        </div>
+        <div>
+          <dt>Database</dt>
+          <dd id="repair-database"></dd>
+        </div>
+      </dl>
+
+      <div class="repair-actions">
+        <button id="retry-button" class="primary" type="button">Try again</button>
+        <button id="open-anyway-button" type="button" hidden>Open anyway</button>
+        <button id="copy-details-button" type="button">Copy details</button>
+        <button id="close-button" type="button">Close Vault</button>
+      </div>
+      <p id="repair-status" class="repair-status" role="status" aria-live="polite"></p>
+    </main>
+  </body>
+</html>

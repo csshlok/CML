@@ -1,0 +1,110 @@
+.vault-static-window-chrome {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 1000;
+  display: flex;
+  height: 44px;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.vault-static-window-controls {
+  display: flex;
+  height: 44px;
+  margin-left: auto;
+  -webkit-app-region: no-drag;
+}
+
+.vault-static-window-control {
+  position: relative;
+  width: 46px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #27211d;
+  cursor: default;
+}
+
+.vault-static-window-control:hover {
+  background: rgba(39, 33, 29, 0.08);
+}
+
+.vault-static-window-control:disabled {
+  color: #27211d;
+  opacity: 1;
+}
+
+.vault-static-window-control:focus-visible {
+  outline: 2px solid #765f4d;
+  outline-offset: -3px;
+}
+
+.vault-static-window-control[data-action="close"]:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
+.vault-static-window-control-icon,
+.vault-static-window-control-icon::before,
+.vault-static-window-control-icon::after {
+  position: absolute;
+  display: block;
+  content: "";
+}
+
+.vault-static-window-control[data-action="minimize"] .vault-static-window-control-icon {
+  top: 22px;
+  left: 18px;
+  width: 10px;
+  height: 1px;
+  background: currentColor;
+}
+
+.vault-static-window-control[data-action="maximize"] .vault-static-window-control-icon {
+  top: 17px;
+  left: 18px;
+  width: 10px;
+  height: 10px;
+  border: 1px solid currentColor;
+}
+
+.vault-static-window-control[data-action="maximize"][data-maximized="true"] .vault-static-window-control-icon {
+  top: 19px;
+  left: 17px;
+  width: 9px;
+  height: 8px;
+}
+
+.vault-static-window-control[data-action="maximize"][data-maximized="true"] .vault-static-window-control-icon::before {
+  top: -3px;
+  left: 3px;
+  width: 8px;
+  height: 7px;
+  border: 1px solid currentColor;
+  background: #fbfaf6;
+}
+
+.vault-static-window-control[data-action="close"] .vault-static-window-control-icon {
+  top: 21px;
+  left: 17px;
+  width: 12px;
+  height: 1px;
+  background: currentColor;
+  transform: rotate(45deg);
+}
+
+.vault-static-window-control[data-action="close"] .vault-static-window-control-icon::after {
+  width: 12px;
+  height: 1px;
+  background: currentColor;
+  transform: rotate(90deg);
+}
+
+@media (forced-colors: active) {
+  .vault-static-window-control {
+    forced-color-adjust: none;
+    color: ButtonText;
+  }
+}
