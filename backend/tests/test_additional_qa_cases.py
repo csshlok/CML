@@ -135,6 +135,52 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(count["total"], 1)
         self.assertEqual(len(second_page), 30)
 
+    def test_source_type_counts_are_grouped_in_one_request_and_ignore_deleted_sources(self) -> None:
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-type-counts", "Type counts", self.tmp.name, now, now),
+            )
+            rows = [
+                ("document-one", "Document one", "file", None),
+                ("document-two", "Document two", "file", None),
+                ("note-one", "Note one", "note", None),
+                ("deleted-note", "Deleted note", "note", now),
+            ]
+            for source_id, title, source_type, deleted_at in rows:
+                conn.execute(
+                    """
+                    INSERT INTO sources (
+                        id, vault_id, title, source_type, state, created_at, updated_at, deleted_at
+                    )
+                    VALUES (?, 'vault-type-counts', ?, ?, 'indexed', ?, ?, ?)
+                    """,
+                    (source_id, title, source_type, now, now, deleted_at),
+                )
+
+        client = self._client()
+        try:
+            response = client.get(
+                "/api/v1/sources/counts-by-type",
+                params={"vault_id": "vault-type-counts"},
+            )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "items": [
+                    {"source_type": "file", "total": 2},
+                    {"source_type": "note", "total": 1},
+                ]
+            },
+        )
+
     def test_source_batch_returns_unique_existing_sources_in_requested_order(self) -> None:
         from backend.app.api.routes.sources import create_source
         from backend.app.core.database import connect, utc_now

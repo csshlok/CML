@@ -35,6 +35,7 @@ export interface Source {
   type: SourceType;
   clusterId: string | null;
   state: SourceState;
+  createdAt: string;
   updatedAt: string;
   preview: string;
   summary: string;

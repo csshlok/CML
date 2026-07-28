@@ -259,6 +259,28 @@ def source_counts_by_cluster(vault_id: str) -> dict:
     }
 
 
+@router.get("/counts-by-type")
+def source_counts_by_type(vault_id: str) -> dict:
+    with connect() as conn:
+        _validate_source_list_filters(conn, vault_id=vault_id, cluster_id=None)
+        rows = conn.execute(
+            """
+            SELECT source_type, COUNT(*) AS total
+            FROM sources
+            WHERE vault_id = ? AND deleted_at IS NULL
+            GROUP BY source_type
+            ORDER BY source_type
+            """,
+            (vault_id,),
+        ).fetchall()
+    return {
+        "items": [
+            {"source_type": row["source_type"], "total": int(row["total"] or 0)}
+            for row in rows
+        ]
+    }
+
+
 @router.get("/latest-by-cluster")
 def latest_source_by_cluster(vault_id: str) -> dict:
     with connect() as conn:

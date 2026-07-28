@@ -2130,9 +2130,20 @@ export type SourceClusterCountRecord = {
   total: number;
 };
 
+export type SourceTypeCountRecord = {
+  source_type: SourceRecord["source_type"];
+  total: number;
+};
+
 export async function sourceCountsByCluster(vaultId: string) {
   return request<{ items: SourceClusterCountRecord[] }>(
     `/api/v1/sources/counts-by-cluster?vault_id=${encodeURIComponent(vaultId)}`,
+  );
+}
+
+export async function sourceCountsByType(vaultId: string) {
+  return request<{ items: SourceTypeCountRecord[] }>(
+    `/api/v1/sources/counts-by-type?vault_id=${encodeURIComponent(vaultId)}`,
   );
 }
 

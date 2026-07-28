@@ -8,6 +8,7 @@ export function sourceFromRecord(record: SourceRecord): Source {
     type: normalizeSourceType(record.source_type),
     clusterId: record.cluster_id,
     state: normalizeSourceState(record.state),
+    createdAt: record.created_at,
     updatedAt: record.updated_at,
     preview: record.extracted_text || record.raw_text,
     summary: record.summary,
