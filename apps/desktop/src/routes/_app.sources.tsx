@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,12 +26,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { ClusterDot } from "@/components/ClusterChip";
 import { notify } from "@/components/product/Notifications";
 import {
+  SourceImportInlineProgress,
+  useSourceImport,
+} from "@/components/product/SourceImportProgress";
+import {
   sourceStateLabel,
   type Cluster,
   type Source,
 } from "@/lib/domain";
 import {
-  createSourceFromPath,
   createSourceFromText,
   createSourceFromUrl,
   countSources,
@@ -42,6 +46,7 @@ import {
   listSourcesPage,
   listVaults,
   reindexSource,
+  type SourceImportProgress,
   type SourcePageRecord,
   type SourceStatsRecord,
   type VaultRecord,
@@ -80,6 +85,7 @@ const typeIcon = {
 
 function SourcesView() {
   const navigate = useNavigate();
+  const sourceImport = useSourceImport();
   const { filter, source: requestedSourceId } = Route.useSearch();
   const inboxOnly = filter === "unsorted";
   const pageSize = 25;
@@ -108,6 +114,7 @@ function SourcesView() {
   const [nextSourceCursor, setNextSourceCursor] = useState<string | null>(null);
   const sourceRequestRef = useRef(0);
   const hasLoadedSourcesRef = useRef(false);
+  const summarizedImportJobRef = useRef<string | null>(null);
 
   async function refreshBackendSources() {
     const requestId = ++sourceRequestRef.current;
@@ -197,6 +204,22 @@ function SourcesView() {
     setPageIndex(0);
     setPageCursors([null]);
   }, [deferredQuery]);
+
+  useEffect(() => {
+    const job = sourceImport.job;
+    const progress = sourceImport.progress;
+    if (
+      !job ||
+      !progress ||
+      sourceImport.active ||
+      summarizedImportJobRef.current === job.id
+    ) {
+      return;
+    }
+    summarizedImportJobRef.current = job.id;
+    setIngestMessage(formatSourceImportResult(job.status, progress));
+    void refreshBackendSources();
+  }, [sourceImport.active, sourceImport.job, sourceImport.progress]);
 
   const usingBackend = Boolean(vault);
   const sources = usingBackend ? backendSources : [];
@@ -308,44 +331,24 @@ function SourcesView() {
 
   async function importFilePaths(paths: string[], truncatedAt: number | null = null) {
     if (!vault || paths.length === 0) return;
-    setIngestMessage(`Importing ${paths.length} file${paths.length === 1 ? "" : "s"}...`);
-    const failures: string[] = [];
-    let imported = 0;
-    let updated = 0;
-    let cursor = 0;
-    const workers = Array.from({ length: Math.min(4, paths.length) }, async () => {
-      while (cursor < paths.length) {
-        const path = paths[cursor];
-        cursor += 1;
-        try {
-          const source = await createSourceFromPath({ vault_id: vault.id, path });
-          if (source.import_outcome === "updated") updated += 1;
-          else imported += 1;
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : "Import failed";
-          failures.push(`${fileNameFromPath(path)}: ${reason}`);
-        }
-      }
-    });
-    await Promise.all(workers);
-    await refreshBackendSources();
-    const limitNotice = truncatedAt
-      ? ` Folder scanning stopped at the ${truncatedAt.toLocaleString()}-file safety limit; import remaining files in a second batch.`
-      : "";
-    setIngestMessage(`${formatImportResult(imported, updated, failures)}${limitNotice}`);
-    if (failures.length > 0) {
-      notify({
-        title: `${failures.length} source${failures.length === 1 ? "" : "s"} could not be imported`,
-        description: failures[0],
-        tone: "error",
+    if (sourceImport.active) {
+      setIngestMessage("Finish or stop the current file import before starting another one.");
+      return;
+    }
+    setIngestMessage(null);
+    try {
+      await sourceImport.start({
+        vaultId: vault.id,
+        paths,
+        truncatedAt,
       });
-    } else {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not start the file import.";
+      setIngestMessage(message);
       notify({
-        title:
-          updated > 0
-            ? `${imported} imported, ${updated} existing source${updated === 1 ? "" : "s"} updated`
-            : `${imported} source${imported === 1 ? "" : "s"} imported`,
-        tone: "success",
+        title: "File import could not start",
+        description: message,
+        tone: "error",
       });
     }
   }
@@ -365,6 +368,10 @@ function SourcesView() {
     if (!vault) return;
     event.preventDefault();
     setDragActive(false);
+    if (sourceImport.active) {
+      setIngestMessage("Finish or stop the current file import before starting another one.");
+      return;
+    }
     const droppedPaths = window.cmlDesktop?.getDroppedFilePaths?.() ?? [];
     if (droppedPaths.length === 0) {
       setIngestMessage(
@@ -435,7 +442,8 @@ function SourcesView() {
 
   return (
     <div
-      className="vault-page-wash relative grid h-full grid-cols-1 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_326px] xl:overflow-hidden"
+      className="sources-layout vault-page-wash relative grid h-full overflow-y-auto xl:overflow-hidden"
+      data-inspector-open={Boolean(inspectorSource)}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={(event) => void handleDrop(event)}
@@ -481,7 +489,7 @@ function SourcesView() {
                 />
               ) : null}
             </div>
-            <Button onClick={() => void handleAddFiles()} disabled={!vault}>
+            <Button onClick={() => void handleAddFiles()} disabled={!vault || sourceImport.active || sourceImport.actionBusy}>
               <FilePlus2 className="h-4 w-4" /> Add files
             </Button>
             <Button variant="outline" onClick={() => setTextDialogOpen(true)}>
@@ -490,7 +498,7 @@ function SourcesView() {
             <Button variant="outline" onClick={() => setLinkDialogOpen(true)}>
               <Plus className="h-4 w-4" /> Add link
             </Button>
-            <Button variant="outline" onClick={() => void handleAddFolder()} disabled={!vault}>
+            <Button variant="outline" onClick={() => void handleAddFolder()} disabled={!vault || sourceImport.active || sourceImport.actionBusy}>
               <FolderPlus className="h-4 w-4" /> Import folder
             </Button>
             <Button variant="outline" asChild>
@@ -502,11 +510,15 @@ function SourcesView() {
         </header>
 
         {error && <div className="mb-3"><DegradedState compact description={error} onRetry={() => void refreshBackendSources()} /></div>}
-        {ingestMessage && (
+        {sourceImport.active && sourceImport.progress ? (
+          <div className="mb-3">
+            <SourceImportInlineProgress />
+          </div>
+        ) : ingestMessage ? (
           <div className="mb-3 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground break-words">
             {ingestMessage}
           </div>
-        )}
+        ) : null}
 
         {loading ? (
           <SkeletonRegion className="py-8" lines={9} />
@@ -622,19 +634,30 @@ function SourcesView() {
         </div>
       </main>
 
-      <SourceInspector
-        source={inspectorSource}
-        cluster={inspectorCluster}
-        pages={selectedPages}
-        stats={selectedStats}
-        onOpen={async (source) => {
-          if (source.localPath) return (await window.cmlDesktop?.openPath(source.localPath)) ?? false;
-          if (source.url) return (await window.cmlDesktop?.openExternal(source.url)) ?? false;
-          return false;
-        }}
-        onReindex={handleReindexSource}
-        onRemove={handleRemoveSource}
-      />
+      {inspectorSource ? (
+        <SourceInspector
+          source={inspectorSource}
+          cluster={inspectorCluster}
+          pages={selectedPages}
+          stats={selectedStats}
+          onClose={() => {
+            setSelected(null);
+            if (requestedSourceId) {
+              navigate({
+                to: "/sources",
+                search: inboxOnly ? { filter: "unsorted" } : {},
+              });
+            }
+          }}
+          onOpen={async (source) => {
+            if (source.localPath) return (await window.cmlDesktop?.openPath(source.localPath)) ?? false;
+            if (source.url) return (await window.cmlDesktop?.openExternal(source.url)) ?? false;
+            return false;
+          }}
+          onReindex={handleReindexSource}
+          onRemove={handleRemoveSource}
+        />
+      ) : null}
 
       <Dialog open={textDialogOpen} onOpenChange={setTextDialogOpen}>
         <DialogContent className="max-w-2xl">
@@ -700,28 +723,23 @@ function SourceInspector({
   cluster,
   pages,
   stats,
+  onClose,
   onOpen,
   onReindex,
   onRemove,
 }: {
-  source: Source | null;
+  source: Source;
   cluster?: Cluster;
   pages: SourcePageRecord[];
   stats: SourceStatsRecord | null;
+  onClose: () => void;
   onOpen: (source: Source) => Promise<boolean | undefined>;
   onReindex: (source: Source) => Promise<void>;
   onRemove: (source: Source) => Promise<void>;
 }) {
-  if (!source) {
-    return (
-      <aside className="border-t border-border bg-card/35 px-7 py-8 xl:border-l xl:border-t-0 xl:px-6">
-        <div className="text-sm text-muted-foreground">Select a source to inspect it.</div>
-      </aside>
-    );
-  }
   const Icon = typeIcon[source.type];
   return (
-    <aside className="overflow-y-visible border-t border-border bg-card/35 px-7 py-8 xl:overflow-y-auto xl:border-l xl:border-t-0 xl:px-6">
+    <aside className="source-inspector overflow-y-visible border-t border-border bg-card/35 px-7 py-8 xl:overflow-y-auto xl:border-l xl:border-t-0 xl:px-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 gap-4">
           <span className="flex h-[72px] w-[54px] flex-col items-center justify-center rounded-md border border-border bg-background text-[10px] font-semibold uppercase text-[var(--status-issue)]">
@@ -735,6 +753,14 @@ function SourceInspector({
             </div>
           </div>
         </div>
+        <button
+          type="button"
+          className="rounded-sm p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={onClose}
+          aria-label="Close source details"
+        >
+          <X className="h-4 w-4" />
+        </button>
       </div>
 
       <div className="mt-8 border-b border-border pb-3 text-sm font-medium">Source details</div>
@@ -871,10 +897,6 @@ function StateChip({ state }: { state: Source["state"] }) {
   );
 }
 
-function fileNameFromPath(path: string) {
-  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
-}
-
 function fileExt(title: string) {
   const ext = title.split(".").pop();
   if (!ext || ext === title) return "FILE";
@@ -913,13 +935,21 @@ function formatFileSize(value?: number | null) {
   return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
-function formatImportResult(imported: number, updated: number, failures: string[]) {
-  const importedLabel = `Imported ${imported} document${imported === 1 ? "" : "s"}`;
-  const updatedLabel = updated
-    ? ` Updated ${updated} existing document${updated === 1 ? "" : "s"}.`
+function formatSourceImportResult(status: string, progress: SourceImportProgress) {
+  const processed = `${progress.completed_files.toLocaleString()} of ${progress.total_files.toLocaleString()} files processed`;
+  if (status === "cancelled") {
+    return `Import stopped. ${processed}.`;
+  }
+  if (status === "failed" || status === "manual_review") {
+    return `Import needs attention. ${processed}.`;
+  }
+  const imported = `${progress.imported_files.toLocaleString()} imported`;
+  const updated = `${progress.updated_files.toLocaleString()} updated`;
+  const failed = progress.failed_files
+    ? `, ${progress.failed_files.toLocaleString()} failed`
     : "";
-  if (failures.length === 0) return `${importedLabel}.${updatedLabel}`;
-  const firstFailure = failures[0];
-  const more = failures.length > 1 ? ` and ${failures.length - 1} more` : "";
-  return `${importedLabel}.${updatedLabel} Failed ${failures.length}: ${firstFailure}${more}.`;
+  const limitNotice = progress.truncated_at
+    ? ` Folder scanning stopped at ${progress.truncated_at.toLocaleString()} files; import the remaining files in another batch.`
+    : "";
+  return `Import finished: ${imported}, ${updated}${failed}.${limitNotice}`;
 }

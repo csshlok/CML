@@ -586,6 +586,7 @@ export type AppJobRecord = {
 
 export type JobQueueStatus = {
   queued: number;
+  paused: number;
   blocked_by_dependency: number;
   blocked_setup_required: number;
   deferred: number;
@@ -596,6 +597,23 @@ export type JobQueueStatus = {
   manual_review: number;
   running_jobs: AppJobRecord[];
   latest: AppJobRecord[];
+};
+
+export type SourceImportFailure = {
+  file_name: string;
+  reason: string;
+};
+
+export type SourceImportProgress = {
+  kind: "source_import";
+  total_files: number;
+  completed_files: number;
+  imported_files: number;
+  updated_files: number;
+  failed_files: number;
+  failures: SourceImportFailure[];
+  current_file: string;
+  truncated_at: number | null;
 };
 
 export type TemporalFactDiagnostics = {
@@ -1973,6 +1991,44 @@ export async function createSourceFromPath(payload: {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export async function startSourceImportJob(payload: {
+  vault_id: string;
+  cluster_id?: string | null;
+  paths: string[];
+  truncated_at?: number | null;
+}) {
+  return request<AppJobRecord>("/api/v1/sources/import-jobs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getActiveSourceImportJob(vaultId?: string) {
+  const query = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
+  return request<AppJobRecord | null>(`/api/v1/sources/import-jobs/active${query}`);
+}
+
+export async function pauseSourceImportJob(jobId: string) {
+  return request<AppJobRecord>(
+    `/api/v1/sources/import-jobs/${encodeURIComponent(jobId)}/pause`,
+    { method: "POST" },
+  );
+}
+
+export async function resumeSourceImportJob(jobId: string) {
+  return request<AppJobRecord>(
+    `/api/v1/sources/import-jobs/${encodeURIComponent(jobId)}/resume`,
+    { method: "POST" },
+  );
+}
+
+export async function stopSourceImportJob(jobId: string) {
+  return request<AppJobRecord>(
+    `/api/v1/sources/import-jobs/${encodeURIComponent(jobId)}/stop`,
+    { method: "POST" },
+  );
 }
 
 export async function createSourceFromText(payload: {

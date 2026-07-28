@@ -224,7 +224,11 @@ export function AppShell() {
         }))
       : [];
 
-  const taskCount = (jobs?.queued ?? 0) + (jobs?.running ?? 0) + (jobs?.failed ?? 0);
+  const taskCount =
+    (jobs?.queued ?? 0) +
+    (jobs?.paused ?? 0) +
+    (jobs?.running ?? 0) +
+    (jobs?.failed ?? 0);
   const securityLockActive =
     Boolean(unlockStatus) &&
     (unlockStatus?.secured_vault_count ?? 0) > 0 &&

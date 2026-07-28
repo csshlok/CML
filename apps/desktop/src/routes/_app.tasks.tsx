@@ -75,6 +75,7 @@ function TasksView() {
   const hasActiveWork = Boolean(
     (jobs?.running ?? 0) +
     (jobs?.queued ?? 0) +
+    (jobs?.paused ?? 0) +
     (jobs?.blocked_by_dependency ?? 0) +
     (jobs?.blocked_setup_required ?? 0) +
     (jobs?.deferred ?? 0),
@@ -234,7 +235,7 @@ function TasksView() {
                       <span className="capitalize">{job.status.replace(/_/g, " ")}</span>
                     </span>
                     <span className="font-mono text-xs text-muted-foreground">{formatEstimate(job)}</span>
-                    <span className="text-right text-xs text-muted-foreground">{job.cancellable && ["queued", "running", "blocked_by_dependency", "blocked_setup_required", "deferred"].includes(job.status) ? "Cancel" : "-"}</span>
+                    <span className="text-right text-xs text-muted-foreground">{job.cancellable && ["queued", "running", "paused", "blocked_by_dependency", "blocked_setup_required", "deferred"].includes(job.status) ? "Cancel" : "-"}</span>
                   </button>
                 ))}
                 {rows.length === 0 && (
@@ -311,7 +312,7 @@ function uniqueJobs(rows: AppJobRecord[]) {
 
 function matchesFilter(job: AppJobRecord, filter: TaskFilter) {
   if (filter === "running") return job.status === "running";
-  if (filter === "queued") return ["queued", "blocked_by_dependency", "blocked_setup_required", "deferred"].includes(job.status);
+  if (filter === "queued") return ["queued", "paused", "blocked_by_dependency", "blocked_setup_required", "deferred"].includes(job.status);
   if (filter === "failed") return ["failed", "manual_review"].includes(job.status);
   if (filter === "completed") return ["succeeded", "cancelled"].includes(job.status) && job.user_visible !== 0;
   return ["orphan_vector_cleanup", "artifact_cleanup", "vault_integrity_check", "diagnostic_bundle"].includes(job.job_type);
@@ -335,7 +336,7 @@ function statusIcon(status: string) {
   if (status === "running") return <Clock3 className="h-4 w-4 text-primary" />;
   if (status === "failed" || status === "manual_review") return <AlertTriangle className="h-4 w-4 text-destructive" />;
   if (status === "succeeded") return <CheckCircle2 className="h-4 w-4 text-[var(--status-ready)]" />;
-  if (status === "cancelled") return <Pause className="h-4 w-4 text-muted-foreground" />;
+  if (status === "paused" || status === "cancelled") return <Pause className="h-4 w-4 text-muted-foreground" />;
   return <Clock3 className="h-4 w-4 text-muted-foreground" />;
 }
 
