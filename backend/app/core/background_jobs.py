@@ -1,8 +1,10 @@
 import json
 import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from backend.app.core.database import connect, dict_from_row, utc_now
@@ -53,7 +55,7 @@ from backend.app.core.unlock_state import should_pause_vault_job
 
 JOB_POLL_SECONDS = 1.0
 JOB_STATUS_RUNNING_LIMIT = 50
-ACTIVE_STATUSES = ("queued", "running", "blocked_by_dependency", "blocked_setup_required", "deferred")
+ACTIVE_STATUSES = ("queued", "running", "paused", "blocked_by_dependency", "blocked_setup_required", "deferred")
 TERMINAL_DEPENDENCY_STATUSES = ("failed", "cancelled", "manual_review")
 PRIORITY_ORDER = {
     "critical": 0,
@@ -77,6 +79,10 @@ EMBEDDING_JOB_TYPES = {
 
 
 class JobCancelled(RuntimeError):
+    pass
+
+
+class JobPaused(RuntimeError):
     pass
 
 
@@ -160,6 +166,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         preemptable=False,
         timeout_seconds=600,
         soft_timeout_seconds=None,
+        timeout_action="defer",
+    ),
+    "source_import_batch": JobPolicy(
+        priority="high",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="vault",
+        concurrency_group="source_import",
+        resource_cost="medium",
+        can_run_during_synthesis=True,
+        user_visible=True,
+        user_initiated=True,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=86_400,
+        soft_timeout_seconds=3_600,
         timeout_action="defer",
     ),
     "chat_transcript_memory": JobPolicy(
@@ -644,6 +667,7 @@ def job_queue_status() -> dict:
     counts = {row["status"]: row["count"] for row in rows}
     return {
         "queued": counts.get("queued", 0),
+        "paused": counts.get("paused", 0),
         "blocked_by_dependency": counts.get("blocked_by_dependency", 0),
         "blocked_setup_required": counts.get("blocked_setup_required", 0),
         "deferred": counts.get("deferred", 0),
@@ -666,8 +690,8 @@ def cancel_job(job_id: str) -> dict:
         job = dict_from_row(row)
         if int(job.get("cancellable") or 0) != 1:
             raise ValueError("Job is not cancellable")
-        if job["status"] not in {"queued", "blocked_by_dependency", "blocked_setup_required", "deferred", "running"}:
-            raise ValueError("Only queued, blocked, deferred, or running jobs can be cancelled")
+        if job["status"] not in {"queued", "paused", "blocked_by_dependency", "blocked_setup_required", "deferred", "running"}:
+            raise ValueError("Only queued, paused, blocked, deferred, or running jobs can be cancelled")
         if job["status"] == "running":
             conn.execute(
                 """
@@ -691,6 +715,58 @@ def cancel_job(job_id: str) -> dict:
                 (now, now, now, job_id),
             )
         updated = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
+    return dict_from_row(updated)
+
+
+def pause_source_import_job(job_id: str) -> dict:
+    now = utc_now()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        job = dict_from_row(row)
+        if job["job_type"] != "source_import_batch":
+            raise ValueError("Only file imports can be paused here")
+        if job["status"] == "paused":
+            return job
+        if job["status"] not in {"queued", "running"}:
+            raise ValueError("Only queued or running file imports can be paused")
+        conn.execute(
+            """
+            UPDATE app_jobs
+            SET status = 'paused',
+                status_detail = 'Paused. Files already being processed may still finish.',
+                updated_at = ?
+            WHERE id = ? AND status IN ('queued', 'running')
+            """,
+            (now, job_id),
+        )
+        updated = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
+    return dict_from_row(updated)
+
+
+def resume_source_import_job(job_id: str) -> dict:
+    now = utc_now()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        job = dict_from_row(row)
+        if job["job_type"] != "source_import_batch":
+            raise ValueError("Only file imports can be resumed here")
+        if job["status"] != "paused":
+            raise ValueError("Only paused file imports can be resumed")
+        conn.execute(
+            """
+            UPDATE app_jobs
+            SET status = 'queued', status_detail = 'Import queued to resume.',
+                started_at = NULL, updated_at = ?
+            WHERE id = ? AND status = 'paused'
+            """,
+            (now, job_id),
+        )
+        updated = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
+    wake_background_worker()
     return dict_from_row(updated)
 
 
@@ -838,6 +914,8 @@ def _run_claimed_job(job: dict) -> None:
             _run_project_phase(job["job_type"], payload, job["id"])
         elif job["job_type"] == "reindex_source":
             _run_reindex_source(payload, job["id"])
+        elif job["job_type"] == "source_import_batch":
+            _run_source_import_batch(payload, job["id"])
         elif job["job_type"] == "chat_transcript_memory":
             _run_chat_transcript_memory(payload, job["id"])
         elif job["job_type"] == "temporal_fact_backfill":
@@ -869,6 +947,8 @@ def _run_claimed_job(job: dict) -> None:
         _raise_if_job_cancelled(job["id"])
     except JobCancelled:
         _acknowledge_job_cancelled(job["id"])
+        return
+    except JobPaused:
         return
     except Exception as exc:
         if job["job_type"] in EMBEDDING_JOB_TYPES and _is_embedding_setup_error(exc):
@@ -905,6 +985,158 @@ def _run_reindex_source(payload: dict, job_id: str | None = None) -> None:
         mark_cluster_needs_update(conn, source.get("cluster_id"), "Source was indexed in the background.")
         rebuild_source_memory(conn, source_id=source_id)
         _refresh_project_retrieval_status(conn, source_id)
+
+
+def _run_source_import_batch(payload: dict, job_id: str) -> None:
+    from backend.app.api.routes.sources import create_source_from_path
+    from backend.app.schemas import SourcePathCreate
+
+    vault_id = str(payload.get("vault_id") or "")
+    cluster_id = _optional_string(payload.get("cluster_id"))
+    paths = [str(path) for path in payload.get("paths") or [] if str(path)]
+    if not vault_id or not paths:
+        raise ValueError("Source import job is missing its vault or file paths.")
+
+    progress = _source_import_progress(job_id, payload, len(paths))
+    completed_indices = {
+        int(index)
+        for index in progress.get("completed_indices") or []
+        if isinstance(index, int) and 0 <= index < len(paths)
+    }
+    remaining = (index for index in range(len(paths)) if index not in completed_indices)
+    max_workers = min(4, len(paths))
+    in_flight: dict[object, tuple[int, str]] = {}
+    pause_requested = False
+    cancellation_requested = False
+
+    def submit_next(executor: ThreadPoolExecutor) -> bool:
+        try:
+            index = next(remaining)
+        except StopIteration:
+            return False
+        path = paths[index]
+        future = executor.submit(
+            create_source_from_path,
+            SourcePathCreate(vault_id=vault_id, cluster_id=cluster_id, path=path),
+        )
+        in_flight[future] = (index, path)
+        return True
+
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="cml-source-import") as executor:
+        while len(in_flight) < max_workers and submit_next(executor):
+            pass
+
+        while in_flight:
+            completed, _pending = wait(in_flight, return_when=FIRST_COMPLETED)
+            for future in completed:
+                index, path = in_flight.pop(future)
+                completed_indices.add(index)
+                try:
+                    source = future.result()
+                    if source.get("import_outcome") == "updated":
+                        progress["updated_files"] = int(progress.get("updated_files") or 0) + 1
+                    else:
+                        progress["imported_files"] = int(progress.get("imported_files") or 0) + 1
+                except Exception as exc:
+                    progress["failed_files"] = int(progress.get("failed_files") or 0) + 1
+                    failures = list(progress.get("failures") or [])
+                    if len(failures) < 100:
+                        detail = getattr(exc, "detail", None)
+                        failures.append(
+                            {
+                                "file_name": Path(path).name or "File",
+                                "reason": str(detail or exc or "Import failed")[:500],
+                            }
+                        )
+                    progress["failures"] = failures
+
+                progress["completed_indices"] = sorted(completed_indices)
+                progress["completed_files"] = len(completed_indices)
+                progress["current_file"] = Path(path).name or "File"
+                _set_source_import_progress(job_id, progress)
+
+            control = _source_import_control_state(job_id)
+            cancellation_requested = cancellation_requested or control in {"cancelled", "cancelling"}
+            pause_requested = pause_requested or control == "paused"
+            if not pause_requested and not cancellation_requested:
+                while len(in_flight) < max_workers and submit_next(executor):
+                    pass
+
+    progress["current_file"] = ""
+    _set_source_import_progress(job_id, progress)
+    if cancellation_requested:
+        raise JobCancelled(job_id)
+    if pause_requested and len(completed_indices) == len(paths):
+        with connect() as conn:
+            conn.execute(
+                "UPDATE app_jobs SET status = 'running', updated_at = ? WHERE id = ? AND status = 'paused'",
+                (utc_now(), job_id),
+            )
+        pause_requested = False
+    if pause_requested:
+        raise JobPaused(job_id)
+
+
+def _source_import_progress(job_id: str, payload: dict, total_files: int) -> dict:
+    with connect() as conn:
+        row = conn.execute("SELECT result_json FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
+    try:
+        stored = json.loads(str(row["result_json"] if row else "{}"))
+    except (TypeError, json.JSONDecodeError):
+        stored = {}
+    progress = stored if isinstance(stored, dict) else {}
+    progress.update(
+        {
+            "kind": "source_import",
+            "total_files": total_files,
+            "truncated_at": payload.get("truncated_at"),
+        }
+    )
+    progress.setdefault("completed_files", 0)
+    progress.setdefault("imported_files", 0)
+    progress.setdefault("updated_files", 0)
+    progress.setdefault("failed_files", 0)
+    progress.setdefault("failures", [])
+    progress.setdefault("completed_indices", [])
+    progress.setdefault("current_file", "")
+    return progress
+
+
+def _set_source_import_progress(job_id: str, progress: dict) -> None:
+    total = max(1, int(progress.get("total_files") or 1))
+    completed = max(0, min(total, int(progress.get("completed_files") or 0)))
+    percent = int((completed / total) * 100)
+    failed = max(0, int(progress.get("failed_files") or 0))
+    detail = f"Processed {completed} of {total} files ({percent}%)."
+    if failed:
+        detail += f" {failed} failed."
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE app_jobs
+            SET result_json = ?, status_detail = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                json.dumps(progress, ensure_ascii=False, separators=(",", ":")),
+                detail,
+                utc_now(),
+                job_id,
+            ),
+        )
+
+
+def _source_import_control_state(job_id: str) -> str:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT status, cancellation_requested FROM app_jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+    if row is None or row["status"] == "cancelled":
+        return "cancelled"
+    if int(row["cancellation_requested"] or 0) == 1:
+        return "cancelling"
+    return str(row["status"])
 
 
 def _run_project_phase(job_type: str, payload: dict, job_id: str) -> None:
@@ -1315,7 +1547,7 @@ def _run_ocr_source(payload: dict, job_id: str) -> None:
             """
             UPDATE sources
             SET title = ?, raw_text = ?, extracted_text = ?, state = 'indexed', updated_at = ?
-            WHERE id = ?
+                WHERE id = ?
             """,
             (title or source["title"], stored_updates["raw_text"], stored_updates["extracted_text"], now, source_id),
         )

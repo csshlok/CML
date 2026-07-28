@@ -1287,6 +1287,10 @@ def init_db() -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_app_jobs_dedupe_active
                 ON app_jobs(dedupe_key)
                 WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running');
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_source_import_one_active
+                ON app_jobs(scope_id)
+                WHERE job_type = 'source_import_batch'
+                  AND status IN ('queued', 'running', 'paused');
             """
         )
         _add_column_if_missing(conn, "sources", "tags", "TEXT NOT NULL DEFAULT '[]'")

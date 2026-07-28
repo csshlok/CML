@@ -5,7 +5,13 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.clustering import assign_or_create_cluster
-from backend.app.core.background_jobs import enqueue_job
+from backend.app.core.background_jobs import (
+    cancel_job,
+    enqueue_job,
+    pause_source_import_job,
+    resume_source_import_job,
+    wake_background_worker,
+)
 from backend.app.core.database import connect, utc_now
 from backend.app.core.embeddings import content_hash, require_embeddings_available
 from backend.app.core.encrypted_storage import (
@@ -27,8 +33,10 @@ from backend.app.core.source_records import replace_source_pages, source_type_fo
 from backend.app.core.sql import build_update_assignments
 from backend.app.core.turbovec_runtime import maybe_remove_source_chunks_from_sidecar
 from backend.app.schemas import (
+    AppJobRead,
     SourceCreate,
     SourceBatchRequest,
+    SourceImportJobRequest,
     SourcePathCreate,
     SourcePageRead,
     SourceRead,
@@ -546,6 +554,142 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
     result = get_source(source_id)
     result["import_outcome"] = "created" if created else "updated"
     return result
+
+
+@router.post("/import-jobs", response_model=AppJobRead, status_code=202)
+def create_source_import_job(payload: SourceImportJobRequest) -> dict:
+    unique_paths: list[str] = []
+    seen: set[str] = set()
+    for raw_path in payload.paths:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            raise HTTPException(status_code=400, detail="File import paths must be absolute")
+        identity = str(path).casefold()
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique_paths.append(str(path))
+    if not unique_paths:
+        raise HTTPException(status_code=400, detail="No unique file paths were provided")
+
+    with connect() as conn:
+        _validate_source_target(conn, payload.vault_id, payload.cluster_id)
+        active = conn.execute(
+            """
+            SELECT id FROM app_jobs
+            WHERE job_type = 'source_import_batch'
+              AND scope_id = ?
+              AND status IN ('queued', 'running', 'paused')
+            LIMIT 1
+            """,
+            (payload.vault_id,),
+        ).fetchone()
+        if active is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Another file import is already active. Finish or stop it before starting a new one.",
+            )
+        job = enqueue_job(
+            conn,
+            job_type="source_import_batch",
+            payload={
+                "vault_id": payload.vault_id,
+                "cluster_id": payload.cluster_id,
+                "paths": unique_paths,
+                "truncated_at": payload.truncated_at,
+            },
+            scope_id=payload.vault_id,
+            user_initiated=True,
+            max_attempts=3,
+        )
+        progress = {
+            "kind": "source_import",
+            "total_files": len(unique_paths),
+            "completed_files": 0,
+            "imported_files": 0,
+            "updated_files": 0,
+            "failed_files": 0,
+            "failures": [],
+            "completed_indices": [],
+            "current_file": "",
+            "truncated_at": payload.truncated_at,
+        }
+        conn.execute(
+            """
+            UPDATE app_jobs
+            SET result_json = ?, status_detail = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                json.dumps(progress, separators=(",", ":")),
+                f"Waiting to import {len(unique_paths)} file{'s' if len(unique_paths) != 1 else ''}.",
+                utc_now(),
+                job["id"],
+            ),
+        )
+        created = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job["id"],)).fetchone()
+    wake_background_worker()
+    return dict(created)
+
+
+@router.get("/import-jobs/active", response_model=AppJobRead | None)
+def get_active_source_import_job(vault_id: str | None = None) -> dict | None:
+    clauses = [
+        "job_type = 'source_import_batch'",
+        "status IN ('queued', 'running', 'paused')",
+    ]
+    params: list[object] = []
+    if vault_id:
+        clauses.append("scope_id = ?")
+        params.append(vault_id)
+    with connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT * FROM app_jobs
+            WHERE {' AND '.join(clauses)}
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+@router.post("/import-jobs/{job_id}/pause", response_model=AppJobRead)
+def pause_source_import(job_id: str) -> dict:
+    try:
+        return pause_source_import_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="File import not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/import-jobs/{job_id}/resume", response_model=AppJobRead)
+def resume_source_import(job_id: str) -> dict:
+    try:
+        return resume_source_import_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="File import not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/import-jobs/{job_id}/stop", response_model=AppJobRead)
+def stop_source_import(job_id: str) -> dict:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT job_type FROM app_jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="File import not found")
+    if row["job_type"] != "source_import_batch":
+        raise HTTPException(status_code=409, detail="This task is not a file import")
+    try:
+        return cancel_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/from-text", response_model=SourceRead)

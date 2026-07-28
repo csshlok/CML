@@ -248,6 +248,28 @@ class SourcePathCreate(BaseModel):
         return _blank_to_none(value)
 
 
+class SourceImportJobRequest(BaseModel):
+    vault_id: str = Field(min_length=1)
+    cluster_id: str | None = None
+    paths: list[str] = Field(min_length=1, max_length=10_000)
+    truncated_at: int | None = Field(default=None, ge=1, le=10_000)
+
+    @field_validator("cluster_id", mode="before")
+    @classmethod
+    def normalize_cluster_id(cls, value: str | None) -> str | None:
+        return _blank_to_none(value)
+
+    @field_validator("paths")
+    @classmethod
+    def normalize_paths(cls, values: list[str]) -> list[str]:
+        normalized = [str(value).strip() for value in values]
+        if any(not value for value in normalized):
+            raise ValueError("File paths cannot be blank")
+        if any(len(value) > 32_767 for value in normalized):
+            raise ValueError("A file path is too long")
+        return normalized
+
+
 class SourceTextCreate(BaseModel):
     vault_id: str
     cluster_id: str | None = None
@@ -1602,6 +1624,7 @@ class RetrievalPackingDiagnosticsRead(BaseModel):
 
 class JobQueueStatus(BaseModel):
     queued: int
+    paused: int = 0
     blocked_by_dependency: int = 0
     blocked_setup_required: int = 0
     deferred: int = 0

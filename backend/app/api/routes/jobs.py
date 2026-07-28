@@ -68,7 +68,7 @@ def list_app_jobs(
     if status:
         statuses = [item.strip() for item in status.split(",") if item.strip()]
         allowed = {
-            "queued", "running", "succeeded", "failed", "cancelled",
+            "queued", "running", "paused", "succeeded", "failed", "cancelled",
             "blocked_by_dependency", "blocked_setup_required", "deferred",
             "manual_review",
         }
