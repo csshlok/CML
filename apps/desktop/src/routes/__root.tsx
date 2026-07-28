@@ -9,6 +9,7 @@ import {
   Scripts,
 } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { BrandLogo, VAULT_OPENING_WORDMARK } from "@/components/BrandLogo";
 import { NotificationViewport } from "@/components/product/Notifications";
 import { WindowChrome } from "@/components/WindowChrome";
 
@@ -16,22 +17,24 @@ import appCss from "../styles.css?url";
 
 function NotFoundComponent() {
   return (
-    <div className="flex min-h-full items-center justify-center bg-background px-4">
-      <div className="max-w-md text-center">
-        <h1 className="text-7xl font-bold text-foreground">404</h1>
-        <h2 className="mt-4 text-xl font-semibold text-foreground">Page not found</h2>
+    <div className="flex min-h-full items-center justify-center bg-background px-6 py-12">
+      <main className="w-full max-w-md">
+        <BrandLogo className="h-auto w-[180px] select-none" />
+        <h1 className="mt-10 text-2xl font-semibold tracking-tight text-foreground">
+          Page not found
+        </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          The page you're looking for doesn't exist or has been moved.
+          This page may have moved. Return to Home to keep working.
         </p>
-        <div className="mt-6">
+        <div className="mt-7">
           <Link
             to="/"
             className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
           >
-            Go home
+            Return home
           </Link>
         </div>
-      </div>
+      </main>
     </div>
   );
 }
@@ -41,15 +44,16 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   const router = useRouter();
 
   return (
-    <div className="flex min-h-full items-center justify-center bg-background px-4">
-      <div className="max-w-md text-center">
-        <h1 className="text-xl font-semibold tracking-tight text-foreground">
-          This page didn't load
+    <div className="flex min-h-full items-center justify-center bg-background px-6 py-12">
+      <main className="w-full max-w-md">
+        <BrandLogo className="h-auto w-[180px] select-none" />
+        <h1 className="mt-10 text-2xl font-semibold tracking-tight text-foreground">
+          This page did not open
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Vault could not open this screen. Refresh it, or return Home and try again.
+          Try again. If it still does not open, return to Home.
         </p>
-        <div className="mt-6 flex flex-wrap justify-center gap-2">
+        <div className="mt-7 flex flex-wrap gap-2">
           <button
             onClick={() => {
               router.invalidate();
@@ -63,10 +67,10 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
             href="/"
             className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
           >
-            Go home
+            Return home
           </a>
         </div>
-      </div>
+      </main>
     </div>
   );
 }
@@ -88,7 +92,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     links: [
       {
         rel: "icon",
-        href: "/brand/logo.svg",
+        href: VAULT_OPENING_WORDMARK,
         type: "image/svg+xml",
       },
       {

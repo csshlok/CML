@@ -310,7 +310,6 @@ export function AppShell() {
               className="inline-flex rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <BrandLogo
-                variant="wordmark"
                 className="h-auto w-[132px] select-none"
               />
             </Link>

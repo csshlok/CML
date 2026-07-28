@@ -117,6 +117,7 @@ test("sidebar and startup use the same Vault wordmark asset", () => {
   const startupSource = fs.readFileSync(path.join(__dirname, "startup.html"), "utf8");
 
   assert.match(brandSource, /VAULT_OPENING_WORDMARK\s*=\s*"\/brand\/Container\.svg"/);
-  assert.match(shellSource, /variant="wordmark"/);
+  assert.doesNotMatch(brandSource, /brand\/logo\.svg|variant/);
+  assert.match(shellSource, /<BrandLogo/);
   assert.match(startupSource, /brand\/Container\.svg/);
 });
