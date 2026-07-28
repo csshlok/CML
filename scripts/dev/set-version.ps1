@@ -33,7 +33,7 @@ try {
 
   $backendProject = Join-Path $repoRoot "backend\pyproject.toml"
   $backendText = [System.IO.File]::ReadAllText($backendProject)
-  $versionPattern = '(?m)^(version\s*=\s*")[^"]+(")$'
+  $versionPattern = '(?m)^(version\s*=\s*")[^"\r\n]+(")(?=\r?$)'
   $versionRegex = [regex]::new($versionPattern)
   if (-not $versionRegex.IsMatch($backendText)) {
     throw "Could not find the backend project version in backend\pyproject.toml."
