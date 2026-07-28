@@ -365,13 +365,21 @@ function SourcesView() {
     if (!vault) return;
     event.preventDefault();
     setDragActive(false);
-    const droppedPaths = window.cmlDesktop?.getDroppedFilePaths?.(event.dataTransfer.files) ?? [];
+    const droppedPaths = window.cmlDesktop?.getDroppedFilePaths?.() ?? [];
+    if (droppedPaths.length === 0) {
+      setIngestMessage(
+        window.cmlDesktop?.getDroppedFilePaths
+          ? "Vault could not read that drop. Try Browse files."
+          : "Drop import is available in the desktop app.",
+      );
+      return;
+    }
     const report = window.cmlDesktop?.scanSupportedFiles
       ? await window.cmlDesktop.scanSupportedFiles(droppedPaths)
       : { files: droppedPaths, truncated: false, limit: 0 };
     const paths = report.files;
     if (paths.length === 0) {
-      setIngestMessage("Drop import is available in the desktop app.");
+      setIngestMessage("No supported documents found in that drop.");
       return;
     }
     await importFilePaths(paths, report.truncated ? report.limit : null);

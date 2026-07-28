@@ -59,6 +59,12 @@ to the same state, and profile media resolves through the managed-media API. The
 vault folder name is no longer used as the user name. The startup progress page uses
 one onboarding wordmark rather than rendering a second duplicate logo.
 
+External file drops now cross Electron's isolated preload boundary correctly. Native
+paths are extracted from the real `File` objects during the capture phase and only
+plain strings are exposed to React. Sources, new-chat attachments, and existing-chat
+attachments consume the same single-use path store. One unreadable entry does not
+discard other files in the drop, and consumed paths cannot leak into a later drop.
+
 Packaged chat logs also exposed a request-stream lifecycle bug. A legacy middleware
 originally used to reserve an unfinished chat field still consumed the request body
 and replayed the same `http.request` message indefinitely. After the field became
@@ -73,8 +79,9 @@ message.
 
 Current local validation for this source delta is green: 100/100 additional backend
 QA tests, including normal completion and client-disconnect persistence; desktop
-TypeScript and 95/95 Electron behavior tests; the production renderer build; Python
-compile checks; and diff hygiene. The package was not rebuilt, by owner request.
+TypeScript and 98/98 Electron behavior tests; three focused native-drop boundary
+tests; the production renderer build and renderer security audit; Python compile
+checks; and diff hygiene. The package was not rebuilt, by owner request.
 
 ## July 27 MCP, Tunnel, And Reliability Completion
 

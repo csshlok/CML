@@ -203,10 +203,14 @@ function ChatIndex() {
     event.preventDefault();
     setDragActive(false);
     if (!backendReady) return;
-    const droppedPaths = window.cmlDesktop?.getDroppedFilePaths?.(event.dataTransfer.files) ?? [];
+    const droppedPaths = window.cmlDesktop?.getDroppedFilePaths?.() ?? [];
     const paths = window.cmlDesktop?.listSupportedFiles
       ? await window.cmlDesktop.listSupportedFiles(droppedPaths)
       : droppedPaths;
+    if (paths.length === 0) {
+      setAttachmentNotice("No supported documents found in that drop.");
+      return;
+    }
     addAttachmentPaths(paths);
   }
 

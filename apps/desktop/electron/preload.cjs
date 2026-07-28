@@ -1,6 +1,10 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
+const { createDroppedFilePathStore } = require("./dropped-files.cjs");
 
 let rendererReadySent = false;
+const droppedFilePaths = createDroppedFilePathStore(window, (file) =>
+  webUtils.getPathForFile(file),
+);
 
 async function notifyRendererReady(detail) {
   if (rendererReadySent) return true;
@@ -97,9 +101,6 @@ contextBridge.exposeInMainWorld("cmlDesktop", {
   listSupportedFiles: (targetPaths) => ipcRenderer.invoke("cml:list-supported-files", targetPaths),
   scanSupportedFiles: (targetPaths, limit) =>
     ipcRenderer.invoke("cml:scan-supported-files", targetPaths, limit),
-  getDroppedFilePaths: (files) =>
-    Array.from(files)
-      .map((file) => webUtils.getPathForFile(file))
-      .filter(Boolean),
+  getDroppedFilePaths: () => droppedFilePaths.consume(),
   showItemInFolder: (targetPath) => ipcRenderer.invoke("cml:show-item-in-folder", targetPath),
 });

@@ -15,6 +15,16 @@ managed-media IDs consistently in Settings and the application shell. Partial up
 preserve the onboarding name and avatar. The opening-library page now displays only
 the onboarding wordmark.
 
+External drag-and-drop failed for the same class of process-boundary reason. React
+passed DOM `File` instances through `contextBridge` to the preload. Those proxied
+objects did not retain Electron's native file binding, so `webUtils.getPathForFile`
+produced no usable paths and Sources displayed the browser-only fallback even in the
+desktop app. The preload now observes the drop in the capture phase, while the native
+objects are still valid, extracts paths there, and exposes a single-use array of plain
+strings. All three drop surfaces consume that array before invoking the existing
+bounded supported-file scan. Focused tests cover multi-file drops, one unreadable
+entry among valid files, one-time consumption, and preload wiring.
+
 The chat failure reported as “The local service closed the answer before confirming
 it was saved” was traced from packaged stderr to Starlette's
 `StreamingResponse.listen_for_disconnect`. The obsolete
@@ -41,8 +51,9 @@ Validation for the combined unbuilt source delta:
 | --- | --- |
 | Additional backend QA | 100/100 passed |
 | Focused chat lifecycle | 3/3 passed |
-| Desktop | TypeScript passed; 95/95 Electron tests passed |
-| Production renderer build | Passed |
+| Desktop | TypeScript passed; 98/98 Electron tests passed |
+| External-drop boundary | 3/3 focused tests passed |
+| Production renderer build and HTML safety | Passed |
 | Python compile and diff hygiene | Passed |
 | Rebuilt Windows package | Pending owner rebuild |
 

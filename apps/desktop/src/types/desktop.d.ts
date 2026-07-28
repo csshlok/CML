@@ -153,7 +153,7 @@ declare global {
         targetPaths: string[],
         limit?: number,
       ) => Promise<{ files: string[]; truncated: boolean; limit: number }>;
-      getDroppedFilePaths: (files: File[] | FileList) => string[];
+      getDroppedFilePaths: () => string[];
       showItemInFolder: (targetPath: string) => Promise<boolean>;
     };
   }
