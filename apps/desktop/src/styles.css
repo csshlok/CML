@@ -314,6 +314,7 @@
   }
 
   .vault-desktop-frame {
+    --vault-titlebar-height: 32px;
     display: flex;
     height: 100vh;
     min-height: 0;
@@ -326,6 +327,7 @@
     min-height: 0;
     flex: 1;
     overflow: hidden;
+    padding-top: var(--vault-titlebar-height);
   }
 
   .vault-desktop-content > * {
@@ -336,18 +338,19 @@
     position: fixed;
     top: 0;
     right: 0;
+    left: 0;
     z-index: 100;
     display: flex;
-    width: 138px;
-    height: 32px;
+    height: var(--vault-titlebar-height);
     align-items: stretch;
     background: transparent;
     user-select: none;
+    -webkit-app-region: drag;
   }
 
   .vault-window-controls {
     display: flex;
-    height: 32px;
+    height: var(--vault-titlebar-height);
     margin-left: auto;
     -webkit-app-region: no-drag;
   }

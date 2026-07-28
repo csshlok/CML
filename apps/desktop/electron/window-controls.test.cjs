@@ -124,6 +124,10 @@ test("window controls reject events without a BrowserWindow sender", async () =>
 test("desktop window and preload are wired to the custom frameless chrome", () => {
   const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   const preloadSource = fs.readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
+  const stylesSource = fs.readFileSync(
+    path.join(__dirname, "..", "src", "styles.css"),
+    "utf8",
+  );
 
   assert.match(mainSource, /frame:\s*false/);
   assert.match(mainSource, /attachWindowStateEvents\(window\)/);
@@ -132,4 +136,16 @@ test("desktop window and preload are wired to the custom frameless chrome", () =
   assert.match(preloadSource, /windowControls:\s*\{/);
   assert.match(preloadSource, /cml:window-toggle-maximize/);
   assert.match(preloadSource, /cml:window-state-changed/);
+  assert.match(
+    stylesSource,
+    /\.vault-desktop-content\s*\{[^}]*padding-top:\s*var\(--vault-titlebar-height\)/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.vault-window-chrome\s*\{[^}]*left:\s*0;[^}]*-webkit-app-region:\s*drag/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.vault-window-controls\s*\{[^}]*-webkit-app-region:\s*no-drag/s,
+  );
 });

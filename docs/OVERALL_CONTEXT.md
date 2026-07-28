@@ -4,6 +4,30 @@ Last updated: 2026-07-28
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
 
+## July 28 Desktop Titlebar Ownership
+
+Vault uses a frameless Electron window with three custom controls fixed to the
+top-right. The control container was previously only 138 px wide and occupied no
+layout space. Route content still began at y=0, which placed top-right actions such
+as Search's Manage sources button partly beneath the 32 px control hit area. Similar
+collisions were possible anywhere a route placed an action near its upper edge.
+
+The desktop frame now defines one `--vault-titlebar-height` of 32 px and gives that
+space to `vault-desktop-content` before any route renders. `vault-window-chrome`
+spans the full width as the native drag region, while `vault-window-controls`
+retains `-webkit-app-region: no-drag`. This establishes one safe-area contract
+instead of page-specific padding and keeps the web build unchanged because the
+desktop wrapper is conditional on the Electron bridge.
+
+At 1280×720 the control group occupies y=0–32 and Manage sources begins at y=52,
+leaving 20 px of visible separation. At 900×700 the responsive header stacks the
+action below its page copy and no interactive content enters the titlebar. A route
+scan over Home, Search, Sources, Chat, Map, Tasks, and Settings found no visible
+interactive control above y=32. Search → Manage sources navigation was exercised
+and reached Sources successfully. The 113-test desktop run, TypeScript, production
+web build, renderer HTML safety audit, and interactive-control audit pass; the
+Windows package remains pending the owner-managed rebuild.
+
 ## July 28 Durable File Imports And On-Demand Source Details
 
 The Sources route previously launched up to four direct `from-path` requests and

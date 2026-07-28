@@ -25,6 +25,24 @@ The scoped RAG migration, temporal memory foundation, Odin project workflow, bou
 
 The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
 
+## July 28 Desktop Chrome Safe Area
+
+The frameless Windows controls no longer float over route content. The desktop frame
+now reserves a shared 32 px titlebar row before rendering the application shell, so
+top-right page actions cannot sit beneath or immediately against minimize, maximize,
+or close. The complete empty titlebar area is a native drag region while the three
+window buttons remain explicitly interactive.
+
+This is a root-layout correction shared by Search, Home, Sources, Chat, Map, Tasks,
+Settings, onboarding, and every other desktop route; individual page headers do not
+carry one-off offsets. Web rendering remains unchanged because the safe area is only
+mounted when the Electron window-control bridge exists. Rendered validation at
+1280×720 and 900×700 confirmed that Search's Manage sources action has no overlap,
+remains clickable, and that visible controls across representative routes stay
+outside the titlebar. The focused window-control contract and desktop TypeScript
+validation pass. The complete 113-test desktop run, production web build, renderer
+HTML safety audit, and interactive-control audit also pass.
+
 ## July 28 Durable File-Import Progress
 
 File and folder imports now run as durable background jobs rather than a renderer-only
