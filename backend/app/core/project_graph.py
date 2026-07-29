@@ -306,6 +306,7 @@ def graph_view(
                 edge_types=allowed_edges,
                 direction=normalized_direction,
             )
+        insights = _graph_insights(nodes, edges)
         return {
             "version": 1,
             "project_id": project_id,
@@ -320,6 +321,7 @@ def graph_view(
             "truncated": truncated,
             "limits": {"max_nodes": node_limit, "max_depth": depth_limit},
             "warnings": ["This is a bounded projection, not the entire project graph."] if truncated else [],
+            "insights": insights,
         }
 
 
@@ -334,8 +336,30 @@ def graph_view_markdown(view: dict) -> str:
         f"Scope: {view.get('query') or view.get('root') or 'major project areas'}",
         f"Bounded: {'yes' if view.get('truncated') else 'no'}",
         "",
-        "## Nodes",
+        "## Overview",
+        str((view.get("insights") or {}).get("summary") or "No connected project areas were found."),
+        "",
+        "## Key areas",
     ]
+    for area in (view.get("insights") or {}).get("key_areas") or []:
+        lines.append(
+            f"- {area['label']} ({area['kind']}, {area['connections']} relationships)"
+            f" — {area.get('relative_path') or 'project root'}"
+        )
+    lines.extend([
+        "",
+        "## Flows",
+    ])
+    flows = (view.get("insights") or {}).get("flows") or []
+    if flows:
+        for flow in flows:
+            lines.append(f"- {' → '.join(flow['steps'])}")
+    else:
+        lines.append("- No directed multi-step flow was present in this bounded view.")
+    lines.extend([
+        "",
+        "## Nodes",
+    ])
     for node in view["nodes"]:
         location = str(node.get("relative_path") or "")
         if node.get("start_line"):
@@ -616,9 +640,135 @@ def _projection_seeds(conn, project_id: str, snapshot_id: str, *, query: str, ro
                  CASE n.kind WHEN 'file' THEN 0 WHEN 'class' THEN 1 WHEN 'route' THEN 2 ELSE 3 END,
                  n.display_label LIMIT ?
         """,
-        [project_id, snapshot_id, project_id, snapshot_id, project_id, snapshot_id, *scope_params, limit],
+        [
+            project_id,
+            snapshot_id,
+            project_id,
+            snapshot_id,
+            project_id,
+            snapshot_id,
+            *scope_params,
+            min(limit, 6),
+        ],
     ).fetchall()
     return [_view_node(dict_from_row(row)) for row in rows]
+
+
+def _graph_insights(nodes: list[dict], edges: list[dict]) -> dict:
+    """Build deterministic, traceable orientation hints for a bounded graph."""
+    if not nodes:
+        return {
+            "summary": "No indexed project areas matched this view.",
+            "key_areas": [],
+            "flows": [],
+            "node_kinds": {},
+            "relationship_types": {},
+            "component_count": 0,
+        }
+    node_by_id = {str(node["id"]): node for node in nodes}
+    degree = {node_id: 0 for node_id in node_by_id}
+    outgoing: dict[str, list[tuple[str, str]]] = {node_id: [] for node_id in node_by_id}
+    undirected: dict[str, set[str]] = {node_id: set() for node_id in node_by_id}
+    relationship_types: dict[str, int] = {}
+    node_kinds: dict[str, int] = {}
+    for node in nodes:
+        kind = str(node.get("kind") or "other")
+        node_kinds[kind] = node_kinds.get(kind, 0) + 1
+    for edge in edges:
+        source = str(edge["source"])
+        target = str(edge["target"])
+        if source not in node_by_id or target not in node_by_id:
+            continue
+        edge_type = str(edge.get("type") or "related")
+        relationship_types[edge_type] = relationship_types.get(edge_type, 0) + 1
+        degree[source] += 1
+        degree[target] += 1
+        outgoing[source].append((target, edge_type))
+        undirected[source].add(target)
+        undirected[target].add(source)
+
+    key_areas = []
+    for node_id in sorted(
+        node_by_id,
+        key=lambda candidate: (
+            degree[candidate],
+            node_by_id[candidate].get("kind") in {"route", "file", "module", "class"},
+            str(node_by_id[candidate].get("label") or ""),
+        ),
+        reverse=True,
+    )[:6]:
+        node = node_by_id[node_id]
+        key_areas.append(
+            {
+                "id": node_id,
+                "label": node.get("label") or node.get("qualified_id") or node_id,
+                "kind": node.get("kind") or "item",
+                "relative_path": node.get("relative_path") or "",
+                "connections": degree[node_id],
+            }
+        )
+
+    visited: set[str] = set()
+    component_count = 0
+    for node_id in node_by_id:
+        if node_id in visited:
+            continue
+        component_count += 1
+        frontier = [node_id]
+        visited.add(node_id)
+        while frontier:
+            current = frontier.pop()
+            for neighbor in undirected[current]:
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    frontier.append(neighbor)
+
+    flows: list[dict] = []
+    flow_starts = [area["id"] for area in key_areas if outgoing[area["id"]]]
+    for start in flow_starts:
+        path = [start]
+        edge_path: list[str] = []
+        while len(path) < 5:
+            choices = [
+                (target, edge_type)
+                for target, edge_type in outgoing[path[-1]]
+                if target not in path
+            ]
+            if not choices:
+                break
+            target, edge_type = max(choices, key=lambda item: degree[item[0]])
+            path.append(target)
+            edge_path.append(edge_type)
+        if len(path) < 3:
+            continue
+        signature = tuple(path)
+        if any(tuple(flow["node_ids"]) == signature for flow in flows):
+            continue
+        flows.append(
+            {
+                "node_ids": path,
+                "steps": [str(node_by_id[node_id].get("label") or node_id) for node_id in path],
+                "relationships": edge_path,
+            }
+        )
+        if len(flows) == 4:
+            break
+
+    top_relationship = max(relationship_types, key=relationship_types.get) if relationship_types else ""
+    summary = (
+        f"This view connects {len(nodes)} indexed items with {len(edges)} traceable relationships"
+        f" across {component_count} {'area' if component_count == 1 else 'areas'}."
+    )
+    if top_relationship:
+        summary += f" The most common relationship is {top_relationship.replace('_', ' ')}."
+    return {
+        "summary": summary,
+        "key_areas": key_areas,
+        "flows": flows,
+        "node_kinds": node_kinds,
+        "relationship_types": relationship_types,
+        "component_count": component_count,
+    }
 
 
 def _projection_seed_score(node: dict, terms: list[str]) -> int:

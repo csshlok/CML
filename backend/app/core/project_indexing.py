@@ -170,27 +170,71 @@ def index_candidate_structure(*, project_id: str, run_id: str, snapshot_id: str,
 
 def stage_candidate_retrieval(*, project_id: str, run_id: str, snapshot_id: str, job_id: str) -> dict:
     _require_running(run_id, phase="retrieval")
-    now = utc_now()
     staged = 0
+    batch_size = 12
+
+    # Retrieval used to run every project file inside one transaction. Large
+    # projects therefore looked frozen until the last embedding committed, and a
+    # restart repeated the entire stage. Commit small, resumable batches so the
+    # project progress heartbeat remains visible to the UI.
     with connect() as conn:
-        rows = conn.execute(
+        totals = conn.execute(
             """
-            SELECT pss.*, s.* FROM project_snapshot_sources pss
-            JOIN sources s ON s.id = pss.source_id
-            WHERE pss.snapshot_id = ? AND pss.intended_action IN ('add', 'replace')
-            ORDER BY pss.relative_path
-            """, (snapshot_id,),
-        ).fetchall()
-        for index, row in enumerate(rows, start=1):
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN stage_status = 'retrieval_staged' THEN 1 ELSE 0 END) AS completed
+            FROM project_snapshot_sources
+            WHERE snapshot_id = ? AND intended_action IN ('add', 'replace')
+            """,
+            (snapshot_id,),
+        ).fetchone()
+        total = int(totals["total"] or 0)
+        completed = int(totals["completed"] or 0)
+
+    while completed < total:
+        with connect() as conn:
             _require_running_in_conn(conn, run_id)
-            source = source_from_encrypted_row(conn, row)
-            reindex_source_chunks(conn, source)
-            conn.execute("UPDATE source_chunks SET project_id = ?, project_snapshot_id = ?, activation_state = 'candidate' WHERE source_id = ?",
-                         (project_id, snapshot_id, row["source_id"]))
-            conn.execute("UPDATE project_snapshot_sources SET retrieval_status = 'ready', stage_status = 'retrieval_staged', updated_at = ? WHERE snapshot_id = ? AND relative_path = ?",
-                         (now, snapshot_id, row["relative_path"]))
-            staged += 1
-            _heartbeat(conn, run_id, "retrieval", index, len(rows))
+            rows = conn.execute(
+                """
+                SELECT pss.*, s.* FROM project_snapshot_sources pss
+                JOIN sources s ON s.id = pss.source_id
+                WHERE pss.snapshot_id = ?
+                  AND pss.intended_action IN ('add', 'replace')
+                  AND pss.stage_status != 'retrieval_staged'
+                ORDER BY pss.relative_path
+                LIMIT ?
+                """,
+                (snapshot_id, batch_size),
+            ).fetchall()
+            if not rows:
+                break
+            now = utc_now()
+            for row in rows:
+                source = source_from_encrypted_row(conn, row)
+                reindex_source_chunks(conn, source)
+                conn.execute(
+                    """
+                    UPDATE source_chunks
+                    SET project_id = ?, project_snapshot_id = ?, activation_state = 'candidate'
+                    WHERE source_id = ?
+                    """,
+                    (project_id, snapshot_id, row["source_id"]),
+                )
+                conn.execute(
+                    """
+                    UPDATE project_snapshot_sources
+                    SET retrieval_status = 'ready', stage_status = 'retrieval_staged', updated_at = ?
+                    WHERE snapshot_id = ? AND relative_path = ?
+                    """,
+                    (now, snapshot_id, row["relative_path"]),
+                )
+            staged += len(rows)
+            completed += len(rows)
+            _heartbeat(conn, run_id, "retrieval", completed, total)
+
+    now = utc_now()
+    with connect() as conn:
+        _require_running_in_conn(conn, run_id)
         conn.execute("UPDATE project_snapshot_sources SET retrieval_status = 'ready', stage_status = 'retrieval_staged', updated_at = ? WHERE snapshot_id = ? AND intended_action = 'unchanged'",
                      (now, snapshot_id))
         conn.execute("UPDATE project_snapshots SET retrieval_status = 'ready' WHERE id = ?", (snapshot_id,))
@@ -221,9 +265,24 @@ def activate_candidate(*, project_id: str, run_id: str, snapshot_id: str, job_id
                              (project_id, row["source_id"], row["relative_path"], row["file_role"], row["content_hash"], now, now))
                 conn.execute("UPDATE sources SET cluster_id = ?, state = 'indexed', activation_state = 'active', project_snapshot_id = ?, updated_at = ? WHERE id = ?",
                              (project["primary_cluster_id"], snapshot_id, now, row["source_id"]))
-                conn.execute("UPDATE source_chunks SET activation_state = 'active' WHERE source_id = ? AND project_snapshot_id = ?", (row["source_id"], snapshot_id))
+                conn.execute(
+                    """
+                    UPDATE source_chunks
+                    SET cluster_id = ?, activation_state = 'active'
+                    WHERE source_id = ? AND project_snapshot_id = ?
+                    """,
+                    (project["primary_cluster_id"], row["source_id"], snapshot_id),
+                )
             elif action == "unchanged" and row["source_id"]:
                 conn.execute("UPDATE sources SET project_snapshot_id = ?, activation_state = 'active', updated_at = ? WHERE id = ?", (snapshot_id, now, row["source_id"]))
+                conn.execute(
+                    """
+                    UPDATE source_chunks
+                    SET cluster_id = ?, activation_state = 'active'
+                    WHERE source_id = ?
+                    """,
+                    (project["primary_cluster_id"], row["source_id"]),
+                )
         count = conn.execute("SELECT COUNT(*) AS total FROM project_sources WHERE project_id = ?", (project_id,)).fetchone()["total"]
         conn.execute("UPDATE project_snapshot_sources SET stage_status = 'active', updated_at = ? WHERE snapshot_id = ?", (now, snapshot_id))
         conn.execute("UPDATE project_snapshots SET retrieval_status = 'ready', activated_at = ?, manifest_activated_at = COALESCE(manifest_activated_at, ?), retrieval_activated_at = ? WHERE id = ?",

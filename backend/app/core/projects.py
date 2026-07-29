@@ -11,16 +11,15 @@ from pathlib import Path
 from uuid import uuid4
 
 from backend.app.core.background_jobs import enqueue_job
-from backend.app.core.code_structure import STRUCTURE_EXTRACTOR_VERSION, build_structure_graph
-from backend.app.core.extractor_registry import extractor_fingerprint
+from backend.app.core.code_structure import STRUCTURE_EXTRACTOR_VERSION
 from backend.app.core.database import connect, dict_from_row, utc_now
-from backend.app.core.encrypted_storage import store_source_content_fields, update_source_content_fields
-from backend.app.core.memory_card import summarize_text
+from backend.app.core.extractor_registry import extractor_fingerprint
 from backend.app.core.pagination import cursor_page, decode_cursor
-from backend.app.core.source_records import source_type_for_suffix
 
 
-EXTRACTOR_VERSION = f"odin-manifest-v2+{STRUCTURE_EXTRACTOR_VERSION}+{extractor_fingerprint()}"
+EXTRACTOR_VERSION = (
+    f"odin-manifest-v2+{STRUCTURE_EXTRACTOR_VERSION}+{extractor_fingerprint()}"
+)
 MAX_FILE_BYTES = 1_000_000
 DEFAULT_IGNORED_DIRECTORIES = {
     ".git",
@@ -292,7 +291,7 @@ def register_project(
                         cluster_id,
                         vault_id,
                         project_name,
-                        "Code project registered through Odin.",
+                        "Files and context from this project folder.",
                         now,
                         now,
                     ),
@@ -334,7 +333,7 @@ def register_project(
                 (project_id, cluster_id, now),
             )
     if sync:
-        sync_project(project_id, trigger_source="odin_add")
+        sync_project(project_id, trigger_source="project_add")
     return get_project(project_id)
 
 
@@ -603,73 +602,6 @@ def sync_project(
         "snapshot_id": None,
         "job_id": discover_job["id"],
         "queued": True,
-    }
-
-
-def run_project_index_job(*, project_id: str, run_id: str, job_id: str) -> dict:
-    project = get_project(project_id)
-    root = normalize_root_path(project["root_path"])
-    now = utc_now()
-    with connect() as conn:
-        run = conn.execute("SELECT * FROM project_index_runs WHERE id = ?", (run_id,)).fetchone()
-        if run is None:
-            raise ProjectError("Project indexing run was not found.")
-        if run["status"] == "cancelled" or run["cancellation_requested"]:
-            return {"status": "cancelled", "run_id": run_id}
-        conn.execute(
-            """
-            UPDATE project_index_runs SET status = 'running', phase = 'discovery', job_id = ?,
-                started_at = COALESCE(started_at, ?), heartbeat_at = ?, updated_at = ? WHERE id = ?
-            """,
-            (job_id, now, now, now, run_id),
-        )
-    try:
-        discovery = discover_project(root, discovery_scope=project["discovery_scope"])
-        with connect() as conn:
-            run = conn.execute(
-                "SELECT cancellation_requested, status FROM project_index_runs WHERE id = ?", (run_id,)
-            ).fetchone()
-            if run is None or run["status"] == "cancelled" or run["cancellation_requested"]:
-                return {"status": "cancelled", "run_id": run_id}
-            conn.execute(
-                """
-                UPDATE project_index_runs SET phase = 'candidate_build', eligible_total = ?,
-                    phase_total_count = ?, heartbeat_at = ?, updated_at = ? WHERE id = ?
-                """,
-                (len(discovery.files), len(discovery.files), utc_now(), utc_now(), run_id),
-            )
-        snapshot_id = _activate_discovery(project, discovery, run_id)
-    except Exception as exc:
-        with connect() as conn:
-            conn.execute(
-                """
-                UPDATE project_index_runs
-                SET status = 'failed', failure_category = ?, finished_at = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (exc.__class__.__name__, utc_now(), utc_now(), run_id),
-            )
-            current = conn.execute("SELECT active_snapshot_id FROM projects WHERE id = ?", (project_id,)).fetchone()
-            if current and current["active_snapshot_id"]:
-                conn.execute(
-                    "UPDATE projects SET status = 'ready', active_run_id = NULL, candidate_snapshot_id = NULL, updated_at = ? WHERE id = ?",
-                    (utc_now(), project_id),
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE projects SET status = 'issue', structure_status = 'issue',
-                        active_run_id = NULL, candidate_snapshot_id = NULL, updated_at = ? WHERE id = ?
-                    """,
-                    (utc_now(), project_id),
-                )
-        raise
-    return {
-        "project": get_project(project_id),
-        "run": get_project_run(run_id),
-        "snapshot_id": snapshot_id,
-        "job_id": job_id,
-        "queued": False,
     }
 
 
@@ -965,329 +897,6 @@ def discover_project(
         manifest_hash=manifest_digest.hexdigest(),
         discovery_scope=normalized_scope,
     )
-
-
-def _activate_discovery(project: dict, discovery: DiscoveryResult, run_id: str) -> str:
-    now = utc_now()
-    snapshot_id = f"project-snapshot-{uuid4()}"
-    repository_kind, branch, commit, remote_fingerprint, dirty, changed_file_count = _git_metadata(Path(project["root_path"]))
-    manifest_summary = {
-        "version": 1,
-        "discovery_scope": discovery.discovery_scope,
-        "files": [{"path": item.relative_path, "hash": item.content_hash} for item in discovery.files],
-        "excluded": {
-            "ignored": discovery.ignored_count,
-            "generated": discovery.generated_count,
-            "failed": discovery.failed_count,
-        },
-    }
-    changed_sources: list[str] = []
-    with connect() as conn:
-        existing_rows = conn.execute(
-            """
-            SELECT ps.relative_path, ps.source_id, ps.content_hash
-            FROM project_sources ps WHERE ps.project_id = ?
-            """,
-            (project["id"],),
-        ).fetchall()
-        existing = {str(row["relative_path"]): row for row in existing_rows}
-        current_paths: set[str] = set()
-        for item in discovery.files:
-            current_paths.add(item.relative_path)
-            previous = existing.get(item.relative_path)
-            if previous is None:
-                source_id = f"source-{uuid4()}"
-                source = {
-                    "id": source_id,
-                    "vault_id": project["vault_id"],
-                    "cluster_id": project["primary_cluster_id"],
-                    "title": Path(item.relative_path).name,
-                    "source_type": source_type_for_suffix(item.absolute_path.suffix.lower()),
-                    "state": "indexed",
-                    "original_path": str(item.absolute_path),
-                    "url": None,
-                    "checksum": item.content_hash,
-                    "provenance": "project_import",
-                    "trust_tier": "trusted_local",
-                    "security_labels": "[]",
-                    "parser_security_json": json.dumps({"odin": {"relative_path": item.relative_path}}),
-                    "raw_text": item.text,
-                    "extracted_text": item.text,
-                    "summary": summarize_text(item.text),
-                    "tags": json.dumps(["project", item.language.lower()]),
-                    "cover_image_url": None,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-                stored = store_source_content_fields(conn, source, now=now)
-                conn.execute(
-                    """
-                    INSERT INTO sources (
-                        id, vault_id, cluster_id, title, source_type, state, original_path, url,
-                        checksum, provenance, trust_tier, security_labels, parser_security_json,
-                        raw_text, extracted_text, summary, tags, cover_image_url, created_at, updated_at
-                    ) VALUES (
-                        :id, :vault_id, :cluster_id, :title, :source_type, :state, :original_path, :url,
-                        :checksum, :provenance, :trust_tier, :security_labels, :parser_security_json,
-                        :raw_text, :extracted_text, :summary, :tags, :cover_image_url, :created_at, :updated_at
-                    )
-                    """,
-                    stored,
-                )
-                conn.execute(
-                    """
-                    INSERT INTO project_sources (
-                        project_id, source_id, relative_path, file_role, content_hash, discovered_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (project["id"], source_id, item.relative_path, item.file_role, item.content_hash, now, now),
-                )
-                changed_sources.append(source_id)
-            else:
-                source_id = str(previous["source_id"])
-                if previous["content_hash"] != item.content_hash:
-                    updates = update_source_content_fields(
-                        conn,
-                        vault_id=project["vault_id"],
-                        source_id=source_id,
-                        updates={
-                            "raw_text": item.text,
-                            "extracted_text": item.text,
-                            "summary": summarize_text(item.text),
-                        },
-                        now=now,
-                    )
-                    conn.execute(
-                        """
-                        UPDATE sources SET title = ?, state = 'indexed', original_path = ?, checksum = ?,
-                            raw_text = ?, extracted_text = ?, summary = ?, deleted_at = NULL, updated_at = ?
-                        WHERE id = ?
-                        """,
-                        (
-                            Path(item.relative_path).name,
-                            str(item.absolute_path),
-                            item.content_hash,
-                            updates["raw_text"],
-                            updates["extracted_text"],
-                            updates["summary"],
-                            now,
-                            source_id,
-                        ),
-                    )
-                    changed_sources.append(source_id)
-                conn.execute(
-                    """
-                    UPDATE project_sources SET file_role = ?, content_hash = ?, updated_at = ?
-                    WHERE project_id = ? AND source_id = ?
-                    """,
-                    (item.file_role, item.content_hash, now, project["id"], source_id),
-                )
-
-        removed = [row for path, row in existing.items() if path not in current_paths]
-        for row in removed:
-            conn.execute("DELETE FROM project_sources WHERE project_id = ? AND source_id = ?", (project["id"], row["source_id"]))
-            conn.execute(
-                "UPDATE sources SET deleted_at = ?, updated_at = ? WHERE id = ?",
-                (now, now, row["source_id"]),
-            )
-
-        structure_status = "processing" if discovery.files else "unavailable"
-        retrieval_status = "partial" if discovery.files else "unavailable"
-        conn.execute(
-            """
-            INSERT INTO project_snapshots (
-                id, project_id, discovery_scope, source_manifest_hash, git_commit, branch, dirty_working_tree,
-                extractor_version, eligible_count, ignored_count, generated_count, parsed_count,
-                failed_count, structure_status, retrieval_status, interpretation_status,
-                manifest_json, activated_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unavailable', ?, ?, ?)
-            """,
-            (
-                snapshot_id,
-                project["id"],
-                discovery.discovery_scope,
-                discovery.manifest_hash,
-                commit,
-                branch,
-                int(dirty),
-                EXTRACTOR_VERSION,
-                len(discovery.files),
-                discovery.ignored_count,
-                discovery.generated_count,
-                len(discovery.files),
-                discovery.failed_count,
-                structure_status,
-                retrieval_status,
-                json.dumps(manifest_summary, separators=(",", ":")),
-                now,
-                now,
-            ),
-        )
-        conn.execute(
-            "UPDATE projects SET candidate_snapshot_id = ?, updated_at = ? WHERE id = ?",
-            (snapshot_id, now, project["id"]),
-        )
-        active_sources = {
-            row["relative_path"]: row
-            for row in conn.execute(
-                """
-                SELECT source_id, relative_path, file_role, content_hash, discovered_at, updated_at
-                FROM project_sources WHERE project_id = ?
-                """,
-                (project["id"],),
-            ).fetchall()
-        }
-        for item in discovery.files:
-            membership = active_sources[item.relative_path]
-            previous = existing.get(item.relative_path)
-            intended_action = "add" if previous is None else "modify" if previous["content_hash"] != item.content_hash else "unchanged"
-            conn.execute(
-                """
-                INSERT INTO project_snapshot_sources (
-                    snapshot_id, project_id, source_id, prior_source_id, relative_path,
-                    file_role, language, byte_size, content_hash, intended_action,
-                    stage_status, error_category, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', '', ?, ?)
-                """,
-                (
-                    snapshot_id,
-                    project["id"],
-                    membership["source_id"],
-                    membership["source_id"],
-                    item.relative_path,
-                    item.file_role,
-                    item.language,
-                    len(item.text.encode("utf-8")),
-                    item.content_hash,
-                    intended_action,
-                    membership["discovered_at"],
-                    membership["updated_at"],
-                ),
-            )
-            conn.execute(
-                """
-                UPDATE sources SET project_id = ?, project_snapshot_id = ?, activation_state = 'active'
-                WHERE id = ?
-                """,
-                (project["id"], snapshot_id, membership["source_id"]),
-            )
-        structure_result = build_structure_graph(
-            conn,
-            project=project,
-            snapshot_id=snapshot_id,
-            files=discovery.files,
-            now=now,
-        )
-        structure_status = (
-            "partial" if structure_result["parse_failure_count"] or discovery.failed_count else "ready"
-        ) if discovery.files else "unavailable"
-        conn.execute(
-            """
-            UPDATE project_snapshots
-            SET structure_status = ?, failed_count = ?, extractor_version = ?,
-                manifest_activated_at = ?, structure_activated_at = ?,
-                retrieval_activated_at = COALESCE(retrieval_activated_at, ?)
-            WHERE id = ?
-            """,
-            (
-                structure_status,
-                discovery.failed_count + structure_result["parse_failure_count"],
-                EXTRACTOR_VERSION,
-                now,
-                now,
-                now,
-                snapshot_id,
-            ),
-        )
-        brief = _build_brief(project["name"], repository_kind, discovery, structure_result)
-        aggregate_status = "partial" if discovery.failed_count or structure_result["parse_failure_count"] else "ready"
-        conn.execute(
-            """
-            UPDATE projects SET repository_kind = ?, git_remote_fingerprint = ?, default_branch = ?, indexed_commit = ?,
-                working_tree_dirty = ?, changed_file_count = ?,
-                status = ?, structure_status = ?, retrieval_status = ?, interpretation_status = 'unavailable',
-                active_snapshot_id = ?, active_manifest_snapshot_id = ?,
-                active_structure_snapshot_id = ?, active_retrieval_snapshot_id = ?,
-                candidate_snapshot_id = NULL, active_run_id = NULL,
-                brief = ?, languages_json = ?, workspace_count = ?, entrypoints_json = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                repository_kind,
-                remote_fingerprint,
-                branch,
-                commit,
-                int(dirty),
-                changed_file_count,
-                aggregate_status,
-                structure_status,
-                retrieval_status,
-                snapshot_id,
-                snapshot_id,
-                snapshot_id,
-                snapshot_id,
-                brief,
-                json.dumps(discovery.languages),
-                discovery.workspace_count,
-                json.dumps(discovery.entrypoints),
-                now,
-                project["id"],
-            ),
-        )
-        conn.execute(
-            "UPDATE project_snapshot_sources SET stage_status = 'active', updated_at = ? WHERE snapshot_id = ?",
-            (now, snapshot_id),
-        )
-        conn.execute(
-            """
-            UPDATE project_index_runs SET snapshot_id = ?, status = 'succeeded', phase = 'activated',
-                eligible_total = ?, completed_count = ?, skipped_count = ?, failed_count = ?,
-                phase_completed_count = ?, phase_total_count = ?, activation_outcome = 'activated',
-                heartbeat_at = ?, detail_json = ?, finished_at = ?, updated_at = ? WHERE id = ?
-            """,
-            (
-                snapshot_id,
-                len(discovery.files),
-                len(discovery.files),
-                discovery.ignored_count + discovery.generated_count,
-                discovery.failed_count + structure_result["parse_failure_count"],
-                len(discovery.files),
-                len(discovery.files),
-                now,
-                json.dumps(
-                    {
-                        "changed_sources": len(changed_sources),
-                        "removed_sources": len(removed),
-                        "structure": structure_result,
-                    },
-                    separators=(",", ":"),
-                ),
-                now,
-                now,
-                run_id,
-            ),
-        )
-        conn.execute(
-            """
-            UPDATE clusters SET index_status = ?, profile_status = 'needs_update',
-                cluster_summary = ?, indexed_source_count = ?, updated_at = ? WHERE id = ?
-            """,
-            (
-                "ready" if discovery.files else "empty",
-                brief,
-                len(discovery.files),
-                now,
-                project["primary_cluster_id"],
-            ),
-        )
-        for source_id in changed_sources:
-            enqueue_job(
-                conn,
-                job_type="reindex_source",
-                payload={"source_id": source_id},
-                dedupe_key=f"reindex-source:{source_id}",
-            )
-    return snapshot_id
 
 
 def _project_from_row(conn, row) -> dict:

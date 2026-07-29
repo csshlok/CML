@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.pagination import cursor_page, decode_cursor
 from backend.app.core.runtime_identity import BACKEND_INSTANCE_ID
 
 
@@ -293,10 +294,69 @@ def authenticate_session(session_token: str) -> dict | None:
         }
 
 
-def list_clients() -> list[dict]:
+def list_clients(*, limit: int = 100) -> list[dict]:
+    """Compatibility list. Bounded and ordered with usable clients first."""
+    safe_limit = max(1, min(int(limit), 100))
     with connect() as conn:
-        rows = conn.execute("SELECT * FROM cli_clients ORDER BY created_at DESC").fetchall()
+        rows = conn.execute(
+            """
+            SELECT * FROM cli_clients
+            ORDER BY
+                CASE WHEN revoked_at IS NULL AND rotated_at IS NULL THEN 0 ELSE 1 END,
+                created_at DESC,
+                id DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
         return [_public_client(dict_from_row(row)) for row in rows]
+
+
+def list_clients_page(
+    *,
+    state: str = "active",
+    limit: int = 30,
+    cursor: str | None = None,
+) -> dict:
+    normalized_state = str(state or "active").strip().lower()
+    if normalized_state not in {"active", "history"}:
+        raise CliAuthError("invalid_cli_client_state")
+    safe_limit = max(1, min(int(limit), 100))
+    decoded = decode_cursor(cursor)
+    state_clause = (
+        "revoked_at IS NULL AND rotated_at IS NULL"
+        if normalized_state == "active"
+        else "(revoked_at IS NOT NULL OR rotated_at IS NOT NULL)"
+    )
+    cursor_clause = ""
+    params: list[object] = []
+    if decoded is not None:
+        cursor_clause = "AND (created_at < ? OR (created_at = ? AND id < ?))"
+        params.extend([decoded[0], decoded[0], decoded[1]])
+    params.append(safe_limit + 1)
+    with connect() as conn:
+        total = int(
+            conn.execute(
+                f"SELECT COUNT(*) AS total FROM cli_clients WHERE {state_clause}"
+            ).fetchone()["total"]
+        )
+        rows = conn.execute(
+            f"""
+            SELECT * FROM cli_clients
+            WHERE {state_clause}
+              {cursor_clause}
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    page = cursor_page(
+        [_public_client(dict_from_row(row)) for row in rows],
+        requested_limit=safe_limit,
+        sort_field="created_at",
+    )
+    page["total"] = total
+    return page
 
 
 def revoke_client(client_id: str) -> dict:

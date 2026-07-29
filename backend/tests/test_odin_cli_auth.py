@@ -358,6 +358,49 @@ class OdinCliAuthTests(unittest.TestCase):
         self.assertEqual(me.status_code, 200)
         self.assertEqual(me.json()["allowed_vault_ids"], ["vault-a"])
 
+    def test_cli_client_pages_keep_large_history_bounded(self) -> None:
+        from backend.app.core.cli_auth import list_clients, list_clients_page
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            rows = []
+            for index in range(1000):
+                created_at = f"2026-01-{1 + (index // 48):02d}T{index % 24:02d}:{index % 60:02d}:00+00:00"
+                rows.append(
+                    (
+                        f"client-{index:04d}",
+                        f"Client {index}",
+                        f"{index:064x}",
+                        f"credential-{index}",
+                        created_at,
+                        None if index < 10 else created_at,
+                    )
+                )
+            conn.executemany(
+                """
+                INSERT INTO cli_clients (
+                    id, display_name, executable_fingerprint, credential_hash,
+                    created_at, revoked_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+        active = list_clients_page(state="active", limit=30)
+        history = list_clients_page(state="history", limit=30)
+        compatibility = list_clients()
+
+        self.assertEqual(len(active["items"]), 10)
+        self.assertEqual(active["total"], 10)
+        self.assertFalse(active["has_more"])
+        self.assertEqual(len(history["items"]), 30)
+        self.assertEqual(history["total"], 990)
+        self.assertTrue(history["has_more"])
+        self.assertIsNotNone(history["next_cursor"])
+        self.assertLessEqual(len(compatibility), 100)
+        self.assertTrue(all(item["revoked_at"] is None for item in compatibility[:10]))
+
 
 if __name__ == "__main__":
     unittest.main()

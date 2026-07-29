@@ -14,6 +14,7 @@ from backend.app.core.cli_auth import (
     create_session,
     deny_pairing,
     list_clients,
+    list_clients_page,
     list_pairing_challenges,
     pairing_status,
     revoke_client,
@@ -113,8 +114,17 @@ def auth_me(request: Request) -> dict:
 
 
 @router.get("/clients")
-def client_list() -> list[dict]:
-    return list_clients()
+def client_list(limit: int = 100) -> list[dict]:
+    return list_clients(limit=limit)
+
+
+@router.get("/clients/page")
+def client_list_page(
+    state: str = "active",
+    limit: int = 30,
+    cursor: str | None = None,
+) -> dict:
+    return _call(list_clients_page, state=state, limit=limit, cursor=cursor)
 
 
 @router.post("/clients/{client_id}/revoke")

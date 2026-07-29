@@ -85,6 +85,89 @@ class OdinProjectTests(unittest.TestCase):
         self.assertEqual(paths, {"package.json", "src/auth.ts", "src/main.ts"})
         self.assertGreaterEqual(node_count, 6)
 
+    def test_phased_activation_is_the_only_project_snapshot_writer(self) -> None:
+        project_source = (
+            Path(__file__).parents[1] / "app" / "core" / "projects.py"
+        ).read_text(encoding="utf-8")
+        indexing_source = (
+            Path(__file__).parents[1] / "app" / "core" / "project_indexing.py"
+        ).read_text(encoding="utf-8")
+        jobs_source = (
+            Path(__file__).parents[1] / "app" / "core" / "background_jobs.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("def run_project_index_job", project_source)
+        self.assertNotIn("def _activate_discovery", project_source)
+        self.assertNotIn('"project_index": JobPolicy', jobs_source)
+        self.assertEqual(indexing_source.count("def activate_candidate("), 1)
+
+    def test_legacy_monolithic_job_is_terminated_and_requeued_as_phases(self) -> None:
+        import json
+
+        from backend.app.core.background_jobs import migrate_legacy_project_index_jobs
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.projects import register_project
+
+        project = register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Legacy",
+            sync=False,
+        )
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO project_index_runs (
+                    id, project_id, trigger_source, status, phase, started_at, created_at, updated_at
+                )
+                VALUES ('legacy-run', ?, 'startup', 'queued', 'queued', ?, ?, ?)
+                """,
+                (project["id"], now, now, now),
+            )
+            conn.execute(
+                """
+                UPDATE projects SET active_run_id = 'legacy-run', status = 'indexing'
+                WHERE id = ?
+                """,
+                (project["id"],),
+            )
+            conn.execute(
+                """
+                INSERT INTO app_jobs (id, job_type, status, payload, created_at, updated_at)
+                VALUES ('legacy-job', 'project_index', 'queued', ?, ?, ?)
+                """,
+                (
+                    json.dumps({"project_id": project["id"], "run_id": "legacy-run"}),
+                    now,
+                    now,
+                ),
+            )
+
+        self.assertEqual(migrate_legacy_project_index_jobs(), 1)
+
+        with connect() as conn:
+            legacy_job = conn.execute(
+                "SELECT status, last_error FROM app_jobs WHERE id = 'legacy-job'"
+            ).fetchone()
+            legacy_run = conn.execute(
+                "SELECT status, failure_category FROM project_index_runs WHERE id = 'legacy-run'"
+            ).fetchone()
+            phase_types = {
+                row["job_type"]
+                for row in conn.execute(
+                    "SELECT job_type FROM app_jobs WHERE scope_id = ?",
+                    (project["id"],),
+                ).fetchall()
+            }
+        self.assertEqual(legacy_job["status"], "failed")
+        self.assertEqual(legacy_job["last_error"], "legacy_project_index_removed")
+        self.assertEqual(legacy_run["status"], "failed")
+        self.assertTrue(
+            {"project_discover", "project_structure_index", "project_retrieval_stage", "project_snapshot_activate"}
+            <= phase_types
+        )
+
     def test_project_list_filters_linked_projects_in_one_query(self) -> None:
         from backend.app.core.projects import link_project, list_projects
 
@@ -269,10 +352,26 @@ class OdinProjectTests(unittest.TestCase):
                 "SELECT * FROM project_index_runs WHERE project_id = ? ORDER BY created_at DESC LIMIT 1",
                 (project["id"],),
             ).fetchone()
+            chunk_scopes = conn.execute(
+                """
+                SELECT DISTINCT chunks.cluster_id
+                FROM source_chunks chunks
+                JOIN project_snapshot_sources membership
+                  ON membership.source_id = chunks.source_id
+                 AND membership.snapshot_id = chunks.project_snapshot_id
+                WHERE membership.snapshot_id = ?
+                  AND chunks.activation_state = 'active'
+                """,
+                (project["active_snapshot_id"],),
+            ).fetchall()
         self.assertEqual([row["relative_path"] for row in memberships], ["package.json", "src/auth.ts", "src/main.ts"])
         self.assertTrue(all(row["stage_status"] == "active" for row in memberships))
         self.assertTrue(all(row["project_snapshot_id"] == project["active_snapshot_id"] for row in memberships))
         self.assertTrue(all(row["activation_state"] == "active" for row in memberships))
+        self.assertEqual(
+            {row["cluster_id"] for row in chunk_scopes},
+            {project["primary_cluster_id"]},
+        )
         self.assertEqual(run["activation_outcome"], "activated")
         self.assertEqual(run["phase_completed_count"], 3)
         self.assertEqual(run["phase_total_count"], 3)
@@ -365,6 +464,12 @@ class OdinProjectTests(unittest.TestCase):
         self.assertEqual(candidate_source["state"], "staging")
         self.assertEqual(candidate_source["activation_state"], "candidate")
         self.assertNotEqual(active_membership["content_hash"], __import__("hashlib").sha256(b"export const start = () => 'candidate';\n").hexdigest())
+        from backend.app.api.routes.sources import count_sources, list_sources
+
+        visible_sources = list_sources(vault_id="vault-odin")
+        self.assertEqual(count_sources(vault_id="vault-odin")["total"], 3)
+        self.assertEqual(len(visible_sources), 3)
+        self.assertNotIn(candidate_source["activation_state"], {item.get("activation_state") for item in visible_sources})
 
         self.assertEqual(run_due_jobs_once(limit=1), 1)  # structure
         structured = get_project(project["id"])
@@ -397,6 +502,37 @@ class OdinProjectTests(unittest.TestCase):
                 (project["id"],),
             ).fetchone()["source_id"]
         self.assertEqual(active_id, candidate_id)
+
+    def test_large_project_sources_can_be_browsed_as_one_folder(self) -> None:
+        from backend.app.api.routes.sources import count_sources, list_sources_page
+
+        for index in range(20):
+            (self.repo / "src" / f"module-{index:02d}.ts").write_text(
+                f"export const module{index} = {index};\n",
+                encoding="utf-8",
+            )
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Large project",
+            sync=True,
+        )
+
+        root_page = list_sources_page(
+            vault_id="vault-odin",
+            exclude_grouped_projects=True,
+            limit=100,
+        )
+        folder_page = list_sources_page(
+            vault_id="vault-odin",
+            project_id=project["id"],
+            limit=100,
+        )
+
+        self.assertEqual(project["source_count"], 23)
+        self.assertEqual(root_page["items"], [])
+        self.assertEqual(count_sources(vault_id="vault-odin", exclude_grouped_projects=True)["total"], 0)
+        self.assertEqual(len(folder_page["items"]), 23)
 
     def test_project_job_recovery_requeues_staging_and_verifies_committed_activation(self) -> None:
         from backend.app.core.background_jobs import recover_interrupted_jobs, run_due_jobs_once
@@ -453,6 +589,81 @@ class OdinProjectTests(unittest.TestCase):
         self.assertEqual(result["status"], "found")
         self.assertEqual([node["display_label"] for node in result["path"]], ["start", "authorize"])
         self.assertEqual(result["edges"][0]["edge_type"], "calls")
+
+    def test_project_context_retrieves_activated_project_sources(self) -> None:
+        from backend.app.api.routes.projects import ProjectContextRequest, project_context
+
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            sync=True,
+        )
+        response = project_context(
+            project["id"],
+            ProjectContextRequest(query="What does this project do?", limit=8, mode="context"),
+        )
+
+        self.assertEqual(response["project_id"], project["id"])
+        self.assertTrue(response["citations"])
+        self.assertTrue(response["source_snippets"])
+        citation_source_ids = {item["source_id"] for item in response["citations"]}
+        from backend.app.core.database import connect
+        with connect() as conn:
+            citation_clusters = {
+                row["cluster_id"]
+                for row in conn.execute(
+                    f"SELECT cluster_id FROM sources WHERE id IN ({','.join('?' for _ in citation_source_ids)})",
+                    list(citation_source_ids),
+                ).fetchall()
+            }
+        self.assertEqual(citation_clusters, {project["primary_cluster_id"]})
+
+    def test_project_chat_retrieves_the_same_project_evidence(self) -> None:
+        from backend.app.api.routes.chat import _build_retrieval_context, _resolve_project_chat_scope
+        from backend.app.schemas import ChatContextRequest
+
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            sync=True,
+        )
+        payload = _resolve_project_chat_scope(
+            ChatContextRequest(
+                vault_id="vault-odin",
+                project_id=project["id"],
+                prompt="What does this project do?",
+                persist=False,
+            )
+        )
+        response = _build_retrieval_context(payload, synthesize=False)
+
+        self.assertEqual(payload.cluster_id, project["primary_cluster_id"])
+        self.assertTrue(response["citations"])
+        self.assertNotEqual(
+            response["coverage_ledger"]["partial_failure_mode"],
+            "no_citations",
+        )
+
+    def test_graph_view_explains_key_areas_and_observed_flows(self) -> None:
+        from backend.app.core.project_graph import graph_view, graph_view_markdown
+
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            sync=True,
+        )
+        view = graph_view(project["id"], query="Show the architecture graph for this project.")
+
+        self.assertTrue(view["nodes"])
+        self.assertIn("traceable relationships", view["insights"]["summary"])
+        self.assertTrue(view["insights"]["key_areas"])
+        markdown = graph_view_markdown(view)
+        self.assertIn("## Overview", markdown)
+        self.assertIn("## Key areas", markdown)
+        self.assertIn("## Flows", markdown)
 
     def test_node_insertion_is_idempotent_within_a_snapshot(self) -> None:
         from backend.app.core.code_structure import _insert_node, _path_key
