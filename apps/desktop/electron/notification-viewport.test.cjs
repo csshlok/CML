@@ -15,6 +15,14 @@ const rootSource = fs.readFileSync(
   path.join(__dirname, "..", "src", "routes", "__root.tsx"),
   "utf8",
 );
+const appShellSource = fs.readFileSync(
+  path.join(__dirname, "..", "src", "components", "AppShell.tsx"),
+  "utf8",
+);
+const homeSource = fs.readFileSync(
+  path.join(__dirname, "..", "src", "routes", "_app.home.tsx"),
+  "utf8",
+);
 
 test("Settings feedback uses the application notification viewport", () => {
   assert.match(settingsSource, /import \{ notify \} from "@\/components\/product\/Notifications"/);
@@ -44,4 +52,22 @@ test("notifications remain accessible and manually dismissible", () => {
   assert.match(notificationsSource, /role=\{tone === "error" \? "alert" : "status"\}/);
   assert.match(notificationsSource, /aria-label="Dismiss notification"/);
   assert.match(notificationsSource, /onClick=\{\(\) => dismiss\(notification\.id\)\}/);
+});
+
+test("model-dependent work reports outages once and confirms automatic recovery", () => {
+  assert.match(appShellSource, /nextJobs\.blocked_local_model > 0/);
+  assert.match(appShellSource, /title: "Local model unavailable"/);
+  assert.match(
+    appShellSource,
+    /Document descriptions and clustering are paused while Vault restarts the model\./,
+  );
+  assert.match(appShellSource, /title: "Local model restored"/);
+  assert.match(
+    appShellSource,
+    /Vault resumed document descriptions and clustering\./,
+  );
+  assert.match(appShellSource, /modelAvailabilityNoticeRef/);
+  assert.match(homeSource, /title: "Local model unavailable"/);
+  assert.match(homeSource, /Vault will resume them after the model restarts\./);
+  assert.match(homeSource, /\{ label: "Waiting for model", value: jobs\.blocked_local_model \}/);
 });

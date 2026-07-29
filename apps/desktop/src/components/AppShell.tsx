@@ -22,6 +22,7 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   getJobStatus,
+  getModelRuntimeStatus,
   listChatSessions,
   listRecentChatGenerations,
   listClusterSuggestions,
@@ -34,6 +35,7 @@ import {
   useBackendHealth,
   type ClusterRecord,
   type JobQueueStatus,
+  type ModelRuntimeStatus,
   type ClusterSuggestionRecord,
   type VaultRecord,
   type UnlockStatusRead,
@@ -104,6 +106,7 @@ export function AppShell() {
   const avatarSource = useLocalImage(profile.avatar_path);
   const contentRef = useRef<HTMLElement>(null);
   const recentChatGenerationsRef = useRef<{ vaultId: string; ids: Set<string> } | null>(null);
+  const modelAvailabilityNoticeRef = useRef<"unknown" | "ready" | "unavailable">("unknown");
 
   useEffect(() => {
     let cancelled = false;
@@ -133,11 +136,52 @@ export function AppShell() {
 
   const refreshJobs = useCallback(async () => {
     try {
-      setJobs(await getJobStatus());
+      const nextJobs = await getJobStatus();
+      setJobs(nextJobs);
+      let runtime: ModelRuntimeStatus | null = null;
+      try {
+        runtime = await getModelRuntimeStatus();
+      } catch {
+        // Job state still remains useful when the runtime status probe fails.
+      }
+      if (!runtime) return;
+      const blocked = nextJobs.blocked_local_model > 0;
+      const unavailable = blocked && !runtime.available;
+      const previous = modelAvailabilityNoticeRef.current;
+      if (unavailable && previous !== "unavailable") {
+        const recoveryActive = nextJobs.latest.some(
+          (job) =>
+            job.job_type === "model_runtime_recovery" &&
+            ["queued", "running", "blocked_by_dependency", "deferred"].includes(job.status),
+        );
+        notify({
+          title: "Local model unavailable",
+          description:
+            runtime.state === "starting" || recoveryActive
+              ? "Document descriptions and clustering are paused while Vault restarts the model."
+              : "Document descriptions and clustering are paused. Open Models to choose or restart a model.",
+          tone: "error",
+          actionLabel: "Open settings",
+          onAction: () => navigate({ to: "/settings" }),
+        });
+      } else if (runtime.available && previous === "unavailable") {
+        notify({
+          title: "Local model restored",
+          description: "Vault resumed document descriptions and clustering.",
+          tone: "success",
+          actionLabel: "View tasks",
+          onAction: () => navigate({ to: "/tasks" }),
+        });
+      }
+      modelAvailabilityNoticeRef.current = unavailable
+        ? "unavailable"
+        : runtime.available
+          ? "ready"
+          : previous;
     } catch {
       setJobs(null);
     }
-  }, []);
+  }, [navigate]);
   const refreshLibrary = useCallback(async () => {
     try {
       const currentUnlock = await getUnlockStatus();
@@ -270,7 +314,11 @@ export function AppShell() {
     (jobs?.queued ?? 0) +
     (jobs?.paused ?? 0) +
     (jobs?.running ?? 0) +
-    (jobs?.failed ?? 0);
+    (jobs?.failed ?? 0) +
+    (jobs?.blocked_by_dependency ?? 0) +
+    (jobs?.blocked_setup_required ?? 0) +
+    (jobs?.deferred ?? 0) +
+    (jobs?.manual_review ?? 0);
   const securityLockActive =
     Boolean(unlockStatus) &&
     (unlockStatus?.secured_vault_count ?? 0) > 0 &&

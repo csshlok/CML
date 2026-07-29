@@ -636,6 +636,7 @@ export type JobQueueStatus = {
   paused: number;
   blocked_by_dependency: number;
   blocked_setup_required: number;
+  blocked_local_model: number;
   deferred: number;
   running: number;
   succeeded: number;
@@ -1673,11 +1674,16 @@ export async function listActivity(
 
 export async function getMapOverview(
   vaultId: string,
-  options: { limit?: number; offset?: number } = {},
+  options: {
+    limit?: number;
+    offset?: number;
+    connections?: MapConnectionMode;
+  } = {},
 ) {
   const params = new URLSearchParams({ vault_id: vaultId });
   if (options.limit !== undefined) params.set("limit", String(options.limit));
   if (options.offset !== undefined) params.set("offset", String(options.offset));
+  if (options.connections) params.set("connections", options.connections);
   return request<MapGraphResponse>(`/api/v1/map/overview?${params.toString()}`);
 }
 
@@ -1911,8 +1917,13 @@ export type MapEdgeRecord = {
   temporal_state: "current" | "historical" | string;
   provenance_ids: string[];
   evidence_labels?: string[];
+  relationship_basis?: "semantic_similarity" | string;
+  similarity_score?: number;
+  shared_terms?: string[];
   updated_at: string;
 };
+
+export type MapConnectionMode = "current" | "similar";
 
 export type MapGraphResponse = {
   vault_id: string;
@@ -1926,7 +1937,8 @@ export type MapGraphResponse = {
   offset?: number;
   depth?: number;
   truncated: boolean;
-  relationship_policy: "authoritative_only";
+  connection_mode?: MapConnectionMode;
+  relationship_policy: "authoritative_only" | "evidence_and_similarity";
 };
 
 export type MapItemRecord = MapNodeRecord & {

@@ -415,6 +415,14 @@ function labelForFilter(filter: TaskFilter) {
 }
 
 function jobTitle(type: string) {
+  const labels: Record<string, string> = {
+    model_runtime_recovery: "Restart local model",
+    source_metadata_enrichment: "Describe source",
+    source_cluster_reconciliation: "Organize analyzed sources",
+    refresh_cluster_profile: "Update cluster details",
+    cluster_profile_backfill: "Update cluster details",
+  };
+  if (labels[type]) return labels[type];
   return type.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 

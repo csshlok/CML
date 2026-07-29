@@ -1159,6 +1159,10 @@ function TasksSection({ jobs, dense }: { jobs: JobQueueStatus | null; dense: boo
     ? [
         { label: "Running", value: jobs.running },
         { label: "Queued", value: jobs.queued },
+        { label: "Waiting for model", value: jobs.blocked_local_model },
+        { label: "Waiting for setup", value: Math.max(0, jobs.blocked_setup_required - jobs.blocked_local_model) },
+        { label: "Waiting on another task", value: jobs.blocked_by_dependency },
+        { label: "Needs review", value: jobs.manual_review },
         { label: "Paused", value: jobs.paused },
         { label: "Failed", value: jobs.failed },
       ].filter((item) => item.value > 0)
@@ -1267,6 +1271,15 @@ function buildAttentionItems({
       title: `${jobs?.paused} paused ${jobs?.paused === 1 ? "task" : "tasks"}`,
       detail: "Resume or stop them from Tasks.",
       href: "/tasks",
+    });
+  }
+  if ((jobs?.blocked_local_model ?? 0) > 0) {
+    items.push({
+      id: "local-model",
+      title: "Local model unavailable",
+      detail: `${jobs?.blocked_local_model} ${jobs?.blocked_local_model === 1 ? "task is" : "tasks are"} waiting. Vault will resume them after the model restarts.`,
+      href: "/settings",
+      search: { section: "health" },
     });
   }
   if ((jobs?.failed ?? 0) > 0) {
