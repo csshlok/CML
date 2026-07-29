@@ -1,7 +1,8 @@
 import { createFileRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
-import { Check, Code2, FileText, Pencil, Plus, RefreshCw, X } from "lucide-react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { Check, Code2, FileText, Pencil, Plus, RefreshCw, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/layout/WindowAware";
 import { Input } from "@/components/ui/input";
 import {
   createCluster,
@@ -12,6 +13,7 @@ import {
   listClustersPage,
   listVaults,
   sourceCountsByCluster,
+  startClusterProfileBackfill,
   updateCluster,
   type ClusterSuggestionRecord,
   type VaultRecord,
@@ -45,6 +47,10 @@ function ClustersList() {
   const [renameBusy, setRenameBusy] = useState(false);
   const [nextClusterCursor, setNextClusterCursor] = useState<string | null>(null);
   const [loadingMoreClusters, setLoadingMoreClusters] = useState(false);
+  const [clusterQuery, setClusterQuery] = useState("");
+  const deferredClusterQuery = useDeferredValue(clusterQuery);
+  const [clusterFilter, setClusterFilter] = useState<"all" | "active" | "attention" | "projects">("all");
+  const [checkingSuggestions, setCheckingSuggestions] = useState(false);
 
   async function loadData() {
     setLoading(true);
@@ -108,6 +114,24 @@ function ClustersList() {
     }
     return counts;
   }, [sourceCountRows]);
+  const filteredClusters = useMemo(() => {
+    const query = deferredClusterQuery.trim().toLocaleLowerCase();
+    return clusters.filter((cluster) => {
+      const count = sourceCounts.get(cluster.id) ?? 0;
+      const matchesQuery =
+        !query ||
+        cluster.name.toLocaleLowerCase().includes(query) ||
+        cluster.summary.toLocaleLowerCase().includes(query) ||
+        cluster.description.toLocaleLowerCase().includes(query);
+      if (!matchesQuery) return false;
+      if (clusterFilter === "active") return count > 0;
+      if (clusterFilter === "attention") {
+        return cluster.lifecycle === "issue" || cluster.lifecycle === "profile-stale";
+      }
+      if (clusterFilter === "projects") return projectClusterIds.has(cluster.id);
+      return true;
+    });
+  }, [clusterFilter, clusters, deferredClusterQuery, projectClusterIds, sourceCounts]);
   if (pathname !== "/clusters") return <Outlet />;
 
   async function handleNewCluster() {
@@ -148,6 +172,20 @@ function ClustersList() {
       setMessage(error instanceof Error ? error.message : "Could not load more clusters.");
     } finally {
       setLoadingMoreClusters(false);
+    }
+  }
+
+  async function checkSuggestions() {
+    if (!vault || checkingSuggestions) return;
+    setCheckingSuggestions(true);
+    try {
+      const next = await listClusterSuggestions(vault.id, 12, true);
+      setSuggestions(next);
+      setMessage(next.length > 0 ? `Found ${next.length} suggested ${next.length === 1 ? "move" : "moves"}.` : "No new moves found.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not check for suggested moves.");
+    } finally {
+      setCheckingSuggestions(false);
     }
   }
 
@@ -202,11 +240,21 @@ function ClustersList() {
     );
   }
 
+  async function refreshOrganization() {
+    if (!vault) return;
+    try {
+      await startClusterProfileBackfill(vault.id);
+      setMessage("Organization refresh started. Track it in Tasks.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not start the organization refresh.");
+    }
+  }
+
   return (
     <div className="vault-page-wash h-full overflow-y-auto">
       <div className="mx-auto min-h-full max-w-[1240px]">
         <div className="min-w-0 px-4 py-6 sm:px-7 sm:py-8">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+        <PageHeader className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0 max-w-2xl">
             <h1 className="page-title flex flex-wrap items-center gap-3">
               Clusters
@@ -215,12 +263,15 @@ function ClustersList() {
               </span>
             </h1>
             <p className="mt-3 text-sm text-muted-foreground">
-              Your memory spaces. Organized. Private. Under your control.
+              Group related sources and review suggested moves.
             </p>
           </div>
-          <div className="desktop-window-action flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => void loadData()} disabled={loading}>
               <RefreshCw className="h-4 w-4" /> Refresh
+            </Button>
+            <Button variant="outline" onClick={() => void refreshOrganization()}>
+              Refresh organization
             </Button>
             <Input
               aria-label="New cluster name"
@@ -236,7 +287,7 @@ function ClustersList() {
               <Plus className="h-4 w-4" /> New cluster
             </Button>
           </div>
-        </div>
+        </PageHeader>
 
         {message && (
           <div className="vault-card mt-5 break-words px-3 py-2 text-sm text-muted-foreground">
@@ -245,6 +296,47 @@ function ClustersList() {
         )}
 
           <section className="mt-9">
+            <div className="mb-4 flex flex-col gap-3 border-b border-border pb-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:items-center">
+                <label className="relative block w-full max-w-sm">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    aria-label="Search clusters"
+                    className="pl-9"
+                    placeholder="Search clusters"
+                    value={clusterQuery}
+                    onChange={(event) => setClusterQuery(event.target.value)}
+                  />
+                </label>
+                <div className="flex flex-wrap gap-1" aria-label="Filter clusters">
+                  {([
+                    ["all", "All"],
+                    ["active", "With sources"],
+                    ["attention", "Needs attention"],
+                    ["projects", "Projects"],
+                  ] as const).map(([value, label]) => (
+                    <Button
+                      key={value}
+                      size="sm"
+                      variant={clusterFilter === value ? "secondary" : "ghost"}
+                      aria-pressed={clusterFilter === value}
+                      onClick={() => setClusterFilter(value)}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!vault || checkingSuggestions}
+                onClick={() => void checkSuggestions()}
+              >
+                <RefreshCw className={`h-4 w-4 ${checkingSuggestions ? "animate-spin" : ""}`} />
+                Check suggestions
+              </Button>
+            </div>
             <div className="min-w-0">
                 <div className="grid grid-cols-[minmax(0,1fr)_64px_48px] border-b border-border px-2 pb-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground md:grid-cols-[minmax(0,1fr)_64px_112px_48px] xl:grid-cols-[minmax(0,1fr)_64px_64px_112px_48px]">
                   <span>Name</span>
@@ -254,7 +346,7 @@ function ClustersList() {
                   <span />
                 </div>
                 <div>
-                  {clusters.map((cluster) => {
+                  {filteredClusters.map((cluster) => {
                     const count = sourceCounts.get(cluster.id) ?? 0;
                     return (
                       <div
@@ -315,9 +407,11 @@ function ClustersList() {
                       </Button>
                     </div>
                   ) : null}
-                  {clusters.length === 0 && (
+                  {filteredClusters.length === 0 && (
                     <div className="px-5 py-10 text-center text-sm text-muted-foreground">
-                      No clusters yet. Create one or add sources so Vault can suggest memory spaces.
+                      {clusters.length === 0
+                        ? "No clusters yet. Add a source or create a cluster."
+                        : "No clusters match these filters."}
                     </div>
                   )}
                 </div>

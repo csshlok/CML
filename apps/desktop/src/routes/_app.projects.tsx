@@ -1,13 +1,16 @@
 import { createFileRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
-import { ArrowRight, Code2, FolderOpen, GitBranch, RefreshCw } from "lucide-react";
+import { ArrowRight, Code2, FolderOpen, FolderPlus, GitBranch, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/layout/WindowAware";
 import {
+  createProject,
   listProjectsPage,
   listVaults,
   synchronizeProject,
   type ProjectRecord,
 } from "@/lib/backend";
+import { notify } from "@/components/product/Notifications";
 
 export const Route = createFileRoute("/_app/projects")({
   head: () => ({ meta: [{ title: "Projects" }] }),
@@ -20,6 +23,7 @@ function ProjectsIndex() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
 
@@ -58,6 +62,58 @@ function ProjectsIndex() {
     }
   }
 
+  async function addProjectFolders() {
+    if (adding) return;
+    setAdding(true);
+    try {
+      const vault = (await listVaults())[0] ?? null;
+      if (!vault) throw new Error("Open a vault before adding a project.");
+      const folders = await window.cmlDesktop?.selectSourceFolders?.();
+      if (!folders) throw new Error("Folder import is available in the desktop app.");
+      if (folders.length === 0) return;
+
+      let added = 0;
+      const failures: string[] = [];
+      for (const rootPath of folders) {
+        try {
+          await createProject({
+            vault_id: vault.id,
+            root_path: rootPath,
+            name: folderName(rootPath),
+            discovery_scope: "context",
+            sync: true,
+          });
+          added += 1;
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : `${folderName(rootPath)} could not be added.`);
+        }
+      }
+      await load();
+      if (added > 0) {
+        notify({
+          title: added === 1 ? "Project added" : `${added} projects added`,
+          description: "Vault is indexing the selected folder.",
+          tone: "success",
+        });
+      }
+      if (failures.length > 0) {
+        notify({
+          title: failures.length === 1 ? "A project was not added" : `${failures.length} projects were not added`,
+          description: failures[0],
+          tone: "error",
+        });
+      }
+    } catch (error) {
+      notify({
+        title: "Project was not added",
+        description: error instanceof Error ? error.message : "Choose the folder again.",
+        tone: "error",
+      });
+    } finally {
+      setAdding(false);
+    }
+  }
+
   async function loadMore() {
     if (!nextCursor || loadingMore) return;
     setLoadingMore(true);
@@ -77,19 +133,24 @@ function ProjectsIndex() {
   return (
     <div className="vault-page-wash h-full overflow-y-auto">
       <main className="mx-auto min-h-full max-w-[1200px] px-4 py-6 sm:px-7 sm:py-8 lg:px-10">
-        <header className="flex flex-col gap-5 border-b border-border pb-7 sm:flex-row sm:items-end sm:justify-between">
+        <PageHeader className="flex flex-col gap-5 border-b border-border pb-7 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h1 className="page-title">Projects</h1>
             <p className="mt-2 max-w-[68ch] text-sm leading-6 text-muted-foreground">
-              Ask questions across code you have indexed with Odin. Repository files stay local and are never executed or modified.
+              Add a project folder to search and ask questions across its code and context. Files stay local and are never executed or modified.
             </p>
           </div>
-          <Button variant="outline" className="desktop-window-action" asChild>
-            <Link to="/settings" search={{ section: "odin" }}>
-              <Code2 className="h-4 w-4" /> Set up Odin
-            </Link>
-          </Button>
-        </header>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" asChild>
+              <Link to="/settings" search={{ section: "odin" }}>
+                <Code2 className="h-4 w-4" /> Odin setup
+              </Link>
+            </Button>
+            <Button disabled={adding} onClick={() => void addProjectFolders()}>
+              <FolderPlus className="h-4 w-4" /> {adding ? "Adding..." : "Add project folder"}
+            </Button>
+          </div>
+        </PageHeader>
 
         {message && <div role="status" className="mt-5 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">{message}</div>}
 
@@ -100,8 +161,11 @@ function ProjectsIndex() {
             <FolderOpen className="mx-auto h-8 w-8 text-muted-foreground" strokeWidth={1.5} />
             <h2 className="mt-4 text-base font-semibold">No projects indexed yet</h2>
             <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-              From a project folder in your IDE, run <code className="font-mono text-foreground">odin project add . --name &quot;My Project&quot;</code>. It will appear here after registration.
+              Add a folder here, or use Odin from your terminal.
             </p>
+            <Button className="mt-5" disabled={adding} onClick={() => void addProjectFolders()}>
+              <FolderPlus className="h-4 w-4" /> {adding ? "Adding..." : "Add project folder"}
+            </Button>
           </section>
         ) : (
           <div className="mt-7 divide-y divide-border border-y border-border">
@@ -169,4 +233,9 @@ function freshness(project: ProjectRecord) {
 function formatDate(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+}
+
+function folderName(value: string) {
+  const normalized = value.replace(/[\\/]+$/, "");
+  return normalized.split(/[\\/]/).filter(Boolean).at(-1) || "Project";
 }

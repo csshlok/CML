@@ -1,6 +1,6 @@
 import { type ComponentType, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, ExternalLink, List, Network, RotateCcw, Search, ZoomIn, ZoomOut } from "lucide-react";
+import { ArrowLeft, ExternalLink, List, Maximize2, Network, RotateCcw, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -26,12 +26,14 @@ export function KnowledgeMap({
   vaultId,
   overview,
   onReload,
+  onExpandOverview,
   initialFocusId,
   persistView = false,
 }: {
   vaultId: string;
   overview: MapGraphResponse;
   onReload: () => void;
+  onExpandOverview?: () => void;
   initialFocusId?: string | null;
   persistView?: boolean;
 }) {
@@ -52,6 +54,7 @@ export function KnowledgeMap({
   const [kindFilter, setKindFilter] = useState<"all" | MapNodeRecord["kind"]>("all");
   const [listMode, setListMode] = useState(false);
   const [loadingFocus, setLoadingFocus] = useState(false);
+  const [neighborhoodLimit, setNeighborhoodLimit] = useState(80);
   const [error, setError] = useState<string | null>(null);
   const [size, setSize] = useState({ width: 900, height: 620 });
   const [viewRevision, setViewRevision] = useState(0);
@@ -207,7 +210,7 @@ export function KnowledgeMap({
     }
   }
 
-  async function focus(node: MapNodeRecord) {
+  async function focus(node: MapNodeRecord, limit = 80) {
     if (node.kind === "fact") {
       await inspect(node);
       return;
@@ -218,13 +221,14 @@ export function KnowledgeMap({
     setError(null);
     try {
       const [nextResult, itemResult] = await Promise.allSettled([
-        getMapNeighborhood(vaultId, node.id),
+        getMapNeighborhood(vaultId, node.id, limit),
         getMapItem(vaultId, node.id),
       ]);
       if (requestId !== focusRequestRef.current) return;
       if (nextResult.status === "rejected") throw nextResult.reason;
       setGraph(nextResult.value);
       setRoot(node);
+      setNeighborhoodLimit(limit);
       if (itemResult.status === "fulfilled") setSelected(itemResult.value);
       setViewRevision((current) => current + 1);
       if (itemResult.status === "rejected") {
@@ -292,11 +296,12 @@ export function KnowledgeMap({
     setQuery("");
     setKindFilter("all");
     setError(null);
+    setNeighborhoodLimit(80);
     setViewRevision((current) => current + 1);
   }
 
   return (
-    <div className="grid min-h-[620px] overflow-hidden rounded-md border border-border bg-card xl:grid-cols-[minmax(0,1fr)_320px]">
+    <div className={`grid min-h-[620px] overflow-hidden rounded-md border border-border bg-card ${selected ? "xl:grid-cols-[minmax(0,1fr)_320px]" : ""}`}>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-3">
           {root ? (
@@ -357,6 +362,20 @@ export function KnowledgeMap({
             <RotateCcw className="h-4 w-4" />
             Reset view
           </Button>
+          {graph.truncated && (root || onExpandOverview) ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loadingFocus || (Boolean(root) && neighborhoodLimit >= 200)}
+              onClick={() => {
+                if (root) void focus(root, Math.min(200, neighborhoodLimit + 60));
+                else onExpandOverview?.();
+              }}
+            >
+              <Maximize2 className="h-4 w-4" />
+              Show more
+            </Button>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-border bg-[var(--bg-canvas)] px-4 py-2.5 text-xs text-muted-foreground">
           <MapLegend color={clusterColors.sage} label="Cluster" />
@@ -420,7 +439,13 @@ export function KnowledgeMap({
           </div>
         )}
       </div>
-      <MapInspector selected={selected} root={root} onFocus={focus} />
+      {selected ? (
+        <MapInspector
+          selected={selected}
+          onFocus={focus}
+          onClose={() => setSelected(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -461,26 +486,24 @@ function MapList({
 
 function MapInspector({
   selected,
-  root,
   onFocus,
+  onClose,
 }: {
-  selected: MapItemRecord | null;
-  root: MapNodeRecord | null;
+  selected: MapItemRecord;
   onFocus: (node: MapNodeRecord) => void;
+  onClose: () => void;
 }) {
   return (
     <aside className="border-t border-border bg-[var(--bg-canvas)] p-5 xl:border-l xl:border-t-0" aria-label="Map details">
-      {!selected ? (
-        <EmptyState
-          icon={<Network className="h-6 w-6" />}
-          title={root ? root.label : "Inspect the map"}
-          description="Select a node to see what it means and which local sources establish it."
-        />
-      ) : (
-        <div>
+      <div>
+          <div className="flex items-start justify-between gap-3">
           <StatusLabel tone={selected.kind === "fact" ? "info" : selected.kind === "collection" ? "neutral" : selected.state === "failed" ? "error" : "ready"}>
             {kindLabel(selected.kind)}
           </StatusLabel>
+            <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close map details">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
           <h2 className="mt-4 break-words text-base font-semibold">{selected.label}</h2>
           {selected.summary ? <p className="mt-3 text-sm leading-6 text-muted-foreground">{selected.summary}</p> : null}
           <dl className="mt-6 space-y-3 text-sm">
@@ -528,7 +551,6 @@ function MapInspector({
             </Button>
           ) : null}
         </div>
-      )}
     </aside>
   );
 }

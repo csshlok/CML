@@ -21,31 +21,58 @@ const desktopManagedBackend = typeof window !== "undefined" && Boolean(window.cm
 
 if (typeof window !== "undefined") {
   const queryBackendUrl = new URLSearchParams(window.location.search).get("backendUrl");
-  if (queryBackendUrl) {
-    resolvedBackendUrl = queryBackendUrl;
+  const trustedQueryBackendUrl = safeRuntimeBackendUrl(queryBackendUrl);
+  if (trustedQueryBackendUrl) {
+    resolvedBackendUrl = trustedQueryBackendUrl;
   }
   const initialGeneration = backendGeneration;
   void window.cmlDesktop?.getBackendUrl?.().then((url) => {
     if (backendGeneration !== initialGeneration) return;
-    if (url) {
-      resolvedBackendUrl = url;
-      publishHealth({ status: "checking", url });
+    const trustedUrl = safeRuntimeBackendUrl(url);
+    if (trustedUrl) {
+      resolvedBackendUrl = trustedUrl;
+      publishHealth({ status: "checking", url: trustedUrl });
     }
   });
   void window.cmlDesktop?.getBackendToken?.().then((token) => {
     if (token) resolvedBackendToken = token;
   });
   window.cmlDesktop?.onBackendUrlChanged?.((nextUrl) => {
+    const trustedUrl = safeRuntimeBackendUrl(nextUrl);
     backendGeneration += 1;
-    resolvedBackendUrl = nextUrl || null;
+    resolvedBackendUrl = trustedUrl;
     discoveryPromise = null;
     lastDiscoveryAttempt = 0;
     publishHealth({
       status: "checking",
-      url: nextUrl || CONFIGURED_BACKEND_URL,
+      url: trustedUrl || CONFIGURED_BACKEND_URL,
     });
-    if (nextUrl) void coordinateHealthCheck();
+    if (trustedUrl) void coordinateHealthCheck();
   });
+}
+
+function safeRuntimeBackendUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    const loopback = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsed.hostname);
+    const rootOnly = (parsed.pathname === "/" || parsed.pathname === "")
+      && !parsed.search
+      && !parsed.hash;
+    if (
+      parsed.protocol !== "http:"
+      || !loopback
+      || !rootOnly
+      || parsed.username
+      || parsed.password
+      || !parsed.port
+    ) {
+      return null;
+    }
+    return parsed.origin;
+  } catch {
+    return null;
+  }
 }
 
 export type BackendHealthStatus = "checking" | "online" | "degraded" | "offline";
@@ -54,6 +81,7 @@ export type CursorPage<T> = {
   items: T[];
   next_cursor: string | null;
   has_more: boolean;
+  total?: number;
 };
 
 type BackendHealthSnapshot = { status: BackendHealthStatus; url: string };
@@ -554,6 +582,24 @@ export type ProjectGraphView = {
   truncated: boolean;
   limits: { max_nodes: number; max_depth: number };
   warnings: string[];
+  insights: {
+    summary: string;
+    key_areas: Array<{
+      id: string;
+      label: string;
+      kind: string;
+      relative_path: string;
+      connections: number;
+    }>;
+    flows: Array<{
+      node_ids: string[];
+      steps: string[];
+      relationships: string[];
+    }>;
+    node_kinds: Record<string, number>;
+    relationship_types: Record<string, number>;
+    component_count: number;
+  };
 };
 
 export type AppJobRecord = {
@@ -569,6 +615,7 @@ export type AppJobRecord = {
   resource_cost?: string | null;
   user_visible?: number | null;
   cancellable?: number | null;
+  preemptable?: number | null;
   timeout_seconds?: number | null;
   started_at?: string | null;
   completed_at?: string | null;
@@ -844,6 +891,9 @@ export type ChatTimelineItem =
 export type ChatTimelineResponse = {
   session_id: string;
   items: ChatTimelineItem[];
+  next_cursor: string | null;
+  latest_cursor: string | null;
+  has_more: boolean;
 };
 
 export type ChatEvidenceRetentionPolicy = {
@@ -1750,6 +1800,20 @@ export async function listCliClients() {
   return request<CliClientRecord[]>("/api/v1/cli-auth/clients");
 }
 
+export async function listCliClientsPage(
+  state: "active" | "history",
+  options: { limit?: number; cursor?: string | null } = {},
+) {
+  const params = new URLSearchParams({
+    state,
+    limit: String(options.limit ?? 30),
+  });
+  if (options.cursor) params.set("cursor", options.cursor);
+  return request<CursorPage<CliClientRecord>>(
+    `/api/v1/cli-auth/clients/page?${params.toString()}`,
+  );
+}
+
 export async function revokeCliClient(id: string) {
   return request<CliClientRecord>(`/api/v1/cli-auth/clients/${encodeURIComponent(id)}/revoke`, { method: "POST" });
 }
@@ -1904,9 +1968,14 @@ export async function mergeClusterInto(sourceClusterId: string, targetClusterId:
   });
 }
 
-export async function listClusterSuggestions(vaultId: string, limit = 12) {
+export async function listClusterSuggestions(vaultId: string, limit = 12, refresh = false) {
+  const params = new URLSearchParams({
+    vault_id: vaultId,
+    limit: String(limit),
+  });
+  if (refresh) params.set("refresh", "true");
   return request<ClusterSuggestionRecord[]>(
-    `/api/v1/clusters/suggestions?vault_id=${encodeURIComponent(vaultId)}&limit=${limit}`,
+    `/api/v1/clusters/suggestions?${params.toString()}`,
   );
 }
 
@@ -1947,6 +2016,9 @@ export async function listSourcesPage(
     states?: Array<SourceRecord["state"]>;
     query?: string;
     sourceTypes?: string[];
+    projectId?: string;
+    importRootPath?: string;
+    excludeGroupedProjects?: boolean;
   } = {},
 ) {
   const params = new URLSearchParams();
@@ -1957,6 +2029,9 @@ export async function listSourcesPage(
   if (options.unclustered) params.set("unclustered", "true");
   if (options.states?.length) params.set("states", options.states.join(","));
   if (options.sourceTypes?.length) params.set("source_types", options.sourceTypes.join(","));
+  if (options.projectId) params.set("project_id", options.projectId);
+  if (options.importRootPath) params.set("import_root_path", options.importRootPath);
+  if (options.excludeGroupedProjects) params.set("exclude_grouped_projects", "true");
   if (options.query?.trim()) params.set("q", options.query.trim());
   const query = params.size ? `?${params.toString()}` : "";
   return request<CursorPage<SourceRecord>>(`/api/v1/sources/page${query}`);
@@ -2029,6 +2104,7 @@ export async function startSourceImportJob(payload: {
   cluster_id?: string | null;
   paths: string[];
   truncated_at?: number | null;
+  folder_roots?: string[];
 }) {
   return request<AppJobRecord>("/api/v1/sources/import-jobs", {
     method: "POST",
@@ -2142,6 +2218,9 @@ export async function countSources(
     states?: Array<SourceRecord["state"]>;
     query?: string;
     sourceTypes?: string[];
+    projectId?: string;
+    importRootPath?: string;
+    excludeGroupedProjects?: boolean;
   } = {},
 ) {
   const params = new URLSearchParams();
@@ -2150,9 +2229,27 @@ export async function countSources(
   if (options.unclustered) params.set("unclustered", "true");
   if (options.states?.length) params.set("states", options.states.join(","));
   if (options.sourceTypes?.length) params.set("source_types", options.sourceTypes.join(","));
+  if (options.projectId) params.set("project_id", options.projectId);
+  if (options.importRootPath) params.set("import_root_path", options.importRootPath);
+  if (options.excludeGroupedProjects) params.set("exclude_grouped_projects", "true");
   if (options.query?.trim()) params.set("q", options.query.trim());
   const query = params.size ? `?${params.toString()}` : "";
   return request<{ total: number }>(`/api/v1/sources/count${query}`);
+}
+
+export type SourceFolderRecord = {
+  root_path: string;
+  name: string;
+  source_count: number;
+  updated_at: string;
+};
+
+export async function listSourceFolders(vaultId: string, query?: string) {
+  const params = new URLSearchParams({ vault_id: vaultId });
+  if (query?.trim()) params.set("q", query.trim());
+  return request<{ items: SourceFolderRecord[] }>(
+    `/api/v1/sources/folders?${params.toString()}`,
+  );
 }
 
 export type SourceClusterCountRecord = {
@@ -2438,8 +2535,28 @@ export async function getChatSession(id: string) {
   return request<ChatSessionRecord>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`);
 }
 
-export async function getChatTimeline(id: string) {
-  return request<ChatTimelineResponse>(`/api/v1/chat/sessions/${encodeURIComponent(id)}/timeline`);
+export async function getChatSessionMetadata(id: string) {
+  return request<ChatSessionRecord>(
+    `/api/v1/chat/sessions/${encodeURIComponent(id)}/metadata`,
+  );
+}
+
+export async function getChatTimeline(
+  id: string,
+  options: {
+    limit?: number;
+    cursor?: string | null;
+    direction?: "older" | "newer";
+  } = {},
+) {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.cursor) params.set("cursor", options.cursor);
+  if (options.direction) params.set("direction", options.direction);
+  const query = params.size ? `?${params.toString()}` : "";
+  return request<ChatTimelineResponse>(
+    `/api/v1/chat/sessions/${encodeURIComponent(id)}/timeline${query}`,
+  );
 }
 
 export type ActiveChatGenerationRecord = {
@@ -2606,6 +2723,25 @@ export async function cancelJob(jobId: string) {
   });
 }
 
+export async function pauseJob(jobId: string) {
+  return request<AppJobRecord>(`/api/v1/jobs/${encodeURIComponent(jobId)}/pause`, {
+    method: "POST",
+  });
+}
+
+export async function resumeJob(jobId: string) {
+  return request<AppJobRecord>(`/api/v1/jobs/${encodeURIComponent(jobId)}/resume`, {
+    method: "POST",
+  });
+}
+
+export async function startClusterProfileBackfill(vaultId: string) {
+  const params = new URLSearchParams({ vault_id: vaultId });
+  return request<AppJobRecord>(`/api/v1/jobs/cluster-profiles/backfill?${params.toString()}`, {
+    method: "POST",
+  });
+}
+
 export async function listLocalModels() {
   return request<LocalModelRecord[]>("/api/v1/models");
 }
@@ -2618,7 +2754,7 @@ export async function discoverInstalledModels(payload?: {
   max_results?: number;
   include_rejected?: boolean;
   refresh?: boolean;
-}) {
+}, onProgress?: ModelJobProgressCallback) {
   if (payload?.refresh) {
     const queued = await request<AppJobRecord>("/api/v1/models/discover/jobs", {
       method: "POST",
@@ -2628,7 +2764,7 @@ export async function discoverInstalledModels(payload?: {
         idempotency_key: crypto.randomUUID(),
       }),
     });
-    const completed = await waitForAppJob(queued.id);
+    const completed = await waitForAppJob(queued.id, onProgress);
     if (completed.status !== "succeeded") {
       throw new Error(completed.last_error || "The model scan did not finish.");
     }
@@ -2659,12 +2795,15 @@ export async function getModelCompatibilityReport(payload: { path: string; name?
   });
 }
 
-export async function importLocalModel(payload: { path: string; name?: string | null }) {
+export async function importLocalModel(
+  payload: { path: string; name?: string | null },
+  onProgress?: ModelJobProgressCallback,
+) {
   const queued = await request<AppJobRecord>("/api/v1/models/import/jobs", {
     method: "POST",
     body: JSON.stringify(payload),
   });
-  const completed = await waitForAppJob(queued.id);
+  const completed = await waitForAppJob(queued.id, onProgress);
   if (completed.status !== "succeeded") {
     throw new Error(completed.last_error || "The model import did not finish.");
   }
@@ -2677,10 +2816,19 @@ export async function importLocalModel(payload: { path: string; name?: string | 
   return imported;
 }
 
-async function waitForAppJob(jobId: string): Promise<AppJobRecord> {
+export type ModelJobProgressCallback = (
+  job: AppJobRecord,
+  detail: Record<string, unknown>,
+) => void;
+
+async function waitForAppJob(
+  jobId: string,
+  onProgress?: ModelJobProgressCallback,
+): Promise<AppJobRecord> {
   const terminal = new Set(["succeeded", "failed", "cancelled", "manual_review"]);
   while (true) {
     const job = await getJob(jobId);
+    onProgress?.(job, parseJobDetail(job.status_detail));
     if (terminal.has(job.status)) return job;
     await new Promise((resolve) => window.setTimeout(resolve, 500));
   }
@@ -3037,13 +3185,22 @@ async function request<T>(path: string, init?: BackendRequestInit): Promise<T> {
   }
   if (!response.ok) {
     let detail = "";
+    let errorCode = "";
+    let diagnosticId = "";
     try {
       const body = await response.json();
-      detail = typeof body.detail === "string" ? body.detail : "";
+      if (body?.error && typeof body.error === "object") {
+        detail = typeof body.error.message === "string" ? body.error.message : "";
+        errorCode = typeof body.error.code === "string" ? body.error.code : "";
+        diagnosticId =
+          typeof body.error.diagnostic_id === "string" ? body.error.diagnostic_id : "";
+      }
+      if (!detail) detail = typeof body.detail === "string" ? body.detail : "";
     } catch {
       detail = await response.text().catch(() => "");
     }
-    throw new Error(userFacingError(detail, response.status));
+    const message = userFacingError(detail || errorCode, response.status);
+    throw new Error(diagnosticId ? `${message} Reference ${diagnosticId}.` : message);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

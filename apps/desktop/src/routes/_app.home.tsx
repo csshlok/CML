@@ -26,6 +26,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/layout/WindowAware";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
@@ -405,7 +406,7 @@ function HomeView() {
           dense ? "pt-5 sm:pt-7" : "pt-6 sm:pt-10",
         )}
       >
-        <header className="flex flex-wrap items-start justify-between gap-5">
+        <PageHeader className="flex flex-wrap items-start justify-between gap-5">
           <div className="min-w-0">
             <h1 className="page-title break-words">Home</h1>
             <p className="mt-2 text-sm text-muted-foreground">
@@ -415,7 +416,7 @@ function HomeView() {
             </p>
           </div>
 
-          <div className="desktop-window-action flex max-w-full flex-wrap items-center gap-2">
+          <div className="flex max-w-full flex-wrap items-center gap-2">
             <Select
               value={preferences.type}
               onValueChange={(value: HomeTypeFilter) =>
@@ -471,7 +472,7 @@ function HomeView() {
               }
             />
           </div>
-        </header>
+        </PageHeader>
 
         <ProductSectionStack className={dense ? "mt-6 space-y-5" : "mt-8 space-y-7"}>
           {visibleSections.map(renderSection)}

@@ -9,6 +9,7 @@ import {
   FileCode2,
   FilePlus2,
   FileText,
+  Folder,
   FolderPlus,
   Image,
   Link2,
@@ -21,6 +22,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/layout/WindowAware";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ClusterDot } from "@/components/ClusterChip";
@@ -42,6 +44,8 @@ import {
   getSourceStats,
   getSource,
   listClusters,
+  listProjectsPage,
+  listSourceFolders,
   listSourcePages,
   listSourcesPage,
   listVaults,
@@ -49,6 +53,8 @@ import {
   type SourceImportProgress,
   type SourcePageRecord,
   type SourceStatsRecord,
+  type ProjectRecord,
+  type SourceFolderRecord,
   type VaultRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
@@ -70,9 +76,11 @@ import {
 } from "@/components/ui/select";
 
 export const Route = createFileRoute("/_app/sources")({
-  validateSearch: (search: Record<string, unknown>): { filter?: "unsorted"; source?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { filter?: "unsorted"; source?: string; project?: string; folder?: string } => ({
     filter: search.filter === "unsorted" ? "unsorted" : undefined,
     source: typeof search.source === "string" ? search.source : undefined,
+    project: typeof search.project === "string" ? search.project : undefined,
+    folder: typeof search.folder === "string" ? search.folder : undefined,
   }),
   head: () => ({ meta: [{ title: "Sources" }] }),
   component: SourcesView,
@@ -93,7 +101,7 @@ const typeIcon = {
 function SourcesView() {
   const navigate = useNavigate();
   const sourceImport = useSourceImport();
-  const { filter, source: requestedSourceId } = Route.useSearch();
+  const { filter, source: requestedSourceId, project: projectId, folder: folderPath } = Route.useSearch();
   const inboxOnly = filter === "unsorted";
   const pageSize = 25;
   const [q, setQ] = useState("");
@@ -106,6 +114,8 @@ function SourcesView() {
   const [vault, setActiveVault] = useState<VaultRecord | null>(null);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [sourceFolders, setSourceFolders] = useState<SourceFolderRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -140,7 +150,7 @@ function SourcesView() {
         setBackendClusters([]);
         return;
       }
-      const [sourceResult, clusterResult, countResult, requestedResult] = await Promise.allSettled([
+      const [sourceResult, clusterResult, countResult, requestedResult, projectResult, folderResult] = await Promise.allSettled([
         listSourcesPage(activeVault.id, {
           limit: pageSize,
           cursor: pageCursors[pageIndex] ?? null,
@@ -152,6 +162,9 @@ function SourcesView() {
               : [stateFilter as "waiting" | "processing" | "indexed" | "failed"],
           sourceTypes: typeFilter === "all" ? undefined : sourceTypesForFilter(typeFilter),
           query: deferredQuery,
+          projectId,
+          importRootPath: folderPath,
+          excludeGroupedProjects: !projectId && !folderPath && !inboxOnly,
         }),
         listClusters(activeVault.id),
         countSources(activeVault.id, undefined, {
@@ -163,8 +176,13 @@ function SourcesView() {
               : [stateFilter as "waiting" | "processing" | "indexed" | "failed"],
           sourceTypes: typeFilter === "all" ? undefined : sourceTypesForFilter(typeFilter),
           query: deferredQuery,
+          projectId,
+          importRootPath: folderPath,
+          excludeGroupedProjects: !projectId && !folderPath && !inboxOnly,
         }),
         requestedSourceId ? getSource(requestedSourceId).catch(() => null) : Promise.resolve(null),
+        listProjectsPage(activeVault.id, { limit: 200 }),
+        listSourceFolders(activeVault.id),
       ]);
       if (requestId !== sourceRequestRef.current) return;
       if (sourceResult.status === "rejected") throw sourceResult.reason;
@@ -172,6 +190,8 @@ function SourcesView() {
       const clusterRows = clusterResult.status === "fulfilled" ? clusterResult.value : null;
       const count = countResult.status === "fulfilled" ? countResult.value : null;
       const requestedSource = requestedResult.status === "fulfilled" ? requestedResult.value : null;
+      if (projectResult.status === "fulfilled") setProjects(projectResult.value.items);
+      if (folderResult.status === "fulfilled") setSourceFolders(folderResult.value.items);
       if (count && count.total > 0 && sourcePage.items.length === 0 && pageIndex > 0) {
         setPageIndex(Math.max(0, Math.ceil(count.total / pageSize) - 1));
         return;
@@ -212,12 +232,12 @@ function SourcesView() {
 
   useEffect(() => {
     void refreshBackendSources();
-  }, [deferredQuery, inboxOnly, pageIndex, requestedSourceId, pageCursors, stateFilter, typeFilter]);
+  }, [deferredQuery, folderPath, inboxOnly, pageIndex, projectId, requestedSourceId, pageCursors, stateFilter, typeFilter]);
 
   useEffect(() => {
     setPageIndex(0);
     setPageCursors([null]);
-  }, [inboxOnly]);
+  }, [folderPath, inboxOnly, projectId]);
 
   useEffect(() => {
     setPageIndex(0);
@@ -245,6 +265,30 @@ function SourcesView() {
   const clusters = usingBackend ? backendClusters : [];
 
   const filtered = useMemo(() => sources, [sources]);
+  const activeProject = projects.find((project) => project.id === projectId) ?? null;
+  const activeSourceFolder = sourceFolders.find((folder) => folder.root_path === folderPath) ?? null;
+  const visibleProjectFolders = useMemo(() => {
+    if (projectId || folderPath || inboxOnly || !["all", "code"].includes(typeFilter) || !["all", "indexed"].includes(stateFilter)) {
+      return [];
+    }
+    const query = deferredQuery.trim().toLocaleLowerCase();
+    return projects.filter(
+      (project) =>
+        project.source_count >= 20 &&
+        (!query ||
+          project.name.toLocaleLowerCase().includes(query) ||
+          project.brief.toLocaleLowerCase().includes(query)),
+    );
+  }, [deferredQuery, folderPath, inboxOnly, projectId, projects, stateFilter, typeFilter]);
+  const visibleSourceFolders =
+    projectId || folderPath || inboxOnly || typeFilter !== "all" || !["all", "indexed"].includes(stateFilter)
+      ? []
+      : sourceFolders.filter((folder) => {
+          const query = deferredQuery.trim().toLocaleLowerCase();
+          return !query ||
+            folder.name.toLocaleLowerCase().includes(query) ||
+            folder.root_path.toLocaleLowerCase().includes(query);
+        });
 
   const inspectorSource = selected;
   const inspectorCluster = inspectorSource
@@ -353,10 +397,10 @@ function SourcesView() {
     }
     const folders = await window.cmlDesktop.selectSourceFolders();
     const report = await window.cmlDesktop.scanSupportedFiles(folders);
-    await importFilePaths(report.files, report.truncated ? report.limit : null);
+    await importFilePaths(report.files, report.truncated ? report.limit : null, folders);
   }
 
-  async function importFilePaths(paths: string[], truncatedAt: number | null = null) {
+  async function importFilePaths(paths: string[], truncatedAt: number | null = null, folderRoots: string[] = []) {
     if (!vault || paths.length === 0) return;
     if (sourceImport.active) {
       setIngestMessage("Finish or stop the current file import before starting another one.");
@@ -368,6 +412,7 @@ function SourcesView() {
         vaultId: vault.id,
         paths,
         truncatedAt,
+        folderRoots,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not start the file import.";
@@ -416,7 +461,7 @@ function SourcesView() {
       setIngestMessage("No supported documents found in that drop.");
       return;
     }
-    await importFilePaths(paths, report.truncated ? report.limit : null);
+    await importFilePaths(paths, report.truncated ? report.limit : null, droppedPaths);
   }
 
   async function handleReindexSource(source: Source) {
@@ -481,14 +526,21 @@ function SourcesView() {
         </div>
       )}
       <main className="min-w-0 px-7 py-8 xl:overflow-y-auto">
-        <header className="mb-8">
+        <PageHeader className="mb-8">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h1 className="page-title">{inboxOnly ? "Inbox" : "Sources"}</h1>
+            <div>
+              {activeProject || activeSourceFolder ? (
+                <Link to="/sources" search={{}} className="mb-2 inline-flex items-center text-xs text-muted-foreground hover:text-foreground">
+                  Sources / <span className="ml-1 text-foreground">{activeProject?.name ?? activeSourceFolder?.name}</span>
+                </Link>
+              ) : null}
+              <h1 className="page-title">{inboxOnly ? "Inbox" : activeProject?.name ?? activeSourceFolder?.name ?? "Sources"}</h1>
+            </div>
             {inboxOnly && (
               <Link
                 to="/sources"
                 search={{}}
-                className="desktop-window-action text-sm text-primary hover:underline"
+                className="text-sm text-primary hover:underline"
               >
                 View all sources
               </Link>
@@ -497,7 +549,9 @@ function SourcesView() {
           <p className="mt-3 text-sm text-muted-foreground">
             {inboxOnly
               ? "Unclustered sources that are still waiting, processing, or need review."
-              : "Files, links, notes, images, and transcripts stored locally."}
+              : activeProject || activeSourceFolder
+                ? `${(activeProject?.source_count ?? activeSourceFolder?.source_count ?? 0).toLocaleString()} files, grouped together.`
+                : "Files, links, notes, images, transcripts, and large project folders stored locally."}
           </p>
           <div className="mt-9 flex flex-wrap items-center gap-2">
             <div className="relative mr-auto min-w-0 flex-[1_1_240px] sm:max-w-sm">
@@ -561,7 +615,7 @@ function SourcesView() {
               </Link>
             </Button>
           </div>
-        </header>
+        </PageHeader>
 
         {error && <div className="mb-3"><DegradedState compact description={error} onRetry={() => void refreshBackendSources()} /></div>}
         {sourceImport.active && sourceImport.progress ? (
@@ -576,7 +630,7 @@ function SourcesView() {
 
         {loading ? (
           <SkeletonRegion className="py-8" lines={9} />
-        ) : filtered.length === 0 ? (
+        ) : filtered.length === 0 && visibleProjectFolders.length === 0 && visibleSourceFolders.length === 0 ? (
           <EmptyState
             title={inboxOnly ? "Inbox clear" : q ? "No sources match" : "Add your first source"}
             description={inboxOnly
@@ -600,6 +654,82 @@ function SourcesView() {
                 </tr>
               </thead>
               <tbody>
+                {visibleSourceFolders.map((folder) => (
+                  <tr
+                    key={folder.root_path}
+                    tabIndex={0}
+                    aria-label={`Open ${folder.name} folder`}
+                    className="cursor-pointer border-b border-border hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                    onClick={() => navigate({ to: "/sources", search: { folder: folder.root_path } })}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        navigate({ to: "/sources", search: { folder: folder.root_path } });
+                      }
+                    }}
+                  >
+                    <td className="px-3 py-5">
+                      <div className="flex items-center gap-4">
+                        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground">
+                          <Folder className="h-5 w-5" />
+                        </span>
+                        <div className="min-w-0">
+                          <div className="break-words font-semibold">{folder.name}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">{folder.source_count.toLocaleString()} files</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="hidden px-3 py-5 text-muted-foreground 2xl:table-cell">Folder</td>
+                    <td className="hidden px-3 py-5 text-muted-foreground xl:table-cell">Ready</td>
+                    <td className="hidden px-3 py-5 text-muted-foreground lg:table-cell">-</td>
+                    <td className="hidden px-3 py-5 text-muted-foreground 2xl:table-cell">{formatDate(folder.updated_at)}</td>
+                  </tr>
+                ))}
+                {visibleProjectFolders.map((project) => {
+                  const cluster = clusters.find((item) => item.id === project.primary_cluster_id);
+                  return (
+                    <tr
+                      key={project.id}
+                      tabIndex={0}
+                      aria-label={`Open ${project.name} folder`}
+                      className="cursor-pointer border-b border-border hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                      onClick={() => navigate({ to: "/sources", search: { project: project.id } })}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          navigate({ to: "/sources", search: { project: project.id } });
+                        }
+                      }}
+                    >
+                      <td className="px-3 py-5">
+                        <div className="flex items-center gap-4">
+                          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground">
+                            <Folder className="h-5 w-5" />
+                          </span>
+                          <div className="min-w-0">
+                            <div className="break-words font-semibold">{project.name}</div>
+                            <div className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">
+                              {project.source_count.toLocaleString()} files · {project.brief || "Project folder"}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="hidden px-3 py-5 text-muted-foreground 2xl:table-cell">Folder</td>
+                      <td className="hidden px-3 py-5 xl:table-cell">
+                        <span className="text-xs text-muted-foreground">{project.active_run_id ? "Indexing" : "Ready"}</span>
+                      </td>
+                      <td className="hidden px-3 py-5 lg:table-cell">
+                        {cluster ? (
+                          <span className="inline-flex max-w-40 items-center gap-1.5">
+                            <ClusterDot tint={cluster.tint} />
+                            <span className="break-words text-muted-foreground">{cluster.name}</span>
+                          </span>
+                        ) : <span className="text-muted-foreground">-</span>}
+                      </td>
+                      <td className="hidden px-3 py-5 text-muted-foreground 2xl:table-cell">{formatDate(project.updated_at)}</td>
+                    </tr>
+                  );
+                })}
                 {filtered.map((source) => {
                   const Icon = typeIcon[source.type];
                   const cluster = clusters.find((item) => item.id === source.clusterId);
@@ -660,6 +790,8 @@ function SourcesView() {
         <div className="mt-8 flex flex-col gap-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
           <span>
             Showing {filtered.length} of {sourceTotal.toLocaleString()} sources
+            {visibleProjectFolders.length > 0 ? ` and ${visibleProjectFolders.length} folders` : ""}
+            {visibleSourceFolders.length > 0 ? ` and ${visibleSourceFolders.length} folders` : ""}
           </span>
           <div className="flex items-center gap-4">
             <button

@@ -18,6 +18,7 @@ import { Route as AppSourcesRouteImport } from './routes/_app.sources'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AppSearchRouteImport } from './routes/_app.search'
 import { Route as AppProjectsRouteImport } from './routes/_app.projects'
+import { Route as AppProjectMapRouteImport } from './routes/_app.project-map'
 import { Route as AppMapRouteImport } from './routes/_app.map'
 import { Route as AppHomeRouteImport } from './routes/_app.home'
 import { Route as AppClustersRouteImport } from './routes/_app.clusters'
@@ -70,6 +71,11 @@ const AppSearchRoute = AppSearchRouteImport.update({
 const AppProjectsRoute = AppProjectsRouteImport.update({
   id: '/projects',
   path: '/projects',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppProjectMapRoute = AppProjectMapRouteImport.update({
+  id: '/project-map',
+  path: '/project-map',
   getParentRoute: () => AppRoute,
 } as any)
 const AppMapRoute = AppMapRouteImport.update({
@@ -127,6 +133,7 @@ export interface FileRoutesByFullPath {
   '/clusters': typeof AppClustersRouteWithChildren
   '/home': typeof AppHomeRoute
   '/map': typeof AppMapRoute
+  '/project-map': typeof AppProjectMapRoute
   '/projects': typeof AppProjectsRouteWithChildren
   '/search': typeof AppSearchRoute
   '/settings': typeof AppSettingsRoute
@@ -146,6 +153,7 @@ export interface FileRoutesByTo {
   '/clusters': typeof AppClustersRouteWithChildren
   '/home': typeof AppHomeRoute
   '/map': typeof AppMapRoute
+  '/project-map': typeof AppProjectMapRoute
   '/projects': typeof AppProjectsRouteWithChildren
   '/search': typeof AppSearchRoute
   '/settings': typeof AppSettingsRoute
@@ -167,6 +175,7 @@ export interface FileRoutesById {
   '/_app/clusters': typeof AppClustersRouteWithChildren
   '/_app/home': typeof AppHomeRoute
   '/_app/map': typeof AppMapRoute
+  '/_app/project-map': typeof AppProjectMapRoute
   '/_app/projects': typeof AppProjectsRouteWithChildren
   '/_app/search': typeof AppSearchRoute
   '/_app/settings': typeof AppSettingsRoute
@@ -188,6 +197,7 @@ export interface FileRouteTypes {
     | '/clusters'
     | '/home'
     | '/map'
+    | '/project-map'
     | '/projects'
     | '/search'
     | '/settings'
@@ -207,6 +217,7 @@ export interface FileRouteTypes {
     | '/clusters'
     | '/home'
     | '/map'
+    | '/project-map'
     | '/projects'
     | '/search'
     | '/settings'
@@ -227,6 +238,7 @@ export interface FileRouteTypes {
     | '/_app/clusters'
     | '/_app/home'
     | '/_app/map'
+    | '/_app/project-map'
     | '/_app/projects'
     | '/_app/search'
     | '/_app/settings'
@@ -307,6 +319,13 @@ declare module '@tanstack/react-router' {
       path: '/projects'
       fullPath: '/projects'
       preLoaderRoute: typeof AppProjectsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/project-map': {
+      id: '/_app/project-map'
+      path: '/project-map'
+      fullPath: '/project-map'
+      preLoaderRoute: typeof AppProjectMapRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/map': {
@@ -417,6 +436,7 @@ interface AppRouteChildren {
   AppClustersRoute: typeof AppClustersRouteWithChildren
   AppHomeRoute: typeof AppHomeRoute
   AppMapRoute: typeof AppMapRoute
+  AppProjectMapRoute: typeof AppProjectMapRoute
   AppProjectsRoute: typeof AppProjectsRouteWithChildren
   AppSearchRoute: typeof AppSearchRoute
   AppSettingsRoute: typeof AppSettingsRoute
@@ -432,6 +452,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppClustersRoute: AppClustersRouteWithChildren,
   AppHomeRoute: AppHomeRoute,
   AppMapRoute: AppMapRoute,
+  AppProjectMapRoute: AppProjectMapRoute,
   AppProjectsRoute: AppProjectsRouteWithChildren,
   AppSearchRoute: AppSearchRoute,
   AppSettingsRoute: AppSettingsRoute,

@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { type Cluster, type Source } from "@/lib/domain";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/layout/WindowAware";
 import { KnowledgeMap } from "@/components/KnowledgeMap";
 import {
   createChatSession,
@@ -337,7 +338,7 @@ function ClusterDetail() {
           Back to clusters
         </Link>
 
-        <header className="mt-7 flex flex-wrap items-start justify-between gap-5">
+        <PageHeader className="mt-7 flex flex-wrap items-start justify-between gap-5">
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-3">
               <h1 className="page-title break-words">{cluster.name}</h1>
@@ -360,7 +361,7 @@ function ClusterDetail() {
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </div>
-        </header>
+        </PageHeader>
 
         <nav className="mt-8 flex gap-6 overflow-x-auto border-b border-border text-sm sm:gap-8">
           {tabs.map((tab) => (

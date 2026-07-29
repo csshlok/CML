@@ -2,6 +2,7 @@ import type { Cluster, ClusterLifecycleStatus, ClusterTint, Source, SourceState,
 import type { ClusterRecord, SourceRecord } from "@/lib/backend";
 
 export function sourceFromRecord(record: SourceRecord): Source {
+  const extracted = record.extracted_text || record.raw_text;
   return {
     id: record.id,
     title: record.title,
@@ -10,7 +11,7 @@ export function sourceFromRecord(record: SourceRecord): Source {
     state: normalizeSourceState(record.state),
     createdAt: record.created_at,
     updatedAt: record.updated_at,
-    preview: record.extracted_text || record.raw_text,
+    preview: buildRepresentativePreview(extracted, record.summary),
     summary: record.summary,
     tags: record.tags ?? [],
     coverImageUrl: record.cover_image_url ?? undefined,
@@ -32,6 +33,37 @@ export function clusterFromRecord(record: ClusterRecord): Cluster {
     glossary: parseGlossary(record.cluster_glossary),
     styleProfile: record.profile_status === "ready" ? "Profile cached" : "Profile refresh pending",
   };
+}
+
+export function buildRepresentativePreview(text: string, summary = "", maxChars = 520) {
+  const cleaned = decodeBasicEntities(text)
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return "";
+  const summaryKey = comparisonKey(summary);
+  const sentences = cleaned
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length >= 30 && comparisonKey(sentence) !== summaryKey);
+  const preview = (sentences.slice(0, 3).join(" ") || cleaned).trim();
+  return preview.length <= maxChars ? preview : `${preview.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
+function decodeBasicEntities(value: string) {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'");
+}
+
+function comparisonKey(value: string) {
+  return value.toLocaleLowerCase().replace(/[\W_]+/g, "");
 }
 
 function parseGlossary(value: string): string[] {

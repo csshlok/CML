@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Network } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { KnowledgeMap } from "@/components/KnowledgeMap";
+import { PageHeader } from "@/components/layout/WindowAware";
 import { DegradedState, EmptyState, SkeletonRegion } from "@/components/product/Feedback";
 import {
   getMapOverview,
@@ -21,6 +22,7 @@ function MapView() {
   const [overview, setOverview] = useState<MapGraphResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [limit, setLimit] = useState(160);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -28,13 +30,13 @@ function MapView() {
     try {
       const activeVault = (await listVaults())[0] ?? null;
       setVault(activeVault);
-      setOverview(activeVault ? await getMapOverview(activeVault.id, { limit: 160 }) : null);
+      setOverview(activeVault ? await getMapOverview(activeVault.id, { limit }) : null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Vault could not load the map.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [limit]);
 
   useEffect(() => {
     void load();
@@ -42,7 +44,7 @@ function MapView() {
 
   return (
     <div className="vault-page-wash h-full overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
-      <header className="flex flex-wrap items-end justify-between gap-4">
+      <PageHeader className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="page-title">Knowledge map</h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
@@ -51,11 +53,11 @@ function MapView() {
           </p>
         </div>
         {overview?.truncated ? (
-          <span className="desktop-window-action text-xs text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             Showing {overview.nodes.length} of {overview.total?.toLocaleString()} clusters
           </span>
         ) : null}
-      </header>
+      </PageHeader>
 
       <section className="mt-6">
         {loading ? (
@@ -88,6 +90,7 @@ function MapView() {
             overview={overview}
             persistView
             onReload={() => void load()}
+            onExpandOverview={() => setLimit((current) => Math.min(500, current + 120))}
           />
         )}
       </section>

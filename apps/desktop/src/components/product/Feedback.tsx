@@ -193,15 +193,71 @@ export function AsyncActionLabel({
   return <>{idle}</>;
 }
 
-export function LockedState({ onOpenSettings }: { onOpenSettings: () => void }) {
+export function LockedState({
+  onUnlock,
+  onOpenRecovery,
+}: {
+  onUnlock: (passphrase: string) => Promise<void>;
+  onOpenRecovery: () => void;
+}) {
+  const [passphrase, setPassphrase] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    if (!passphrase || pending) return;
+    setPending(true);
+    setError("");
+    try {
+      await onUnlock(passphrase);
+      setPassphrase("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "That passphrase did not unlock this library.");
+    } finally {
+      setPending(false);
+    }
+  }
+
   return (
     <div className="flex h-full items-center justify-center px-5 py-10">
-      <EmptyState
-        icon={<LockKeyhole className="h-8 w-8" />}
-        title="Library locked"
-        description="Vault cleared the open workspace. Unlock your local library to see sources, chats, and relationships again."
-        action={<Button onClick={onOpenSettings}>Open privacy settings</Button>}
-      />
+      <section className="w-full max-w-sm" aria-labelledby="locked-library-title">
+        <LockKeyhole className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
+        <h2 id="locked-library-title" className="mt-4 text-xl font-semibold">Library locked</h2>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          Enter your passphrase to continue.
+        </p>
+        <form
+          className="mt-6"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <label htmlFor="vault-inline-passphrase" className="text-sm font-medium">Passphrase</label>
+          <input
+            id="vault-inline-passphrase"
+            type="password"
+            autoComplete="current-password"
+            autoFocus
+            value={passphrase}
+            disabled={pending}
+            onChange={(event) => {
+              setPassphrase(event.target.value);
+              if (error) setError("");
+            }}
+            className="mt-2 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+          />
+          {error ? <p className="mt-2 text-sm text-destructive" role="alert">{error}</p> : null}
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <Button type="submit" disabled={!passphrase || pending}>
+              {pending ? <><LoaderCircle className="h-4 w-4 animate-spin" /> Unlocking...</> : "Unlock"}
+            </Button>
+            <Button type="button" variant="ghost" onClick={onOpenRecovery}>
+              Reset or recover
+            </Button>
+          </div>
+        </form>
+      </section>
     </div>
   );
 }

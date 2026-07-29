@@ -40,6 +40,7 @@ type SourceImportContextValue = {
     vaultId: string;
     paths: string[];
     truncatedAt?: number | null;
+    folderRoots?: string[];
   }) => Promise<AppJobRecord>;
   pause: () => Promise<void>;
   resume: () => Promise<void>;
@@ -88,10 +89,12 @@ export function SourceImportProvider({ children }: { children: ReactNode }) {
       vaultId,
       paths,
       truncatedAt = null,
+      folderRoots = [],
     }: {
       vaultId: string;
       paths: string[];
       truncatedAt?: number | null;
+      folderRoots?: string[];
     }) => {
       setActionBusy(true);
       setActionError(null);
@@ -100,6 +103,7 @@ export function SourceImportProvider({ children }: { children: ReactNode }) {
           vault_id: vaultId,
           paths,
           truncated_at: truncatedAt,
+          folder_roots: folderRoots,
         });
         terminalEventRef.current = null;
         setDismissedJobId(null);

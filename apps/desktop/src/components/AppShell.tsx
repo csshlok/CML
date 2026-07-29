@@ -28,6 +28,8 @@ import {
   listClusters,
   listVaults,
   getUnlockStatus,
+  lockVault,
+  unlockVaultWithPassphrase,
   type ChatSessionRecord,
   useBackendHealth,
   type ClusterRecord,
@@ -128,34 +130,6 @@ export function AppShell() {
       window.removeEventListener("vault:start-tour", restart);
     };
   }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setOpen((o) => !o);
-      }
-      if (mod && e.key.toLowerCase() === "n") {
-        e.preventDefault();
-        if (e.shiftKey) {
-          navigate({ to: "/clusters" });
-        } else {
-          navigate({ to: "/chat" });
-        }
-      }
-      if (mod && e.key.toLowerCase() === "l") {
-        e.preventDefault();
-        navigate({ to: "/sources" });
-      }
-      if (mod && e.key.toLowerCase() === "o") {
-        e.preventDefault();
-        navigate({ to: "/settings" });
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [navigate, setOpen]);
 
   const refreshJobs = useCallback(async () => {
     try {
@@ -301,6 +275,58 @@ export function AppShell() {
     Boolean(unlockStatus) &&
     (unlockStatus?.secured_vault_count ?? 0) > 0 &&
     unlockStatus?.ready === false;
+  const securedVaultId =
+    vault?.id ?? unlockStatus?.vault_id ?? unlockStatus?.secured_vault_ids?.[0] ?? null;
+
+  const lockCurrentVault = useCallback(async () => {
+    if (!securedVaultId || securityLockActive) return;
+    try {
+      const next = await lockVault(securedVaultId);
+      setOpen(false);
+      window.dispatchEvent(new CustomEvent("vault:lock-state", { detail: next }));
+      navigate({ to: "/home" });
+    } catch (error) {
+      notify({
+        title: "Library was not locked",
+        description: error instanceof Error ? error.message : "Try again.",
+        tone: "error",
+      });
+    }
+  }, [navigate, securedVaultId, securityLockActive, setOpen]);
+
+  const unlockCurrentVault = useCallback(async (passphrase: string) => {
+    if (!securedVaultId) throw new Error("Vault could not find the secured library.");
+    const next = await unlockVaultWithPassphrase({ vault_id: securedVaultId, passphrase });
+    window.dispatchEvent(new CustomEvent("vault:lock-state", { detail: next }));
+  }, [securedVaultId]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setOpen((o) => !o);
+      }
+      if (mod && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          navigate({ to: "/clusters" });
+        } else {
+          navigate({ to: "/chat" });
+        }
+      }
+      if (mod && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        void lockCurrentVault();
+      }
+      if (mod && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        navigate({ to: "/settings" });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lockCurrentVault, navigate, setOpen]);
   const currentPage =
     [...primaryNav, ...secondaryNav].find((item) => pathname.startsWith(item.to))?.label ?? "Vault";
   const currentVaultName = vault?.name ?? (vaultPath ? vaultName(vaultPath) : "Vault");
@@ -468,14 +494,22 @@ export function AppShell() {
 
         <main ref={contentRef} className="content-area focus:outline-none" tabIndex={-1}>
           {securityLockActive && pathname !== "/settings" ? (
-            <LockedState onOpenSettings={() => navigate({ to: "/settings", search: { section: "privacy" } })} />
+            <LockedState
+              onUnlock={unlockCurrentVault}
+              onOpenRecovery={() => navigate({ to: "/settings", search: { section: "privacy" } })}
+            />
           ) : (
             <Outlet key={securityLockActive ? "locked" : "ready"} />
           )}
         </main>
       </div>
 
-      <CommandPalette open={openPalette} onOpenChange={setOpen} />
+      <CommandPalette
+        open={openPalette}
+        onOpenChange={setOpen}
+        onLock={lockCurrentVault}
+        lockAvailable={Boolean(securedVaultId) && !securityLockActive}
+      />
       <AppStatusAnnouncer
         message={
           backend.status === "offline"

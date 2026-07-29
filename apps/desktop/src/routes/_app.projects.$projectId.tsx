@@ -14,6 +14,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/layout/WindowAware";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
@@ -37,6 +38,7 @@ import {
   type ClusterRecord,
 } from "@/lib/backend";
 import { displayPath } from "@/lib/displayPath";
+import { detectProjectVisualizationRequest } from "@/components/ProjectGraphArtifact";
 
 export const Route = createFileRoute("/_app/projects/$projectId")({
   head: () => ({ meta: [{ title: "Project" }] }),
@@ -126,6 +128,14 @@ function ProjectWorkspace() {
   async function ask(prompt = question) {
     if (!project || !prompt.trim()) return;
     const normalized = prompt.trim();
+    const visualization = detectProjectVisualizationRequest(normalized);
+    if (visualization) {
+      navigate({
+        to: "/project-map",
+        search: { project: project.id, mode: visualization.mode, q: visualization.query },
+      });
+      return;
+    }
     const session = await createChatSession({
       vault_id: project.vault_id,
       title: `${project.name}: ${normalized.slice(0, 52)}`,
@@ -169,7 +179,7 @@ function ProjectWorkspace() {
           >
             <ArrowLeft className="h-4 w-4" /> Projects
           </Link>
-          <header className="mt-7 flex flex-wrap items-start justify-between gap-5 border-b border-border pb-7">
+          <PageHeader className="mt-7 flex flex-wrap items-start justify-between gap-5 border-b border-border pb-7">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-3">
                 <h1 className="page-title break-words">{project.name}</h1>
@@ -216,7 +226,7 @@ function ProjectWorkspace() {
                 Synchronize
               </Button>
             </div>
-          </header>
+          </PageHeader>
 
           {activeRun && (
             <RunStrip

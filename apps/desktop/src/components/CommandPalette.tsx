@@ -11,7 +11,7 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { createChatSession, listClusters, listSources, listVaults, type ClusterRecord, type SourceRecord } from "@/lib/backend";
-import { MessageSquare, Layers, Files, Globe2, Settings, Plus, FolderOpen, Cable } from "lucide-react";
+import { MessageSquare, Layers, Files, Globe2, Settings, Plus, FolderOpen, Cable, LockKeyhole } from "lucide-react";
 
 interface PaletteState {
   open: boolean;
@@ -27,9 +27,13 @@ export const useCommandPalette = create<PaletteState>((set, get) => ({
 export function CommandPalette({
   open,
   onOpenChange,
+  onLock,
+  lockAvailable,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
+  onLock: () => Promise<void>;
+  lockAvailable: boolean;
 }) {
   const navigate = useNavigate();
   const [clusters, setClusters] = useState<ClusterRecord[]>([]);
@@ -108,6 +112,13 @@ export function CommandPalette({
           <CommandItem onSelect={() => go(() => navigate({ to: "/settings", search: { section: "storage" } }))}>
             <FolderOpen className="mr-2 h-4 w-4" /> Library settings
           </CommandItem>
+          {lockAvailable ? (
+            <CommandItem onSelect={() => go(onLock)}>
+              <LockKeyhole className="mr-2 h-4 w-4" />
+              Lock library
+              <span className="ml-auto text-xs text-muted-foreground">Ctrl+L</span>
+            </CommandItem>
+          ) : null}
         </CommandGroup>
         <CommandSeparator />
         <CommandGroup heading="Go to">

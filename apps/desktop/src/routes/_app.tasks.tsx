@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Clock3, Pause, Play, RefreshCw, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PageHeader } from "@/components/layout/WindowAware";
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
 import {
   cancelJob,
@@ -10,7 +11,9 @@ import {
   getJobStatus,
   listJobsPage,
   listProjectRunSummary,
+  pauseJob,
   reindexProject,
+  resumeJob,
   runJobsOnce,
   type AppJobRecord,
   type JobQueueStatus,
@@ -135,6 +138,20 @@ function TasksView() {
     }
   }
 
+  async function setSelectedPaused(paused: boolean) {
+    if (!selected) return;
+    try {
+      const next = paused
+        ? await pauseJob(selected.id)
+        : await resumeJob(selected.id);
+      setSelected(next);
+      setMessage(paused ? "Task paused." : "Task queued to resume.");
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not update this task.");
+    }
+  }
+
   const activeJob = rows.find((job) => job.id === selected?.id) ?? null;
 
   return (
@@ -145,13 +162,13 @@ function TasksView() {
       }
     >
       <main className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:overflow-y-auto">
-        <header className="border-b border-border pb-6">
+        <PageHeader className="border-b border-border pb-6">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
               <h1 className="page-title">Tasks</h1>
               <p className="mt-2 text-sm text-muted-foreground">Background work that keeps your vault current.</p>
             </div>
-            <div className="desktop-window-action flex w-full gap-2 sm:w-auto">
+            <div className="flex w-full gap-2 sm:w-auto">
               <Button variant="outline" onClick={() => void load()}>
                 <RefreshCw className="h-4 w-4" />
                 Refresh
@@ -182,7 +199,7 @@ function TasksView() {
               ))}
             </div>
           </div>
-        </header>
+        </PageHeader>
 
         {message && (
           <div className="mt-5 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
@@ -246,7 +263,15 @@ function TasksView() {
                       <span className="capitalize">{job.status.replace(/_/g, " ")}</span>
                     </span>
                     <span className="font-mono text-xs text-muted-foreground">{formatEstimate(job)}</span>
-                    <span className="text-right text-xs text-muted-foreground">{job.cancellable && ["queued", "running", "paused", "blocked_by_dependency", "blocked_setup_required", "deferred"].includes(job.status) ? "Cancel" : "-"}</span>
+                    <span className="text-right text-xs text-muted-foreground">
+                      {job.status === "paused" && job.preemptable
+                        ? "Resume"
+                        : ["queued", "running"].includes(job.status) && job.preemptable
+                          ? "Pause"
+                          : job.cancellable && ["queued", "running", "blocked_by_dependency", "blocked_setup_required", "deferred"].includes(job.status)
+                            ? "Cancel"
+                            : "-"}
+                    </span>
                   </button>
                 ))}
                 {rows.length === 0 && (
@@ -295,7 +320,25 @@ function TasksView() {
                 <RefreshCw className="h-4 w-4" />
                 Refresh
               </Button>
-              <Button variant="outline" disabled={!activeJob.cancellable} onClick={() => void cancelSelected()}>
+              {activeJob.status === "paused" && activeJob.preemptable ? (
+                <Button variant="outline" onClick={() => void setSelectedPaused(false)}>
+                  <Play className="h-4 w-4" />
+                  Resume
+                </Button>
+              ) : ["queued", "running"].includes(activeJob.status) && activeJob.preemptable ? (
+                <Button variant="outline" onClick={() => void setSelectedPaused(true)}>
+                  <Pause className="h-4 w-4" />
+                  Pause
+                </Button>
+              ) : null}
+              <Button
+                variant="outline"
+                disabled={
+                  !activeJob.cancellable
+                  || !["queued", "running", "paused", "blocked_by_dependency", "blocked_setup_required", "deferred"].includes(activeJob.status)
+                }
+                onClick={() => void cancelSelected()}
+              >
                 <X className="h-4 w-4" />
                 Cancel
               </Button>
