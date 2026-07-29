@@ -20,9 +20,11 @@ class SourceImportJobTests(unittest.TestCase):
 
         from backend.app.core.config import get_settings
         from backend.app.core.database import connect, init_db, utc_now
+        from backend.app.core.migrations import run_migrations
 
         get_settings.cache_clear()
         init_db()
+        run_migrations()
         now = utc_now()
         with connect() as conn:
             conn.execute(
@@ -185,6 +187,50 @@ class SourceImportJobTests(unittest.TestCase):
         self.assertEqual(finished["status"], "succeeded")
         self.assertEqual(finished_progress["completed_files"], 6)
         self.assertEqual(finished_progress["imported_files"], 6)
+
+    def test_large_folder_import_is_grouped_and_browsable(self) -> None:
+        from backend.app.api.routes.sources import (
+            count_sources,
+            create_source_import_job,
+            list_source_folders,
+            list_sources_page,
+        )
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.schemas import SourceImportJobRequest
+
+        folder = Path(self.tmp.name) / "large-folder"
+        folder.mkdir()
+        paths = []
+        for index in range(20):
+            path = folder / f"item-{index:02d}.txt"
+            path.write_text(f"Folder item {index}", encoding="utf-8")
+            paths.append(str(path))
+
+        create_source_import_job(
+            SourceImportJobRequest(
+                vault_id="vault-import",
+                paths=paths,
+                folder_roots=[str(folder)],
+            )
+        )
+        self.assertEqual(run_due_jobs_once(limit=1), 1)
+
+        folders = list_source_folders("vault-import")["items"]
+        root_page = list_sources_page(
+            vault_id="vault-import",
+            exclude_grouped_projects=True,
+            limit=100,
+        )
+        folder_page = list_sources_page(
+            vault_id="vault-import",
+            import_root_path=str(folder.resolve()),
+            limit=100,
+        )
+
+        self.assertEqual([(item["name"], item["source_count"]) for item in folders], [("large-folder", 20)])
+        self.assertEqual(root_page["items"], [])
+        self.assertEqual(count_sources(vault_id="vault-import", exclude_grouped_projects=True)["total"], 0)
+        self.assertEqual(len(folder_page["items"]), 20)
 
 
 if __name__ == "__main__":

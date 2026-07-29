@@ -366,6 +366,8 @@ def _overview_cluster_edges(conn, vault_id: str, visible_cluster_ids: set[str]) 
             continue
         label = f"Shared {str(row['object_type']).replace('_', ' ')}: {row['object_text']}"
         for source_id, target_id in combinations(cluster_ids, 2):
+            if len(relationships) >= 240 and (source_id, target_id) not in relationships:
+                break
             _merge_relationship(
                 relationships,
                 source_id,
@@ -377,20 +379,30 @@ def _overview_cluster_edges(conn, vault_id: str, visible_cluster_ids: set[str]) 
 
     project_rows = conn.execute(
         """
+        WITH project_memberships AS (
+            SELECT id AS project_id, primary_cluster_id AS cluster_id
+            FROM projects
+            WHERE vault_id = ? AND deleted_at IS NULL
+            UNION
+            SELECT links.project_id, links.cluster_id
+            FROM project_cluster_links links
+            JOIN projects ON projects.id = links.project_id
+            WHERE projects.vault_id = ? AND projects.deleted_at IS NULL
+        )
         SELECT
             p.id,
             p.name,
             p.updated_at,
-            GROUP_CONCAT(DISTINCT pcl.cluster_id) AS cluster_ids
+            GROUP_CONCAT(DISTINCT memberships.cluster_id) AS cluster_ids
         FROM projects p
-        JOIN project_cluster_links pcl ON pcl.project_id = p.id
+        JOIN project_memberships memberships ON memberships.project_id = p.id
         WHERE p.vault_id = ? AND p.deleted_at IS NULL
         GROUP BY p.id
-        HAVING COUNT(DISTINCT pcl.cluster_id) > 1
+        HAVING COUNT(DISTINCT memberships.cluster_id) > 1
         ORDER BY p.updated_at DESC
         LIMIT 80
         """,
-        (vault_id,),
+        (vault_id, vault_id, vault_id),
     ).fetchall()
     for row in project_rows:
         cluster_ids = sorted(
@@ -399,6 +411,8 @@ def _overview_cluster_edges(conn, vault_id: str, visible_cluster_ids: set[str]) 
             if cluster_id in visible_cluster_ids
         )
         for source_id, target_id in combinations(cluster_ids, 2):
+            if len(relationships) >= 320 and (source_id, target_id) not in relationships:
+                break
             _merge_relationship(
                 relationships,
                 source_id,

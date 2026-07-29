@@ -23,7 +23,7 @@ from backend.app.core.encrypted_storage import (
     store_source_content_fields,
     update_source_content_fields,
 )
-from backend.app.core.cluster_lifecycle import mark_cluster_needs_update
+from backend.app.core.cluster_lifecycle import mark_cluster_needs_update, prune_empty_auto_cluster
 from backend.app.core.extraction import ExtractionError, extract_text_from_url_with_security, link_extraction_diagnostics
 from backend.app.core.memory_card import generate_tags, summarize_text
 from backend.app.core.pagination import cursor_page, decode_cursor
@@ -53,6 +53,9 @@ def _source_list_clauses(
     *,
     vault_id: str | None,
     cluster_id: str | None,
+    project_id: str | None,
+    import_root_path: str | None,
+    exclude_grouped_projects: bool,
     unclustered: bool,
     states: str | None,
     source_types: str | None,
@@ -68,6 +71,28 @@ def _source_list_clauses(
         params.append(cluster_id)
     elif unclustered:
         clauses.append("cluster_id IS NULL")
+    if project_id:
+        clauses.append("project_id = ?")
+        params.append(project_id)
+    elif import_root_path:
+        clauses.append("import_root_path = ?")
+        params.append(import_root_path)
+    elif exclude_grouped_projects:
+        clauses.append(
+            """
+            (
+                (project_id IS NULL OR
+                 (SELECT COUNT(*) FROM project_sources ps WHERE ps.project_id = sources.project_id) < 20)
+                AND
+                (import_root_path IS NULL OR
+                 (SELECT COUNT(*) FROM sources grouped
+                  WHERE grouped.vault_id = sources.vault_id
+                    AND grouped.import_root_path = sources.import_root_path
+                    AND grouped.deleted_at IS NULL
+                    AND (grouped.activation_state IS NULL OR grouped.activation_state = 'active')) < 20)
+            )
+            """
+        )
     state_values = [item.strip() for item in (states or "").split(",") if item.strip()]
     invalid_states = [item for item in state_values if item not in {"waiting", "processing", "indexed", "failed"}]
     if invalid_states:
@@ -87,6 +112,7 @@ def _source_list_clauses(
         match = f"%{normalized_query}%"
         params.extend([match, match, match, match])
     clauses.append("deleted_at IS NULL")
+    clauses.append("(activation_state IS NULL OR activation_state = 'active')")
     return clauses, params
 
 
@@ -94,6 +120,9 @@ def _source_list_clauses(
 def list_sources(
     vault_id: str | None = None,
     cluster_id: str | None = None,
+    project_id: str | None = None,
+    import_root_path: str | None = None,
+    exclude_grouped_projects: bool = False,
     unclustered: bool = False,
     states: str | None = None,
     source_types: str | None = None,
@@ -103,36 +132,17 @@ def list_sources(
     offset: int = 0,
     include_content: bool = False,
 ) -> list[dict]:
-    clauses: list[str] = []
-    params: list[object] = []
-    if vault_id:
-        clauses.append("vault_id = ?")
-        params.append(vault_id)
-    if cluster_id:
-        clauses.append("cluster_id = ?")
-        params.append(cluster_id)
-    elif unclustered:
-        clauses.append("cluster_id IS NULL")
-    state_values = [item.strip() for item in (states or "").split(",") if item.strip()]
-    if state_values:
-        invalid_states = [item for item in state_values if item not in {"waiting", "processing", "indexed", "failed"}]
-        if invalid_states:
-            raise HTTPException(status_code=400, detail="Invalid source state filter")
-        clauses.append(f"state IN ({','.join('?' for _ in state_values)})")
-        params.extend(state_values)
-    source_type_values = [item.strip() for item in (source_types or "").split(",") if item.strip()]
-    if source_type_values:
-        clauses.append(f"source_type IN ({','.join('?' for _ in source_type_values)})")
-        params.extend(source_type_values)
-    normalized_query = (q or "").strip().lower()
-    if normalized_query:
-        clauses.append(
-            "(LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(source_type) LIKE ?)"
-        )
-        match = f"%{normalized_query}%"
-        params.extend([match, match, match, match])
-
-    clauses.append("deleted_at IS NULL")
+    clauses, params = _source_list_clauses(
+        vault_id=vault_id,
+        cluster_id=cluster_id,
+        project_id=project_id,
+        import_root_path=import_root_path,
+        exclude_grouped_projects=exclude_grouped_projects,
+        unclustered=unclustered,
+        states=states,
+        source_types=source_types,
+        q=q,
+    )
     where = f"WHERE {' AND '.join(clauses)}"
     safe_limit = max(1, min(int(limit), 1000))
     safe_offset = max(0, int(offset))
@@ -156,6 +166,9 @@ def list_sources(
 def list_sources_page(
     vault_id: str | None = None,
     cluster_id: str | None = None,
+    project_id: str | None = None,
+    import_root_path: str | None = None,
+    exclude_grouped_projects: bool = False,
     unclustered: bool = False,
     states: str | None = None,
     source_types: str | None = None,
@@ -167,6 +180,9 @@ def list_sources_page(
     clauses, params = _source_list_clauses(
         vault_id=vault_id,
         cluster_id=cluster_id,
+        project_id=project_id,
+        import_root_path=import_root_path,
+        exclude_grouped_projects=exclude_grouped_projects,
         unclustered=unclustered,
         states=states,
         source_types=source_types,
@@ -197,39 +213,25 @@ def list_sources_page(
 def count_sources(
     vault_id: str | None = None,
     cluster_id: str | None = None,
+    project_id: str | None = None,
+    import_root_path: str | None = None,
+    exclude_grouped_projects: bool = False,
     unclustered: bool = False,
     states: str | None = None,
     source_types: str | None = None,
     q: str | None = None,
 ) -> dict:
-    clauses = ["deleted_at IS NULL"]
-    params: list[object] = []
-    if vault_id:
-        clauses.append("vault_id = ?")
-        params.append(vault_id)
-    if cluster_id:
-        clauses.append("cluster_id = ?")
-        params.append(cluster_id)
-    elif unclustered:
-        clauses.append("cluster_id IS NULL")
-    state_values = [item.strip() for item in (states or "").split(",") if item.strip()]
-    if state_values:
-        invalid_states = [item for item in state_values if item not in {"waiting", "processing", "indexed", "failed"}]
-        if invalid_states:
-            raise HTTPException(status_code=400, detail="Invalid source state filter")
-        clauses.append(f"state IN ({','.join('?' for _ in state_values)})")
-        params.extend(state_values)
-    source_type_values = [item.strip() for item in (source_types or "").split(",") if item.strip()]
-    if source_type_values:
-        clauses.append(f"source_type IN ({','.join('?' for _ in source_type_values)})")
-        params.extend(source_type_values)
-    normalized_query = (q or "").strip().lower()
-    if normalized_query:
-        clauses.append(
-            "(LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(source_type) LIKE ?)"
-        )
-        match = f"%{normalized_query}%"
-        params.extend([match, match, match, match])
+    clauses, params = _source_list_clauses(
+        vault_id=vault_id,
+        cluster_id=cluster_id,
+        project_id=project_id,
+        import_root_path=import_root_path,
+        exclude_grouped_projects=exclude_grouped_projects,
+        unclustered=unclustered,
+        states=states,
+        source_types=source_types,
+        q=q,
+    )
     with connect() as conn:
         _validate_source_list_filters(conn, vault_id=vault_id, cluster_id=cluster_id)
         row = conn.execute(
@@ -248,6 +250,7 @@ def source_counts_by_cluster(vault_id: str) -> dict:
             SELECT cluster_id, state, COUNT(*) AS total
             FROM sources
             WHERE vault_id = ? AND deleted_at IS NULL
+              AND (activation_state IS NULL OR activation_state = 'active')
             GROUP BY cluster_id, state
             """,
             (vault_id,),
@@ -269,6 +272,7 @@ def source_counts_by_type(vault_id: str) -> dict:
             SELECT source_type, COUNT(*) AS total
             FROM sources
             WHERE vault_id = ? AND deleted_at IS NULL
+              AND (activation_state IS NULL OR activation_state = 'active')
             GROUP BY source_type
             ORDER BY source_type
             """,
@@ -280,6 +284,42 @@ def source_counts_by_type(vault_id: str) -> dict:
             for row in rows
         ]
     }
+
+
+@router.get("/folders")
+def list_source_folders(vault_id: str, q: str | None = None) -> dict:
+    normalized_query = (q or "").strip().lower()
+    with connect() as conn:
+        _validate_source_list_filters(conn, vault_id=vault_id, cluster_id=None)
+        rows = conn.execute(
+            """
+            SELECT import_root_path, COUNT(*) AS source_count, MAX(updated_at) AS updated_at
+            FROM sources
+            WHERE vault_id = ?
+              AND import_root_path IS NOT NULL
+              AND deleted_at IS NULL
+              AND (activation_state IS NULL OR activation_state = 'active')
+            GROUP BY import_root_path
+            HAVING COUNT(*) >= 20
+            ORDER BY MAX(updated_at) DESC, import_root_path
+            """,
+            (vault_id,),
+        ).fetchall()
+    items = [
+        {
+            "root_path": row["import_root_path"],
+            "name": Path(str(row["import_root_path"])).name or str(row["import_root_path"]),
+            "source_count": int(row["source_count"] or 0),
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+    if normalized_query:
+        items = [
+            item for item in items
+            if normalized_query in item["name"].lower() or normalized_query in item["root_path"].lower()
+        ]
+    return {"items": items}
 
 
 @router.get("/latest-by-cluster")
@@ -296,6 +336,7 @@ def latest_source_by_cluster(vault_id: str) -> dict:
                        ) AS row_number
                 FROM sources
                 WHERE vault_id = ? AND cluster_id IS NOT NULL AND deleted_at IS NULL
+                  AND (activation_state IS NULL OR activation_state = 'active')
             )
             SELECT cluster_id, state, updated_at
             FROM ranked
@@ -594,6 +635,21 @@ def create_source_import_job(payload: SourceImportJobRequest) -> dict:
         unique_paths.append(str(path))
     if not unique_paths:
         raise HTTPException(status_code=400, detail="No unique file paths were provided")
+    folder_roots: list[str] = []
+    for raw_root in payload.folder_roots:
+        root = Path(raw_root)
+        if not root.is_absolute():
+            raise HTTPException(status_code=400, detail="Folder import paths must be absolute")
+        resolved_root = root.resolve()
+        contained = 0
+        for raw_path in unique_paths:
+            try:
+                Path(raw_path).resolve().relative_to(resolved_root)
+                contained += 1
+            except ValueError:
+                continue
+        if contained >= 20:
+            folder_roots.append(str(resolved_root))
 
     with connect() as conn:
         _validate_source_target(conn, payload.vault_id, payload.cluster_id)
@@ -620,6 +676,7 @@ def create_source_import_job(payload: SourceImportJobRequest) -> dict:
                 "cluster_id": payload.cluster_id,
                 "paths": unique_paths,
                 "truncated_at": payload.truncated_at,
+                "folder_roots": folder_roots,
             },
             scope_id=payload.vault_id,
             user_initiated=True,
@@ -1028,6 +1085,8 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
         updates["extracted_text"] = updates["raw_text"]
     if "raw_text" in updates and "summary" not in updates:
         updates["summary"] = summarize_text(updates["raw_text"])
+    if "raw_text" in updates or "extracted_text" in updates:
+        updates["metadata_version"] = 1
     if "tags" in updates:
         updates["tags"] = json.dumps(updates["tags"])
     if not updates:
@@ -1066,6 +1125,7 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
                 "summary",
                 "tags",
                 "cover_image_url",
+                "metadata_version",
                 "updated_at",
             },
         )
@@ -1098,7 +1158,12 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
                     rebuild_reason=f"source_state_change:{source_id}",
                 )
                 conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
-            mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
+            if not (
+                "cluster_id" in updates
+                and existing["cluster_id"] != source["cluster_id"]
+                and prune_empty_auto_cluster(conn, existing["cluster_id"])
+            ):
+                mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
             mark_cluster_needs_update(conn, source["cluster_id"], "Source changed or moved.")
             invalidate_caches_for_source(source_id, conn=conn)
         return source_from_row(row, conn=conn)
@@ -1182,7 +1247,8 @@ def delete_source(source_id: str) -> None:
             scope_id=source_id,
             user_initiated=True,
         )
-        mark_cluster_needs_update(conn, source["cluster_id"], "Source was deleted.")
+        if not prune_empty_auto_cluster(conn, source["cluster_id"]):
+            mark_cluster_needs_update(conn, source["cluster_id"], "Source was deleted.")
         invalidate_caches_for_source(source_id, conn=conn)
 
 
