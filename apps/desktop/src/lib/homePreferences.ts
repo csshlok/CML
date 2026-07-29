@@ -10,6 +10,7 @@ export function homePreferencesStorageKey(profileId?: string) {
 export const HOME_SECTION_IDS = [
   "ask",
   "attention",
+  "suggestedMoves",
   "continue",
   "clusters",
   "quick",
@@ -40,7 +41,7 @@ export type HomePreferences = {
 };
 
 const PRESET_SECTIONS: Record<HomePreset, HomeSectionId[]> = {
-  focused: ["ask", "attention", "continue", "clusters", "quick"],
+  focused: ["ask", "attention", "suggestedMoves", "continue", "clusters", "quick"],
   library: ["recentSources", "inbox", "clusters", "sourceTypes", "quick"],
   activity: ["timeline", "tasks", "recentChats", "quick"],
 };

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   createCluster,
+  decideClusterSuggestion,
   getLatestSourcesByCluster,
   getProjectClusterMembershipSummary,
   listClusterSuggestions,
@@ -12,7 +13,6 @@ import {
   listVaults,
   sourceCountsByCluster,
   updateCluster,
-  updateSource,
   type ClusterSuggestionRecord,
   type VaultRecord,
 } from "@/lib/backend";
@@ -33,8 +33,6 @@ function ClustersList() {
     Map<string, { state: string; updatedAt: string }>
   >(new Map());
   const [suggestions, setSuggestions] = useState<ClusterSuggestionRecord[]>([]);
-  const [dismissedSuggestions, setDismissedSuggestions] = useState<string[]>([]);
-  const [lastDismissedSuggestion, setLastDismissedSuggestion] = useState<ClusterSuggestionRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [mounted, setMounted] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -55,7 +53,6 @@ function ClustersList() {
       const activeVault = vaults[0] ?? null;
       setBackendVault(activeVault);
       if (!activeVault) return;
-      setDismissedSuggestions(readDismissedSuggestions(activeVault.id));
       const [clusterResult, suggestionResult, countResult, projectResult, latestResult] = await Promise.allSettled([
         listClustersPage(activeVault.id, { limit: 100 }),
         listClusterSuggestions(activeVault.id),
@@ -95,16 +92,8 @@ function ClustersList() {
     void loadData();
   }, []);
 
-  useEffect(() => {
-    if (!lastDismissedSuggestion) return;
-    const timeout = window.setTimeout(() => setLastDismissedSuggestion(null), 6000);
-    return () => window.clearTimeout(timeout);
-  }, [lastDismissedSuggestion]);
-
   const clusters = !mounted ? [] : backendClusters;
-  const visibleSuggestions = suggestions.filter(
-    (suggestion) => !dismissedSuggestions.includes(suggestionKey(suggestion)),
-  );
+  const visibleSuggestions = suggestions;
   const sourceCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const row of sourceCountRows) {
@@ -164,7 +153,12 @@ function ClustersList() {
 
   async function acceptSuggestion(suggestion: ClusterSuggestionRecord) {
     try {
-      await updateSource(suggestion.source_id, { cluster_id: suggestion.suggested_cluster_id });
+      await decideClusterSuggestion({
+        source_id: suggestion.source_id,
+        suggested_cluster_id: suggestion.suggested_cluster_id,
+        action: "accepted",
+      });
+      setSuggestions((current) => current.filter((item) => suggestionKey(item) !== suggestionKey(suggestion)));
       setMessage(`Moved "${suggestion.source_title}" to ${suggestion.suggested_cluster_name}.`);
       await loadData();
     } catch (error) {
@@ -191,26 +185,21 @@ function ClustersList() {
     }
   }
 
-  function dismissSuggestion(suggestion: ClusterSuggestionRecord) {
+  async function dismissSuggestion(suggestion: ClusterSuggestionRecord) {
     if (!vault) return;
-    const key = suggestionKey(suggestion);
-    setDismissedSuggestions((current) => {
-      const next = Array.from(new Set([...current, key]));
-      writeDismissedSuggestions(vault.id, next);
-      return next;
-    });
-    setLastDismissedSuggestion(suggestion);
-  }
-
-  function undoDismissSuggestion() {
-    if (!vault || !lastDismissedSuggestion) return;
-    const key = suggestionKey(lastDismissedSuggestion);
-    setDismissedSuggestions((current) => {
-      const next = current.filter((item) => item !== key);
-      writeDismissedSuggestions(vault.id, next);
-      return next;
-    });
-    setLastDismissedSuggestion(null);
+    try {
+      await decideClusterSuggestion({
+        source_id: suggestion.source_id,
+        suggested_cluster_id: suggestion.suggested_cluster_id,
+        action: "dismissed",
+      });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not dismiss this suggestion.");
+      return;
+    }
+    setSuggestions((current) =>
+      current.filter((item) => suggestionKey(item) !== suggestionKey(suggestion)),
+    );
   }
 
   return (
@@ -340,7 +329,7 @@ function ClustersList() {
               <div className="border-b border-border px-4 py-3">
                 <div className="text-sm font-semibold">Suggested moves</div>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Review-only. Accepting a suggestion moves the source.
+                  Review each suggestion before moving the source.
                 </p>
               </div>
               <div className="divide-y divide-border">
@@ -363,7 +352,7 @@ function ClustersList() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => dismissSuggestion(suggestion)}
+                        onClick={() => void dismissSuggestion(suggestion)}
                       >
                         <X className="h-4 w-4" /> Dismiss
                       </Button>
@@ -376,17 +365,6 @@ function ClustersList() {
         </div>
 
       </div>
-      {lastDismissedSuggestion ? (
-        <div
-          className="fixed bottom-10 right-4 z-50 flex max-w-sm items-center gap-3 rounded-md bg-[var(--text-primary)] px-4 py-3 text-sm text-[var(--bg-card)]"
-          role="status"
-        >
-          <span className="min-w-0 flex-1 truncate">Suggestion dismissed</span>
-          <button type="button" className="font-medium underline underline-offset-2" onClick={undoDismissSuggestion}>
-            Undo
-          </button>
-        </div>
-      ) : null}
       {renamingCluster ? (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4">
           <div
@@ -436,23 +414,6 @@ function ClusterDocument({ tint }: { tint: ClusterTint }) {
 
 function suggestionKey(suggestion: ClusterSuggestionRecord) {
   return `${suggestion.source_id}:${suggestion.suggested_cluster_id}`;
-}
-
-function dismissedSuggestionStorageKey(vaultId: string) {
-  return `vault.clusters.dismissedSuggestions.${vaultId}`;
-}
-
-function readDismissedSuggestions(vaultId: string) {
-  try {
-    const value: unknown = JSON.parse(window.localStorage.getItem(dismissedSuggestionStorageKey(vaultId)) ?? "[]");
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeDismissedSuggestions(vaultId: string, values: string[]) {
-  window.localStorage.setItem(dismissedSuggestionStorageKey(vaultId), JSON.stringify(values));
 }
 
 function nextTint(index: number) {

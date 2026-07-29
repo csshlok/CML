@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import {
   ArrowDown,
   ArrowUp,
+  Check,
   ChevronRight,
   CircleAlert,
   Clock3,
@@ -22,6 +23,7 @@ import {
   Send,
   SlidersHorizontal,
   Sparkles,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -42,7 +44,9 @@ import {
 import {
   countSources,
   createChatSession,
+  decideClusterSuggestion,
   getJobStatus,
+  listClusterSuggestions,
   listActivity,
   listChatSessions,
   listClusters,
@@ -54,6 +58,7 @@ import {
   type ActivityRecord,
   type ChatSessionRecord,
   type JobQueueStatus,
+  type ClusterSuggestionRecord,
   type ProjectRecord,
   type SourceTypeCountRecord,
   type VaultRecord,
@@ -99,6 +104,7 @@ const sortOptions: Array<{ value: HomeSort; label: string }> = [
 const sectionLabels: Record<HomeSectionId, string> = {
   ask: "Ask Vault",
   attention: "Needs attention",
+  suggestedMoves: "Suggested moves",
   continue: "Continue working",
   clusters: "Active clusters",
   quick: "Quick actions",
@@ -129,6 +135,7 @@ function HomeView() {
   const [clusterCounts, setClusterCounts] = useState<
     Map<string, { total: number; indexed: number }>
   >(new Map());
+  const [suggestedMoves, setSuggestedMoves] = useState<ClusterSuggestionRecord[]>([]);
   const [loadError, setLoadError] = useState(false);
   const [query, setQuery] = useState("");
   const [scopeClusterId, setScopeClusterId] = useState("all");
@@ -175,6 +182,7 @@ function HomeView() {
         listChatSessions(activeVault.id, { limit: 5 }),
         listProjects(activeVault.id, { limit: 5 }),
         getJobStatus(),
+        listClusterSuggestions(activeVault.id, 8),
       ]);
       const [
         unsortedResult,
@@ -188,6 +196,7 @@ function HomeView() {
         chatResult,
         projectResult,
         jobsResult,
+        suggestionsResult,
       ] = results;
       if (unsortedResult.status === "fulfilled") {
         setUnsortedSources(unsortedResult.value.map(sourceFromRecord));
@@ -214,6 +223,7 @@ function HomeView() {
       if (chatResult.status === "fulfilled") setChatSessions(chatResult.value);
       if (projectResult.status === "fulfilled") setProjects(projectResult.value);
       if (jobsResult.status === "fulfilled") setJobs(jobsResult.value);
+      if (suggestionsResult.status === "fulfilled") setSuggestedMoves(suggestionsResult.value);
       setLoadError(results.some((result) => result.status === "rejected"));
     } catch {
       setLoadError(true);
@@ -311,6 +321,15 @@ function HomeView() {
         return attentionItems.length ? (
           <AttentionSection key={sectionId} items={attentionItems} dense={dense} />
         ) : null;
+      case "suggestedMoves":
+        return (
+          <SuggestedMovesSection
+            key={sectionId}
+            suggestions={suggestedMoves}
+            dense={dense}
+            onChanged={() => void loadOverview()}
+          />
+        );
       case "continue":
         return (
           <ContinueSection
@@ -880,6 +899,75 @@ function ActiveClustersSection({
       ) : (
         <EmptyRow>Create a cluster when several sources belong together.</EmptyRow>
       )}
+    </ProductSection>
+  );
+}
+
+function SuggestedMovesSection({
+  suggestions,
+  dense,
+  onChanged,
+}: {
+  suggestions: ClusterSuggestionRecord[];
+  dense: boolean;
+  onChanged: () => void;
+}) {
+  if (suggestions.length === 0) return null;
+
+  async function decide(
+    suggestion: ClusterSuggestionRecord,
+    action: "accepted" | "dismissed",
+  ) {
+    await decideClusterSuggestion({
+      source_id: suggestion.source_id,
+      suggested_cluster_id: suggestion.suggested_cluster_id,
+      action,
+    });
+    onChanged();
+  }
+
+  return (
+    <ProductSection>
+      <ProductSectionHeader
+        title="Suggested moves"
+        description={`${suggestions.length} ${suggestions.length === 1 ? "source may fit" : "sources may fit"} better elsewhere.`}
+        action={<Link to="/clusters" className="text-sm text-primary hover:underline">Review all</Link>}
+      />
+      <div className="divide-y divide-border">
+        {suggestions.slice(0, 3).map((suggestion) => (
+          <div
+            key={`${suggestion.source_id}:${suggestion.suggested_cluster_id}`}
+            className={cn(
+              "flex flex-col gap-3 px-5 sm:flex-row sm:items-center",
+              dense ? "py-2" : "py-3",
+            )}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium">{suggestion.source_title}</div>
+              <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                Move to {suggestion.suggested_cluster_name}
+              </div>
+            </div>
+            <div className="flex shrink-0 gap-1">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void decide(suggestion, "accepted")}
+              >
+                <Check className="h-4 w-4" /> Move
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label={`Dismiss move for ${suggestion.source_title}`}
+                onClick={() => void decide(suggestion, "dismissed")}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
     </ProductSection>
   );
 }

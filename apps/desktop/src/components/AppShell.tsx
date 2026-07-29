@@ -23,6 +23,8 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKe
 import {
   getJobStatus,
   listChatSessions,
+  listRecentChatGenerations,
+  listClusterSuggestions,
   listClusters,
   listVaults,
   getUnlockStatus,
@@ -30,6 +32,7 @@ import {
   useBackendHealth,
   type ClusterRecord,
   type JobQueueStatus,
+  type ClusterSuggestionRecord,
   type VaultRecord,
   type UnlockStatusRead,
 } from "@/lib/backend";
@@ -46,6 +49,7 @@ import {
   subscribeDesktopProfile,
   type DesktopProfile,
 } from "@/lib/profileState";
+import { notify } from "@/components/product/Notifications";
 
 type NavItem = {
   to:
@@ -90,12 +94,14 @@ export function AppShell() {
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
   const [recentClusters, setRecentClusters] = useState<ClusterRecord[]>([]);
   const [savedChats, setSavedChats] = useState<ChatSessionRecord[]>([]);
+  const [suggestedMoves, setSuggestedMoves] = useState<ClusterSuggestionRecord[]>([]);
   const [unlockStatus, setUnlockStatus] = useState<UnlockStatusRead | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tour, setTour] = useState<DesktopSetupState["tour"] | null>(null);
   const [profile, setProfile] = useState<DesktopProfile>(() => normalizeDesktopProfile(null));
   const avatarSource = useLocalImage(profile.avatar_path);
   const contentRef = useRef<HTMLElement>(null);
+  const recentChatGenerationsRef = useRef<{ vaultId: string; ids: Set<string> } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -173,21 +179,83 @@ export function AppShell() {
       if (!activeVault) {
         setRecentClusters([]);
         setSavedChats([]);
+        setSuggestedMoves([]);
         return;
       }
-      const [rows, chats] = await Promise.allSettled([
+      const [rows, chats, suggestions] = await Promise.allSettled([
         listClusters(activeVault.id, { limit: 3 }),
         listChatSessions(activeVault.id, { saved: true, limit: 3 }),
+        listClusterSuggestions(activeVault.id, 8),
       ]);
       if (rows.status === "fulfilled") setRecentClusters(rows.value);
       if (chats.status === "fulfilled") setSavedChats(chats.value);
+      if (suggestions.status === "fulfilled") {
+        setSuggestedMoves(suggestions.value);
+        const storageKey = `vault.clusterSuggestions.notified.${activeVault.id}`;
+        const prior = new Set(readStoredStrings(storageKey));
+        const keys = suggestions.value.map(
+          (item) => `${item.source_id}:${item.suggested_cluster_id}`,
+        );
+        const unseen = keys.filter((key) => !prior.has(key));
+        if (unseen.length > 0) {
+          notify({
+            title: `${unseen.length} new suggested ${unseen.length === 1 ? "move" : "moves"}`,
+            description: "Review where these sources fit.",
+            actionLabel: "Review",
+            onAction: () => navigate({ to: "/clusters" }),
+          });
+        }
+        window.localStorage.setItem(storageKey, JSON.stringify(keys.slice(0, 100)));
+      }
     } catch {
       // Keep the last successful sidebar data during a transient refresh failure.
     }
-  }, []);
+  }, [navigate]);
 
   useVisiblePolling(refreshJobs, 10_000, backend.status === "online");
   useVisiblePolling(refreshLibrary, 30_000, backend.status === "online");
+  useVisiblePolling(
+    async () => {
+      if (!vault) {
+        recentChatGenerationsRef.current = null;
+        return;
+      }
+      try {
+        const result = await listRecentChatGenerations(vault.id);
+        const previous = recentChatGenerationsRef.current;
+        const nextIds = new Set(result.items.map((item) => item.id));
+        if (!previous || previous.vaultId !== vault.id) {
+          recentChatGenerationsRef.current = { vaultId: vault.id, ids: nextIds };
+          return;
+        }
+        for (const generation of result.items) {
+          if (
+            previous.ids.has(generation.id) ||
+            generation.state !== "completed" ||
+            pathname === `/chat/${generation.session_id}`
+          ) {
+            continue;
+          }
+          notify({
+            title: "Answer ready",
+            description: generation.title,
+            tone: "success",
+            actionLabel: "Open chat",
+            onAction: () =>
+              navigate({
+                to: "/chat/$chatId",
+                params: { chatId: generation.session_id },
+              }),
+          });
+        }
+        recentChatGenerationsRef.current = { vaultId: vault.id, ids: nextIds };
+      } catch {
+        // A transient status failure must not create a false completion notice.
+      }
+    },
+    3_000,
+    backend.status === "online" && Boolean(vault),
+  );
 
   useEffect(() => {
     const onLockState = (event: Event) => {
@@ -274,6 +342,10 @@ export function AppShell() {
           {item.to === "/tasks" && taskCount > 0 ? (
             <span className="rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)]">
               {taskCount}
+            </span>
+          ) : item.to === "/clusters" && suggestedMoves.length > 0 ? (
+            <span className="rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)]">
+              {suggestedMoves.length}
             </span>
           ) : null}
         </Link>
@@ -430,6 +502,17 @@ export function AppShell() {
       ) : null}
     </div>
   );
+}
+
+function readStoredStrings(key: string): string[] {
+  try {
+    const value: unknown = JSON.parse(window.localStorage.getItem(key) ?? "[]");
+    return Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 const tourSteps = [

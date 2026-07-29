@@ -39,6 +39,7 @@ test("Home presents a working overview instead of repeated dashboard actions", (
   assert.match(homeSource, /\sCustomize\s*<\/Button>/);
   assert.match(homeSource, /Ask Vault/);
   assert.match(homeSource, /Needs attention/);
+  assert.match(homeSource, /Suggested moves/);
   assert.match(homeSource, /Continue working/);
   assert.match(homeSource, /Active clusters/);
   assert.doesNotMatch(homeSource, /Search filters|Suggested clusters|Recent memories/);
@@ -85,7 +86,7 @@ test("invalid saved Home preferences fall back safely without losing valid visib
 
   assert.equal(restored.density, "comfortable");
   assert.equal(new Set(restored.sectionOrder).size, restored.sectionOrder.length);
-  assert.equal(restored.sectionOrder.length, 11);
+  assert.equal(restored.sectionOrder.length, DEFAULT_HOME_PREFERENCES.sectionOrder.length);
   assert.deepEqual(restored.hiddenSections, ["attention"]);
 });
 
