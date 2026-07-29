@@ -47,10 +47,13 @@ def resolve_benchmark_evidence(model_row: dict[str, Any]) -> dict[str, Any]:
             return layered_exact
         return {
             "score": spec.benchmark.score,
-            "source": spec.benchmark.source,
-            "confidence": spec.benchmark.confidence,
+            "source": "catalog_estimate",
+            "confidence": min(spec.benchmark.confidence, 0.5),
             "updated_at": spec.benchmark.updated_at,
-            "detail": f"Direct approved-catalog evidence for {spec.name}.",
+            "detail": (
+                f"Catalog estimate for {spec.name}, combined with detected memory, "
+                "graphics capacity, model size, and quantization."
+            ),
             "bundle_version": str(bundle.get("version") or ""),
         }
 

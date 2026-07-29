@@ -173,6 +173,24 @@ class ModelRecommenderTests(unittest.TestCase):
         self.assertTrue(any("base_model" in reason for reason in reasons))
         self.assertTrue(any("cpu-first fallback" in reason.lower() for reason in reasons))
 
+    def test_catalog_fallback_is_labeled_as_an_estimate_not_a_measurement(self) -> None:
+        from backend.app.core.model_recommender.benchmark_evidence import resolve_benchmark_evidence
+
+        evidence = resolve_benchmark_evidence(
+            {
+                "id": "qwen3-4b-q4_k_m",
+                "name": "Qwen3 4B Q4_K_M",
+                "family": "qwen",
+                "source_kind": "default_choice",
+                "local_path": "",
+                "compatibility": {},
+            }
+        )
+
+        self.assertEqual(evidence["source"], "catalog_estimate")
+        self.assertLessEqual(float(evidence["confidence"]), 0.5)
+        self.assertIn("detected memory", evidence["detail"].lower())
+
     def test_benchmark_evidence_demotes_frozen_only_exact_match_when_newer_current_lineage_exists(self) -> None:
         from backend.app.core.model_recommender.benchmark_evidence import resolve_benchmark_evidence
         from backend.app.core.model_recommender.benchmark_store import invalidate_internal_benchmark_bundle_cache

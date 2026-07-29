@@ -49,7 +49,13 @@ def build_hardware_profile() -> dict[str, Any]:
         "hardware_tier": str(hardware.get("hardware_tier") or "unknown"),
         "training_supported": bool(hardware.get("training_supported")),
         "runtime_provider": str(runtime.get("provider") or "none"),
-        "runtime_backend": _runtime_backend_label(str(runtime.get("base_url") or ""), str(runtime.get("provider") or "")),
+        "runtime_backend": (
+            str(runtime.get("runtime_backend") or "")
+            or _runtime_backend_label(
+                str(runtime.get("base_url") or ""),
+                str(runtime.get("provider") or ""),
+            )
+        ),
         "runtime_base_url": str(runtime.get("base_url") or ""),
         "runtime_detected": bool(runtime.get("available")),
         "runtime_detail": str(runtime.get("detail") or ""),

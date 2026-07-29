@@ -11,6 +11,7 @@ _BENCHMARK_SOURCE_WEIGHTS = {
     "variant": 0.50,
     "line_interp": 0.40,
     "self_reported": 0.30,
+    "catalog_estimate": 0.36,
     "none": 0.0,
 }
 

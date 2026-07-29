@@ -5,7 +5,7 @@ from typing import Any
 
 def build_chat_reasons(choice: dict[str, Any], fit: dict[str, Any], speed: dict[str, Any], evidence: dict[str, Any]) -> list[str]:
     reasons = [
-        f"Benchmark evidence: {evidence.get('source') or 'none'}",
+        f"Evidence: {evidence.get('source') or 'hardware estimate'}",
         f"Runtime fit: {fit.get('fit_type')}",
         f"Estimated chat speed: {speed.get('estimated_tok_per_sec')} tok/s",
     ]
