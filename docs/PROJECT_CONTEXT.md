@@ -1,6 +1,6 @@
 # Project Context
 
-Last updated: 2026-07-28
+Last updated: 2026-07-29
 
 ## Purpose
 
@@ -24,6 +24,74 @@ Vault is in **pre-release stabilization and productionization**.
 The scoped RAG migration, temporal memory foundation, Odin project workflow, bounded context pipeline, and primary desktop surfaces are implemented. The project is no longer deciding its core architecture. Current work is about proving release reliability, productionizing the strongest retrieval improvements, improving measured quality without benchmark-specific behavior, distilling the UI around real user journeys, and finishing clean Windows packaging.
 
 The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
+
+## July 29 Workflow Reliability And Odin Setup
+
+The latest source closes the reported workflow gaps across suggested organization,
+chat, ingestion, source metadata, operational details, model selection, and Odin
+setup. Suggested moves are now durable backend decisions, appear in the default
+Focused Home layout, produce a Clusters badge and a small notification, and move the
+source only after backend confirmation. Source and cluster metadata are generated
+during ingestion, while automatic cluster names can improve without overwriting
+names chosen by the user.
+
+Chat attachments are stored and displayed as file attachments instead of prompt
+text. A generation continues after the user leaves its page, appears as running in
+conversation history, and produces an Answer ready notification when it finishes.
+Reopening the chat reconnects to durable generation state. Successful completion
+also synchronizes temporal memory immediately, closing the gap behind an empty
+Memory history panel.
+
+Sources now expose type and status filters. Import progress and failed filenames
+remain visible outside Sources, and Tasks lists per-file failures. Task, Timeline,
+and source detail panels consume no default width and open only after selection.
+Folder sync replaces the nonfunctional Local imports presentation and can create a
+watched-folder import through the native desktop picker.
+
+Model rows are hidden until requested. Compatibility copy reflects whether a model
+can actually be used for chat, and unmeasured recommendations are labeled as
+catalog estimates rather than presented as benchmark evidence. Recommendation
+ranking remains based on the detected hardware, model requirements, approved
+catalog data, and measured results when available.
+
+Odin now supports two Settings installation paths. The recommended Vault-managed
+launcher chooses a writable location from local application data, roaming
+application data, Electron user data, or the user profile instead of depending on
+one unsupported path lookup. The optional `uv` path installs the packaged backend
+as an isolated tool. Pairing starts a detached visible PowerShell process so the
+desktop does not freeze while waiting for approval. Users can also select and add a
+local repository through Vault before using the CLI.
+
+Validation passed desktop TypeScript and 128 Electron tests, the production
+renderer build, Python compilation, renderer security, interactive-control audit,
+diff hygiene, and 837 backend tests. Two environment-dependent backend tests were
+skipped. One existing OCR packaging contract remains outside that count because
+`backend/bin/ocr/README.md` is deleted in the current working tree. No Windows
+package was rebuilt and no release claim is attached to this source-only result.
+
+## July 29 Local Model Acceleration
+
+The packaged local-model runtime was CPU-only and launched without explicit thread
+tuning. On the current i7-12700H and RTX 3060 Laptop system, Qwen3-4B Q4_K_M
+generated about 5 tokens per second. Windows packaging now stages pinned,
+checksum-verified CPU and CUDA 12.4 variants of llama.cpp. Vault selects CUDA on a
+supported NVIDIA GPU, uses automatic layer fitting, and falls back to the CPU
+runtime when GPU startup is unavailable.
+
+Generation and batch thread counts now follow physical and logical CPU capacity,
+with bounded overrides, while context remains bounded at a 4096-token default.
+Runtime replacement also removes only exact stale Vault processes that match the
+packaged executable, GGUF model, and loopback host; this prevents duplicate model
+servers without terminating unrelated llama.cpp sessions. Packaging cleanup uses
+the same path ownership principle before retrying removal of locked output.
+
+A live staged-runtime test on the affected model reached 38.75 generated tokens per
+second and 76.03 prompt tokens per second while using 3583 MiB of VRAM. Focused
+runtime tests, all selected backend tests, Electron behavior tests, TypeScript,
+renderer production build, renderer security, package layout security, and script
+syntax checks pass. The Windows package remains intentionally unbuilt pending the
+owner-managed rebuild; the CUDA payload adds roughly 1.2 GiB uncompressed before
+installer compression.
 
 ## July 28 0.1.11 Release Candidate
 

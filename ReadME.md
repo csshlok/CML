@@ -101,13 +101,34 @@ Files can be selected normally or dropped into the desktop app from File Explore
 
 Odin is Vault's project-context layer. It registers a repository as a first-class project, indexes its files, extracts deterministic structure, connects it to retrieval, and exposes the result to Vault and approved outside tools.
 
-Install Odin command-line access from Vault Settings, approve the computer, and then run it from a project folder:
+### Install the Odin command
+
+Vault offers two installation methods in **Settings > Odin command**:
+
+- **Install Odin — recommended:** Vault creates and maintains the Windows launcher in your local application-data folder and adds that folder to your user `PATH`. Use **Repair Odin** from the same screen if the launcher is moved or damaged.
+- **Install with uv:** Vault installs the packaged Odin command as an isolated Python tool with `uv`. This is useful when you already manage command-line tools with `uv`; `uv` must be installed and available on `PATH`.
+
+Both methods install the same command and connect to the currently running Vault desktop app. After installation, open a new PowerShell window and verify it:
+
+```powershell
+odin --help
+```
+
+Select **Pair Odin** in Settings. Vault opens PowerShell for the pairing request; approve the waiting computer in **Odin command-line access**. You can then verify the protected connection:
+
+```powershell
+odin auth status
+```
+
+Pairing is separate from installation. Reinstalling Odin does not grant access to a library, and connected computers can be rotated or revoked from Settings.
+
+When running Vault from a source checkout, `.\odin.ps1` provides the same commands without installing a global launcher. Otherwise, run Odin from a project folder:
 
 ```powershell
 odin project add . --name "My Project" --scope context
 ```
 
-When running Vault from a source checkout, `.\odin.ps1` provides the same commands. The default `context` scope includes source code plus useful repository documentation and configuration. Use `--scope code` when you want a source-focused index, or change the persisted choice during a later sync:
+The default `context` scope includes source code plus useful repository documentation and configuration. Use `--scope code` when you want a source-focused index, or change the persisted choice during a later sync:
 
 ```powershell
 odin project add . --name "My Project" --scope code

@@ -266,6 +266,10 @@ The build is self-contained and checkout-relative:
   (`.tmp` or `apps/desktop/packaging`) instead of assuming `C:` has space.
 - Tesseract, qpdf, Ghostscript, llama.cpp, Playwright Chromium, and the packaged
   Python runtime are detected, downloaded, or staged automatically.
+- llama.cpp is staged as a pinned CPU runtime plus a pinned CUDA 12.4 runtime.
+  Supported NVIDIA systems use CUDA first and retain CPU fallback. The CUDA
+  libraries add roughly 1.2 GiB to `win-unpacked` before installer compression, so
+  allow additional download, disk, and build time on the first rebuild.
 - Development signing is disabled. `-Release` controls clean caches and maximum
   compression; it does not provide a production certificate.
 

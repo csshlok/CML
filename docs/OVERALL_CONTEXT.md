@@ -1,8 +1,145 @@
 # Overall Context
 
-Last updated: 2026-07-28
+Last updated: 2026-07-29
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
+
+## July 29 Cross-Workflow Reliability And Odin Installation
+
+This pass addressed a connected set of discoverability, durability, and truthful
+state problems rather than treating each screenshot as an isolated UI defect.
+
+Suggested cluster moves now have a durable decision record keyed to the source and
+suggested destination. An accepted suggestion updates the source's cluster in the
+backend before the interface removes the row; a dismissed suggestion remains
+suppressed until the underlying source changes. Suggestions appear in the default
+Focused Home layout, the Clusters navigation item shows their count, and unseen
+suggestions create a small bottom-of-frame notification. Automatic cluster identity
+now records whether its name came from Vault or the user, allowing ingestion to
+improve weak automatic names and summaries without replacing explicit user edits.
+
+Chat generation state is durable across navigation. Leaving a chat no longer aborts
+its request, conversation history marks sessions with active generations, and a
+global poll reports newly completed answers when the user is elsewhere. Reopening
+an active chat reconnects to its generation state, while a prematurely closed
+response stream checks for the durable saved answer before showing an interruption.
+Attachments are hydrated from `chat_attachments` and rendered as decoded filename
+chips; legacy `Attachments:` prompt lines remain readable without being displayed
+as message copy. Successful generation now synchronizes chat temporal facts
+immediately, so Settings Memory history advances after completed conversations
+instead of depending on startup or backfill.
+
+Ingestion visibility is shared across routes. Sources includes type and status
+filters, the floating import surface retains all failed filenames and reasons, and
+Tasks exposes the same per-file result from the durable job payload. Import notices
+remain dismissible without cancelling work and preserve pause, resume, and
+confirmed stop behavior. Tasks gained an explicit refresh action. Task, Timeline,
+and source details remain closed until a row is selected and can be closed again.
+Source list responses now decrypt available summaries, and ingestion-generated
+summaries feed source descriptions, previews, cluster profiles, representative
+summaries, and automatic cluster names.
+
+Settings now presents temporal memory as direct information under its heading and
+removes the redundant diagnostic box. The old Local imports surface was a reader
+for integration-import rows but had no creation path, so normal users could not
+activate it. It is now Folder sync: Add folder uses the native picker, creates the
+integration import, and starts reconciliation. Model management similarly uses
+progressive disclosure. The full list stays hidden until requested, compatibility
+language matches actual chat eligibility, and recommendation evidence distinguishes
+measurements, catalog estimates, metadata, and unavailable evidence. Catalog
+fallbacks carry bounded confidence and a lower score than direct measurements.
+
+The Odin installer previously assumed Electron could always resolve
+`app.getPath("localAppData")`, which is not a supported Electron path name and caused
+installation to fail before the launcher could be written. The Vault-managed
+installer now resolves a writable Odin bin directory from Windows local application
+data, application data, Electron user data, or the user profile, creates the
+launcher atomically, updates the user `PATH`, and verifies `odin --help`. Pairing
+uses a detached visible PowerShell process instead of a blocking command-shell
+handoff, so Settings remains responsive while the user approves access.
+
+Settings also exposes **Install with uv** for users who manage Python command-line
+tools with Astral uv. Vault runs `uv tool install` against the packaged backend,
+keeps dependencies isolated, locates the resulting tool bin, and verifies the Odin
+command before reporting success. Installation and authorization remain separate:
+either launcher must still complete `odin auth pair`, and approved clients remain
+rotatable or revocable. The Projects settings surface can select a repository on
+the current computer and register it through Vault; local project registration,
+snapshot activation, synchronization, scope changes, failure isolation, and
+removal are covered by the Odin backend suite.
+
+Validation evidence:
+
+| Gate | Result |
+| --- | --- |
+| Desktop TypeScript and behavior | Passed; 128/128 Electron tests |
+| Backend | Passed; 837 tests, two environment-dependent skips |
+| Focused chat, cluster, recommendation, and Odin regressions | Passed |
+| Production renderer | Built successfully |
+| Python compilation | Passed |
+| Renderer HTML safety | Passed |
+| Interactive-control audit | Passed across 43 TSX files |
+| Diff hygiene | Passed; line-ending notices only |
+| Windows package rebuild | Not run by request |
+
+The full backend collection has one additional existing packaging-contract failure:
+`backend/bin/ocr/README.md` is deleted in the current dirty worktree. That unrelated
+deletion was preserved rather than silently restored, and its single contract test
+was deselected for the clean implementation validation.
+
+## July 29 Qwen Runtime Throughput Repair
+
+The approximately 5 token/second Qwen3-4B result was reproduced as an architectural
+packaging problem rather than a model defect. The release script staged only
+`llama-b9374-bin-win-cpu-x64.zip`, and the managed supervisor supplied neither a
+GPU-offload policy nor explicit generation and batch thread counts. Repeated starts
+had also left CPU llama-server processes alive after their parent backend exited,
+increasing RAM and CPU pressure.
+
+The Windows package contract now contains two independently pinned and verified
+llama.cpp b9374 runtimes:
+
+- CPU: `llama-b9374-bin-win-cpu-x64.zip`
+- NVIDIA: `llama-b9374-bin-win-cuda-12.4-x64.zip` plus its matching CUDA runtime
+  archive
+
+The CPU executable remains at `llm-runtime/llama-server.exe` for compatibility.
+The CUDA executable and its CUBLAS/CUDART dependencies live under
+`llm-runtime/cuda/`. Electron supplies both paths to the backend. On a dedicated
+NVIDIA GPU with at least 3 GiB usable VRAM, the supervisor attempts CUDA first with
+automatic GPU-layer fitting and then attempts CPU if startup or generation probing
+fails. CPU-only and unsupported systems continue to use the existing executable.
+The runtime records the selected backend, failed attempts, and stale-process cleanup
+result for diagnostics.
+
+Process cleanup deliberately fails closed. A process is eligible only when its
+normalized executable path is one of Vault's exact staged runtimes, its `--model`
+value is the selected or previously selected GGUF path, and its `--host` value is
+loopback. Surviving processes cause activation to stop with a clear error. Windows
+package output cleanup similarly stops only executables whose resolved paths are
+inside the explicit output directory, then retries locked-directory removal.
+
+Live validation used the staged CUDA runtime and the affected
+Qwen3-4B-Q4_K_M model on an i7-12700H and RTX 3060 Laptop GPU. With a 4096-token
+context, 14 generation threads, 20 batch threads, and automatic offload, llama.cpp
+reported 76.03 prompt tokens/second and 38.75 generated tokens/second for 25 output
+tokens, using 3583 MiB VRAM. This is about 7.7 times the observed packaged
+throughput. The benchmark server was stopped after the measurement.
+
+Validation passed:
+
+- 9 focused managed-runtime tests, including CUDA preference, CPU fallback,
+  command tuning, exact orphan matching, and fail-closed survivors;
+- 416 selected backend tests and the focused model-recommender suite;
+- all Electron behavior tests, desktop TypeScript, and production renderer build;
+- renderer HTML safety, interactive-control, and package-layout security audits;
+- PowerShell parse checks, Python compile checks, and diff hygiene.
+
+No Windows package was built. The next owner-run build must repeat clean-machine
+layout, packaged backend/runtime, full-vault, app-launch, installer, and uninstall
+checks. The self-contained CUDA libraries add roughly 1.2 GiB to the unpacked
+payload before compression, so release storage and download-size review remains a
+shipping gate.
 
 ## July 28 0.1.11 Integration And Release Hardening
 
