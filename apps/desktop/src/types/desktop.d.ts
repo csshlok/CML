@@ -116,6 +116,8 @@ declare global {
         needs_repair: boolean;
         on_current_path: boolean;
         expected_checksum: string;
+        install_method?: "vault" | "uv";
+        path_error?: string | null;
       }>;
       installOdinLauncher: () => Promise<{
         version: number;
@@ -123,6 +125,8 @@ declare global {
         installed: boolean;
         needs_repair: boolean;
         available_in_new_shell: boolean;
+        path_registered?: boolean;
+        path_error?: string | null;
         help_ok: boolean;
       }>;
       installOdinWithUv: () => Promise<{
@@ -131,6 +135,9 @@ declare global {
         installed: boolean;
         needs_repair: boolean;
         install_method: "uv";
+        available_in_new_shell?: boolean;
+        path_registered?: boolean;
+        path_error?: string | null;
         help_ok: boolean;
       }>;
       startOdinPairing: () => Promise<{ started: boolean }>;

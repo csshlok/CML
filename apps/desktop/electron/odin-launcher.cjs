@@ -67,7 +67,7 @@ function resolveOdinBinDir({ localAppData, appData, userData, homeDir }) {
 
 function powershellPathScript() {
   return [
-    "$target = [IO.Path]::GetFullPath($args[0])",
+    "$target = [IO.Path]::GetFullPath($env:CML_ODIN_BIN)",
     "$current = [Environment]::GetEnvironmentVariable('Path', 'User')",
     "$parts = @($current -split ';' | Where-Object {",
     "  if (-not $_) { return $false }",
@@ -89,8 +89,16 @@ function registerUserPath(binDir, runner = childProcess.spawnSync) {
   }
   const result = runner(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", powershellPathScript(), path.resolve(binDir)],
-    { encoding: "utf8", windowsHide: true, timeout: 15_000 },
+    ["-NoProfile", "-NonInteractive", "-Command", powershellPathScript()],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        CML_ODIN_BIN: path.resolve(binDir),
+      },
+    },
   );
   if (result.error || result.status !== 0) {
     throw new Error("Odin was installed, but Windows could not add it to your user PATH.");
@@ -128,6 +136,14 @@ async function getLauncherStatus({
     expected_checksum: launcherChecksum(expected),
     install_method: "vault",
   };
+}
+
+function addToCurrentProcessPath(binDir) {
+  const resolvedBin = path.resolve(binDir);
+  if (pathContains(process.env.PATH, resolvedBin)) return;
+  process.env.PATH = process.env.PATH
+    ? `${resolvedBin}${path.delimiter}${process.env.PATH}`
+    : resolvedBin;
 }
 
 async function getUvLauncherStatus(runner = null) {
@@ -196,25 +212,39 @@ async function installLauncher({ binDir, pythonPath, resourcesRoot, registerPath
   const temporary = `${launcherPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   await fs.writeFile(temporary, contents, { encoding: "utf8", flag: "wx" });
   await fs.rename(temporary, launcherPath);
-  registerPath(resolvedBin);
+  let pathRegistration = { changed: false, supported: process.platform === "win32" };
+  let pathError = "";
+  try {
+    pathRegistration = registerPath(resolvedBin);
+  } catch (error) {
+    pathError = error instanceof Error ? error.message : "Windows could not update your user PATH.";
+  }
+  const pathAvailable = !pathError && pathRegistration.supported !== false;
+  if (pathAvailable) addToCurrentProcessPath(resolvedBin);
   return {
     version: LAUNCHER_VERSION,
     launcher_path: launcherPath,
     installed: true,
     needs_repair: false,
-    on_current_path: pathContains(process.env.PATH, resolvedBin),
-    available_in_new_shell: true,
+    on_current_path: pathAvailable,
+    available_in_new_shell: pathAvailable,
+    path_registered: pathAvailable,
+    path_error: pathError || null,
     checksum: launcherChecksum(contents),
     install_method: "vault",
   };
 }
 
-async function installWithUv({ resourcesRoot, runner = childProcess.spawnSync }) {
+async function installWithUv({
+  resourcesRoot,
+  runner = childProcess.spawnSync,
+  registerPath = registerUserPath,
+}) {
   const backendRoot = path.join(path.resolve(resourcesRoot), "backend");
   await fs.access(path.join(backendRoot, "pyproject.toml"));
   const result = runner(
     "uv",
-    ["tool", "install", "--force", "--no-deps", "--with", "psutil", backendRoot],
+    ["tool", "install", "--force", "--with", "psutil", backendRoot],
     {
       encoding: "utf8",
       windowsHide: true,
@@ -233,7 +263,26 @@ async function installWithUv({ resourcesRoot, runner = childProcess.spawnSync })
   if (!status.installed) {
     throw new Error("uv finished, but the Odin command was not found.");
   }
-  return status;
+  const binDir = path.dirname(status.launcher_path);
+  let pathRegistration = { changed: false, supported: process.platform === "win32" };
+  let pathError = "";
+  if (!status.on_current_path) {
+    try {
+      pathRegistration = registerPath(binDir);
+    } catch (error) {
+      pathError = error instanceof Error ? error.message : "Windows could not update your user PATH.";
+    }
+  }
+  const pathAvailable =
+    status.on_current_path || (!pathError && pathRegistration.supported !== false);
+  if (pathAvailable) addToCurrentProcessPath(binDir);
+  return {
+    ...status,
+    on_current_path: pathAvailable,
+    available_in_new_shell: pathAvailable,
+    path_registered: pathAvailable,
+    path_error: pathError || null,
+  };
 }
 
 function runLauncher(launcherPath, args, {

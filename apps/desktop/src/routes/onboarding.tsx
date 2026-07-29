@@ -41,6 +41,7 @@ import {
   type EmbeddingRuntimeStatus,
   type DiskPreflightResponse,
   type DiscoveredInstalledModelRecord,
+  type InstalledModelDiscoveryRecord,
   type LocalModelRecord,
   type ModelCompatibilityRecord,
   type ModelRecommendationsRecord,
@@ -55,6 +56,13 @@ import { useVisiblePolling } from "@/lib/useVisiblePolling";
 type Step = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 type ModelChoice = "recommended" | "custom";
 type EmbeddingChoice = "recommended" | "existing";
+type ModelOperation = {
+  kind: "scan" | "validate" | "import" | "activate";
+  state: "active" | "complete" | "error";
+  title: string;
+  detail: string;
+  progress: number;
+};
 
 const steps = ["Welcome", "Name", "Library", "Models", "Memory search", "Security", "Finish"] as const;
 const recommendedEmbeddingModel = {
@@ -102,8 +110,10 @@ function Onboarding() {
   const [customModelName, setCustomModelName] = useState("");
   const [customModelReport, setCustomModelReport] = useState<ModelCompatibilityRecord | null>(null);
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredInstalledModelRecord[]>([]);
+  const [modelDiscovery, setModelDiscovery] = useState<InstalledModelDiscoveryRecord | null>(null);
   const [discoveringModels, setDiscoveringModels] = useState(false);
   const [hasScannedModels, setHasScannedModels] = useState(false);
+  const [modelOperation, setModelOperation] = useState<ModelOperation | null>(null);
   const [embeddingChoice, setEmbeddingChoice] = useState<EmbeddingChoice>("recommended");
   const [embeddingCacheDir, setEmbeddingCacheDir] = useState("");
   const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
@@ -155,6 +165,35 @@ function Onboarding() {
     () => models.filter((model) => model.source_kind === "custom_import"),
     [models],
   );
+  const readyChatModel = useMemo(
+    () => models.find((model) => isModelRuntimeReady(model, modelRuntime)) ?? null,
+    [modelRuntime, models],
+  );
+  const modelSetupProgress = useMemo((): ModelOperation | null => {
+    if (modelDownloadActive && activeModelDownload) {
+      const downloadProgress = activeModelDownload.progress_percent ?? 0;
+      return {
+        kind: "import",
+        state: "active",
+        title: "Downloading model",
+        detail: "Vault will verify and start it when the download finishes.",
+        progress: Math.max(3, Math.min(76, downloadProgress * 0.76)),
+      };
+    }
+    if (modelOperation?.state === "active" || modelOperation?.state === "error") {
+      return modelOperation;
+    }
+    if (readyChatModel) {
+      return {
+        kind: "activate",
+        state: "complete",
+        title: "Chat model ready",
+        detail: `${shortModelName(readyChatModel.name)} is active and ready to answer.`,
+        progress: 100,
+      };
+    }
+    return modelOperation;
+  }, [activeModelDownload, modelDownloadActive, modelOperation, readyChatModel]);
 
   const resolvedVaultPath = useMemo(() => {
     const path = vaultPath.trim();
@@ -264,6 +303,29 @@ function Onboarding() {
   useVisiblePolling(refreshEmbeddingStatus, 750, embeddingDownloadActive);
 
   useEffect(() => {
+    if (!activeModelDownload || modelDownloadActive) return;
+    if (activeModelDownload.status === "failed" || activeModelDownload.status === "blocked") {
+      setModelOperation({
+        kind: "import",
+        state: "error",
+        title: "Download stopped",
+        detail: activeModelDownload.error || "The model download did not finish.",
+        progress: 100,
+      });
+    } else if (activeModelDownload.status === "cancelled") {
+      setModelOperation(null);
+    } else if (activeModelDownload.status === "installed" && !readyChatModel && !activatingId) {
+      setModelOperation({
+        kind: "activate",
+        state: "active",
+        title: "Preparing chat model",
+        detail: "The download is complete. Vault is checking the model now.",
+        progress: 78,
+      });
+    }
+  }, [activeModelDownload, activatingId, modelDownloadActive, readyChatModel]);
+
+  useEffect(() => {
     if (step !== 3 || activatingId) return;
     const selected = models.find((model) => model.id === selectedModelId);
     if (
@@ -363,16 +425,81 @@ function Onboarding() {
     }
   }
 
-  async function refreshDetectedModels(refresh = false) {
-    setDiscoveringModels(true);
+  async function chooseModelScanFolder() {
+    const selected = await desktop?.selectModelFolder?.();
+    if (!selected) return;
+    const normalized = displayPath(selected);
     try {
-      const discovered = await discoverInstalledModels({ max_results: 24, refresh });
+      await approveModelDiscoveryRoot(normalized);
+      await refreshDetectedModels(true, normalized);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "Could not scan this folder.";
+      setModelOperation({
+        kind: "scan",
+        state: "error",
+        title: "Scan stopped",
+        detail,
+        progress: 100,
+      });
+      setError(detail);
+    }
+  }
+
+  async function refreshDetectedModels(refresh = false, selectedRoot = "") {
+    setDiscoveringModels(true);
+    setError(null);
+    setModelOperation({
+      kind: "scan",
+      state: "active",
+      title: "Scanning for models",
+      detail: selectedRoot ? `Checking ${displayPath(selectedRoot)}` : "Checking known model folders.",
+      progress: 8,
+    });
+    try {
+      const discovered = await discoverInstalledModels(
+        { max_results: 24, refresh },
+        (_job, detail) => {
+          const candidates = numberFromJobDetail(detail.candidates_checked);
+          const found = numberFromJobDetail(detail.models_found);
+          setModelOperation({
+            kind: "scan",
+            state: "active",
+            title: "Scanning for models",
+            detail:
+              candidates > 0
+                ? `Checked ${candidates.toLocaleString()} files · ${found.toLocaleString()} found`
+                : selectedRoot
+                  ? `Checking ${displayPath(selectedRoot)}`
+                  : "Checking known model folders.",
+            progress: Math.min(88, 8 + Math.sqrt(candidates) * 5),
+          });
+        },
+      );
       setDiscoveredModels(discovered.models);
+      setModelDiscovery(discovered);
+      setModelOperation({
+        kind: "scan",
+        state: "complete",
+        title:
+          discovered.models.length === 1
+            ? "1 model found"
+            : `${discovered.models.length} models found`,
+        detail: `Scanned ${discovered.scanned_root_count} ${discovered.scanned_root_count === 1 ? "folder" : "folders"}.`,
+        progress: 100,
+      });
     } catch (err) {
       setDiscoveredModels([]);
-      setError(
-        err instanceof Error ? err.message : "Could not scan for installed compatible models.",
-      );
+      setModelDiscovery(null);
+      const detail =
+        err instanceof Error ? err.message : "Could not scan for installed compatible models.";
+      setModelOperation({
+        kind: "scan",
+        state: "error",
+        title: "Scan stopped",
+        detail,
+        progress: 100,
+      });
+      setError(detail);
     } finally {
       setDiscoveringModels(false);
       setHasScannedModels(true);
@@ -381,53 +508,117 @@ function Onboarding() {
 
   async function validateCustomModel() {
     setError(null);
-    setMessage("Checking model compatibility...");
+    setModelOperation({
+      kind: "validate",
+      state: "active",
+      title: "Checking model",
+      detail: "Reading the model metadata and chat format.",
+      progress: 18,
+    });
     try {
       const report = await getModelCompatibilityReport({
         path: customModelPath.trim(),
         name: customModelName.trim() || null,
       });
       setCustomModelReport(report);
-      setMessage(report.accepted ? "This model is compatible." : report.detail);
+      setModelOperation({
+        kind: "validate",
+        state: report.accepted ? "complete" : "error",
+        title: report.accepted ? "Model is compatible" : "Model cannot be used",
+        detail: report.accepted ? "Ready to add to Vault." : report.detail,
+        progress: 100,
+      });
       if (!report.accepted) setError(report.detail);
     } catch (err) {
       setCustomModelReport(null);
-      setError(err instanceof Error ? err.message : "Could not validate the model.");
-      setMessage(null);
+      const detail = err instanceof Error ? err.message : "Could not validate the model.";
+      setModelOperation({
+        kind: "validate",
+        state: "error",
+        title: "Model check stopped",
+        detail,
+        progress: 100,
+      });
+      setError(detail);
     }
   }
 
   async function importApprovedModel() {
     setError(null);
-    setMessage("Adding model...");
+    setModelOperation({
+      kind: "import",
+      state: "active",
+      title: "Adding model",
+      detail: "Preparing the model for Vault.",
+      progress: 12,
+    });
     try {
-      const imported = await importLocalModel({
-        path: customModelPath.trim(),
-        name: customModelName.trim() || null,
-      });
+      const imported = await importLocalModel(
+        {
+          path: customModelPath.trim(),
+          name: customModelName.trim() || null,
+        },
+        (_job, detail) => updateModelImportProgress(detail),
+      );
       setCustomModelReport(imported.compatibility);
       await activateImportedModel(imported);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not import the model.");
-      setMessage(null);
+      const detail = err instanceof Error ? err.message : "Could not import the model.";
+      setModelOperation({
+        kind: "import",
+        state: "error",
+        title: "Model was not added",
+        detail,
+        progress: 100,
+      });
+      setError(detail);
     }
   }
 
   async function importDiscoveredModel(model: DiscoveredInstalledModelRecord) {
     setError(null);
-    setMessage(`Adding ${model.name}...`);
+    setModelOperation({
+      kind: "import",
+      state: "active",
+      title: `Adding ${shortModelName(model.name)}`,
+      detail: "Copying the model into Vault.",
+      progress: 12,
+    });
     try {
-      const imported = await importLocalModel({
-        path: model.local_path,
-        name: model.name,
-      });
+      const imported = await importLocalModel(
+        {
+          path: model.local_path,
+          name: model.name,
+        },
+        (_job, detail) => updateModelImportProgress(detail, model.name),
+      );
       setCustomModelReport(imported.compatibility);
       await activateImportedModel(imported);
-      await refreshDetectedModels();
+      const refreshed = await discoverInstalledModels({ max_results: 24 });
+      setDiscoveredModels(refreshed.models);
+      setModelDiscovery(refreshed);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not import the detected model.");
-      setMessage(null);
+      const detail = err instanceof Error ? err.message : "Could not import the detected model.";
+      setModelOperation({
+        kind: "import",
+        state: "error",
+        title: "Model was not added",
+        detail,
+        progress: 100,
+      });
+      setError(detail);
     }
+  }
+
+  function updateModelImportProgress(detail: Record<string, unknown>, modelName = "") {
+    const copiedPercent = numberFromJobDetail(detail.progress_percent);
+    setModelOperation({
+      kind: "import",
+      state: "active",
+      title: modelName ? `Adding ${shortModelName(modelName)}` : "Adding model",
+      detail: copiedPercent > 0 ? `Copying model · ${formatProgressPercent(copiedPercent)}` : "Preparing the model for Vault.",
+      progress: Math.min(76, 12 + copiedPercent * 0.64),
+    });
   }
 
   async function activateModel(modelId: string) {
@@ -436,6 +627,13 @@ function Onboarding() {
     autoActivationAttemptRef.current = modelId;
     setSelectedModelId(modelId);
     setActivatingId(modelId);
+    setModelOperation({
+      kind: "activate",
+      state: "active",
+      title: "Starting chat model",
+      detail: "Loading the model and checking that it can answer.",
+      progress: 82,
+    });
     try {
       const activated = await activateLocalModel(modelId, "chat");
       setModels((current) => {
@@ -444,18 +642,38 @@ function Onboarding() {
           ? current.map((model) => (model.id === activated.id ? activated : model))
           : [...current, activated];
       });
+      setModelOperation({
+        kind: "activate",
+        state: "active",
+        title: "Checking chat model",
+        detail: "Confirming the local model is ready.",
+        progress: 94,
+      });
       const runtime = await getModelRuntimeStatus();
       setModelRuntime(runtime);
       if (!isModelRuntimeReady(activated, runtime)) {
         throw new Error(runtime.error || "Vault could not confirm that the chat model is ready.");
       }
       await refreshModels();
-      setMessage("Chat model is ready.");
+      setModelOperation({
+        kind: "activate",
+        state: "complete",
+        title: "Chat model ready",
+        detail: `${shortModelName(activated.name)} is active and ready to answer.`,
+        progress: 100,
+      });
       return true;
     } catch (err) {
       await refreshModels();
-      setError(err instanceof Error ? err.message : "Could not activate the model.");
-      setMessage(null);
+      const detail = err instanceof Error ? err.message : "Could not activate the model.";
+      setModelOperation({
+        kind: "activate",
+        state: "error",
+        title: "Model could not start",
+        detail,
+        progress: 100,
+      });
+      setError(detail);
       return false;
     } finally {
       setActivatingId(null);
@@ -473,13 +691,17 @@ function Onboarding() {
         : [...current, imported];
     });
     if (isModelRuntimeReady(imported, modelRuntime)) {
-      setMessage(`${imported.name} is already ready for chat.`);
+      setModelOperation({
+        kind: "activate",
+        state: "complete",
+        title: "Chat model ready",
+        detail: `${shortModelName(imported.name)} is active and ready to answer.`,
+        progress: 100,
+      });
       return;
     }
-    setMessage(`${imported.name} was added. Starting it now...`);
     const activated = await activateModel(imported.id);
     if (activated) {
-      setMessage(`${imported.name} is ready for chat.`);
       return;
     }
     setError((current) =>
@@ -605,20 +827,48 @@ function Onboarding() {
     setSelectedModelId(modelId);
     autoActivationAttemptRef.current = null;
     setDownloadingId(modelId);
+    setModelOperation({
+      kind: "import",
+      state: "active",
+      title: "Preparing download",
+      detail: "Checking the model source and available space.",
+      progress: 3,
+    });
     try {
       const state = await startModelDownload(modelId, {
         target_dir: modelDownloadRoot.trim(),
       });
       setModelDownload(state);
       if (state.status === "failed" || state.status === "blocked") {
-        setError(state.error || "Could not start model download.");
-        setMessage(null);
+        const detail = state.error || "Could not start model download.";
+        setModelOperation({
+          kind: "import",
+          state: "error",
+          title: "Download could not start",
+          detail,
+          progress: 100,
+        });
+        setError(detail);
       } else {
-        setMessage("Download started. You can continue setup while it resolves.");
+        setModelOperation({
+          kind: "import",
+          state: "active",
+          title: "Downloading model",
+          detail: "Vault will verify and start it when the download finishes.",
+          progress: 3,
+        });
       }
       await refreshModels();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start model download.");
+      const detail = err instanceof Error ? err.message : "Could not start model download.";
+      setModelOperation({
+        kind: "import",
+        state: "error",
+        title: "Download could not start",
+        detail,
+        progress: 100,
+      });
+      setError(detail);
     } finally {
       setDownloadingId(null);
     }
@@ -629,6 +879,7 @@ function Onboarding() {
     try {
       await cancelModelDownload(modelId);
       setModelDownload(null);
+      setModelOperation(null);
       await refreshModels();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not cancel model download.");
@@ -997,6 +1248,10 @@ function Onboarding() {
                     title="Set up a chat model"
                     sub="Vault uses a model on your computer to write answers. First, choose where to keep it."
                   >
+                    {modelSetupProgress ? (
+                      <ModelSetupProgress operation={modelSetupProgress} />
+                    ) : null}
+
                     <Field label="Save models in">
                       <div className="flex flex-col gap-2 sm:flex-row">
                         <Input
@@ -1129,16 +1384,29 @@ function Onboarding() {
                                     Models found on this computer
                                   </div>
                                   <div className="mt-1 text-muted-foreground">
-                                    Vault checks every available drive. This may take a moment.
+                                    Scan known model folders, or choose the folder that contains
+                                    your GGUF files.
                                   </div>
                                 </div>
-                                <Button
-                                  variant="outline"
-                                  onClick={() => void refreshDetectedModels(true)}
-                                  disabled={discoveringModels}
-                                >
-                                  {discoveringModels ? "Scanning..." : "Scan device"}
-                                </Button>
+                                <div className="flex flex-wrap gap-2">
+                                  <Button
+                                    variant="outline"
+                                    onClick={() => void refreshDetectedModels(true)}
+                                    disabled={discoveringModels}
+                                  >
+                                    {discoveringModels ? "Scanning..." : "Scan known folders"}
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    onClick={() => void chooseModelScanFolder()}
+                                    disabled={
+                                      discoveringModels || !mounted || !desktop?.selectModelFolder
+                                    }
+                                  >
+                                    <FolderOpen className="h-4 w-4" />
+                                    Choose folder
+                                  </Button>
+                                </div>
                               </div>
                               <div className="mt-3 grid gap-3">
                                 {discoveringModels ? (
@@ -1173,12 +1441,21 @@ function Onboarding() {
                                     </div>
                                   ))
                                 ) : hasScannedModels ? (
-                                  <p className="text-xs text-muted-foreground">
-                                    No supported chat models were found.
-                                  </p>
+                                  <div className="text-xs leading-5 text-muted-foreground">
+                                    <p>No supported chat models were found.</p>
+                                    {modelDiscovery ? (
+                                      <p>
+                                        Scanned {modelDiscovery.scanned_root_count}{" "}
+                                        {modelDiscovery.scanned_root_count === 1
+                                          ? "folder"
+                                          : "folders"}
+                                        . Choose a folder if the model is stored elsewhere.
+                                      </p>
+                                    ) : null}
+                                  </div>
                                 ) : (
                                   <p className="text-xs text-muted-foreground">
-                                    Select Scan device to look for models.
+                                    Scan known folders or choose a model folder.
                                   </p>
                                 )}
                               </div>
@@ -1813,6 +2090,50 @@ function ChoiceButton({
   );
 }
 
+function ModelSetupProgress({ operation }: { operation: ModelOperation }) {
+  const active = operation.state === "active";
+  const failed = operation.state === "error";
+  const Icon = active ? Loader2 : failed ? AlertTriangle : Check;
+
+  return (
+    <div
+      className={cn(
+        "border-y border-border bg-secondary/35 px-4 py-3",
+        failed && "border-destructive/30 bg-destructive/5",
+      )}
+      role={failed ? "alert" : "status"}
+      aria-live="polite"
+    >
+      <div className="flex items-start gap-3">
+        <Icon
+          className={cn(
+            "mt-0.5 h-4 w-4 shrink-0",
+            active && "animate-spin text-muted-foreground",
+            failed && "text-destructive",
+            operation.state === "complete" && "text-[var(--status-ready)]",
+          )}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span className="font-medium text-foreground">{operation.title}</span>
+            <span className="tabular-nums text-muted-foreground">
+              {formatProgressPercent(operation.progress)}
+            </span>
+          </div>
+          <Progress
+            value={operation.progress}
+            className={cn("mt-2 h-1.5", active && "download-progress-active")}
+            aria-label={`${operation.title}: ${formatProgressPercent(operation.progress)}`}
+          />
+          <p className={cn("mt-2 text-xs leading-5 text-muted-foreground", failed && "text-destructive")}>
+            {operation.detail}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ModelRow({
   model,
   recommended,
@@ -2068,6 +2389,11 @@ function formatProgressPercent(value: number) {
   if (value < 0.1) return "<0.1%";
   if (value < 1) return `${value.toFixed(1)}%`;
   return `${Math.round(value)}%`;
+}
+
+function numberFromJobDetail(value: unknown) {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
 function shortModelName(value: string) {

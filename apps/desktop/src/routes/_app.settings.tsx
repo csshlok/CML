@@ -23,6 +23,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/layout/WindowAware";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -63,7 +64,7 @@ import {
   listIntegrationImports,
   listIntegrationReconciliationItems,
   listIntegrationReconciliationRuns,
-  listCliClients,
+  listCliClientsPage,
   listCliPairingChallenges,
   listVaults,
   listProjects,
@@ -193,6 +194,12 @@ function SettingsView() {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [cliPairings, setCliPairings] = useState<CliPairingChallenge[]>([]);
   const [cliClients, setCliClients] = useState<CliClientRecord[]>([]);
+  const [cliActiveTotal, setCliActiveTotal] = useState(0);
+  const [cliClientHistory, setCliClientHistory] = useState<CliClientRecord[]>([]);
+  const [cliHistoryOpen, setCliHistoryOpen] = useState(false);
+  const [cliHistoryCursor, setCliHistoryCursor] = useState<string | null>(null);
+  const [cliHistoryHasMore, setCliHistoryHasMore] = useState(false);
+  const [cliHistoryLoading, setCliHistoryLoading] = useState(false);
   const [cliAccessBusyId, setCliAccessBusyId] = useState<string | null>(null);
   const [cliAccessError, setCliAccessError] = useState<string | null>(null);
   const [odinLauncher, setOdinLauncher] = useState<{
@@ -200,6 +207,9 @@ function SettingsView() {
     installed: boolean;
     needs_repair: boolean;
     install_method?: "vault" | "uv";
+    path_error?: string | null;
+    available_in_new_shell?: boolean;
+    on_current_path?: boolean;
   } | null>(null);
   const [odinLauncherBusy, setOdinLauncherBusy] = useState(false);
   const [addingProject, setAddingProject] = useState(false);
@@ -305,12 +315,15 @@ function SettingsView() {
   const refreshCliAccess = useCallback(async () => {
     const [pairings, clients] = await Promise.allSettled([
       listCliPairingChallenges(),
-      listCliClients(),
+      listCliClientsPage("active", { limit: 50 }),
     ]);
     const failures: string[] = [];
     if (pairings.status === "fulfilled") setCliPairings(pairings.value);
     else failures.push("pairing requests");
-    if (clients.status === "fulfilled") setCliClients(clients.value);
+    if (clients.status === "fulfilled") {
+      setCliClients(clients.value.items);
+      setCliActiveTotal(clients.value.total ?? clients.value.items.length);
+    }
     else failures.push("connected clients");
     setCliAccessError(
       failures.length ? `Could not refresh ${failures.join(" and ")}.` : null,
@@ -1045,7 +1058,11 @@ function SettingsView() {
       const installed = await desktop?.installOdinLauncher?.();
       if (!installed) throw new Error("Odin is available only in the desktop app.");
       setOdinLauncher(installed);
-      setStatusMessage("Odin is ready. New PowerShell windows can use the odin command.");
+      setStatusMessage(
+        installed.path_error
+          ? "Odin is installed. Pairing works here, but Windows did not update PATH."
+          : "Odin is ready. Open a new PowerShell window to use it.",
+      );
     } catch (error) {
       setCliAccessError(error instanceof Error ? error.message : "Could not install Odin.");
     } finally {
@@ -1123,7 +1140,11 @@ function SettingsView() {
       const installed = await desktop?.installOdinWithUv?.();
       if (!installed) throw new Error("uv installation is available only in the desktop app.");
       setOdinLauncher(installed);
-      setStatusMessage("Odin is ready.");
+      setStatusMessage(
+        installed.path_error
+          ? "Odin is installed with uv. Pairing works here, but Windows did not update PATH."
+          : "Odin is ready. Open a new PowerShell window to use it.",
+      );
     } catch (error) {
       setCliAccessError(error instanceof Error ? error.message : "Could not install Odin with uv.");
     } finally {
@@ -1230,7 +1251,9 @@ function SettingsView() {
         setStatusMessage("The Odin access request was denied.");
       }
       setCliPairings(await listCliPairingChallenges());
-      setCliClients(await listCliClients());
+      const activeClients = await listCliClientsPage("active", { limit: 50 });
+      setCliClients(activeClients.items);
+      setCliActiveTotal(activeClients.total ?? activeClients.items.length);
     } catch (error) {
       setCliAccessError(error instanceof Error ? error.message : "The access request could not be updated.");
     } finally {
@@ -1249,11 +1272,58 @@ function SettingsView() {
         await rotateCliClient(client.id);
         setStatusMessage(`${client.display_name} must pair again before its next Odin command.`);
       }
-      setCliClients(await listCliClients());
+      const activeClients = await listCliClientsPage("active", { limit: 50 });
+      setCliClients(activeClients.items);
+      setCliActiveTotal(activeClients.total ?? activeClients.items.length);
+      if (cliHistoryOpen) {
+        const history = await listCliClientsPage("history", { limit: 30 });
+        setCliClientHistory(history.items);
+        setCliHistoryCursor(history.next_cursor);
+        setCliHistoryHasMore(history.has_more);
+      }
     } catch (error) {
       setCliAccessError(error instanceof Error ? error.message : "Command-line access could not be updated.");
     } finally {
       setCliAccessBusyId(null);
+    }
+  }
+
+  async function toggleCliHistory() {
+    const nextOpen = !cliHistoryOpen;
+    setCliHistoryOpen(nextOpen);
+    if (!nextOpen || cliClientHistory.length > 0) return;
+    setCliHistoryLoading(true);
+    try {
+      const history = await listCliClientsPage("history", { limit: 30 });
+      setCliClientHistory(history.items);
+      setCliHistoryCursor(history.next_cursor);
+      setCliHistoryHasMore(history.has_more);
+    } catch (error) {
+      setCliAccessError(error instanceof Error ? error.message : "Connection history could not load.");
+    } finally {
+      setCliHistoryLoading(false);
+    }
+  }
+
+  async function loadMoreCliHistory() {
+    if (!cliHistoryCursor || cliHistoryLoading) return;
+    setCliHistoryLoading(true);
+    try {
+      const history = await listCliClientsPage("history", {
+        limit: 30,
+        cursor: cliHistoryCursor,
+      });
+      setCliClientHistory((current) => {
+        const byId = new Map(current.map((client) => [client.id, client]));
+        for (const client of history.items) byId.set(client.id, client);
+        return [...byId.values()];
+      });
+      setCliHistoryCursor(history.next_cursor);
+      setCliHistoryHasMore(history.has_more);
+    } catch (error) {
+      setCliAccessError(error instanceof Error ? error.message : "More connection history could not load.");
+    } finally {
+      setCliHistoryLoading(false);
     }
   }
 
@@ -1303,12 +1373,12 @@ function SettingsView() {
       </aside>
 
       <main className="min-w-0 overflow-y-auto px-7 py-9">
-        <header>
+        <PageHeader>
           <h1 className="page-title">Settings</h1>
           <p className="mt-3 text-sm text-muted-foreground">
             Local models, storage, privacy, and maintenance.
           </p>
-        </header>
+        </PageHeader>
 
         <label
           htmlFor="settings-section-select"
@@ -1484,12 +1554,30 @@ function SettingsView() {
               icon={<TerminalSquare className="h-4 w-4" />}
               title="Odin command"
               description="Install Odin, then open a new PowerShell window and run odin --help."
-              status={odinLauncher?.installed ? "Ready" : odinLauncher?.needs_repair ? "Repair needed" : "Not installed"}
-              statusTone={odinLauncher?.installed ? "ready" : "issue"}
+              status={
+                odinLauncher?.installed
+                  ? odinLauncher.path_error || odinLauncher.on_current_path === false
+                    ? "Installed"
+                    : "Ready"
+                  : odinLauncher?.needs_repair
+                    ? "Repair needed"
+                    : "Not installed"
+              }
+              statusTone={
+                odinLauncher?.installed &&
+                !odinLauncher.path_error &&
+                odinLauncher.on_current_path !== false
+                  ? "ready"
+                  : "issue"
+              }
             >
               <div className="mt-5 flex flex-wrap gap-2">
                 <Button onClick={() => void installOrRepairOdin()} disabled={odinLauncherBusy || !desktop?.installOdinLauncher}>
-                  {odinLauncher?.installed ? "Repair Odin" : "Install Odin"}
+                  {odinLauncher?.needs_repair
+                    ? "Repair Odin"
+                    : odinLauncher?.installed
+                      ? "Reinstall Odin"
+                      : "Install Odin"}
                 </Button>
                 <Button
                   variant="outline"
@@ -1509,6 +1597,13 @@ function SettingsView() {
               <p className="mt-3 text-xs text-muted-foreground">
                 Use the Vault installer for the simplest setup. The uv option is available for developer-managed Python tools.
               </p>
+              {odinLauncher?.installed &&
+              (odinLauncher.path_error || odinLauncher.on_current_path === false) ? (
+                <p className="mt-3 text-sm text-[var(--status-warn-ink)]">
+                  Odin is installed and can pair from this screen. Add its installed folder to
+                  your user PATH to run <code>odin</code> in a new terminal.
+                </p>
+              ) : null}
               {odinLauncher?.launcher_path ? (
                 <details className="mt-3 text-xs text-muted-foreground">
                   <summary className="cursor-pointer">Installed location</summary>
@@ -1521,7 +1616,7 @@ function SettingsView() {
               icon={<ShieldCheck className="h-4 w-4" />}
               title="Odin command-line access"
               description="Approve this computer before Odin can read or update code-project context in this library. Credentials stay protected by Windows."
-              status={cliPairings.length ? `${cliPairings.length} waiting` : `${cliClients.filter((client) => !client.revoked_at).length} connected`}
+              status={cliPairings.length ? `${cliPairings.length} waiting` : `${cliActiveTotal} connected`}
               statusTone={cliPairings.length ? "issue" : "ready"}
             >
               {cliAccessError ? (
@@ -1569,28 +1664,80 @@ function SettingsView() {
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="font-medium">{client.display_name}</span>
-                          <span className="text-xs text-muted-foreground">{client.revoked_at ? "Revoked" : "Connected"}</span>
+                          <span className="text-xs text-muted-foreground">Connected</span>
                         </div>
                         <div className="mt-1 text-xs text-muted-foreground">
                           {client.last_used_at ? `Last used ${new Date(client.last_used_at).toLocaleString()}` : "Not used yet"}
                           {` / ${client.scopes.length} permissions`}
                         </div>
                       </div>
-                      {!client.revoked_at ? (
-                        <div className="flex gap-2">
-                          <Button variant="outline" onClick={() => void updateCliClient(client, "rotate")} disabled={cliAccessBusyId === client.id}>
-                            Require pairing again
-                          </Button>
-                          <Button variant="outline" onClick={() => void updateCliClient(client, "revoke")} disabled={cliAccessBusyId === client.id}>
-                            Revoke
-                          </Button>
-                        </div>
-                      ) : null}
+                      <div className="flex gap-2">
+                        <Button variant="outline" onClick={() => void updateCliClient(client, "rotate")} disabled={cliAccessBusyId === client.id}>
+                          Require pairing again
+                        </Button>
+                        <Button variant="outline" onClick={() => void updateCliClient(client, "revoke")} disabled={cliAccessBusyId === client.id}>
+                          Revoke
+                        </Button>
+                      </div>
                     </div>
                   )) : (
                     <div className="px-3 py-4 text-sm text-muted-foreground">No computers have been approved for Odin yet.</div>
                   )}
                 </div>
+              </div>
+
+              <div className="mt-5 border-t border-border pt-4">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-8 px-2"
+                  onClick={() => void toggleCliHistory()}
+                  aria-expanded={cliHistoryOpen}
+                >
+                  Connection history
+                </Button>
+                {cliHistoryOpen ? (
+                  <div className="mt-2 divide-y divide-border rounded-md border border-border bg-background">
+                    {cliHistoryLoading && cliClientHistory.length === 0 ? (
+                      <div className="px-3 py-4 text-sm text-muted-foreground">Loading…</div>
+                    ) : cliClientHistory.length > 0 ? (
+                      <>
+                        {cliClientHistory.map((client) => (
+                          <div key={client.id} className="px-3 py-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium">{client.display_name}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {client.revoked_at ? "Revoked" : "Pairing expired"}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {client.last_used_at
+                                ? `Last used ${new Date(client.last_used_at).toLocaleString()}`
+                                : `Added ${new Date(client.created_at).toLocaleString()}`}
+                            </div>
+                          </div>
+                        ))}
+                        {cliHistoryHasMore ? (
+                          <div className="p-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={cliHistoryLoading}
+                              onClick={() => void loadMoreCliHistory()}
+                            >
+                              {cliHistoryLoading ? "Loading…" : "Show more"}
+                            </Button>
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <div className="px-3 py-4 text-sm text-muted-foreground">
+                        No old connections.
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </div>
             </SettingsCard>
           </>)}

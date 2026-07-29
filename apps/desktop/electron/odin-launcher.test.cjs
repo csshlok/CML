@@ -101,6 +101,31 @@ test("PATH registration broadcasts the Windows environment change", () => {
   assert.match(invocation.args.join(" "), /SetEnvironmentVariable/);
   assert.match(invocation.args.join(" "), /SendMessageTimeout/);
   assert.equal(invocation.options.windowsHide, true);
+  assert.equal(
+    invocation.options.env.CML_ODIN_BIN,
+    path.resolve("C:\\Users\\Person\\AppData\\Local\\CML\\bin"),
+  );
+  assert.doesNotMatch(invocation.args.join(" "), /C:\\Users\\Person/);
+});
+
+test("a blocked PATH update does not discard a working Odin launcher", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "cml-odin-path-warning-"));
+  try {
+    const installed = await installLauncher({
+      binDir: path.join(root, "bin"),
+      pythonPath: path.join(root, "python-runtime", "python.exe"),
+      resourcesRoot: root,
+      registerPath() {
+        throw new Error("Windows could not update PATH.");
+      },
+    });
+    assert.equal(installed.installed, true);
+    assert.equal(installed.available_in_new_shell, false);
+    assert.match(installed.path_error, /could not update PATH/i);
+    await fs.access(installed.launcher_path);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 test("Odin help probe is bounded and does not invoke a command shell", () => {
@@ -161,6 +186,7 @@ test("uv installation uses the local backend package and verifies the installed 
   try {
     const status = await installWithUv({
       resourcesRoot: root,
+      registerPath: () => ({ changed: true, supported: true }),
       runner(command, args, options) {
         invocations.push({ command, args, options });
         if (args.join(" ") === "tool dir --bin") {
@@ -171,11 +197,10 @@ test("uv installation uses the local backend package and verifies the installed 
     });
     assert.equal(status.installed, true);
     assert.equal(status.install_method, "uv");
-    assert.deepEqual(invocations[0].args.slice(0, 7), [
+    assert.deepEqual(invocations[0].args.slice(0, 6), [
       "tool",
       "install",
       "--force",
-      "--no-deps",
       "--with",
       "psutil",
       backendRoot,
