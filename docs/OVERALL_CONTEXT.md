@@ -1,8 +1,108 @@
 # Overall Context
 
+## 2026-07-29 — deep audit implementation
+
+The latest cross-layer review found that project indexing activation updated source membership but not chunk membership. This produced a misleading state: the UI and Odin correctly showed the selected project while retrieval returned no evidence. Activation and migration 16 now enforce and repair that invariant, with focused Odin and chat retrieval tests.
+
+Graph requests now use a clean, on-demand project-map page rather than embedding a dense fixed-size graph in chat. Both project and knowledge maps support progressive expansion; selected details remain closed by default. Project graph responses include traceable orientation data—key areas, relationship counts, connected components, and observed directed flows—so the UI and Odin exports can explain what a view represents.
+
+The review also bounded a quadratic knowledge-map edge path, restored primary project-cluster relationships, and restricted renderer runtime backend URLs to local loopback origins. The approved follow-up is now implemented in source: persisted cluster candidate profiles, evidence-stable move decisions, conservative placement, bounded chat hydration, Odin client pagination, legacy project-job migration, one project activation writer, and a stable public error boundary. The local audit and fix-plan files are intentionally ignored rather than retained as tracked product documentation.
+
 Last updated: 2026-07-29
 
 This file preserves the longer-form current state behind `docs/PROJECT_CONTEXT.md`. It should hold durable background, validation summaries, and high-signal historical notes, not stale architecture claims.
+
+## July 29 Bounded Data Paths And Global Window Safety
+
+The desktop shell publishes one upper-right control geometry contract: 138 pixels
+for the three controls, 32 pixels high, plus a 12-pixel interaction buffer. The
+safe rectangle is transparent and does not reserve a full-width strip. Chat and
+every primary route header consume the contract, while static startup and repair
+documents use the same numeric tokens. Source tests reject the retired
+`desktop-window-action` and chat-only clearance classes. A rendered collision pass
+at 1536x960 and 1024x768 found no intersecting interactive controls across Home,
+Sources, Clusters, Chat, Projects, Map, Search, Tasks, Timeline, Bridge, Settings,
+onboarding, and the not-found route. Console errors in that isolated browser pass
+were expected connection refusals because no backend was started.
+
+Schema version 18 adds versioned cluster candidate profiles and evidence keys for
+move decisions. Candidate retrieval uses an indexed lexical shortlist capped at 32
+profiles; suggestion review reads at most 240 eligible sources and only their
+active vectors. Project-linked sources and clusters are excluded. New standalone
+sources require a high absolute score, a clear margin, and acceptable cohesion for
+automatic placement; otherwise they remain unclustered. Existing sources are never
+silently moved. Accept and dismiss decisions remain stable until the source
+checksum or candidate profile membership/version changes.
+
+Cluster identity publication uses representative source summaries, source types,
+weighted terms, a centroid, cohesion, and a deterministic membership hash. Manual
+names and descriptions remain protected. A durable organization backfill removes
+abandoned automatic clusters and refreshes stale profiles in 20-cluster work units.
+Its task reports progress and failures and supports pause, resume, and cancellation.
+
+Chat now separates metadata from a unified message/retriable-generation timeline.
+The desktop reads the newest 80 items, prepends older cursor pages while preserving
+scroll position, and polls only newer deltas for active work. Stable IDs reconcile
+optimistic messages without replacing the conversation. Tests cover 2,000 messages,
+a new message arriving after the initial page, and an older cursor whose boundary
+row was removed by retention.
+
+Odin Settings reads active connections and pending approvals without loading
+history. Revoked and rotated clients are fetched only after Connection history is
+opened and continue through cursor pages. The displayed active count comes from an
+exact indexed count. A 1,000-client fixture confirms bounded pages.
+
+The retired monolithic project indexer and activation helper are removed.
+Startup migration marks historical `project_index` jobs failed with a clear reason
+and queues the four phased jobs for the affected project. The phased pipeline keeps
+the extractor-version contract and remains the only active snapshot writer.
+
+HTTP, validation, and chat-stream failures now return stable codes, simple copy,
+optional action text, and a diagnostic ID. Original exceptions are logged locally.
+Raw paths, request payload details, OS messages, and stack information do not cross
+the public response boundary.
+
+The completed verification pass collected 870 backend tests: 868 passed. The Odin
+release scale case remains explicitly opt-in, and the TurboVec benchmark was
+skipped because that optional runtime is not installed. All 141 Electron behavior
+tests passed, as did TypeScript checking, the production renderer build, Python
+bytecode compilation, the renderer HTML safety audit, the 45-file interactive
+control audit, the package layout and helper-manifest audit, and Git's whitespace
+check. Rendered desktop-safe-zone checks at 1536x960 and 1024x768 found no
+interactive overlap on the primary application, onboarding, or error routes.
+
+## July 29 Direct Projects, Observable Indexing, And Folder Browsing
+
+The desktop Projects route and Odin now share the same project registration and
+snapshot behavior. Users can select project folders from Projects without first
+installing or pairing the CLI; terminal users can continue to register, synchronize,
+and query the same records with Odin. Project cluster descriptions and run trigger
+labels no longer claim that Odin was the entry point when the desktop performed the
+registration.
+
+The reported CML indexing stall was diagnosed against the live project database.
+Discovery and structure completed normally, but retrieval processed 566 files in a
+single SQLite transaction for roughly fifteen minutes. Its heartbeat writes were
+therefore invisible until commit, while the activation job correctly waited on the
+retrieval dependency. Retrieval now selects only unfinished rows and commits
+12-file batches. The stage is restart-safe, cancellation is checked between
+batches, and completed/total progress becomes visible after every commit.
+Dependency copy now describes what the user is waiting for rather than displaying
+an internal scheduler status.
+
+Candidate project sources remain isolated from all default source lists, counts,
+type totals, cluster totals, and latest-source summaries. This preserves atomic
+snapshot activation and prevents hundreds of staging rows from appearing as
+unclustered sources. Once active, projects with at least 20 sources are represented
+as folder rows in Sources. The durable batch-import payload also records selected
+folder roots; roots containing at least 20 imported files become the same kind of
+folder row. Opening either folder type scopes the normal source list, filters,
+pagination, inspector, reindex, open, and delete actions to that folder.
+
+Locked libraries now provide an inline passphrase form with local error feedback.
+The Privacy route is reserved for reset and recovery. Ctrl+L and the command palette
+both invoke the backend lock authority for the current secured vault and immediately
+clear the open workspace.
 
 ## July 29 Cross-Workflow Reliability And Odin Installation
 
@@ -607,8 +707,8 @@ Validation evidence for the combined source state:
 
 ## July 27 ChatGPT MCP, Tunnel, And Reliability Completion
 
-The latest source completes the locally executable implementation in
-`docs/CHATGPT_MCP_CONNECTION_PLAN.md`. The remaining release boundary is now explicit:
+The latest source completes the locally executable ChatGPT MCP and secure-tunnel
+implementation. The remaining release boundary is now explicit:
 the owner-deferred Windows package rebuild and its post-build checks, followed by tests
 that require an authorized ChatGPT workspace and live OpenAI tunnel credentials.
 
@@ -723,7 +823,6 @@ these changes.
 - Compact operating brief: `docs/PROJECT_CONTEXT.md`
 - Public product overview: `ReadME.md`
 - Public benchmark report: `BENCHMARK.md`
-- Migration archive: `docs/LORA_TO_RAG_MIGRATION_PLAN.md`
 
 ## Current Project Cycle
 
@@ -956,7 +1055,9 @@ Changes that now define current behavior:
 - The reusable UI primitive inventory is retained for future feature work; only obsolete product-specific code remains deleted.
 - A shared encrypted-source hydration bug was fixed so authorized search, memory, and report paths receive all decrypted fields without restoring plaintext database storage.
 - README and live interface copy now address users directly and reserve backend/runtime terminology for advanced settings and diagnostics.
-- Historical UI audit, ingestion-reference, and packaging-investigation documents are retained with status notices so their evidence remains available without being mistaken for current implementation truth.
+- Historical audits and completed implementation plans are retained only as local,
+  ignored working records. Current behavior remains documented here and in
+  `docs/PROJECT_CONTEXT.md`.
 
 The Odin release plan, parser dependency decision, and external benchmark are local working records intentionally excluded from Git. Implemented behavior and release status remain summarized in `PROJECT_CONTEXT.md`. The desktop includes a first-class Projects navigation destination and lightweight project index; project details remain centered on status, scoped questions, and run activity, with graph/tree artifacts shown only when requested.
 
@@ -967,7 +1068,9 @@ Important distinction:
 
 ## Historical Note
 
-The completed migration record remains in `docs/LORA_TO_RAG_MIGRATION_PLAN.md`. Security audit/build records may also retain LoRA references where they document historical threat analysis. Neither is a live product contract. When an archive conflicts with `docs/PROJECT_CONTEXT.md`, the project context document is authoritative.
+Security audit and build records may retain LoRA references where they document
+historical threat analysis. They are not live product contracts.
+`docs/PROJECT_CONTEXT.md` is authoritative.
 
 ## July 18 Memory Benchmark Update
 
@@ -1303,4 +1406,4 @@ This is a separate workload from LongMemEval. Open RAG's 2,672.1 prompt tokens/q
 
 The first implementation pass converted the earlier UI backlog into verified reductions. Home activity hierarchy and OCR settings wrapping were normalized. Map now exposes authoritative links, unclustered items, reset behavior, and large-vault mock coverage. The redundant cluster-detail right rail and nonfunctional close button were removed; cluster rows now navigate directly; duplicate cluster-local Map and source/status surfaces were removed. Global Saved chats, the Settings utility rail, the unused legacy `ClusterMap`, 29 unused UI primitives, and a stale Figma export utility were also removed.
 
-The browser audit passed 46 TSX interaction checks and rendered 13 routes at 1440x900 and 768x900, plus the cluster route at 512 px, without page-level overflow, unlabeled controls, browser errors, or failed close/reset interactions. Remaining work is intentionally narrower: source-inspector persistence, stale embedded project/search/chat paths, Bridge and Settings decomposition, keyboard and automated accessibility, 200% zoom, locked/offline behavior, and packaged Electron validation. `docs/UI_UX_DEEP_AUDIT_2026-07-24.md` is the detailed evidence record; `docs/UI_RECOMMENDATIONS_BACKLOG.md` tracks the remaining work.
+The browser audit passed 46 TSX interaction checks and rendered 13 routes at 1440x900 and 768x900, plus the cluster route at 512 px, without page-level overflow, unlabeled controls, browser errors, or failed close/reset interactions. Remaining work is intentionally narrower: source-inspector persistence, stale embedded project/search/chat paths, Bridge and Settings decomposition, keyboard and automated accessibility, 200% zoom, locked/offline behavior, and packaged Electron validation. `docs/UI_RECOMMENDATIONS_BACKLOG.md` tracks the remaining work.

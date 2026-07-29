@@ -1,5 +1,26 @@
 # Project Context
 
+## 2026-07-29 — deep-audit implementation
+
+- Desktop window controls now own one invisible 150-by-44 CSS safe rectangle. Application headers, Chat, onboarding, startup, and repair surfaces use the same 138-pixel control width, 32-pixel control height, and 12-pixel buffer. Tests reject the retired route-specific margin classes.
+- Project indexing has one activation writer. Historical monolithic jobs are terminated with an explicit result and requeued through discovery, structure, retrieval staging, and atomic activation.
+- Public API and chat-stream failures now use stable, short messages with local diagnostic IDs. Validation payloads, paths, OS errors, and exception text stay out of renderer responses.
+- Odin connection history is cursor-paginated and lazy. Active counts come from an exact bounded count query rather than the first page.
+- Chat opens with metadata plus the newest 80 timeline items, loads older pages without replacing visible history, and polls only newer deltas.
+- Standalone clustering uses persisted, versioned candidate profiles and bounded review work. Ambiguous imports remain unclustered, project sources are excluded, manual identity is protected, decisions are keyed to source and profile evidence, and abandoned automatic clusters are removed.
+- Cluster organization backfill runs in bounded batches through Tasks with progress, pause, resume, cancellation, and failure records.
+- Scale contracts now cover 10,000 sources, 1,000 clusters, 2,000 chat messages, and 1,000 Odin clients.
+- Final verification is green: 868 backend tests passed, 141 desktop behavior tests passed, the production frontend build and Python compilation passed, and the renderer-safety, interactive-control, package-layout, and diff-whitespace audits passed. The Odin release scale test remains an explicit opt-in gate, and the TurboVec benchmark was skipped because TurboVec is not installed in the development environment.
+
+## 2026-07-29 — project retrieval and on-demand graph workspace
+
+- Project activation now keeps `sources.cluster_id` and `source_chunks.cluster_id` in the same transaction. Schema migration 16 repairs active chunks from existing projects, restoring evidence for both Odin context and project-scoped chat without re-importing folders.
+- Requested architecture graphs no longer render as small chat artifacts. Project and chat requests lead to the on-demand `/project-map` workspace, which is intentionally absent from normal navigation.
+- The project map provides bounded expansion, direction controls, graph/tree modes, wider layout spacing, source inspection, key areas, and deterministic evidence-backed flow summaries.
+- Knowledge-map overview and neighborhood results can be expanded, and map details occupy space only after selection.
+- Runtime backend URLs received by the renderer are restricted to credential-free loopback HTTP origins before any authenticated probe.
+- The local deep-audit records are intentionally excluded from Git; current behavior is summarized here and in `docs/OVERALL_CONTEXT.md`.
+
 Last updated: 2026-07-29
 
 ## Purpose
@@ -24,6 +45,32 @@ Vault is in **pre-release stabilization and productionization**.
 The scoped RAG migration, temporal memory foundation, Odin project workflow, bounded context pipeline, and primary desktop surfaces are implemented. The project is no longer deciding its core architecture. Current work is about proving release reliability, productionizing the strongest retrieval improvements, improving measured quality without benchmark-specific behavior, distilling the UI around real user journeys, and finishing clean Windows packaging.
 
 The reviewed 0.1.9 product, packaging, CI, and documentation work is published on `main`. GitHub CI run `30182242079` passed every automatic job for product commit `f36f75e1959ac40b783303316265974f037ae1fb`. A development/test NSIS installer completed install, shortcut, registry, launch, and uninstall validation. Version 0.1.9 remains pre-release because signing, Windows account-separation proof, and a release build on the latest source revision remain outstanding.
+
+## July 29 Project Import, Locking, And Large-Source Navigation
+
+Projects is no longer CLI-only. The Projects page can select one or more local
+folders, register each through the same project authority used by Odin, and start
+the immutable snapshot pipeline. Odin remains available for terminal and IDE
+workflows. Project-created clusters and job triggers now use neutral project
+language so behavior is truthful regardless of which entry point registered the
+folder.
+
+Large project retrieval now commits resumable batches of 12 files. Each commit
+publishes the current completed/total heartbeat, so a project with hundreds of files
+does not appear frozen during one long transaction. The activation job reports that
+it is waiting for project indexing instead of exposing the scheduler's
+`blocked_by_dependency` wording. Candidate snapshot sources are excluded from
+Sources and its aggregates until atomic activation, preventing temporary
+unclustered duplicates. Active projects and explicitly imported folders with 20 or
+more sources appear as one folder on the Sources page; opening the folder provides
+the normal source rows and actions with independent pagination and filters. Folder
+membership is recorded during the durable import job rather than guessed later from
+file names.
+
+The locked-library route now accepts the passphrase directly and keeps validation
+errors beside the field. Recovery and passphrase reset remain in Privacy settings.
+Ctrl+L locks the active secured vault immediately, and the command palette exposes
+the same action so the shortcut is discoverable.
 
 ## July 29 Workflow Reliability And Odin Setup
 
@@ -516,16 +563,15 @@ Open RAG supplies that independent external-corpus check for document retrieval.
 6. Improve Odin TypeScript/React graph-to-prompt ranking and authoritative cross-file import/re-export/reference coverage, then rerun multi-model external evaluation.
 7. Run the manual Odin scale workflow when the next discovery/indexing change needs promotion evidence.
 8. Finish the remaining UI audit items: source-inspector persistence, stale embedded project/search/chat handlers, Bridge and Settings decomposition, keyboard/accessibility coverage, 200% zoom, offline/locked states, and rebuilt-package Electron validation.
-9. Execute the seven credentialed ChatGPT/Secure MCP Tunnel gates in
-   `docs/CHATGPT_MCP_CONNECTION_PLAN.md` Section 20.7 before broad rollout.
+9. Execute the seven credentialed ChatGPT/Secure MCP Tunnel release gates before
+   broad rollout. These require an authorized workspace and live tunnel credentials.
 
 ## Canonical References
 
 - Detailed internal state: `docs/OVERALL_CONTEXT.md`
 - Public product overview: `ReadME.md`
 - Public benchmark methodology and analysis: `BENCHMARK.md`
-- UI implementation status and remaining backlog: `docs/UI_UX_DEEP_AUDIT_2026-07-24.md` and `docs/UI_RECOMMENDATIONS_BACKLOG.md`
-- Completed migration archive: `docs/LORA_TO_RAG_MIGRATION_PLAN.md`
+- UI implementation status and remaining backlog: `docs/UI_RECOMMENDATIONS_BACKLOG.md`
 - Odin implementation: `backend/app/core/projects.py`, `backend/app/core/project_graph.py`, and `backend/app/api/routes/projects.py`
 - Temporal memory implementation: `backend/app/core/claim_semantics.py`, `backend/app/core/temporal_facts.py`, and `backend/app/core/typed_evidence_runtime.py`
 - Paired memory evaluation: `scripts/backend/evaluate_evolving_memory_api.py` and `scripts/backend/evaluate_locomo_temporal_paired.py`

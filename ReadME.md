@@ -101,6 +101,11 @@ Files can be selected normally or dropped into the desktop app from File Explore
 
 Odin is Vault's project-context layer. It registers a repository as a first-class project, indexes its files, extracts deterministic structure, connects it to retrieval, and exposes the result to Vault and approved outside tools.
 
+You can add a project without installing the command line. Open **Projects**, choose
+**Add project folder**, and select one or more folders. Vault starts indexing them
+immediately. Odin is the optional terminal workflow for adding, synchronizing, and
+querying the same projects from an IDE or PowerShell.
+
 ### Install the Odin command
 
 Vault offers two installation methods in **Settings > Odin command**:
@@ -222,7 +227,13 @@ Type and Sort controls change the sources shown across the overview. Customize o
 
 Long-running ingestion remains visible after leaving Sources. The compact progress notice shows processed and total files, percentage, and the current file. It can be dismissed without cancelling the job, paused and resumed safely, or stopped after confirmation. The Sources detail panel stays closed until a source is selected, leaving the default workspace open for browsing.
 
-Vault also keeps routine feedback lightweight. Successful saves, connection results, and other short updates appear as small notifications at the bottom of the app window and fade automatically. Locked libraries report an incorrect passphrase clearly, imported models are reconciled before they are shown as ready, and duplicate model registrations are prevented from appearing as separate working installations.
+Projects and imported folders with 20 or more indexed files appear as folders in
+Sources instead of filling the main list with hundreds of rows. Open a folder to
+browse, filter, inspect, reindex, open, or remove its individual files. Files from a
+new project snapshot remain hidden until that snapshot is ready, so an in-progress
+update does not create temporary duplicates or unclustered entries.
+
+Vault also keeps routine feedback lightweight. Successful saves, connection results, and other short updates appear as small notifications at the bottom of the app window and fade automatically. A locked library can be unlocked on the same screen; reset and recovery remain in Privacy settings. Press **Ctrl+L** or choose **Lock library** in the command palette to lock immediately. Incorrect passphrases are shown beside the field. Imported models are reconciled before they are shown as ready, and duplicate model registrations are prevented from appearing as separate working installations.
 
 Settings gives each feature one clear location, keeps explanations directly below
 their headings, and places longer technical detail behind optional disclosures.
