@@ -4,14 +4,23 @@ import re
 from pathlib import Path
 
 from backend.app.core.clustering import cluster_identity_from_sources, keywords_for_text
-from backend.app.core.llm_runtime import LLMRuntimeError, generate_local_structured_json
+from backend.app.core.llm_runtime import (
+    LLMRuntimeError,
+    generate_local_structured_json,
+    runtime_status,
+)
 
+SOURCE_METADATA_VERSION = 3
 
 _BOILERPLATE_PATTERNS = (
     re.compile(r"^\s*<[^>]+>"),
     re.compile(r"^\s*(page\s+\d+|table of contents|copyright|all rights reserved)\b", re.IGNORECASE),
     re.compile(r"^\s*[-_=*#|]{3,}\s*$"),
 )
+
+
+class SemanticModelUnavailable(RuntimeError):
+    """Raised when durable semantic work must wait for the selected local model."""
 
 
 def clean_extracted_text(text: str, *, max_chars: int = 12_000) -> str:
@@ -68,7 +77,13 @@ def fallback_source_summary(*, title: str, text: str, max_chars: int = 260) -> s
     return _truncate(document_label, max_chars)
 
 
-def enrich_source_metadata(*, title: str, source_type: str, text: str) -> dict[str, object]:
+def enrich_source_metadata(
+    *,
+    title: str,
+    source_type: str,
+    text: str,
+    require_model: bool = False,
+) -> dict[str, object]:
     fallback = fallback_source_summary(title=title, text=text)
     cleaned = clean_extracted_text(text, max_chars=8_000)
     fallback_keywords = keywords_for_text(f"{title} {cleaned}", limit=6)
@@ -100,11 +115,20 @@ def enrich_source_metadata(*, title: str, source_type: str, text: str) -> dict[s
         summary = _truncate(str(parsed.get("summary") or "").strip(), 280)
         keywords = _clean_keywords(parsed.get("keywords"), fallback_keywords)
         return {"summary": summary or fallback, "keywords": keywords}
-    except (LLMRuntimeError, json.JSONDecodeError, TypeError, ValueError):
+    except LLMRuntimeError as exc:
+        _raise_when_model_unavailable(exc, required=require_model)
+        return {"summary": fallback, "keywords": fallback_keywords}
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        if require_model:
+            raise RuntimeError("The local model returned invalid source metadata.") from exc
         return {"summary": fallback, "keywords": fallback_keywords}
 
 
-def enrich_cluster_metadata(sources: list[dict]) -> dict[str, str]:
+def enrich_cluster_metadata(
+    sources: list[dict],
+    *,
+    require_model: bool = False,
+) -> dict[str, str]:
     fallback_name, fallback_description = cluster_identity_from_sources(sources)
     title_examples = [
         _readable_title(str(source.get("title") or ""))
@@ -162,12 +186,35 @@ def enrich_cluster_metadata(sources: list[dict]) -> dict[str, str]:
             "description": description or fallback_description,
             "summary": summary or description or fallback_description,
         }
-    except (LLMRuntimeError, json.JSONDecodeError, TypeError, ValueError):
+    except LLMRuntimeError as exc:
+        _raise_when_model_unavailable(exc, required=require_model)
         return {
             "name": fallback_name,
             "description": fallback_description,
             "summary": fallback_summary,
         }
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        if require_model:
+            raise RuntimeError("The local model returned invalid cluster metadata.") from exc
+        return {
+            "name": fallback_name,
+            "description": fallback_description,
+            "summary": fallback_summary,
+        }
+
+
+def _raise_when_model_unavailable(
+    error: LLMRuntimeError,
+    *,
+    required: bool,
+) -> None:
+    if not required:
+        return
+    status = runtime_status()
+    if status.get("available"):
+        raise error
+    detail = str(status.get("detail") or error or "The selected local model is unavailable.")
+    raise SemanticModelUnavailable(detail) from error
 
 
 def _readable_title(title: str) -> str:

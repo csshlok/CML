@@ -1641,6 +1641,7 @@ class JobQueueStatus(BaseModel):
     paused: int = 0
     blocked_by_dependency: int = 0
     blocked_setup_required: int = 0
+    blocked_local_model: int = 0
     deferred: int = 0
     running: int
     succeeded: int

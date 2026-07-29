@@ -12,7 +12,11 @@ from backend.app.core.embeddings import (
     start_embedding_model_download,
 )
 from backend.app.core.llm_runtime import runtime_status
-from backend.app.core.background_jobs import enqueue_job, notify_embedding_prerequisite_changed
+from backend.app.core.background_jobs import (
+    enqueue_job,
+    notify_embedding_prerequisite_changed,
+    notify_local_model_prerequisite_changed,
+)
 from backend.app.core.database import connect
 from backend.app.core.model_registry import (
     activate_model_runtime,
@@ -235,7 +239,9 @@ def queue_local_model_import(payload: ModelCompatibilityRequest) -> dict:
 def activate_local_model(model_id: str, payload: ModelActivateRequest | None = None) -> dict:
     try:
         role = payload.role if payload is not None else "chat"
-        return activate_model_runtime(model_id, role=role)
+        activated = activate_model_runtime(model_id, role=role)
+        notify_local_model_prerequisite_changed()
+        return activated
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Model not found") from exc
     except ValueError as exc:

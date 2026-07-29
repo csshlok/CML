@@ -1,4 +1,5 @@
 from collections import Counter
+from itertools import combinations
 import re
 from uuid import uuid4
 
@@ -119,6 +120,22 @@ def assign_or_create_cluster(conn, *, vault_id: str, title: str, text: str) -> s
     if standalone_clusters:
         return None
 
+    return create_auto_cluster(
+        conn,
+        vault_id=vault_id,
+        title=title,
+        keywords=ordered_keywords,
+    )
+
+
+def create_auto_cluster(
+    conn,
+    *,
+    vault_id: str,
+    title: str,
+    keywords: list[str] | set[str],
+) -> str:
+    ordered_keywords = list(keywords)
     name = cluster_name_from_keywords(ordered_keywords, title)
     now = utc_now()
     cluster_id = f"cluster-{uuid4()}"
@@ -150,6 +167,69 @@ def assign_or_create_cluster(conn, *, vault_id: str, title: str, text: str) -> s
         },
     )
     return cluster_id
+
+
+def group_related_unclustered_sources(
+    sources: list[dict],
+    *,
+    minimum_group_size: int = 2,
+    maximum_sources: int = 1000,
+) -> list[list[dict]]:
+    """Create stable lexical groups without forcing unrelated singletons together."""
+    candidates = list(sources[: max(1, maximum_sources)])
+    if len(candidates) < minimum_group_size:
+        return []
+    term_sets = [
+        set(
+            terms_for_text(
+                " ".join(
+                    str(source.get(field) or "")
+                    for field in ("title", "summary", "tags")
+                ),
+                limit=18,
+            )
+        )
+        for source in candidates
+    ]
+    parents = list(range(len(candidates)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(first: int, second: int) -> None:
+        first_root = find(first)
+        second_root = find(second)
+        if first_root != second_root:
+            parents[second_root] = first_root
+
+    postings: dict[str, list[int]] = {}
+    for index, terms in enumerate(term_sets):
+        for term in terms:
+            postings.setdefault(term, []).append(index)
+    pair_overlap: Counter[tuple[int, int]] = Counter()
+    maximum_posting = max(40, int(len(candidates) * 0.20))
+    for indices in postings.values():
+        if len(indices) > maximum_posting:
+            continue
+        pair_overlap.update(combinations(indices, 2))
+    for (first, second), overlap in pair_overlap.items():
+        if overlap < 2:
+            continue
+        containment = overlap / max(1, min(len(term_sets[first]), len(term_sets[second])))
+        if overlap >= 3 or containment >= 0.40:
+            union(first, second)
+
+    grouped: dict[int, list[dict]] = {}
+    for index, source in enumerate(candidates):
+        grouped.setdefault(find(index), []).append(source)
+    return [
+        group
+        for group in grouped.values()
+        if len(group) >= max(2, minimum_group_size)
+    ]
 
 
 def cluster_name_from_keywords(keywords: list[str] | set[str], title: str) -> str:

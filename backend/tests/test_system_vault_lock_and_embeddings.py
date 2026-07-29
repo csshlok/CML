@@ -538,6 +538,91 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(resumed["status"], "queued")
         self.assertEqual(reconciliation_count, 1)
 
+    def test_local_model_jobs_block_without_consuming_attempts_and_resume_when_ready(self) -> None:
+        from backend.app.core.background_jobs import (
+            _claim_next_job,
+            _refresh_local_model_prerequisite,
+            enqueue_job,
+            notify_local_model_prerequisite_changed,
+        )
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            queued = enqueue_job(
+                conn,
+                job_type="source_metadata_enrichment",
+                payload={"source_id": "source-waits-for-model", "source_updated_at": "now"},
+                dedupe_key="source-metadata:source-waits-for-model:now",
+                scope_id="source-waits-for-model",
+            )
+        unavailable = {
+            "available": False,
+            "state": "failed",
+            "detail": "The selected model stopped.",
+        }
+        with patch("backend.app.core.llm_runtime.runtime_status", return_value=unavailable):
+            self.assertIsNone(_claim_next_job())
+            _refresh_local_model_prerequisite()
+            _refresh_local_model_prerequisite()
+        with connect() as conn:
+            blocked = conn.execute(
+                "SELECT * FROM app_jobs WHERE id = ?",
+                (queued["id"],),
+            ).fetchone()
+            recovery_count = conn.execute(
+                "SELECT COUNT(*) FROM app_jobs WHERE job_type = 'model_runtime_recovery'"
+            ).fetchone()[0]
+        self.assertEqual(blocked["status"], "blocked_setup_required")
+        self.assertEqual(blocked["attempts"], 0)
+        self.assertEqual(recovery_count, 1)
+
+        with patch(
+            "backend.app.core.llm_runtime.runtime_status",
+            return_value={"available": True, "state": "ready", "detail": "Ready."},
+        ):
+            notify_local_model_prerequisite_changed()
+        with connect() as conn:
+            resumed = conn.execute(
+                "SELECT * FROM app_jobs WHERE id = ?",
+                (queued["id"],),
+            ).fetchone()
+        self.assertEqual(resumed["status"], "queued")
+
+    def test_model_recovery_rescans_drives_reactivates_selection_and_wakes_jobs(self) -> None:
+        from backend.app.core.background_jobs import _run_model_runtime_recovery
+
+        with (
+            patch(
+                "backend.app.core.model_registry.discover_installed_models",
+                return_value={
+                    "models": [{"id": "model-1"}],
+                    "scanned_root_count": 4,
+                    "compatible_model_count": 1,
+                },
+            ) as discover,
+            patch(
+                "backend.app.core.model_registry.active_chat_model_status",
+                return_value={
+                    "id": "model-1",
+                    "name": "Model One",
+                    "local_path": str(self.data_dir / "model.gguf"),
+                },
+            ),
+            patch(
+                "backend.app.core.model_registry.activate_model_runtime",
+                return_value={"id": "model-1", "name": "Model One"},
+            ) as activate,
+            patch(
+                "backend.app.core.background_jobs.notify_local_model_prerequisite_changed"
+            ) as notify_ready,
+        ):
+            _run_model_runtime_recovery({"reason": "semantic_jobs_waiting"})
+
+        self.assertTrue(discover.call_args.kwargs["refresh"])
+        self.assertEqual(discover.call_args.kwargs["max_results"], 200)
+        activate.assert_called_once_with("model-1", role="chat")
+        notify_ready.assert_called_once_with()
+
     def test_lock_override_audit_sequence_is_complete(self) -> None:
         import backend.app.core.vault_lock as vault_lock_module
         from backend.app.core.database import connect

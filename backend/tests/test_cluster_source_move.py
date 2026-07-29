@@ -314,8 +314,72 @@ class ClusterSourceMoveTests(unittest.TestCase):
             ).fetchone()
         self.assertIn("source move", updated["summary"])
         self.assertIn("source organization", updated["tags"])
-        self.assertEqual(updated["metadata_version"], 2)
+        self.assertEqual(updated["metadata_version"], 3)
         self.assertIsNotNone(refresh)
+
+    def test_reconciliation_groups_related_analyzed_sources_after_model_recovery(self) -> None:
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import _run_source_cluster_reconciliation
+        from backend.app.core.database import connect
+        from backend.app.schemas import SourceCreate
+
+        self.seed_clusters()
+        sources = [
+            create_source(
+                SourceCreate(
+                    vault_id="vault-1",
+                    cluster_id="cluster-a",
+                    title=title,
+                    source_type="note",
+                    raw_text=text,
+                )
+            )
+            for title, text in (
+                (
+                    "Neural network training plan",
+                    "Neural network training uses gradient descent, model evaluation, and validation data.",
+                ),
+                (
+                    "Neural network evaluation notes",
+                    "Neural network evaluation compares validation data, model accuracy, and training results.",
+                ),
+            )
+        ]
+        with connect() as conn:
+            conn.executemany(
+                """
+                UPDATE sources
+                SET cluster_id = NULL, metadata_version = 3, summary = ?, tags = ?, updated_at = updated_at
+                WHERE id = ?
+                """,
+                [
+                    (
+                        "Neural network training, validation data, and model evaluation.",
+                        '["neural networks","model training","validation data"]',
+                        sources[0]["id"],
+                    ),
+                    (
+                        "Neural network evaluation using validation data and training results.",
+                        '["neural networks","model evaluation","validation data"]',
+                        sources[1]["id"],
+                    ),
+                ],
+            )
+
+        _run_source_cluster_reconciliation({"vault_id": "vault-1"})
+
+        with connect() as conn:
+            memberships = conn.execute(
+                "SELECT id, cluster_id FROM sources WHERE id IN (?, ?) ORDER BY id",
+                (sources[0]["id"], sources[1]["id"]),
+            ).fetchall()
+            cluster = conn.execute(
+                "SELECT name_origin FROM clusters WHERE id = ?",
+                (memberships[0]["cluster_id"],),
+            ).fetchone()
+        self.assertIsNotNone(memberships[0]["cluster_id"])
+        self.assertEqual(memberships[0]["cluster_id"], memberships[1]["cluster_id"])
+        self.assertEqual(cluster["name_origin"], "auto")
 
     def test_startup_metadata_repair_is_bounded_and_deduplicated(self) -> None:
         from backend.app.core.background_jobs import enqueue_startup_metadata_jobs
@@ -337,6 +401,38 @@ class ClusterSourceMoveTests(unittest.TestCase):
                 (source["id"],),
             ).fetchone()
         self.assertEqual(jobs["count"], 1)
+
+    def test_stale_metadata_job_queues_the_current_source_revision(self) -> None:
+        from backend.app.core.background_jobs import _run_source_metadata_enrichment
+        from backend.app.core.database import connect
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+        with connect() as conn:
+            conn.execute(
+                "UPDATE sources SET updated_at = '2099-01-01T00:00:00+00:00' WHERE id = ?",
+                (source["id"],),
+            )
+
+        _run_source_metadata_enrichment(
+            {
+                "source_id": source["id"],
+                "source_updated_at": source["updated_at"],
+            }
+        )
+
+        with connect() as conn:
+            replacement = conn.execute(
+                """
+                SELECT payload FROM app_jobs
+                WHERE job_type = 'source_metadata_enrichment'
+                  AND scope_id = ?
+                  AND dedupe_key LIKE '%2099-01-01T00:00:00+00:00'
+                LIMIT 1
+                """,
+                (source["id"],),
+            ).fetchone()
+        self.assertIsNotNone(replacement)
 
     def test_dismissing_a_suggested_move_keeps_membership_and_records_the_decision(self) -> None:
         from backend.app.api.routes.clusters import decide_cluster_suggestion

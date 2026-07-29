@@ -2,8 +2,9 @@ import json
 import unittest
 from unittest.mock import patch
 
-from backend.app.core.llm_runtime import LLMResult
+from backend.app.core.llm_runtime import LLMResult, LLMRuntimeError
 from backend.app.core.semantic_metadata import (
+    SemanticModelUnavailable,
     clean_extracted_text,
     enrich_cluster_metadata,
     enrich_source_metadata,
@@ -66,6 +67,62 @@ class SemanticMetadataTests(unittest.TestCase):
             )
         self.assertIn("course guide", result["summary"])
         self.assertEqual(result["keywords"][0], "Python")
+
+    def test_unavailable_model_pauses_semantic_work_instead_of_saving_fallback_copy(self) -> None:
+        with (
+            patch(
+                "backend.app.core.semantic_metadata.generate_local_structured_json",
+                side_effect=LLMRuntimeError("runtime unreachable"),
+            ),
+            patch(
+                "backend.app.core.semantic_metadata.runtime_status",
+                return_value={
+                    "available": False,
+                    "state": "unreachable",
+                    "detail": "The selected model stopped.",
+                },
+            ),
+        ):
+            with self.assertRaises(SemanticModelUnavailable):
+                enrich_source_metadata(
+                    title="syllabus.pdf",
+                    source_type="file",
+                    text="A course syllabus describing lessons and projects.",
+                    require_model=True,
+                )
+
+    def test_runtime_error_does_not_save_fallback_when_process_still_looks_ready(self) -> None:
+        with (
+            patch(
+                "backend.app.core.semantic_metadata.generate_local_structured_json",
+                side_effect=LLMRuntimeError("generation request failed"),
+            ),
+            patch(
+                "backend.app.core.semantic_metadata.runtime_status",
+                return_value={"available": True, "state": "ready", "detail": ""},
+            ),
+        ):
+            with self.assertRaises(LLMRuntimeError):
+                enrich_source_metadata(
+                    title="syllabus.pdf",
+                    source_type="file",
+                    text="A course syllabus describing lessons and projects.",
+                    require_model=True,
+                )
+
+    def test_invalid_model_metadata_is_retried_instead_of_marked_complete(self) -> None:
+        response = LLMResult(text="not json", provider="local", model="test")
+        with patch(
+            "backend.app.core.semantic_metadata.generate_local_structured_json",
+            return_value=response,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "invalid source metadata"):
+                enrich_source_metadata(
+                    title="syllabus.pdf",
+                    source_type="file",
+                    text="A course syllabus describing lessons and projects.",
+                    require_model=True,
+                )
 
     def test_cluster_enrichment_rejects_filename_style_names(self) -> None:
         response = LLMResult(

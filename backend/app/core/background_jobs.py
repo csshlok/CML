@@ -31,7 +31,12 @@ from backend.app.core.cluster_lifecycle import (
 from backend.app.core.vector_maintenance import vector_repair_plan
 from backend.app.core.context_memory import rebuild_chat_session_memory, rebuild_source_memory
 from backend.app.core.memory_card import generate_tags
-from backend.app.core.semantic_metadata import enrich_source_metadata, fallback_source_summary
+from backend.app.core.semantic_metadata import (
+    SOURCE_METADATA_VERSION,
+    SemanticModelUnavailable,
+    enrich_source_metadata,
+    fallback_source_summary,
+)
 from backend.app.core.atomic_memory import (
     ATOMIC_MEMORY_VERSION,
     ATOMIC_EXTRACTION_RESPONSE_SCHEMA,
@@ -58,6 +63,7 @@ from backend.app.core.temporal_facts import (
     temporal_fact_source_hash,
 )
 from backend.app.core.analysis_packets import build_analysis_packets
+from backend.app.core.llm_runtime import LLMRuntimeError
 from backend.app.core.unlock_state import should_pause_vault_job
 
 
@@ -83,6 +89,12 @@ EMBEDDING_JOB_TYPES = {
     "expanded_analysis",
     "complete_analysis",
     "vector_reconcile_incremental",
+}
+LOCAL_MODEL_JOB_TYPES = {
+    "atomic_semantic_enrichment",
+    "cluster_profile_backfill",
+    "refresh_cluster_profile",
+    "source_metadata_enrichment",
 }
 
 
@@ -295,6 +307,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         soft_timeout_seconds=120,
         timeout_action="defer",
     ),
+    "source_cluster_reconciliation": JobPolicy(
+        priority="normal",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="vault",
+        concurrency_group="cluster_reconciliation",
+        resource_cost="medium",
+        can_run_during_synthesis=True,
+        user_visible=True,
+        user_initiated=False,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=900,
+        soft_timeout_seconds=180,
+        timeout_action="defer",
+    ),
     "ocr_source": JobPolicy(
         priority="normal",
         idempotency_class="idempotent",
@@ -412,6 +441,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         preemptable=False,
         timeout_seconds=1800,
         soft_timeout_seconds=120,
+        timeout_action="defer",
+    ),
+    "model_runtime_recovery": JobPolicy(
+        priority="high",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="model_registry",
+        concurrency_group="model_storage",
+        resource_cost="medium",
+        can_run_during_synthesis=True,
+        user_visible=True,
+        user_initiated=False,
+        cancellable=False,
+        preemptable=False,
+        timeout_seconds=1800,
+        soft_timeout_seconds=180,
         timeout_action="defer",
     ),
     "diagnostic_bundle": JobPolicy(
@@ -679,11 +725,11 @@ def enqueue_startup_metadata_jobs(*, limit: int = 50) -> None:
             FROM sources
             WHERE deleted_at IS NULL
               AND state = 'indexed'
-              AND metadata_version < 2
+              AND metadata_version < ?
             ORDER BY updated_at DESC
             LIMIT ?
             """,
-            (safe_limit,),
+            (SOURCE_METADATA_VERSION, safe_limit),
         ).fetchall()
         for source in sources:
             enqueue_job(
@@ -718,12 +764,12 @@ def enqueue_startup_metadata_jobs(*, limit: int = 50) -> None:
                   WHERE sources.cluster_id = clusters.id
                     AND sources.deleted_at IS NULL
                     AND sources.state = 'indexed'
-                    AND sources.metadata_version < 2
+                    AND sources.metadata_version < ?
               )
             ORDER BY updated_at DESC
             LIMIT ?
             """,
-            (safe_limit,),
+            (SOURCE_METADATA_VERSION, safe_limit),
         ).fetchall()
         for cluster in clusters:
             enqueue_job(
@@ -855,12 +901,23 @@ def job_queue_status() -> dict:
             """,
             (JOB_STATUS_RUNNING_LIMIT,),
         ).fetchall()
+        local_model_placeholders = ",".join("?" for _ in LOCAL_MODEL_JOB_TYPES)
+        blocked_local_model = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM app_jobs
+            WHERE status = 'blocked_setup_required'
+              AND job_type IN ({local_model_placeholders})
+            """,
+            sorted(LOCAL_MODEL_JOB_TYPES),
+        ).fetchone()
     counts = {row["status"]: row["count"] for row in rows}
     return {
         "queued": counts.get("queued", 0),
         "paused": counts.get("paused", 0),
         "blocked_by_dependency": counts.get("blocked_by_dependency", 0),
         "blocked_setup_required": counts.get("blocked_setup_required", 0),
+        "blocked_local_model": int(blocked_local_model["count"] or 0),
         "deferred": counts.get("deferred", 0),
         "running": counts.get("running", 0),
         "succeeded": counts.get("succeeded", 0),
@@ -1052,6 +1109,7 @@ def _worker_loop() -> None:
 
 def _claim_next_job() -> dict | None:
     embeddings_available = bool(embedding_status(probe_model=False).get("available"))
+    local_model_available: bool | None = None
     with connect() as conn:
         rows = conn.execute(
             """
@@ -1072,6 +1130,23 @@ def _claim_next_job() -> dict | None:
         ).fetchall()
         for row in rows:
             job = dict_from_row(row)
+            if job["job_type"] in LOCAL_MODEL_JOB_TYPES:
+                if local_model_available is None:
+                    from backend.app.core.llm_runtime import runtime_status
+
+                    local_model_available = bool(runtime_status().get("available"))
+                if not local_model_available:
+                    conn.execute(
+                        """
+                        UPDATE app_jobs
+                        SET status = 'blocked_setup_required',
+                            status_detail = 'Local model unavailable. Waiting to resume document analysis.',
+                            updated_at = ?
+                        WHERE id = ? AND status = 'queued'
+                        """,
+                        (utc_now(), job["id"]),
+                    )
+                    continue
             if job["job_type"] in EMBEDDING_JOB_TYPES and not embeddings_available:
                 conn.execute(
                     """
@@ -1171,6 +1246,8 @@ def _run_claimed_job(job: dict) -> None:
             _run_cluster_profile_backfill(payload, job["id"])
         elif job["job_type"] == "source_metadata_enrichment":
             _run_source_metadata_enrichment(payload, job["id"])
+        elif job["job_type"] == "source_cluster_reconciliation":
+            _run_source_cluster_reconciliation(payload, job["id"])
         elif job["job_type"] == "ocr_source":
             _run_ocr_source(payload, job["id"])
         elif job["job_type"] == "expanded_analysis":
@@ -1185,6 +1262,8 @@ def _run_claimed_job(job: dict) -> None:
             _run_model_import(payload, job["id"])
         elif job["job_type"] == "model_discovery":
             _run_model_discovery(payload, job["id"])
+        elif job["job_type"] == "model_runtime_recovery":
+            _run_model_runtime_recovery(payload, job["id"])
         elif job["job_type"] == "diagnostic_bundle":
             _run_diagnostic_bundle(payload, job["id"])
         elif job["job_type"] == "integration_refresh":
@@ -1200,6 +1279,9 @@ def _run_claimed_job(job: dict) -> None:
     except Exception as exc:
         if job["job_type"] in EMBEDDING_JOB_TYPES and _is_embedding_setup_error(exc):
             _mark_job_blocked_setup(job)
+            return
+        if job["job_type"] in LOCAL_MODEL_JOB_TYPES and _is_local_model_setup_error(exc):
+            _mark_job_blocked_local_model(job, str(exc))
             return
         _mark_job_failed_or_retry(job, str(exc))
         return
@@ -1746,7 +1828,7 @@ def _run_refresh_cluster_profile(payload: dict, job_id: str | None = None) -> No
     if not cluster_id:
         return
     with connect() as conn:
-        refresh_cluster_profile(conn, cluster_id)
+        refresh_cluster_profile(conn, cluster_id, require_model=True)
         _raise_if_job_cancelled(job_id)
 
 
@@ -1805,8 +1887,14 @@ def _run_cluster_profile_backfill(payload: dict, job_id: str) -> None:
                     raise JobPaused(job_id)
                 try:
                     if not prune_empty_auto_cluster(conn, str(row["id"])):
-                        refresh_cluster_profile(conn, str(row["id"]))
+                        refresh_cluster_profile(
+                            conn,
+                            str(row["id"]),
+                            require_model=True,
+                        )
                     processed += 1
+                except (SemanticModelUnavailable, LLMRuntimeError):
+                    raise
                 except Exception as exc:
                     failures.append(
                         {"cluster_id": str(row["id"]), "cluster_name": str(row["name"])}
@@ -1837,6 +1925,108 @@ def _run_cluster_profile_backfill(payload: dict, job_id: str) -> None:
     )
 
 
+def _enqueue_source_metadata_backlog(
+    conn,
+    *,
+    vault_id: str | None = None,
+    limit_per_vault: int = 64,
+) -> int:
+    vault_rows = (
+        [{"id": vault_id}]
+        if vault_id
+        else conn.execute("SELECT id FROM vaults ORDER BY created_at ASC").fetchall()
+    )
+    enqueued = 0
+    active_statuses = (
+        "queued", "running", "paused", "blocked_by_dependency",
+        "blocked_setup_required", "deferred",
+    )
+    placeholders = ",".join("?" for _ in active_statuses)
+    for vault in vault_rows:
+        current_vault_id = str(vault["id"])
+        active = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM app_jobs jobs
+            JOIN sources ON sources.id = jobs.scope_id
+            WHERE jobs.job_type = 'source_metadata_enrichment'
+              AND jobs.status IN ({placeholders})
+              AND sources.vault_id = ?
+              AND sources.deleted_at IS NULL
+            """,
+            [*active_statuses, current_vault_id],
+        ).fetchone()
+        queue_limit = max(1, min(int(limit_per_vault), 128))
+        available_slots = max(0, queue_limit - int(active["count"] or 0))
+        if available_slots == 0:
+            continue
+        sources = conn.execute(
+            f"""
+            SELECT sources.id, sources.updated_at
+            FROM sources
+            WHERE sources.vault_id = ?
+              AND sources.deleted_at IS NULL
+              AND sources.state = 'indexed'
+              AND sources.metadata_version < ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM app_jobs jobs
+                  WHERE jobs.job_type = 'source_metadata_enrichment'
+                    AND jobs.scope_id = sources.id
+                    AND jobs.status IN ({placeholders})
+              )
+            ORDER BY sources.updated_at ASC, sources.id ASC
+            LIMIT ?
+            """,
+            [
+                current_vault_id,
+                SOURCE_METADATA_VERSION,
+                *active_statuses,
+                available_slots,
+            ],
+        ).fetchall()
+        for source in sources:
+            enqueue_job(
+                conn,
+                job_type="source_metadata_enrichment",
+                payload={
+                    "source_id": source["id"],
+                    "source_updated_at": source["updated_at"],
+                },
+                dedupe_key=f"source-metadata:{source['id']}:{source['updated_at']}",
+                scope_id=str(source["id"]),
+            )
+            enqueued += 1
+        stale = conn.execute(
+            """
+            SELECT 1 FROM sources
+            WHERE vault_id = ? AND deleted_at IS NULL AND state = 'indexed'
+              AND metadata_version < ?
+            LIMIT 1
+            """,
+            (current_vault_id, SOURCE_METADATA_VERSION),
+        ).fetchone()
+        if stale is None:
+            unclustered = conn.execute(
+                """
+                SELECT 1 FROM sources
+                WHERE vault_id = ? AND deleted_at IS NULL AND state = 'indexed'
+                  AND cluster_id IS NULL AND metadata_version >= ?
+                LIMIT 1
+                """,
+                (current_vault_id, SOURCE_METADATA_VERSION),
+            ).fetchone()
+            if unclustered is not None:
+                enqueue_job(
+                    conn,
+                    job_type="source_cluster_reconciliation",
+                    payload={"vault_id": current_vault_id, "metadata_version": SOURCE_METADATA_VERSION},
+                    dedupe_key=f"source-cluster-reconciliation:{current_vault_id}:v{SOURCE_METADATA_VERSION}",
+                    scope_id=current_vault_id,
+                    user_initiated=False,
+                )
+    return enqueued
+
+
 def _run_source_metadata_enrichment(payload: dict, job_id: str | None = None) -> None:
     _raise_if_job_cancelled(job_id)
     source_id = str(payload.get("source_id") or "")
@@ -1848,7 +2038,19 @@ def _run_source_metadata_enrichment(payload: dict, job_id: str | None = None) ->
             "SELECT * FROM sources WHERE id = ? AND deleted_at IS NULL",
             (source_id,),
         ).fetchone()
-        if row is None or (expected_updated_at and row["updated_at"] != expected_updated_at):
+        if row is None:
+            return
+        if expected_updated_at and row["updated_at"] != expected_updated_at:
+            enqueue_job(
+                conn,
+                job_type="source_metadata_enrichment",
+                payload={
+                    "source_id": source_id,
+                    "source_updated_at": row["updated_at"],
+                },
+                dedupe_key=f"source-metadata:{source_id}:{row['updated_at']}",
+                scope_id=source_id,
+            )
             return
         source = dict_from_row(row)
         encrypted = load_source_content_fields(
@@ -1863,6 +2065,7 @@ def _run_source_metadata_enrichment(payload: dict, job_id: str | None = None) ->
         title=str(source.get("title") or "Document"),
         source_type=str(source.get("source_type") or "file"),
         text=text,
+        require_model=True,
     )
     _raise_if_job_cancelled(job_id)
     existing_tags = _json_string_list(source.get("tags"))
@@ -1893,10 +2096,16 @@ def _run_source_metadata_enrichment(payload: dict, job_id: str | None = None) ->
         conn.execute(
             """
             UPDATE sources
-            SET summary = ?, tags = ?, metadata_version = 2, updated_at = ?
+            SET summary = ?, tags = ?, metadata_version = ?, updated_at = ?
             WHERE id = ?
             """,
-            (stored["summary"], stored["tags"], now, source_id),
+            (
+                stored["summary"],
+                stored["tags"],
+                SOURCE_METADATA_VERSION,
+                now,
+                source_id,
+            ),
         )
         remaining = conn.execute(
             """
@@ -1904,15 +2113,133 @@ def _run_source_metadata_enrichment(payload: dict, job_id: str | None = None) ->
             WHERE cluster_id = ?
               AND deleted_at IS NULL
               AND state = 'indexed'
-              AND metadata_version < 2
+              AND metadata_version < ?
             LIMIT 1
             """,
-            (current["cluster_id"],),
+            (current["cluster_id"], SOURCE_METADATA_VERSION),
         ).fetchone()
         if remaining is None:
             mark_cluster_needs_update(conn, current["cluster_id"], "Source description was refreshed.")
         else:
             mark_cluster_metadata_pending(conn, current["cluster_id"])
+        _enqueue_source_metadata_backlog(
+            conn,
+            vault_id=str(current["vault_id"]),
+        )
+
+
+def _run_source_cluster_reconciliation(payload: dict, job_id: str | None = None) -> None:
+    from backend.app.core.clustering import (
+        assign_or_create_cluster,
+        create_auto_cluster,
+        group_related_unclustered_sources,
+        keywords_for_text,
+    )
+
+    _raise_if_job_cancelled(job_id)
+    vault_id = str(payload.get("vault_id") or "")
+    if not vault_id:
+        raise ValueError("source_cluster_reconciliation_requires_vault")
+    batch_size = max(2, min(int(payload.get("batch_size") or 1000), 1000))
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM sources
+            WHERE vault_id = ? AND deleted_at IS NULL AND state = 'indexed'
+              AND cluster_id IS NULL AND metadata_version >= ?
+            ORDER BY updated_at ASC, id ASC
+            LIMIT ?
+            """,
+            (vault_id, SOURCE_METADATA_VERSION, batch_size),
+        ).fetchall()
+        sources: list[dict] = []
+        for row in rows:
+            source = dict_from_row(row)
+            encrypted = load_source_content_fields(
+                conn,
+                vault_id=vault_id,
+                source_id=str(source["id"]),
+                fields=("summary", "extracted_text", "raw_text", "tags"),
+            )
+            source.update({key: value for key, value in encrypted.items() if value})
+            sources.append(source)
+
+        assigned: dict[str, list[str]] = {}
+        unmatched: list[dict] = []
+        for source in sources:
+            _raise_if_job_cancelled(job_id)
+            text = str(
+                source.get("summary")
+                or source.get("extracted_text")
+                or source.get("raw_text")
+                or ""
+            )
+            cluster_id = assign_or_create_cluster(
+                conn,
+                vault_id=vault_id,
+                title=str(source.get("title") or "Document"),
+                text=f"{text} {source.get('tags') or ''}",
+            )
+            if cluster_id:
+                assigned.setdefault(cluster_id, []).append(str(source["id"]))
+            else:
+                unmatched.append(source)
+
+        grouped_ids: set[str] = set()
+        for group in group_related_unclustered_sources(unmatched):
+            combined = " ".join(
+                f"{source.get('title') or ''} {source.get('summary') or ''} {source.get('tags') or ''}"
+                for source in group
+            )
+            cluster_id = create_auto_cluster(
+                conn,
+                vault_id=vault_id,
+                title=str(group[0].get("title") or "Documents"),
+                keywords=keywords_for_text(combined, limit=8),
+            )
+            source_ids = [str(source["id"]) for source in group]
+            assigned.setdefault(cluster_id, []).extend(source_ids)
+            grouped_ids.update(source_ids)
+
+        now = utc_now()
+        for cluster_id, source_ids in assigned.items():
+            for source_id in dict.fromkeys(source_ids):
+                conn.execute(
+                    """
+                    UPDATE sources SET cluster_id = ?, updated_at = ?
+                    WHERE id = ? AND vault_id = ? AND cluster_id IS NULL
+                    """,
+                    (cluster_id, now, source_id, vault_id),
+                )
+                rebuild_source_memory(conn, source_id=source_id)
+            mark_cluster_needs_update(
+                conn,
+                cluster_id,
+                "Newly analyzed sources were organized into this cluster.",
+            )
+        remaining = max(0, len(sources) - sum(len(set(ids)) for ids in assigned.values()))
+        result = {
+            "sources_checked": len(sources),
+            "sources_clustered": len(sources) - remaining,
+            "sources_left_unclustered": remaining,
+            "clusters_updated": len(assigned),
+            "new_groups_created": len(
+                {
+                    cluster_id
+                    for cluster_id, ids in assigned.items()
+                    if any(source_id in grouped_ids for source_id in ids)
+                }
+            ),
+        }
+    _set_job_result(
+        job_id,
+        result,
+        detail=(
+            f"Organized {result['sources_clustered']} of {result['sources_checked']} analyzed sources. "
+            f"{result['sources_left_unclustered']} still need a clearer match."
+        ),
+    )
 
 
 def _run_ocr_source(payload: dict, job_id: str) -> None:
@@ -2278,6 +2605,60 @@ def _run_model_discovery(payload: dict, job_id: str | None = None) -> None:
     )
 
 
+def _run_model_runtime_recovery(payload: dict, job_id: str | None = None) -> None:
+    from backend.app.core.model_registry import (
+        activate_model_runtime,
+        active_chat_model_status,
+        discover_installed_models,
+    )
+
+    _raise_if_job_cancelled(job_id)
+    discovery = discover_installed_models(
+        max_results=200,
+        include_rejected=False,
+        refresh=True,
+        progress_callback=lambda progress: _update_recovery_scan_progress(job_id, progress),
+        cancellation_callback=lambda: _raise_if_job_cancelled(job_id),
+    )
+    _raise_if_job_cancelled(job_id)
+    active_model = active_chat_model_status()
+    if not active_model:
+        raise RuntimeError("Choose a local chat model to resume document analysis.")
+    if not active_model.get("local_path"):
+        raise RuntimeError(
+            "The selected local model file was not found during the drive scan. "
+            "Open Models and choose an available model."
+        )
+    activated = activate_model_runtime(str(active_model["id"]), role="chat")
+    _raise_if_job_cancelled(job_id)
+    notify_local_model_prerequisite_changed()
+    _set_job_result(
+        job_id,
+        {
+            "model_id": activated["id"],
+            "model_name": activated["name"],
+            "scanned_root_count": int(discovery.get("scanned_root_count") or 0),
+            "compatible_model_count": int(discovery.get("compatible_model_count") or 0),
+            "reason": str(payload.get("reason") or "runtime_unavailable"),
+        },
+        detail="The local model was found, restarted, and queued document analysis resumed.",
+    )
+
+
+def _update_recovery_scan_progress(job_id: str | None, progress: dict) -> None:
+    if not job_id:
+        return
+    with connect() as conn:
+        _update_job_progress(
+            conn,
+            job_id,
+            {
+                **progress,
+                "phase": "scanning_for_selected_model",
+            },
+        )
+
+
 def _run_diagnostic_bundle(payload: dict, job_id: str | None = None) -> None:
     _raise_if_job_cancelled(job_id)
     from backend.app.api.routes.diagnostics import create_diagnostic_bundle
@@ -2392,6 +2773,10 @@ def _is_embedding_setup_error(error: Exception) -> bool:
     return "embedding" in message or "memory search" in message
 
 
+def _is_local_model_setup_error(error: Exception) -> bool:
+    return isinstance(error, (SemanticModelUnavailable, LLMRuntimeError))
+
+
 def _mark_job_blocked_setup(job: dict) -> None:
     with connect() as conn:
         conn.execute(
@@ -2409,7 +2794,34 @@ def _mark_job_blocked_setup(job: dict) -> None:
         )
 
 
+def _mark_job_blocked_local_model(job: dict, detail: str = "") -> None:
+    message = detail.strip() or "The selected local model is unavailable."
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE app_jobs
+            SET status = 'blocked_setup_required',
+                attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+                last_error = '',
+                status_detail = ?,
+                started_at = NULL,
+                updated_at = ?
+            WHERE id = ? AND status = 'running'
+            """,
+            (
+                f"Local model unavailable. {message[:430]}",
+                utc_now(),
+                job["id"],
+            ),
+        )
+
+
 def _refresh_setup_prerequisites() -> None:
+    _refresh_embedding_prerequisite()
+    _refresh_local_model_prerequisite()
+
+
+def _refresh_embedding_prerequisite() -> None:
     available = bool(embedding_status(probe_model=False).get("available"))
     now = utc_now()
     with connect() as conn:
@@ -2474,8 +2886,107 @@ def _refresh_setup_prerequisites() -> None:
                 )
 
 
+def _refresh_local_model_prerequisite() -> None:
+    from backend.app.core.llm_runtime import runtime_status
+
+    placeholders = ",".join("?" for _ in LOCAL_MODEL_JOB_TYPES)
+    with connect() as conn:
+        pending = conn.execute(
+            f"""
+            SELECT
+                EXISTS(
+                    SELECT 1 FROM app_jobs
+                    WHERE job_type IN ({placeholders})
+                      AND status IN (
+                          'queued', 'running', 'paused', 'blocked_by_dependency',
+                          'blocked_setup_required', 'deferred'
+                      )
+                )
+                OR EXISTS(
+                    SELECT 1 FROM sources
+                    WHERE deleted_at IS NULL AND state = 'indexed'
+                      AND metadata_version < ?
+                ) AS needed
+            """,
+            [*sorted(LOCAL_MODEL_JOB_TYPES), SOURCE_METADATA_VERSION],
+        ).fetchone()
+    if not bool(pending["needed"]):
+        return
+
+    runtime = runtime_status()
+    available = bool(runtime.get("available"))
+    runtime_state = str(runtime.get("state") or "missing")
+    detail = str(runtime.get("detail") or "The selected local model is unavailable.")
+    now = utc_now()
+    with connect() as conn:
+        previous = conn.execute(
+            "SELECT state, generation FROM scheduler_prerequisites WHERE name = 'local_model'"
+        ).fetchone()
+        previous_state = str(previous["state"]) if previous else "unknown"
+        generation = int(previous["generation"] or 0) if previous else 0
+        transitioned_to_ready = available and previous_state != "ready"
+        if transitioned_to_ready:
+            generation += 1
+        state = "ready" if available else "setup_required"
+        conn.execute(
+            """
+            INSERT INTO scheduler_prerequisites (name, state, generation, detail, updated_at)
+            VALUES ('local_model', ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                state = excluded.state,
+                generation = excluded.generation,
+                detail = excluded.detail,
+                updated_at = excluded.updated_at
+            """,
+            (state, generation, "" if available else detail[:500], now),
+        )
+        if available:
+            conn.execute(
+                f"""
+                UPDATE app_jobs
+                SET status = 'queued', status_detail = '', updated_at = ?
+                WHERE status = 'blocked_setup_required'
+                  AND job_type IN ({placeholders})
+                """,
+                [now, *sorted(LOCAL_MODEL_JOB_TYPES)],
+            )
+            if transitioned_to_ready:
+                _enqueue_source_metadata_backlog(conn)
+            return
+
+        waiting = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM app_jobs
+            WHERE job_type IN ({placeholders})
+              AND status IN ('queued', 'running', 'blocked_setup_required', 'deferred')
+            """,
+            sorted(LOCAL_MODEL_JOB_TYPES),
+        ).fetchone()
+        recovery_key = f"model-runtime-recovery:{generation}"
+        recovery = conn.execute(
+            "SELECT id FROM app_jobs WHERE dedupe_key = ? LIMIT 1",
+            (recovery_key,),
+        ).fetchone()
+        if int(waiting["count"] or 0) > 0 and runtime_state != "starting" and recovery is None:
+            enqueue_job(
+                conn,
+                job_type="model_runtime_recovery",
+                payload={"reason": "semantic_jobs_waiting"},
+                dedupe_key=recovery_key,
+                user_initiated=False,
+                max_attempts=1,
+            )
+
+
 def notify_embedding_prerequisite_changed() -> None:
-    _refresh_setup_prerequisites()
+    _refresh_embedding_prerequisite()
+    wake_background_worker()
+
+
+def notify_local_model_prerequisite_changed() -> None:
+    _refresh_local_model_prerequisite()
+    wake_background_worker()
 
 
 def _refresh_blocked_dependencies() -> None:

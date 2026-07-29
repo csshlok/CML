@@ -103,7 +103,12 @@ def prune_empty_auto_cluster(conn, cluster_id: str | None) -> bool:
     return True
 
 
-def refresh_cluster_profile(conn, cluster_id: str) -> dict[str, str]:
+def refresh_cluster_profile(
+    conn,
+    cluster_id: str,
+    *,
+    require_model: bool = False,
+) -> dict[str, str]:
     lifecycle = _cluster_rag_lifecycle(conn, cluster_id)
     row = conn.execute(
         """
@@ -199,7 +204,10 @@ def refresh_cluster_profile(conn, cluster_id: str) -> dict[str, str]:
                 )
                 source_row.update({key: value for key, value in encrypted_fields.items() if value})
                 source_rows.append(source_row)
-            generated_metadata = enrich_cluster_metadata(source_rows)
+            generated_metadata = enrich_cluster_metadata(
+                source_rows,
+                require_model=require_model,
+            )
             effective_name = str(row["name"] or "").strip()
             effective_description = str(row["description"] or "").strip()
             if str(row["name_origin"] or "user") == "auto":
