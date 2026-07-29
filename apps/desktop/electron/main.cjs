@@ -328,9 +328,33 @@ async function loadStartupProgress(window, baseDir = __dirname) {
 }
 
 async function getInitialRendererPath() {
+  const resolved = await resolveSetupLaunchState();
+  return resolved.activeVaultPath && resolved.state.phase === "complete"
+    ? "/home"
+    : "/onboarding";
+}
+
+async function resolveSetupLaunchState() {
   const activeVaultPath = await getActiveVaultPath();
-  const setupState = await readSetupState(app.getPath("userData"), { activeVaultPath });
-  return activeVaultPath && setupState.phase === "complete" ? "/home" : "/onboarding";
+  const state = await readSetupState(app.getPath("userData"), { activeVaultPath });
+  if (activeVaultPath || state.phase !== "complete") {
+    return { activeVaultPath, state };
+  }
+
+  const savedVaultPath = String(state.vault?.path || "").trim();
+  if (savedVaultPath && await isUsableActiveVaultPath(savedVaultPath)) {
+    await setActiveVaultPath(savedVaultPath);
+    return { activeVaultPath: savedVaultPath, state };
+  }
+
+  return {
+    activeVaultPath: null,
+    state: {
+      ...state,
+      phase: "recovery",
+      recovery_reason: savedVaultPath ? "missing_vault_data" : "setup_state_invalid",
+    },
+  };
 }
 
 function ensureTrailingSlash(value) {
@@ -717,12 +741,7 @@ if (gotSingleInstanceLock) {
       return true;
     });
     ipcMain.handle("cml:get-setup-state", async () => {
-      const activeVaultPath = await getActiveVaultPath();
-      const state = await readSetupState(app.getPath("userData"), { activeVaultPath });
-      if (!activeVaultPath && state.phase === "complete" && state.vault?.path) {
-        return { ...state, phase: "recovery" };
-      }
-      return state;
+      return (await resolveSetupLaunchState()).state;
     });
     ipcMain.handle("cml:update-setup-state", async (_event, patch) => {
       const activeVaultPath = await getActiveVaultPath();

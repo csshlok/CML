@@ -196,8 +196,10 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
     pointerId: number;
     offsetX: number;
     offsetY: number;
+    captureTarget: HTMLElement | null;
   } | null>(null);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
 
   const constrainPosition = useCallback((x: number, y: number) => {
     const popup = popupRef.current;
@@ -211,23 +213,32 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
     };
   }, []);
 
-  const startDragging = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (event.button !== 0) return;
+  const startDragging = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || !event.isPrimary) return;
+    if (
+      event.target instanceof Element &&
+      event.target.closest("[data-import-drag-ignore='true']")
+    ) {
+      return;
+    }
     const popup = popupRef.current;
     if (!popup) return;
     const bounds = popup.getBoundingClientRect();
+    const captureTarget = event.currentTarget;
     dragRef.current = {
       pointerId: event.pointerId,
       offsetX: event.clientX - bounds.left,
       offsetY: event.clientY - bounds.top,
+      captureTarget,
     };
     setPosition({ x: bounds.left, y: bounds.top });
-    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragging(true);
+    captureTarget.setPointerCapture?.(event.pointerId);
     event.preventDefault();
   }, []);
 
-  const moveDragging = useCallback(
-    (event: ReactPointerEvent<HTMLButtonElement>) => {
+  useEffect(() => {
+    const moveDragging = (event: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag || drag.pointerId !== event.pointerId) return;
       setPosition(
@@ -236,17 +247,33 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
           event.clientY - drag.offsetY,
         ),
       );
-    },
-    [constrainPosition],
-  );
+      event.preventDefault();
+    };
+    const stopDragging = (event: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      dragRef.current = null;
+      setDragging(false);
+      if (drag.captureTarget?.hasPointerCapture?.(event.pointerId)) {
+        drag.captureTarget.releasePointerCapture(event.pointerId);
+      }
+    };
+    const stopOnBlur = () => {
+      dragRef.current = null;
+      setDragging(false);
+    };
 
-  const stopDragging = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (dragRef.current?.pointerId !== event.pointerId) return;
-    dragRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  }, []);
+    window.addEventListener("pointermove", moveDragging, { capture: true });
+    window.addEventListener("pointerup", stopDragging, { capture: true });
+    window.addEventListener("pointercancel", stopDragging, { capture: true });
+    window.addEventListener("blur", stopOnBlur);
+    return () => {
+      window.removeEventListener("pointermove", moveDragging, { capture: true });
+      window.removeEventListener("pointerup", stopDragging, { capture: true });
+      window.removeEventListener("pointercancel", stopDragging, { capture: true });
+      window.removeEventListener("blur", stopOnBlur);
+    };
+  }, [constrainPosition]);
 
   const moveWithKeyboard = useCallback(
     (event: ReactKeyboardEvent<HTMLButtonElement>) => {
@@ -273,6 +300,8 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
   );
 
   useEffect(() => {
+    dragRef.current = null;
+    setDragging(false);
     setPosition(null);
   }, [sourceImport.job?.id]);
 
@@ -325,10 +354,8 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
         onDismiss={sourceImport.dismiss}
         dragHandleProps={{
           onPointerDown: startDragging,
-          onPointerMove: moveDragging,
-          onPointerUp: stopDragging,
-          onPointerCancel: stopDragging,
           onKeyDown: moveWithKeyboard,
+          dragging,
         }}
       />
     </div>
@@ -356,11 +383,9 @@ function SourceImportStatus({
   onStop: () => Promise<void>;
   onDismiss?: () => void;
   dragHandleProps?: {
-    onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
-    onPointerMove: (event: ReactPointerEvent<HTMLButtonElement>) => void;
-    onPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => void;
-    onPointerCancel: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
     onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => void;
+    dragging: boolean;
   };
   compact?: boolean;
 }) {
@@ -380,16 +405,21 @@ function SourceImportStatus({
       aria-label="File import progress"
       aria-live="polite"
     >
-      <div className="flex items-start gap-3">
+      <div
+        className={
+          dragHandleProps
+            ? `source-import-drag-handle flex touch-none items-start gap-3 ${
+                dragHandleProps.dragging ? "cursor-grabbing" : "cursor-grab"
+              }`
+            : "flex items-start gap-3"
+        }
+        onPointerDown={dragHandleProps?.onPointerDown}
+      >
         {dragHandleProps ? (
           <button
             type="button"
-            className="-ml-2 -mr-1 touch-none cursor-grab rounded-sm p-1 text-muted-foreground hover:text-foreground active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="-ml-2 -mr-1 rounded-sm p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Move file import progress"
-            onPointerDown={dragHandleProps.onPointerDown}
-            onPointerMove={dragHandleProps.onPointerMove}
-            onPointerUp={dragHandleProps.onPointerUp}
-            onPointerCancel={dragHandleProps.onPointerCancel}
             onKeyDown={dragHandleProps.onKeyDown}
           >
             <GripVertical className="h-4 w-4" aria-hidden="true" />
@@ -408,6 +438,7 @@ function SourceImportStatus({
                 className="-mr-1 rounded-sm p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={onDismiss}
                 aria-label="Dismiss file import progress"
+                data-import-drag-ignore="true"
               >
                 <X className="h-4 w-4" />
               </button>

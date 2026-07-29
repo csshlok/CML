@@ -361,11 +361,6 @@
     -webkit-app-region: no-drag;
   }
 
-  .vault-window-aware {
-    min-height: var(--vault-window-controls-safe-height);
-    padding-right: max(var(--vault-window-controls-safe-width), 1.5rem);
-  }
-
   .vault-sidebar {
     -webkit-app-region: drag;
   }
@@ -585,6 +580,13 @@
 
   .source-import-popup {
     animation: source-import-enter 180ms cubic-bezier(0.16, 1, 0.3, 1);
+    -webkit-app-region: no-drag;
+  }
+
+  .source-import-drag-handle {
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-app-region: no-drag;
   }
 
   .sources-layout {
@@ -792,4 +794,14 @@
       animation: none;
     }
   }
+}
+
+/*
+ * This contract is intentionally unlayered. Tailwind utilities otherwise win
+ * by cascade-layer priority and can place trailing header actions underneath
+ * the native window controls even when this selector is more specific.
+ */
+.vault-window-aware.vault-window-aware {
+  min-height: var(--vault-window-controls-safe-height);
+  padding-inline-end: max(var(--vault-window-controls-safe-width), 1.5rem);
 }

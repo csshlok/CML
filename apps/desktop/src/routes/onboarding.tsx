@@ -258,7 +258,7 @@ function Onboarding() {
         const resumedStep = setupPhaseToStep(state.phase);
         setStep(resumedStep);
         if (state.phase === "recovery") {
-          if (state.vault.path) {
+          if (state.recovery_reason === "missing_vault_data" && state.vault.path) {
             setMissingLibraryPath(state.vault.path);
           } else {
             setError("Vault could not read the previous setup progress. Review these choices to continue.");

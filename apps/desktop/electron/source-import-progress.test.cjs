@@ -32,10 +32,15 @@ test("file import progress persists above app routes with counts and percentage"
   assert.match(progressSource, /aria-label="Dismiss file import progress"/);
   assert.match(progressSource, /fixed bottom-4 right-4/);
   assert.match(progressSource, /aria-label="Move file import progress"/);
-  assert.match(progressSource, /setPointerCapture\(event\.pointerId\)/);
+  assert.match(progressSource, /source-import-drag-handle/);
+  assert.match(progressSource, /window\.addEventListener\("pointermove", moveDragging/);
+  assert.match(progressSource, /window\.addEventListener\("pointerup", stopDragging/);
+  assert.match(progressSource, /captureTarget\.setPointerCapture/);
+  assert.match(progressSource, /data-import-drag-ignore="true"/);
   assert.match(progressSource, /constrainPosition/);
   assert.match(progressSource, /ArrowLeft/);
   assert.match(progressSource, /ResizeObserver/);
+  assert.match(styles, /\.source-import-popup\s*\{[^}]*-webkit-app-region:\s*no-drag/s);
   assert.doesNotMatch(
     styles,
     /\.source-import-popup\s*\{[^}]*\bleft\s*:/,

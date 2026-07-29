@@ -170,9 +170,36 @@ test("desktop window and preload are wired to the custom frameless chrome", () =
     assert.match(stylesSource, pattern);
     assert.match(staticChromeStyles, pattern);
   }
+  const baseLayerStart = stylesSource.indexOf("@layer base {");
+  const baseLayerOpeningBrace = stylesSource.indexOf("{", baseLayerStart);
+  let baseLayerDepth = 0;
+  let baseLayerEnd = -1;
+  for (let index = baseLayerOpeningBrace; index < stylesSource.length; index += 1) {
+    if (stylesSource[index] === "{") baseLayerDepth += 1;
+    if (stylesSource[index] === "}") {
+      baseLayerDepth -= 1;
+      if (baseLayerDepth === 0) {
+        baseLayerEnd = index;
+        break;
+      }
+    }
+  }
+  const safeZoneRuleStart = stylesSource.indexOf(
+    ".vault-window-aware.vault-window-aware",
+  );
+  assert.ok(baseLayerEnd > 0, "the Tailwind base layer must be well formed");
+  assert.ok(
+    safeZoneRuleStart > baseLayerEnd,
+    "the window safe-zone rule must stay outside Tailwind layers",
+  );
   assert.match(
     stylesSource,
-    /\.vault-window-aware\s*\{[^}]*padding-right:\s*max\(var\(--vault-window-controls-safe-width\),\s*1\.5rem\)/s,
+    /\.vault-window-aware\.vault-window-aware\s*\{[^}]*padding-inline-end:\s*max\(var\(--vault-window-controls-safe-width\),\s*1\.5rem\)/s,
+  );
+  assert.doesNotMatch(
+    stylesSource,
+    /(?<!\.vault-window-aware)\.vault-window-aware\s*\{[^}]*padding-(?:right|inline-end):/s,
+    "the safe-zone inset must outrank route-level padding utilities",
   );
   assert.match(
     stylesSource,

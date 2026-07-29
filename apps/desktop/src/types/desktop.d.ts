@@ -15,6 +15,7 @@ declare global {
   interface DesktopSetupState {
     schema_version: 1;
     phase: DesktopSetupPhase;
+    recovery_reason?: "missing_vault_data" | "setup_state_invalid";
     profile: { display_name: string; avatar_path?: string };
     vault: { id: string; name: string; path: string };
     chat_setup: { status: string; model_id: string };

@@ -32,7 +32,7 @@ function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, backendIdentityMatches, rendererSecurityHeaders, sanitizeRendererBody, imageMimeType, imageDimensions, resolveApprovedMediaTarget, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, collectSupportedFiles, findOpenPort, loadStartupProgress, loadStartupFailure, loadRendererFailure, truncateDesktopLogValue, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, assertSafeVaultMoveRoots, verifyCopiedVault, finalizeActiveVaultDeletion, reconcilePendingVaultDeletion, __setMainWindow: (value) => { mainWindow = value; }, __setTunnelManager: (value) => { tunnelManager = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; }, __setEnsureBackend: (value) => { ensureBackend = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, backendIdentityMatches, rendererSecurityHeaders, sanitizeRendererBody, imageMimeType, imageDimensions, resolveApprovedMediaTarget, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, resolveSetupLaunchState, collectSupportedFiles, findOpenPort, loadStartupProgress, loadStartupFailure, loadRendererFailure, truncateDesktopLogValue, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, assertSafeVaultMoveRoots, verifyCopiedVault, finalizeActiveVaultDeletion, reconcilePendingVaultDeletion, __setMainWindow: (value) => { mainWindow = value; }, __setTunnelManager: (value) => { tunnelManager = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; }, __setEnsureBackend: (value) => { ensureBackend = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -393,15 +393,68 @@ test("copied vault verification requires a SQLite database header", async () => 
 });
 
 test("stale active vault config falls back to onboarding instead of forcing home", async () => {
-  const { exported } = loadMainModule();
+  const { exported, userDataDir } = loadMainModule();
   const targetRoot = makeTempDir("cml-stale-vault-");
   const vaultPath = path.join(targetRoot, "stale-vault");
 
   await exported.setActiveVaultPath(vaultPath);
+  const { writeSetupState, defaultSetupState } = require("./setup-state.cjs");
+  await writeSetupState(userDataDir, {
+    ...defaultSetupState(),
+    phase: "complete",
+    vault: { id: "vault-stale", name: "Stale", path: vaultPath },
+  });
   fs.rmSync(targetRoot, { recursive: true, force: true });
 
   assert.equal(await exported.getActiveVaultPath(), null);
   assert.equal(await exported.getInitialRendererPath(), "/onboarding");
+  const resolved = await exported.resolveSetupLaunchState();
+  assert.equal(resolved.state.phase, "recovery");
+  assert.equal(resolved.state.recovery_reason, "missing_vault_data");
+});
+
+test("fresh install opens setup without showing missing-library recovery", async () => {
+  const { exported } = loadMainModule();
+
+  assert.equal(await exported.getInitialRendererPath(), "/onboarding");
+  const resolved = await exported.resolveSetupLaunchState();
+  assert.equal(resolved.state.phase, "fresh");
+  assert.equal(resolved.state.recovery_reason, undefined);
+});
+
+test("completed setup restores a missing active pointer when saved vault data is valid", async () => {
+  const { exported, userDataDir } = loadMainModule();
+  const vaultPath = makeTempDir("cml-saved-vault-");
+  fs.mkdirSync(path.join(vaultPath, ".vault"));
+  const { writeSetupState, defaultSetupState } = require("./setup-state.cjs");
+  await writeSetupState(userDataDir, {
+    ...defaultSetupState(),
+    phase: "complete",
+    vault: { id: "vault-saved", name: "Saved", path: vaultPath },
+  });
+
+  assert.equal(await exported.getActiveVaultPath(), null);
+  assert.equal(await exported.getInitialRendererPath(), "/home");
+  assert.equal(await exported.getActiveVaultPath(), vaultPath);
+  const resolved = await exported.resolveSetupLaunchState();
+  assert.equal(resolved.state.phase, "complete");
+  assert.equal(resolved.state.recovery_reason, undefined);
+});
+
+test("incomplete setup never becomes missing-library recovery", async () => {
+  const { exported, userDataDir } = loadMainModule();
+  const missingPath = path.join(userDataDir, "not-created");
+  const { writeSetupState, defaultSetupState } = require("./setup-state.cjs");
+  await writeSetupState(userDataDir, {
+    ...defaultSetupState(),
+    phase: "profile_complete",
+    profile: { display_name: "Ada", avatar_path: "" },
+    vault: { id: "", name: "My Library", path: missingPath },
+  });
+
+  const resolved = await exported.resolveSetupLaunchState();
+  assert.equal(resolved.state.phase, "profile_complete");
+  assert.equal(resolved.state.recovery_reason, undefined);
 });
 
 test("collectSupportedFiles skips symlinks and build folders", async () => {
