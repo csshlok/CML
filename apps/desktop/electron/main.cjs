@@ -40,6 +40,7 @@ const { resolveMcpFeatureFlags } = require("./mcp-feature-flags.cjs");
 const {
   getLauncherStatus: getOdinLauncherStatus,
   installLauncher: installOdinLauncher,
+  installWithUv: installOdinWithUv,
   resolveOdinBinDir,
   runLauncher: runOdinLauncher,
 } = require("./odin-launcher.cjs");
@@ -663,6 +664,16 @@ if (gotSingleInstanceLock) {
       }
       return { ...installed, help_ok: true };
     });
+    ipcMain.handle("cml:install-odin-with-uv", async () => {
+      const installed = await installOdinWithUv(getOdinLauncherConfiguration());
+      const help = runOdinLauncher(installed.launcher_path, ["--help"], {
+        cwd: app.getPath("home"),
+      });
+      if (help.exit_code !== 0 || !help.stdout.toLowerCase().includes("odin")) {
+        throw new Error("uv installed Odin, but its help check failed.");
+      }
+      return { ...installed, help_ok: true };
+    });
     ipcMain.handle("cml:start-odin-pairing", async () => {
       const configuration = getOdinLauncherConfiguration();
       const status = await getOdinLauncherStatus(configuration);
@@ -902,6 +913,8 @@ function getOdinLauncherConfiguration() {
     binDir: resolveOdinBinDir({
       localAppData: process.env.LOCALAPPDATA,
       appData: app.getPath("appData"),
+      userData: app.getPath("userData"),
+      homeDir: app.getPath("home"),
     }),
     pythonPath,
     resourcesRoot,
@@ -1041,6 +1054,9 @@ async function ensureBackend() {
         llmRuntimeServer:
           process.env.CML_LLM_RUNTIME_BINARY ||
           path.join(rootDir, "apps", "desktop", "packaging", "llm-runtime", "llama-server.exe"),
+        llmCudaRuntimeServer:
+          process.env.CML_LLM_RUNTIME_CUDA_BINARY ||
+          path.join(rootDir, "apps", "desktop", "packaging", "llm-runtime", "cuda", "llama-server.exe"),
       }
     : resolvePackagedHelperPaths(process.resourcesPath);
   const pythonCommand = isDev
@@ -1074,6 +1090,7 @@ async function ensureBackend() {
             CML_STARTUP_STATUS_PATH: startupStatusPath,
             CML_VAULT_LOCK_OVERRIDE: vaultLockOverrideOnce ? "open_anyway" : "",
             CML_LLM_RUNTIME_BINARY: helperPaths.llmRuntimeServer,
+            CML_LLM_RUNTIME_CUDA_BINARY: helperPaths.llmCudaRuntimeServer,
             PLAYWRIGHT_BROWSERS_PATH: helperPaths.playwrightRoot,
             PYTHONNOUSERSITE: "1",
           }

@@ -125,6 +125,14 @@ declare global {
         available_in_new_shell: boolean;
         help_ok: boolean;
       }>;
+      installOdinWithUv: () => Promise<{
+        version: number;
+        launcher_path: string;
+        installed: boolean;
+        needs_repair: boolean;
+        install_method: "uv";
+        help_ok: boolean;
+      }>;
       startOdinPairing: () => Promise<{ started: boolean }>;
       getTunnelStatus: () => Promise<DesktopTunnelStatus | null>;
       connectTunnel: (configuration: {

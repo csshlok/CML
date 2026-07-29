@@ -116,6 +116,12 @@ contextBridge.exposeInMainWorld("cmlDesktop", {
       "cml:install-odin-launcher",
       "Could not install Odin.",
     ),
+  installOdinWithUv: () =>
+    invokeWithCleanError(
+      ipcRenderer,
+      "cml:install-odin-with-uv",
+      "Could not install Odin with uv.",
+    ),
   startOdinPairing: () =>
     invokeWithCleanError(
       ipcRenderer,

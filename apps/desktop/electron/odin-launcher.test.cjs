@@ -7,6 +7,7 @@ const test = require("node:test");
 const {
   getLauncherStatus,
   installLauncher,
+  installWithUv,
   launcherContents,
   pathContains,
   registerUserPath,
@@ -37,6 +38,7 @@ test("Odin launcher installs atomically and detects a launcher that needs repair
     binDir,
     pythonPath: path.join(root, "python-runtime", "python.exe"),
     resourcesRoot: root,
+    allowUv: false,
   };
   try {
     const installed = await installLauncher({ ...options, registerPath: () => ({ changed: true }) });
@@ -118,24 +120,69 @@ test("Odin help probe is bounded and does not invoke a command shell", () => {
   assert.equal(invocation.options.cwd, "C:\\work");
 });
 
-test("visible Odin pairing uses Windows start to create an independent PowerShell console", () => {
+test("visible Odin pairing starts an independent PowerShell console without waiting for it", () => {
   let invocation = null;
+  let unrefCalled = false;
   const result = runLauncher("C:\\Users\\Me\\CML\\bin\\odin.cmd", [], {
     cwd: "C:\\Users\\Me",
     visible: true,
-    runner(command, args, options) {
+    visibleRunner(command, args, options) {
       invocation = { command, args, options };
-      return { status: 0, stdout: "", stderr: "" };
+      return {
+        pid: 123,
+        once() {},
+        unref() {
+          unrefCalled = true;
+        },
+      };
     },
   });
 
   assert.deepEqual(result, { started: true });
-  assert.equal(invocation.command, "cmd.exe");
-  assert.deepEqual(invocation.args.slice(0, 3), ["/d", "/s", "/c"]);
-  assert.match(invocation.args[3], /^start "" powershell\.exe /);
-  assert.match(invocation.args[3], /-NoExit -EncodedCommand [A-Za-z0-9+/=]+$/);
-  assert.equal(invocation.options.windowsHide, true);
+  assert.equal(invocation.command, "powershell.exe");
+  assert.deepEqual(invocation.args.slice(0, 3), ["-NoLogo", "-NoProfile", "-NoExit"]);
+  assert.equal(invocation.args[3], "-EncodedCommand");
+  assert.match(invocation.args[4], /^[A-Za-z0-9+/=]+$/);
+  assert.equal(invocation.options.windowsHide, false);
+  assert.equal(invocation.options.detached, true);
   assert.equal(invocation.options.cwd, "C:\\Users\\Me");
+  assert.equal(unrefCalled, true);
+});
+
+test("uv installation uses the local backend package and verifies the installed command", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "cml-odin-uv-"));
+  const backendRoot = path.join(root, "backend");
+  const uvBin = path.join(root, "uv-bin");
+  await fs.mkdir(backendRoot, { recursive: true });
+  await fs.mkdir(uvBin, { recursive: true });
+  await fs.writeFile(path.join(backendRoot, "pyproject.toml"), "[project]\nname='fixture'\nversion='1.0.0'\n", "utf8");
+  await fs.writeFile(path.join(uvBin, process.platform === "win32" ? "odin.exe" : "odin"), "", "utf8");
+  const invocations = [];
+  try {
+    const status = await installWithUv({
+      resourcesRoot: root,
+      runner(command, args, options) {
+        invocations.push({ command, args, options });
+        if (args.join(" ") === "tool dir --bin") {
+          return { status: 0, stdout: uvBin, stderr: "" };
+        }
+        return { status: 0, stdout: "installed", stderr: "" };
+      },
+    });
+    assert.equal(status.installed, true);
+    assert.equal(status.install_method, "uv");
+    assert.deepEqual(invocations[0].args.slice(0, 7), [
+      "tool",
+      "install",
+      "--force",
+      "--no-deps",
+      "--with",
+      "psutil",
+      backendRoot,
+    ]);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 test("visible Odin pairing reports a failed Windows handoff", () => {
@@ -143,7 +190,7 @@ test("visible Odin pairing reports a failed Windows handoff", () => {
     () =>
       runLauncher("C:\\Users\\Me\\CML\\bin\\odin.cmd", [], {
         visible: true,
-        runner: () => ({ status: 1, stdout: "", stderr: "failed" }),
+        visibleRunner: () => ({ pid: undefined }),
       }),
     /could not open PowerShell/i,
   );

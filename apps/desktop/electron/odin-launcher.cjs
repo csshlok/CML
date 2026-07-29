@@ -3,7 +3,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
-const LAUNCHER_VERSION = 4;
+const LAUNCHER_VERSION = 5;
 
 function quoteCmd(value) {
   return `"${String(value).replaceAll('"', '""')}"`;
@@ -47,13 +47,17 @@ function pathContains(pathValue, target) {
   return splitPath(pathValue).some((item) => path.resolve(item).toLowerCase() === expected);
 }
 
-function resolveOdinBinDir({ localAppData, appData }) {
+function resolveOdinBinDir({ localAppData, appData, userData, homeDir }) {
   const configured = String(localAppData || "").trim();
   if (configured && path.isAbsolute(configured)) {
     return path.join(path.resolve(configured), "CML", "bin");
   }
 
-  const roamingRoot = path.resolve(String(appData || ""));
+  const fallbackRoot = String(appData || userData || homeDir || "").trim();
+  if (!fallbackRoot || !path.isAbsolute(fallbackRoot)) {
+    throw new Error("Windows could not find a writable folder for Odin.");
+  }
+  const roamingRoot = path.resolve(fallbackRoot);
   const localRoot =
     path.basename(roamingRoot).toLowerCase() === "roaming"
       ? path.join(path.dirname(roamingRoot), "Local")
@@ -94,7 +98,13 @@ function registerUserPath(binDir, runner = childProcess.spawnSync) {
   return { changed: true, supported: true };
 }
 
-async function getLauncherStatus({ binDir, pythonPath, resourcesRoot, userPath = process.env.PATH }) {
+async function getLauncherStatus({
+  binDir,
+  pythonPath,
+  resourcesRoot,
+  userPath = process.env.PATH,
+  allowUv = true,
+}) {
   const launcherPath = path.join(path.resolve(binDir), "odin.cmd");
   const expected = launcherContents({ pythonPath, resourcesRoot });
   let installed = false;
@@ -105,6 +115,10 @@ async function getLauncherStatus({ binDir, pythonPath, resourcesRoot, userPath =
   } catch {
     installed = false;
   }
+  if (!installed && allowUv) {
+    const uvStatus = await getUvLauncherStatus();
+    if (uvStatus.installed) return uvStatus;
+  }
   return {
     version: LAUNCHER_VERSION,
     launcher_path: launcherPath,
@@ -112,7 +126,66 @@ async function getLauncherStatus({ binDir, pythonPath, resourcesRoot, userPath =
     needs_repair: Boolean(current) && !installed,
     on_current_path: pathContains(userPath, binDir),
     expected_checksum: launcherChecksum(expected),
+    install_method: "vault",
   };
+}
+
+async function getUvLauncherStatus(runner = null) {
+  const result = runner
+    ? runner("uv", ["tool", "dir", "--bin"], {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 10_000,
+      })
+    : await runUvToolBin();
+  if (result.error || result.status !== 0) {
+    return { installed: false, install_method: "uv", uv_available: false };
+  }
+  const binDir = String(result.stdout || "").trim();
+  for (const name of process.platform === "win32" ? ["odin.exe", "odin.cmd"] : ["odin"]) {
+    const launcherPath = path.join(binDir, name);
+    try {
+      await fs.access(launcherPath);
+      return {
+        version: LAUNCHER_VERSION,
+        launcher_path: launcherPath,
+        installed: true,
+        needs_repair: false,
+        on_current_path: pathContains(process.env.PATH, binDir),
+        install_method: "uv",
+        uv_available: true,
+      };
+    } catch {
+      // Try the next platform launcher name.
+    }
+  }
+  return { installed: false, install_method: "uv", uv_available: true };
+}
+
+function runUvToolBin() {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    const child = childProcess.spawn("uv", ["tool", "dir", "--bin"], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const timeout = setTimeout(() => child.kill(), 3_000);
+    child.stdout?.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      resolve({ error, status: 1, stdout, stderr });
+    });
+    child.once("close", (status) => {
+      clearTimeout(timeout);
+      resolve({ status, stdout, stderr });
+    });
+  });
 }
 
 async function installLauncher({ binDir, pythonPath, resourcesRoot, registerPath = registerUserPath }) {
@@ -132,12 +205,41 @@ async function installLauncher({ binDir, pythonPath, resourcesRoot, registerPath
     on_current_path: pathContains(process.env.PATH, resolvedBin),
     available_in_new_shell: true,
     checksum: launcherChecksum(contents),
+    install_method: "vault",
   };
+}
+
+async function installWithUv({ resourcesRoot, runner = childProcess.spawnSync }) {
+  const backendRoot = path.join(path.resolve(resourcesRoot), "backend");
+  await fs.access(path.join(backendRoot, "pyproject.toml"));
+  const result = runner(
+    "uv",
+    ["tool", "install", "--force", "--no-deps", "--with", "psutil", backendRoot],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 180_000,
+      maxBuffer: 512 * 1024,
+    },
+  );
+  if (result.error?.code === "ENOENT") {
+    throw new Error("uv is not installed or is not available on PATH.");
+  }
+  if (result.error || result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || "").trim().slice(0, 500);
+    throw new Error(detail || "uv could not install Odin.");
+  }
+  const status = await getUvLauncherStatus(runner);
+  if (!status.installed) {
+    throw new Error("uv finished, but the Odin command was not found.");
+  }
+  return status;
 }
 
 function runLauncher(launcherPath, args, {
   cwd = process.cwd(),
   runner = childProcess.spawnSync,
+  visibleRunner = childProcess.spawn,
   visible = false,
 } = {}) {
   const safeArgs = Array.isArray(args) ? args.map(String) : [];
@@ -148,24 +250,21 @@ function runLauncher(launcherPath, args, {
     const powershellCommand =
       `$env:CML_ODIN_PAIRING_CONSOLE='1'; & ${quotePowerShell(path.resolve(launcherPath))} auth pair`;
     const encodedCommand = Buffer.from(powershellCommand, "utf16le").toString("base64");
-    const result = runner(
-      "cmd.exe",
-      [
-        "/d",
-        "/s",
-        "/c",
-        `start "" powershell.exe -NoLogo -NoProfile -NoExit -EncodedCommand ${encodedCommand}`,
-      ],
+    const child = visibleRunner(
+      "powershell.exe",
+      ["-NoLogo", "-NoProfile", "-NoExit", "-EncodedCommand", encodedCommand],
       {
         cwd,
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 10_000,
+        detached: true,
+        stdio: "ignore",
+        windowsHide: false,
       },
     );
-    if (result.error || result.status !== 0) {
+    if (!child || child.pid === undefined) {
       throw new Error("Windows could not open PowerShell for Odin pairing.");
     }
+    child.once?.("error", () => {});
+    child.unref?.();
     return { started: true };
   }
   const command = `""${path.resolve(launcherPath).replaceAll('"', '""')}" --help"`;
@@ -192,6 +291,7 @@ module.exports = {
   LAUNCHER_VERSION,
   getLauncherStatus,
   installLauncher,
+  installWithUv,
   launcherChecksum,
   launcherContents,
   pathContains,

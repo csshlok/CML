@@ -34,6 +34,7 @@ import {
   cancelEmbeddingDownload,
   configureEmbeddingRuntime,
   correctTemporalFact,
+  createProject,
   createVaultBackup,
   createDiagnosticBundle,
   createVault,
@@ -54,7 +55,6 @@ import {
   lockVault,
   getModelRuntimeStatus,
   getOCRRuntimeStatus,
-  getRetrievalPackingDiagnostics,
   getTemporalFactStatus,
   pruneQueryCache,
   resetVaultPassphrase,
@@ -68,6 +68,7 @@ import {
   listVaults,
   listProjects,
   listTemporalFacts,
+  scanLocalFolderIntegration,
   refreshIntegrationImport,
   retractTemporalFact,
   revokeCliClient,
@@ -95,7 +96,6 @@ import {
   type ModelRuntimeStatus,
   type OCRRuntimeStatusRead,
   type ProjectRecord,
-  type RetrievalPackingDiagnostics,
   type ReconciliationItemPage,
   type ReconciliationRunRecord,
   type TemporalFactDiagnostics,
@@ -174,6 +174,7 @@ function SettingsView() {
   const [backendVault, setBackendVault] = useState<VaultRecord | null>(null);
   const [pathDraft, setPathDraft] = useState("");
   const [models, setModels] = useState<LocalModelRecord[]>([]);
+  const [showModelList, setShowModelList] = useState(false);
   const [runtime, setRuntime] = useState<ModelRuntimeStatus | null>(null);
   const [modelRecommendations, setModelRecommendations] = useState<ModelRecommendationsRecord | null>(null);
   const [embeddingRuntime, setEmbeddingRuntime] = useState<EmbeddingRuntimeStatus | null>(null);
@@ -184,7 +185,6 @@ function SettingsView() {
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
   const [temporalFacts, setTemporalFacts] = useState<TemporalFactDiagnostics | null>(null);
   const [reviewableFacts, setReviewableFacts] = useState<TemporalFactRecord[]>([]);
-  const [retrievalPacking, setRetrievalPacking] = useState<RetrievalPackingDiagnostics | null>(null);
   const [temporalBackfillBusy, setTemporalBackfillBusy] = useState(false);
   const [editingFactId, setEditingFactId] = useState<string | null>(null);
   const [factCorrectionDraft, setFactCorrectionDraft] = useState("");
@@ -199,8 +199,10 @@ function SettingsView() {
     launcher_path: string;
     installed: boolean;
     needs_repair: boolean;
+    install_method?: "vault" | "uv";
   } | null>(null);
   const [odinLauncherBusy, setOdinLauncherBusy] = useState(false);
+  const [addingProject, setAddingProject] = useState(false);
   const [integrationImports, setIntegrationImports] = useState<IntegrationImportRecord[]>([]);
   const [reconciliationRunsByImport, setReconciliationRunsByImport] = useState<Record<string, ReconciliationRunRecord[]>>({});
   const [reconciliationItemsByRun, setReconciliationItemsByRun] = useState<Record<string, ReconciliationItemPage>>({});
@@ -216,6 +218,7 @@ function SettingsView() {
   const [newPassphraseDraft, setNewPassphraseDraft] = useState("");
   const [newPassphraseConfirm, setNewPassphraseConfirm] = useState("");
   const [refreshingImportId, setRefreshingImportId] = useState<string | null>(null);
+  const [addingImport, setAddingImport] = useState(false);
   const [loadingImportHistoryId, setLoadingImportHistoryId] = useState<string | null>(null);
   const [loadingRunItemsId, setLoadingRunItemsId] = useState<string | null>(null);
   const [retryingReconciliationItemId, setRetryingReconciliationItemId] = useState<string | null>(null);
@@ -338,7 +341,6 @@ function SettingsView() {
           setBackendVault(firstVault ? { ...firstVault, path: "" } : null);
           setTemporalFacts(null);
           setReviewableFacts([]);
-          setRetrievalPacking(null);
           if (!pathDraftDirtyRef.current) setPathDraft("");
           setHealthCheckedAt(new Date());
           setPollingStatusMessage(
@@ -388,7 +390,6 @@ function SettingsView() {
               listProjects(firstVault.id),
               getTemporalFactStatus(firstVault.id),
               listTemporalFacts(firstVault.id),
-              getRetrievalPackingDiagnostics(firstVault.id),
           ]);
           const readDependent = <T,>(index: number, label: string): T | undefined => {
             const result = dependent[index] as PromiseSettledResult<T>;
@@ -400,12 +401,10 @@ function SettingsView() {
           const projectRows = readDependent<ProjectRecord[]>(1, "projects");
           const temporalStatus = readDependent<TemporalFactDiagnostics>(2, "memory status");
           const factRows = readDependent<TemporalFactRecord[]>(3, "memory facts");
-          const packingStatus = readDependent<RetrievalPackingDiagnostics>(4, "retrieval");
           if (importRows) setIntegrationImports(importRows);
           if (projectRows) setProjects(projectRows);
           if (temporalStatus) setTemporalFacts(temporalStatus);
           if (factRows) setReviewableFacts(factRows);
-          if (packingStatus) setRetrievalPacking(packingStatus);
         }
         if (modelRows) setModels(modelRows);
         if (recommendations) setModelRecommendations(recommendations);
@@ -1107,16 +1106,79 @@ function SettingsView() {
 
   async function refreshMemoryInsights() {
     if (!backendVault) return;
-    const [statusResult, factsResult, packingResult] = await Promise.allSettled([
+    const [statusResult, factsResult] = await Promise.allSettled([
       getTemporalFactStatus(backendVault.id),
       listTemporalFacts(backendVault.id),
-      getRetrievalPackingDiagnostics(backendVault.id),
     ]);
     if (statusResult.status === "fulfilled") setTemporalFacts(statusResult.value);
     if (factsResult.status === "fulfilled") setReviewableFacts(factsResult.value);
-    if (packingResult.status === "fulfilled") setRetrievalPacking(packingResult.value);
-    const failures = [statusResult, factsResult, packingResult].filter((result) => result.status === "rejected");
+    const failures = [statusResult, factsResult].filter((result) => result.status === "rejected");
     if (failures.length) setStatusMessage("Some memory details could not refresh.");
+  }
+
+  async function installOdinWithUv() {
+    setOdinLauncherBusy(true);
+    setCliAccessError(null);
+    try {
+      const installed = await desktop?.installOdinWithUv?.();
+      if (!installed) throw new Error("uv installation is available only in the desktop app.");
+      setOdinLauncher(installed);
+      setStatusMessage("Odin is ready.");
+    } catch (error) {
+      setCliAccessError(error instanceof Error ? error.message : "Could not install Odin with uv.");
+    } finally {
+      setOdinLauncherBusy(false);
+    }
+  }
+
+  async function addCodeProject() {
+    if (!backendVault || !window.cmlDesktop?.selectSourceFolders) return;
+    const folders = await window.cmlDesktop.selectSourceFolders();
+    if (!folders.length) return;
+    setAddingProject(true);
+    try {
+      for (const rootPath of folders) {
+        await createProject({
+          vault_id: backendVault.id,
+          root_path: rootPath,
+          discovery_scope: "context",
+          sync: true,
+        });
+      }
+      setProjects(await listProjects(backendVault.id));
+      setStatusMessage(folders.length === 1 ? "Project added." : `${folders.length} projects added.`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not add this project.");
+    } finally {
+      setAddingProject(false);
+    }
+  }
+
+  async function addLocalImport() {
+    if (!backendVault || !window.cmlDesktop?.selectSourceFolders) return;
+    const folders = await window.cmlDesktop.selectSourceFolders();
+    if (!folders.length) return;
+    setAddingImport(true);
+    try {
+      for (const path of folders) {
+        const scanned = await scanLocalFolderIntegration({
+          path,
+          vault_id: backendVault.id,
+        });
+        if (scanned.import_id) {
+          await refreshIntegrationImport(scanned.import_id, {
+            import_files: true,
+            tombstone_missing: true,
+          });
+        }
+      }
+      await reloadIntegrationImports();
+      setStatusMessage(folders.length === 1 ? "Folder added." : `${folders.length} folders added.`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not add this folder.");
+    } finally {
+      setAddingImport(false);
+    }
   }
 
   async function saveFactCorrection(factId: string) {
@@ -1385,15 +1447,22 @@ function SettingsView() {
               status={projects.length ? `${projects.length} registered` : "None"}
               statusTone={projects.some((project) => project.status === "issue") ? "issue" : "ready"}
             >
-              <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm">
-                <div className="font-medium">Add a project from your IDE</div>
-                <code className="mt-2 block overflow-x-auto rounded bg-card px-3 py-2 text-xs text-muted-foreground">
-                  odin project add . --name &quot;My Project&quot;
-                </code>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => void addCodeProject()}
+                  disabled={addingProject || !backendVault || !window.cmlDesktop?.selectSourceFolders}
+                >
+                  <Folder className="h-4 w-4" />
+                  {addingProject ? "Adding..." : "Add project"}
+                </Button>
               </div>
-              <div className="mt-4 divide-y divide-border rounded-md border border-border bg-background">
+              <p className="mt-3 text-xs text-muted-foreground">
+                Or run <code className="text-foreground">odin project add .</code> from a project folder.
+              </p>
+              <div className="mt-4 divide-y divide-border">
                 {projects.length ? projects.map((project) => (
-                  <div key={project.id} className="px-3 py-3">
+                  <div key={project.id} className="py-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="font-medium">{project.name}</span>
                       <span className="text-xs capitalize text-muted-foreground">{project.status}</span>
@@ -1406,7 +1475,7 @@ function SettingsView() {
                     </div>
                   </div>
                 )) : (
-                  <div className="px-3 py-4 text-sm text-muted-foreground">No code projects are registered in this library.</div>
+                  <div className="py-3 text-sm text-muted-foreground">No code projects are registered yet.</div>
                 )}
               </div>
             </SettingsCard>
@@ -1429,7 +1498,17 @@ function SettingsView() {
                 >
                   Pair Odin
                 </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => void installOdinWithUv()}
+                  disabled={odinLauncherBusy || !desktop?.installOdinWithUv}
+                >
+                  Install with uv
+                </Button>
               </div>
+              <p className="mt-3 text-xs text-muted-foreground">
+                Use the Vault installer for the simplest setup. The uv option is available for developer-managed Python tools.
+              </p>
               {odinLauncher?.launcher_path ? (
                 <details className="mt-3 text-xs text-muted-foreground">
                   <summary className="cursor-pointer">Installed location</summary>
@@ -1543,7 +1622,7 @@ function SettingsView() {
             status={activeChatModel ? "Configured" : "Required"}
             statusTone={activeChatModel ? "ready" : "issue"}
           >
-            <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm">
+            <div className="mt-4 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="font-medium">Recommended for this device</div>
                 <span className="text-xs text-muted-foreground">
@@ -1560,7 +1639,9 @@ function SettingsView() {
                 <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                   {modelRecommendations?.chat_fit_type ? <span>Fit: {modelRecommendations.chat_fit_type.replaceAll("_", " ")}</span> : null}
                   {recommendedChatSpeed ? <span>Estimated speed: {recommendedChatSpeed} tok/s</span> : null}
-                  {modelRecommendations?.evidence_level ? <span>Evidence: {modelRecommendations.evidence_level.replaceAll("_", " ")}</span> : null}
+                  {modelRecommendations?.evidence_level ? (
+                    <span>Basis: {recommendationEvidenceLabel(modelRecommendations.evidence_level)}</span>
+                  ) : null}
                 </div>
               )}
               {modelRecommendations?.warnings?.length ? (
@@ -1569,6 +1650,16 @@ function SettingsView() {
                 </div>
               ) : null}
             </div>
+            <Button
+              variant="outline"
+              className="mt-4"
+              onClick={() => setShowModelList((visible) => !visible)}
+              aria-expanded={showModelList}
+            >
+              {showModelList ? "Hide models" : "Manage models"}
+            </Button>
+            {showModelList ? (
+              <>
             <label className="mt-5 block text-sm font-medium">Local model download location</label>
             <div className="mt-2 flex flex-wrap gap-2">
               <Input
@@ -1719,6 +1810,8 @@ function SettingsView() {
                 </p>
               )}
             </div>
+              </>
+            ) : null}
           </SettingsCard>
           {activeModelDownload &&
             (isActiveModelDownloadStatus(activeModelDownload.status) ||
@@ -1894,7 +1987,7 @@ function SettingsView() {
           <SettingsCard
             icon={<MessageSquare className="h-4 w-4" />}
             title="Memory history"
-            description="Review dated facts and correct what Vault remembers from saved chats. Older versions stay available for dated questions."
+            description="Review and correct details remembered from your chats."
             status={
               temporalBackfillActive
                 ? "Refreshing"
@@ -1908,18 +2001,18 @@ function SettingsView() {
                 : "ready"
             }
           >
-            <div className="mt-5 rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
+            <p className="mt-4 text-sm text-muted-foreground">
               {temporalFacts ? (
                 <>
-                  {temporalFacts.status_counts.current ?? 0} current facts and preferences are available for grounded answers.
+                  Vault remembers {temporalFacts.status_counts.current ?? 0} current details.
                   {temporalFacts.latest_observed_at
-                    ? ` Latest saved history: ${new Date(temporalFacts.latest_observed_at).toLocaleString()}.`
-                    : " No dated history has been derived yet."}
+                    ? ` Last updated ${new Date(temporalFacts.latest_observed_at).toLocaleString()}.`
+                    : " No details have been saved yet."}
                 </>
               ) : (
-                "Waiting for the local history check."
+                "Checking saved conversations."
               )}
-            </div>
+            </p>
             <div className="mt-3 flex flex-wrap gap-2">
               <Button
                 variant="outline"
@@ -1931,19 +2024,6 @@ function SettingsView() {
                 {temporalBackfillActive ? "Refreshing..." : "Refresh memory history"}
               </Button>
             </div>
-            {retrievalPacking && retrievalPacking.query_count > 0 ? (
-              <div className="mt-5 border-t border-border pt-4">
-                <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                  <p className="text-sm font-medium text-foreground">Answer context</p>
-                  <p className="text-xs text-muted-foreground">
-                    {retrievalPacking.context_reduction_percent}% less context across {retrievalPacking.query_count} saved {retrievalPacking.query_count === 1 ? "answer" : "answers"}
-                  </p>
-                </div>
-                <p className="mt-1 max-w-[70ch] text-xs text-muted-foreground">
-                  Vault keeps the most relevant evidence before asking the local model. Recent answers averaged {retrievalPacking.average_final_context_tokens.toLocaleString()} estimated context tokens.
-                </p>
-              </div>
-            ) : null}
             <div className="mt-5 border-t border-border pt-4">
               <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
                 <p className="text-sm font-medium text-foreground">What Vault remembers</p>
@@ -2220,20 +2300,28 @@ function SettingsView() {
           {showSection("library") && (
           <SettingsCard
             icon={<Folder className="h-4 w-4" />}
-            title="Local imports"
-            description="Manual refresh and reconciliation for local, synced-folder, and Obsidian imports."
+            title="Folder sync"
+            description="Keep a local folder in sync with this library."
             status={integrationImports.length ? `${integrationImports.length} tracked` : "None"}
           >
-            <div className="mt-5 space-y-2">
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                onClick={() => void addLocalImport()}
+                disabled={addingImport || !backendVault || !window.cmlDesktop?.selectSourceFolders}
+              >
+                <Folder className="h-4 w-4" />
+                {addingImport ? "Adding..." : "Add folder"}
+              </Button>
+            </div>
+            <div className="mt-4 divide-y divide-border">
               {integrationImports.length === 0 ? (
-                <div className="rounded-md border border-border bg-background px-3 py-3 text-sm text-muted-foreground">
-                  No local folder imports are tracked for this library yet.
-                </div>
+                <p className="py-2 text-sm text-muted-foreground">No folders are synced yet.</p>
               ) : (
                 integrationImports.map((record) => (
                   <div
                     key={record.id}
-                    className="grid gap-3 rounded-md border border-border bg-background px-3 py-3 text-sm md:grid-cols-[1fr_auto]"
+                    className="grid gap-3 py-4 text-sm first:pt-2 md:grid-cols-[1fr_auto]"
                   >
                     <div className="min-w-0">
                       <div className="truncate font-medium">{displayPath(record.root_path)}</div>
@@ -2567,6 +2655,20 @@ function selectVisibleModelDownload(
 
 function isActiveModelDownloadStatus(status: string | null | undefined) {
   return status === "resolving" || status === "downloading" || status === "cancelling";
+}
+
+function recommendationEvidenceLabel(level: string) {
+  const labels: Record<string, string> = {
+    internal_measured: "measured on this device",
+    direct: "matched benchmark",
+    catalog_estimate: "model specifications and detected hardware",
+    base_model: "related model benchmark",
+    variant: "related model variant",
+    line_interp: "model family estimate",
+    self_reported: "model metadata and detected hardware",
+    none: "detected hardware and model size",
+  };
+  return labels[level] ?? level.replaceAll("_", " ");
 }
 
 function ModelDownloadToast({
