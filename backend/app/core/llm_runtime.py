@@ -45,6 +45,9 @@ def runtime_status() -> dict[str, Any]:
             "detail": str(managed.get("detail") or "No managed local model is selected."),
             "pid": managed.get("pid"),
             "error": managed.get("error"),
+            "runtime_backend": str(managed.get("runtime_backend") or ""),
+            "runtime_attempts": list(managed.get("runtime_attempts") or []),
+            "orphan_cleanup": dict(managed.get("orphan_cleanup") or {}),
             "managed": True,
         }
     in_flight = _in_flight_count()

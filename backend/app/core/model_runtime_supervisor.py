@@ -71,8 +71,8 @@ def activate_managed_model(model_id: str, model_path: str) -> dict[str, Any]:
     if not candidate.is_file() or candidate.suffix.casefold() != ".gguf":
         raise ManagedRuntimeError("The selected model does not contain an executable GGUF file.")
 
-    runtime_binary = _runtime_binary()
-    if runtime_binary is None:
+    runtime_candidates = _runtime_candidates()
+    if not runtime_candidates:
         raise ManagedRuntimeError(
             "The local model engine is missing. Reinstall Vault or repair the packaged runtime."
         )
@@ -82,35 +82,60 @@ def activate_managed_model(model_id: str, model_path: str) -> dict[str, Any]:
         previous_model_id = str(previous.get("model_id") or "")
         previous_model_path = str(previous.get("model_path") or "")
         _stop_locked(mark_stopped=False)
-        try:
-            return _start_locked(
-                model_id=model_id,
-                model_path=str(candidate),
-                runtime_binary=runtime_binary,
-            )
-        except Exception as exc:
-            failure = {
-                **previous,
-                "state": "failed",
-                "available": False,
-                "pid": None,
-                "attempted_model_id": model_id,
-                "error": str(exc),
-                "detail": f"Vault could not start {model_id}.",
-                "updated_at": utc_now(),
-            }
-            _persist_state_locked(failure)
-            if previous_model_id and previous_model_path and Path(previous_model_path).is_file():
+        cleanup = _terminate_verified_orphans_locked(
+            runtime_binaries={binary for _, binary in runtime_candidates},
+            model_paths={
+                path
+                for path in (str(candidate), previous_model_path)
+                if path
+            },
+        )
+        attempts: list[dict[str, str]] = []
+        last_error: Exception | None = None
+        for runtime_backend, runtime_binary in runtime_candidates:
+            try:
+                return _start_locked(
+                    model_id=model_id,
+                    model_path=str(candidate),
+                    runtime_binary=runtime_binary,
+                    runtime_backend=runtime_backend,
+                    cleanup=cleanup,
+                    attempts=attempts,
+                )
+            except Exception as exc:
+                last_error = exc
+                attempts.append({"runtime_backend": runtime_backend, "error": str(exc)})
+
+        final_error = str(last_error or "The local model engine could not start.")
+        failure = {
+            **previous,
+            "state": "failed",
+            "available": False,
+            "pid": None,
+            "attempted_model_id": model_id,
+            "error": final_error,
+            "detail": f"Vault could not start {model_id}.",
+            "runtime_attempts": attempts,
+            "orphan_cleanup": cleanup,
+            "updated_at": utc_now(),
+        }
+        _persist_state_locked(failure)
+        if previous_model_id and previous_model_path and Path(previous_model_path).is_file():
+            for runtime_backend, runtime_binary in runtime_candidates:
                 try:
                     _start_locked(
                         model_id=previous_model_id,
                         model_path=previous_model_path,
                         runtime_binary=runtime_binary,
+                        runtime_backend=runtime_backend,
+                        cleanup={"count": 0, "pids": []},
+                        attempts=[],
                     )
+                    break
                 except Exception as rollback_exc:
                     failure["rollback_error"] = str(rollback_exc)
                     _persist_state_locked(failure)
-            raise ManagedRuntimeError(str(exc)) from exc
+        raise ManagedRuntimeError(final_error) from last_error
 
 
 def restore_selected_model(model_id: str, model_path: str) -> None:
@@ -129,19 +154,35 @@ def stop_managed_runtime() -> None:
         _stop_locked(mark_stopped=True)
 
 
-def _start_locked(*, model_id: str, model_path: str, runtime_binary: str) -> dict[str, Any]:
+def _start_locked(
+    *,
+    model_id: str,
+    model_path: str,
+    runtime_binary: str,
+    runtime_backend: str,
+    cleanup: dict[str, Any],
+    attempts: list[dict[str, str]],
+) -> dict[str, Any]:
     global _PROCESS
     port = _find_open_port()
     base_url = f"http://127.0.0.1:{port}/v1"
     stdout_path = get_settings().data_dir / "model-runtime-stdout.log"
     stderr_path = get_settings().data_dir / "model-runtime-stderr.log"
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    command = _runtime_command(runtime_binary, model_path, model_id, port)
+    command = _runtime_command(
+        runtime_binary,
+        model_path,
+        model_id,
+        port,
+        runtime_backend=runtime_backend,
+    )
     starting = {
         "schema_version": 1,
         "state": "starting",
         "available": False,
         "provider": "managed-llama.cpp",
+        "runtime_backend": runtime_backend,
+        "runtime_binary": runtime_binary,
         "base_url": base_url,
         "model_id": model_id,
         "model_path": model_path,
@@ -152,6 +193,8 @@ def _start_locked(*, model_id: str, model_path: str, runtime_binary: str) -> dic
         "stderr_log": str(stderr_path),
         "started_at": utc_now(),
         "updated_at": utc_now(),
+        "runtime_attempts": list(attempts),
+        "orphan_cleanup": cleanup,
     }
     _persist_state_locked(starting)
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -165,6 +208,12 @@ def _start_locked(*, model_id: str, model_path: str, runtime_binary: str) -> dic
             creationflags=creationflags,
         )
     starting["pid"] = _PROCESS.pid
+    try:
+        import psutil
+
+        starting["process_create_time"] = float(psutil.Process(_PROCESS.pid).create_time())
+    except Exception:
+        starting["process_create_time"] = None
     _persist_state_locked(starting)
     try:
         _wait_for_models(base_url, _PROCESS)
@@ -178,7 +227,15 @@ def _start_locked(*, model_id: str, model_path: str, runtime_binary: str) -> dic
         "state": "ready",
         "available": True,
         "pid": _PROCESS.pid,
-        "detail": f"{model_id} is ready for local chat.",
+        "detail": (
+            f"{model_id} is ready with GPU acceleration."
+            if runtime_backend == "cuda"
+            else (
+                f"{model_id} is ready on CPU after GPU acceleration was unavailable."
+                if attempts
+                else f"{model_id} is ready for local chat."
+            )
+        ),
         "ready_at": utc_now(),
         "updated_at": utc_now(),
     }
@@ -216,14 +273,174 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=5)
 
 
-def _runtime_binary() -> str | None:
-    configured = str(os.environ.get("CML_LLM_RUNTIME_BINARY") or "").strip()
-    if configured and Path(configured).is_file():
-        return str(Path(configured).resolve())
-    return None
+def _terminate_verified_orphans_locked(
+    *,
+    runtime_binaries: set[str],
+    model_paths: set[str],
+) -> dict[str, Any]:
+    if not runtime_binaries or not model_paths:
+        return {"count": 0, "pids": []}
+    try:
+        import psutil
+    except Exception:
+        return {"count": 0, "pids": []}
+
+    expected_binaries = {_normalized_process_path(path) for path in runtime_binaries if path}
+    expected_models = {_normalized_process_path(path) for path in model_paths if path}
+    matched = []
+    for process in psutil.process_iter(["pid", "exe", "cmdline"]):
+        try:
+            executable = _normalized_process_path(str(process.info.get("exe") or ""))
+            command = [str(value) for value in (process.info.get("cmdline") or [])]
+            model_path = _command_option(command, "--model")
+            host = _command_option(command, "--host")
+            if (
+                executable in expected_binaries
+                and _normalized_process_path(model_path) in expected_models
+                and host in {"127.0.0.1", "localhost", "::1"}
+            ):
+                matched.append(process)
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError):
+            continue
+
+    pids = sorted({int(process.pid) for process in matched})
+    for process in matched:
+        try:
+            process.terminate()
+        except (psutil.AccessDenied, psutil.NoSuchProcess):
+            continue
+    _, alive = psutil.wait_procs(matched, timeout=5)
+    for process in alive:
+        try:
+            process.kill()
+        except (psutil.AccessDenied, psutil.NoSuchProcess):
+            continue
+    if alive:
+        _, alive = psutil.wait_procs(alive, timeout=5)
+    if alive:
+        survivor_ids = sorted({int(process.pid) for process in alive})
+        raise ManagedRuntimeError(
+            "Vault could not stop its previous local model process "
+            f"({', '.join(str(pid) for pid in survivor_ids)})."
+        )
+    return {"count": len(pids), "pids": pids}
 
 
-def _runtime_command(runtime_binary: str, model_path: str, model_id: str, port: int) -> list[str]:
+def _command_option(command: list[str], option: str) -> str:
+    try:
+        index = command.index(option)
+    except ValueError:
+        return ""
+    if index + 1 >= len(command):
+        return ""
+    return str(command[index + 1])
+
+
+def _normalized_process_path(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        return os.path.normcase(os.path.abspath(value))
+    except (OSError, ValueError):
+        return ""
+
+
+def _runtime_candidates() -> list[tuple[str, str]]:
+    configured_cpu = str(os.environ.get("CML_LLM_RUNTIME_BINARY") or "").strip()
+    configured_cuda = str(os.environ.get("CML_LLM_RUNTIME_CUDA_BINARY") or "").strip()
+    cpu_binary = str(Path(configured_cpu).resolve()) if configured_cpu and Path(configured_cpu).is_file() else ""
+    cuda_binary = (
+        str(Path(configured_cuda).resolve())
+        if configured_cuda and Path(configured_cuda).is_file()
+        else ""
+    )
+    preference = str(os.environ.get("CML_LLM_RUNTIME_PREFERENCE") or "auto").strip().lower()
+    if preference not in {"auto", "cpu", "cuda"}:
+        preference = "auto"
+
+    ordered: list[tuple[str, str]] = []
+    if preference == "cpu":
+        if cpu_binary:
+            ordered.append(("cpu", cpu_binary))
+    elif preference == "cuda":
+        if cuda_binary:
+            ordered.append(("cuda", cuda_binary))
+        if cpu_binary:
+            ordered.append(("cpu", cpu_binary))
+    else:
+        if cuda_binary and _nvidia_gpu_available():
+            ordered.append(("cuda", cuda_binary))
+        if cpu_binary:
+            ordered.append(("cpu", cpu_binary))
+        if cuda_binary and not ordered:
+            ordered.append(("cuda", cuda_binary))
+
+    unique: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for runtime_backend, binary in ordered:
+        normalized = os.path.normcase(os.path.abspath(binary))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append((runtime_backend, binary))
+    return unique
+
+
+def _nvidia_gpu_available() -> bool:
+    try:
+        from backend.app.core.hardware import hardware_status
+
+        return any(
+            str(gpu.get("vendor") or "").lower() == "nvidia"
+            and not bool(gpu.get("shared_memory"))
+            and int(gpu.get("usable_vram_bytes") or gpu.get("vram_bytes") or 0) >= 3 * 1024**3
+            for gpu in hardware_status().get("gpus") or []
+            if isinstance(gpu, dict)
+        )
+    except Exception:
+        return False
+
+
+def _runtime_thread_counts() -> tuple[int, int]:
+    logical = max(1, int(os.cpu_count() or 1))
+    try:
+        import psutil
+
+        physical = int(psutil.cpu_count(logical=False) or 0)
+    except Exception:
+        physical = 0
+    generation_default = physical or max(1, logical // 2)
+    generation = _bounded_int_env(
+        "CML_LLM_RUNTIME_THREADS",
+        default=min(generation_default, 16),
+        minimum=1,
+        maximum=64,
+    )
+    batch = _bounded_int_env(
+        "CML_LLM_RUNTIME_BATCH_THREADS",
+        default=min(max(generation, logical), 32),
+        minimum=1,
+        maximum=64,
+    )
+    return generation, batch
+
+
+def _bounded_int_env(name: str, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(str(os.environ.get(name) or default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _runtime_command(
+    runtime_binary: str,
+    model_path: str,
+    model_id: str,
+    port: int,
+    *,
+    runtime_backend: str = "cpu",
+) -> list[str]:
     template = str(os.environ.get("CML_LLM_RUNTIME_COMMAND_JSON") or "").strip()
     if template:
         try:
@@ -246,7 +463,8 @@ def _runtime_command(runtime_binary: str, model_path: str, model_id: str, port: 
                 .replace("{port}", str(port)))
             for value in values
         ]
-    return [
+    generation_threads, batch_threads = _runtime_thread_counts()
+    command = [
         runtime_binary,
         "--model",
         model_path,
@@ -257,9 +475,25 @@ def _runtime_command(runtime_binary: str, model_path: str, model_id: str, port: 
         "--alias",
         model_id,
         "--ctx-size",
-        "4096",
+        str(
+            _bounded_int_env(
+                "CML_LLM_RUNTIME_CONTEXT_SIZE",
+                default=4096,
+                minimum=1024,
+                maximum=32768,
+            )
+        ),
+        "--threads",
+        str(generation_threads),
+        "--threads-batch",
+        str(batch_threads),
         "--no-webui",
     ]
+    if runtime_backend == "cuda":
+        command.extend(["--n-gpu-layers", "auto", "--fit", "on"])
+    else:
+        command.extend(["--device", "none"])
+    return command
 
 
 def _wait_for_models(base_url: str, process: subprocess.Popen[bytes]) -> None:
