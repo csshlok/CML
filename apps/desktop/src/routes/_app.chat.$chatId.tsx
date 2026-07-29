@@ -79,7 +79,6 @@ function ChatView() {
   const [backendSession, setBackendSession] = useState<ChatSessionRecord | null>(null);
   const [backendMessages, setBackendMessages] = useState<ChatMessage[]>([]);
   const [titleDraft, setTitleDraft] = useState("");
-  const [memoryState, setMemoryState] = useState("idle");
   const [loadingSession, setLoadingSession] = useState(true);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
@@ -118,7 +117,6 @@ function ChatView() {
         setBackendSession(session);
         setBackendSessionId(session.id);
         setBackendMessages(timeline ? timeline.items.map(messageFromTimelineItem) : session.messages.map(messageFromRecord));
-        setMemoryState(session.memory_status ?? "idle");
       } catch (error) {
         setLastError(error instanceof Error ? error.message : "This chat could not be loaded.");
         return;
@@ -169,9 +167,6 @@ function ChatView() {
 
   useEffect(() => {
     void loadBackendContext();
-    return () => {
-      abortControllerRef.current?.abort();
-    };
   }, [chatId]);
 
   useVisiblePolling(
@@ -184,6 +179,22 @@ function ChatView() {
     },
     15_000,
     backendReady,
+  );
+
+  useVisiblePolling(
+    async () => {
+      if (!backendSession?.active_generation || streaming) return;
+      const refreshed = await getChatSession(backendSession.id);
+      const timeline = await getChatTimeline(refreshed.id).catch(() => null);
+      setBackendSession(refreshed);
+      setBackendMessages(
+        timeline
+          ? timeline.items.map(messageFromTimelineItem)
+          : refreshed.messages.map(messageFromRecord),
+      );
+    },
+    2_000,
+    Boolean(backendSession?.active_generation) && !streaming,
   );
 
   useEffect(() => {
@@ -251,9 +262,7 @@ function ChatView() {
     ? { label: "Library unavailable", tone: "var(--status-error)", settings: false }
     : runtime && !runtime.available
       ? { label: "Chat model needs setup", tone: "var(--status-warn)", settings: true }
-      : memoryState === "indexing"
-        ? { label: "Saving conversation memory", tone: "var(--status-info)", settings: false }
-        : { label: "Ready", tone: "var(--status-ready)", settings: false };
+      : null;
 
   const scope = scopeClusterId
     ? (activeClusters.find((c) => c.id === scopeClusterId) ?? null)
@@ -346,15 +355,16 @@ function ChatView() {
     autoScrollRef.current = true;
     setShowJumpToLatest(false);
     setLastUserPrompt(prompt);
-    const attachmentNote =
-      selectedAttachments.length > 0
-        ? `\n\nAttachments:\n${selectedAttachments.map((path) => `- ${fileNameFromPath(path)}`).join("\n")}`
-        : "";
     if (!backendReady || !vault || !backendSession) {
       setLastError("Open a library before sending a message.");
       return;
     }
-    const userMsg = { id: crypto.randomUUID(), role: "user" as const, content: prompt + attachmentNote };
+    const userMsg = {
+      id: crypto.randomUUID(),
+      role: "user" as const,
+      content: prompt,
+      attachments: selectedAttachments.map(fileNameFromPath),
+    };
     setBackendMessages((current) => [...current, userMsg]);
     if (!promptOverride) {
       setInput("");
@@ -376,7 +386,6 @@ function ChatView() {
         ? `Storing ${selectedAttachments.length} attachment${selectedAttachments.length === 1 ? "" : "s"} as vault source${selectedAttachments.length === 1 ? "" : "s"}...`
         : null,
     );
-    setMemoryState("indexing");
     if (backendReady && vault) {
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
@@ -457,7 +466,6 @@ function ChatView() {
           memory_status: streamedDone.memory_status ?? "indexed",
         };
         setBackendSessionId(response.session_id);
-        setMemoryState(response.memory_status ?? "indexed");
         const assistantMessage = {
           id: crypto.randomUUID(),
           role: "assistant",
@@ -489,7 +497,6 @@ function ChatView() {
             setBackendSessionId(refreshed.id);
             const timeline = await getChatTimeline(refreshed.id).catch(() => null);
             setBackendMessages(timeline ? timeline.items.map(messageFromTimelineItem) : refreshed.messages.map(messageFromRecord));
-            setMemoryState(refreshed.memory_status ?? response.memory_status ?? "indexed");
             window.dispatchEvent(new Event("vault:chats-changed"));
             const storedAttachments = streamedDone.attachments_stored ?? streamedMeta.attachments_stored ?? [];
             if (storedAttachments.length > 0) {
@@ -515,7 +522,6 @@ function ChatView() {
                 ? timeline.items.map(messageFromTimelineItem)
                 : refreshed.messages.map(messageFromRecord),
             );
-            setMemoryState(refreshed.memory_status ?? "indexed");
             setStreamStatus("Stopped. Partial answer saved.");
           } catch {
             setStreamStatus("Stopped. Vault will recover the partial answer on refresh.");
@@ -524,53 +530,59 @@ function ChatView() {
         }
         if (error instanceof ChatStreamInterruptedError) {
           try {
-            const refreshed = await getChatSession(backendSession.id);
-            const timeline = await getChatTimeline(refreshed.id);
-            let persistedPromptIndex = -1;
-            timeline.items.forEach((item, index) => {
-              if (
-                item.message_type === "user_message" &&
-                item.content === prompt
-              ) {
-                persistedPromptIndex = index;
-              }
-            });
-            const terminalItem =
-              persistedPromptIndex >= 0
-                ? timeline.items
-                    .slice(persistedPromptIndex + 1)
-                    .find(
-                      (item) =>
-                        item.message_type === "assistant_message" ||
-                        item.message_type === "retriable_generation",
-                    )
-                : undefined;
-            if (terminalItem) {
-              setBackendSession(refreshed);
-              setBackendSessionId(refreshed.id);
-              setBackendMessages(timeline.items.map(messageFromTimelineItem));
-              setMemoryState(refreshed.memory_status ?? "indexed");
-              setLastError(null);
-              setStreamStatus(
-                terminalItem.message_type === "retriable_generation"
-                  ? "Answer interrupted. Retry when you're ready."
-                  : terminalItem.generation_state === "stopped"
-                    ? "Partial answer saved."
-                    : "Answer saved.",
-              );
-              if (selectedAttachments.length > 0) {
-                setAttachmentNotice(
-                  "Check Sources to confirm the attachment was stored.",
+            for (let attempt = 0; attempt < 16; attempt += 1) {
+              const refreshed = await getChatSession(backendSession.id);
+              const timeline = await getChatTimeline(refreshed.id);
+              let persistedPromptIndex = -1;
+              timeline.items.forEach((item, index) => {
+                if (item.message_type === "user_message" && item.content === prompt) {
+                  persistedPromptIndex = index;
+                }
+              });
+              const terminalItem =
+                persistedPromptIndex >= 0
+                  ? timeline.items
+                      .slice(persistedPromptIndex + 1)
+                      .find(
+                        (item) =>
+                          item.message_type === "assistant_message" ||
+                          item.message_type === "retriable_generation",
+                      )
+                  : undefined;
+              if (terminalItem) {
+                setBackendSession(refreshed);
+                setBackendSessionId(refreshed.id);
+                setBackendMessages(timeline.items.map(messageFromTimelineItem));
+                setLastError(null);
+                setStreamStatus(
+                  terminalItem.message_type === "retriable_generation"
+                    ? "Answer interrupted. Retry when you're ready."
+                    : terminalItem.generation_state === "stopped"
+                      ? "Partial answer saved."
+                      : "Answer saved.",
                 );
+                if (selectedAttachments.length > 0) {
+                  setAttachmentNotice("Check Sources to confirm the attachment was stored.");
+                }
+                window.dispatchEvent(new Event("vault:chats-changed"));
+                return;
               }
-              window.dispatchEvent(new Event("vault:chats-changed"));
-              return;
+              if (refreshed.active_generation) {
+                if (attempt < 15) {
+                  await new Promise((resolve) => window.setTimeout(resolve, 750));
+                  continue;
+                }
+                setBackendSession(refreshed);
+                setLastError(null);
+                setStreamStatus("Answering in the background. Vault will notify you when it is ready.");
+                return;
+              }
+              break;
             }
           } catch {
             // Fall through to the normal error state when no durable answer can be recovered.
           }
         }
-        setMemoryState("issue");
         const message = error instanceof Error ? error.message : "Could not retrieve local context.";
         setLastError(
           selectedAttachments.length > 0
@@ -700,7 +712,7 @@ function ChatView() {
       onDrop={(event) => void handleDrop(event)}
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="flex flex-wrap items-center gap-3 border-b border-border bg-card/40 px-6 py-3">
+        <header className="vault-window-control-clearance flex flex-wrap items-center gap-3 border-b border-border bg-card/40 px-6 py-3">
           <Input
             value={titleDraft}
             onChange={(event) => setTitleDraft(event.target.value)}
@@ -788,18 +800,18 @@ function ChatView() {
                 Delete
               </Button>
             </ConfirmAction>
-            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+            {chatStatus ? <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
               <span className="h-2 w-2 rounded-full" style={{ background: chatStatus.tone }} />
               {chatStatus.settings ? (
                 <Link to="/settings" search={{ section: "models" }} className="hover:text-foreground hover:underline">
                   {chatStatus.label}
                 </Link>
               ) : chatStatus.label}
-            </span>
+            </span> : null}
           </div>
         </header>
 
-        <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="flex min-h-0 flex-1">
           <div
             ref={messageViewportRef}
             className="relative min-w-0 flex-1 overflow-y-auto"
@@ -973,8 +985,7 @@ function ChatView() {
             </div>
           )}
           <p className="mx-auto mt-1.5 max-w-3xl break-words text-[11px] text-muted-foreground">
-            Ctrl/Cmd Enter to send / {scope ? scope.name : "all vault context"} / {latestAnalysisLabel.toLowerCase()} / memory{" "}
-            {memoryLabel(memoryState)}
+            Ctrl/Cmd Enter to send / {scope ? scope.name : "all vault context"} / {latestAnalysisLabel.toLowerCase()}
           </p>
         </div>
       </div>
@@ -1011,15 +1022,13 @@ function ChatLoadingSkeleton() {
   );
 }
 
-function memoryLabel(status: string) {
-  if (status === "indexed") return "saved";
-  if (status === "indexing") return "saving";
-  if (status === "issue") return "issue";
-  return "idle";
-}
-
 function fileNameFromPath(path: string) {
-  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  try {
+    return decodeURIComponent(name.replace(/\+/g, " "));
+  } catch {
+    return name.replace(/\+/g, " ");
+  }
 }
 
 function messageFromRecord(record: ChatMessageRecord): ChatMessage {
@@ -1050,6 +1059,7 @@ function messageFromRecord(record: ChatMessageRecord): ChatMessage {
     generationId: record.generation_id,
     replyToMessageId: record.reply_to_message_id,
     generationState: record.generation_state,
+    attachments: record.attachments,
   };
 }
 
@@ -1085,9 +1095,26 @@ function Message({
   onAskEvidence: (prompt: string) => void;
 }) {
   if (msg.role === "user") {
+    const legacy = splitLegacyAttachments(msg.content);
+    const attachmentNames = msg.attachments?.length ? msg.attachments : legacy.attachments;
     return (
-      <div className="ml-auto max-w-[85%] break-words rounded-md bg-accent px-3.5 py-2.5 text-sm">
-        {msg.content}
+      <div className="ml-auto max-w-[85%]">
+        {attachmentNames.length > 0 ? (
+          <div className="mb-2 flex flex-wrap justify-end gap-2">
+            {attachmentNames.map((name) => (
+              <span
+                key={name}
+                className="inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs"
+              >
+                <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">{fileNameFromPath(name)}</span>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div className="break-words rounded-md bg-accent px-3.5 py-2.5 text-sm">
+          {legacy.content}
+        </div>
       </div>
     );
   }
@@ -1234,4 +1261,18 @@ function Message({
       </div>
     </div>
   );
+}
+
+function splitLegacyAttachments(content: string) {
+  const marker = "\n\nAttachments:\n";
+  const markerIndex = content.indexOf(marker);
+  if (markerIndex < 0) return { content, attachments: [] as string[] };
+  return {
+    content: content.slice(0, markerIndex),
+    attachments: content
+      .slice(markerIndex + marker.length)
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^\s*-\s*/, "").trim())
+      .filter(Boolean),
+  };
 }

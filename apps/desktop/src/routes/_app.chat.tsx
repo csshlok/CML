@@ -10,7 +10,7 @@ import {
   type ClusterRecord,
   type VaultRecord,
 } from "@/lib/backend";
-import { MessageSquare, Paperclip, Plus, Send, SlidersHorizontal, Trash2 } from "lucide-react";
+import { LoaderCircle, MessageSquare, Paperclip, Plus, Send, SlidersHorizontal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmAction } from "@/components/product/Feedback";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useVisiblePolling } from "@/lib/useVisiblePolling";
 
 export const Route = createFileRoute("/_app/chat")({
   head: () => ({ meta: [{ title: "Chat" }] }),
@@ -107,6 +108,8 @@ function ChatIndex() {
       cancelled = true;
     };
   }, []);
+
+  useVisiblePolling(load, 4_000, Boolean(vault));
 
   async function newChat() {
     try {
@@ -217,7 +220,21 @@ function ChatIndex() {
   const visibleChats = backendReady ? backendChats : [];
 
   if (pathname !== "/chat") {
-    return <Outlet />;
+    return (
+      <div className="grid h-full min-w-0 grid-cols-[260px_minmax(0,1fr)] overflow-hidden xl:grid-cols-[300px_minmax(0,1fr)]">
+        <ChatHistory
+          chats={visibleChats}
+          cursor={chatCursor}
+          loadingMore={loadingMore}
+          onNew={() => void newChat()}
+          onDelete={(id) => void removeChat(id)}
+          onLoadMore={() => void loadMoreChats()}
+        />
+        <div className="min-w-0 overflow-hidden">
+          <Outlet />
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -246,9 +263,12 @@ function ChatIndex() {
               <Link
                 to="/chat/$chatId"
                 params={{ chatId: c.id }}
-                className="min-w-0 flex-1 break-words px-3 py-2 text-sm text-muted-foreground group-hover:text-foreground"
+                className="flex min-w-0 flex-1 items-center gap-2 break-words px-3 py-2 text-sm text-muted-foreground group-hover:text-foreground"
               >
-                {c.title}
+                {c.active_generation ? (
+                  <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
+                ) : null}
+                <span className="truncate">{c.title}</span>
               </Link>
               {backendReady && (
                 <ConfirmAction
@@ -398,6 +418,71 @@ function ChatIndex() {
         </main>
       </div>
     </div>
+  );
+}
+
+function ChatHistory({
+  chats,
+  cursor,
+  loadingMore,
+  onNew,
+  onDelete,
+  onLoadMore,
+}: {
+  chats: ChatSessionRecord[];
+  cursor: string | null;
+  loadingMore: boolean;
+  onNew: () => void;
+  onDelete: (id: string) => void;
+  onLoadMore: () => void;
+}) {
+  return (
+    <aside className="min-w-0 border-r border-border bg-card/35 px-4 py-5">
+      <Button variant="ghost" className="mb-4 w-full justify-start gap-2" onClick={onNew}>
+        <Plus className="h-4 w-4" /> New chat
+      </Button>
+      <div className="h-[calc(100%-3rem)] space-y-1 overflow-y-auto">
+        {chats.map((chat) => (
+          <div key={chat.id} className="group flex items-center gap-1 rounded-md hover:bg-accent/60">
+            <Link
+              to="/chat/$chatId"
+              params={{ chatId: chat.id }}
+              className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-sm text-muted-foreground group-hover:text-foreground"
+            >
+              {chat.active_generation ? (
+                <LoaderCircle
+                  className="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none"
+                  aria-label="Answer in progress"
+                />
+              ) : (
+                <MessageSquare className="h-3.5 w-3.5 shrink-0" />
+              )}
+              <span className="truncate">{chat.title}</span>
+            </Link>
+            <ConfirmAction
+              title={`Delete “${chat.title}”?`}
+              description="This removes the conversation and its saved messages."
+              confirmLabel="Delete chat"
+              onConfirm={() => onDelete(chat.id)}
+            >
+              <Button
+                variant="ghost"
+                size="icon"
+                className="mr-1 h-8 w-8 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                aria-label={`Delete ${chat.title}`}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </ConfirmAction>
+          </div>
+        ))}
+        {cursor ? (
+          <Button variant="ghost" size="sm" className="w-full" disabled={loadingMore} onClick={onLoadMore}>
+            {loadingMore ? "Loading..." : "Load older chats"}
+          </Button>
+        ) : null}
+      </div>
+    </aside>
   );
 }
 

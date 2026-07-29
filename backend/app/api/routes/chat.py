@@ -58,6 +58,7 @@ from backend.app.core.typed_evidence_runtime import (
 from backend.app.core.vector_maintenance import active_embedding_selector
 from backend.app.core.turbovec_runtime import maybe_remove_source_chunks_from_sidecar
 from backend.app.core.synthesis_guard import analyze_synthesis_readiness
+from backend.app.core.temporal_facts import sync_chat_session_temporal_facts
 from backend.app.core.chat_retention import (
     chat_evidence_retention_policy,
     compact_retrieval_snapshots,
@@ -103,7 +104,18 @@ def list_chat_sessions(
         if vault_id:
             _ensure_vault(conn, vault_id)
         rows = conn.execute(
-            f"SELECT * FROM chat_sessions {where} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+            f"""
+            SELECT chat_sessions.*,
+                   EXISTS(
+                       SELECT 1 FROM chat_generations
+                       WHERE chat_generations.session_id = chat_sessions.id
+                         AND chat_generations.state = 'in_flight'
+                   ) AS active_generation
+            FROM chat_sessions
+            {where}
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
             [*params, bounded_limit, bounded_offset],
         ).fetchall()
     return [_session_from_row(row, messages=[]) for row in rows]
@@ -135,7 +147,18 @@ def list_chat_sessions_page(
         if vault_id:
             _ensure_vault(conn, vault_id)
         rows = conn.execute(
-            f"SELECT * FROM chat_sessions {where} ORDER BY updated_at DESC, id DESC LIMIT ?",
+            f"""
+            SELECT chat_sessions.*,
+                   EXISTS(
+                       SELECT 1 FROM chat_generations
+                       WHERE chat_generations.session_id = chat_sessions.id
+                         AND chat_generations.state = 'in_flight'
+                   ) AS active_generation
+            FROM chat_sessions
+            {where}
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+            """,
             [*params, safe_limit + 1],
         ).fetchall()
     items = [_session_from_row(row, messages=[]) for row in rows]
@@ -187,7 +210,19 @@ def get_chat_session(session_id: str, limit: int = 200, offset: int = 0) -> dict
     bounded_limit = max(1, min(limit, 500))
     bounded_offset = max(offset, 0)
     with connect() as conn:
-        row = conn.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
+        row = conn.execute(
+            """
+            SELECT chat_sessions.*,
+                   EXISTS(
+                       SELECT 1 FROM chat_generations
+                       WHERE chat_generations.session_id = chat_sessions.id
+                         AND chat_generations.state = 'in_flight'
+                   ) AS active_generation
+            FROM chat_sessions
+            WHERE chat_sessions.id = ?
+            """,
+            (session_id,),
+        ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Chat session not found")
         messages = _chat_messages_window(
@@ -260,6 +295,45 @@ def get_chat_messages_page(session_id: str, limit: int = 50, cursor: str | None 
     if session is None:
         raise HTTPException(status_code=404, detail="Chat session not found")
     return paginated_messages(session_id, limit=limit, cursor=cursor)
+
+
+@router.get("/generations/active")
+def list_active_chat_generations(vault_id: str) -> dict:
+    with connect() as conn:
+        _ensure_vault(conn, vault_id)
+        rows = conn.execute(
+            """
+            SELECT generations.id, generations.session_id, generations.state,
+                   generations.created_at, generations.updated_at, sessions.title
+            FROM chat_generations generations
+            JOIN chat_sessions sessions ON sessions.id = generations.session_id
+            WHERE generations.vault_id = ? AND generations.state = 'in_flight'
+            ORDER BY generations.created_at ASC
+            """,
+            (vault_id,),
+        ).fetchall()
+    return {"items": [dict_from_row(row) for row in rows]}
+
+
+@router.get("/generations/recent")
+def list_recent_chat_generations(vault_id: str, limit: int = 30) -> dict:
+    with connect() as conn:
+        _ensure_vault(conn, vault_id)
+        rows = conn.execute(
+            """
+            SELECT generations.id, generations.session_id, generations.state,
+                   generations.completed_at, generations.created_at,
+                   generations.updated_at, sessions.title
+            FROM chat_generations generations
+            JOIN chat_sessions sessions ON sessions.id = generations.session_id
+            WHERE generations.vault_id = ?
+              AND generations.state IN ('completed', 'stopped', 'retriable')
+            ORDER BY generations.updated_at DESC, generations.id DESC
+            LIMIT ?
+            """,
+            (vault_id, max(1, min(limit, 100))),
+        ).fetchall()
+    return {"items": [dict_from_row(row) for row in rows]}
 
 
 @router.post("/retrieval-snapshots/compact")
@@ -491,6 +565,8 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
             clusters_used = context["clusters_used"]
             attachments_stored = generation["attachment_sources"] if generation else []
             yield _sse("meta", {
+                "generation_id": generation["generation_id"] if generation else None,
+                "session_id": generation["session_id"] if generation else payload.session_id,
                 "clusters_used": clusters_used,
                 "citations": citations,
                 "coverage_ledger": context["coverage_ledger"],
@@ -1868,6 +1944,19 @@ def _complete_chat_generation(
             "UPDATE chat_sessions SET memory_status = 'indexing', memory_updated_at = ? WHERE id = ?",
             (now, session_id),
         )
+        session_messages = hydrate_chat_message_rows(
+            conn,
+            conn.execute(
+                "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at, rowid",
+                (session_id,),
+            ).fetchall(),
+        )
+        sync_chat_session_temporal_facts(
+            conn,
+            vault_id=vault_id,
+            session_id=session_id,
+            messages=session_messages,
+        )
         enqueue_job(
             conn,
             job_type="chat_transcript_memory",
@@ -2260,6 +2349,7 @@ def _session_from_row(row, messages: list[dict]) -> dict:
     session["saved"] = bool(session["saved"])
     session["memory_status"] = session.get("memory_status") or "idle"
     session["memory_updated_at"] = session.get("memory_updated_at")
+    session["active_generation"] = bool(session.get("active_generation", 0))
     session["messages"] = messages
     return session
 
@@ -2267,6 +2357,22 @@ def _session_from_row(row, messages: list[dict]) -> dict:
 def _messages_from_rows(conn, rows: list[dict]) -> list[dict]:
     hydrated_messages = hydrate_chat_message_rows(conn, rows)
     message_ids = [str(message["id"]) for message in hydrated_messages]
+    attachments_by_message: dict[str, list[str]] = {}
+    if message_ids:
+        placeholders = ",".join("?" for _ in message_ids)
+        attachment_rows = conn.execute(
+            f"""
+            SELECT message_id, file_name
+            FROM chat_attachments
+            WHERE message_id IN ({placeholders})
+            ORDER BY created_at ASC, id ASC
+            """,
+            message_ids,
+        ).fetchall()
+        for attachment in attachment_rows:
+            attachments_by_message.setdefault(str(attachment["message_id"]), []).append(
+                str(attachment["file_name"])
+            )
     generation_by_message_id: dict[str, dict] = {}
     if message_ids:
         placeholders = ",".join("?" for _ in message_ids)
@@ -2289,6 +2395,7 @@ def _messages_from_rows(conn, rows: list[dict]) -> list[dict]:
         [message["id"] for message in hydrated_messages if str(message.get("role") or "").strip().lower() == "assistant"],
     )
     for message in hydrated_messages:
+        message["attachments"] = attachments_by_message.get(str(message["id"]), [])
         generation = generation_by_message_id.get(str(message["id"]))
         message["generation_id"] = generation.get("id") if generation else None
         message["generation_state"] = generation.get("state") if generation else None

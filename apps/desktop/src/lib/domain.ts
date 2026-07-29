@@ -88,6 +88,7 @@ export interface ChatMessage {
   generationId?: string | null;
   replyToMessageId?: string | null;
   generationState?: string | null;
+  attachments?: string[];
 }
 
 export const clusterLifecycleLabel: Record<ClusterLifecycleStatus, string> = {

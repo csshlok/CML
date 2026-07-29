@@ -808,6 +808,7 @@ export type ChatMessageRecord = {
   generation_id: string | null;
   reply_to_message_id: string | null;
   generation_state: string | null;
+  attachments: string[];
 };
 
 export type ChatSessionRecord = {
@@ -819,6 +820,7 @@ export type ChatSessionRecord = {
   saved: boolean;
   memory_status: string;
   memory_updated_at: string | null;
+  active_generation: boolean;
   created_at: string;
   updated_at: string;
   messages: ChatMessageRecord[];
@@ -1993,6 +1995,35 @@ export async function createSourceFromPath(payload: {
   });
 }
 
+export async function createProject(payload: {
+  vault_id: string;
+  root_path: string;
+  name?: string | null;
+  discovery_scope?: "context" | "code";
+  sync?: boolean;
+}) {
+  return request<ProjectRecord>("/api/v1/projects", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function decideClusterSuggestion(payload: {
+  source_id: string;
+  suggested_cluster_id: string;
+  action: "accepted" | "dismissed";
+}) {
+  return request<{
+    source_id: string;
+    cluster_id: string | null;
+    cluster_name: string;
+    action: "accepted" | "dismissed";
+  }>("/api/v1/clusters/suggestions/decision", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function startSourceImportJob(payload: {
   vault_id: string;
   cluster_id?: string | null;
@@ -2218,7 +2249,7 @@ export async function buildChatContext(payload: {
 
 export class ChatStreamInterruptedError extends Error {
   constructor() {
-    super("The local service closed the answer before confirming it was saved.");
+    super("The answer connection closed before Vault confirmed the result.");
     this.name = "ChatStreamInterruptedError";
   }
 }
@@ -2409,6 +2440,37 @@ export async function getChatSession(id: string) {
 
 export async function getChatTimeline(id: string) {
   return request<ChatTimelineResponse>(`/api/v1/chat/sessions/${encodeURIComponent(id)}/timeline`);
+}
+
+export type ActiveChatGenerationRecord = {
+  id: string;
+  session_id: string;
+  state: "in_flight";
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listActiveChatGenerations(vaultId: string) {
+  return request<{ items: ActiveChatGenerationRecord[] }>(
+    `/api/v1/chat/generations/active?vault_id=${encodeURIComponent(vaultId)}`,
+  );
+}
+
+export type RecentChatGenerationRecord = {
+  id: string;
+  session_id: string;
+  state: "completed" | "stopped" | "retriable";
+  title: string;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listRecentChatGenerations(vaultId: string, limit = 30) {
+  return request<{ items: RecentChatGenerationRecord[] }>(
+    `/api/v1/chat/generations/recent?vault_id=${encodeURIComponent(vaultId)}&limit=${limit}`,
+  );
 }
 
 export async function updateChatSession(
