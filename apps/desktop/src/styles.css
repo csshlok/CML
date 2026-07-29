@@ -314,6 +314,15 @@
   }
 
   .vault-desktop-frame {
+    --vault-window-controls-width: 138px;
+    --vault-window-controls-height: 32px;
+    --vault-window-controls-gap: 12px;
+    --vault-window-controls-safe-width: calc(
+      var(--vault-window-controls-width) + var(--vault-window-controls-gap)
+    );
+    --vault-window-controls-safe-height: calc(
+      var(--vault-window-controls-height) + var(--vault-window-controls-gap)
+    );
     display: flex;
     height: 100vh;
     min-height: 0;
@@ -338,8 +347,8 @@
     right: 0;
     z-index: 100;
     display: flex;
-    width: 150px;
-    height: 44px;
+    width: var(--vault-window-controls-safe-width);
+    height: var(--vault-window-controls-safe-height);
     align-items: stretch;
     background: transparent;
     user-select: none;
@@ -352,8 +361,9 @@
     -webkit-app-region: no-drag;
   }
 
-  .vault-window-control-clearance {
-    padding-right: max(150px, 1.5rem);
+  .vault-window-aware {
+    min-height: var(--vault-window-controls-safe-height);
+    padding-right: max(var(--vault-window-controls-safe-width), 1.5rem);
   }
 
   .vault-sidebar {
@@ -603,13 +613,6 @@
     }
   }
 
-  @media (min-width: 1101px) {
-    .vault-desktop-frame .desktop-window-action {
-      margin-right: 150px;
-    }
-
-  }
-
   @media (min-width: 1280px) {
     .sources-layout {
       grid-template-columns: minmax(0, 1fr) 0;
@@ -727,17 +730,13 @@
       gap: var(--space-3);
       border-bottom: 1px solid var(--border-default);
       background: var(--bg-sidebar);
-      padding: 6px 12px;
+      padding: 6px max(var(--vault-window-controls-safe-width), 12px) 6px 12px;
     }
 
     .vault-desktop-frame .vault-mobile-logo {
       position: absolute;
       left: 50%;
       transform: translateX(-50%);
-    }
-
-    .vault-desktop-frame .vault-mobile-status {
-      margin-right: 150px;
     }
 
     .vault-sidebar {

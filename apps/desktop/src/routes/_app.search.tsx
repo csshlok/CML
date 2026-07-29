@@ -22,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { PageHeader } from "@/components/layout/WindowAware";
 import {
   type Cluster,
   type Source,
@@ -198,17 +199,17 @@ function SearchView() {
     <div className="relative h-full overflow-y-auto bg-background">
       <main className="min-w-0 xl:overflow-y-auto">
         <div className="border-b border-border bg-background px-4 py-5 sm:px-6">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+          <PageHeader className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
             <div className="min-w-0">
               <h1 className="page-title">Search</h1>
               <p className="mt-1 max-w-xl text-sm leading-6 text-muted-foreground">
                 Search saved sources, review unclustered items, and open the context you need.
               </p>
             </div>
-            <Button variant="outline" className="desktop-window-action" asChild>
+            <Button variant="outline" asChild>
               <Link to="/sources">Manage sources</Link>
             </Button>
-          </div>
+          </PageHeader>
 
           <div className="mt-5 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
             <div className="relative min-w-0">

@@ -12,6 +12,7 @@ import {
 } from "@/lib/backend";
 import { LoaderCircle, MessageSquare, Paperclip, Plus, Send, SlidersHorizontal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/layout/WindowAware";
 import { ConfirmAction } from "@/components/product/Feedback";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -298,7 +299,7 @@ function ChatIndex() {
       </aside>
       ) : null}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="border-b border-border bg-card/35 px-4 py-5 sm:px-6 lg:px-10 lg:py-7">
+        <PageHeader className="border-b border-border bg-card/35 px-4 py-5 sm:px-6 lg:px-10 lg:py-7">
           <div className="flex min-w-0 items-start gap-3">
             <MessageSquare className="h-5 w-5 text-muted-foreground" />
             <div className="min-w-0">
@@ -308,7 +309,7 @@ function ChatIndex() {
               </p>
             </div>
           </div>
-        </header>
+        </PageHeader>
 
         <main className="flex flex-1 items-center justify-center overflow-y-auto px-4 py-6 sm:px-6 lg:px-10">
           <section className="w-full max-w-[840px]">

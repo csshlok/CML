@@ -4,7 +4,7 @@ import type { ChatMessage, Cluster, Source } from "@/lib/domain";
 import {
   deleteChatSession,
   getModelRuntimeStatus,
-  getChatSession,
+  getChatSessionMetadata,
   getChatTimeline,
   listClusters,
   listSources,
@@ -29,6 +29,7 @@ import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 import { displayPath } from "@/lib/displayPath";
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/layout/WindowAware";
 import { ConfirmAction } from "@/components/product/Feedback";
 import { notify } from "@/components/product/Notifications";
 import { Input } from "@/components/ui/input";
@@ -43,7 +44,7 @@ import {
 import { ClusterChip } from "@/components/ClusterChip";
 import {
   detectProjectVisualizationRequest,
-  ProjectGraphArtifact,
+  ProjectGraphLink,
 } from "@/components/ProjectGraphArtifact";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -92,31 +93,47 @@ function ChatView() {
   const [dragActive, setDragActive] = useState(false);
   const [lastUserPrompt, setLastUserPrompt] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [earlierCursor, setEarlierCursor] = useState<string | null>(null);
+  const [latestTimelineCursor, setLatestTimelineCursor] = useState<string | null>(null);
+  const [hasEarlierMessages, setHasEarlierMessages] = useState(false);
+  const [loadingEarlierMessages, setLoadingEarlierMessages] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const messageViewportRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
   const titleCommitRef = useRef(0);
   const consumedPendingPromptRef = useRef<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const loadSequenceRef = useRef(0);
 
   async function loadBackendContext() {
+    const loadSequence = ++loadSequenceRef.current;
     setLoadingSession(true);
     setBackendSession(null);
     setBackendSessionId(null);
     setBackendMessages([]);
     setLastError(null);
     setLatestContextMeta(null);
+    setEarlierCursor(null);
+    setLatestTimelineCursor(null);
+    setHasEarlierMessages(false);
     try {
       const vaults = await listVaults();
+      if (loadSequence !== loadSequenceRef.current) return;
       const activeVault = vaults[0] ?? null;
       setVaultRecord(activeVault);
       if (!activeVault) return;
       try {
-        const session = await getChatSession(chatId);
-        const timeline = await getChatTimeline(chatId).catch(() => null);
+        const [session, timeline] = await Promise.all([
+          getChatSessionMetadata(chatId),
+          getChatTimeline(chatId, { limit: 80 }),
+        ]);
+        if (loadSequence !== loadSequenceRef.current) return;
         setBackendSession(session);
         setBackendSessionId(session.id);
-        setBackendMessages(timeline ? timeline.items.map(messageFromTimelineItem) : session.messages.map(messageFromRecord));
+        setBackendMessages(timeline.items.map(messageFromTimelineItem));
+        setEarlierCursor(timeline.next_cursor);
+        setLatestTimelineCursor(timeline.latest_cursor);
+        setHasEarlierMessages(timeline.has_more);
       } catch (error) {
         setLastError(error instanceof Error ? error.message : "This chat could not be loaded.");
         return;
@@ -127,6 +144,7 @@ function ChatView() {
         listSources(activeVault.id, { limit: 20, order: "newest" }),
         getModelRuntimeStatus(),
       ]);
+      if (loadSequence !== loadSequenceRef.current) return;
       if (optional[0].status === "fulfilled") {
         setBackendClusters(optional[0].value.map(clusterFromRecord));
       }
@@ -145,7 +163,7 @@ function ChatView() {
       setBackendReady(false);
       setLastError(error instanceof Error ? error.message : "Vault could not load this chat.");
     } finally {
-      setLoadingSession(false);
+      if (loadSequence === loadSequenceRef.current) setLoadingSession(false);
     }
   }
 
@@ -167,7 +185,39 @@ function ChatView() {
 
   useEffect(() => {
     void loadBackendContext();
+    return () => {
+      loadSequenceRef.current += 1;
+    };
   }, [chatId]);
+
+  const loadEarlierMessages = async () => {
+    if (!backendSession || !earlierCursor || loadingEarlierMessages) return;
+    const viewport = messageViewportRef.current;
+    const previousHeight = viewport?.scrollHeight ?? 0;
+    const previousTop = viewport?.scrollTop ?? 0;
+    setLoadingEarlierMessages(true);
+    try {
+      const page = await getChatTimeline(backendSession.id, {
+        limit: 80,
+        cursor: earlierCursor,
+        direction: "older",
+      });
+      setBackendMessages((current) =>
+        mergeTimelineMessages(page.items.map(messageFromTimelineItem), current),
+      );
+      setEarlierCursor(page.next_cursor);
+      setHasEarlierMessages(page.has_more);
+      window.requestAnimationFrame(() => {
+        const nextViewport = messageViewportRef.current;
+        if (!nextViewport) return;
+        nextViewport.scrollTop = previousTop + (nextViewport.scrollHeight - previousHeight);
+      });
+    } catch (error) {
+      setLastError(error instanceof Error ? error.message : "Earlier messages could not load.");
+    } finally {
+      setLoadingEarlierMessages(false);
+    }
+  };
 
   useVisiblePolling(
     async () => {
@@ -184,14 +234,20 @@ function ChatView() {
   useVisiblePolling(
     async () => {
       if (!backendSession?.active_generation || streaming) return;
-      const refreshed = await getChatSession(backendSession.id);
-      const timeline = await getChatTimeline(refreshed.id).catch(() => null);
+      const refreshed = await getChatSessionMetadata(backendSession.id);
       setBackendSession(refreshed);
-      setBackendMessages(
-        timeline
-          ? timeline.items.map(messageFromTimelineItem)
-          : refreshed.messages.map(messageFromRecord),
-      );
+      if (!latestTimelineCursor) return;
+      const delta = await getChatTimeline(refreshed.id, {
+        limit: 100,
+        cursor: latestTimelineCursor,
+        direction: "newer",
+      });
+      if (delta.items.length > 0) {
+        setBackendMessages((current) =>
+          mergeTimelineMessages(current, delta.items.map(messageFromTimelineItem)),
+        );
+      }
+      if (delta.latest_cursor) setLatestTimelineCursor(delta.latest_cursor);
     },
     2_000,
     Boolean(backendSession?.active_generation) && !streaming,
@@ -291,7 +347,6 @@ function ChatView() {
   const latestVisualizationRequest = projectId
     ? [...messages]
         .reverse()
-        .filter((message) => message.role === "user")
         .map((message) => detectProjectVisualizationRequest(message.content))
         .find((request) => request !== null) ?? null
     : null;
@@ -360,7 +415,7 @@ function ChatView() {
       return;
     }
     const userMsg = {
-      id: crypto.randomUUID(),
+      id: `optimistic:${crypto.randomUUID()}`,
       role: "user" as const,
       content: prompt,
       attachments: selectedAttachments.map(fileNameFromPath),
@@ -467,7 +522,7 @@ function ChatView() {
         };
         setBackendSessionId(response.session_id);
         const assistantMessage = {
-          id: crypto.randomUUID(),
+          id: `optimistic:${crypto.randomUUID()}`,
           role: "assistant",
           content: response.answer,
           clustersUsed: response.clusters_used.map((cluster) => ({
@@ -492,11 +547,14 @@ function ChatView() {
         if (response.session_id) {
           setBackendMessages((current) => [...current, assistantMessage]);
           try {
-            const refreshed = await getChatSession(response.session_id);
+            const refreshed = await getChatSessionMetadata(response.session_id);
             setBackendSession(refreshed);
             setBackendSessionId(refreshed.id);
-            const timeline = await getChatTimeline(refreshed.id).catch(() => null);
-            setBackendMessages(timeline ? timeline.items.map(messageFromTimelineItem) : refreshed.messages.map(messageFromRecord));
+            const timeline = await getChatTimeline(refreshed.id, { limit: 80 });
+            setBackendMessages((current) =>
+              mergeTimelineMessages(current, timeline.items.map(messageFromTimelineItem)),
+            );
+            if (timeline.latest_cursor) setLatestTimelineCursor(timeline.latest_cursor);
             window.dispatchEvent(new Event("vault:chats-changed"));
             const storedAttachments = streamedDone.attachments_stored ?? streamedMeta.attachments_stored ?? [];
             if (storedAttachments.length > 0) {
@@ -514,14 +572,13 @@ function ChatView() {
         if (error instanceof DOMException && error.name === "AbortError") {
           setStreamStatus("Stopped. Saving the partial answer...");
           try {
-            const refreshed = await getChatSession(backendSession.id);
-            const timeline = await getChatTimeline(refreshed.id).catch(() => null);
+            const refreshed = await getChatSessionMetadata(backendSession.id);
+            const timeline = await getChatTimeline(refreshed.id, { limit: 80 });
             setBackendSession(refreshed);
-            setBackendMessages(
-              timeline
-                ? timeline.items.map(messageFromTimelineItem)
-                : refreshed.messages.map(messageFromRecord),
+            setBackendMessages((current) =>
+              mergeTimelineMessages(current, timeline.items.map(messageFromTimelineItem)),
             );
+            if (timeline.latest_cursor) setLatestTimelineCursor(timeline.latest_cursor);
             setStreamStatus("Stopped. Partial answer saved.");
           } catch {
             setStreamStatus("Stopped. Vault will recover the partial answer on refresh.");
@@ -531,8 +588,8 @@ function ChatView() {
         if (error instanceof ChatStreamInterruptedError) {
           try {
             for (let attempt = 0; attempt < 16; attempt += 1) {
-              const refreshed = await getChatSession(backendSession.id);
-              const timeline = await getChatTimeline(refreshed.id);
+              const refreshed = await getChatSessionMetadata(backendSession.id);
+              const timeline = await getChatTimeline(refreshed.id, { limit: 80 });
               let persistedPromptIndex = -1;
               timeline.items.forEach((item, index) => {
                 if (item.message_type === "user_message" && item.content === prompt) {
@@ -552,7 +609,10 @@ function ChatView() {
               if (terminalItem) {
                 setBackendSession(refreshed);
                 setBackendSessionId(refreshed.id);
-                setBackendMessages(timeline.items.map(messageFromTimelineItem));
+                setBackendMessages((current) =>
+                  mergeTimelineMessages(current, timeline.items.map(messageFromTimelineItem)),
+                );
+                if (timeline.latest_cursor) setLatestTimelineCursor(timeline.latest_cursor);
                 setLastError(null);
                 setStreamStatus(
                   terminalItem.message_type === "retriable_generation"
@@ -662,7 +722,9 @@ function ChatView() {
     try {
       const updated = await updateChatMessage(messageId, { useful: value });
       setBackendSession(updated);
-      setBackendMessages(updated.messages.map(messageFromRecord));
+      setBackendMessages((current) =>
+        current.map((message) => (message.id === messageId ? { ...message, useful: value } : message)),
+      );
     } catch (error) {
       setLastError(error instanceof Error ? error.message : "Could not save this feedback.");
     }
@@ -673,7 +735,11 @@ function ChatView() {
     try {
       const updated = await updateChatMessage(messageId, { saved: !current });
       setBackendSession(updated);
-      setBackendMessages(updated.messages.map(messageFromRecord));
+      setBackendMessages((messages) =>
+        messages.map((message) =>
+          message.id === messageId ? { ...message, saved: !current } : message,
+        ),
+      );
       window.dispatchEvent(new Event("vault:chats-changed"));
     } catch (error) {
       setLastError(error instanceof Error ? error.message : "Could not update this message.");
@@ -712,7 +778,7 @@ function ChatView() {
       onDrop={(event) => void handleDrop(event)}
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="vault-window-control-clearance flex flex-wrap items-center gap-3 border-b border-border bg-card/40 px-6 py-3">
+        <PageHeader className="flex flex-wrap items-center gap-3 border-b border-border bg-card/40 px-6 py-3">
           <Input
             value={titleDraft}
             onChange={(event) => setTitleDraft(event.target.value)}
@@ -809,7 +875,7 @@ function ChatView() {
               ) : chatStatus.label}
             </span> : null}
           </div>
-        </header>
+        </PageHeader>
 
         <div className="flex min-h-0 flex-1">
           <div
@@ -824,6 +890,19 @@ function ChatView() {
             }}
           >
             <div className="mx-auto max-w-3xl px-6 py-8">
+              {hasEarlierMessages ? (
+                <div className="mb-6 flex justify-center">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={loadingEarlierMessages}
+                    onClick={() => void loadEarlierMessages()}
+                  >
+                    {loadingEarlierMessages ? "Loading…" : "Load earlier messages"}
+                  </Button>
+                </div>
+              ) : null}
               {messages.length === 0 && !streaming && (
                 <div className="text-muted-foreground">
                   <p className="text-lg font-medium text-foreground">Ask across your vault.</p>
@@ -877,7 +956,7 @@ function ChatView() {
                   </div>
                 )}
                 {projectId && latestVisualizationRequest && (
-                  <ProjectGraphArtifact projectId={projectId} request={latestVisualizationRequest} />
+                  <ProjectGraphLink projectId={projectId} request={latestVisualizationRequest} />
                 )}
               </div>
               <div ref={endRef} />
@@ -1073,6 +1152,29 @@ function messageFromTimelineItem(item: ChatTimelineItem): ChatMessage {
     };
   }
   return messageFromRecord(item);
+}
+
+function mergeTimelineMessages(first: ChatMessage[], second: ChatMessage[]): ChatMessage[] {
+  const incomingPersisted = second.filter((message) => !message.id.startsWith("optimistic:"));
+  const consumedOptimistic = new Set<string>();
+  for (const persisted of incomingPersisted) {
+    const optimistic = [...first]
+      .reverse()
+      .find(
+        (candidate) =>
+          candidate.id.startsWith("optimistic:") &&
+          candidate.role === persisted.role &&
+          candidate.content === persisted.content &&
+          !consumedOptimistic.has(candidate.id),
+      );
+    if (optimistic) consumedOptimistic.add(optimistic.id);
+  }
+  const merged = new Map<string, ChatMessage>();
+  for (const message of [...first, ...second]) {
+    if (consumedOptimistic.has(message.id)) continue;
+    merged.set(message.id, message);
+  }
+  return [...merged.values()];
 }
 
 function Message({

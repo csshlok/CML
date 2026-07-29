@@ -130,6 +130,10 @@ test("desktop window and preload are wired to the custom frameless chrome", () =
     path.join(__dirname, "static-window-chrome.js"),
     "utf8",
   );
+  const staticChromeStyles = fs.readFileSync(
+    path.join(__dirname, "static-window-chrome.css"),
+    "utf8",
+  );
   const stylesSource = fs.readFileSync(
     path.join(__dirname, "..", "src", "styles.css"),
     "utf8",
@@ -155,11 +159,20 @@ test("desktop window and preload are wired to the custom frameless chrome", () =
   );
   assert.match(
     stylesSource,
-    /\.vault-window-chrome\s*\{[^}]*width:\s*150px;[^}]*height:\s*44px;/s,
+    /--vault-window-controls-safe-width:\s*calc\(/,
   );
+  for (const contract of [
+    ["--vault-window-controls-width", "138px"],
+    ["--vault-window-controls-height", "32px"],
+    ["--vault-window-controls-gap", "12px"],
+  ]) {
+    const pattern = new RegExp(`${contract[0]}:\\s*${contract[1]}`);
+    assert.match(stylesSource, pattern);
+    assert.match(staticChromeStyles, pattern);
+  }
   assert.match(
     stylesSource,
-    /\.vault-desktop-frame \.desktop-window-action\s*\{[^}]*margin-right:\s*150px;/s,
+    /\.vault-window-aware\s*\{[^}]*padding-right:\s*max\(var\(--vault-window-controls-safe-width\),\s*1\.5rem\)/s,
   );
   assert.match(
     stylesSource,
@@ -171,7 +184,7 @@ test("desktop window and preload are wired to the custom frameless chrome", () =
   );
   assert.match(
     stylesSource,
-    /\.vault-desktop-frame \.vault-mobile-status\s*\{[^}]*margin-right:\s*150px;/s,
+    /\.vault-mobile-bar\s*\{[^}]*padding:\s*6px max\(var\(--vault-window-controls-safe-width\),\s*12px\) 6px 12px;/s,
   );
 
   for (const routeName of [
@@ -183,11 +196,23 @@ test("desktop window and preload are wired to the custom frameless chrome", () =
     "_app.tasks.tsx",
     "_app.bridge.tsx",
     "_app.clusters.tsx",
+    "_app.chat.tsx",
+    "_app.chat.$chatId.tsx",
+    "_app.clusters.$clusterId.tsx",
+    "_app.projects.$projectId.tsx",
+    "_app.settings.tsx",
+    "_app.timeline.tsx",
   ]) {
     const routeSource = fs.readFileSync(
       path.join(__dirname, "..", "src", "routes", routeName),
       "utf8",
     );
-    assert.match(routeSource, /desktop-window-action/, `${routeName} must avoid window controls`);
+    assert.match(
+      routeSource,
+      /import\s+\{\s*PageHeader\s*\}\s+from\s+"@\/components\/layout\/WindowAware"/,
+      `${routeName} must use the shared window-aware page header`,
+    );
+    assert.match(routeSource, /<PageHeader(?:\s|>)/, `${routeName} must render PageHeader`);
+    assert.doesNotMatch(routeSource, /desktop-window-action|vault-window-control-clearance/);
   }
 });

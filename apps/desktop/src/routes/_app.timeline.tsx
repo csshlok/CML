@@ -3,6 +3,7 @@ import { useDeferredValue, useEffect, useState } from "react";
 import { Bot, FileText, GitBranch, Search, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/layout/WindowAware";
 import {
   listActivity,
   listVaults,
@@ -94,7 +95,7 @@ function TimelineRoute() {
       }
     >
       <main className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:overflow-y-auto">
-        <header className="border-b border-border pb-6">
+        <PageHeader className="border-b border-border pb-6">
           <h1 className="page-title">Timeline</h1>
           <p className="mt-2 text-sm text-muted-foreground">Your source, cluster, and conversation history. Operational work stays in Tasks; external access stays in Bridge.</p>
           <div className="mt-6 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
@@ -129,7 +130,7 @@ function TimelineRoute() {
               ))}
             </div>
           </div>
-        </header>
+        </PageHeader>
 
         <section className="mt-6 rounded-md border border-border bg-card">
           <div className="divide-y divide-border">

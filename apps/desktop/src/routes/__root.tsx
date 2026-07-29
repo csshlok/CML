@@ -131,7 +131,9 @@ function RootComponent() {
   }, [pathname]);
 
   useEffect(() => {
-    setHasDesktopChrome(Boolean(window.cmlDesktop?.windowControls));
+    const auditChrome = import.meta.env.DEV
+      && new URLSearchParams(window.location.search).get("desktopChromeAudit") === "1";
+    setHasDesktopChrome(Boolean(window.cmlDesktop?.windowControls) || auditChrome);
   }, []);
 
   return (

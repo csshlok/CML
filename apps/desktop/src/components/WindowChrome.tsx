@@ -26,13 +26,16 @@ export function WindowChrome() {
     };
   }, [controls]);
 
-  if (!controls) return null;
-
   const isExpanded = windowState.maximized || windowState.fullScreen;
 
   return (
-    <header className="vault-window-chrome" data-testid="window-chrome">
-      <div className="vault-window-controls" aria-label="Window controls">
+    <header
+      className="vault-window-chrome"
+      data-testid="window-chrome"
+      data-window-control-safe-zone=""
+      aria-hidden={controls ? undefined : true}
+    >
+      {controls ? <div className="vault-window-controls" aria-label="Window controls">
         <button
           type="button"
           className="vault-window-control"
@@ -65,7 +68,7 @@ export function WindowChrome() {
         >
           <span className="vault-window-icon vault-window-icon-close" aria-hidden="true" />
         </button>
-      </div>
+      </div> : null}
     </header>
   );
 }

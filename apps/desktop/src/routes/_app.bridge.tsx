@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { Cable, Copy, ExternalLink, HelpCircle, Plus, RefreshCw, Shield, Terminal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmAction } from "@/components/product/Feedback";
+import { PageHeader } from "@/components/layout/WindowAware";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { describeBridgeCaptureResult, describeBridgeReviewDecision } from "@/lib/bridge-presentation.js";
@@ -610,7 +611,7 @@ function BridgeView() {
   return (
     <div className="vault-page-wash h-full overflow-y-auto">
       <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <PageHeader className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Cable className="h-4 w-4" />
@@ -627,7 +628,7 @@ function BridgeView() {
             </div>
           </div>
 
-          <div className="desktop-window-action flex flex-wrap items-center gap-2 lg:shrink-0">
+          <div className="flex flex-wrap items-center gap-2 lg:shrink-0">
             <Button variant="outline" className="gap-2" onClick={() => setTourStep(0)}>
               <HelpCircle className="h-4 w-4" />
               How to connect
@@ -661,7 +662,7 @@ function BridgeView() {
             </Button>
             </div>
           </div>
-        </div>
+        </PageHeader>
 
         <nav className="mt-8 flex gap-1 overflow-x-auto border-b border-border pb-2" aria-label="Bridge sections">
           {(["overview", "clients", "reviews", "history", "advanced"] as const).map((item) => (
