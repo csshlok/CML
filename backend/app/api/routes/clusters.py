@@ -4,10 +4,17 @@ import json
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.background_jobs import enqueue_job
-from backend.app.core.cluster_suggestions import suggest_source_cluster_moves
+from backend.app.core.cluster_suggestions import (
+    list_or_create_source_cluster_move_batch,
+    record_source_cluster_move_batch_decision,
+)
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.pagination import cursor_page, decode_cursor
-from backend.app.core.cluster_lifecycle import mark_cluster_needs_update, refresh_cluster_profile
+from backend.app.core.cluster_lifecycle import (
+    mark_cluster_needs_update,
+    prune_empty_auto_cluster,
+    refresh_cluster_profile,
+)
 from backend.app.core.retrieval_cache import invalidate_caches_for_source
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
@@ -109,12 +116,17 @@ def create_cluster(payload: ClusterCreate) -> dict:
 
 
 @router.get("/suggestions", response_model=list[ClusterSuggestionRead])
-def list_cluster_suggestions(vault_id: str, limit: int = 12) -> list[dict]:
+def list_cluster_suggestions(vault_id: str, limit: int = 12, refresh: bool = False) -> list[dict]:
     with connect() as conn:
         vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
         if vault is None:
             raise HTTPException(status_code=404, detail="Vault not found")
-        return suggest_source_cluster_moves(conn, vault_id, limit=max(1, min(limit, 30)))
+        return list_or_create_source_cluster_move_batch(
+            conn,
+            vault_id,
+            limit=max(1, min(limit, 30)),
+            refresh=refresh,
+        )
 
 
 @router.post("/suggestions/decision")
@@ -123,7 +135,7 @@ def decide_cluster_suggestion(payload: ClusterSuggestionDecision) -> dict:
     with connect() as conn:
         source = conn.execute(
             """
-            SELECT id, vault_id, cluster_id, updated_at
+            SELECT id, vault_id, cluster_id, updated_at, checksum, metadata_version
             FROM sources
             WHERE id = ? AND deleted_at IS NULL
             """,
@@ -139,28 +151,72 @@ def decide_cluster_suggestion(payload: ClusterSuggestionDecision) -> dict:
             raise HTTPException(status_code=404, detail="Suggested cluster not found")
 
         source_updated_at = source["updated_at"]
+        source_content_hash = str(source["checksum"] or "") or (
+            f"meta:{int(source['metadata_version'] or 0)}:{source['updated_at']}"
+        )
         previous_cluster_id = source["cluster_id"]
+        candidate_evidence = conn.execute(
+            """
+            SELECT candidates.source_content_hash, candidates.candidate_profile_hash,
+                   candidates.candidate_profile_version
+            FROM cluster_suggestion_candidates candidates
+            JOIN cluster_suggestion_batches batches ON batches.id = candidates.batch_id
+            WHERE candidates.vault_id = ?
+              AND candidates.source_id = ?
+              AND candidates.suggested_cluster_id = ?
+              AND candidates.decision IS NULL
+              AND batches.status = 'active'
+            ORDER BY candidates.created_at DESC
+            LIMIT 1
+            """,
+            (source["vault_id"], payload.source_id, payload.suggested_cluster_id),
+        ).fetchone()
+        profile = conn.execute(
+            """
+            SELECT source_hash, profile_version
+            FROM cluster_candidate_profiles
+            WHERE cluster_id = ?
+            """,
+            (payload.suggested_cluster_id,),
+        ).fetchone()
+        candidate_profile_hash = (
+            str(candidate_evidence["candidate_profile_hash"])
+            if candidate_evidence is not None
+            else str(profile["source_hash"] if profile is not None else "")
+        )
+        candidate_profile_version = (
+            int(candidate_evidence["candidate_profile_version"])
+            if candidate_evidence is not None
+            else int(profile["profile_version"] if profile is not None else 0)
+        )
+        if candidate_evidence is not None:
+            source_content_hash = str(candidate_evidence["source_content_hash"])
         if payload.action == "accepted":
             source_updated_at = now
             conn.execute(
                 "UPDATE sources SET cluster_id = ?, updated_at = ? WHERE id = ?",
                 (payload.suggested_cluster_id, now, payload.source_id),
             )
-            mark_cluster_needs_update(conn, previous_cluster_id, "Source moved from a suggestion.")
             mark_cluster_needs_update(conn, payload.suggested_cluster_id, "Source moved from a suggestion.")
+            if not prune_empty_auto_cluster(conn, previous_cluster_id):
+                mark_cluster_needs_update(conn, previous_cluster_id, "Source moved from a suggestion.")
             invalidate_caches_for_source(payload.source_id, conn=conn)
 
         conn.execute(
             """
             INSERT INTO cluster_suggestion_decisions (
                 source_id, vault_id, suggested_cluster_id, action,
-                source_updated_at, created_at, updated_at
+                source_updated_at, source_content_hash, candidate_profile_hash,
+                candidate_profile_version, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_id) DO UPDATE SET
                 suggested_cluster_id = excluded.suggested_cluster_id,
                 action = excluded.action,
                 source_updated_at = excluded.source_updated_at,
+                source_content_hash = excluded.source_content_hash,
+                candidate_profile_hash = excluded.candidate_profile_hash,
+                candidate_profile_version = excluded.candidate_profile_version,
                 updated_at = excluded.updated_at
             """,
             (
@@ -169,9 +225,20 @@ def decide_cluster_suggestion(payload: ClusterSuggestionDecision) -> dict:
                 payload.suggested_cluster_id,
                 payload.action,
                 source_updated_at,
+                source_content_hash,
+                candidate_profile_hash,
+                candidate_profile_version,
                 now,
                 now,
             ),
+        )
+        record_source_cluster_move_batch_decision(
+            conn,
+            vault_id=str(source["vault_id"]),
+            source_id=payload.source_id,
+            suggested_cluster_id=payload.suggested_cluster_id,
+            action=payload.action,
+            decided_at=now,
         )
     return {
         "source_id": payload.source_id,
@@ -408,6 +475,10 @@ def rollback_cluster_merge_artifact(artifact_id: str) -> dict:
 @router.delete("/{cluster_id}", status_code=204)
 def delete_cluster(cluster_id: str) -> None:
     with connect() as conn:
+        conn.execute(
+            "DELETE FROM cluster_suggestion_decisions WHERE suggested_cluster_id = ?",
+            (cluster_id,),
+        )
         result = conn.execute("DELETE FROM clusters WHERE id = ?", (cluster_id,))
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Cluster not found")

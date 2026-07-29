@@ -4,6 +4,8 @@ from backend.app.core.background_jobs import (
     cancel_job,
     enqueue_job,
     job_queue_status,
+    pause_job,
+    resume_job,
     wake_background_worker,
 )
 from backend.app.core.database import connect
@@ -53,6 +55,22 @@ def backfill_temporal_facts(payload: TemporalFactBackfillRequest) -> dict:
             payload=payload.model_dump(),
             dedupe_key=f"temporal-fact-backfill:{payload.vault_id}",
             scope_id=payload.vault_id,
+            user_initiated=True,
+        )
+
+
+@router.post("/cluster-profiles/backfill", response_model=AppJobRead, status_code=202)
+def backfill_cluster_profiles(vault_id: str) -> dict:
+    with connect() as conn:
+        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+        if vault is None:
+            raise HTTPException(status_code=404, detail="Vault not found")
+        return enqueue_job(
+            conn,
+            job_type="cluster_profile_backfill",
+            payload={"vault_id": vault_id},
+            dedupe_key=f"cluster-profile-backfill:{vault_id}",
+            scope_id=vault_id,
             user_initiated=True,
         )
 
@@ -108,6 +126,26 @@ def get_app_job(job_id: str) -> dict:
 def cancel_app_job(job_id: str) -> dict:
     try:
         return cancel_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{job_id}/pause", response_model=AppJobRead)
+def pause_app_job(job_id: str) -> dict:
+    try:
+        return pause_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{job_id}/resume", response_model=AppJobRead)
+def resume_app_job(job_id: str) -> dict:
+    try:
+        return resume_job(job_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Job not found") from exc
     except ValueError as exc:

@@ -4,8 +4,9 @@ from collections import OrderedDict
 from hashlib import sha256
 
 from backend.app.core.database import dict_from_row, utc_now
+from backend.app.core.cluster_profiles import publish_cluster_candidate_profile
 from backend.app.core.encrypted_storage import load_source_content_fields
-from backend.app.core.clustering import cluster_identity_from_sources
+from backend.app.core.semantic_metadata import enrich_cluster_metadata
 
 
 def mark_cluster_needs_update(conn, cluster_id: str | None, detail: str) -> None:
@@ -45,6 +46,63 @@ def mark_cluster_needs_update(conn, cluster_id: str | None, detail: str) -> None
     )
 
 
+def mark_cluster_metadata_pending(conn, cluster_id: str | None) -> None:
+    """Expose fresh index state while semantic metadata waits for its serialized job."""
+    if not cluster_id:
+        return
+    lifecycle = _cluster_rag_lifecycle(conn, cluster_id)
+    conn.execute(
+        """
+        UPDATE clusters
+        SET index_status = ?, profile_status = 'stale', updated_at = ?
+        WHERE id = ?
+        """,
+        (lifecycle["index_status"], utc_now(), cluster_id),
+    )
+
+
+def prune_empty_auto_cluster(conn, cluster_id: str | None) -> bool:
+    """Remove an abandoned generated cluster without touching user-created spaces."""
+    if not cluster_id:
+        return False
+    cluster = conn.execute(
+        "SELECT id, name_origin FROM clusters WHERE id = ?",
+        (cluster_id,),
+    ).fetchone()
+    if cluster is None or str(cluster["name_origin"] or "user") != "auto":
+        return False
+    blockers = conn.execute(
+        """
+        SELECT
+            EXISTS(
+                SELECT 1 FROM sources
+                WHERE cluster_id = ? AND deleted_at IS NULL
+            ) AS has_sources,
+            EXISTS(
+                SELECT 1 FROM chat_sessions
+                WHERE scope_cluster_id = ?
+            ) AS has_chats,
+            EXISTS(
+                SELECT 1 FROM projects
+                WHERE primary_cluster_id = ? AND deleted_at IS NULL
+            ) AS has_primary_project,
+            EXISTS(
+                SELECT 1 FROM project_cluster_links
+                WHERE cluster_id = ?
+            ) AS has_project_link
+        """,
+        (cluster_id, cluster_id, cluster_id, cluster_id),
+    ).fetchone()
+    if any(int(blockers[key] or 0) for key in blockers.keys()):
+        return False
+    conn.execute(
+        "DELETE FROM cluster_suggestion_decisions WHERE suggested_cluster_id = ?",
+        (cluster_id,),
+    )
+    conn.execute("DELETE FROM clusters WHERE id = ?", (cluster_id,))
+    return True
+
+
 def refresh_cluster_profile(conn, cluster_id: str) -> dict[str, str]:
     lifecycle = _cluster_rag_lifecycle(conn, cluster_id)
     row = conn.execute(
@@ -72,6 +130,7 @@ def refresh_cluster_profile(conn, cluster_id: str) -> dict[str, str]:
         profile_updated_at = None
         profile_source_hash = ""
         indexed_source_count = 0
+        conn.execute("DELETE FROM cluster_candidate_profiles WHERE cluster_id = ?", (cluster_id,))
     elif lifecycle["index_status"] == "error":
         summary = ""
         glossary = "[]"
@@ -79,6 +138,7 @@ def refresh_cluster_profile(conn, cluster_id: str) -> dict[str, str]:
         profile_updated_at = None
         profile_source_hash = ""
         indexed_source_count = 0
+        conn.execute("DELETE FROM cluster_candidate_profiles WHERE cluster_id = ?", (cluster_id,))
     else:
         source_metadata = conn.execute(
             """
@@ -96,6 +156,10 @@ def refresh_cluster_profile(conn, cluster_id: str) -> dict[str, str]:
         previous_summary = str(row["cluster_summary"] or "")
         previous_glossary = str(row["cluster_glossary"] or "[]")
         previous_updated_at = row["profile_updated_at"]
+        candidate_profile = conn.execute(
+            "SELECT 1 FROM cluster_candidate_profiles WHERE cluster_id = ?",
+            (cluster_id,),
+        ).fetchone()
         if indexed_source_count == 0:
             summary = ""
             glossary = "[]"
@@ -106,6 +170,7 @@ def refresh_cluster_profile(conn, cluster_id: str) -> dict[str, str]:
             profile_source_hash == previous_hash
             and previous_summary.strip()
             and previous_glossary.strip()
+            and candidate_profile is not None
         ):
             summary = previous_summary
             glossary = previous_glossary
@@ -114,7 +179,8 @@ def refresh_cluster_profile(conn, cluster_id: str) -> dict[str, str]:
         else:
             sources = conn.execute(
                 """
-                SELECT id, vault_id, checksum, updated_at, title, summary, extracted_text, raw_text
+                SELECT id, vault_id, checksum, updated_at, title, source_type, summary, tags,
+                       extracted_text, raw_text
                 FROM sources
                 WHERE cluster_id = ? AND deleted_at IS NULL AND state = 'indexed'
                 ORDER BY updated_at DESC, created_at DESC
@@ -133,20 +199,30 @@ def refresh_cluster_profile(conn, cluster_id: str) -> dict[str, str]:
                 )
                 source_row.update({key: value for key, value in encrypted_fields.items() if value})
                 source_rows.append(source_row)
-            summary = _build_cluster_summary(
-                cluster_name=str(row["name"] or "").strip(),
-                description=str(row["description"] or "").strip(),
+            generated_metadata = enrich_cluster_metadata(source_rows)
+            effective_name = str(row["name"] or "").strip()
+            effective_description = str(row["description"] or "").strip()
+            if str(row["name_origin"] or "user") == "auto":
+                effective_name = generated_metadata["name"]
+                effective_description = generated_metadata["description"]
+                conn.execute(
+                    "UPDATE clusters SET name = ?, description = ? WHERE id = ?",
+                    (effective_name, effective_description, cluster_id),
+                )
+            summary = generated_metadata["summary"] or _build_cluster_summary(
+                cluster_name=effective_name,
+                description=effective_description,
                 sources=source_rows,
             )
             glossary = json.dumps(_build_cluster_glossary(source_rows), separators=(",", ":"))
-            if str(row["name_origin"] or "user") == "auto":
-                generated_name, generated_description = cluster_identity_from_sources(source_rows)
-                conn.execute(
-                    "UPDATE clusters SET name = ?, description = ? WHERE id = ?",
-                    (generated_name, generated_description, cluster_id),
-                )
             profile_status = "ready"
             profile_updated_at = utc_now()
+            publish_cluster_candidate_profile(
+                conn,
+                cluster_id=cluster_id,
+                source_hash=profile_source_hash,
+                sources=source_rows,
+            )
     conn.execute(
         """
         UPDATE clusters

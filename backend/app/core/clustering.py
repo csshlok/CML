@@ -1,7 +1,9 @@
 from collections import Counter
+import re
 from uuid import uuid4
 
 from backend.app.core.database import utc_now
+from backend.app.core.cluster_profiles import shortlist_cluster_candidates, terms_for_text
 
 
 STOPWORDS = {
@@ -27,47 +29,104 @@ STOPWORDS = {
     "this",
     "to",
     "with",
+    "about",
+    "document",
+    "documents",
+    "file",
+    "files",
+    "page",
+    "pages",
+    "pdf",
+    "chat",
+    "transcript",
+    "user",
+    "attachment",
+    "stored",
+    "source",
+    "sources",
+    "includes",
+    "include",
+    "what",
 }
 
 CLUSTER_COLORS = ["sage", "sky", "blush", "sand", "lavender", "terracotta"]
 
 
 def keywords_for_text(text: str, limit: int = 6) -> list[str]:
-    words = [
-        word
-        for word in text.lower().replace("_", " ").split()
-        if len(word) > 3 and word.strip(".,:;!?()[]{}\"'") not in STOPWORDS
+    words = re.findall(r"[A-Za-z][A-Za-z'-]{3,}", str(text or "").casefold().replace("_", " "))
+    cleaned = [
+        word.strip("-'")
+        for word in words
+        if word.strip("-'") not in STOPWORDS
+        and not word.casefold().endswith(("html", "http"))
     ]
-    cleaned = [word.strip(".,:;!?()[]{}\"'") for word in words]
     return [word for word, _count in Counter(cleaned).most_common(limit)]
 
 
-def assign_or_create_cluster(conn, *, vault_id: str, title: str, text: str) -> str:
+AUTO_PLACE_MIN_SCORE = 0.72
+AUTO_PLACE_MIN_MARGIN = 0.20
+AUTO_PLACE_MIN_COHESION = 0.55
+
+
+def assign_or_create_cluster(conn, *, vault_id: str, title: str, text: str) -> str | None:
     ordered_keywords = keywords_for_text(f"{title} {text}", limit=10)
-    source_keywords = set(ordered_keywords)
-    rows = conn.execute(
-        "SELECT * FROM clusters WHERE vault_id = ? ORDER BY updated_at DESC",
+    standalone_clusters = conn.execute(
+        """
+        SELECT clusters.id
+        FROM clusters
+        WHERE clusters.vault_id = ?
+          AND NOT EXISTS (
+              SELECT 1 FROM project_cluster_links links
+              WHERE links.cluster_id = clusters.id
+          )
+        LIMIT 2
+        """,
         (vault_id,),
     ).fetchall()
-
-    best_cluster_id: str | None = None
-    best_score = 0
-    for row in rows:
-        cluster_words = set(
-            keywords_for_text(f"{row['name']} {row['description']}", limit=12)
+    candidates = shortlist_cluster_candidates(
+        conn,
+        vault_id=vault_id,
+        text=f"{title} {text}",
+    )
+    source_terms = set(terms_for_text(f"{title} {title} {text}", limit=16))
+    scored: list[tuple[float, str]] = []
+    for candidate in candidates:
+        candidate_terms = candidate["terms"]
+        overlap = sum(float(candidate_terms.get(term, 0)) for term in source_terms)
+        lexical_score = min(1.0, overlap / max(2.0, len(source_terms) * 0.25))
+        cohesion = float(candidate["cohesion"])
+        cohesion_factor = cohesion if cohesion > 0 else 0.5
+        score = (0.82 * lexical_score) + (0.18 * cohesion_factor)
+        scored.append((score, str(candidate["cluster_id"])))
+    scored.sort(reverse=True)
+    if scored:
+        best_score, best_cluster_id = scored[0]
+        second_score = scored[1][0] if len(scored) > 1 else 0.0
+        best_profile = next(
+            candidate for candidate in candidates if candidate["cluster_id"] == best_cluster_id
         )
-        score = len(source_keywords.intersection(cluster_words))
-        if score > best_score:
-            best_score = score
-            best_cluster_id = row["id"]
+        profile_cohesion = float(best_profile["cohesion"])
+        cohesion_ok = profile_cohesion == 0 or profile_cohesion >= AUTO_PLACE_MIN_COHESION
+        if (
+            best_score >= AUTO_PLACE_MIN_SCORE
+            and best_score - second_score >= AUTO_PLACE_MIN_MARGIN
+            and cohesion_ok
+        ):
+            return best_cluster_id
 
-    if best_cluster_id and best_score >= 2:
-        return best_cluster_id
+    # Bootstrap only the first standalone cluster. Ambiguous later imports stay
+    # unclustered until a persisted profile supports a clear placement.
+    if standalone_clusters:
+        return None
 
     name = cluster_name_from_keywords(ordered_keywords, title)
     now = utc_now()
     cluster_id = f"cluster-{uuid4()}"
-    color = CLUSTER_COLORS[len(rows) % len(CLUSTER_COLORS)]
+    total = conn.execute(
+        "SELECT COUNT(*) AS total FROM clusters WHERE vault_id = ?",
+        (vault_id,),
+    ).fetchone()
+    color = CLUSTER_COLORS[int(total["total"] or 0) % len(CLUSTER_COLORS)]
     description = cluster_description_from_keywords(ordered_keywords)
     conn.execute(
         """
@@ -97,14 +156,15 @@ def cluster_name_from_keywords(keywords: list[str] | set[str], title: str) -> st
     if keywords:
         leading = list(keywords)[:2]
         return " ".join(word.capitalize() for word in leading)
-    stem = title.rsplit(".", 1)[0].strip()
+    stem = re.sub(r"[_+]+", " ", title.rsplit(".", 1)[0]).strip()
     return stem[:60] or "New Cluster"
 
 
 def cluster_description_from_keywords(keywords: list[str]) -> str:
     if not keywords:
         return ""
-    return f"Sources about {', '.join(keywords[:4])}."
+    topics = ", ".join(keywords[:3])
+    return f"Documents about {topics}."
 
 
 def cluster_identity_from_sources(sources: list[dict]) -> tuple[str, str]:
