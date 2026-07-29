@@ -27,6 +27,8 @@ $backend = Join-Path $resources "backend"
 $ocrManifest = Join-Path $backend "bin\ocr\manifest.json"
 $playwrightRuntime = Join-Path $resources "ms-playwright"
 $llmRuntime = Join-Path $resources "llm-runtime\llama-server.exe"
+$llmCudaRuntime = Join-Path $resources "llm-runtime\cuda\llama-server.exe"
+$llmCudaBackend = Join-Path $resources "llm-runtime\cuda\ggml-cuda.dll"
 $tunnelRuntime = Join-Path $resources "tunnel-client\tunnel-client.exe"
 $helperManifest = Join-Path $resources "helper-manifest.json"
 $modelIntegrityManifest = Join-Path $resources "docs\model-integrity-manifest.json"
@@ -42,6 +44,8 @@ $checks = @(
   @{ name = "sentence_transformers_runtime_exists"; ok = Test-PathPresent $sentenceTransformersRuntime; path = $sentenceTransformersRuntime },
   @{ name = "playwright_runtime_exists"; ok = Test-PathPresent $playwrightRuntime; path = $playwrightRuntime },
   @{ name = "llm_runtime_exists"; ok = Test-PathPresent $llmRuntime; path = $llmRuntime },
+  @{ name = "llm_cuda_runtime_exists"; ok = Test-PathPresent $llmCudaRuntime; path = $llmCudaRuntime },
+  @{ name = "llm_cuda_backend_exists"; ok = Test-PathPresent $llmCudaBackend; path = $llmCudaBackend },
   @{ name = "tunnel_client_exists"; ok = Test-PathPresent $tunnelRuntime; path = $tunnelRuntime },
   @{ name = "ocr_manifest_exists"; ok = Test-PathPresent $ocrManifest; path = $ocrManifest },
   @{ name = "helper_manifest_exists"; ok = Test-PathPresent $helperManifest; path = $helperManifest },

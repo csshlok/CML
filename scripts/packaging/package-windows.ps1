@@ -282,6 +282,45 @@ function Optimize-PortablePythonRuntime([string]$RuntimeRoot) {
     }
 }
 
+function Stop-ProcessesInsidePackageOutput([string]$OutputRoot) {
+  if (-not $IsWindows -and $env:OS -ne "Windows_NT") {
+    return
+  }
+  $normalizedRoot = [System.IO.Path]::GetFullPath($OutputRoot).TrimEnd("\") + "\"
+  if ($normalizedRoot.Length -lt 4) {
+    throw "Refusing to inspect processes for an unsafe package output path: $normalizedRoot"
+  }
+  $ownedProcesses = @(
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object {
+        $executable = [string]$_.ExecutablePath
+        $executable -and
+        ([System.IO.Path]::GetFullPath($executable)).StartsWith(
+          $normalizedRoot,
+          [System.StringComparison]::OrdinalIgnoreCase
+        )
+      }
+  )
+  foreach ($process in $ownedProcesses) {
+    Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
+  }
+  if ($ownedProcesses.Count -gt 0) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+      $remaining = @(
+        $ownedProcesses |
+          Where-Object { Get-Process -Id ([int]$_.ProcessId) -ErrorAction SilentlyContinue }
+      )
+      if ($remaining.Count -eq 0) {
+        return
+      }
+      Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+    $remainingIds = ($remaining | ForEach-Object { $_.ProcessId }) -join ", "
+    throw "Close the previous packaged Vault runtime and retry. Processes still running: $remainingIds"
+  }
+}
+
 if (-not $OutputDir) {
   throw "OutputDir is required. Pass an explicit package output directory."
 }
@@ -296,7 +335,20 @@ Write-PackageDetail "Base Python: $basePythonRoot"
 
 Start-PackagePhase "Clear previous output" "Removing old artifacts from output directory."
 if (Test-Path $outputDirPath) {
-  Remove-Item -Recurse -Force $outputDirPath
+  Stop-ProcessesInsidePackageOutput $outputDirPath
+  $removeAttempts = 0
+  while (Test-Path -LiteralPath $outputDirPath) {
+    $removeAttempts += 1
+    try {
+      Remove-Item -LiteralPath $outputDirPath -Recurse -Force -ErrorAction Stop
+    }
+    catch {
+      if ($removeAttempts -ge 5) {
+        throw
+      }
+      Start-Sleep -Milliseconds (250 * $removeAttempts)
+    }
+  }
 }
 New-Item -ItemType Directory -Force -Path $outputDirPath | Out-Null
 Complete-PackagePhase $outputDirPath
@@ -459,16 +511,24 @@ if ($playwrightReady) {
 Complete-PackagePhase $playwrightBrowserDir
 
 $llmRuntimeServer = Join-Path $llmRuntimeDir "llama-server.exe"
-Start-PackagePhase "Local chat runtime" "Staging the pinned, verified llama.cpp CPU runtime."
-if (-not (Test-Path -LiteralPath $llmRuntimeServer) -or $Release) {
+$llmCudaRuntimeServer = Join-Path $llmRuntimeDir "cuda\llama-server.exe"
+Start-PackagePhase "Local chat runtime" "Staging pinned CPU and CUDA llama.cpp runtimes."
+if (
+  -not (Test-Path -LiteralPath $llmRuntimeServer) -or
+  -not (Test-Path -LiteralPath $llmCudaRuntimeServer) -or
+  $Release
+) {
   & $llmRuntimeStagingScript `
     -TargetDir $llmRuntimeDir `
     -CacheDir (Join-Path $tmpDir "llm-runtime-cache")
 }
 if (-not (Test-Path -LiteralPath $llmRuntimeServer)) {
-  throw "Local chat runtime staging did not produce llama-server.exe."
+  throw "Local chat runtime staging did not produce the CPU llama-server.exe."
 }
-Complete-PackagePhase $llmRuntimeServer
+if (-not (Test-Path -LiteralPath $llmCudaRuntimeServer)) {
+  throw "Local chat runtime staging did not produce the CUDA llama-server.exe."
+}
+Complete-PackagePhase "$llmRuntimeServer; $llmCudaRuntimeServer"
 
 Start-PackagePhase "Secure MCP Tunnel" "Staging the pinned OpenAI tunnel client with checksum verification."
 $tunnelRuntimeBinary = Join-Path $tunnelRuntimeDir "tunnel-client.exe"

@@ -162,6 +162,8 @@ test("buildBackendChildEnv pins PATH to helper and system roots", () => {
       pythonRuntime: "C:\\Package\\resources\\python-runtime",
       backendPython: "C:\\Package\\resources\\python-runtime\\python.exe",
       playwrightRoot: "C:\\Package\\resources\\ms-playwright",
+      llmRuntimeServer: "C:\\Package\\resources\\llm-runtime\\llama-server.exe",
+      llmCudaRuntimeServer: "C:\\Package\\resources\\llm-runtime\\cuda\\llama-server.exe",
     },
     apiPrefix: "/api/v1",
     apiToken: "token",
@@ -176,6 +178,10 @@ test("buildBackendChildEnv pins PATH to helper and system roots", () => {
   assert.equal(env.PYTHONPATH, "C:\\Package\\resources");
   assert.equal(env.PYTHONNOUSERSITE, "1");
   assert.equal(env.CML_API_TOKEN, "token");
+  assert.equal(
+    env.CML_LLM_RUNTIME_CUDA_BINARY,
+    "C:\\Package\\resources\\llm-runtime\\cuda\\llama-server.exe",
+  );
 });
 
 test("pathsOverlap handles nested paths only", () => {
