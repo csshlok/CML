@@ -61,6 +61,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ConfirmAction, DegradedState, EmptyState, SkeletonRegion } from "@/components/product/Feedback";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export const Route = createFileRoute("/_app/sources")({
   validateSearch: (search: Record<string, unknown>): { filter?: "unsorted"; source?: string } => ({
@@ -90,6 +97,8 @@ function SourcesView() {
   const inboxOnly = filter === "unsorted";
   const pageSize = 25;
   const [q, setQ] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [stateFilter, setStateFilter] = useState("all");
   const deferredQuery = useDeferredValue(q);
   const [selected, setSelected] = useState<Source | null>(null);
   const [selectedPages, setSelectedPages] = useState<SourcePageRecord[]>([]);
@@ -136,13 +145,23 @@ function SourcesView() {
           limit: pageSize,
           cursor: pageCursors[pageIndex] ?? null,
           unclustered: inboxOnly,
-          states: inboxOnly ? ["waiting", "processing", "failed"] : undefined,
+          states: inboxOnly
+            ? ["waiting", "processing", "failed"]
+            : stateFilter === "all"
+              ? undefined
+              : [stateFilter as "waiting" | "processing" | "indexed" | "failed"],
+          sourceTypes: typeFilter === "all" ? undefined : sourceTypesForFilter(typeFilter),
           query: deferredQuery,
         }),
         listClusters(activeVault.id),
         countSources(activeVault.id, undefined, {
           unclustered: inboxOnly,
-          states: inboxOnly ? ["waiting", "processing", "failed"] : undefined,
+          states: inboxOnly
+            ? ["waiting", "processing", "failed"]
+            : stateFilter === "all"
+              ? undefined
+              : [stateFilter as "waiting" | "processing" | "indexed" | "failed"],
+          sourceTypes: typeFilter === "all" ? undefined : sourceTypesForFilter(typeFilter),
           query: deferredQuery,
         }),
         requestedSourceId ? getSource(requestedSourceId).catch(() => null) : Promise.resolve(null),
@@ -193,7 +212,7 @@ function SourcesView() {
 
   useEffect(() => {
     void refreshBackendSources();
-  }, [deferredQuery, inboxOnly, pageIndex, requestedSourceId, pageCursors]);
+  }, [deferredQuery, inboxOnly, pageIndex, requestedSourceId, pageCursors, stateFilter, typeFilter]);
 
   useEffect(() => {
     setPageIndex(0);
@@ -203,7 +222,7 @@ function SourcesView() {
   useEffect(() => {
     setPageIndex(0);
     setPageCursors([null]);
-  }, [deferredQuery]);
+  }, [deferredQuery, stateFilter, typeFilter]);
 
   useEffect(() => {
     const job = sourceImport.job;
@@ -240,11 +259,19 @@ function SourcesView() {
         return;
       }
       try {
-        const [pagesResult, statsResult] = await Promise.allSettled([
+        const [sourceResult, pagesResult, statsResult] = await Promise.allSettled([
+          getSource(inspectorSource.id),
           listSourcePages(inspectorSource.id, { limit: 2 }),
           getSourceStats(inspectorSource.id),
         ]);
         if (!cancelled) {
+          if (sourceResult.status === "fulfilled") {
+            setSelected((current) =>
+              current?.id === inspectorSource.id
+                ? sourceFromRecord(sourceResult.value)
+                : current,
+            );
+          }
           setSelectedPages(pagesResult.status === "fulfilled" ? pagesResult.value : []);
           setSelectedStats(statsResult.status === "fulfilled" ? statsResult.value : null);
         }
@@ -489,6 +516,33 @@ function SourcesView() {
                 />
               ) : null}
             </div>
+            <Select value={typeFilter} onValueChange={setTypeFilter}>
+              <SelectTrigger className="h-10 w-36" aria-label="Filter source type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All types</SelectItem>
+                <SelectItem value="documents">Documents</SelectItem>
+                <SelectItem value="notes">Notes</SelectItem>
+                <SelectItem value="links">Links</SelectItem>
+                <SelectItem value="media">Media</SelectItem>
+                <SelectItem value="code">Code</SelectItem>
+              </SelectContent>
+            </Select>
+            {!inboxOnly ? (
+              <Select value={stateFilter} onValueChange={setStateFilter}>
+                <SelectTrigger className="h-10 w-36" aria-label="Filter source status">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All statuses</SelectItem>
+                  <SelectItem value="indexed">Ready</SelectItem>
+                  <SelectItem value="processing">Indexing</SelectItem>
+                  <SelectItem value="waiting">Waiting</SelectItem>
+                  <SelectItem value="failed">Needs review</SelectItem>
+                </SelectContent>
+              </Select>
+            ) : null}
             <Button onClick={() => void handleAddFiles()} disabled={!vault || sourceImport.active || sourceImport.actionBusy}>
               <FilePlus2 className="h-4 w-4" /> Add files
             </Button>
@@ -952,4 +1006,13 @@ function formatSourceImportResult(status: string, progress: SourceImportProgress
     ? ` Folder scanning stopped at ${progress.truncated_at.toLocaleString()} files; import the remaining files in another batch.`
     : "";
   return `Import finished: ${imported}, ${updated}${failed}.${limitNotice}`;
+}
+
+function sourceTypesForFilter(filter: string) {
+  if (filter === "documents") return ["file", "external_artifact"];
+  if (filter === "notes") return ["note"];
+  if (filter === "links") return ["link"];
+  if (filter === "media") return ["image", "audio", "video", "external_transcript"];
+  if (filter === "code") return ["code"];
+  return undefined;
 }

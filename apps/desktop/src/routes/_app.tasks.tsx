@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Clock3, Pause, Play, RotateCcw, Search, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock3, Pause, Play, RefreshCw, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
@@ -53,7 +53,7 @@ function TasksView() {
       const requested = requestedJobId
         ? [...status.running_jobs, ...status.latest].find((job) => job.id === requestedJobId)
         : null;
-      setSelected((current) => requested ?? current ?? status.running_jobs[0] ?? status.latest[0] ?? null);
+      setSelected((current) => requested ?? current);
     }
     if (jobsResult.status === "fulfilled") {
       setJobRows(jobsResult.value.items);
@@ -135,10 +135,15 @@ function TasksView() {
     }
   }
 
-  const activeJob = rows.find((job) => job.id === selected?.id) ?? rows[0] ?? null;
+  const activeJob = rows.find((job) => job.id === selected?.id) ?? null;
 
   return (
-    <div className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto bg-background xl:grid-cols-[minmax(0,1fr)_320px] xl:overflow-hidden">
+    <div
+      className={
+        "vault-page-wash grid h-full grid-cols-1 overflow-y-auto bg-background xl:overflow-hidden " +
+        (activeJob ? "xl:grid-cols-[minmax(0,1fr)_320px]" : "")
+      }
+    >
       <main className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:overflow-y-auto">
         <header className="border-b border-border pb-6">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -146,10 +151,16 @@ function TasksView() {
               <h1 className="page-title">Tasks</h1>
               <p className="mt-2 text-sm text-muted-foreground">Background work that keeps your vault current.</p>
             </div>
-            <Button className="desktop-window-action w-full sm:w-auto" onClick={() => void runOnce()}>
-              <Play className="h-4 w-4" />
-              Run due jobs
-            </Button>
+            <div className="desktop-window-action flex w-full gap-2 sm:w-auto">
+              <Button variant="outline" onClick={() => void load()}>
+                <RefreshCw className="h-4 w-4" />
+                Refresh
+              </Button>
+              <Button onClick={() => void runOnce()}>
+                <Play className="h-4 w-4" />
+                Run due jobs
+              </Button>
+            </div>
           </div>
           <div className="mt-6 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
             <div className="relative min-w-0 max-w-xl">
@@ -254,9 +265,14 @@ function TasksView() {
         ) : null}
       </main>
 
-      <aside className="min-w-0 border-t border-border bg-card px-4 py-6 sm:px-6 xl:w-[var(--panel-width)] xl:min-w-[var(--panel-width)] xl:overflow-y-auto xl:border-l xl:border-t-0 xl:py-8">
-        <h2 className="text-sm font-semibold">Job detail</h2>
-        {activeJob ? (
+      {activeJob ? <aside className="min-w-0 border-t border-border bg-card px-4 py-6 sm:px-6 xl:w-[var(--panel-width)] xl:min-w-[var(--panel-width)] xl:overflow-y-auto xl:border-l xl:border-t-0 xl:py-8">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold">Job detail</h2>
+          <Button variant="ghost" size="icon" aria-label="Close job detail" onClick={() => setSelected(null)}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        {
           <div className="mt-5">
             <div className="flex items-center gap-2 text-sm">
               {statusIcon(activeJob.status)}
@@ -273,9 +289,10 @@ function TasksView() {
               <Meta label="Timeout" value={activeJob.timeout_seconds ? `${activeJob.timeout_seconds}s` : "none"}/>
               <Meta label="Started" value={activeJob.started_at ? formatDate(activeJob.started_at) : "not started"}/>
             </dl>
+            <ImportFailures job={activeJob} />
             <div className="mt-5 flex flex-wrap gap-2">
               <Button variant="outline" onClick={() => void load()}>
-                <RotateCcw className="h-4 w-4" />
+                <RefreshCw className="h-4 w-4" />
                 Refresh
               </Button>
               <Button variant="outline" disabled={!activeJob.cancellable} onClick={() => void cancelSelected()}>
@@ -284,12 +301,38 @@ function TasksView() {
               </Button>
             </div>
           </div>
-        ) : (
-          <p className="mt-5 text-sm text-muted-foreground">No task selected.</p>
-        )}
-      </aside>
+        }
+      </aside> : null}
     </div>
   );
+}
+
+function ImportFailures({ job }: { job: AppJobRecord }) {
+  if (job.job_type !== "source_import_batch" || !job.result_json) return null;
+  try {
+    const result = JSON.parse(job.result_json) as {
+      failures?: Array<{ file_name?: string; reason?: string }>;
+    };
+    const failures = Array.isArray(result.failures) ? result.failures : [];
+    if (failures.length === 0) return null;
+    return (
+      <div className="mt-6">
+        <h3 className="text-sm font-medium">Files not imported</h3>
+        <ul className="mt-2 divide-y divide-border border-y border-border">
+          {failures.map((failure, index) => (
+            <li key={`${failure.file_name ?? "file"}:${index}`} className="py-3 text-xs">
+              <div className="break-all font-medium">{failure.file_name || "File"}</div>
+              <div className="mt-1 break-words text-muted-foreground">
+                {failure.reason || "Import failed"}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  } catch {
+    return null;
+  }
 }
 
 function Meta({ label, value }: { label: string; value: string }) {

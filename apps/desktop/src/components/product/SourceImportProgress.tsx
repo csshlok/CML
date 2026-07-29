@@ -6,9 +6,12 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { FileUp, Pause, Play, Square, X } from "lucide-react";
+import { FileUp, GripVertical, Pause, Play, Square, X } from "lucide-react";
 import {
   getActiveSourceImportJob,
   getJob,
@@ -184,9 +187,129 @@ export function SourceImportInlineProgress() {
 
 function SourceImportViewport({ hidden }: { hidden: boolean }) {
   const sourceImport = useSourceImport();
+  const popupRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    offsetX: number;
+    offsetY: number;
+  } | null>(null);
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+
+  const constrainPosition = useCallback((x: number, y: number) => {
+    const popup = popupRef.current;
+    if (!popup) return { x, y };
+    const edge = 8;
+    const maxX = Math.max(edge, window.innerWidth - popup.offsetWidth - edge);
+    const maxY = Math.max(edge, window.innerHeight - popup.offsetHeight - edge);
+    return {
+      x: Math.min(maxX, Math.max(edge, x)),
+      y: Math.min(maxY, Math.max(edge, y)),
+    };
+  }, []);
+
+  const startDragging = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    const popup = popupRef.current;
+    if (!popup) return;
+    const bounds = popup.getBoundingClientRect();
+    dragRef.current = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - bounds.left,
+      offsetY: event.clientY - bounds.top,
+    };
+    setPosition({ x: bounds.left, y: bounds.top });
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }, []);
+
+  const moveDragging = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      setPosition(
+        constrainPosition(
+          event.clientX - drag.offsetX,
+          event.clientY - drag.offsetY,
+        ),
+      );
+    },
+    [constrainPosition],
+  );
+
+  const stopDragging = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  const moveWithKeyboard = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      if (event.key === "Escape") {
+        setPosition(null);
+        return;
+      }
+      const movement = {
+        ArrowLeft: [-12, 0],
+        ArrowRight: [12, 0],
+        ArrowUp: [0, -12],
+        ArrowDown: [0, 12],
+      }[event.key];
+      if (!movement) return;
+      const popup = popupRef.current;
+      if (!popup) return;
+      const bounds = popup.getBoundingClientRect();
+      setPosition(
+        constrainPosition(bounds.left + movement[0], bounds.top + movement[1]),
+      );
+      event.preventDefault();
+    },
+    [constrainPosition],
+  );
+
+  useEffect(() => {
+    setPosition(null);
+  }, [sourceImport.job?.id]);
+
+  useEffect(() => {
+    const keepInsideViewport = () => {
+      setPosition((current) =>
+        current ? constrainPosition(current.x, current.y) : current,
+      );
+    };
+    window.addEventListener("resize", keepInsideViewport);
+    return () => window.removeEventListener("resize", keepInsideViewport);
+  }, [constrainPosition]);
+
+  useEffect(() => {
+    const popup = popupRef.current;
+    if (!popup || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      setPosition((current) =>
+        current ? constrainPosition(current.x, current.y) : current,
+      );
+    });
+    observer.observe(popup);
+    return () => observer.disconnect();
+  }, [constrainPosition, hidden, sourceImport.job?.id]);
+
   if (hidden || !sourceImport.job || !sourceImport.progress) return null;
+  const popupStyle: CSSProperties | undefined = position
+    ? {
+        left: position.x,
+        top: position.y,
+        right: "auto",
+        bottom: "auto",
+      }
+    : undefined;
+
   return (
-    <div className="source-import-popup fixed bottom-4 z-[60] w-[min(21rem,calc(100vw-2rem))]">
+    <div
+      ref={popupRef}
+      className="source-import-popup fixed bottom-4 right-4 z-[60] w-[min(21rem,calc(100vw-2rem))]"
+      style={popupStyle}
+    >
       <SourceImportStatus
         job={sourceImport.job}
         progress={sourceImport.progress}
@@ -196,6 +319,13 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
         onResume={sourceImport.resume}
         onStop={sourceImport.stop}
         onDismiss={sourceImport.dismiss}
+        dragHandleProps={{
+          onPointerDown: startDragging,
+          onPointerMove: moveDragging,
+          onPointerUp: stopDragging,
+          onPointerCancel: stopDragging,
+          onKeyDown: moveWithKeyboard,
+        }}
       />
     </div>
   );
@@ -210,6 +340,7 @@ function SourceImportStatus({
   onResume,
   onStop,
   onDismiss,
+  dragHandleProps,
   compact = false,
 }: {
   job: AppJobRecord;
@@ -220,6 +351,13 @@ function SourceImportStatus({
   onResume: () => Promise<void>;
   onStop: () => Promise<void>;
   onDismiss?: () => void;
+  dragHandleProps?: {
+    onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+    onPointerMove: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+    onPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+    onPointerCancel: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+    onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => void;
+  };
   compact?: boolean;
 }) {
   const percent = sourceImportPercent(progress);
@@ -239,6 +377,20 @@ function SourceImportStatus({
       aria-live="polite"
     >
       <div className="flex items-start gap-3">
+        {dragHandleProps ? (
+          <button
+            type="button"
+            className="-ml-2 -mr-1 touch-none cursor-grab rounded-sm p-1 text-muted-foreground hover:text-foreground active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Move file import progress"
+            onPointerDown={dragHandleProps.onPointerDown}
+            onPointerMove={dragHandleProps.onPointerMove}
+            onPointerUp={dragHandleProps.onPointerUp}
+            onPointerCancel={dragHandleProps.onPointerCancel}
+            onKeyDown={dragHandleProps.onKeyDown}
+          >
+            <GripVertical className="h-4 w-4" aria-hidden="true" />
+          </button>
+        ) : null}
         <FileUp className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
@@ -268,10 +420,19 @@ function SourceImportStatus({
             </div>
           ) : null}
           {progress.failed_files > 0 ? (
-            <div className="mt-2 text-xs text-[var(--status-error)]">
-              {progress.failed_files.toLocaleString()} failed
-              {progress.failures[0] ? ` · ${progress.failures[0].file_name}` : ""}
-            </div>
+            <details className="mt-2 text-xs text-[var(--status-error)]">
+              <summary className="cursor-pointer">
+                {progress.failed_files.toLocaleString()} failed
+              </summary>
+              <ul className="mt-2 max-h-40 divide-y divide-border overflow-y-auto border-y border-border text-foreground">
+                {progress.failures.map((failure, index) => (
+                  <li key={`${failure.file_name}:${index}`} className="py-2">
+                    <div className="break-all font-medium">{failure.file_name}</div>
+                    <div className="mt-0.5 break-words text-muted-foreground">{failure.reason}</div>
+                  </li>
+                ))}
+              </ul>
+            </details>
           ) : null}
           {progress.truncated_at ? (
             <div className="mt-2 text-xs text-[var(--status-warn-ink)]">

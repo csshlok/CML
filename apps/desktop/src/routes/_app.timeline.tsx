@@ -1,7 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useDeferredValue, useEffect, useState } from "react";
-import { Bot, FileText, GitBranch, Search } from "lucide-react";
+import { Bot, FileText, GitBranch, Search, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import {
   listActivity,
   listVaults,
@@ -83,10 +84,15 @@ function TimelineRoute() {
   const totalPages = Math.max(1, Math.ceil(activityTotal / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
   const pageActivities = activities;
-  const activeItem = activities.find((item) => item.id === selected?.id) ?? activities[0] ?? null;
+  const activeItem = activities.find((item) => item.id === selected?.id) ?? null;
 
   return (
-    <div className="vault-page-wash grid h-full grid-cols-1 overflow-y-auto bg-background xl:grid-cols-[minmax(0,1fr)_320px] xl:overflow-hidden">
+    <div
+      className={
+        "vault-page-wash grid h-full grid-cols-1 overflow-y-auto bg-background xl:overflow-hidden " +
+        (activeItem ? "xl:grid-cols-[minmax(0,1fr)_320px]" : "")
+      }
+    >
       <main className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:overflow-y-auto">
         <header className="border-b border-border pb-6">
           <h1 className="page-title">Timeline</h1>
@@ -175,9 +181,14 @@ function TimelineRoute() {
         )}
       </main>
 
-      <aside className="min-w-0 border-t border-border bg-card px-4 py-6 sm:px-6 xl:w-[var(--panel-width)] xl:min-w-[var(--panel-width)] xl:overflow-y-auto xl:border-l xl:border-t-0 xl:py-8">
-        <h2 className="text-sm font-semibold">Activity detail</h2>
-        {activeItem ? (
+      {activeItem ? <aside className="min-w-0 border-t border-border bg-card px-4 py-6 sm:px-6 xl:w-[var(--panel-width)] xl:min-w-[var(--panel-width)] xl:overflow-y-auto xl:border-l xl:border-t-0 xl:py-8">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold">Activity detail</h2>
+          <Button variant="ghost" size="icon" aria-label="Close activity detail" onClick={() => setSelected(null)}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        {
           <div className="mt-5">
             <div className="flex items-center gap-2">
               <span className="h-2.5 w-2.5 rounded-full bg-[var(--cluster-sage)]" />
@@ -196,10 +207,8 @@ function TimelineRoute() {
               </Link>
             )}
           </div>
-        ) : (
-          <p className="mt-5 text-sm text-muted-foreground">No activity yet.</p>
-        )}
-      </aside>
+        }
+      </aside> : null}
     </div>
   );
 }

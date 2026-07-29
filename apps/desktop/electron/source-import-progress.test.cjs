@@ -30,6 +30,16 @@ test("file import progress persists above app routes with counts and percentage"
   );
   assert.match(progressSource, /aria-label=\{`\$\{percent\}% of files processed`\}/);
   assert.match(progressSource, /aria-label="Dismiss file import progress"/);
+  assert.match(progressSource, /fixed bottom-4 right-4/);
+  assert.match(progressSource, /aria-label="Move file import progress"/);
+  assert.match(progressSource, /setPointerCapture\(event\.pointerId\)/);
+  assert.match(progressSource, /constrainPosition/);
+  assert.match(progressSource, /ArrowLeft/);
+  assert.match(progressSource, /ResizeObserver/);
+  assert.doesNotMatch(
+    styles,
+    /\.source-import-popup\s*\{[^}]*\bleft\s*:/,
+  );
 });
 
 test("file imports use durable jobs with pause, resume, and confirmed stop", () => {

@@ -16,6 +16,7 @@ from backend.app.core.database import connect, utc_now
 from backend.app.core.embeddings import content_hash, require_embeddings_available
 from backend.app.core.encrypted_storage import (
     delete_source_encrypted_content,
+    load_source_content_fields,
     mark_chat_citations_source_deleted,
     page_from_encrypted_row,
     source_from_encrypted_row,
@@ -1188,9 +1189,27 @@ def delete_source(source_id: str) -> None:
 def source_from_row(row, conn=None, *, include_content: bool = True) -> dict:
     if conn is not None:
         source = source_from_encrypted_row(conn, row, include_content=include_content)
+        if not include_content:
+            summary = load_source_content_fields(
+                conn,
+                vault_id=str(source["vault_id"]),
+                source_id=str(source["id"]),
+                fields=("summary",),
+            ).get("summary")
+            if summary:
+                source["summary"] = summary
     else:
         with connect() as local_conn:
             source = source_from_encrypted_row(local_conn, row, include_content=include_content)
+            if not include_content:
+                summary = load_source_content_fields(
+                    local_conn,
+                    vault_id=str(source["vault_id"]),
+                    source_id=str(source["id"]),
+                    fields=("summary",),
+                ).get("summary")
+                if summary:
+                    source["summary"] = summary
     if not include_content:
         source["raw_text"] = ""
         source["extracted_text"] = ""
