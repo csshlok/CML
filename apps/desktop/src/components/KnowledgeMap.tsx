@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import {
   getMapItem,
   getMapNeighborhood,
+  type MapConnectionMode,
   type MapEdgeRecord,
   type MapGraphResponse,
   type MapItemRecord,
@@ -29,6 +30,9 @@ export function KnowledgeMap({
   onExpandOverview,
   initialFocusId,
   persistView = false,
+  connectionMode = "current",
+  connectionModeBusy = false,
+  onConnectionModeChange,
 }: {
   vaultId: string;
   overview: MapGraphResponse;
@@ -36,6 +40,9 @@ export function KnowledgeMap({
   onExpandOverview?: () => void;
   initialFocusId?: string | null;
   persistView?: boolean;
+  connectionMode?: MapConnectionMode;
+  connectionModeBusy?: boolean;
+  onConnectionModeChange?: (mode: MapConnectionMode) => void;
 }) {
   const restoredViewRef = useRef(readMapViewFromUrl(persistView));
   const graphRef = useRef<any>(null);
@@ -143,7 +150,7 @@ export function KnowledgeMap({
     if (!instance) return;
     instance.d3Force?.("charge")?.strength?.(-45);
     instance.d3Force?.("link")?.distance?.((edge: MapEdgeRecord) =>
-      edge.kind === "related" ? 68 : 52
+      edge.kind === "similarity" ? 86 : edge.kind === "related" ? 68 : 52
     );
     instance.d3ReheatSimulation?.();
   }, []);
@@ -335,6 +342,43 @@ export function KnowledgeMap({
             {listMode ? <Network className="h-4 w-4" /> : <List className="h-4 w-4" />}
             {listMode ? "Graph" : "List"}
           </Button>
+          {onConnectionModeChange ? (
+            <div
+              className="flex h-9 items-center rounded-md border border-input bg-card"
+              role="group"
+              aria-label="Cluster connection mode"
+              aria-busy={connectionModeBusy}
+            >
+              <button
+                type="button"
+                disabled={connectionModeBusy}
+                aria-pressed={connectionMode === "current"}
+                className={`h-full rounded-l-md px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50 ${
+                  connectionMode === "current"
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                title="Show only saved and evidence-backed relationships"
+                onClick={() => onConnectionModeChange("current")}
+              >
+                Current
+              </button>
+              <button
+                type="button"
+                disabled={connectionModeBusy}
+                aria-pressed={connectionMode === "similar"}
+                className={`h-full rounded-r-md border-l border-input px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50 ${
+                  connectionMode === "similar"
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                title="Also show strong semantic similarity between clusters"
+                onClick={() => onConnectionModeChange("similar")}
+              >
+                Connections
+              </button>
+            </div>
+          ) : null}
           {!listMode ? (
             <div className="flex h-9 items-center rounded-md border border-input bg-card" aria-label="Map zoom controls">
               <button
@@ -381,8 +425,16 @@ export function KnowledgeMap({
           <MapLegend color={clusterColors.sage} label="Cluster" />
           <MapLegend color="#7C6E5A" label="Source" />
           <MapLegend color="#9B9A96" label="Unclustered collection" />
+          <MapLineLegend label="Verified" />
+          {connectionMode === "similar" && !root ? (
+            <MapLineLegend dashed label="Similar" />
+          ) : null}
           <span className="min-w-[220px] flex-1">
-            Lines show exact shared typed entities or explicit project membership. Hover a line for its evidence.
+            {root
+              ? "This view shows what the selected item contains."
+              : connectionMode === "similar"
+                ? "Dashed lines show strong local similarity. Hover any line for details."
+                : "Solid lines show shared facts or explicit project membership."}
           </span>
           {graph.truncated ? (
             <span className="font-medium text-[var(--status-warn-ink)]">
@@ -420,11 +472,12 @@ export function KnowledgeMap({
                 nodeCanvasObject={(node: CanvasMapNode, context: CanvasRenderingContext2D, globalScale: number) =>
                   drawMapNode(node, context, globalScale)
                 }
-                linkColor={() => "#D8D7D2"}
-                linkWidth={(edge: MapEdgeRecord) => edge.kind === "related" ? 0.75 : 1.25}
+                linkColor={(edge: MapEdgeRecord) => edge.kind === "similarity" ? "#8C857A" : "#77736C"}
+                linkWidth={(edge: MapEdgeRecord) => edge.kind === "similarity" ? 1.15 : 1.5}
+                linkLineDash={(edge: MapEdgeRecord) => edge.kind === "similarity" ? [4, 3] : null}
                 linkDirectionalArrowLength={(edge: MapEdgeRecord) => edge.direction === "undirected" ? 0 : 4}
                 linkDirectionalArrowRelPos={0.86}
-                linkLabel={(edge: MapEdgeRecord) => `${edge.evidence_labels?.join(" · ") || edge.label}; ${edge.provenance_ids.length} evidence item${edge.provenance_ids.length === 1 ? "" : "s"}`}
+                linkLabel={(edge: MapEdgeRecord) => mapEdgeTooltip(edge)}
                 linkCanvasObjectMode={() => "after"}
                 linkCanvasObject={(edge: CanvasMapEdge, context: CanvasRenderingContext2D, globalScale: number) =>
                   drawMapLinkLabel(edge, context, globalScale, graphData.nodes.length)
@@ -580,6 +633,29 @@ function MapLegend({ color, label }: { color: string; label: string }) {
       {label}
     </span>
   );
+}
+
+function MapLineLegend({ label, dashed = false }: { label: string; dashed?: boolean }) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span
+        className={`w-5 border-t-2 ${dashed ? "border-dashed border-[#8C857A]" : "border-[#77736C]"}`}
+        aria-hidden="true"
+      />
+      {label}
+    </span>
+  );
+}
+
+function mapEdgeTooltip(edge: MapEdgeRecord) {
+  if (edge.kind === "similarity") {
+    const topics = edge.shared_terms?.length
+      ? ` Shared topics: ${edge.shared_terms.join(", ")}.`
+      : "";
+    return `${Math.round((edge.similarity_score ?? 0) * 100)}% similar.${topics}`;
+  }
+  const evidence = edge.provenance_ids.length;
+  return `${edge.evidence_labels?.join(" · ") || edge.label}; ${evidence} evidence item${evidence === 1 ? "" : "s"}`;
 }
 
 function relationshipSummary(nodeId: string, edges: MapEdgeRecord[]) {

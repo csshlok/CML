@@ -8,6 +8,7 @@ import { DegradedState, EmptyState, SkeletonRegion } from "@/components/product/
 import {
   getMapOverview,
   listVaults,
+  type MapConnectionMode,
   type MapGraphResponse,
   type VaultRecord,
 } from "@/lib/backend";
@@ -23,6 +24,7 @@ function MapView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [limit, setLimit] = useState(160);
+  const [connectionMode, setConnectionMode] = useState<MapConnectionMode>("current");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -30,13 +32,20 @@ function MapView() {
     try {
       const activeVault = (await listVaults())[0] ?? null;
       setVault(activeVault);
-      setOverview(activeVault ? await getMapOverview(activeVault.id, { limit }) : null);
+      setOverview(
+        activeVault
+          ? await getMapOverview(activeVault.id, {
+              limit,
+              connections: connectionMode,
+            })
+          : null,
+      );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Vault could not load the map.");
     } finally {
       setLoading(false);
     }
-  }, [limit]);
+  }, [connectionMode, limit]);
 
   useEffect(() => {
     void load();
@@ -48,8 +57,8 @@ function MapView() {
         <div>
           <h1 className="page-title">Knowledge map</h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Explore clusters, source episodes, and facts that Vault can trace back to your local
-            material. The map never invents connections from word overlap.
+            Explore what your clusters contain, then reveal strong connections found in their
+            indexed meaning.
           </p>
         </div>
         {overview?.truncated ? (
@@ -60,7 +69,7 @@ function MapView() {
       </PageHeader>
 
       <section className="mt-6">
-        {loading ? (
+        {loading && !overview ? (
           <div className="min-h-[620px] rounded-md border border-border bg-card p-6">
             <SkeletonRegion lines={10} />
           </div>
@@ -89,6 +98,9 @@ function MapView() {
             vaultId={vault.id}
             overview={overview}
             persistView
+            connectionMode={connectionMode}
+            connectionModeBusy={loading}
+            onConnectionModeChange={setConnectionMode}
             onReload={() => void load()}
             onExpandOverview={() => setLimit((current) => Math.min(500, current + 120))}
           />

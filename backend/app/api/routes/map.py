@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from itertools import combinations
+import json
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -8,6 +10,10 @@ from backend.app.core.database import connect, dict_from_row
 
 router = APIRouter(prefix="/map", tags=["map"])
 UNCLUSTERED_PREFIX = "unclustered:"
+MapConnectionMode = Literal["current", "similar"]
+MIN_CLUSTER_SIMILARITY = 0.72
+MAX_SIMILAR_NEIGHBORS = 3
+MAX_SIMILARITY_EDGES = 240
 
 
 def _cluster_node(row, source_count: int, fact_count: int) -> dict:
@@ -47,8 +53,9 @@ def map_overview(
     vault_id: str,
     limit: int = Query(default=120, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    connections: MapConnectionMode = "current",
 ) -> dict:
-    """Return a bounded graph overview without inventing cross-cluster similarity."""
+    """Return the current graph, optionally augmented with bounded semantic links."""
     with connect() as conn:
         vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
         if vault is None:
@@ -95,7 +102,25 @@ def map_overview(
                     unclustered["updated_at"] or max((row["updated_at"] for row in rows), default=""),
                 )
             )
-        edges = _overview_cluster_edges(conn, vault_id, {node["id"] for node in nodes if node["kind"] == "cluster"})
+        visible_cluster_ids = {
+            node["id"]
+            for node in nodes
+            if node["kind"] == "cluster"
+        }
+        edges = _overview_cluster_edges(conn, vault_id, visible_cluster_ids)
+        if connections == "similar":
+            authoritative_pairs = {
+                tuple(sorted((str(edge["source"]), str(edge["target"]))))
+                for edge in edges
+            }
+            edges.extend(
+                _semantic_cluster_edges(
+                    conn,
+                    vault_id,
+                    visible_cluster_ids,
+                    excluded_pairs=authoritative_pairs,
+                )
+            )
         node_total = int(total) + (1 if int(unclustered["total"] or 0) > 0 else 0)
     return {
         "vault_id": vault_id,
@@ -107,7 +132,12 @@ def map_overview(
         "limit": limit,
         "offset": offset,
         "truncated": offset + len(rows) < int(total),
-        "relationship_policy": "authoritative_only",
+        "connection_mode": connections,
+        "relationship_policy": (
+            "evidence_and_similarity"
+            if connections == "similar"
+            else "authoritative_only"
+        ),
     }
 
 
@@ -441,6 +471,158 @@ def _overview_cluster_edges(conn, vault_id: str, visible_cluster_ids: set[str]) 
         )
         edges.append(edge)
     return edges
+
+
+def _semantic_cluster_edges(
+    conn,
+    vault_id: str,
+    visible_cluster_ids: set[str],
+    *,
+    excluded_pairs: set[tuple[str, str]],
+) -> list[dict]:
+    """Return a sparse nearest-neighbor graph from ready cluster profiles."""
+    import numpy as np
+
+    if len(visible_cluster_ids) < 2:
+        return []
+    ordered_ids = sorted(visible_cluster_ids)
+    placeholders = ",".join("?" for _ in ordered_ids)
+    rows = conn.execute(
+        f"""
+        SELECT
+            cluster_id, centroid, lexical_terms, representative_source_ids,
+            cohesion, updated_at
+        FROM cluster_candidate_profiles
+        WHERE vault_id = ?
+          AND cluster_id IN ({placeholders})
+          AND status = 'ready'
+          AND TRIM(centroid) != ''
+        ORDER BY cluster_id
+        """,
+        (vault_id, *ordered_ids),
+    ).fetchall()
+    profiles: list[dict] = []
+    for row in rows:
+        centroid = _json_float_list(row["centroid"])
+        if not centroid:
+            continue
+        profiles.append(
+            {
+                "cluster_id": str(row["cluster_id"]),
+                "centroid": centroid,
+                "terms": _json_float_dict(row["lexical_terms"]),
+                "representative_ids": _json_string_list(row["representative_source_ids"]),
+                "cohesion": float(row["cohesion"] or 0),
+                "updated_at": str(row["updated_at"] or ""),
+            }
+        )
+
+    candidates: list[tuple[float, str, str, dict, dict]] = []
+    by_dimensions: dict[int, list[dict]] = {}
+    for profile in profiles:
+        by_dimensions.setdefault(len(profile["centroid"]), []).append(profile)
+    for dimension_profiles in by_dimensions.values():
+        if len(dimension_profiles) < 2:
+            continue
+        matrix = np.asarray(
+            [profile["centroid"] for profile in dimension_profiles],
+            dtype=np.float32,
+        )
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        valid = norms[:, 0] > 0
+        matrix[valid] = matrix[valid] / norms[valid]
+        scores = matrix @ matrix.T
+        for first_index, second_index in combinations(range(len(dimension_profiles)), 2):
+            first = dimension_profiles[first_index]
+            second = dimension_profiles[second_index]
+            pair = tuple(sorted((first["cluster_id"], second["cluster_id"])))
+            if pair in excluded_pairs:
+                continue
+            score = float(scores[first_index, second_index])
+            if score < MIN_CLUSTER_SIMILARITY:
+                continue
+            candidates.append((score, pair[0], pair[1], first, second))
+
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+    degrees: dict[str, int] = {}
+    edges: list[dict] = []
+    for score, source_id, target_id, first, second in candidates:
+        if len(edges) >= MAX_SIMILARITY_EDGES:
+            break
+        if (
+            degrees.get(source_id, 0) >= MAX_SIMILAR_NEIGHBORS
+            or degrees.get(target_id, 0) >= MAX_SIMILAR_NEIGHBORS
+        ):
+            continue
+        shared_terms = sorted(
+            set(first["terms"]).intersection(second["terms"]),
+            key=lambda term: (
+                -min(first["terms"][term], second["terms"][term]),
+                term,
+            ),
+        )[:4]
+        similarity = round(max(0.0, min(1.0, score)), 3)
+        edge = _edge(
+            source_id,
+            target_id,
+            "similarity",
+            list(
+                dict.fromkeys(
+                    [
+                        *first["representative_ids"],
+                        *second["representative_ids"],
+                    ]
+                )
+            )[:10],
+            max(first["updated_at"], second["updated_at"]),
+        )
+        edge.update(
+            {
+                "label": f"{round(similarity * 100)}% similar",
+                "direction": "undirected",
+                "relationship_basis": "semantic_similarity",
+                "similarity_score": similarity,
+                "shared_terms": shared_terms,
+                "evidence_labels": (
+                    [f"Shared topics: {', '.join(shared_terms)}"]
+                    if shared_terms
+                    else []
+                ),
+            }
+        )
+        edges.append(edge)
+        degrees[source_id] = degrees.get(source_id, 0) + 1
+        degrees[target_id] = degrees.get(target_id, 0) + 1
+    return edges
+
+
+def _json_float_list(raw: str) -> list[float]:
+    try:
+        value = json.loads(raw or "[]")
+        return [float(item) for item in value] if isinstance(value, list) else []
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+
+
+def _json_float_dict(raw: str) -> dict[str, float]:
+    try:
+        value = json.loads(raw or "{}")
+        if not isinstance(value, dict):
+            return {}
+        return {
+            str(key): float(weight)
+            for key, weight in value.items()
+        }
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
+def _json_string_list(raw: str) -> list[str]:
+    try:
+        value = json.loads(raw or "[]")
+        return [str(item) for item in value if str(item)] if isinstance(value, list) else []
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
 
 
 def _merge_relationship(
