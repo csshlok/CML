@@ -69,6 +69,8 @@ for (const file of files) {
     );
     const hasAction =
       attrs.has("onClick") ||
+      attrs.has("onPointerDown") ||
+      attrs.has("onKeyDown") ||
       attrs.has("onSubmit") ||
       attrs.has("data-compound-trigger") ||
       (attrs.has("type") && node.getText(source).includes('type="submit"'));

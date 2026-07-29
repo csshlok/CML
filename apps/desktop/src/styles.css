@@ -352,6 +352,10 @@
     -webkit-app-region: no-drag;
   }
 
+  .vault-window-control-clearance {
+    padding-right: max(150px, 1.5rem);
+  }
+
   .vault-sidebar {
     -webkit-app-region: drag;
   }
@@ -570,7 +574,6 @@
   }
 
   .source-import-popup {
-    left: 1rem;
     animation: source-import-enter 180ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
@@ -605,9 +608,6 @@
       margin-right: 150px;
     }
 
-    .source-import-popup {
-      left: calc(var(--sidebar-width) + 1rem);
-    }
   }
 
   @media (min-width: 1280px) {
