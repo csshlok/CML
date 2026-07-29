@@ -1386,8 +1386,10 @@ class AdditionalQACases(unittest.TestCase):
             payload = asyncio.run(collect(response))
 
         self.assertIn("event: error", payload)
-        self.assertIn("Vault could not finish routing this message.", payload)
-        self.assertIn("context build exploded", payload)
+        self.assertIn("Vault could not finish this answer.", payload)
+        self.assertIn('"code": "stream_interrupted"', payload)
+        self.assertIn('"diagnostic_id": "diag-', payload)
+        self.assertNotIn("context build exploded", payload)
         self.assertIn('"retriable": true', payload)
 
         with connect() as conn:

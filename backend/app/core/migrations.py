@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 from backend.app.core.database import connect, utc_now
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 18
 
 
 class MigrationError(RuntimeError):
@@ -772,6 +772,214 @@ def _migration_013_cluster_identity_origin(conn) -> None:
     )
 
 
+def _migration_014_stable_cluster_suggestion_batches(conn) -> None:
+    _add_column_if_missing(
+        conn,
+        "sources",
+        "metadata_version",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS cluster_suggestion_batches (
+            id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('active', 'completed')),
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS cluster_suggestion_candidates (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL,
+            vault_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            current_cluster_id TEXT,
+            suggested_cluster_id TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            source_updated_at TEXT NOT NULL,
+            decision TEXT,
+            decided_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (batch_id) REFERENCES cluster_suggestion_batches(id) ON DELETE CASCADE,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
+            FOREIGN KEY (current_cluster_id) REFERENCES clusters(id) ON DELETE SET NULL,
+            FOREIGN KEY (suggested_cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,
+            UNIQUE(batch_id, source_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cluster_suggestion_batches_vault
+            ON cluster_suggestion_batches(vault_id, status, created_at DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cluster_suggestion_one_active_batch
+            ON cluster_suggestion_batches(vault_id) WHERE status = 'active';
+        CREATE INDEX IF NOT EXISTS idx_cluster_suggestion_candidates_batch
+            ON cluster_suggestion_candidates(batch_id, decision, confidence DESC);
+        """
+    )
+    required_cleanup_tables = {
+        "clusters",
+        "sources",
+        "chat_sessions",
+        "projects",
+        "project_cluster_links",
+    }
+    if not all(_table_exists(conn, table) for table in required_cleanup_tables):
+        return
+    conn.executescript(
+        """
+        DELETE FROM cluster_suggestion_decisions
+        WHERE NOT EXISTS (
+            SELECT 1 FROM clusters
+            WHERE clusters.id = cluster_suggestion_decisions.suggested_cluster_id
+              AND clusters.vault_id = cluster_suggestion_decisions.vault_id
+        );
+        DELETE FROM clusters
+        WHERE name_origin = 'auto'
+          AND NOT EXISTS (
+              SELECT 1 FROM sources
+              WHERE sources.cluster_id = clusters.id
+                AND sources.deleted_at IS NULL
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM chat_sessions
+              WHERE chat_sessions.scope_cluster_id = clusters.id
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM projects
+              WHERE projects.primary_cluster_id = clusters.id
+                AND projects.deleted_at IS NULL
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM project_cluster_links
+              WHERE project_cluster_links.cluster_id = clusters.id
+          );
+        UPDATE clusters
+        SET profile_status = 'stale',
+            profile_source_hash = ''
+        WHERE name_origin = 'auto'
+          AND EXISTS (
+              SELECT 1 FROM sources
+              WHERE sources.cluster_id = clusters.id
+                AND sources.deleted_at IS NULL
+          );
+        """
+    )
+
+
+def _migration_015_source_folder_membership(conn) -> None:
+    _add_column_if_missing(conn, "sources", "import_root_path", "TEXT")
+    _add_column_if_missing(conn, "sources", "import_relative_path", "TEXT")
+    source_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(sources)").fetchall()
+    }
+    if not {"vault_id", "activation_state", "deleted_at"} <= source_columns:
+        return
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_sources_import_root
+        ON sources(vault_id, import_root_path, activation_state, deleted_at)
+        """
+    )
+
+
+def _migration_016_repair_project_chunk_scope(conn) -> None:
+    """Repair project chunks activated before their source joined the project cluster."""
+    source_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(sources)").fetchall()
+    }
+    chunk_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(source_chunks)").fetchall()
+    }
+    required_source_columns = {"id", "cluster_id", "activation_state", "deleted_at"}
+    required_chunk_columns = {
+        "source_id",
+        "project_id",
+        "activation_state",
+        "cluster_id",
+    }
+    if not required_source_columns <= source_columns or not required_chunk_columns <= chunk_columns:
+        return
+    conn.execute(
+        """
+        UPDATE source_chunks
+        SET cluster_id = (
+            SELECT sources.cluster_id
+            FROM sources
+            WHERE sources.id = source_chunks.source_id
+        )
+        WHERE source_chunks.project_id IS NOT NULL
+          AND source_chunks.activation_state = 'active'
+          AND EXISTS (
+              SELECT 1
+              FROM sources
+              WHERE sources.id = source_chunks.source_id
+                AND sources.activation_state = 'active'
+                AND sources.deleted_at IS NULL
+                AND sources.cluster_id IS NOT NULL
+                AND (
+                    source_chunks.cluster_id IS NULL
+                    OR source_chunks.cluster_id <> sources.cluster_id
+                )
+          )
+        """
+    )
+
+
+def _migration_017_cluster_candidate_profiles(conn) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS cluster_candidate_profiles (
+            cluster_id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            profile_version INTEGER NOT NULL,
+            source_hash TEXT NOT NULL,
+            derived_state_tuple TEXT NOT NULL DEFAULT '{}',
+            centroid TEXT NOT NULL DEFAULT '',
+            lexical_terms TEXT NOT NULL DEFAULT '{}',
+            source_type_distribution TEXT NOT NULL DEFAULT '{}',
+            representative_source_ids TEXT NOT NULL DEFAULT '[]',
+            cohesion REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'ready',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS cluster_candidate_terms (
+            cluster_id TEXT NOT NULL,
+            vault_id TEXT NOT NULL,
+            term TEXT NOT NULL,
+            weight REAL NOT NULL,
+            PRIMARY KEY (cluster_id, term),
+            FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_cluster_candidate_terms_lookup
+            ON cluster_candidate_terms(vault_id, term, weight DESC, cluster_id);
+        CREATE INDEX IF NOT EXISTS idx_cluster_candidate_profiles_vault
+            ON cluster_candidate_profiles(vault_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_cli_clients_active_created
+            ON cli_clients(created_at DESC, id DESC)
+            WHERE revoked_at IS NULL AND rotated_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_cli_clients_history_created
+            ON cli_clients(created_at DESC, id DESC)
+            WHERE revoked_at IS NOT NULL OR rotated_at IS NOT NULL;
+        """
+    )
+    for table in ("cluster_suggestion_decisions", "cluster_suggestion_candidates"):
+        _add_column_if_missing(conn, table, "source_content_hash", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, table, "candidate_profile_hash", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, table, "candidate_profile_version", "INTEGER NOT NULL DEFAULT 0")
+
+
+def _migration_018_stable_cluster_suggestion_evidence(conn) -> None:
+    for table in ("cluster_suggestion_decisions", "cluster_suggestion_candidates"):
+        _add_column_if_missing(conn, table, "source_content_hash", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, table, "candidate_profile_hash", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, table, "candidate_profile_version", "INTEGER NOT NULL DEFAULT 0")
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migration_001_baseline,
     2: _migration_002_vault_security_metadata,
@@ -786,6 +994,11 @@ MIGRATIONS: dict[int, Migration] = {
     11: _migration_011_project_discovery_scope,
     12: _migration_012_cluster_suggestion_decisions,
     13: _migration_013_cluster_identity_origin,
+    14: _migration_014_stable_cluster_suggestion_batches,
+    15: _migration_015_source_folder_membership,
+    16: _migration_016_repair_project_chunk_scope,
+    17: _migration_017_cluster_candidate_profiles,
+    18: _migration_018_stable_cluster_suggestion_evidence,
 }
 
 

@@ -262,12 +262,13 @@ class LoraToRagPhase12Tests(unittest.TestCase):
                     profile_source_hash,
                     indexed_source_count
                 FROM clusters
-                WHERE id IN (?, ?, ?)
+                WHERE id IN (?, ?)
                 """,
-                (created["id"], auto_cluster_id, chats["id"]),
+                (created["id"], chats["id"]),
             ).fetchall()
 
-        self.assertEqual(len(rows), 3)
+        self.assertIsNone(auto_cluster_id)
+        self.assertEqual(len(rows), 2)
         for row in rows:
             self.assertEqual(row["index_status"], "empty")
             self.assertEqual(row["profile_status"], "missing")

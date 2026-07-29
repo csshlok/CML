@@ -29,6 +29,7 @@ def init_db() -> None:
         # can repair forward instead of crashing before migrations run.
         _add_column_if_missing_if_table_exists(conn, "sources", "provenance", "TEXT NOT NULL DEFAULT 'local_import'")
         _add_column_if_missing_if_table_exists(conn, "sources", "trust_tier", "TEXT NOT NULL DEFAULT 'trusted_local'")
+        _add_column_if_missing_if_table_exists(conn, "sources", "metadata_version", "INTEGER NOT NULL DEFAULT 1")
         _add_column_if_missing_if_table_exists(conn, "source_chunks", "embedding_model_id", "TEXT NOT NULL DEFAULT 'hash'")
         _add_column_if_missing_if_table_exists(conn, "source_chunks", "index_version", "TEXT NOT NULL DEFAULT 'v1'")
         _add_column_if_missing_if_table_exists(conn, "source_chunks", "normalization_version", "TEXT NOT NULL DEFAULT 'norm-v1'")
@@ -120,6 +121,7 @@ def init_db() -> None:
                 trust_tier TEXT NOT NULL DEFAULT 'trusted_local',
                 security_labels TEXT NOT NULL DEFAULT '[]',
                 parser_security_json TEXT NOT NULL DEFAULT '{}',
+                metadata_version INTEGER NOT NULL DEFAULT 1,
                 raw_text TEXT NOT NULL DEFAULT '',
                 extracted_text TEXT NOT NULL DEFAULT '',
                 summary TEXT NOT NULL DEFAULT '',
@@ -1180,9 +1182,73 @@ def init_db() -> None:
                 suggested_cluster_id TEXT NOT NULL,
                 action TEXT NOT NULL CHECK (action IN ('accepted', 'dismissed')),
                 source_updated_at TEXT NOT NULL,
+                source_content_hash TEXT NOT NULL DEFAULT '',
+                candidate_profile_hash TEXT NOT NULL DEFAULT '',
+                candidate_profile_version INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS cluster_suggestion_batches (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('active', 'completed')),
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS cluster_suggestion_candidates (
+                id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                vault_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                current_cluster_id TEXT,
+                suggested_cluster_id TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                source_updated_at TEXT NOT NULL,
+                source_content_hash TEXT NOT NULL DEFAULT '',
+                candidate_profile_hash TEXT NOT NULL DEFAULT '',
+                candidate_profile_version INTEGER NOT NULL DEFAULT 0,
+                decision TEXT,
+                decided_at TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (batch_id) REFERENCES cluster_suggestion_batches(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
+                FOREIGN KEY (current_cluster_id) REFERENCES clusters(id) ON DELETE SET NULL,
+                FOREIGN KEY (suggested_cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,
+                UNIQUE(batch_id, source_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS cluster_candidate_profiles (
+                cluster_id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                profile_version INTEGER NOT NULL,
+                source_hash TEXT NOT NULL,
+                derived_state_tuple TEXT NOT NULL DEFAULT '{}',
+                centroid TEXT NOT NULL DEFAULT '',
+                lexical_terms TEXT NOT NULL DEFAULT '{}',
+                source_type_distribution TEXT NOT NULL DEFAULT '{}',
+                representative_source_ids TEXT NOT NULL DEFAULT '[]',
+                cohesion REAL NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'ready',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS cluster_candidate_terms (
+                cluster_id TEXT NOT NULL,
+                vault_id TEXT NOT NULL,
+                term TEXT NOT NULL,
+                weight REAL NOT NULL,
+                PRIMARY KEY (cluster_id, term),
+                FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
             );
 
@@ -1210,6 +1276,22 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_source_chunks_vault_id ON source_chunks(vault_id);
             CREATE INDEX IF NOT EXISTS idx_cluster_suggestion_decisions_vault
                 ON cluster_suggestion_decisions(vault_id, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_cluster_suggestion_batches_vault
+                ON cluster_suggestion_batches(vault_id, status, created_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_cluster_suggestion_one_active_batch
+                ON cluster_suggestion_batches(vault_id) WHERE status = 'active';
+            CREATE INDEX IF NOT EXISTS idx_cluster_suggestion_candidates_batch
+                ON cluster_suggestion_candidates(batch_id, decision, confidence DESC);
+            CREATE INDEX IF NOT EXISTS idx_cluster_candidate_terms_lookup
+                ON cluster_candidate_terms(vault_id, term, weight DESC, cluster_id);
+            CREATE INDEX IF NOT EXISTS idx_cluster_candidate_profiles_vault
+                ON cluster_candidate_profiles(vault_id, status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_cli_clients_active_created
+                ON cli_clients(created_at DESC, id DESC)
+                WHERE revoked_at IS NULL AND rotated_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_cli_clients_history_created
+                ON cli_clients(created_at DESC, id DESC)
+                WHERE revoked_at IS NOT NULL OR rotated_at IS NOT NULL;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_vault_name
                 ON projects(vault_id, lower(name)) WHERE deleted_at IS NULL;
             CREATE INDEX IF NOT EXISTS idx_projects_primary_cluster

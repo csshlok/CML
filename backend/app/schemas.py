@@ -259,6 +259,7 @@ class SourceImportJobRequest(BaseModel):
     cluster_id: str | None = None
     paths: list[str] = Field(min_length=1, max_length=10_000)
     truncated_at: int | None = Field(default=None, ge=1, le=10_000)
+    folder_roots: list[str] = Field(default_factory=list, max_length=100)
 
     @field_validator("cluster_id", mode="before")
     @classmethod
@@ -274,6 +275,11 @@ class SourceImportJobRequest(BaseModel):
         if any(len(value) > 32_767 for value in normalized):
             raise ValueError("A file path is too long")
         return normalized
+
+    @field_validator("folder_roots")
+    @classmethod
+    def normalize_folder_roots(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
 class SourceTextCreate(BaseModel):
