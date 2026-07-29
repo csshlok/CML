@@ -370,7 +370,7 @@ class UnlockPhase2Tests(unittest.TestCase):
             client.close()
 
         self.assertEqual(wrong.status_code, 401)
-        self.assertEqual(wrong.json()["detail"], "invalid_vault_secret")
+        self.assertEqual(wrong.json()["error"]["code"], "invalid_vault_secret")
         self.assertEqual(pin.status_code, 401)
         self.assertEqual(full.status_code, 200)
         self.assertTrue(full.json()["ok"])

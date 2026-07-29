@@ -1,12 +1,18 @@
 from contextlib import asynccontextmanager
 import threading
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.routes import activity, bridge, chat, cli_auth, clusters, diagnostics, extension, integrations, jobs, map, memory, models, projects, search, sources, system, vaults
 from backend.app.core.auth import LocalApiAuthMiddleware
-from backend.app.core.background_jobs import enqueue_startup_reconciliation_jobs, start_background_worker
+from backend.app.core.background_jobs import (
+    enqueue_startup_metadata_jobs,
+    enqueue_startup_reconciliation_jobs,
+    migrate_legacy_project_index_jobs,
+    start_background_worker,
+)
 from backend.app.core.config import get_settings
 from backend.app.core.database import init_db
 from backend.app.core.generation_recovery import recover_interrupted_generations
@@ -15,6 +21,11 @@ from backend.app.core.migrations import run_migrations
 from backend.app.core.model_registry import active_chat_model_status
 from backend.app.core.model_runtime_supervisor import restore_selected_model, stop_managed_runtime
 from backend.app.core.pre_vault import BackendModeMiddleware
+from backend.app.core.public_errors import (
+    public_http_exception,
+    public_unhandled_exception,
+    public_validation_exception,
+)
 from backend.app.core.startup_checks import StartupCheckError, verify_schema_version, verify_sqlite_integrity
 from backend.app.core.unlock_middleware import UnlockGateMiddleware
 from backend.app.core.startup_status import reset_startup_status_timing, write_startup_status
@@ -90,11 +101,13 @@ def start_startup_warming() -> None:
 def _run_startup_warming() -> None:
     try:
         write_startup_status("warming", message="Finishing background setup.")
+        migrate_legacy_project_index_jobs()
         enqueue_startup_reconciliation_jobs()
         write_startup_status("runtime_detection_running")
         active_model = active_chat_model_status()
         if active_model and active_model.get("local_path"):
             restore_selected_model(str(active_model["id"]), str(active_model["local_path"]))
+        enqueue_startup_metadata_jobs()
         write_startup_status("ready", status="ready", message="Vault is ready.")
     except Exception as exc:
         write_startup_status(
@@ -120,6 +133,21 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="CML Local Backend", version=app_version(), lifespan=lifespan)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return public_http_exception(request, exc)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    return public_unhandled_exception(request, exc)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return public_validation_exception(request, exc)
 
 app.add_middleware(UnlockGateMiddleware)
 app.add_middleware(BackendModeMiddleware)

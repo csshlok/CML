@@ -455,10 +455,10 @@ class BridgePhase10Tests(unittest.TestCase):
 
         self.assertEqual(clusters.status_code, 200)
         self.assertEqual(denied.status_code, 403)
-        self.assertEqual(denied.json()["detail"], "capability_denied")
+        self.assertEqual(denied.json()["error"]["code"], "capability_denied")
         self.assertEqual(allowed.status_code, 200)
         self.assertEqual(scope_denied.status_code, 403)
-        self.assertEqual(scope_denied.json()["detail"], "vault_not_allowed")
+        self.assertEqual(scope_denied.json()["error"]["code"], "vault_not_allowed")
         with connect() as conn:
             read_only_audit = dict(
                 conn.execute(
@@ -567,11 +567,11 @@ class BridgePhase10Tests(unittest.TestCase):
         self.assertEqual(replay.status_code, 200)
         self.assertEqual(replay.json(), first.json())
         self.assertEqual(conflict.status_code, 409)
-        self.assertEqual(conflict.json()["detail"], "idempotency_key_reused")
+        self.assertEqual(conflict.json()["error"]["code"], "idempotency_key_reused")
         self.assertEqual(approved.status_code, 200)
         self.assertEqual(approved_replay.json(), approved.json())
         self.assertEqual(stale.status_code, 409)
-        self.assertEqual(stale.json()["detail"], "bridge_review_changed")
+        self.assertEqual(stale.json()["error"]["code"], "bridge_review_changed")
         with connect() as conn:
             capture_count = conn.execute(
                 "SELECT COUNT(*) FROM sources WHERE source_type = 'external_artifact'"
