@@ -128,6 +128,72 @@ class ClusterSourceMoveTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 404)
         self.assertEqual(membership["cluster_id"], "cluster-a")
 
+    def test_accepting_a_suggested_move_updates_membership_and_records_the_decision(self) -> None:
+        from backend.app.api.routes.clusters import decide_cluster_suggestion
+        from backend.app.core.database import connect
+        from backend.app.schemas import ClusterSuggestionDecision
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+
+        result = decide_cluster_suggestion(
+            ClusterSuggestionDecision(
+                source_id=source["id"],
+                suggested_cluster_id="cluster-b",
+                action="accepted",
+            )
+        )
+
+        with connect() as conn:
+            membership = conn.execute(
+                "SELECT cluster_id, updated_at FROM sources WHERE id = ?",
+                (source["id"],),
+            ).fetchone()
+            decision = conn.execute(
+                """
+                SELECT action, suggested_cluster_id, source_updated_at
+                FROM cluster_suggestion_decisions
+                WHERE source_id = ?
+                """,
+                (source["id"],),
+            ).fetchone()
+
+        self.assertEqual(result["action"], "accepted")
+        self.assertEqual(membership["cluster_id"], "cluster-b")
+        self.assertEqual(decision["action"], "accepted")
+        self.assertEqual(decision["suggested_cluster_id"], "cluster-b")
+        self.assertEqual(decision["source_updated_at"], membership["updated_at"])
+
+    def test_dismissing_a_suggested_move_keeps_membership_and_records_the_decision(self) -> None:
+        from backend.app.api.routes.clusters import decide_cluster_suggestion
+        from backend.app.core.database import connect
+        from backend.app.schemas import ClusterSuggestionDecision
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+
+        decide_cluster_suggestion(
+            ClusterSuggestionDecision(
+                source_id=source["id"],
+                suggested_cluster_id="cluster-b",
+                action="dismissed",
+            )
+        )
+
+        with connect() as conn:
+            membership = conn.execute(
+                "SELECT cluster_id, updated_at FROM sources WHERE id = ?",
+                (source["id"],),
+            ).fetchone()
+            decision = conn.execute(
+                "SELECT action, source_updated_at FROM cluster_suggestion_decisions WHERE source_id = ?",
+                (source["id"],),
+            ).fetchone()
+
+        self.assertEqual(membership["cluster_id"], "cluster-a")
+        self.assertEqual(decision["action"], "dismissed")
+        self.assertEqual(decision["source_updated_at"], membership["updated_at"])
+
 
 if __name__ == "__main__":
     unittest.main()

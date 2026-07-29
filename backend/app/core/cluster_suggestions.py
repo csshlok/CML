@@ -13,9 +13,12 @@ def suggest_source_cluster_moves(conn, vault_id: str, limit: int = 12) -> list[d
 
     rows = conn.execute(
         """
-        SELECT sources.id, sources.title, sources.cluster_id, clusters.name AS current_cluster_name
+        SELECT sources.id, sources.title, sources.cluster_id, sources.updated_at,
+               clusters.name AS current_cluster_name,
+               decisions.source_updated_at AS decision_source_updated_at
         FROM sources
         LEFT JOIN clusters ON clusters.id = sources.cluster_id
+        LEFT JOIN cluster_suggestion_decisions decisions ON decisions.source_id = sources.id
         WHERE sources.vault_id = ? AND sources.state = 'indexed' AND sources.deleted_at IS NULL
         """,
         (vault_id,),
@@ -30,6 +33,8 @@ def suggest_source_cluster_moves(conn, vault_id: str, limit: int = 12) -> list[d
 
     suggestions: list[dict] = []
     for row in rows:
+        if row["decision_source_updated_at"] == row["updated_at"]:
+            continue
         source_id = row["id"]
         source_vector = source_vectors.get(source_id)
         if source_vector is None:

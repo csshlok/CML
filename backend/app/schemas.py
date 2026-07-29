@@ -87,6 +87,12 @@ class ClusterSuggestionRead(BaseModel):
     reason: str
 
 
+class ClusterSuggestionDecision(BaseModel):
+    source_id: str
+    suggested_cluster_id: str
+    action: Literal["accepted", "dismissed"]
+
+
 class ProjectCreate(BaseModel):
     vault_id: str
     root_path: str = Field(min_length=1)
@@ -894,6 +900,7 @@ class ChatMessageRead(BaseModel):
     generation_id: str | None = None
     reply_to_message_id: str | None = None
     generation_state: str | None = None
+    attachments: list[str] = Field(default_factory=list)
 
 
 class ChatMessageUpdate(BaseModel):
@@ -910,9 +917,10 @@ class ChatSessionRead(BaseModel):
     saved: bool
     memory_status: str = "idle"
     memory_updated_at: str | None = None
+    active_generation: bool = False
     created_at: str
     updated_at: str
-    messages: list[ChatMessageRead] = []
+    messages: list[ChatMessageRead] = Field(default_factory=list)
 
 
 class ModelDownloadState(BaseModel):

@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 from backend.app.core.database import connect, utc_now
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 
 class MigrationError(RuntimeError):
@@ -732,6 +732,46 @@ def _migration_011_project_discovery_scope(conn) -> None:
     )
 
 
+def _migration_012_cluster_suggestion_decisions(conn) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS cluster_suggestion_decisions (
+            source_id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            suggested_cluster_id TEXT NOT NULL,
+            action TEXT NOT NULL CHECK (action IN ('accepted', 'dismissed')),
+            source_updated_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_cluster_suggestion_decisions_vault
+            ON cluster_suggestion_decisions(vault_id, updated_at DESC);
+        """
+    )
+
+
+def _migration_013_cluster_identity_origin(conn) -> None:
+    if not _table_exists(conn, "clusters"):
+        return
+    _add_column_if_missing(conn, "clusters", "name_origin", "TEXT NOT NULL DEFAULT 'user'")
+    conn.execute(
+        """
+        UPDATE clusters
+        SET name_origin = 'auto'
+        WHERE name_origin = 'user'
+          AND description <> ''
+          AND description NOT LIKE '%.%'
+          AND description NOT LIKE '%:%'
+          AND (
+              description LIKE '%,%'
+              OR lower(description) = lower(name)
+          )
+        """
+    )
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migration_001_baseline,
     2: _migration_002_vault_security_metadata,
@@ -744,6 +784,8 @@ MIGRATIONS: dict[int, Migration] = {
     9: _migration_009_project_chat_scope,
     10: _migration_010_odin_release_contracts,
     11: _migration_011_project_discovery_scope,
+    12: _migration_012_cluster_suggestion_decisions,
+    13: _migration_013_cluster_identity_origin,
 }
 
 
@@ -751,6 +793,16 @@ def _add_column_if_missing(conn, table: str, column: str, definition: str) -> No
     columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _table_exists(conn, table: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
 
 
 def run_migrations() -> None:

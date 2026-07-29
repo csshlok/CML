@@ -91,6 +91,7 @@ def init_db() -> None:
                 id TEXT PRIMARY KEY,
                 vault_id TEXT NOT NULL,
                 name TEXT NOT NULL,
+                name_origin TEXT NOT NULL DEFAULT 'user',
                 description TEXT NOT NULL DEFAULT '',
                 color TEXT NOT NULL DEFAULT 'sage',
                 index_status TEXT NOT NULL DEFAULT 'empty',
@@ -1173,6 +1174,18 @@ def init_db() -> None:
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS cluster_suggestion_decisions (
+                source_id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                suggested_cluster_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK (action IN ('accepted', 'dismissed')),
+                source_updated_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS extension_pairing_sessions (
                 id TEXT PRIMARY KEY,
                 pairing_code TEXT NOT NULL,
@@ -1195,6 +1208,8 @@ def init_db() -> None:
             );
 
             CREATE INDEX IF NOT EXISTS idx_source_chunks_vault_id ON source_chunks(vault_id);
+            CREATE INDEX IF NOT EXISTS idx_cluster_suggestion_decisions_vault
+                ON cluster_suggestion_decisions(vault_id, updated_at DESC);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_vault_name
                 ON projects(vault_id, lower(name)) WHERE deleted_at IS NULL;
             CREATE INDEX IF NOT EXISTS idx_projects_primary_cluster
@@ -1622,6 +1637,11 @@ def _backfill_cluster_rag_lifecycle(conn: sqlite3.Connection) -> None:
 def _rebuild_clusters_table_without_expert_status(conn: sqlite3.Connection) -> None:
     if not _table_has_column(conn, "clusters", "expert_status"):
         return
+    name_origin_select = (
+        "COALESCE(name_origin, 'user')"
+        if _table_has_column(conn, "clusters", "name_origin")
+        else "'user'"
+    )
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
         conn.execute("DROP TABLE IF EXISTS clusters_new")
@@ -1631,6 +1651,7 @@ def _rebuild_clusters_table_without_expert_status(conn: sqlite3.Connection) -> N
                 id TEXT PRIMARY KEY,
                 vault_id TEXT NOT NULL,
                 name TEXT NOT NULL,
+                name_origin TEXT NOT NULL DEFAULT 'user',
                 description TEXT NOT NULL DEFAULT '',
                 color TEXT NOT NULL DEFAULT 'sage',
                 index_status TEXT NOT NULL DEFAULT 'empty',
@@ -1647,9 +1668,9 @@ def _rebuild_clusters_table_without_expert_status(conn: sqlite3.Connection) -> N
             """
         )
         conn.execute(
-            """
+            f"""
             INSERT INTO clusters_new (
-                id, vault_id, name, description, color, index_status, profile_status,
+                id, vault_id, name, name_origin, description, color, index_status, profile_status,
                 cluster_summary, cluster_glossary, profile_updated_at, profile_source_hash,
                 indexed_source_count, created_at, updated_at
             )
@@ -1657,6 +1678,7 @@ def _rebuild_clusters_table_without_expert_status(conn: sqlite3.Connection) -> N
                 id,
                 vault_id,
                 name,
+                {name_origin_select},
                 description,
                 color,
                 COALESCE(index_status, 'empty'),

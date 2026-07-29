@@ -5,6 +5,7 @@ from hashlib import sha256
 
 from backend.app.core.database import dict_from_row, utc_now
 from backend.app.core.encrypted_storage import load_source_content_fields
+from backend.app.core.clustering import cluster_identity_from_sources
 
 
 def mark_cluster_needs_update(conn, cluster_id: str | None, detail: str) -> None:
@@ -51,6 +52,7 @@ def refresh_cluster_profile(conn, cluster_id: str) -> dict[str, str]:
         SELECT
             id,
             name,
+            name_origin,
             description,
             cluster_summary,
             cluster_glossary,
@@ -137,6 +139,12 @@ def refresh_cluster_profile(conn, cluster_id: str) -> dict[str, str]:
                 sources=source_rows,
             )
             glossary = json.dumps(_build_cluster_glossary(source_rows), separators=(",", ":"))
+            if str(row["name_origin"] or "user") == "auto":
+                generated_name, generated_description = cluster_identity_from_sources(source_rows)
+                conn.execute(
+                    "UPDATE clusters SET name = ?, description = ? WHERE id = ?",
+                    (generated_name, generated_description, cluster_id),
+                )
             profile_status = "ready"
             profile_updated_at = utc_now()
     conn.execute(
@@ -188,11 +196,18 @@ def _compute_profile_source_hash(sources: list[dict]) -> str:
 
 def _build_cluster_summary(*, cluster_name: str, description: str, sources: list[dict]) -> str:
     title_examples = [str(source.get("title") or "").strip() for source in sources if str(source.get("title") or "").strip()]
-    lead = description or (f"{cluster_name} knowledge cluster." if cluster_name else "Cluster knowledge.")
+    source_summaries = [
+        str(source.get("summary") or "").strip()
+        for source in sources
+        if str(source.get("summary") or "").strip()
+    ]
+    lead = source_summaries[0] if source_summaries else description
+    if not lead:
+        lead = f"Sources about {cluster_name}." if cluster_name else "Related sources."
     if not title_examples:
         return lead[:320]
     focus = ", ".join(title_examples[:3])
-    return f"{lead} Indexed sources include {focus}."[:320]
+    return f"{lead} Includes {focus}."[:320]
 
 
 def _build_cluster_glossary(sources) -> list[str]:

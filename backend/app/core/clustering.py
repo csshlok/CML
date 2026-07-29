@@ -43,7 +43,8 @@ def keywords_for_text(text: str, limit: int = 6) -> list[str]:
 
 
 def assign_or_create_cluster(conn, *, vault_id: str, title: str, text: str) -> str:
-    source_keywords = set(keywords_for_text(f"{title} {text}", limit=10))
+    ordered_keywords = keywords_for_text(f"{title} {text}", limit=10)
+    source_keywords = set(ordered_keywords)
     rows = conn.execute(
         "SELECT * FROM clusters WHERE vault_id = ? ORDER BY updated_at DESC",
         (vault_id,),
@@ -63,19 +64,19 @@ def assign_or_create_cluster(conn, *, vault_id: str, title: str, text: str) -> s
     if best_cluster_id and best_score >= 2:
         return best_cluster_id
 
-    name = cluster_name_from_keywords(source_keywords, title)
+    name = cluster_name_from_keywords(ordered_keywords, title)
     now = utc_now()
     cluster_id = f"cluster-{uuid4()}"
     color = CLUSTER_COLORS[len(rows) % len(CLUSTER_COLORS)]
-    description = ", ".join(list(source_keywords)[:6])
+    description = cluster_description_from_keywords(ordered_keywords)
     conn.execute(
         """
         INSERT INTO clusters (
-            id, vault_id, name, description, color, index_status, profile_status,
+            id, vault_id, name, name_origin, description, color, index_status, profile_status,
             cluster_summary, cluster_glossary, created_at, updated_at
         )
         VALUES (
-            :id, :vault_id, :name, :description, :color, 'empty', 'missing',
+            :id, :vault_id, :name, 'auto', :description, :color, 'empty', 'missing',
             '', '[]', :created_at, :updated_at
         )
         """,
@@ -92,9 +93,26 @@ def assign_or_create_cluster(conn, *, vault_id: str, title: str, text: str) -> s
     return cluster_id
 
 
-def cluster_name_from_keywords(keywords: set[str], title: str) -> str:
+def cluster_name_from_keywords(keywords: list[str] | set[str], title: str) -> str:
     if keywords:
-        leading = sorted(keywords)[:2]
+        leading = list(keywords)[:2]
         return " ".join(word.capitalize() for word in leading)
     stem = title.rsplit(".", 1)[0].strip()
     return stem[:60] or "New Cluster"
+
+
+def cluster_description_from_keywords(keywords: list[str]) -> str:
+    if not keywords:
+        return ""
+    return f"Sources about {', '.join(keywords[:4])}."
+
+
+def cluster_identity_from_sources(sources: list[dict]) -> tuple[str, str]:
+    combined = " ".join(
+        str(source.get(field) or "")
+        for source in sources
+        for field in ("title", "summary")
+    )
+    keywords = keywords_for_text(combined, limit=8)
+    title = str(sources[0].get("title") or "New Cluster") if sources else "New Cluster"
+    return cluster_name_from_keywords(keywords, title), cluster_description_from_keywords(keywords)

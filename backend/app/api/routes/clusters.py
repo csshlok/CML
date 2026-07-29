@@ -15,6 +15,7 @@ from backend.app.schemas import (
     ClusterMergeRequest,
     ClusterRead,
     ClusterSuggestionRead,
+    ClusterSuggestionDecision,
     ClusterUpdate,
 )
 
@@ -116,6 +117,70 @@ def list_cluster_suggestions(vault_id: str, limit: int = 12) -> list[dict]:
         return suggest_source_cluster_moves(conn, vault_id, limit=max(1, min(limit, 30)))
 
 
+@router.post("/suggestions/decision")
+def decide_cluster_suggestion(payload: ClusterSuggestionDecision) -> dict:
+    now = utc_now()
+    with connect() as conn:
+        source = conn.execute(
+            """
+            SELECT id, vault_id, cluster_id, updated_at
+            FROM sources
+            WHERE id = ? AND deleted_at IS NULL
+            """,
+            (payload.source_id,),
+        ).fetchone()
+        if source is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        target = conn.execute(
+            "SELECT id, name FROM clusters WHERE id = ? AND vault_id = ?",
+            (payload.suggested_cluster_id, source["vault_id"]),
+        ).fetchone()
+        if target is None:
+            raise HTTPException(status_code=404, detail="Suggested cluster not found")
+
+        source_updated_at = source["updated_at"]
+        previous_cluster_id = source["cluster_id"]
+        if payload.action == "accepted":
+            source_updated_at = now
+            conn.execute(
+                "UPDATE sources SET cluster_id = ?, updated_at = ? WHERE id = ?",
+                (payload.suggested_cluster_id, now, payload.source_id),
+            )
+            mark_cluster_needs_update(conn, previous_cluster_id, "Source moved from a suggestion.")
+            mark_cluster_needs_update(conn, payload.suggested_cluster_id, "Source moved from a suggestion.")
+            invalidate_caches_for_source(payload.source_id, conn=conn)
+
+        conn.execute(
+            """
+            INSERT INTO cluster_suggestion_decisions (
+                source_id, vault_id, suggested_cluster_id, action,
+                source_updated_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_id) DO UPDATE SET
+                suggested_cluster_id = excluded.suggested_cluster_id,
+                action = excluded.action,
+                source_updated_at = excluded.source_updated_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                payload.source_id,
+                source["vault_id"],
+                payload.suggested_cluster_id,
+                payload.action,
+                source_updated_at,
+                now,
+                now,
+            ),
+        )
+    return {
+        "source_id": payload.source_id,
+        "cluster_id": payload.suggested_cluster_id if payload.action == "accepted" else previous_cluster_id,
+        "cluster_name": target["name"],
+        "action": payload.action,
+    }
+
+
 @router.get("/{cluster_id}", response_model=ClusterRead)
 def get_cluster(cluster_id: str) -> dict:
     with connect() as conn:
@@ -132,9 +197,11 @@ def update_cluster(cluster_id: str, payload: ClusterUpdate) -> dict:
         return get_cluster(cluster_id)
 
     updates["updated_at"] = utc_now()
+    if "name" in updates:
+        updates["name_origin"] = "user"
     assignments = build_update_assignments(
         updates,
-        {"name", "description", "color", "index_status", "profile_status", "updated_at"},
+        {"name", "name_origin", "description", "color", "index_status", "profile_status", "updated_at"},
     )
     params = {"id": cluster_id, **updates}
     with connect() as conn:
