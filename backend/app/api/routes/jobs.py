@@ -5,6 +5,7 @@ from backend.app.core.background_jobs import (
     enqueue_job,
     job_queue_status,
     pause_job,
+    public_job_record,
     resume_job,
     wake_background_worker,
 )
@@ -65,7 +66,7 @@ def backfill_cluster_profiles(vault_id: str) -> dict:
         vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
         if vault is None:
             raise HTTPException(status_code=404, detail="Vault not found")
-        return enqueue_job(
+        profile_job = enqueue_job(
             conn,
             job_type="cluster_profile_backfill",
             payload={"vault_id": vault_id},
@@ -73,6 +74,16 @@ def backfill_cluster_profiles(vault_id: str) -> dict:
             scope_id=vault_id,
             user_initiated=True,
         )
+        enqueue_job(
+            conn,
+            job_type="source_cluster_reconciliation",
+            payload={"vault_id": vault_id},
+            dedupe_key=f"source-cluster-reconciliation:organization-refresh:{profile_job['id']}",
+            depends_on_job_id=profile_job["id"],
+            scope_id=vault_id,
+            user_initiated=True,
+        )
+        return profile_job
 
 
 @router.get("")
@@ -88,7 +99,7 @@ def list_app_jobs(
         allowed = {
             "queued", "running", "paused", "succeeded", "failed", "cancelled",
             "blocked_by_dependency", "blocked_setup_required", "deferred",
-            "manual_review",
+            "manual_review", "partial_success",
         }
         if not statuses or any(item not in allowed for item in statuses):
             raise HTTPException(status_code=400, detail="Invalid job status")
@@ -107,7 +118,7 @@ def list_app_jobs(
             [*params, safe_limit + 1],
         ).fetchall()
     return cursor_page(
-        [dict(row) for row in rows],
+        [public_job_record(dict(row)) for row in rows],
         requested_limit=safe_limit,
         sort_field="updated_at",
     )
@@ -119,7 +130,7 @@ def get_app_job(job_id: str) -> dict:
         row = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return dict(row)
+    return public_job_record(dict(row))
 
 
 @router.post("/{job_id}/cancel", response_model=AppJobRead)

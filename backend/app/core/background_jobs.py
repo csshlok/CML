@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -30,9 +31,14 @@ from backend.app.core.cluster_lifecycle import (
 )
 from backend.app.core.vector_maintenance import vector_repair_plan
 from backend.app.core.context_memory import rebuild_chat_session_memory, rebuild_source_memory
+from backend.app.core.cluster_membership import (
+    move_source_cluster_membership,
+    repair_cluster_membership_batch,
+)
 from backend.app.core.memory_card import generate_tags
 from backend.app.core.semantic_metadata import (
     SOURCE_METADATA_VERSION,
+    SOURCE_SEMANTIC_METADATA_VERSION,
     SemanticModelUnavailable,
     enrich_source_metadata,
     fallback_source_summary,
@@ -65,12 +71,24 @@ from backend.app.core.temporal_facts import (
 from backend.app.core.analysis_packets import build_analysis_packets
 from backend.app.core.llm_runtime import LLMRuntimeError
 from backend.app.core.unlock_state import should_pause_vault_job
+from backend.app.core.adaptive_scheduler import (
+    job_lane,
+    record_lane_observation,
+    source_import_worker_count,
+)
+from backend.app.core.source_ingestion import (
+    publish_source_ingestion_stage,
+    source_ingestion_identity,
+)
 
+
+logger = logging.getLogger("cml.background_jobs")
+_LAST_WORKER_LOOP_ERROR: tuple[str, float] | None = None
 
 JOB_POLL_SECONDS = 1.0
 JOB_STATUS_RUNNING_LIMIT = 50
 ACTIVE_STATUSES = ("queued", "running", "paused", "blocked_by_dependency", "blocked_setup_required", "deferred")
-TERMINAL_DEPENDENCY_STATUSES = ("failed", "cancelled", "manual_review")
+TERMINAL_DEPENDENCY_STATUSES = ("failed", "partial_success", "cancelled", "manual_review")
 PRIORITY_ORDER = {
     "critical": 0,
     "high": 1,
@@ -82,6 +100,7 @@ _WORKER_STARTED = False
 _WORKER_LOCK = threading.Lock()
 _WORKER_WAKE = threading.Event()
 EMBEDDING_JOB_TYPES = {
+    "project_delta_apply",
     "project_retrieval_stage",
     "reindex_source",
     "chat_transcript_memory",
@@ -94,7 +113,7 @@ LOCAL_MODEL_JOB_TYPES = {
     "atomic_semantic_enrichment",
     "cluster_profile_backfill",
     "refresh_cluster_profile",
-    "source_metadata_enrichment",
+    "source_semantic_enrichment",
 }
 
 
@@ -188,6 +207,40 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         soft_timeout_seconds=None,
         timeout_action="defer",
     ),
+    "project_delta_probe": JobPolicy(
+        priority="low",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="project",
+        concurrency_group="project_probe",
+        resource_cost="light",
+        can_run_during_synthesis=True,
+        user_visible=False,
+        user_initiated=False,
+        cancellable=True,
+        preemptable=True,
+        timeout_seconds=120,
+        soft_timeout_seconds=30,
+        timeout_action="defer",
+    ),
+    "project_delta_apply": JobPolicy(
+        priority="normal",
+        idempotency_class="reconcile_required",
+        restart_policy="reconcile_then_retry",
+        dependency_failure_policy="manual_review",
+        write_scope="project",
+        concurrency_group="project_index",
+        resource_cost="medium",
+        can_run_during_synthesis=False,
+        user_visible=True,
+        user_initiated=False,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=1800,
+        soft_timeout_seconds=300,
+        timeout_action="defer",
+    ),
     "source_import_batch": JobPolicy(
         priority="high",
         idempotency_class="idempotent",
@@ -273,6 +326,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         soft_timeout_seconds=None,
         timeout_action="defer",
     ),
+    "chat_answer_generation": JobPolicy(
+        priority="high",
+        idempotency_class="reconcile_required",
+        restart_policy="reconcile_then_retry",
+        dependency_failure_policy="cancel",
+        write_scope="chat",
+        concurrency_group="chat_generation",
+        resource_cost="heavy",
+        can_run_during_synthesis=True,
+        user_visible=False,
+        user_initiated=True,
+        cancellable=False,
+        preemptable=False,
+        timeout_seconds=3600,
+        soft_timeout_seconds=600,
+        timeout_action="defer",
+    ),
     "cluster_profile_backfill": JobPolicy(
         priority="low",
         idempotency_class="idempotent",
@@ -291,6 +361,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         timeout_action="defer",
     ),
     "source_metadata_enrichment": JobPolicy(
+        priority="normal",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="source",
+        concurrency_group="source_metadata",
+        resource_cost="light",
+        can_run_during_synthesis=True,
+        user_visible=False,
+        user_initiated=False,
+        cancellable=True,
+        preemptable=True,
+        timeout_seconds=300,
+        soft_timeout_seconds=120,
+        timeout_action="defer",
+    ),
+    "source_semantic_enrichment": JobPolicy(
         priority="low",
         idempotency_class="idempotent",
         restart_policy="requeue",
@@ -322,6 +409,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         preemptable=False,
         timeout_seconds=900,
         soft_timeout_seconds=180,
+        timeout_action="defer",
+    ),
+    "cluster_membership_repair": JobPolicy(
+        priority="high",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="vault",
+        concurrency_group="cluster_membership",
+        resource_cost="medium",
+        can_run_during_synthesis=True,
+        user_visible=True,
+        user_initiated=False,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=1800,
+        soft_timeout_seconds=300,
         timeout_action="defer",
     ),
     "ocr_source": JobPolicy(
@@ -441,6 +545,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         preemptable=False,
         timeout_seconds=1800,
         soft_timeout_seconds=120,
+        timeout_action="defer",
+    ),
+    "turbovec_evaluate": JobPolicy(
+        priority="low",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="vector_index",
+        concurrency_group="vector_writer",
+        resource_cost="heavy",
+        can_run_during_synthesis=False,
+        user_visible=True,
+        user_initiated=False,
+        cancellable=True,
+        preemptable=True,
+        timeout_seconds=3600,
+        soft_timeout_seconds=600,
         timeout_action="defer",
     ),
     "model_runtime_recovery": JobPolicy(
@@ -713,6 +834,28 @@ def enqueue_startup_reconciliation_jobs() -> None:
                 scope_id=vault_id,
                 user_initiated=False,
             )
+        membership_vaults = conn.execute(
+            """
+            SELECT DISTINCT sources.vault_id
+            FROM sources
+            JOIN source_chunks chunks
+              ON chunks.source_id = sources.id
+             AND chunks.activation_state = 'active'
+            WHERE sources.deleted_at IS NULL
+              AND sources.activation_state = 'active'
+              AND NOT (chunks.cluster_id IS sources.cluster_id)
+            """
+        ).fetchall()
+        for row in membership_vaults:
+            vault_id = str(row["vault_id"])
+            enqueue_job(
+                conn,
+                job_type="cluster_membership_repair",
+                payload={"vault_id": vault_id, "batch_size": 100},
+                dedupe_key=f"cluster-membership-repair:{vault_id}",
+                scope_id=vault_id,
+                user_initiated=False,
+            )
 
 
 def enqueue_startup_metadata_jobs(*, limit: int = 50) -> None:
@@ -862,6 +1005,8 @@ def run_due_jobs_once(limit: int = 5) -> int:
     _refresh_setup_prerequisites()
     _refresh_blocked_dependencies()
     _enqueue_due_integration_refresh_jobs()
+    _enqueue_due_project_delta_jobs()
+    _enqueue_due_turbovec_evaluations()
     processed = 0
     for _ in range(limit):
         job = _claim_next_job()
@@ -921,12 +1066,23 @@ def job_queue_status() -> dict:
         "deferred": counts.get("deferred", 0),
         "running": counts.get("running", 0),
         "succeeded": counts.get("succeeded", 0),
+        "partial_success": counts.get("partial_success", 0),
         "failed": counts.get("failed", 0),
         "cancelled": counts.get("cancelled", 0),
         "manual_review": counts.get("manual_review", 0),
-        "running_jobs": [_with_runtime_estimate(dict_from_row(row)) for row in running],
-        "latest": [dict_from_row(row) for row in latest],
+        "running_jobs": [_with_runtime_estimate(public_job_record(dict_from_row(row))) for row in running],
+        "latest": [public_job_record(dict_from_row(row)) for row in latest],
     }
+
+
+def public_job_record(job: dict) -> dict:
+    record = dict(job)
+    if record.get("status") in {"failed", "partial_success", "manual_review"} and record.get("last_error"):
+        record["last_error"] = str(
+            record.get("status_detail")
+            or "Vault could not finish this task."
+        )
+    return record
 
 
 def cancel_job(job_id: str) -> dict:
@@ -1098,11 +1254,20 @@ def _acknowledge_job_cancelled(job_id: str) -> None:
 
 
 def _worker_loop() -> None:
+    global _LAST_WORKER_LOOP_ERROR
     while True:
         try:
             run_due_jobs_once(limit=3)
-        except Exception:
-            pass
+        except Exception as exc:
+            signature = f"{type(exc).__name__}:{exc}"
+            now = time.monotonic()
+            last_signature, last_logged_at = _LAST_WORKER_LOOP_ERROR or ("", 0.0)
+            if signature != last_signature or now - last_logged_at >= 60:
+                logger.exception(
+                    "background_worker_loop_failed error_signature=%s",
+                    signature[:300],
+                )
+                _LAST_WORKER_LOOP_ERROR = (signature, now)
         _WORKER_WAKE.wait(timeout=JOB_POLL_SECONDS)
         _WORKER_WAKE.clear()
 
@@ -1158,6 +1323,17 @@ def _claim_next_job() -> dict | None:
                     """,
                     (utc_now(), job["id"]),
                 )
+                if job["job_type"] == "reindex_source":
+                    payload = _decode_payload(job.get("payload") or "{}")
+                    source_id = str(payload.get("source_id") or "")
+                    if source_id:
+                        publish_source_ingestion_stage(
+                            conn,
+                            source_id=source_id,
+                            stage="paused",
+                            generation=int(payload.get("ingestion_generation") or 0) or None,
+                            detail="Set up memory search to publish this source.",
+                        )
                 continue
             dependency_ready = _resolve_dependency(conn, job)
             if not dependency_ready:
@@ -1222,6 +1398,7 @@ def _run_claimed_job(job: dict) -> None:
     if job["job_type"] not in JOB_REGISTRY:
         _mark_job_manual_review(job, f"Unsupported job type: {job['job_type']}")
         return
+    observation_started = time.perf_counter()
     try:
         _raise_if_job_cancelled(job["id"])
         payload = _decode_payload(job["payload"])
@@ -1230,12 +1407,18 @@ def _run_claimed_job(job: dict) -> None:
             "project_snapshot_activate", "project_candidate_cleanup",
         }:
             _run_project_phase(job["job_type"], payload, job["id"])
+        elif job["job_type"] == "project_delta_probe":
+            _run_project_delta_probe(payload, job["id"])
+        elif job["job_type"] == "project_delta_apply":
+            _run_project_delta_apply(payload, job["id"])
         elif job["job_type"] == "reindex_source":
             _run_reindex_source(payload, job["id"])
         elif job["job_type"] == "source_import_batch":
             _run_source_import_batch(payload, job["id"])
         elif job["job_type"] == "chat_transcript_memory":
             _run_chat_transcript_memory(payload, job["id"])
+        elif job["job_type"] == "chat_answer_generation":
+            _run_chat_answer_generation(payload, job["id"])
         elif job["job_type"] == "temporal_fact_backfill":
             _run_temporal_fact_backfill(payload, job["id"])
         elif job["job_type"] == "atomic_semantic_enrichment":
@@ -1246,8 +1429,12 @@ def _run_claimed_job(job: dict) -> None:
             _run_cluster_profile_backfill(payload, job["id"])
         elif job["job_type"] == "source_metadata_enrichment":
             _run_source_metadata_enrichment(payload, job["id"])
+        elif job["job_type"] == "source_semantic_enrichment":
+            _run_source_semantic_enrichment(payload, job["id"])
         elif job["job_type"] == "source_cluster_reconciliation":
             _run_source_cluster_reconciliation(payload, job["id"])
+        elif job["job_type"] == "cluster_membership_repair":
+            _run_cluster_membership_repair(payload, job["id"])
         elif job["job_type"] == "ocr_source":
             _run_ocr_source(payload, job["id"])
         elif job["job_type"] == "expanded_analysis":
@@ -1258,6 +1445,8 @@ def _run_claimed_job(job: dict) -> None:
             _run_delete_source_cleanup(payload, job["id"])
         elif job["job_type"] == "vector_reconcile_incremental":
             _run_vector_reconcile_incremental(payload, job["id"])
+        elif job["job_type"] == "turbovec_evaluate":
+            _run_turbovec_evaluate(payload, job["id"])
         elif job["job_type"] == "model_import":
             _run_model_import(payload, job["id"])
         elif job["job_type"] == "model_discovery":
@@ -1273,6 +1462,8 @@ def _run_claimed_job(job: dict) -> None:
         _raise_if_job_cancelled(job["id"])
     except JobCancelled:
         _acknowledge_job_cancelled(job["id"])
+        if job["job_type"] == "source_semantic_enrichment":
+            _finalize_source_semantic_wave(_decode_payload(job["payload"]))
         return
     except JobPaused:
         return
@@ -1283,7 +1474,15 @@ def _run_claimed_job(job: dict) -> None:
         if job["job_type"] in LOCAL_MODEL_JOB_TYPES and _is_local_model_setup_error(exc):
             _mark_job_blocked_local_model(job, str(exc))
             return
-        _mark_job_failed_or_retry(job, str(exc))
+        record_lane_observation(
+            job_lane(job["job_type"]),
+            success=False,
+            latency_ms=(time.perf_counter() - observation_started) * 1000,
+            pressure_event=_scheduler_pressure_event(exc),
+        )
+        _mark_job_failed_or_retry(job, exc)
+        if job["job_type"] == "source_semantic_enrichment":
+            _finalize_source_semantic_wave(_decode_payload(job["payload"]))
         return
 
     with connect() as conn:
@@ -1295,27 +1494,77 @@ def _run_claimed_job(job: dict) -> None:
             """,
             (utc_now(), utc_now(), job["id"]),
         )
+    if job["job_type"] == "source_semantic_enrichment":
+        _finalize_source_semantic_wave(_decode_payload(job["payload"]))
+    record_lane_observation(
+        job_lane(job["job_type"]),
+        success=True,
+        latency_ms=(time.perf_counter() - observation_started) * 1000,
+    )
 
 
 def _run_reindex_source(payload: dict, job_id: str | None = None) -> None:
     _raise_if_job_cancelled(job_id)
-    require_embeddings_available("Source reindexing")
     source_id = str(payload["source_id"])
+    expected_generation = int(payload.get("ingestion_generation") or 0)
+    expected_checksum = str(payload.get("source_checksum") or "")
     with connect() as conn:
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
         if row is None:
             return
         source = dict_from_row(row)
+        identity = source_ingestion_identity(conn, source_id)
+        if identity is None:
+            return
+        if expected_generation and identity.generation != expected_generation:
+            return
+        if expected_checksum and identity.checksum != expected_checksum:
+            return
         if source.get("deleted_at") or source["state"] != "indexed":
             conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
             return
+        publish_source_ingestion_stage(
+            conn,
+            source_id=source_id,
+            stage="extracting",
+            generation=identity.generation,
+            detail="Publishing searchable source content.",
+        )
+    require_embeddings_available("Source reindexing")
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+        if row is None:
+            return
+        source = dict_from_row(row)
+        identity = source_ingestion_identity(conn, source_id)
+        if identity is None:
+            return
+        if expected_generation and identity.generation != expected_generation:
+            return
+        if expected_checksum and identity.checksum != expected_checksum:
+            return
         reindex_source_chunks(conn, source)
         _raise_if_job_cancelled(job_id)
+        publish_source_ingestion_stage(
+            conn,
+            source_id=source_id,
+            stage="searchable",
+            generation=identity.generation,
+            detail="Source is searchable. Organization is continuing.",
+        )
         enqueue_job(
             conn,
             job_type="source_metadata_enrichment",
-            payload={"source_id": source_id, "source_updated_at": source["updated_at"]},
-            dedupe_key=f"source-metadata:{source_id}:{source['updated_at']}",
+            payload={
+                "source_id": source_id,
+                "source_updated_at": source["updated_at"],
+                "ingestion_generation": identity.generation,
+                "source_checksum": identity.checksum,
+            },
+            dedupe_key=(
+                f"source-metadata:{source_id}:{source['updated_at']}:"
+                f"{identity.job_suffix}"
+            ),
             scope_id=source_id,
         )
         if int(source.get("metadata_version") or 1) < 2:
@@ -1344,7 +1593,7 @@ def _run_source_import_batch(payload: dict, job_id: str) -> None:
         if isinstance(index, int) and 0 <= index < len(paths)
     }
     remaining = (index for index in range(len(paths)) if index not in completed_indices)
-    max_workers = min(4, len(paths))
+    max_workers = source_import_worker_count(len(paths))
     in_flight: dict[object, tuple[int, str]] = {}
     pause_requested = False
     cancellation_requested = False
@@ -1399,6 +1648,13 @@ def _run_source_import_batch(payload: dict, job_id: str) -> None:
                         progress["imported_files"] = int(progress.get("imported_files") or 0) + 1
                 except Exception as exc:
                     progress["failed_files"] = int(progress.get("failed_files") or 0) + 1
+                    failed_indices = {
+                        int(item)
+                        for item in progress.get("failed_indices") or []
+                        if isinstance(item, int)
+                    }
+                    failed_indices.add(index)
+                    progress["failed_indices"] = sorted(failed_indices)
                     failures = list(progress.get("failures") or [])
                     if len(failures) < 100:
                         detail = getattr(exc, "detail", None)
@@ -1406,6 +1662,7 @@ def _run_source_import_batch(payload: dict, job_id: str) -> None:
                             {
                                 "file_name": Path(path).name or "File",
                                 "reason": str(detail or exc or "Import failed")[:500],
+                                "path_index": index,
                             }
                         )
                     progress["failures"] = failures
@@ -1435,6 +1692,29 @@ def _run_source_import_batch(payload: dict, job_id: str) -> None:
         pause_requested = False
     if pause_requested:
         raise JobPaused(job_id)
+    if int(progress.get("failed_files") or 0) > 0:
+        now = utc_now()
+        failed_count = int(progress["failed_files"])
+        with connect() as conn:
+            conn.execute(
+                """
+                UPDATE app_jobs
+                SET status = 'partial_success',
+                    status_detail = ?,
+                    completed_at = ?,
+                    updated_at = ?,
+                    error_code = 'source_import_partial',
+                    diagnostic_id = ''
+                WHERE id = ? AND status = 'running'
+                """,
+                (
+                    f"Imported {len(paths) - failed_count} of {len(paths)} files. "
+                    f"{failed_count} can be retried.",
+                    now,
+                    now,
+                    job_id,
+                ),
+            )
 
 
 def _source_import_progress(job_id: str, payload: dict, total_files: int) -> dict:
@@ -1456,6 +1736,7 @@ def _source_import_progress(job_id: str, payload: dict, total_files: int) -> dic
     progress.setdefault("imported_files", 0)
     progress.setdefault("updated_files", 0)
     progress.setdefault("failed_files", 0)
+    progress.setdefault("failed_indices", [])
     progress.setdefault("failures", [])
     progress.setdefault("completed_indices", [])
     progress.setdefault("current_file", "")
@@ -1545,6 +1826,25 @@ def _refresh_project_retrieval_status(conn, source_id: str) -> None:
                 """,
                 (project_id,),
             )
+
+
+def _run_chat_answer_generation(payload: dict, job_id: str | None = None) -> None:
+    from backend.app.api.routes.chat import run_durable_chat_generation
+
+    _raise_if_job_cancelled(job_id)
+    generation_id = str(payload.get("generation_id") or "")
+    if not generation_id:
+        raise ValueError("Chat answer task is missing its answer ID.")
+    run_durable_chat_generation(
+        generation_id,
+        expanded_analysis=bool(payload.get("expanded_analysis")),
+        complete_analysis=bool(payload.get("complete_analysis")),
+    )
+    _set_job_result(
+        job_id,
+        {"generation_id": generation_id},
+        detail="Answer saved.",
+    )
 
 
 def _run_chat_transcript_memory(payload: dict, job_id: str | None = None) -> None:
@@ -1836,7 +2136,8 @@ def _run_cluster_profile_backfill(payload: dict, job_id: str) -> None:
     vault_id = str(payload.get("vault_id") or "")
     if not vault_id:
         raise ValueError("cluster_profile_backfill_requires_vault")
-    processed = 0
+    attempted_ids: set[str] = set()
+    processed_ids: set[str] = set()
     failures: list[dict[str, str]] = []
     while True:
         _raise_if_job_cancelled(job_id)
@@ -1859,6 +2160,25 @@ def _run_cluster_profile_backfill(payload: dict, job_id: str) -> None:
                       WHERE links.cluster_id = clusters.id
                   )
                   AND (
+                      (
+                          clusters.name_origin = 'auto'
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM sources any_source
+                              WHERE any_source.cluster_id = clusters.id
+                                AND any_source.deleted_at IS NULL
+                          )
+                      )
+                      OR EXISTS (
+                          SELECT 1
+                          FROM sources profile_source
+                          WHERE profile_source.cluster_id = clusters.id
+                            AND profile_source.deleted_at IS NULL
+                            AND profile_source.state = 'indexed'
+                            AND profile_source.source_type <> 'chat_transcript'
+                      )
+                  )
+                  AND (
                       profiles.cluster_id IS NULL
                       OR profiles.source_hash <> clusters.profile_source_hash
                       OR profiles.profile_version <> 1
@@ -1876,8 +2196,25 @@ def _run_cluster_profile_backfill(payload: dict, job_id: str) -> None:
             ).fetchall()
         if not rows:
             break
-        for row in rows:
+        fresh_rows = [
+            row for row in rows if str(row["id"]) not in attempted_ids
+        ]
+        if not fresh_rows:
+            for row in rows:
+                cluster_id = str(row["id"])
+                if not any(item["cluster_id"] == cluster_id for item in failures):
+                    failures.append(
+                        {
+                            "cluster_id": cluster_id,
+                            "cluster_name": str(row["name"]),
+                            "reason": "profile_remained_eligible",
+                        }
+                    )
+            break
+        for row in fresh_rows:
             _raise_if_job_cancelled(job_id)
+            cluster_id = str(row["id"])
+            attempted_ids.add(cluster_id)
             with connect() as conn:
                 state = conn.execute(
                     "SELECT status FROM app_jobs WHERE id = ?",
@@ -1886,18 +2223,22 @@ def _run_cluster_profile_backfill(payload: dict, job_id: str) -> None:
                 if state is not None and state["status"] == "paused":
                     raise JobPaused(job_id)
                 try:
-                    if not prune_empty_auto_cluster(conn, str(row["id"])):
+                    if not prune_empty_auto_cluster(conn, cluster_id):
                         refresh_cluster_profile(
                             conn,
-                            str(row["id"]),
+                            cluster_id,
                             require_model=True,
                         )
-                    processed += 1
+                    processed_ids.add(cluster_id)
                 except (SemanticModelUnavailable, LLMRuntimeError):
                     raise
                 except Exception as exc:
                     failures.append(
-                        {"cluster_id": str(row["id"]), "cluster_name": str(row["name"])}
+                        {
+                            "cluster_id": cluster_id,
+                            "cluster_name": str(row["name"]),
+                            "reason": type(exc).__name__,
+                        }
                     )
                     conn.execute(
                         """
@@ -1911,16 +2252,22 @@ def _run_cluster_profile_backfill(payload: dict, job_id: str) -> None:
                         raise RuntimeError("cluster_profile_backfill_failure_limit") from exc
             _set_job_result(
                 job_id,
-                {"processed": processed, "failures": failures},
-                detail=f"Refreshed {processed} clusters. {len(failures)} failed.",
+                {"processed": len(processed_ids), "failures": failures},
+                detail=(
+                    f"Refreshed {len(processed_ids)} unique clusters. "
+                    f"{len(failures)} failed."
+                ),
             )
     _set_job_result(
         job_id,
-        {"processed": processed, "failures": failures},
+        {"processed": len(processed_ids), "failures": failures},
         detail=(
-            f"Refreshed {processed} clusters."
+            f"Refreshed {len(processed_ids)} unique clusters."
             if not failures
-            else f"Refreshed {processed} clusters. {len(failures)} need attention."
+            else (
+                f"Refreshed {len(processed_ids)} unique clusters. "
+                f"{len(failures)} need attention."
+            )
         ),
     )
 
@@ -1996,41 +2343,115 @@ def _enqueue_source_metadata_backlog(
                 scope_id=str(source["id"]),
             )
             enqueued += 1
-        stale = conn.execute(
+        ready_unclustered = conn.execute(
             """
-            SELECT 1 FROM sources
+            SELECT id, updated_at
+            FROM sources
             WHERE vault_id = ? AND deleted_at IS NULL AND state = 'indexed'
-              AND metadata_version < ?
-            LIMIT 1
+              AND cluster_id IS NULL AND metadata_version >= ?
+            ORDER BY updated_at ASC, id ASC
+            LIMIT ?
             """,
-            (current_vault_id, SOURCE_METADATA_VERSION),
-        ).fetchone()
-        if stale is None:
-            unclustered = conn.execute(
-                """
-                SELECT 1 FROM sources
-                WHERE vault_id = ? AND deleted_at IS NULL AND state = 'indexed'
-                  AND cluster_id IS NULL AND metadata_version >= ?
-                LIMIT 1
-                """,
-                (current_vault_id, SOURCE_METADATA_VERSION),
-            ).fetchone()
-            if unclustered is not None:
-                enqueue_job(
-                    conn,
-                    job_type="source_cluster_reconciliation",
-                    payload={"vault_id": current_vault_id, "metadata_version": SOURCE_METADATA_VERSION},
-                    dedupe_key=f"source-cluster-reconciliation:{current_vault_id}:v{SOURCE_METADATA_VERSION}",
-                    scope_id=current_vault_id,
-                    user_initiated=False,
-                )
+            (current_vault_id, SOURCE_METADATA_VERSION, max(1, available_slots or 16)),
+        ).fetchall()
+        for source in ready_unclustered:
+            enqueue_job(
+                conn,
+                job_type="source_cluster_reconciliation",
+                payload={
+                    "vault_id": current_vault_id,
+                    "source_id": str(source["id"]),
+                    "metadata_version": SOURCE_METADATA_VERSION,
+                },
+                dedupe_key=(
+                    f"source-cluster-reconciliation:{source['id']}:"
+                    f"{source['updated_at']}:v{SOURCE_METADATA_VERSION}"
+                ),
+                scope_id=current_vault_id,
+                user_initiated=False,
+            )
+        enqueued += _enqueue_source_semantic_backlog(
+            conn,
+            vault_id=current_vault_id,
+            limit_per_vault=max(4, min(queue_limit // 2, 16)),
+        )
     return enqueued
+
+
+def _enqueue_source_semantic_backlog(
+    conn,
+    *,
+    vault_id: str,
+    limit_per_vault: int = 16,
+) -> int:
+    active_statuses = (
+        "queued", "running", "paused", "blocked_by_dependency",
+        "blocked_setup_required", "deferred",
+    )
+    placeholders = ",".join("?" for _ in active_statuses)
+    active = conn.execute(
+        f"""
+        SELECT COUNT(*) AS count
+        FROM app_jobs jobs
+        JOIN sources ON sources.id = jobs.scope_id
+        WHERE jobs.job_type = 'source_semantic_enrichment'
+          AND jobs.status IN ({placeholders})
+          AND sources.vault_id = ?
+          AND sources.deleted_at IS NULL
+        """,
+        [*active_statuses, vault_id],
+    ).fetchone()
+    queue_limit = max(1, min(int(limit_per_vault), 32))
+    available = max(0, queue_limit - int(active["count"] or 0))
+    if available == 0:
+        return 0
+    rows = conn.execute(
+        f"""
+        SELECT sources.id, sources.updated_at
+        FROM sources
+        WHERE sources.vault_id = ?
+          AND sources.deleted_at IS NULL
+          AND sources.state = 'indexed'
+          AND sources.metadata_version >= ?
+          AND sources.semantic_metadata_version < ?
+          AND NOT EXISTS (
+              SELECT 1 FROM app_jobs jobs
+              WHERE jobs.job_type = 'source_semantic_enrichment'
+                AND jobs.scope_id = sources.id
+                AND jobs.status IN ({placeholders})
+          )
+        ORDER BY sources.updated_at ASC, sources.id ASC
+        LIMIT ?
+        """,
+        [
+            vault_id,
+            SOURCE_METADATA_VERSION,
+            SOURCE_SEMANTIC_METADATA_VERSION,
+            *active_statuses,
+            available,
+        ],
+    ).fetchall()
+    for source in rows:
+        enqueue_job(
+            conn,
+            job_type="source_semantic_enrichment",
+            payload={"source_id": source["id"]},
+            dedupe_key=(
+                f"source-semantic:{source['id']}:{source['updated_at']}:"
+                f"v{SOURCE_SEMANTIC_METADATA_VERSION}"
+            ),
+            scope_id=str(source["id"]),
+            user_initiated=False,
+        )
+    return len(rows)
 
 
 def _run_source_metadata_enrichment(payload: dict, job_id: str | None = None) -> None:
     _raise_if_job_cancelled(job_id)
     source_id = str(payload.get("source_id") or "")
     expected_updated_at = str(payload.get("source_updated_at") or "")
+    expected_generation = int(payload.get("ingestion_generation") or 0)
+    expected_checksum = str(payload.get("source_checksum") or "")
     if not source_id:
         return
     with connect() as conn:
@@ -2052,6 +2473,13 @@ def _run_source_metadata_enrichment(payload: dict, job_id: str | None = None) ->
                 scope_id=source_id,
             )
             return
+        identity = source_ingestion_identity(conn, source_id)
+        if identity is None:
+            return
+        if expected_generation and identity.generation != expected_generation:
+            return
+        if expected_checksum and identity.checksum != expected_checksum:
+            return
         source = dict_from_row(row)
         encrypted = load_source_content_fields(
             conn,
@@ -2065,7 +2493,8 @@ def _run_source_metadata_enrichment(payload: dict, job_id: str | None = None) ->
         title=str(source.get("title") or "Document"),
         source_type=str(source.get("source_type") or "file"),
         text=text,
-        require_model=True,
+        require_model=False,
+        allow_model=False,
     )
     _raise_if_job_cancelled(job_id)
     existing_tags = _json_string_list(source.get("tags"))
@@ -2078,10 +2507,18 @@ def _run_source_metadata_enrichment(payload: dict, job_id: str | None = None) ->
     now = utc_now()
     with connect() as conn:
         current = conn.execute(
-            "SELECT updated_at, vault_id, cluster_id FROM sources WHERE id = ? AND deleted_at IS NULL",
+            """
+            SELECT updated_at, vault_id, cluster_id, ingestion_generation, checksum
+            FROM sources WHERE id = ? AND deleted_at IS NULL
+            """,
             (source_id,),
         ).fetchone()
         if current is None or current["updated_at"] != source["updated_at"]:
+            return
+        current_generation = max(1, int(current["ingestion_generation"] or 1))
+        if expected_generation and current_generation != expected_generation:
+            return
+        if expected_checksum and str(current["checksum"] or "") != expected_checksum:
             return
         stored = update_source_content_fields(
             conn,
@@ -2096,16 +2533,38 @@ def _run_source_metadata_enrichment(payload: dict, job_id: str | None = None) ->
         conn.execute(
             """
             UPDATE sources
-            SET summary = ?, tags = ?, metadata_version = ?, updated_at = ?
+            SET summary = ?, tags = ?, metadata_version = ?,
+                metadata_quality = CASE
+                    WHEN semantic_metadata_version >= ? THEN metadata_quality
+                    ELSE 'fallback'
+                END,
+                updated_at = ?
             WHERE id = ?
             """,
             (
                 stored["summary"],
                 stored["tags"],
                 SOURCE_METADATA_VERSION,
+                SOURCE_SEMANTIC_METADATA_VERSION,
                 now,
                 source_id,
             ),
+        )
+        enqueue_job(
+            conn,
+            job_type="source_semantic_enrichment",
+            payload={
+                "source_id": source_id,
+                "source_content_hash": content_hash(text),
+                "ingestion_generation": current_generation,
+                "source_checksum": str(current["checksum"] or ""),
+            },
+            dedupe_key=(
+                f"source-semantic:{source_id}:{content_hash(text)}:"
+                f"v{SOURCE_SEMANTIC_METADATA_VERSION}:g{current_generation}"
+            ),
+            scope_id=source_id,
+            user_initiated=False,
         )
         remaining = conn.execute(
             """
@@ -2122,10 +2581,287 @@ def _run_source_metadata_enrichment(payload: dict, job_id: str | None = None) ->
             mark_cluster_needs_update(conn, current["cluster_id"], "Source description was refreshed.")
         else:
             mark_cluster_metadata_pending(conn, current["cluster_id"])
+        if current["cluster_id"] is None:
+            publish_source_ingestion_stage(
+                conn,
+                source_id=source_id,
+                stage="organizing",
+                generation=current_generation,
+                detail="Source is searchable and is being organized.",
+            )
+            enqueue_job(
+                conn,
+                job_type="source_cluster_reconciliation",
+                payload={
+                    "vault_id": str(current["vault_id"]),
+                    "source_id": source_id,
+                    "metadata_version": SOURCE_METADATA_VERSION,
+                    "ingestion_generation": current_generation,
+                    "source_checksum": str(current["checksum"] or ""),
+                },
+                dedupe_key=f"source-cluster-reconciliation:{source_id}:{now}:v{SOURCE_METADATA_VERSION}",
+                scope_id=str(current["vault_id"]),
+                user_initiated=False,
+            )
+        else:
+            publish_source_ingestion_stage(
+                conn,
+                source_id=source_id,
+                stage="ready",
+                generation=current_generation,
+                detail="Source is searchable and organized.",
+            )
         _enqueue_source_metadata_backlog(
             conn,
             vault_id=str(current["vault_id"]),
         )
+
+
+def _run_source_semantic_enrichment(payload: dict, job_id: str | None = None) -> None:
+    _raise_if_job_cancelled(job_id)
+    source_id = str(payload.get("source_id") or "")
+    expected_hash = str(payload.get("source_content_hash") or "")
+    expected_generation = int(payload.get("ingestion_generation") or 0)
+    expected_checksum = str(payload.get("source_checksum") or "")
+    if not source_id:
+        return
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM sources WHERE id = ? AND deleted_at IS NULL",
+            (source_id,),
+        ).fetchone()
+        if row is None:
+            return
+        identity = source_ingestion_identity(conn, source_id)
+        if identity is None:
+            return
+        if expected_generation and identity.generation != expected_generation:
+            return
+        if expected_checksum and identity.checksum != expected_checksum:
+            return
+        publish_source_ingestion_stage(
+            conn,
+            source_id=source_id,
+            stage="describing",
+            generation=identity.generation,
+            detail="Improving the source description.",
+        )
+        source = dict_from_row(row)
+        encrypted = load_source_content_fields(
+            conn,
+            vault_id=str(source["vault_id"]),
+            source_id=source_id,
+            fields=("raw_text", "extracted_text", "summary", "tags"),
+        )
+        source.update({key: value for key, value in encrypted.items() if value})
+    text = str(source.get("extracted_text") or source.get("raw_text") or "")
+    current_hash = content_hash(text)
+    if expected_hash and expected_hash != current_hash:
+        with connect() as conn:
+            enqueue_job(
+                conn,
+                job_type="source_semantic_enrichment",
+                payload={"source_id": source_id, "source_content_hash": current_hash},
+                dedupe_key=(
+                    f"source-semantic:{source_id}:{current_hash}:"
+                    f"v{SOURCE_SEMANTIC_METADATA_VERSION}"
+                ),
+                scope_id=source_id,
+            )
+        return
+    if not text.strip():
+        return
+    metadata = enrich_source_metadata(
+        title=str(source.get("title") or "Document"),
+        source_type=str(source.get("source_type") or "file"),
+        text=text,
+        require_model=True,
+        allow_model=True,
+    )
+    _raise_if_job_cancelled(job_id)
+    generated_tags = [
+        str(item).strip()
+        for item in metadata.get("keywords", [])
+        if str(item).strip()
+    ]
+    existing_tags = _json_string_list(source.get("tags"))
+    tags = list(dict.fromkeys([*generated_tags, *existing_tags]))[:12]
+    now = utc_now()
+    with connect() as conn:
+        current = conn.execute(
+            """
+            SELECT vault_id, cluster_id, raw_text, extracted_text
+            FROM sources WHERE id = ? AND deleted_at IS NULL
+            """,
+            (source_id,),
+        ).fetchone()
+        if current is None:
+            return
+        latest_content = load_source_content_fields(
+            conn,
+            vault_id=str(current["vault_id"]),
+            source_id=source_id,
+            fields=("raw_text", "extracted_text"),
+        )
+        latest_text = str(
+            latest_content.get("extracted_text")
+            or latest_content.get("raw_text")
+            or current["extracted_text"]
+            or current["raw_text"]
+            or ""
+        )
+        if content_hash(latest_text) != current_hash:
+            enqueue_job(
+                conn,
+                job_type="source_semantic_enrichment",
+                payload={
+                    "source_id": source_id,
+                    "source_content_hash": content_hash(latest_text),
+                },
+                dedupe_key=(
+                    f"source-semantic:{source_id}:{content_hash(latest_text)}:"
+                    f"v{SOURCE_SEMANTIC_METADATA_VERSION}"
+                ),
+                scope_id=source_id,
+            )
+            return
+        current_identity = source_ingestion_identity(conn, source_id)
+        if current_identity is None:
+            return
+        if expected_generation and current_identity.generation != expected_generation:
+            return
+        if expected_checksum and current_identity.checksum != expected_checksum:
+            return
+        stored = update_source_content_fields(
+            conn,
+            vault_id=str(current["vault_id"]),
+            source_id=source_id,
+            updates={
+                "summary": str(metadata.get("summary") or source.get("summary") or ""),
+                "tags": json.dumps(tags, ensure_ascii=False),
+            },
+            now=now,
+        )
+        conn.execute(
+            """
+            UPDATE sources
+            SET summary = ?, tags = ?, metadata_quality = 'semantic',
+                semantic_metadata_version = ?, semantic_metadata_updated_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                stored["summary"],
+                stored["tags"],
+                SOURCE_SEMANTIC_METADATA_VERSION,
+                now,
+                now,
+                source_id,
+            ),
+        )
+        cluster_id = str(current["cluster_id"] or "")
+        if cluster_id:
+            # A large import may have hundreds of source-description jobs sharing
+            # one local model with cluster-profile generation. Rebuilding the
+            # same profile after every source both duplicates work and starves
+            # the remaining descriptions. Keep the cluster visibly stale and
+            # publish one profile refresh after the enrichment wave drains.
+            mark_cluster_metadata_pending(conn, cluster_id)
+        else:
+            enqueue_job(
+                conn,
+                job_type="source_cluster_reconciliation",
+                payload={
+                    "vault_id": str(current["vault_id"]),
+                    "source_id": source_id,
+                    "metadata_version": SOURCE_METADATA_VERSION,
+                },
+                dedupe_key=(
+                    f"source-cluster-reconciliation:{source_id}:{now}:"
+                    f"semantic-v{SOURCE_SEMANTIC_METADATA_VERSION}"
+                ),
+                scope_id=str(current["vault_id"]),
+            )
+        publish_source_ingestion_stage(
+            conn,
+            source_id=source_id,
+            stage="ready",
+            generation=current_identity.generation,
+            detail="Source is searchable, organized, and described.",
+        )
+        _enqueue_source_semantic_backlog(
+            conn,
+            vault_id=str(current["vault_id"]),
+        )
+
+
+def _finalize_source_semantic_wave(payload: dict) -> bool:
+    source_id = str(payload.get("source_id") or "")
+    if not source_id:
+        return False
+    with connect() as conn:
+        source = conn.execute(
+            """
+            SELECT sources.cluster_id, clusters.vault_id, clusters.profile_status
+            FROM sources
+            LEFT JOIN clusters ON clusters.id = sources.cluster_id
+            WHERE sources.id = ? AND sources.deleted_at IS NULL
+            """,
+            (source_id,),
+        ).fetchone()
+        if (
+            source is None
+            or not source["cluster_id"]
+            or str(source["profile_status"] or "") != "stale"
+        ):
+            return False
+        return _enqueue_cluster_profile_after_semantic_wave(
+            conn,
+            cluster_id=str(source["cluster_id"]),
+            vault_id=str(source["vault_id"]),
+        )
+
+
+def _enqueue_cluster_profile_after_semantic_wave(
+    conn,
+    *,
+    cluster_id: str,
+    vault_id: str,
+) -> bool:
+    """Coalesce per-source invalidations into one cluster-profile refresh."""
+    active_statuses = (
+        "queued",
+        "running",
+        "paused",
+        "blocked_by_dependency",
+        "blocked_setup_required",
+        "deferred",
+    )
+    placeholders = ",".join("?" for _ in active_statuses)
+    params: list[object] = [*active_statuses, cluster_id]
+    remaining = conn.execute(
+        f"""
+        SELECT 1
+        FROM app_jobs jobs
+        JOIN sources ON sources.id = jobs.scope_id
+        WHERE jobs.job_type = 'source_semantic_enrichment'
+          AND jobs.status IN ({placeholders})
+          AND sources.cluster_id = ?
+          AND sources.deleted_at IS NULL
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    if remaining is not None:
+        return False
+    enqueue_job(
+        conn,
+        job_type="refresh_cluster_profile",
+        payload={"cluster_id": cluster_id, "vault_id": vault_id},
+        dedupe_key=f"refresh-cluster-profile:{cluster_id}",
+        scope_id=cluster_id,
+    )
+    return True
 
 
 def _run_source_cluster_reconciliation(payload: dict, job_id: str | None = None) -> None:
@@ -2138,24 +2874,39 @@ def _run_source_cluster_reconciliation(payload: dict, job_id: str | None = None)
 
     _raise_if_job_cancelled(job_id)
     vault_id = str(payload.get("vault_id") or "")
+    source_id = str(payload.get("source_id") or "")
+    expected_generation = int(payload.get("ingestion_generation") or 0)
+    expected_checksum = str(payload.get("source_checksum") or "")
     if not vault_id:
         raise ValueError("source_cluster_reconciliation_requires_vault")
     batch_size = max(2, min(int(payload.get("batch_size") or 1000), 1000))
     with connect() as conn:
+        source_clause = "AND id = ?" if source_id else ""
+        params: list[object] = [vault_id, SOURCE_METADATA_VERSION]
+        if source_id:
+            params.append(source_id)
+        params.append(batch_size)
         rows = conn.execute(
-            """
+            f"""
             SELECT *
             FROM sources
             WHERE vault_id = ? AND deleted_at IS NULL AND state = 'indexed'
               AND cluster_id IS NULL AND metadata_version >= ?
+              {source_clause}
             ORDER BY updated_at ASC, id ASC
             LIMIT ?
             """,
-            (vault_id, SOURCE_METADATA_VERSION, batch_size),
+            params,
         ).fetchall()
         sources: list[dict] = []
         for row in rows:
             source = dict_from_row(row)
+            if source_id:
+                current_generation = max(1, int(source.get("ingestion_generation") or 1))
+                if expected_generation and current_generation != expected_generation:
+                    continue
+                if expected_checksum and str(source.get("checksum") or "") != expected_checksum:
+                    continue
             encrypted = load_source_content_fields(
                 conn,
                 vault_id=vault_id,
@@ -2202,17 +2953,17 @@ def _run_source_cluster_reconciliation(payload: dict, job_id: str | None = None)
             assigned.setdefault(cluster_id, []).extend(source_ids)
             grouped_ids.update(source_ids)
 
-        now = utc_now()
         for cluster_id, source_ids in assigned.items():
             for source_id in dict.fromkeys(source_ids):
-                conn.execute(
-                    """
-                    UPDATE sources SET cluster_id = ?, updated_at = ?
-                    WHERE id = ? AND vault_id = ? AND cluster_id IS NULL
-                    """,
-                    (cluster_id, now, source_id, vault_id),
+                move_source_cluster_membership(
+                    conn,
+                    source_id=source_id,
+                    target_cluster_id=cluster_id,
+                    reason="Newly analyzed source was organized.",
+                    actor="automatic_cluster_reconciliation",
+                    expected_vault_id=vault_id,
+                    only_if_unclustered=True,
                 )
-                rebuild_source_memory(conn, source_id=source_id)
             mark_cluster_needs_update(
                 conn,
                 cluster_id,
@@ -2232,12 +2983,91 @@ def _run_source_cluster_reconciliation(payload: dict, job_id: str | None = None)
                 }
             ),
         }
+        for source in sources:
+            publish_source_ingestion_stage(
+                conn,
+                source_id=str(source["id"]),
+                stage="ready",
+                generation=max(1, int(source.get("ingestion_generation") or 1)),
+                detail=(
+                    "Source is searchable and organized."
+                    if str(source["id"]) in {
+                        item
+                        for source_ids in assigned.values()
+                        for item in source_ids
+                    }
+                    else "Source is searchable. No confident cluster match was found."
+                ),
+            )
     _set_job_result(
         job_id,
         result,
         detail=(
             f"Organized {result['sources_clustered']} of {result['sources_checked']} analyzed sources. "
             f"{result['sources_left_unclustered']} still need a clearer match."
+        ),
+    )
+
+
+def _run_cluster_membership_repair(payload: dict, job_id: str | None = None) -> None:
+    vault_id = str(payload.get("vault_id") or "")
+    if not vault_id:
+        raise ValueError("cluster_membership_repair_requires_vault")
+    batch_size = max(1, min(int(payload.get("batch_size") or 100), 500))
+    cursor = str(payload.get("after_source_id") or "") or None
+    totals = {
+        "sources_checked": int(payload.get("sources_checked") or 0),
+        "sources_mismatched": int(payload.get("sources_mismatched") or 0),
+        "chunks_mismatched": int(payload.get("chunks_mismatched") or 0),
+        "sources_repaired": int(payload.get("sources_repaired") or 0),
+        "chunks_repaired": int(payload.get("chunks_repaired") or 0),
+    }
+    while True:
+        _raise_if_job_cancelled(job_id)
+        with connect() as conn:
+            batch = repair_cluster_membership_batch(
+                conn,
+                vault_id=vault_id,
+                after_source_id=cursor,
+                limit=batch_size,
+                dry_run=False,
+                actor="startup_membership_repair" if not payload.get("user_initiated") else "user_membership_repair",
+            )
+            for key in totals:
+                totals[key] += int(batch.get(key) or 0)
+            cursor = batch.get("next_cursor")
+            checkpoint_payload = {
+                "vault_id": vault_id,
+                "batch_size": batch_size,
+                "after_source_id": cursor,
+                **totals,
+            }
+            if job_id:
+                conn.execute(
+                    """
+                    UPDATE app_jobs
+                    SET payload = ?, result_json = ?, status_detail = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        json.dumps(checkpoint_payload, separators=(",", ":")),
+                        json.dumps(totals, separators=(",", ":")),
+                        (
+                            f"Checked {totals['sources_checked']} sources. "
+                            f"Repaired {totals['chunks_repaired']} chunk memberships."
+                        ),
+                        utc_now(),
+                        job_id,
+                    ),
+                )
+        if not cursor:
+            break
+    _set_job_result(
+        job_id,
+        {**totals, "vault_id": vault_id, "complete": True},
+        detail=(
+            f"Checked {totals['sources_checked']} sources and repaired "
+            f"{totals['chunks_repaired']} chunk memberships."
         ),
     )
 
@@ -2499,6 +3329,67 @@ def _enqueue_due_integration_refresh_jobs() -> None:
             )
 
 
+def _enqueue_due_project_delta_jobs() -> None:
+    cutoff = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM projects
+            WHERE deleted_at IS NULL
+              AND auto_sync_enabled = 1
+              AND (last_change_checked_at IS NULL OR last_change_checked_at <= ?)
+            ORDER BY COALESCE(last_change_checked_at, created_at), id
+            LIMIT 25
+            """,
+            (cutoff,),
+        ).fetchall()
+        for row in rows:
+            enqueue_job(
+                conn,
+                job_type="project_delta_probe",
+                payload={"project_id": row["id"]},
+                dedupe_key=f"project-delta-probe:{row['id']}",
+                scope_id=str(row["id"]),
+            )
+
+
+def _run_project_delta_probe(payload: dict, job_id: str | None = None) -> None:
+    from backend.app.core.projects import probe_project_changes
+
+    _raise_if_job_cancelled(job_id)
+    project_id = str(payload.get("project_id") or "")
+    if not project_id:
+        raise ValueError("Project change check is missing its project.")
+    result = probe_project_changes(project_id)
+    _set_job_result(
+        job_id,
+        result,
+        detail=(
+            "Project changes were found and synchronization was queued."
+            if result["changed"]
+            else "Project files are current."
+        ),
+    )
+
+
+def _run_project_delta_apply(payload: dict, job_id: str) -> None:
+    from backend.app.core.project_indexing import apply_project_delta
+
+    _raise_if_job_cancelled(job_id)
+    apply_project_delta(
+        project_id=str(payload["project_id"]),
+        run_id=str(payload["run_id"]),
+        snapshot_id=str(payload["candidate_snapshot_id"]),
+        job_id=job_id,
+        changed_paths=[
+            str(path)
+            for path in payload.get("changed_paths", [])
+            if str(path or "").strip()
+        ],
+    )
+
+
 def _run_vector_reconcile_incremental(payload: dict, job_id: str | None = None) -> None:
     _raise_if_job_cancelled(job_id)
     require_embeddings_available("Vector reconciliation")
@@ -2596,6 +3487,7 @@ def _run_model_discovery(payload: dict, job_id: str | None = None) -> None:
         refresh=True,
         progress_callback=update_progress,
         cancellation_callback=lambda: _raise_if_job_cancelled(job_id),
+        scan_all_drives=bool(payload.get("scan_all_drives")),
     )
     _raise_if_job_cancelled(job_id)
     _set_job_result(
@@ -2610,6 +3502,7 @@ def _run_model_runtime_recovery(payload: dict, job_id: str | None = None) -> Non
         activate_model_runtime,
         active_chat_model_status,
         discover_installed_models,
+        list_models,
     )
 
     _raise_if_job_cancelled(job_id)
@@ -2622,14 +3515,39 @@ def _run_model_runtime_recovery(payload: dict, job_id: str | None = None) -> Non
     )
     _raise_if_job_cancelled(job_id)
     active_model = active_chat_model_status()
-    if not active_model:
-        raise RuntimeError("Choose a local chat model to resume document analysis.")
-    if not active_model.get("local_path"):
+    candidates = []
+    if active_model:
+        candidates.append(active_model)
+    candidates.extend(
+        model
+        for model in list_models()
+        if not active_model or model.get("id") != active_model.get("id")
+    )
+    compatible = [
+        model
+        for model in candidates
+        if model.get("installed")
+        and model.get("local_path")
+        and bool((model.get("compatibility") or {}).get("chat_role_accepted"))
+    ]
+    if not compatible:
         raise RuntimeError(
-            "The selected local model file was not found during the drive scan. "
-            "Open Models and choose an available model."
+            "No installed model can run chat. Open Models and choose a compatible GGUF model."
         )
-    activated = activate_model_runtime(str(active_model["id"]), role="chat")
+    activation_errors: list[str] = []
+    activated = None
+    for model in compatible:
+        try:
+            activated = activate_model_runtime(str(model["id"]), role="chat")
+            break
+        except ValueError as exc:
+            activation_errors.append(str(exc))
+    if activated is None:
+        raise RuntimeError(
+            activation_errors[-1]
+            if activation_errors
+            else "No installed model could be started."
+        )
     _raise_if_job_cancelled(job_id)
     notify_local_model_prerequisite_changed()
     _set_job_result(
@@ -2685,7 +3603,28 @@ def _run_integration_refresh(payload: dict, job_id: str | None = None) -> None:
     _set_job_result(job_id, result, detail="Integration refresh is complete.")
 
 
-def _mark_job_failed_or_retry(job: dict, error: str) -> None:
+def _mark_job_failed_or_retry(job: dict, error: Exception | str) -> None:
+    raw_error = str(error)
+    diagnostic_id = f"jobdiag-{uuid4()}"
+    error_code = f"{str(job.get('job_type') or 'job')}_failed"[:96]
+    if isinstance(error, Exception):
+        logger.error(
+            "background_job_failed diagnostic_id=%s job_id=%s job_type=%s attempt=%s",
+            diagnostic_id,
+            job.get("id"),
+            job.get("job_type"),
+            job.get("attempts"),
+            exc_info=(type(error), error, error.__traceback__),
+        )
+    else:
+        logger.error(
+            "background_job_failed diagnostic_id=%s job_id=%s job_type=%s attempt=%s detail=%r",
+            diagnostic_id,
+            job.get("id"),
+            job.get("job_type"),
+            job.get("attempts"),
+            raw_error,
+        )
     with connect() as conn:
         current = conn.execute(
             "SELECT attempts, max_attempts, cancellation_requested FROM app_jobs WHERE id = ?",
@@ -2707,14 +3646,29 @@ def _mark_job_failed_or_retry(job: dict, error: str) -> None:
         max_attempts = int(current["max_attempts"] if current is not None else job.get("max_attempts") or 3)
         status = "failed" if attempts >= max_attempts else "queued"
         completed_at = utc_now() if status == "failed" else None
+        public_detail = (
+            "This task needs attention."
+            if status == "failed"
+            else "Vault will retry this task."
+        )
         conn.execute(
             """
             UPDATE app_jobs
-            SET status = ?, last_error = ?, status_detail = ?,
+            SET status = ?, last_error = ?, error_code = ?, diagnostic_id = ?,
+                status_detail = ?,
                 completed_at = ?, updated_at = ?
             WHERE id = ? AND status = 'running'
             """,
-            (status, error[:500], error[:500], completed_at, utc_now(), job["id"]),
+            (
+                status,
+                raw_error[:500],
+                error_code,
+                diagnostic_id,
+                public_detail,
+                completed_at,
+                utc_now(),
+                job["id"],
+            ),
         )
         if status == "failed" and job.get("job_type", "").startswith("project_"):
             payload = _decode_payload(job.get("payload") or "{}")
@@ -2758,6 +3712,29 @@ def _mark_job_failed_or_retry(job: dict, error: str) -> None:
                         payload={"project_id": project_id, "run_id": run_id, "candidate_snapshot_id": snapshot_id},
                         dedupe_key=f"project-cleanup:{snapshot_id}", scope_id=project_id,
                     )
+        if status == "failed" and job.get("job_type") == "reindex_source":
+            payload = _decode_payload(job.get("payload") or "{}")
+            source_id = str(payload.get("source_id") or "")
+            if source_id:
+                publish_source_ingestion_stage(
+                    conn,
+                    source_id=source_id,
+                    stage="needs_attention",
+                    generation=int(payload.get("ingestion_generation") or 0) or None,
+                    detail="Search publication failed. Retry this source.",
+                    error_code=error_code,
+                )
+        elif status == "failed" and job.get("job_type") == "source_semantic_enrichment":
+            payload = _decode_payload(job.get("payload") or "{}")
+            source_id = str(payload.get("source_id") or "")
+            if source_id:
+                publish_source_ingestion_stage(
+                    conn,
+                    source_id=source_id,
+                    stage="ready",
+                    generation=int(payload.get("ingestion_generation") or 0) or None,
+                    detail="Source is ready with its fallback description.",
+                )
 
 
 def _decode_payload(raw: str) -> dict:
@@ -2766,6 +3743,20 @@ def _decode_payload(raw: str) -> dict:
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _scheduler_pressure_event(error: Exception) -> str:
+    name = type(error).__name__.casefold()
+    message = str(error).casefold()
+    if isinstance(error, MemoryError) or "out of memory" in message or "cuda oom" in message:
+        return "oom"
+    if "context" in message and ("limit" in message or "length" in message):
+        return "context_limit"
+    if "locked" in message and ("database" in message or "sqlite" in message):
+        return "database_lock"
+    if "runtime" in name or "runtime" in message:
+        return "runtime_reset"
+    return ""
 
 
 def _is_embedding_setup_error(error: Exception) -> bool:
@@ -2792,6 +3783,17 @@ def _mark_job_blocked_setup(job: dict) -> None:
             """,
             (utc_now(), job["id"]),
         )
+        if job.get("job_type") == "reindex_source":
+            payload = _decode_payload(job.get("payload") or "{}")
+            source_id = str(payload.get("source_id") or "")
+            if source_id:
+                publish_source_ingestion_stage(
+                    conn,
+                    source_id=source_id,
+                    stage="paused",
+                    generation=int(payload.get("ingestion_generation") or 0) or None,
+                    detail="Set up memory search to publish this source.",
+                )
 
 
 def _mark_job_blocked_local_model(job: dict, detail: str = "") -> None:
@@ -2862,6 +3864,24 @@ def _refresh_embedding_prerequisite() -> None:
               AND job_type IN ({placeholders})
             """,
             [now, *sorted(EMBEDDING_JOB_TYPES)],
+        )
+        conn.execute(
+            f"""
+            UPDATE sources
+            SET ingestion_stage = 'imported',
+                ingestion_status_detail = 'Memory search is ready. Source publication will resume.',
+                ingestion_error_code = '',
+                ingestion_updated_at = ?
+            WHERE id IN (
+                SELECT scope_id
+                FROM app_jobs
+                WHERE status = 'queued'
+                  AND job_type = 'reindex_source'
+                  AND scope_id IS NOT NULL
+            )
+              AND ingestion_stage = 'paused'
+            """,
+            (now,),
         )
         if transitioned_to_ready:
             active_reconciliation = conn.execute(
@@ -2977,6 +3997,81 @@ def _refresh_local_model_prerequisite() -> None:
                 user_initiated=False,
                 max_attempts=1,
             )
+
+
+def _enqueue_due_turbovec_evaluations() -> None:
+    from backend.app.core.config import get_settings
+    from backend.app.core.turbovec_runtime import (
+        turbovec_phase_c_status,
+        turbovec_runtime_available,
+    )
+
+    if not turbovec_runtime_available():
+        return
+    with connect() as conn:
+        vault_ids = [
+            str(row["id"])
+            for row in conn.execute("SELECT id FROM vaults ORDER BY created_at, id LIMIT 25").fetchall()
+        ]
+    for vault_id in vault_ids:
+        try:
+            status = turbovec_phase_c_status(vault_id)
+        except (KeyError, RuntimeError, OSError):
+            continue
+        threshold = int(get_settings().turbovec_min_chunk_count)
+        if int(status.get("eligible_chunk_count") or 0) < threshold:
+            continue
+        # A result—passing or failing—is evidence for this derived-state epoch.
+        # Re-evaluate only after the epoch changes rather than burning resources
+        # on every worker poll.
+        if status.get("benchmark") is not None:
+            continue
+        with connect() as conn:
+            enqueue_job(
+                conn,
+                job_type="turbovec_evaluate",
+                payload={
+                    "vault_id": vault_id,
+                    "derived_state_epoch": status.get("derived_state_epoch"),
+                },
+                dedupe_key=(
+                    f"turbovec-evaluate:{vault_id}:"
+                    f"{status.get('derived_state_epoch') or 'current'}"
+                ),
+                scope_id=vault_id,
+            )
+
+
+def _run_turbovec_evaluate(payload: dict, job_id: str | None = None) -> None:
+    from backend.app.core.turbovec_runtime import (
+        benchmark_turbovec_phase_c,
+        turbovec_phase_c_status,
+    )
+
+    _raise_if_job_cancelled(job_id)
+    vault_id = str(payload.get("vault_id") or "")
+    if not vault_id:
+        raise ValueError("Faster search evaluation is missing its library.")
+    current = turbovec_phase_c_status(vault_id)
+    requested_epoch = payload.get("derived_state_epoch")
+    if requested_epoch is not None and int(requested_epoch) != int(current["derived_state_epoch"]):
+        _set_job_result(
+            job_id,
+            {"skipped": True, "reason": "derived_state_changed"},
+            detail="Search data changed. Vault will test the current index later.",
+        )
+        return
+    report = benchmark_turbovec_phase_c(vault_id)
+    _raise_if_job_cancelled(job_id)
+    _set_job_result(
+        job_id,
+        report,
+        detail=(
+            "Faster search passed its checks and is ready."
+            if report.get("approved")
+            else "Exact search remains active because faster search did not pass every check."
+        ),
+    )
 
 
 def notify_embedding_prerequisite_changed() -> None:

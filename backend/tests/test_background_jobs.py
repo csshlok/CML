@@ -228,6 +228,34 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
         self.assertEqual(row["status"], "cancelled")
         self.assertEqual(row["status_detail"], "Cancellation acknowledged by worker.")
 
+    def test_failed_job_keeps_internal_detail_private_and_exposes_diagnostic_reference(self) -> None:
+        from backend.app.core.background_jobs import (
+            _claim_next_job,
+            _mark_job_failed_or_retry,
+            public_job_record,
+        )
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            self._insert_job(conn, "job-a", max_attempts=1)
+
+        job = _claim_next_job()
+        self.assertIsNotNone(job)
+        _mark_job_failed_or_retry(
+            job,
+            RuntimeError(r"Permission denied: C:\Users\person\private\model.gguf"),
+        )
+
+        with connect() as conn:
+            stored = dict(conn.execute("SELECT * FROM app_jobs WHERE id = 'job-a'").fetchone())
+        public = public_job_record(stored)
+
+        self.assertIn("Users", stored["last_error"])
+        self.assertNotIn("Users", public["last_error"])
+        self.assertEqual(public["last_error"], "This task needs attention.")
+        self.assertEqual(stored["error_code"], "reindex_source_failed")
+        self.assertTrue(stored["diagnostic_id"].startswith("jobdiag-"))
+
     def test_running_cancellation_is_acknowledged_before_handler_writes_commit(self) -> None:
         import json
 
@@ -296,6 +324,60 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
 
         self.assertIsNotNone(job)
         self.assertEqual(job["attempts"], 1)
+
+    def test_turbovec_evaluation_is_queued_only_after_threshold_without_epoch_evidence(self) -> None:
+        from backend.app.core import background_jobs
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+
+        status = {
+            "eligible_chunk_count": 10000,
+            "derived_state_epoch": 3,
+            "benchmark": None,
+        }
+        with (
+            patch(
+                "backend.app.core.turbovec_runtime.turbovec_runtime_available",
+                return_value=True,
+            ),
+            patch(
+                "backend.app.core.turbovec_runtime.turbovec_phase_c_status",
+                return_value=status,
+            ),
+        ):
+            background_jobs._enqueue_due_turbovec_evaluations()
+            background_jobs._enqueue_due_turbovec_evaluations()
+
+        with connect() as conn:
+            jobs = conn.execute(
+                "SELECT job_type, dedupe_key FROM app_jobs WHERE job_type = 'turbovec_evaluate'"
+            ).fetchall()
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["dedupe_key"], "turbovec-evaluate:vault-1:3")
+
+        status["benchmark"] = {"approved": False}
+        with (
+            patch(
+                "backend.app.core.turbovec_runtime.turbovec_runtime_available",
+                return_value=True,
+            ),
+            patch(
+                "backend.app.core.turbovec_runtime.turbovec_phase_c_status",
+                return_value=status,
+            ),
+        ):
+            background_jobs._enqueue_due_turbovec_evaluations()
+        with connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS count FROM app_jobs WHERE job_type = 'turbovec_evaluate'"
+            ).fetchone()["count"]
+        self.assertEqual(count, 1)
 
     def _insert_job(self, conn, job_id: str, **overrides) -> None:
         from backend.app.core.database import utc_now
