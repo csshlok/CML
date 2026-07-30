@@ -194,12 +194,30 @@ test("desktop window and preload are wired to the custom frameless chrome", () =
   );
   assert.match(
     stylesSource,
-    /\.vault-window-aware\.vault-window-aware\s*\{[^}]*padding-inline-end:\s*max\(var\(--vault-window-controls-safe-width\),\s*1\.5rem\)/s,
+    /\.vault-window-aware\.vault-window-aware\s*\{[^}]*min-height:\s*var\(--vault-window-controls-safe-height\)/s,
   );
   assert.doesNotMatch(
     stylesSource,
-    /(?<!\.vault-window-aware)\.vault-window-aware\s*\{[^}]*padding-(?:right|inline-end):/s,
-    "the safe-zone inset must outrank route-level padding utilities",
+    /\.vault-window-aware(?:\.vault-window-aware)?\s*\{[^}]*padding-(?:right|inline-end):/s,
+    "the safe zone must not reserve a full-width strip",
+  );
+  assert.match(
+    stylesSource,
+    /\.vault-window-aware\s*>\s*\*\s*\{[^}]*margin-inline-end:\s*var\(--vault-window-collision-inset,\s*0\)/s,
+  );
+  const windowAwareSource = fs.readFileSync(
+    path.join(__dirname, "..", "src", "components", "layout", "WindowAware.tsx"),
+    "utf8",
+  );
+  assert.match(
+    windowAwareSource,
+    /querySelector<HTMLElement>\("\[data-window-control-safe-zone\]"\)/,
+    "shared window-aware layouts must measure the actual control rectangle",
+  );
+  assert.match(
+    windowAwareSource,
+    /baseline\.right\s*-\s*safe\.left\s*\+\s*12/,
+    "only colliding children should move outside the no-go rectangle",
   );
   assert.match(
     stylesSource,

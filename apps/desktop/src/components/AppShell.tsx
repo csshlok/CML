@@ -30,6 +30,7 @@ import {
   listVaults,
   getUnlockStatus,
   lockVault,
+  updateAppProfile,
   unlockVaultWithPassphrase,
   type ChatSessionRecord,
   useBackendHealth,
@@ -113,7 +114,9 @@ export function AppShell() {
     async function loadTour() {
       const state = await window.cmlDesktop?.getSetupState?.();
       if (!cancelled) {
-        setProfile(normalizeDesktopProfile(state?.profile));
+        const nextProfile = normalizeDesktopProfile(state?.profile);
+        setProfile(nextProfile);
+        void updateAppProfile(nextProfile.display_name).catch(() => undefined);
       }
       if (!cancelled && state?.phase === "complete") {
         setTour(state.tour);

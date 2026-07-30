@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, LoaderCircle, LockKeyhole, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -203,6 +203,14 @@ export function LockedState({
   const [passphrase, setPassphrase] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const passphraseRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (error && !pending) {
+      passphraseRef.current?.focus();
+      passphraseRef.current?.select();
+    }
+  }, [error, pending]);
 
   async function submit() {
     if (!passphrase || pending) return;
@@ -235,6 +243,7 @@ export function LockedState({
         >
           <label htmlFor="vault-inline-passphrase" className="text-sm font-medium">Passphrase</label>
           <input
+            ref={passphraseRef}
             id="vault-inline-passphrase"
             type="password"
             autoComplete="current-password"

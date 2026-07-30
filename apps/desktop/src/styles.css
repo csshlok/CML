@@ -796,12 +796,11 @@
   }
 }
 
-/*
- * This contract is intentionally unlayered. Tailwind utilities otherwise win
- * by cascade-layer priority and can place trailing header actions underneath
- * the native window controls even when this selector is more specific.
- */
 .vault-window-aware.vault-window-aware {
   min-height: var(--vault-window-controls-safe-height);
-  padding-inline-end: max(var(--vault-window-controls-safe-width), 1.5rem);
+}
+
+.vault-window-aware > * {
+  min-width: 0;
+  margin-inline-end: var(--vault-window-collision-inset, 0);
 }

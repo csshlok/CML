@@ -8,7 +8,7 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BrandLogo, VAULT_OPENING_WORDMARK } from "@/components/BrandLogo";
 import { NotificationViewport } from "@/components/product/Notifications";
 import { WindowChrome } from "@/components/WindowChrome";
@@ -16,11 +16,20 @@ import { WindowChrome } from "@/components/WindowChrome";
 import appCss from "../styles.css?url";
 
 function NotFoundComponent() {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
   return (
     <div className="flex min-h-full items-center justify-center bg-background px-6 py-12">
-      <main className="w-full max-w-md">
+      <main className="w-full max-w-md" aria-labelledby="not-found-title">
         <BrandLogo className="h-auto w-[180px] select-none" />
-        <h1 className="mt-10 text-2xl font-semibold tracking-tight text-foreground">
+        <h1
+          id="not-found-title"
+          ref={headingRef}
+          tabIndex={-1}
+          className="mt-10 text-2xl font-semibold tracking-tight text-foreground focus:outline-none"
+        >
           Page not found
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
@@ -42,12 +51,21 @@ function NotFoundComponent() {
 function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   console.error(error);
   const router = useRouter();
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
 
   return (
     <div className="flex min-h-full items-center justify-center bg-background px-6 py-12">
-      <main className="w-full max-w-md">
+      <main className="w-full max-w-md" aria-labelledby="route-error-title">
         <BrandLogo className="h-auto w-[180px] select-none" />
-        <h1 className="mt-10 text-2xl font-semibold tracking-tight text-foreground">
+        <h1
+          id="route-error-title"
+          ref={headingRef}
+          tabIndex={-1}
+          className="mt-10 text-2xl font-semibold tracking-tight text-foreground focus:outline-none"
+        >
           This page did not open
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
@@ -55,6 +73,7 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
         </p>
         <div className="mt-7 flex flex-wrap gap-2">
           <button
+            type="button"
             onClick={() => {
               router.invalidate();
               reset();
