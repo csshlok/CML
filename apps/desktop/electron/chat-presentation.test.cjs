@@ -39,3 +39,31 @@ test("describeCoverage summarizes complete analysis counts", async () => {
     "Scored 12 indexed sources and analyzed 12.",
   );
 });
+
+test("tokenizeChatInlineMarkdown renders complete bold spans without consuming plain text", async () => {
+  const mod = await import("../src/lib/chat-presentation.js");
+
+  assert.deepEqual(
+    mod.tokenizeChatInlineMarkdown("This is **important** and **grounded**."),
+    [
+      { type: "text", content: "This is " },
+      { type: "strong", content: "important" },
+      { type: "text", content: " and " },
+      { type: "strong", content: "grounded" },
+      { type: "text", content: "." },
+    ],
+  );
+});
+
+test("tokenizeChatInlineMarkdown preserves incomplete model output literally", async () => {
+  const mod = await import("../src/lib/chat-presentation.js");
+
+  assert.deepEqual(
+    mod.tokenizeChatInlineMarkdown("Streaming **unfinished"),
+    [{ type: "text", content: "Streaming **unfinished" }],
+  );
+  assert.deepEqual(
+    mod.tokenizeChatInlineMarkdown("<script>alert(1)</script>"),
+    [{ type: "text", content: "<script>alert(1)</script>" }],
+  );
+});

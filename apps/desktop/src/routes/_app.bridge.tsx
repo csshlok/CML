@@ -34,6 +34,7 @@ import {
   listBridgeRequests,
   rejectBridgeApprovalRequest,
   revokeExtensionClient,
+  rotateExtensionClient,
   startExtensionPairing,
   listVaults,
   updateBridgeClient,
@@ -467,6 +468,20 @@ function BridgeView() {
     setSaving(true);
     try {
       await revokeExtensionClient(client.id);
+      await loadBridgeState();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function rotateExtensionClientToken(client: ExtensionClientRecord) {
+    setSaving(true);
+    try {
+      const result = await rotateExtensionClient(client.id);
+      setExtensionToken(result.token);
+      setExtensionName(result.name);
+      setExtensionVaultId(result.allowed_vault_ids[0] ?? "");
+      setExtensionNotice("Extension token replaced. Import the new setup JSON in the extension.");
       await loadBridgeState();
     } finally {
       setSaving(false);
@@ -1226,6 +1241,14 @@ function BridgeView() {
                       onClick={() => void scopeExtensionClient(client, [])}
                     >
                       Allow all
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={saving || !client.enabled}
+                      onClick={() => void rotateExtensionClientToken(client)}
+                    >
+                      <RefreshCw className="h-4 w-4" /> Replace token
                     </Button>
                     <ConfirmAction
                       title={`Revoke “${client.name}”?`}

@@ -71,3 +71,32 @@ export function statusToneForPartialFailure(mode) {
   }
   return "muted";
 }
+
+export function tokenizeChatInlineMarkdown(value) {
+  const text = String(value ?? "");
+  const tokens = [];
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    const opening = text.indexOf("**", cursor);
+    if (opening < 0) {
+      tokens.push({ type: "text", content: text.slice(cursor) });
+      break;
+    }
+    const closing = text.indexOf("**", opening + 2);
+    if (closing < 0 || closing === opening + 2) {
+      tokens.push({ type: "text", content: text.slice(cursor) });
+      break;
+    }
+    if (opening > cursor) {
+      tokens.push({ type: "text", content: text.slice(cursor, opening) });
+    }
+    tokens.push({ type: "strong", content: text.slice(opening + 2, closing) });
+    cursor = closing + 2;
+  }
+
+  if (tokens.length === 0) {
+    tokens.push({ type: "text", content: text });
+  }
+  return tokens;
+}

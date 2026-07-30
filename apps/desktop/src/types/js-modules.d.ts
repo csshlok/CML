@@ -6,10 +6,16 @@ declare module "@/lib/bridge-presentation.js" {
 }
 
 declare module "@/lib/chat-presentation" {
+  export type ChatInlineMarkdownToken = {
+    type: "text" | "strong";
+    content: string;
+  };
+
   export function analysisModeLabel(intent: string, coverageLedger?: Record<string, unknown> | null): string;
   export function describeCoverage(coverageLedger?: Record<string, unknown> | null): string | null;
   export function describePartialFailure(mode?: string | null): string | null;
   export function statusToneForPartialFailure(mode?: string | null): "neutral" | "critical" | "warning" | "muted";
+  export function tokenizeChatInlineMarkdown(value?: string | null): ChatInlineMarkdownToken[];
 }
 
 declare module "@/lib/chat-presentation.js" {

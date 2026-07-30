@@ -22,6 +22,7 @@ import {
   cancelProjectRun,
   createChatSession,
   getProject,
+  getProjectChanges,
   getProjectRun,
   linkProjectCluster,
   listClusters,
@@ -29,11 +30,12 @@ import {
   listProjectRuns,
   reindexProject,
   removeProject,
-  synchronizeProject,
+  synchronizeProjectChanges,
   unlinkProjectCluster,
   updateProject,
   type ProjectIndexRunRecord,
   type ProjectRecord,
+  type ProjectChangesRecord,
   type ProjectLinkRecord,
   type ClusterRecord,
 } from "@/lib/backend";
@@ -59,24 +61,28 @@ function ProjectWorkspace() {
   const [links, setLinks] = useState<ProjectLinkRecord[]>([]);
   const [clusters, setClusters] = useState<ClusterRecord[]>([]);
   const [linkTarget, setLinkTarget] = useState("");
+  const [changes, setChanges] = useState<ProjectChangesRecord | null>(null);
 
   const load = useCallback(async () => {
     try {
       const nextProject = await getProject(projectId);
-      const [runsResult, linksResult, clustersResult] = await Promise.allSettled([
+      const [runsResult, linksResult, clustersResult, changesResult] = await Promise.allSettled([
         listProjectRuns(projectId, 12),
         listProjectLinks(projectId),
         listClusters(nextProject.vault_id),
+        getProjectChanges(projectId, 200),
       ]);
       setProject(nextProject);
       if (runsResult.status === "fulfilled") setRuns(runsResult.value);
       if (linksResult.status === "fulfilled") setLinks(linksResult.value);
       if (clustersResult.status === "fulfilled") setClusters(clustersResult.value);
+      if (changesResult.status === "fulfilled") setChanges(changesResult.value);
       setName(nextProject.name);
       const unavailable = [
         runsResult.status === "rejected" ? "history" : "",
         linksResult.status === "rejected" ? "links" : "",
         clustersResult.status === "rejected" ? "clusters" : "",
+        changesResult.status === "rejected" ? "changes" : "",
       ].filter(Boolean);
       setMessage(unavailable.length ? `Some project details are unavailable: ${unavailable.join(", ")}.` : null);
     } catch (error) {
@@ -194,14 +200,22 @@ function ProjectWorkspace() {
                   </span>
                 )}
                 {commit && <span>Indexed at {commit}</span>}
-                {project.changed_file_count > 0 && (
+                {Boolean(changes?.changed_path_count) && (
                   <span
                     role="status"
                     className="inline-flex items-center rounded border border-[var(--status-warn)] bg-[var(--status-warn-bg)] px-2 py-0.5 text-xs font-medium text-foreground"
-                    title="Synchronize to include these working-tree changes in Odin answers."
+                    title="Synchronize to include these pending file changes in Odin answers."
                   >
-                    {project.changed_file_count.toLocaleString()}{" "}
-                    {project.changed_file_count === 1 ? "change" : "changes"} newer than index
+                    {changes!.changed_path_count.toLocaleString()}{" "}
+                    {changes!.changed_path_count === 1 ? "change" : "changes"} pending for Odin
+                  </span>
+                )}
+                {changes?.working_tree_dirty && (
+                  <span
+                    className="inline-flex items-center rounded border border-border px-2 py-0.5 text-xs text-muted-foreground"
+                    title="Git repository state is reported separately from Odin index freshness."
+                  >
+                    Git working tree: {changes.repository_changed_path_count.toLocaleString()} changed
                   </span>
                 )}
                 <span>{project.source_count.toLocaleString()} files</span>
@@ -215,7 +229,7 @@ function ProjectWorkspace() {
                 disabled={busy || Boolean(activeRun)}
                 onClick={() =>
                   void runAction(
-                    () => synchronizeProject(project.id),
+                    () => synchronizeProjectChanges(project.id),
                     "Synchronization queued. Your current index remains available until activation.",
                   )
                 }
@@ -248,17 +262,63 @@ function ProjectWorkspace() {
               {message}
             </div>
           )}
+          {project.structure_status === "stale" && !activeRun && (
+            <div
+              role="status"
+              className="mt-5 flex max-w-4xl flex-wrap items-center justify-between gap-3 border-y border-border py-3"
+            >
+              <p className="text-sm text-muted-foreground">
+                Search includes the latest file changes. Update the map when you need current
+                relationships.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() =>
+                  void runAction(
+                    () => reindexProject(project.id, "structure"),
+                    "Project map update queued.",
+                  )
+                }
+              >
+                <RefreshCw className="h-4 w-4" /> Update map
+              </Button>
+            </div>
+          )}
+          <ProjectChangesInbox
+            changes={changes}
+            busy={busy || Boolean(activeRun)}
+            onSync={() =>
+              void runAction(
+                () => synchronizeProjectChanges(project.id),
+                "Changed files are queued for synchronization.",
+              )
+            }
+          />
           {settingsOpen && (
-            <ProjectScopeSettings
-              project={project}
-              busy={busy}
-              onChange={(scope) =>
-                void runAction(
-                  () => updateProject(project.id, { discovery_scope: scope }),
-                  "Project scope updated. Synchronize to build the replacement index.",
-                )
-              }
-            />
+            <>
+              <ProjectScopeSettings
+                project={project}
+                busy={busy}
+                onChange={(scope) =>
+                  void runAction(
+                    () => updateProject(project.id, { discovery_scope: scope }),
+                    "Project scope updated. Synchronize to build the replacement index.",
+                  )
+                }
+              />
+              <ProjectSyncModeSettings
+                project={project}
+                busy={busy}
+                onChange={(syncMode) =>
+                  void runAction(
+                    () => updateProject(project.id, { sync_mode: syncMode }),
+                    "Project sync mode updated.",
+                  )
+                }
+              />
+            </>
           )}
           {settingsOpen && (
             <ProjectSettings
@@ -383,9 +443,18 @@ function ProjectWorkspace() {
             <h3 className="text-sm font-medium">Freshness</h3>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
               {commit ? `Indexed commit ${commit}.` : "Indexed from the registered local folder."}{" "}
-              {project.changed_file_count
-                ? `${project.changed_file_count} working-tree changes are newer than the index.`
-                : "Synchronize after changing the repository."}
+              {changes
+                ? changes.changed_path_count
+                  ? `${changes.changed_path_count.toLocaleString()} file changes are pending for Odin.`
+                  : "The active Odin snapshot matches the current eligible files."
+                : project.changed_file_count
+                  ? `${project.changed_file_count.toLocaleString()} file changes may be pending verification.`
+                  : "Freshness is being verified."}
+              {changes?.working_tree_dirty
+                ? ` Git separately reports ${changes.repository_changed_path_count.toLocaleString()} working-tree paths.`
+                : changes
+                  ? " The Git working tree is clean."
+                  : ""}
             </p>
           </section>
           {project.entrypoints.length > 0 && (
@@ -489,6 +558,71 @@ function RunStrip({
   );
 }
 
+function ProjectChangesInbox({
+  changes,
+  busy,
+  onSync,
+}: {
+  changes: ProjectChangesRecord | null;
+  busy: boolean;
+  onSync: () => void;
+}) {
+  if (!changes) return null;
+  const items = changes.change_items.slice(0, 20);
+  return (
+    <section className="mt-5 border-y border-border py-4" aria-labelledby="project-changes-title">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 id="project-changes-title" className="text-sm font-semibold">
+            Odin freshness
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {changes.changed_path_count
+              ? `${changes.changed_path_count.toLocaleString()} eligible paths differ from the active Odin snapshot.`
+              : "The active Odin snapshot matches the current eligible files."}{" "}
+            {changes.last_checked_at ? `Last verified ${formatDate(changes.last_checked_at)}.` : ""}
+          </p>
+        </div>
+        {changes.changed && (
+          <Button size="sm" variant="outline" disabled={busy} onClick={onSync}>
+            <RefreshCw className="h-3.5 w-3.5" /> Sync changes
+          </Button>
+        )}
+      </div>
+      {items.length > 0 && (
+        <ul className="mt-3 divide-y divide-border border-y border-border">
+          {items.map((item) => (
+            <li
+              key={`${item.kind}:${item.previous_path ?? ""}:${item.path}`}
+              className="grid min-w-0 grid-cols-[5.5rem_minmax(0,1fr)] gap-3 py-2 text-xs"
+            >
+              <span className="capitalize text-muted-foreground">{item.kind}</span>
+              <span className="min-w-0 break-all font-mono">
+                {item.previous_path ? `${item.previous_path} → ${item.path}` : item.path}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {changes.truncated && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          This list is bounded. Synchronization will use the complete detected delta or explain
+          why a full refresh is required.
+        </p>
+      )}
+      <div className="mt-4 border-t border-border pt-4">
+        <h3 className="text-xs font-medium">Git repository status</h3>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          {changes.working_tree_dirty
+            ? `Git reports ${changes.repository_changed_path_count.toLocaleString()} changed working-tree paths. Some or all may already be present in Odin's active snapshot.`
+            : "Git reports a clean working tree."}
+          {changes.repository_truncated ? " This repository list is bounded." : ""}
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function projectRunPhase(value: string) {
   const phase = value.toLowerCase();
   if (phase.startsWith("discover") || phase === "candidate_build")
@@ -557,6 +691,58 @@ function ProjectScopeSettings({
           Select Synchronize when you are ready to replace it.
         </p>
       )}
+    </section>
+  );
+}
+
+function ProjectSyncModeSettings({
+  project,
+  busy,
+  onChange,
+}: {
+  project: ProjectRecord;
+  busy: boolean;
+  onChange: (mode: "automatic" | "notify" | "manual") => void;
+}) {
+  const options = [
+    {
+      value: "automatic" as const,
+      title: "Automatic",
+      description: "Detect and queue bounded changes when Vault verifies this project.",
+    },
+    {
+      value: "notify" as const,
+      title: "Notify only",
+      description: "Detect changes and show them here without starting synchronization.",
+    },
+    {
+      value: "manual" as const,
+      title: "Manual",
+      description: "Synchronize only when you choose Sync changes.",
+    },
+  ];
+  return (
+    <section className="mt-5 rounded-md border border-border bg-card p-4">
+      <h2 className="text-sm font-semibold">Change synchronization</h2>
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            disabled={busy}
+            aria-pressed={project.sync_mode === option.value}
+            className={`rounded-md border p-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              project.sync_mode === option.value ? "border-primary bg-primary/5" : "border-border"
+            }`}
+            onClick={() => onChange(option.value)}
+          >
+            <span className="block text-sm font-medium">{option.title}</span>
+            <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+              {option.description}
+            </span>
+          </button>
+        ))}
+      </div>
     </section>
   );
 }

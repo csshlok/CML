@@ -24,6 +24,7 @@ import {
   analysisModeLabel,
   describePartialFailure,
   statusToneForPartialFailure,
+  tokenizeChatInlineMarkdown,
 } from "@/lib/chat-presentation";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
 import { displayPath } from "@/lib/displayPath";
@@ -313,6 +314,8 @@ function ChatView() {
   const messages = backendMessages;
   const projectId = backendSession.scope_project_id ?? null;
   const scopeClusterId = backendSession.scope_cluster_id ?? null;
+  const scopeUnclustered = backendSession.scope_unclustered;
+  const hasUnclusteredSources = activeSources.some((source) => !source.clusterId);
   const saved = backendSession.saved;
   const chatStatus = !backendReady
     ? { label: "Library unavailable", tone: "var(--status-error)", settings: false }
@@ -352,10 +355,11 @@ function ChatView() {
     : null;
 
   const setScope = async (val: string) => {
-    const nextScope = val === "global" ? null : val;
+    const nextScope = val === "global" || val === "unclustered" ? null : val;
     try {
       const updated = await updateChatSession(backendSession.id, {
         scope_cluster_id: nextScope,
+        scope_unclustered: val === "unclustered",
       });
       setBackendSession(updated);
     } catch {
@@ -403,6 +407,7 @@ function ChatView() {
     promptOverride?: string,
     attachmentOverride?: string[],
     analysisMode: "standard" | "expanded" | "complete" = "standard",
+    retryGenerationId?: string | null,
   ) => {
     const selectedAttachments = attachmentOverride ?? (promptOverride ? [] : attachments);
     const prompt = (promptOverride ?? input).trim() || (selectedAttachments.length > 0 ? "Read and store these attachments." : "");
@@ -461,14 +466,18 @@ function ChatView() {
             vault_id: vault.id,
             prompt,
             cluster_id: scope?.id ?? null,
+            unclustered_only: scopeUnclustered,
             session_id: backendSessionId ?? chatId,
             persist: true,
             limit: analysisMode === "expanded" ? 12 : 6,
             expanded_analysis: analysisMode === "expanded",
             complete_analysis: analysisMode === "complete",
+            request_id: `chat-${crypto.randomUUID()}`,
+            retry_generation_id: retryGenerationId ?? null,
             attachments: selectedAttachments.map((path) => ({
               path,
               cluster_id: scope?.id ?? null,
+              unclustered_only: scopeUnclustered,
             })),
           },
           {
@@ -715,7 +724,14 @@ function ChatView() {
     const lastRetryable = [...messages].reverse().find(
       (message) => message.role === "retriable" || message.role === "user",
     );
-    if (lastRetryable) void send(lastRetryable.prompt ?? lastRetryable.content);
+    if (lastRetryable) {
+      void send(
+        lastRetryable.prompt ?? lastRetryable.content,
+        [],
+        "standard",
+        lastRetryable.role === "retriable" ? lastRetryable.generationId : null,
+      );
+    }
   };
 
   const setBackendMessageUseful = async (messageId: string, value: boolean) => {
@@ -750,13 +766,13 @@ function ChatView() {
     const index = messages.findIndex((message) => message.id === messageId);
     const target = messages[index];
     if (target?.prompt) {
-      void send(target.prompt);
+      void send(target.prompt, [], "standard", target.generationId);
       return;
     }
     if (target?.replyToMessageId) {
       const linkedUser = messages.find((message) => message.id === target.replyToMessageId);
       if (linkedUser?.role === "user") {
-        void send(linkedUser.content);
+        void send(linkedUser.content, [], "standard", target.generationId);
         return;
       }
     }
@@ -764,7 +780,7 @@ function ChatView() {
       .slice(0, Math.max(0, index))
       .reverse()
       .find((message) => message.role === "user");
-    if (priorUser) void send(priorUser.content);
+    if (priorUser) void send(priorUser.content, [], "standard", target?.generationId);
   };
 
   return (
@@ -792,13 +808,19 @@ function ChatView() {
             aria-label="Chat title"
             className="h-8 min-w-0 flex-1 border-transparent bg-transparent px-2 text-sm font-medium disabled:opacity-100 md:max-w-sm"
           />
-          <Select value={scopeClusterId ?? "global"} onValueChange={setScope}>
+          <Select
+            value={scopeUnclustered ? "unclustered" : scopeClusterId ?? "global"}
+            onValueChange={setScope}
+          >
             <SelectTrigger className="h-8 w-full gap-2 text-xs sm:w-52">
               <SlidersHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="global">All vault context</SelectItem>
+              {hasUnclusteredSources ? (
+                <SelectItem value="unclustered">Unclustered sources</SelectItem>
+              ) : null}
               {activeClusters.map((c) => (
                 <SelectItem key={c.id} value={c.id}>
                   {c.name}
@@ -950,7 +972,7 @@ function ChatView() {
                       </div>
                     )}
                     <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                      {streamText}
+                      <ChatInlineMarkdown content={streamText} />
                       <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-foreground/40 align-middle" />
                     </p>
                   </div>
@@ -1149,6 +1171,7 @@ function messageFromTimelineItem(item: ChatTimelineItem): ChatMessage {
       role: "retriable",
       prompt: item.prompt,
       content: "Vault was interrupted while answering this prompt. The partial answer was not saved.",
+      generationId: item.id,
     };
   }
   return messageFromRecord(item);
@@ -1255,7 +1278,9 @@ function Message({
           })}
         </div>
       )}
-      <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{msg.content}</p>
+      <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+        <ChatInlineMarkdown content={msg.content} />
+      </p>
       {msg.citations && msg.citations.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-1.5">
           {msg.citations.map((cit, i) => {
@@ -1362,6 +1387,18 @@ function Message({
         </Button>
       </div>
     </div>
+  );
+}
+
+function ChatInlineMarkdown({ content }: { content: string }) {
+  return tokenizeChatInlineMarkdown(content).map((token, index) =>
+    token.type === "strong" ? (
+      <strong key={index} className="font-semibold">
+        {token.content}
+      </strong>
+    ) : (
+      token.content
+    ),
   );
 }
 
