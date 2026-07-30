@@ -307,6 +307,68 @@ class OdinCliAuthTests(unittest.TestCase):
         self.assertEqual(request.call_count, BUSY_RETRY_ATTEMPTS)
         self.assertEqual(sleep.call_count, BUSY_RETRY_ATTEMPTS - 1)
 
+    def test_odin_explains_changed_executable_and_returns_a_machine_action(self) -> None:
+        from backend.app.odin_cli import EXIT_AUTHENTICATION, OdinClient, OdinClientError
+
+        mismatch = HTTPError(
+            "http://127.0.0.1/api/v1/cli-auth/sessions",
+            401,
+            "Unauthorized",
+            {},
+            io.BytesIO(
+                json.dumps({"detail": "executable_fingerprint_mismatch"}).encode("utf-8")
+            ),
+        )
+
+        with (
+            patch("backend.app.odin_cli.urlopen", side_effect=mismatch),
+            self.assertRaises(OdinClientError) as failure,
+        ):
+            OdinClient("http://127.0.0.1:7343", "").request(
+                "POST",
+                "cli-auth/sessions",
+                {"client_id": "client-1"},
+            )
+
+        self.assertEqual(failure.exception.exit_code, EXIT_AUTHENTICATION)
+        self.assertEqual(failure.exception.code, "executable_fingerprint_mismatch")
+        self.assertEqual(failure.exception.next_action, "repair_and_pair")
+        self.assertIn("Repair Odin", str(failure.exception))
+
+    def test_odin_doctor_reports_launcher_drift_without_reading_projects(self) -> None:
+        from backend.app.odin_cli import (
+            EXIT_AUTHENTICATION,
+            OdinClientError,
+            _doctor,
+        )
+
+        descriptor = {
+            "backend_url": "http://127.0.0.1:7343",
+            "api_prefix": "/api/v1",
+            "backend_instance_id": "runtime-1",
+        }
+        mismatch = OdinClientError(
+            "Odin changed since this computer approved it.",
+            EXIT_AUTHENTICATION,
+            code="executable_fingerprint_mismatch",
+            next_action="repair_and_pair",
+        )
+        with (
+            patch("backend.app.odin_cli._load_runtime_descriptor", return_value=descriptor),
+            patch(
+                "backend.app.odin_cli._credential_helper",
+                return_value={"client_id": "client-1", "credential": "x" * 64},
+            ),
+            patch("backend.app.odin_cli._establish_cli_session", side_effect=mismatch),
+        ):
+            result = _doctor()
+
+        self.assertEqual(result["status"], "attention")
+        self.assertEqual(result["error_code"], "executable_fingerprint_mismatch")
+        self.assertEqual(result["next_action"], "repair_and_pair")
+        self.assertFalse(result["reads_project_content"])
+        self.assertEqual(result["checks"][-1]["status"], "repair_needed")
+
     def test_pairing_route_exposes_database_contention_as_retryable(self) -> None:
         from fastapi import HTTPException
 

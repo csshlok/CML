@@ -21,15 +21,18 @@ from backend.app.core.projects import (
     cancel_project_run,
     get_project,
     get_project_run,
+    inspect_project_changes,
     link_project,
     list_project_links,
     list_project_runs,
     list_projects,
     list_projects_page,
     register_project,
+    probe_project_changes,
     reindex_project,
     remove_project,
     sync_project,
+    sync_project_delta,
     unlink_project,
     update_project,
 )
@@ -43,6 +46,7 @@ from backend.app.schemas import (
     ProjectRemoveRequest,
     ProjectSyncResponse,
     ProjectSyncRequest,
+    ProjectTargetedSyncRequest,
     ProjectUpdate,
 )
 
@@ -191,6 +195,8 @@ def project_create(payload: ProjectCreate, request: Request) -> dict:
             root_path=payload.root_path,
             name=payload.name,
             discovery_scope=payload.discovery_scope,
+            auto_sync_enabled=payload.auto_sync_enabled,
+            sync_mode=payload.sync_mode,
             sync=payload.sync,
         )
     except ProjectError as exc:
@@ -205,6 +211,16 @@ def project_get(project_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Project not found") from exc
 
 
+@router.get("/{project_id}/changes")
+def project_changes(project_id: str, max_paths: int = 5000) -> dict:
+    try:
+        return inspect_project_changes(project_id, max_paths=max_paths)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except ProjectError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.patch("/{project_id}", response_model=ProjectRead)
 def project_update(project_id: str, payload: ProjectUpdate) -> dict:
     try:
@@ -213,6 +229,8 @@ def project_update(project_id: str, payload: ProjectUpdate) -> dict:
             name=payload.name,
             root_path=payload.root_path,
             discovery_scope=payload.discovery_scope,
+            auto_sync_enabled=payload.auto_sync_enabled,
+            sync_mode=payload.sync_mode,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
@@ -231,6 +249,92 @@ def project_sync(project_id: str, payload: ProjectSyncRequest | None = None) -> 
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except ProjectError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/sync-changes", status_code=202)
+def project_sync_changes(project_id: str) -> dict:
+    try:
+        return probe_project_changes(project_id, force_sync=True)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except ProjectError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/sync-targeted", status_code=202)
+def project_sync_targeted(project_id: str, payload: ProjectTargetedSyncRequest) -> dict:
+    try:
+        report = inspect_project_changes(project_id, max_paths=5000)
+        available = {str(path) for path in report.get("changed_paths") or []}
+        requested = list(dict.fromkeys(str(path).replace("\\", "/") for path in payload.paths))
+        unsupported = [path for path in requested if path not in available]
+        if unsupported:
+            raise ProjectError("Targeted sync paths must come from the current project change set.")
+        if report.get("detection_mode") != "snapshot_git_delta" or report.get("truncated"):
+            raise ProjectError("Targeted sync is unavailable until Vault can compute a complete Git delta.")
+        queued = sync_project_delta(
+            project_id,
+            changed_paths=requested,
+            trigger_source="question_targeted",
+        )
+        return {
+            **queued,
+            "freshness_token": str(queued.get("snapshot_id") or queued.get("job_id") or ""),
+            "targeted_paths": requested,
+            "next_action": "wait_for_freshness",
+        }
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except ProjectError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/{project_id}/freshness/{freshness_token}")
+def project_freshness(project_id: str, freshness_token: str) -> dict:
+    with connect() as conn:
+        project = conn.execute(
+            """
+            SELECT active_retrieval_snapshot_id, candidate_snapshot_id, active_run_id
+            FROM projects
+            WHERE id = ? AND deleted_at IS NULL
+            """,
+            (project_id,),
+        ).fetchone()
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        if project["active_retrieval_snapshot_id"] == freshness_token:
+            return {
+                "project_id": project_id,
+                "freshness_token": freshness_token,
+                "status": "current",
+                "next_action": "answer_question",
+            }
+        run = (
+            conn.execute(
+                "SELECT status, failure_category FROM project_index_runs WHERE id = ?",
+                (project["active_run_id"],),
+            ).fetchone()
+            if project["active_run_id"]
+            else None
+        )
+    if project["candidate_snapshot_id"] == freshness_token and run is not None:
+        return {
+            "project_id": project_id,
+            "freshness_token": freshness_token,
+            "status": str(run["status"]),
+            "failure_category": str(run["failure_category"] or ""),
+            "next_action": (
+                "wait"
+                if str(run["status"]) in {"queued", "running"}
+                else "retry_sync"
+            ),
+        }
+    return {
+        "project_id": project_id,
+        "freshness_token": freshness_token,
+        "status": "superseded",
+        "next_action": "refresh_changes",
+    }
 
 
 @router.post("/{project_id}/reindex", status_code=202)
@@ -401,20 +505,231 @@ def project_context(project_id: str, payload: ProjectContextRequest) -> dict:
         structural_candidates.values(),
         key=lambda item: (item[0], len(str(item[1]["display_label"])), str(item[1]["qualified_id"])),
     )[:12]]
+    structural_question = _is_structural_project_question(payload.query)
+    citations = list(bundle.get("citations") or [])
+    evidence = _project_evidence_summary(project_id, citations)
+    if (
+        evidence["implementation_files"] == 0
+        and len(citations) < max(1, int(payload.limit))
+        and (structural_question or _is_project_overview_question(payload.query))
+    ):
+        orientation = _project_orientation_evidence(project_id)
+        if orientation is not None:
+            citations.append(orientation["citation"])
+            bundle.setdefault("source_snippets", []).append(orientation["source_snippet"])
+            evidence = _project_evidence_summary(project_id, citations)
+    stale_retrieval = int(project.get("changed_file_count") or 0) > 0
+    stale_structure = project.get("structure_status") == "stale"
+    limitations: list[str] = []
+    if not citations:
+        limitations.append("No indexed project files matched this question.")
+    if evidence["implementation_files"] == 0:
+        limitations.append("No implementation file was included in the evidence.")
+    if structural_question and not structural_hits:
+        limitations.append("No matching code symbol or relationship was found.")
+    if stale_retrieval:
+        limitations.append("Local project changes are not included in this snapshot.")
+    if structural_question and stale_structure:
+        limitations.append("The project map is older than the searchable file snapshot.")
+    authority = (
+        bool(bundle.get("retrieval_authority", False))
+        and bool(citations)
+        and evidence["implementation_files"] > 0
+        and not stale_retrieval
+        and (not structural_question or (bool(structural_hits) and not stale_structure))
+    )
     return {
         "project_id": project_id,
         "project_name": project["name"],
-        "snapshot_id": project["active_snapshot_id"],
+        "snapshot_id": project["active_retrieval_snapshot_id"],
+        "structure_snapshot_id": project["active_structure_snapshot_id"],
         "indexed_commit": project["indexed_commit"],
         "query": payload.query,
-        "citations": bundle.get("citations") or [],
+        "citations": citations,
         "source_snippets": bundle.get("source_snippets") or [],
         "structural_hits": structural_hits,
-        "warnings": bundle.get("warnings") or [],
-        "retrieval_authority": bool(bundle.get("retrieval_authority", True)),
+        "warnings": [*(bundle.get("warnings") or []), *limitations],
+        "retrieval_authority": authority,
+        "evidence_summary": evidence,
+        "freshness": {
+            "retrieval_status": project["retrieval_status"],
+            "structure_status": project["structure_status"],
+            "changed_file_count": int(project.get("changed_file_count") or 0),
+            "includes_unindexed_changes": False,
+            "retrieval_snapshot_id": project["active_retrieval_snapshot_id"],
+            "structure_snapshot_id": project["active_structure_snapshot_id"],
+        },
+        "limitations": limitations,
         "token_estimate": bundle.get("token_estimate") or {},
         "bundle_status": bundle.get("bundle_status") or {},
     }
+
+
+def _project_evidence_summary(project_id: str, citations: list[dict]) -> dict:
+    source_ids = sorted({
+        str(citation.get("source_id") or "")
+        for citation in citations
+        if str(citation.get("source_id") or "")
+    })
+    if not source_ids:
+        return {
+            "files_read": 0,
+            "implementation_files": 0,
+            "test_files": 0,
+            "documentation_files": 0,
+            "configuration_files": 0,
+            "files": [],
+        }
+    placeholders = ",".join("?" for _ in source_ids)
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT ps.source_id, ps.relative_path, ps.file_role
+            FROM project_sources ps
+            WHERE ps.project_id = ? AND ps.source_id IN ({placeholders})
+            ORDER BY ps.relative_path
+            """,
+            [project_id, *source_ids],
+        ).fetchall()
+    files = []
+    counts = {
+        "implementation": 0,
+        "test": 0,
+        "documentation": 0,
+        "configuration": 0,
+    }
+    for row in rows:
+        relative_path = str(row["relative_path"])
+        role = str(row["file_role"] or "source")
+        suffix = relative_path.rsplit(".", 1)[-1].casefold() if "." in relative_path else ""
+        if role == "test":
+            evidence_role = "test"
+        elif suffix in {"md", "mdx", "rst", "adoc"}:
+            evidence_role = "documentation"
+        elif role in {"configuration", "workspace_manifest"}:
+            evidence_role = "configuration"
+        else:
+            evidence_role = "implementation"
+        counts[evidence_role] += 1
+        files.append({
+            "source_id": str(row["source_id"]),
+            "path": relative_path,
+            "role": evidence_role,
+        })
+    return {
+        "files_read": len(files),
+        "implementation_files": counts["implementation"],
+        "test_files": counts["test"],
+        "documentation_files": counts["documentation"],
+        "configuration_files": counts["configuration"],
+        "files": files,
+    }
+
+
+def _project_orientation_evidence(project_id: str) -> dict | None:
+    """Return one bounded active implementation excerpt for project-orientation questions."""
+
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT ps.source_id, ps.relative_path, ps.file_role,
+                   sources.title, sources.source_type, sources.cluster_id,
+                   sources.provenance, sources.trust_tier, sources.security_labels,
+                   chunks.id AS chunk_id, chunks.page_id, pages.page_number,
+                   chunks.text
+            FROM project_sources ps
+            JOIN projects ON projects.id = ps.project_id
+            JOIN sources ON sources.id = ps.source_id
+            JOIN source_chunks chunks ON chunks.source_id = sources.id
+            LEFT JOIN source_pages pages ON pages.id = chunks.page_id
+            WHERE ps.project_id = ?
+              AND sources.deleted_at IS NULL
+              AND sources.activation_state = 'active'
+              AND sources.project_snapshot_id = projects.active_retrieval_snapshot_id
+              AND chunks.activation_state = 'active'
+              AND chunks.project_snapshot_id = projects.active_retrieval_snapshot_id
+              AND ps.file_role NOT IN ('test', 'documentation', 'configuration', 'workspace_manifest')
+            ORDER BY
+                CASE ps.file_role
+                    WHEN 'entrypoint' THEN 0
+                    WHEN 'source' THEN 1
+                    ELSE 2
+                END,
+                ps.relative_path,
+                chunks.chunk_index
+            LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    snippet = " ".join(str(row["text"] or "").split())[:900]
+    if not snippet:
+        return None
+    source_id = str(row["source_id"])
+    title = str(row["title"] or row["relative_path"] or "Project source")
+    trust_tier = str(row["trust_tier"] or "trusted_local")
+    source_type = str(row["source_type"] or "code")
+    return {
+        "citation": {
+            "source_id": source_id,
+            "source_title": title,
+            "chunk_id": row["chunk_id"],
+            "page_id": row["page_id"],
+            "page_number": row["page_number"],
+            "snippet": snippet,
+            "score": 0.0,
+            "provenance": str(row["provenance"] or "local_import"),
+            "trust_tier": trust_tier,
+            "security_labels": row["security_labels"] or "[]",
+            "low_trust": False,
+            "state": "current",
+            "source_type": source_type,
+            "evidence_role": "project_orientation",
+        },
+        "source_snippet": {
+            "id": source_id,
+            "title": title,
+            "source_type": source_type,
+            "trust_tier": trust_tier,
+            "summary": snippet[:320],
+            "cluster_id": row["cluster_id"],
+        },
+    }
+
+
+def _is_structural_project_question(query: str) -> bool:
+    normalized = str(query or "").casefold()
+    return any(
+        phrase in normalized
+        for phrase in (
+            "architecture", "call flow", "dependency", "dependencies", "depends on",
+            "function", "method", "class", "route", "handler", "implemented",
+            "implementation", "where is", "how does", "entrypoint", "entry point",
+            "graph", "map", "relationship",
+        )
+    )
+
+
+def _is_project_overview_question(query: str) -> bool:
+    normalized = " ".join(str(query or "").casefold().split())
+    subject = any(
+        term in normalized
+        for term in ("project", "repository", "repo", "codebase", "application", "app")
+    )
+    orientation = any(
+        phrase in normalized
+        for phrase in (
+            "what does",
+            "what is",
+            "purpose",
+            "overview",
+            "summarize",
+            "summary",
+            "about",
+        )
+    )
+    return subject and orientation
 
 
 _CONTEXT_STOPWORDS = {

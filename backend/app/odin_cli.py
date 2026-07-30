@@ -26,9 +26,18 @@ EXIT_INTERNAL = 10
 
 
 class OdinClientError(RuntimeError):
-    def __init__(self, message: str, exit_code: int = EXIT_INTERNAL):
+    def __init__(
+        self,
+        message: str,
+        exit_code: int = EXIT_INTERNAL,
+        *,
+        code: str = "odin_error",
+        next_action: str = "",
+    ):
         super().__init__(message)
         self.exit_code = exit_code
+        self.code = code
+        self.next_action = next_action
 
 
 DEFAULT_CLI_SCOPES = ["cluster:link", "context:read", "project:read", "project:write", "source:read"]
@@ -71,9 +80,26 @@ class OdinClient:
                     raise OdinClientError(
                         "CML is busy indexing. Wait a moment and retry Odin pairing.",
                         EXIT_BACKEND_UNAVAILABLE,
+                        code="cli_auth_store_busy",
+                        next_action="retry",
+                    ) from exc
+                if detail in {
+                    "executable_fingerprint_mismatch",
+                    "Executable fingerprint mismatch.",
+                }:
+                    raise OdinClientError(
+                        "Odin changed since this computer approved it. Repair Odin in Vault Settings, then pair it again.",
+                        EXIT_AUTHENTICATION,
+                        code="executable_fingerprint_mismatch",
+                        next_action="repair_and_pair",
                     ) from exc
                 code = EXIT_AUTHENTICATION if exc.code in {401, 403} else EXIT_INVALID_INPUT
-                raise OdinClientError(detail, code) from exc
+                raise OdinClientError(
+                    detail,
+                    code,
+                    code=_machine_error_code(detail),
+                    next_action="pair" if exc.code in {401, 403} else "review_input",
+                ) from exc
             except URLError as exc:
                 raise OdinClientError(
                     "CML is not running. Open CML and retry, or start the local backend.",
@@ -102,19 +128,28 @@ def main() -> int:
             else:
                 print("Odin is signed out on this computer. You can revoke its retained client access in Vault Settings.")
             return 0
-        descriptor = _load_runtime_descriptor(args.backend)
-        client = OdinClient(descriptor["backend_url"], "", api_prefix=descriptor["api_prefix"])
-        if args.command == "auth" and args.auth_command == "pair":
-            result = _pair(client, descriptor, as_json=getattr(args, "json", False))
+        if args.command == "doctor":
+            result = _doctor(args.backend)
         else:
-            development_token = _development_token(args)
-            if development_token:
-                client.token = development_token
+            descriptor = _load_runtime_descriptor(args.backend)
+            client = OdinClient(descriptor["backend_url"], "", api_prefix=descriptor["api_prefix"])
+            if args.command == "auth" and args.auth_command == "pair":
+                result = _pair(client, descriptor, as_json=getattr(args, "json", False))
             else:
-                _establish_cli_session(client, descriptor)
-            result = dispatch(client, args)
+                development_token = _development_token(args)
+                if development_token:
+                    client.token = development_token
+                else:
+                    _establish_cli_session(client, descriptor)
+                result = dispatch(client, args)
     except OdinClientError as exc:
-        _print_error(str(exc), as_json=getattr(args, "json", False), exit_code=exc.exit_code)
+        _print_error(
+            str(exc),
+            as_json=getattr(args, "json", False),
+            exit_code=exc.exit_code,
+            code=exc.code,
+            next_action=exc.next_action,
+        )
         return exc.exit_code
     except KeyboardInterrupt:
         _print_error("Odin was cancelled.", as_json=getattr(args, "json", False), exit_code=EXIT_CANCELLED)
@@ -142,6 +177,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--token", help=argparse.SUPPRESS)
     parser.add_argument("--json", action="store_true", help="Return versioned JSON output.")
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser(
+        "doctor",
+        help="Check the local Odin launcher, Vault connection, and approval without reading project files.",
+    )
 
     auth = commands.add_parser("auth", help="Inspect Odin authentication.")
     auth_commands = auth.add_subparsers(dest="auth_command", required=True)
@@ -170,11 +209,28 @@ def build_parser() -> argparse.ArgumentParser:
     status = project_commands.add_parser("status", help="Show project indexing status.")
     _add_project_target(status)
 
+    changes = project_commands.add_parser(
+        "changes",
+        help="Show new, changed, and removed files without rebuilding the project index.",
+    )
+    _add_project_target(changes)
+    changes.add_argument("--max-paths", type=int, default=5000)
+
     sync = project_commands.add_parser("sync", help="Reconcile the current working tree.")
     _add_project_target(sync)
     sync.add_argument(
         "--scope", choices=("context", "code"),
         help="Persist a new discovery scope before synchronizing.",
+    )
+    sync.add_argument(
+        "--full",
+        action="store_true",
+        help="Rebuild every project layer instead of applying changed files.",
+    )
+    sync.add_argument(
+        "--changed",
+        action="store_true",
+        help="Apply changed files only (the default when --scope and --full are omitted).",
     )
     sync.add_argument("--no-wait", action="store_true")
 
@@ -236,6 +292,12 @@ def build_parser() -> argparse.ArgumentParser:
     context.add_argument("query")
     context.add_argument("--project", default=".")
     context.add_argument("--project-id")
+    context.add_argument("--project-name")
+    context.add_argument(
+        "--require-fresh",
+        action="store_true",
+        help="Synchronize detected project changes before retrieving context.",
+    )
     return parser
 
 
@@ -247,7 +309,9 @@ def dispatch(client: OdinClient, args: argparse.Namespace) -> object:
             return {"authenticated": True, "backend": health, "client": me, "vault_count": len(me.get("allowed_vault_ids", []))}
         raise OdinClientError("Unknown Odin authentication command.", EXIT_INVALID_INPUT)
     if args.command == "context":
-        project = _resolve_project(client, args.project_id, args.project)
+        project = _resolve_project(client, args.project_id, args.project, args.project_name)
+        if args.require_fresh:
+            project = _ensure_fresh_project(client, project)
         return client.request(
             "POST",
             f"projects/{project['id']}/context",
@@ -278,11 +342,31 @@ def dispatch(client: OdinClient, args: argparse.Namespace) -> object:
     if action == "list":
         return client.projects(args.vault_id)
 
-    project = _resolve_project(client, args.project_id, args.path)
+    project = _resolve_project(client, args.project_id, args.path, args.project_name)
     project_id = str(project["id"])
     if action == "status":
         return client.request("GET", f"projects/{project_id}")
+    if action == "changes":
+        return client.request(
+            "GET",
+            f"projects/{project_id}/changes?{urlencode({'max_paths': args.max_paths})}",
+        )
     if action == "sync":
+        if args.changed and (args.full or args.scope):
+            raise OdinClientError(
+                "--changed cannot be combined with --full or --scope.",
+                EXIT_INVALID_INPUT,
+            )
+        if not args.full and not args.scope:
+            report = dict(client.request("POST", f"projects/{project_id}/sync-changes", {}))
+            if not report.get("changed") or args.no_wait:
+                return report
+            current_project = dict(client.request("GET", f"projects/{project_id}"))
+            run_id = current_project.get("active_run_id")
+            if not run_id:
+                return report
+            run = dict(client.request("GET", f"projects/{project_id}/runs/{run_id}"))
+            return _wait_for_project_run(client, current_project, run)
         body = {"discovery_scope": args.scope} if args.scope else {}
         queued = dict(client.request("POST", f"projects/{project_id}/sync", body))
         return queued if args.no_wait else _wait_for_project_run(client, queued["project"], queued["run"])
@@ -420,6 +504,44 @@ def format_result(args: argparse.Namespace, result: object) -> str:
         return "\n".join(_project_line(item) for item in result)
     if not isinstance(result, dict):
         return str(result)
+    if args.command == "doctor":
+        lines = [f"Odin check: {result.get('status', 'unknown')}"]
+        for check in result.get("checks", []):
+            lines.append(
+                f"- {check.get('name')}: {check.get('status')}"
+                + (f" — {check.get('detail')}" if check.get("detail") else "")
+            )
+        if result.get("next_action"):
+            lines.append(f"Next: {result['next_action']}")
+        return "\n".join(lines)
+    if "evidence_summary" in result and "retrieval_authority" in result:
+        evidence = result.get("evidence_summary") or {}
+        freshness = result.get("freshness") or {}
+        lines = [
+            f"{result.get('project_name', 'Project')} context",
+            (
+                f"Evidence: {evidence.get('implementation_files', 0)} implementation, "
+                f"{evidence.get('test_files', 0)} test, "
+                f"{evidence.get('documentation_files', 0)} documentation files"
+            ),
+            (
+                f"Snapshot: {freshness.get('retrieval_snapshot_id') or result.get('snapshot_id')} · "
+                f"Authority: {'verified' if result.get('retrieval_authority') else 'limited'}"
+            ),
+        ]
+        for snippet in (result.get("source_snippets") or [])[:6]:
+            text = (
+                str(snippet.get("text") or snippet.get("snippet") or "").strip()
+                if isinstance(snippet, dict)
+                else str(snippet).strip()
+            )
+            if text:
+                lines.append(f"\n{text}")
+        limitations = list(result.get("limitations") or [])
+        if limitations:
+            lines.append("\nLimits:")
+            lines.extend(f"- {item}" for item in limitations)
+        return "\n".join(lines)
     if "project" in result and isinstance(result["project"], dict):
         project = result["project"]
         run = result.get("run") or {}
@@ -427,6 +549,20 @@ def format_result(args: argparse.Namespace, result: object) -> str:
         return _project_detail(project) + suffix
     if "name" in result and "primary_cluster_id" in result:
         return _project_detail(result)
+    if "changed_paths" in result and "detection_mode" in result:
+        paths = list(result.get("changed_paths") or [])
+        heading = (
+            f"{len(paths)} changed path{'s' if len(paths) != 1 else ''}"
+            if result.get("changed")
+            else "Project files are current"
+        )
+        details = [heading, f"Detection: {result['detection_mode']}"]
+        details.extend(f"- {path}" for path in paths)
+        if result.get("requires_full_scan"):
+            details.append("A lightweight fingerprint found changes; synchronization will verify the folder.")
+        if result.get("truncated"):
+            details.append("More changed paths exist. Use --max-paths to raise the limit.")
+        return "\n".join(details)
     if result.get("authenticated"):
         return f"Odin is authenticated to {result['backend']['service']} · {result['vault_count']} vault(s) available."
     if result.get("removed"):
@@ -464,26 +600,60 @@ def _project_line(project: dict) -> str:
 def _project_detail(project: dict) -> str:
     commit = str(project.get("indexed_commit") or "")[:7] or "folder snapshot"
     languages = ", ".join(list((project.get("languages") or {}).keys())[:3]) or "not detected"
-    return "\n".join(
-        [
+    lines = [
             f"{project['name']} · {project['status']}",
             f"Root: {project['root_path']}",
             f"Scope: {project.get('discovery_scope', 'context')}",
             f"Snapshot: {commit} · {project.get('source_count', 0)} indexed files",
             f"Languages: {languages}",
             f"Structure: {project['structure_status']} · Search: {project['retrieval_status']} · Brief: {project['interpretation_status']}",
+            f"Automatic sync: {'on' if project.get('auto_sync_enabled', True) else 'off'}",
+            (
+                f"Last change check: {project.get('last_change_checked_at')}"
+                if project.get("last_change_checked_at")
+                else "Last change check: not yet"
+            ),
         ]
-    )
+    if project.get("structure_status") == "stale" and project.get("retrieval_status") == "ready":
+        lines.append(
+            "Freshness: search includes the latest file changes; run `odin project sync .` "
+            "when you need a current structure map."
+        )
+    return "\n".join(lines)
 
 
 def _add_project_target(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("path", nargs="?", default=".")
     parser.add_argument("--project-id")
+    parser.add_argument("--project-name")
 
 
-def _resolve_project(client: OdinClient, project_id: str | None, path: str) -> dict:
+def _resolve_project(
+    client: OdinClient,
+    project_id: str | None,
+    path: str,
+    project_name: str | None = None,
+) -> dict:
     if project_id:
         return dict(client.request("GET", f"projects/{project_id}"))
+    if project_name:
+        matches = [
+            project
+            for project in client.projects()
+            if str(project.get("name") or "").casefold() == project_name.strip().casefold()
+        ]
+        if len(matches) == 1:
+            return dict(matches[0])
+        if not matches:
+            raise OdinClientError(
+                f"No registered project is named {project_name!r}. Use `odin project list`.",
+                EXIT_INVALID_INPUT,
+            )
+        choices = ", ".join(str(project["id"]) for project in matches[:5])
+        raise OdinClientError(
+            f"More than one project is named {project_name!r}. Use --project-id ({choices}).",
+            EXIT_INVALID_INPUT,
+        )
     root = _resolved_directory(path)
     normalized = os.path.normcase(os.path.normpath(str(root)))
     for project in client.projects():
@@ -491,6 +661,23 @@ def _resolve_project(client: OdinClient, project_id: str | None, path: str) -> d
         if candidate == normalized:
             return project
     raise OdinClientError("This folder is not registered with Odin. Run `odin project add . --name NAME`.", EXIT_INVALID_INPUT)
+
+
+def _ensure_fresh_project(client: OdinClient, project: dict) -> dict:
+    project_id = str(project["id"])
+    report = dict(client.request("POST", f"projects/{project_id}/sync-changes", {}))
+    if not report.get("changed"):
+        return dict(client.request("GET", f"projects/{project_id}"))
+    current = dict(client.request("GET", f"projects/{project_id}"))
+    run_id = current.get("active_run_id")
+    if not run_id:
+        raise OdinClientError(
+            "Project changes were detected, but synchronization did not start.",
+            EXIT_PARTIAL,
+        )
+    run = dict(client.request("GET", f"projects/{project_id}/runs/{run_id}"))
+    result = _wait_for_project_run(client, current, run)
+    return dict(result["project"])
 
 
 def _resolve_cluster_id(client: OdinClient, vault_id: str, name: str) -> str:
@@ -606,6 +793,80 @@ def _development_token(args: argparse.Namespace) -> str:
     return token
 
 
+def _doctor(explicit_backend: str | None = None) -> dict:
+    checks: list[dict[str, str]] = [
+        {
+            "name": "launcher",
+            "status": "ready",
+            "detail": str(Path(sys.argv[0]).resolve()),
+        }
+    ]
+    try:
+        descriptor = _load_runtime_descriptor(explicit_backend)
+    except OdinClientError as exc:
+        checks.append({"name": "vault", "status": "unavailable", "detail": str(exc)})
+        return {
+            "status": "attention",
+            "checks": checks,
+            "error_code": exc.code,
+            "next_action": exc.next_action or "open_vault",
+            "reads_project_content": False,
+        }
+    checks.append(
+        {
+            "name": "vault",
+            "status": "ready",
+            "detail": "The local Vault runtime is available.",
+        }
+    )
+    try:
+        _credential_helper("read")
+    except OdinClientError as exc:
+        checks.append(
+            {
+                "name": "approval",
+                "status": "missing",
+                "detail": "This computer has not stored an Odin approval.",
+            }
+        )
+        return {
+            "status": "attention",
+            "checks": checks,
+            "error_code": exc.code,
+            "next_action": "pair",
+            "reads_project_content": False,
+        }
+    client = OdinClient(
+        descriptor["backend_url"],
+        "",
+        api_prefix=descriptor["api_prefix"],
+    )
+    try:
+        _establish_cli_session(client, descriptor)
+    except OdinClientError as exc:
+        checks.append({"name": "approval", "status": "repair_needed", "detail": str(exc)})
+        return {
+            "status": "attention",
+            "checks": checks,
+            "error_code": exc.code,
+            "next_action": exc.next_action or "pair",
+            "reads_project_content": False,
+        }
+    checks.append(
+        {
+            "name": "approval",
+            "status": "ready",
+            "detail": "The launcher matches its approved identity.",
+        }
+    )
+    return {
+        "status": "ready",
+        "checks": checks,
+        "next_action": "none",
+        "reads_project_content": False,
+    }
+
+
 def _pair(client: OdinClient, descriptor: dict, *, as_json: bool) -> dict:
     verifier = secrets.token_urlsafe(48)
     verifier_hash = hashlib.sha256(verifier.encode("utf-8")).hexdigest()
@@ -701,9 +962,26 @@ def _http_error_detail(exc: HTTPError) -> str:
     return f"Odin request failed with HTTP {exc.code}."
 
 
-def _print_error(message: str, *, as_json: bool, exit_code: int) -> None:
+def _machine_error_code(detail: str) -> str:
+    normalized = detail.strip().casefold().replace(" ", "_").replace("-", "_").rstrip("._")
+    if normalized and all(character.isalnum() or character == "_" for character in normalized):
+        return normalized[:80]
+    return "odin_request_failed"
+
+
+def _print_error(
+    message: str,
+    *,
+    as_json: bool,
+    exit_code: int,
+    code: str = "odin_error",
+    next_action: str = "",
+) -> None:
     if as_json:
-        print(json.dumps({"version": 1, "error": {"message": message, "exit_code": exit_code}}, indent=2), file=sys.stderr)
+        error = {"code": code, "message": message, "exit_code": exit_code}
+        if next_action:
+            error["next_action"] = next_action
+        print(json.dumps({"version": 1, "error": error}, indent=2), file=sys.stderr)
     else:
         print(message, file=sys.stderr)
 

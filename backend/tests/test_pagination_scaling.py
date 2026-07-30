@@ -72,6 +72,52 @@ class PaginationScalingTests(unittest.TestCase):
         self.assertNotIn("cluster-newer", ids)
         self.assertLess(elapsed, 5.0)
 
+    def test_cluster_destination_search_is_server_filtered_and_bounded(self) -> None:
+        from backend.app.api.routes.clusters import list_clusters_page
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, description, color, cluster_summary,
+                    created_at, updated_at
+                )
+                VALUES (?, 'vault-scale', ?, ?, 'sage', ?, ?, ?)
+                """,
+                [
+                    (
+                        f"search-cluster-{index}",
+                        f"Archive {index}",
+                        "Ordinary records",
+                        "General material",
+                        now,
+                        f"2026-01-01T00:00:{index:02d}+00:00",
+                    )
+                    for index in range(60)
+                ]
+                + [
+                    (
+                        "search-cluster-target",
+                        "Ethical spyware reports",
+                        "Security research",
+                        "Mobile surveillance analysis",
+                        now,
+                        "2099-01-01T00:00:00+00:00",
+                    )
+                ],
+            )
+
+        result = list_clusters_page(
+            vault_id="vault-scale",
+            limit=20,
+            q="spyware",
+        )
+
+        self.assertEqual([item["id"] for item in result["items"]], ["search-cluster-target"])
+        self.assertIsNone(result["next_cursor"])
+
     def test_project_list_hydration_uses_constant_query_count(self) -> None:
         from backend.app.core.database import connect, utc_now
         from backend.app.core.projects import list_projects_page

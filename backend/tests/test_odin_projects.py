@@ -1,4 +1,7 @@
 import os
+import hashlib
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -84,6 +87,384 @@ class OdinProjectTests(unittest.TestCase):
             ).fetchone()["total"]
         self.assertEqual(paths, {"package.json", "src/auth.ts", "src/main.ts"})
         self.assertGreaterEqual(node_count, 6)
+
+    def test_delta_probe_detects_a_new_untracked_file_and_queues_sync(self) -> None:
+        from backend.app.core.projects import get_project, probe_project_changes
+
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            sync=True,
+        )
+        self.assertTrue(project["change_fingerprint"])
+        (self.repo / "src" / "new-file.ts").write_text(
+            "export const newlyAdded = true;\n",
+            encoding="utf-8",
+        )
+
+        result = probe_project_changes(project["id"])
+        current = get_project(project["id"])
+
+        self.assertTrue(result["changed"])
+        self.assertTrue(result["sync_queued"])
+        self.assertEqual(current["status"], "indexing")
+
+    def test_notify_sync_mode_reports_typed_changes_without_queuing_work(self) -> None:
+        from backend.app.core.projects import (
+            inspect_project_changes,
+            probe_project_changes,
+            update_project,
+        )
+
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.email", "odin-test@example.invalid"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.name", "Odin Test"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-q", "-m", "baseline"],
+            check=True,
+        )
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Notify project",
+            sync=True,
+        )
+        update_project(project["id"], sync_mode="notify")
+        (self.repo / "src" / "auth.ts").rename(self.repo / "src" / "permissions.ts")
+        (self.repo / "src" / "new.ts").write_text(
+            "export const created = true;\n",
+            encoding="utf-8",
+        )
+
+        inspected = inspect_project_changes(project["id"])
+        probed = probe_project_changes(project["id"])
+
+        self.assertTrue(inspected["changed"])
+        self.assertEqual(inspected["sync_mode"], "notify")
+        self.assertIn("added", {item["kind"] for item in inspected["change_items"]})
+        self.assertIn("renamed", {item["kind"] for item in inspected["change_items"]})
+        self.assertFalse(probed["sync_queued"])
+        self.assertEqual(probed["next_action"], "sync_changes")
+
+    def test_dirty_worktree_matching_active_snapshot_is_not_pending_for_odin(self) -> None:
+        from backend.app.core.projects import inspect_project_changes
+
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.email", "odin-test@example.invalid"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.name", "Odin Test"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-q", "-m", "baseline"],
+            check=True,
+        )
+        (self.repo / "src" / "auth.ts").write_text(
+            "export function authorize() { return 'indexed-dirty-version'; }\n",
+            encoding="utf-8",
+        )
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Dirty snapshot project",
+            sync=True,
+        )
+
+        indexed = inspect_project_changes(project["id"])
+
+        self.assertFalse(indexed["changed"])
+        self.assertEqual(indexed["changed_path_count"], 0)
+        self.assertTrue(indexed["working_tree_dirty"])
+        self.assertIn("src/auth.ts", indexed["repository_changed_paths"])
+
+        (self.repo / "src" / "auth.ts").write_text(
+            "export function authorize() { return 'newer-than-snapshot'; }\n",
+            encoding="utf-8",
+        )
+        pending = inspect_project_changes(project["id"])
+
+        self.assertTrue(pending["changed"])
+        self.assertEqual(pending["changed_paths"], ["src/auth.ts"])
+        self.assertEqual(pending["change_items"][0]["kind"], "modified")
+
+    def test_targeted_sync_accepts_snapshot_filtered_git_delta(self) -> None:
+        from backend.app.api.routes.projects import project_sync_targeted
+        from backend.app.schemas import ProjectTargetedSyncRequest
+
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.email", "odin-test@example.invalid"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.name", "Odin Test"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-q", "-m", "baseline"],
+            check=True,
+        )
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Targeted route project",
+            sync=True,
+        )
+        (self.repo / "src" / "auth.ts").write_text(
+            "export function authorize() { return 'targeted-change'; }\n",
+            encoding="utf-8",
+        )
+
+        queued = project_sync_targeted(
+            project["id"],
+            ProjectTargetedSyncRequest(paths=["src/auth.ts"]),
+        )
+
+        self.assertEqual(queued["targeted_paths"], ["src/auth.ts"])
+        self.assertTrue(queued["freshness_token"])
+
+    def test_snapshot_delta_scales_across_many_already_indexed_untracked_files(self) -> None:
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.projects import (
+            inspect_project_changes,
+            project_discovery_policy_hash,
+            register_project,
+        )
+
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.email", "odin-test@example.invalid"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.name", "Odin Test"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-q", "-m", "baseline"],
+            check=True,
+        )
+        generated = self.repo / "src" / "scale"
+        generated.mkdir()
+        for index in range(750):
+            (generated / f"module-{index:04d}.ts").write_text(
+                f"export const value{index} = {index};\n",
+                encoding="utf-8",
+            )
+        project = register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Scale snapshot project",
+            sync=False,
+        )
+        manifest_files = []
+        for path in sorted(self.repo.rglob("*")):
+            if not path.is_file() or ".git" in path.parts or path.name == ".env":
+                continue
+            raw = path.read_bytes()
+            manifest_files.append(
+                {
+                    "path": path.relative_to(self.repo).as_posix(),
+                    "hash": hashlib.sha256(raw).hexdigest(),
+                }
+            )
+        snapshot_id = "snapshot-scale-active"
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO project_snapshots (
+                    id, project_id, discovery_scope, source_manifest_hash, git_commit,
+                    branch, dirty_working_tree, extractor_version, eligible_count,
+                    ignored_count, generated_count, parsed_count, failed_count,
+                    structure_status, retrieval_status, interpretation_status,
+                    manifest_json, created_at
+                ) VALUES (?, ?, 'context', '', '', '', 1, 'scale-test', ?, 0, 0, ?, 0,
+                          'ready', 'ready', 'unavailable', ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    project["id"],
+                    len(manifest_files),
+                    len(manifest_files),
+                    json.dumps(
+                        {
+                            "version": 2,
+                            "policy_hash": project_discovery_policy_hash(self.repo),
+                            "files": manifest_files,
+                        }
+                    ),
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE projects
+                SET active_snapshot_id = ?, active_manifest_snapshot_id = ?,
+                    active_retrieval_snapshot_id = ?, status = 'ready'
+                WHERE id = ?
+                """,
+                (snapshot_id, snapshot_id, snapshot_id, project["id"]),
+            )
+
+        report = inspect_project_changes(project["id"], max_paths=1000)
+
+        self.assertGreaterEqual(report["repository_changed_path_count"], 750)
+        self.assertEqual(report["changed_path_count"], 0)
+        self.assertFalse(report["changed"])
+        self.assertFalse(report["truncated"])
+
+    def test_repeated_targeted_delta_reuses_versioned_freshness_token(self) -> None:
+        from backend.app.core.projects import sync_project_delta
+
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Targeted project",
+            sync=False,
+        )
+        first = sync_project_delta(
+            project["id"],
+            changed_paths=["src/auth.ts"],
+            trigger_source="question_targeted",
+        )
+        repeated = sync_project_delta(
+            project["id"],
+            changed_paths=["src/auth.ts"],
+            trigger_source="question_targeted",
+        )
+
+        self.assertTrue(first["snapshot_id"])
+        self.assertEqual(repeated["sync_kind"], "existing")
+        self.assertEqual(repeated["snapshot_id"], first["snapshot_id"])
+
+    def test_project_auto_sync_setting_persists_on_create_and_update(self) -> None:
+        from backend.app.core.projects import register_project, update_project
+
+        project = register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Manual project",
+            auto_sync_enabled=False,
+            sync=False,
+        )
+        self.assertFalse(project["auto_sync_enabled"])
+        self.assertEqual(project["sync_mode"], "manual")
+
+        updated = update_project(project["id"], auto_sync_enabled=True)
+        self.assertTrue(updated["auto_sync_enabled"])
+        self.assertEqual(updated["sync_mode"], "automatic")
+
+    def test_git_auto_sync_indexes_only_changed_paths_and_marks_structure_stale(self) -> None:
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect
+        from backend.app.core.projects import get_project, probe_project_changes
+
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.email", "odin-test@example.invalid"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.name", "Odin Test"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-q", "-m", "baseline"],
+            check=True,
+        )
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Git project",
+            sync=True,
+        )
+        structure_snapshot = project["active_structure_snapshot_id"]
+        with connect() as conn:
+            original_sources = {
+                row["relative_path"]: row["source_id"]
+                for row in conn.execute(
+                    "SELECT relative_path, source_id FROM project_sources WHERE project_id = ?",
+                    (project["id"],),
+                ).fetchall()
+            }
+            unchanged_chunk_ids = {
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM source_chunks WHERE source_id = ?",
+                    (original_sources["package.json"],),
+                ).fetchall()
+            }
+
+        (self.repo / "src" / "main.ts").write_text(
+            "export const start = () => 'changed';\n",
+            encoding="utf-8",
+        )
+        (self.repo / "src" / "new-file.ts").write_text(
+            "export const newlyAdded = true;\n",
+            encoding="utf-8",
+        )
+        (self.repo / "src" / "auth.ts").unlink()
+
+        report = probe_project_changes(project["id"])
+        self.assertEqual(report["sync_kind"], "git_delta")
+        self.assertEqual(
+            set(report["changed_paths"]),
+            {"src/auth.ts", "src/main.ts", "src/new-file.ts"},
+        )
+        run_due_jobs_once(limit=20)
+        current = get_project(project["id"])
+
+        self.assertEqual(current["status"], "ready")
+        self.assertEqual(current["retrieval_status"], "ready")
+        self.assertEqual(current["structure_status"], "stale")
+        self.assertEqual(current["active_structure_snapshot_id"], structure_snapshot)
+        self.assertNotEqual(current["active_retrieval_snapshot_id"], structure_snapshot)
+        with connect() as conn:
+            current_sources = {
+                row["relative_path"]: row["source_id"]
+                for row in conn.execute(
+                    "SELECT relative_path, source_id FROM project_sources WHERE project_id = ?",
+                    (project["id"],),
+                ).fetchall()
+            }
+            current_chunk_ids = {
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM source_chunks WHERE source_id = ?",
+                    (current_sources["package.json"],),
+                ).fetchall()
+            }
+            delta_job = conn.execute(
+                """
+                SELECT status FROM app_jobs
+                WHERE job_type = 'project_delta_apply' AND scope_id = ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (project["id"],),
+            ).fetchone()
+        self.assertEqual(
+            set(current_sources),
+            {"package.json", "src/main.ts", "src/new-file.ts"},
+        )
+        self.assertEqual(current_sources["package.json"], original_sources["package.json"])
+        self.assertEqual(current_chunk_ids, unchanged_chunk_ids)
+        self.assertEqual(delta_job["status"], "succeeded")
 
     def test_phased_activation_is_the_only_project_snapshot_writer(self) -> None:
         project_source = (
@@ -607,6 +988,11 @@ class OdinProjectTests(unittest.TestCase):
         self.assertEqual(response["project_id"], project["id"])
         self.assertTrue(response["citations"])
         self.assertTrue(response["source_snippets"])
+        self.assertGreater(response["evidence_summary"]["implementation_files"], 0)
+        self.assertEqual(
+            response["freshness"]["retrieval_snapshot_id"],
+            project["active_retrieval_snapshot_id"],
+        )
         citation_source_ids = {item["source_id"] for item in response["citations"]}
         from backend.app.core.database import connect
         with connect() as conn:
@@ -618,6 +1004,34 @@ class OdinProjectTests(unittest.TestCase):
                 ).fetchall()
             }
         self.assertEqual(citation_clusters, {project["primary_cluster_id"]})
+
+    def test_project_context_withholds_authority_when_local_changes_are_unindexed(self) -> None:
+        from backend.app.api.routes.projects import ProjectContextRequest, project_context
+        from backend.app.core.database import connect
+
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            sync=True,
+        )
+        with connect() as conn:
+            conn.execute(
+                "UPDATE projects SET changed_file_count = 2 WHERE id = ?",
+                (project["id"],),
+            )
+
+        response = project_context(
+            project["id"],
+            ProjectContextRequest(query="What does this project do?", limit=8, mode="context"),
+        )
+
+        self.assertFalse(response["retrieval_authority"])
+        self.assertEqual(response["freshness"]["changed_file_count"], 2)
+        self.assertIn(
+            "Local project changes are not included in this snapshot.",
+            response["limitations"],
+        )
 
     def test_project_chat_retrieves_the_same_project_evidence(self) -> None:
         from backend.app.api.routes.chat import _build_retrieval_context, _resolve_project_chat_scope

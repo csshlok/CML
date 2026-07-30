@@ -236,6 +236,677 @@ def root_fingerprint(root: Path) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def project_discovery_policy_hash(root: Path) -> str:
+    digest = hashlib.sha256()
+    for filename in (".cmlignore", ".gitignore"):
+        path = root / filename
+        digest.update(f"{filename}\0".encode("utf-8"))
+        try:
+            digest.update(path.read_bytes())
+        except FileNotFoundError:
+            digest.update(b"<missing>")
+        except OSError:
+            digest.update(b"<unreadable>")
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def project_change_fingerprint(root: Path) -> str:
+    """Detect working-tree deltas without parsing or indexing project content."""
+
+    if (root / ".git").exists():
+        try:
+            status = subprocess.run(
+                ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=8,
+                check=False,
+            )
+            head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                encoding="ascii",
+                errors="replace",
+                timeout=5,
+                check=False,
+            )
+            if status.returncode == 0:
+                return hashlib.sha256(
+                    f"{head.stdout.strip()}\n{status.stdout}".encode("utf-8")
+                ).hexdigest()
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    digest = hashlib.sha256()
+    for current_root, directory_names, file_names in os.walk(root):
+        directory_names[:] = sorted(
+            name
+            for name in directory_names
+            if name.casefold() not in DEFAULT_IGNORED_DIRECTORIES
+        )
+        current = Path(current_root)
+        for file_name in sorted(file_names):
+            path = current / file_name
+            try:
+                relative = path.relative_to(root).as_posix()
+                stat = path.stat()
+            except OSError:
+                continue
+            digest.update(relative.casefold().encode("utf-8", errors="replace"))
+            digest.update(f":{stat.st_size}:{stat.st_mtime_ns}\n".encode("ascii"))
+    return digest.hexdigest()
+
+
+def inspect_project_changes(project_id: str, *, max_paths: int = 5000) -> dict:
+    project = get_project(project_id)
+    root = normalize_root_path(project["root_path"])
+    bounded_max_paths = max(1, min(int(max_paths), 20_000))
+    fingerprint = project_change_fingerprint(root)
+    repository_paths, repository_detection_mode, repository_truncated = _project_changed_paths(
+        root,
+        max_paths=bounded_max_paths,
+        baseline_commit=str(project.get("indexed_commit") or "") or None,
+    )
+    previous = str(project.get("change_fingerprint") or "")
+    repository_items = _project_change_items(
+        root,
+        baseline_commit=str(project.get("indexed_commit") or "") or None,
+        max_paths=bounded_max_paths,
+    )
+    snapshot_delta = _project_snapshot_delta(
+        project=project,
+        root=root,
+        repository_paths=repository_paths,
+        repository_items=repository_items,
+        repository_detection_mode=repository_detection_mode,
+        repository_truncated=repository_truncated,
+        max_paths=bounded_max_paths,
+    )
+    return {
+        "project_id": project_id,
+        "changed": bool(snapshot_delta["changed_path_count"]),
+        "change_fingerprint": fingerprint,
+        "previous_fingerprint": previous,
+        "fingerprint_changed": bool(previous and previous != fingerprint),
+        "detection_mode": snapshot_delta["detection_mode"],
+        "changed_paths": snapshot_delta["changed_paths"],
+        "change_items": snapshot_delta["change_items"],
+        "changed_path_count": snapshot_delta["changed_path_count"],
+        "truncated": snapshot_delta["truncated"],
+        "requires_full_scan": snapshot_delta["requires_full_scan"],
+        "repository_detection_mode": repository_detection_mode,
+        "repository_changed_paths": repository_paths,
+        "repository_change_items": repository_items,
+        "repository_changed_path_count": len(repository_paths),
+        "repository_truncated": repository_truncated,
+        "working_tree_dirty": bool(repository_paths),
+        "last_checked_at": project.get("last_change_checked_at"),
+        "auto_sync_enabled": bool(project.get("auto_sync_enabled", True)),
+        "sync_mode": str(project.get("sync_mode") or "automatic"),
+    }
+
+
+def _project_changed_paths(
+    root: Path,
+    *,
+    max_paths: int,
+    baseline_commit: str | None = None,
+) -> tuple[list[str], str, bool]:
+    if (root / ".git").exists():
+        try:
+            commands = [
+                ["git", "-C", str(root), "diff", "--no-renames", "--name-only", "-z", "HEAD"],
+            ]
+            if baseline_commit:
+                commands.append(
+                    [
+                        "git", "-C", str(root), "diff", "--no-renames",
+                        "--name-only", "-z", f"{baseline_commit}..HEAD",
+                    ]
+                )
+            changed_results = [
+                subprocess.run(command, capture_output=True, timeout=8, check=False)
+                for command in commands
+            ]
+            untracked = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "ls-files",
+                    "--others",
+                    "--exclude-standard",
+                    "-z",
+                ],
+                capture_output=True,
+                timeout=8,
+                check=False,
+            )
+            if all(result.returncode == 0 for result in changed_results) and untracked.returncode == 0:
+                values = [
+                    item.decode("utf-8", errors="replace").replace("\\", "/")
+                    for item in [
+                        *[
+                            value
+                            for result in changed_results
+                            for value in result.stdout.split(b"\0")
+                        ],
+                        *untracked.stdout.split(b"\0"),
+                    ]
+                    if item
+                ]
+                unique = sorted(dict.fromkeys(values), key=str.casefold)
+                return unique[:max_paths], "git_delta", len(unique) > max_paths
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return [], "metadata_fingerprint", False
+
+
+def _project_change_items(
+    root: Path,
+    *,
+    baseline_commit: str | None,
+    max_paths: int,
+) -> list[dict]:
+    if not (root / ".git").exists():
+        return []
+    commands: list[list[str]] = [
+        [
+            "git",
+            "-C",
+            str(root),
+            "diff",
+            "--name-status",
+            "-z",
+            "--find-renames",
+            "HEAD",
+        ]
+    ]
+    if baseline_commit:
+        commands.append(
+            [
+                "git",
+                "-C",
+                str(root),
+                "diff",
+                "--name-status",
+                "-z",
+                "--find-renames",
+                f"{baseline_commit}..HEAD",
+            ]
+        )
+    items: dict[tuple[str, str], dict] = {}
+    try:
+        for command in commands:
+            result = subprocess.run(command, capture_output=True, timeout=8, check=False)
+            if result.returncode != 0:
+                continue
+            for item in _parse_git_name_status(result.stdout):
+                key = (str(item["kind"]), str(item["path"]).casefold())
+                items[key] = item
+        untracked = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ],
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+        if untracked.returncode == 0:
+            for raw_path in untracked.stdout.split(b"\0"):
+                if not raw_path:
+                    continue
+                path = raw_path.decode("utf-8", errors="replace").replace("\\", "/")
+                items[("added", path.casefold())] = {
+                    "kind": "added",
+                    "path": path,
+                    "previous_path": None,
+                }
+    except (OSError, subprocess.SubprocessError):
+        return []
+    _coalesce_unstaged_renames(root, items)
+    return sorted(
+        items.values(),
+        key=lambda item: (str(item["path"]).casefold(), str(item["kind"])),
+    )[:max_paths]
+
+
+def _coalesce_unstaged_renames(
+    root: Path,
+    items: dict[tuple[str, str], dict],
+) -> None:
+    """Recognize exact renames whose destination is still untracked.
+
+    ``git diff`` cannot pair a tracked deletion with an untracked destination.
+    Comparing Git object IDs gives us a conservative rename signal without
+    staging files or mutating the user's repository.
+    """
+
+    deleted_items = [
+        (key, item)
+        for key, item in items.items()
+        if item.get("kind") == "deleted" and str(item.get("path") or "")
+    ]
+    added_items = [
+        (key, item)
+        for key, item in items.items()
+        if item.get("kind") == "added" and str(item.get("path") or "")
+    ]
+    if not deleted_items or not added_items:
+        return
+
+    deleted_by_oid: dict[str, list[tuple[tuple[str, str], dict]]] = {}
+    added_by_oid: dict[str, list[tuple[tuple[str, str], dict]]] = {}
+    try:
+        tree = subprocess.run(
+            ["git", "-C", str(root), "ls-tree", "-r", "-z", "HEAD"],
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+        if tree.returncode != 0:
+            return
+        head_oids: dict[str, str] = {}
+        for raw_entry in tree.stdout.split(b"\0"):
+            if not raw_entry or b"\t" not in raw_entry:
+                continue
+            metadata, raw_path = raw_entry.split(b"\t", 1)
+            parts = metadata.split()
+            if len(parts) < 3:
+                continue
+            path = raw_path.decode("utf-8", errors="replace").replace("\\", "/")
+            head_oids[path.casefold()] = parts[2].decode("ascii", errors="ignore")
+        for key, item in deleted_items:
+            oid = head_oids.get(str(item["path"]).casefold(), "")
+            if len(oid) >= 20:
+                deleted_by_oid.setdefault(oid, []).append((key, item))
+
+        added_paths = [str(item["path"]) for _, item in added_items]
+        hashes = subprocess.run(
+            ["git", "-C", str(root), "hash-object", "--stdin-paths"],
+            input=("\n".join(added_paths) + "\n").encode("utf-8"),
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+        if hashes.returncode != 0:
+            return
+        added_oids = hashes.stdout.decode("ascii", errors="ignore").splitlines()
+        for (key, item), oid in zip(added_items, added_oids, strict=False):
+            oid = oid.strip()
+            if len(oid) >= 20:
+                added_by_oid.setdefault(oid, []).append((key, item))
+    except (OSError, subprocess.SubprocessError):
+        return
+
+    for oid in deleted_by_oid.keys() & added_by_oid.keys():
+        deleted = deleted_by_oid[oid]
+        added = added_by_oid[oid]
+        if len(deleted) != 1 or len(added) != 1:
+            continue
+        deleted_key, deleted_item = deleted[0]
+        added_key, added_item = added[0]
+        items.pop(deleted_key, None)
+        items.pop(added_key, None)
+        destination = str(added_item["path"])
+        items[("renamed", destination.casefold())] = {
+            "kind": "renamed",
+            "path": destination,
+            "previous_path": deleted_item["path"],
+        }
+
+
+def _parse_git_name_status(raw: bytes) -> list[dict]:
+    tokens = [token for token in raw.split(b"\0") if token]
+    items: list[dict] = []
+    index = 0
+    while index < len(tokens):
+        status = tokens[index].decode("ascii", errors="replace")
+        index += 1
+        if index >= len(tokens):
+            break
+        first_path = tokens[index].decode("utf-8", errors="replace").replace("\\", "/")
+        index += 1
+        code = status[:1]
+        if code in {"R", "C"} and index < len(tokens):
+            next_path = tokens[index].decode("utf-8", errors="replace").replace("\\", "/")
+            index += 1
+            items.append(
+                {
+                    "kind": "renamed" if code == "R" else "copied",
+                    "path": next_path,
+                    "previous_path": first_path,
+                }
+            )
+            continue
+        kind = {
+            "A": "added",
+            "D": "deleted",
+            "M": "modified",
+            "T": "modified",
+            "U": "modified",
+        }.get(code, "modified")
+        items.append({"kind": kind, "path": first_path, "previous_path": None})
+    return items
+
+
+def _project_snapshot_delta(
+    *,
+    project: dict,
+    root: Path,
+    repository_paths: list[str],
+    repository_items: list[dict],
+    repository_detection_mode: str,
+    repository_truncated: bool,
+    max_paths: int,
+) -> dict:
+    """Compare the current eligible content with Odin's active manifest.
+
+    Git is only a candidate-path accelerator. A dirty Git path is not pending
+    when its current bytes already match the active Odin snapshot.
+    """
+
+    manifest = _active_project_manifest(project)
+    if manifest is None:
+        return {
+            "changed_paths": repository_paths,
+            "change_items": repository_items,
+            "changed_path_count": len(repository_paths),
+            "truncated": repository_truncated,
+            "detection_mode": repository_detection_mode,
+            "requires_full_scan": repository_detection_mode != "git_delta",
+        }
+
+    manifest_by_key = {
+        str(item.get("path") or "").replace("\\", "/").casefold(): {
+            "path": str(item.get("path") or "").replace("\\", "/"),
+            "hash": str(item.get("hash") or ""),
+        }
+        for item in manifest.get("files") or []
+        if isinstance(item, dict) and str(item.get("path") or "").strip()
+    }
+    indexed_policy_hash = str(manifest.get("policy_hash") or "")
+    policy_changed = (
+        not indexed_policy_hash
+        or indexed_policy_hash != project_discovery_policy_hash(root)
+    )
+    use_targeted_scan = (
+        repository_detection_mode == "git_delta"
+        and not repository_truncated
+        and not policy_changed
+    )
+
+    if use_targeted_scan:
+        candidate_paths = list(repository_paths)
+        # Git cannot report deletion of a file that was untracked when Odin
+        # indexed it. Existence checks are cheap and close that correctness gap.
+        for item in manifest_by_key.values():
+            path = root / Path(item["path"])
+            if not path.exists():
+                candidate_paths.append(item["path"])
+        files, removed, skipped = discover_project_paths(
+            root,
+            candidate_paths,
+            discovery_scope=str(project.get("discovery_scope") or "context"),
+        )
+        current_by_key = {
+            item.relative_path.casefold(): item
+            for item in files
+        }
+        removed_keys = {
+            str(path).replace("\\", "/").casefold()
+            for path in [*removed, *skipped]
+        }
+        candidate_keys = {
+            str(path).replace("\\", "/").casefold()
+            for path in candidate_paths
+        }
+        pending = _compare_snapshot_entries(
+            manifest_by_key=manifest_by_key,
+            current_by_key=current_by_key,
+            candidate_keys=candidate_keys,
+            removed_keys=removed_keys,
+        )
+        detection_mode = "snapshot_git_delta"
+        requires_full_scan = False
+    else:
+        discovery = discover_project(
+            root,
+            discovery_scope=str(project.get("discovery_scope") or "context"),
+        )
+        current_by_key = {
+            item.relative_path.casefold(): item
+            for item in discovery.files
+        }
+        pending = _compare_snapshot_entries(
+            manifest_by_key=manifest_by_key,
+            current_by_key=current_by_key,
+            candidate_keys=set(manifest_by_key) | set(current_by_key),
+            removed_keys=set(manifest_by_key) - set(current_by_key),
+        )
+        detection_mode = "snapshot_full_scan"
+        requires_full_scan = True
+
+    pending_items = _pending_snapshot_change_items(
+        pending,
+        repository_items=repository_items,
+    )
+    pending_paths = sorted(
+        {
+            str(item["path"])
+            for item in pending_items
+        }
+        | {
+            str(item["previous_path"])
+            for item in pending_items
+            if item.get("previous_path")
+        },
+        key=str.casefold,
+    )
+    total = len(pending_paths)
+    return {
+        "changed_paths": pending_paths[:max_paths],
+        "change_items": pending_items[:max_paths],
+        "changed_path_count": total,
+        "truncated": total > max_paths,
+        "detection_mode": detection_mode,
+        "requires_full_scan": requires_full_scan,
+    }
+
+
+def _active_project_manifest(project: dict) -> dict | None:
+    snapshot_id = (
+        project.get("active_manifest_snapshot_id")
+        or project.get("active_snapshot_id")
+    )
+    if not snapshot_id:
+        return None
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT manifest_json FROM project_snapshots WHERE id = ? AND project_id = ?",
+            (snapshot_id, project["id"]),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        manifest = json.loads(row["manifest_json"] or "{}")
+    except (TypeError, ValueError):
+        return None
+    return manifest if isinstance(manifest, dict) else None
+
+
+def _compare_snapshot_entries(
+    *,
+    manifest_by_key: dict[str, dict],
+    current_by_key: dict[str, ManifestFile],
+    candidate_keys: set[str],
+    removed_keys: set[str],
+) -> dict[str, dict]:
+    pending: dict[str, dict] = {}
+    for key in candidate_keys:
+        previous = manifest_by_key.get(key)
+        current = current_by_key.get(key)
+        if current is None:
+            if previous is not None and key in removed_keys:
+                pending[key] = {
+                    "kind": "deleted",
+                    "path": previous["path"],
+                    "previous_path": None,
+                    "hash": previous["hash"],
+                }
+            continue
+        if previous is None:
+            pending[key] = {
+                "kind": "added",
+                "path": current.relative_path,
+                "previous_path": None,
+                "hash": current.content_hash,
+            }
+        elif previous["hash"] != current.content_hash:
+            pending[key] = {
+                "kind": "modified",
+                "path": current.relative_path,
+                "previous_path": None,
+                "hash": current.content_hash,
+            }
+    return pending
+
+
+def _pending_snapshot_change_items(
+    pending: dict[str, dict],
+    *,
+    repository_items: list[dict],
+) -> list[dict]:
+    remaining = dict(pending)
+    items: list[dict] = []
+    for repository_item in repository_items:
+        kind = str(repository_item.get("kind") or "")
+        path = str(repository_item.get("path") or "").replace("\\", "/")
+        previous_path = str(repository_item.get("previous_path") or "").replace("\\", "/")
+        path_key = path.casefold()
+        previous_key = previous_path.casefold()
+        if kind == "renamed" and path_key in remaining and previous_key in remaining:
+            if (
+                remaining[path_key]["kind"] == "added"
+                and remaining[previous_key]["kind"] == "deleted"
+            ):
+                items.append(
+                    {
+                        "kind": "renamed",
+                        "path": path,
+                        "previous_path": previous_path,
+                    }
+                )
+                remaining.pop(path_key, None)
+                remaining.pop(previous_key, None)
+        elif kind == "copied" and path_key in remaining:
+            items.append(
+                {
+                    "kind": "copied",
+                    "path": path,
+                    "previous_path": previous_path or None,
+                }
+            )
+            remaining.pop(path_key, None)
+    items.extend(
+        {
+            "kind": str(item["kind"]),
+            "path": str(item["path"]),
+            "previous_path": item.get("previous_path"),
+        }
+        for _, item in sorted(
+            remaining.items(),
+            key=lambda pair: str(pair[1]["path"]).casefold(),
+        )
+    )
+    return items
+
+
+def probe_project_changes(project_id: str, *, force_sync: bool = False) -> dict:
+    report = inspect_project_changes(project_id)
+    fingerprint = str(report["change_fingerprint"])
+    changed = bool(report["changed"])
+    now = utc_now()
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE projects
+            SET change_fingerprint = CASE WHEN change_fingerprint = '' THEN ? ELSE change_fingerprint END,
+                last_change_checked_at = ?,
+                changed_file_count = ?,
+                status = CASE WHEN ? THEN 'stale' ELSE status END,
+                updated_at = CASE WHEN ? THEN ? ELSE updated_at END
+            WHERE id = ?
+            """,
+            (
+                fingerprint,
+                now,
+                int(report["changed_path_count"] or 0),
+                int(changed),
+                int(changed),
+                now,
+                project_id,
+            ),
+        )
+    project = get_project(project_id)
+    sync_mode = str(project.get("sync_mode") or "automatic")
+    source_count = int(project.get("source_count") or 0)
+    path_count = int(report["changed_path_count"] or 0)
+    complete_git_delta = (
+        report["detection_mode"] == "snapshot_git_delta"
+        and not bool(report["truncated"])
+        and bool(project.get("active_manifest_snapshot_id"))
+        and path_count > 0
+        and path_count <= 500
+        and (source_count < 100 or path_count <= max(25, source_count // 5))
+    )
+    should_sync = bool(force_sync or sync_mode == "automatic")
+    if not changed or not should_sync:
+        sync = None
+        sync_kind = None
+    elif complete_git_delta:
+        sync = sync_project_delta(
+            project_id,
+            changed_paths=list(report["changed_paths"]),
+            trigger_source="auto_delta",
+        )
+        sync_kind = "git_delta"
+    else:
+        sync = sync_project(project_id, trigger_source="auto_full_refresh")
+        sync_kind = "full"
+    return {
+        "project_id": project_id,
+        "changed": changed,
+        "change_fingerprint": fingerprint,
+        "sync_queued": bool(sync),
+        "job_id": sync.get("job_id") if sync else None,
+        "detection_mode": report["detection_mode"],
+        "changed_paths": report["changed_paths"],
+        "change_items": report["change_items"],
+        "changed_path_count": report["changed_path_count"],
+        "requires_full_scan": report["requires_full_scan"],
+        "sync_kind": sync_kind,
+        "sync_mode": sync_mode,
+        "next_action": (
+            "wait_for_sync"
+            if sync
+            else "sync_changes"
+            if changed
+            else "none"
+        ),
+    }
+
+
 def normalize_discovery_scope(value: str | None) -> str:
     scope = str(value or "context").strip().casefold()
     if scope not in DISCOVERY_SCOPES:
@@ -243,12 +914,38 @@ def normalize_discovery_scope(value: str | None) -> str:
     return scope
 
 
+def normalize_project_sync_mode(
+    value: str | None,
+    *,
+    auto_sync_enabled: bool | None = None,
+) -> str:
+    if value is None:
+        return "automatic" if auto_sync_enabled is not False else "manual"
+    normalized = str(value).strip().casefold().replace("-", "_")
+    aliases = {
+        "auto": "automatic",
+        "automatic": "automatic",
+        "notify": "notify",
+        "notify_only": "notify",
+        "manual": "manual",
+    }
+    if normalized not in aliases:
+        raise ProjectError("Project sync mode must be automatic, notify, or manual.")
+    return aliases[normalized]
+
+
 def register_project(
     *, vault_id: str, root_path: str, name: str | None,
-    discovery_scope: str = "context", sync: bool = True,
+    discovery_scope: str = "context", auto_sync_enabled: bool | None = None,
+    sync_mode: str | None = None,
+    sync: bool = True,
 ) -> dict:
     root = normalize_root_path(root_path)
     normalized_scope = normalize_discovery_scope(discovery_scope)
+    normalized_sync_mode = normalize_project_sync_mode(
+        sync_mode,
+        auto_sync_enabled=auto_sync_enabled,
+    )
     fingerprint = root_fingerprint(root)
     project_name = (name or root.name).strip()
     if not project_name:
@@ -306,9 +1003,9 @@ def register_project(
                     repository_kind, git_remote_fingerprint, default_branch, indexed_commit,
                     working_tree_dirty, changed_file_count, status,
                     structure_status, retrieval_status, interpretation_status,
-                    created_at, updated_at
+                    auto_sync_enabled, sync_mode, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', 'waiting', 'waiting',
-                          'unavailable', ?, ?)
+                          'unavailable', ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -324,6 +1021,8 @@ def register_project(
                     commit,
                     int(dirty),
                     changed_file_count,
+                    int(normalized_sync_mode == "automatic"),
+                    normalized_sync_mode,
                     now,
                     now,
                 ),
@@ -447,16 +1146,28 @@ def get_project(project_id: str) -> dict:
 
 def update_project(
     project_id: str, *, name: str | None = None, root_path: str | None = None,
-    discovery_scope: str | None = None,
+    discovery_scope: str | None = None, auto_sync_enabled: bool | None = None,
+    sync_mode: str | None = None,
 ) -> dict:
-    if name is None and root_path is None and discovery_scope is None:
-        raise ProjectError("Provide a project name, replacement folder, or discovery scope.")
+    if (
+        name is None
+        and root_path is None
+        and discovery_scope is None
+        and auto_sync_enabled is None
+        and sync_mode is None
+    ):
+        raise ProjectError("Provide a project setting to update.")
     normalized = name.strip() if name is not None else None
     if normalized is not None and (not normalized or len(normalized) > 120):
         raise ProjectError("Project name must be between 1 and 120 characters.")
     replacement_root = normalize_root_path(root_path) if root_path is not None else None
     replacement_fingerprint = root_fingerprint(replacement_root) if replacement_root is not None else None
     normalized_scope = normalize_discovery_scope(discovery_scope) if discovery_scope is not None else None
+    normalized_sync_mode = (
+        normalize_project_sync_mode(sync_mode, auto_sync_enabled=auto_sync_enabled)
+        if sync_mode is not None or auto_sync_enabled is not None
+        else None
+    )
     with connect() as conn:
         row = conn.execute(
             "SELECT vault_id, primary_cluster_id, name, active_run_id, discovery_scope FROM projects WHERE id = ? AND deleted_at IS NULL",
@@ -510,6 +1221,21 @@ def update_project(
                     updated_at = ? WHERE id = ?
                 """,
                 (normalized_scope, now, project_id),
+            )
+        if normalized_sync_mode is not None:
+            conn.execute(
+                """
+                UPDATE projects
+                SET auto_sync_enabled = ?, sync_mode = ?,
+                    last_change_checked_at = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    int(normalized_sync_mode == "automatic"),
+                    normalized_sync_mode,
+                    now,
+                    project_id,
+                ),
             )
     return get_project(project_id)
 
@@ -602,6 +1328,103 @@ def sync_project(
         "snapshot_id": None,
         "job_id": discover_job["id"],
         "queued": True,
+    }
+
+
+def sync_project_delta(
+    project_id: str,
+    *,
+    changed_paths: list[str],
+    trigger_source: str = "auto_delta",
+) -> dict:
+    project = get_project(project_id)
+    normalized_paths = sorted(
+        dict.fromkeys(
+            str(path or "").replace("\\", "/").lstrip("/")
+            for path in changed_paths
+            if str(path or "").strip()
+        ),
+        key=str.casefold,
+    )
+    if not normalized_paths:
+        raise ProjectError("No changed project files were supplied.")
+    run_id = f"project-run-{uuid4()}"
+    candidate_snapshot_id = f"project-snapshot-{uuid4()}"
+    now = utc_now()
+    with connect() as conn:
+        active = conn.execute(
+            """
+            SELECT * FROM project_index_runs
+            WHERE project_id = ? AND status IN ('queued', 'running')
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+        if active is not None:
+            active_run = _project_run_from_row(active)
+            current_project = get_project(project_id)
+            return {
+                "project": current_project,
+                "run": active_run,
+                "snapshot_id": current_project.get("candidate_snapshot_id"),
+                "job_id": active_run.get("job_id"),
+                "queued": True,
+                "sync_kind": "existing",
+            }
+        conn.execute(
+            """
+            INSERT INTO project_index_runs (
+                id, project_id, trigger_source, status, phase, queued_at, heartbeat_at,
+                started_at, created_at, updated_at
+            ) VALUES (?, ?, ?, 'queued', 'delta_queued', ?, ?, ?, ?, ?)
+            """,
+            (run_id, project_id, trigger_source, now, now, now, now, now),
+        )
+        payload = {
+            "project_id": project_id,
+            "run_id": run_id,
+            "candidate_snapshot_id": candidate_snapshot_id,
+            "changed_paths": normalized_paths,
+        }
+        job = enqueue_job(
+            conn,
+            job_type="project_delta_apply",
+            payload=payload,
+            dedupe_key=f"project-delta-apply:{project_id}",
+            scope_id=project_id,
+            user_initiated=False,
+        )
+        conn.execute(
+            "UPDATE project_index_runs SET job_id = ?, detail_json = ? WHERE id = ?",
+            (
+                job["id"],
+                json.dumps(
+                    {
+                        "candidate_snapshot_id": candidate_snapshot_id,
+                        "sync_kind": "git_delta",
+                        "changed_path_count": len(normalized_paths),
+                    },
+                    separators=(",", ":"),
+                ),
+                run_id,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE projects
+            SET status = 'indexing', active_run_id = ?, candidate_snapshot_id = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (run_id, candidate_snapshot_id, now, project_id),
+        )
+    return {
+        "project": get_project(project_id),
+        "run": get_project_run(run_id),
+        "snapshot_id": candidate_snapshot_id,
+        "job_id": job["id"],
+        "queued": True,
+        "sync_kind": "git_delta",
     }
 
 
@@ -899,9 +1722,81 @@ def discover_project(
     )
 
 
+def discover_project_paths(
+    root: Path,
+    relative_paths: list[str],
+    *,
+    discovery_scope: str = "context",
+) -> tuple[list[ManifestFile], list[str], list[str]]:
+    """Read only a known delta set. Missing paths represent removals."""
+
+    root = root.resolve(strict=True)
+    normalized_scope = normalize_discovery_scope(discovery_scope)
+    ignore_patterns = _load_ignore_patterns(root)
+    files: list[ManifestFile] = []
+    removed: list[str] = []
+    skipped: list[str] = []
+    for raw_relative in sorted(dict.fromkeys(relative_paths), key=str.casefold):
+        relative = str(raw_relative or "").replace("\\", "/").lstrip("/")
+        if not relative or relative.startswith("../") or "/../" in relative:
+            skipped.append(relative or raw_relative)
+            continue
+        path = (root / Path(relative)).resolve(strict=False)
+        if not _inside_root(root, path):
+            skipped.append(relative)
+            continue
+        if not path.exists():
+            removed.append(relative)
+            continue
+        if not path.is_file():
+            skipped.append(relative)
+            continue
+        filename = path.name
+        lower_name = filename.casefold()
+        suffix = path.suffix.casefold()
+        if (
+            _is_secret_name(lower_name, suffix)
+            or _matches_ignore(relative, ignore_patterns)
+            or any(part.casefold() in DEFAULT_IGNORED_DIRECTORIES for part in Path(relative).parts[:-1])
+            or lower_name in GENERATED_FILENAMES
+            or lower_name.endswith((".min.js", ".min.css", ".map", ".generated.ts", ".g.cs"))
+            or (suffix not in SUPPORTED_EXTENSIONS and lower_name not in SUPPORTED_FILENAMES)
+            or (normalized_scope == "code" and suffix not in CODE_EXTENSIONS)
+            or _is_link_or_junction(path)
+        ):
+            skipped.append(relative)
+            continue
+        try:
+            raw = path.read_bytes()
+            if len(raw) > MAX_FILE_BYTES or b"\x00" in raw[:8192]:
+                skipped.append(relative)
+                continue
+            text = raw.decode("utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            skipped.append(relative)
+            continue
+        language = LANGUAGE_BY_EXTENSION.get(suffix, "Configuration")
+        files.append(
+            ManifestFile(
+                absolute_path=path,
+                relative_path=relative,
+                content_hash=hashlib.sha256(raw).hexdigest(),
+                text=text,
+                language=language,
+                file_role=_file_role(relative, lower_name),
+            )
+        )
+    return files, removed, skipped
+
+
 def _project_from_row(conn, row) -> dict:
     result = dict_from_row(row)
     result["working_tree_dirty"] = bool(result.get("working_tree_dirty"))
+    result["sync_mode"] = str(
+        result.get("sync_mode")
+        or ("automatic" if bool(result.get("auto_sync_enabled", True)) else "manual")
+    )
+    result["auto_sync_enabled"] = result["sync_mode"] == "automatic"
     compatibility_snapshot_id = result.get("active_snapshot_id")
     result["active_manifest_snapshot_id"] = result.get("active_manifest_snapshot_id") or compatibility_snapshot_id
     result["active_structure_snapshot_id"] = result.get("active_structure_snapshot_id") or compatibility_snapshot_id
@@ -967,6 +1862,11 @@ def _projects_from_rows(conn, rows) -> list[dict]:
     for row in row_list:
         result = dict_from_row(row)
         result["working_tree_dirty"] = bool(result.get("working_tree_dirty"))
+        result["sync_mode"] = str(
+            result.get("sync_mode")
+            or ("automatic" if bool(result.get("auto_sync_enabled", True)) else "manual")
+        )
+        result["auto_sync_enabled"] = result["sync_mode"] == "automatic"
         compatibility_snapshot_id = result.get("active_snapshot_id")
         result["active_manifest_snapshot_id"] = result.get("active_manifest_snapshot_id") or compatibility_snapshot_id
         result["active_structure_snapshot_id"] = result.get("active_structure_snapshot_id") or compatibility_snapshot_id

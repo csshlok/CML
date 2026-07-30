@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from backend.app.core.code_structure import build_structure_graph
+from backend.app.core.cluster_membership import move_source_cluster_membership
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.embeddings import reindex_source_chunks
 from backend.app.core.encrypted_storage import source_from_encrypted_row, store_source_content_fields
@@ -19,7 +20,8 @@ class ProjectIndexCancelled(RuntimeError):
 
 def discover_candidate(*, project_id: str, run_id: str, snapshot_id: str, job_id: str) -> dict:
     from backend.app.core.projects import (
-        EXTRACTOR_VERSION, _git_metadata, discover_project, get_project, normalize_root_path,
+        EXTRACTOR_VERSION, _git_metadata, discover_project, get_project,
+        normalize_root_path, project_discovery_policy_hash,
     )
 
     _require_running(run_id, phase="discovery")
@@ -36,6 +38,7 @@ def discover_candidate(*, project_id: str, run_id: str, snapshot_id: str, job_id
         "version": 2,
         "discovery_scope": discovery.discovery_scope,
         "root_fingerprint": project["root_fingerprint"],
+        "policy_hash": project_discovery_policy_hash(root),
         "files": [{"path": item.relative_path, "hash": item.content_hash} for item in discovery.files],
         "excluded": {"ignored": discovery.ignored_count, "generated": discovery.generated_count, "failed": discovery.failed_count},
     }
@@ -158,7 +161,8 @@ def index_candidate_structure(*, project_id: str, run_id: str, snapshot_id: str,
             """
             UPDATE projects SET active_snapshot_id = ?, active_manifest_snapshot_id = ?,
                 active_structure_snapshot_id = ?, structure_status = ?, brief = ?, languages_json = ?,
-                workspace_count = ?, entrypoints_json = ?, indexed_commit = ?, updated_at = ? WHERE id = ?
+                workspace_count = ?, entrypoints_json = ?, indexed_commit = ?,
+                changed_file_count = 0, updated_at = ? WHERE id = ?
             """, (
                 snapshot_id, snapshot_id, snapshot_id, status, brief, json.dumps(discovery.languages),
                 discovery.workspace_count, json.dumps(discovery.entrypoints), snapshot["git_commit"], now, project_id,
@@ -241,11 +245,436 @@ def stage_candidate_retrieval(*, project_id: str, run_id: str, snapshot_id: str,
     return {"staged_sources": staged}
 
 
+def apply_project_delta(
+    *,
+    project_id: str,
+    run_id: str,
+    snapshot_id: str,
+    job_id: str,
+    changed_paths: list[str],
+) -> dict:
+    """Apply a complete Git path delta without walking or restructuring the repository."""
+
+    from backend.app.core.projects import (
+        EXTRACTOR_VERSION,
+        _git_metadata,
+        discover_project_paths,
+        get_project,
+        normalize_root_path,
+        project_change_fingerprint,
+        project_discovery_policy_hash,
+    )
+
+    _require_running(run_id, phase="delta_discovery")
+    project = get_project(project_id)
+    root = normalize_root_path(project["root_path"])
+    repository_kind, branch, commit, remote_fingerprint, dirty, changed_count = _git_metadata(root)
+    if repository_kind != "git":
+        raise RuntimeError("Incremental project synchronization requires a Git change list.")
+
+    with connect() as conn:
+        snapshot_exists = conn.execute(
+            "SELECT id FROM project_snapshots WHERE id = ?",
+            (snapshot_id,),
+        ).fetchone() is not None
+
+    if not snapshot_exists:
+        files, missing_paths, skipped_paths = discover_project_paths(
+            root,
+            changed_paths,
+            discovery_scope=project["discovery_scope"],
+        )
+        discovered_by_path = {item.relative_path: item for item in files}
+        now = utc_now()
+        with connect() as conn:
+            _require_running_in_conn(conn, run_id)
+            active_rows = conn.execute(
+                """
+                SELECT relative_path, source_id, content_hash, file_role
+                FROM project_sources
+                WHERE project_id = ?
+                """,
+                (project_id,),
+            ).fetchall()
+            active = {str(row["relative_path"]): row for row in active_rows}
+            # A tracked file that is now missing or excluded must leave retrieval.
+            removed_paths = {
+                path for path in [*missing_paths, *skipped_paths] if path in active
+            }
+            manifest_items = {
+                path: str(row["content_hash"])
+                for path, row in active.items()
+                if path not in removed_paths
+            }
+            for path, item in discovered_by_path.items():
+                manifest_items[path] = item.content_hash
+            manifest_payload = {
+                "version": 3,
+                "kind": "git_delta",
+                "discovery_scope": project["discovery_scope"],
+                "root_fingerprint": project["root_fingerprint"],
+                "policy_hash": project_discovery_policy_hash(root),
+                "base_snapshot_id": project.get("active_manifest_snapshot_id"),
+                "files": [
+                    {"path": path, "hash": digest}
+                    for path, digest in sorted(manifest_items.items(), key=lambda value: value[0].casefold())
+                ],
+                "changed_paths": sorted(dict.fromkeys(changed_paths), key=str.casefold),
+                "excluded_changed_paths": sorted(skipped_paths, key=str.casefold),
+            }
+            manifest_hash = hashlib.sha256(
+                json.dumps(manifest_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            conn.execute(
+                """
+                INSERT INTO project_snapshots (
+                    id, project_id, discovery_scope, source_manifest_hash, git_commit, branch,
+                    dirty_working_tree, extractor_version, eligible_count, ignored_count,
+                    generated_count, parsed_count, failed_count, structure_status,
+                    retrieval_status, interpretation_status, manifest_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 'stale',
+                          'waiting', 'unavailable', ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    project_id,
+                    project["discovery_scope"],
+                    manifest_hash,
+                    commit,
+                    branch,
+                    int(dirty),
+                    EXTRACTOR_VERSION,
+                    len(manifest_items),
+                    len(skipped_paths),
+                    json.dumps(manifest_payload, separators=(",", ":")),
+                    now,
+                ),
+            )
+            for relative_path in sorted(dict.fromkeys(changed_paths), key=str.casefold):
+                previous = active.get(relative_path)
+                item = discovered_by_path.get(relative_path)
+                if item is None:
+                    if previous is None:
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO project_snapshot_sources (
+                            snapshot_id, project_id, source_id, prior_source_id, relative_path,
+                            file_role, content_hash, resolved_path_hash, exclusion_decision,
+                            intended_action, stage_status, parser_status, retrieval_status,
+                            created_at, updated_at
+                        ) VALUES (?, ?, NULL, ?, ?, ?, ?, '', 'included', 'remove',
+                                  'discovered', 'not_applicable', 'not_applicable', ?, ?)
+                        """,
+                        (
+                            snapshot_id,
+                            project_id,
+                            previous["source_id"],
+                            relative_path,
+                            previous["file_role"],
+                            previous["content_hash"],
+                            now,
+                            now,
+                        ),
+                    )
+                    continue
+                if previous is not None and previous["content_hash"] == item.content_hash:
+                    continue
+                action = "replace" if previous is not None else "add"
+                source_id = _insert_candidate_source(conn, project, snapshot_id, item, now)
+                conn.execute(
+                    """
+                    INSERT INTO project_snapshot_sources (
+                        snapshot_id, project_id, source_id, prior_source_id, relative_path,
+                        file_role, language, byte_size, content_hash, resolved_path_hash,
+                        exclusion_decision, intended_action, stage_status, parser_status,
+                        retrieval_status, error_category, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'included', ?,
+                              'discovered', 'not_run', 'waiting', '', ?, ?)
+                    """,
+                    (
+                        snapshot_id,
+                        project_id,
+                        source_id,
+                        previous["source_id"] if previous else None,
+                        relative_path,
+                        item.file_role,
+                        item.language,
+                        len(item.text.encode("utf-8")),
+                        item.content_hash,
+                        _path_proof(root, item.absolute_path),
+                        action,
+                        now,
+                        now,
+                    ),
+                )
+            delta_total = conn.execute(
+                "SELECT COUNT(*) AS total FROM project_snapshot_sources WHERE snapshot_id = ?",
+                (snapshot_id,),
+            ).fetchone()["total"]
+            conn.execute(
+                """
+                UPDATE projects
+                SET candidate_snapshot_id = ?, repository_kind = ?,
+                    git_remote_fingerprint = ?, default_branch = ?, working_tree_dirty = ?,
+                    changed_file_count = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    snapshot_id,
+                    repository_kind,
+                    remote_fingerprint,
+                    branch,
+                    int(dirty),
+                    changed_count,
+                    now,
+                    project_id,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE project_index_runs
+                SET snapshot_id = ?, phase = 'delta_discovery_complete',
+                    eligible_total = ?, completed_count = 0,
+                    phase_completed_count = 0, phase_total_count = ?,
+                    heartbeat_at = ?, detail_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    snapshot_id,
+                    int(delta_total or 0),
+                    int(delta_total or 0),
+                    now,
+                    json.dumps(
+                        {
+                            "sync_kind": "git_delta",
+                            "changed_path_count": len(changed_paths),
+                            "candidate_snapshot_id": snapshot_id,
+                        },
+                        separators=(",", ":"),
+                    ),
+                    now,
+                    run_id,
+                ),
+            )
+
+    # Embed only added/replaced files. Committing per file makes restart safe and
+    # avoids holding a write transaction while a local embedding model runs.
+    while True:
+        with connect() as conn:
+            _require_running_in_conn(conn, run_id)
+            row = conn.execute(
+                """
+                SELECT pss.*, s.*
+                FROM project_snapshot_sources pss
+                JOIN sources s ON s.id = pss.source_id
+                WHERE pss.snapshot_id = ?
+                  AND pss.intended_action IN ('add', 'replace')
+                  AND pss.stage_status != 'retrieval_staged'
+                ORDER BY pss.relative_path
+                LIMIT 1
+                """,
+                (snapshot_id,),
+            ).fetchone()
+            if row is None:
+                break
+            source = source_from_encrypted_row(conn, row)
+            reindex_source_chunks(conn, source)
+            now = utc_now()
+            conn.execute(
+                """
+                UPDATE source_chunks
+                SET project_id = ?, project_snapshot_id = ?, activation_state = 'candidate'
+                WHERE source_id = ?
+                """,
+                (project_id, snapshot_id, row["source_id"]),
+            )
+            conn.execute(
+                """
+                UPDATE project_snapshot_sources
+                SET retrieval_status = 'ready', stage_status = 'retrieval_staged',
+                    updated_at = ?
+                WHERE snapshot_id = ? AND relative_path = ?
+                """,
+                (now, snapshot_id, row["relative_path"]),
+            )
+            completed = conn.execute(
+                """
+                SELECT COUNT(*) AS total FROM project_snapshot_sources
+                WHERE snapshot_id = ?
+                  AND (intended_action = 'remove' OR stage_status = 'retrieval_staged')
+                """,
+                (snapshot_id,),
+            ).fetchone()["total"]
+            total = conn.execute(
+                "SELECT COUNT(*) AS total FROM project_snapshot_sources WHERE snapshot_id = ?",
+                (snapshot_id,),
+            ).fetchone()["total"]
+            _heartbeat(conn, run_id, "delta_retrieval", int(completed or 0), int(total or 0))
+
+    now = utc_now()
+    change_fingerprint = project_change_fingerprint(root)
+    with connect() as conn:
+        _require_running_in_conn(conn, run_id)
+        project_row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if project_row is None or project_row["candidate_snapshot_id"] != snapshot_id:
+            raise RuntimeError("The incremental snapshot no longer belongs to this project run.")
+        rows = conn.execute(
+            "SELECT * FROM project_snapshot_sources WHERE snapshot_id = ? ORDER BY relative_path",
+            (snapshot_id,),
+        ).fetchall()
+        for row in rows:
+            action = str(row["intended_action"])
+            prior_source_id = row["prior_source_id"]
+            if action in {"replace", "remove"} and prior_source_id:
+                conn.execute(
+                    "DELETE FROM project_sources WHERE project_id = ? AND source_id = ?",
+                    (project_id, prior_source_id),
+                )
+                terminal_state = "superseded" if action == "replace" else "removed"
+                conn.execute(
+                    """
+                    UPDATE sources SET activation_state = ?, deleted_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (terminal_state, now, now, prior_source_id),
+                )
+                conn.execute(
+                    "UPDATE source_chunks SET activation_state = ? WHERE source_id = ?",
+                    (terminal_state, prior_source_id),
+                )
+            if action not in {"add", "replace"}:
+                continue
+            conn.execute(
+                """
+                INSERT INTO project_sources (
+                    project_id, source_id, relative_path, file_role, content_hash,
+                    discovered_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    project_id,
+                    row["source_id"],
+                    row["relative_path"],
+                    row["file_role"],
+                    row["content_hash"],
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE sources
+                SET state = 'indexed', activation_state = 'active',
+                    project_snapshot_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (snapshot_id, now, row["source_id"]),
+            )
+            conn.execute(
+                """
+                UPDATE source_chunks SET activation_state = 'active'
+                WHERE source_id = ? AND project_snapshot_id = ?
+                """,
+                (row["source_id"], snapshot_id),
+            )
+            move_source_cluster_membership(
+                conn,
+                source_id=str(row["source_id"]),
+                target_cluster_id=str(project_row["primary_cluster_id"]),
+                reason="Odin applied a changed project file.",
+                actor="project_delta_activation",
+                expected_vault_id=str(project_row["vault_id"]),
+                allowed_project_snapshot_id=snapshot_id,
+                prune_empty_cluster=False,
+            )
+        source_count = int(
+            conn.execute(
+                "SELECT COUNT(*) AS total FROM project_sources WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()["total"]
+            or 0
+        )
+        conn.execute(
+            """
+            UPDATE project_snapshot_sources
+            SET stage_status = 'active', updated_at = ?
+            WHERE snapshot_id = ?
+            """,
+            (now, snapshot_id),
+        )
+        conn.execute(
+            """
+            UPDATE project_snapshots
+            SET retrieval_status = 'ready', activated_at = ?,
+                manifest_activated_at = ?, retrieval_activated_at = ?
+            WHERE id = ?
+            """,
+            (now, now, now, snapshot_id),
+        )
+        conn.execute(
+            """
+            UPDATE projects
+            SET active_snapshot_id = ?, active_manifest_snapshot_id = ?,
+                active_retrieval_snapshot_id = ?, candidate_snapshot_id = NULL,
+                active_run_id = NULL, status = 'ready', retrieval_status = 'ready',
+                structure_status = CASE
+                    WHEN active_structure_snapshot_id IS NULL THEN 'unavailable'
+                    ELSE 'stale'
+                END,
+                change_fingerprint = ?, last_change_checked_at = ?,
+                indexed_commit = ?, changed_file_count = 0, updated_at = ?
+            WHERE id = ?
+            """,
+            (snapshot_id, snapshot_id, snapshot_id, change_fingerprint, now, commit, now, project_id),
+        )
+        conn.execute(
+            """
+            UPDATE clusters
+            SET indexed_source_count = ?, index_status = ?,
+                profile_status = 'needs_update', updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                source_count,
+                "ready" if source_count else "empty",
+                now,
+                project_row["primary_cluster_id"],
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE project_index_runs
+            SET status = 'succeeded', phase = 'delta_activated',
+                activation_outcome = 'activated', completed_count = eligible_total,
+                phase_completed_count = phase_total_count, heartbeat_at = ?,
+                finished_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, now, now, run_id),
+        )
+    return {
+        "project_id": project_id,
+        "snapshot_id": snapshot_id,
+        "changed_path_count": len(changed_paths),
+        "source_count": source_count,
+        "structure_refresh_available": True,
+    }
+
+
 def activate_candidate(*, project_id: str, run_id: str, snapshot_id: str, job_id: str) -> dict:
-    from backend.app.core.projects import _project_from_row
+    from backend.app.core.projects import (
+        _project_from_row,
+        get_project,
+        normalize_root_path,
+        project_change_fingerprint,
+    )
 
     _require_running(run_id, phase="activation")
     now = utc_now()
+    change_fingerprint = project_change_fingerprint(
+        normalize_root_path(get_project(project_id)["root_path"])
+    )
     with connect() as conn:
         _require_running_in_conn(conn, run_id)
         project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
@@ -258,30 +687,59 @@ def activate_candidate(*, project_id: str, run_id: str, snapshot_id: str, job_id
                 conn.execute("DELETE FROM project_sources WHERE project_id = ? AND source_id = ?", (project_id, row["prior_source_id"]))
                 if action == "replace":
                     conn.execute("UPDATE sources SET activation_state = 'superseded', deleted_at = ?, updated_at = ? WHERE id = ?", (now, now, row["prior_source_id"]))
+                    conn.execute(
+                        "UPDATE source_chunks SET activation_state = 'superseded' WHERE source_id = ?",
+                        (row["prior_source_id"],),
+                    )
                 else:
                     conn.execute("UPDATE sources SET activation_state = 'removed', deleted_at = ?, updated_at = ? WHERE id = ?", (now, now, row["prior_source_id"]))
+                    conn.execute(
+                        "UPDATE source_chunks SET activation_state = 'removed' WHERE source_id = ?",
+                        (row["prior_source_id"],),
+                    )
             if action in {"add", "replace"}:
                 conn.execute("INSERT INTO project_sources (project_id, source_id, relative_path, file_role, content_hash, discovered_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                              (project_id, row["source_id"], row["relative_path"], row["file_role"], row["content_hash"], now, now))
-                conn.execute("UPDATE sources SET cluster_id = ?, state = 'indexed', activation_state = 'active', project_snapshot_id = ?, updated_at = ? WHERE id = ?",
-                             (project["primary_cluster_id"], snapshot_id, now, row["source_id"]))
+                conn.execute("UPDATE sources SET state = 'indexed', activation_state = 'active', project_snapshot_id = ?, updated_at = ? WHERE id = ?",
+                             (snapshot_id, now, row["source_id"]))
                 conn.execute(
                     """
                     UPDATE source_chunks
-                    SET cluster_id = ?, activation_state = 'active'
+                    SET activation_state = 'active'
                     WHERE source_id = ? AND project_snapshot_id = ?
                     """,
-                    (project["primary_cluster_id"], row["source_id"], snapshot_id),
+                    (row["source_id"], snapshot_id),
+                )
+                move_source_cluster_membership(
+                    conn,
+                    source_id=str(row["source_id"]),
+                    target_cluster_id=str(project["primary_cluster_id"]),
+                    reason="Project snapshot was activated.",
+                    actor="project_snapshot_activation",
+                    expected_vault_id=str(project["vault_id"]),
+                    allowed_project_snapshot_id=snapshot_id,
+                    prune_empty_cluster=False,
                 )
             elif action == "unchanged" and row["source_id"]:
                 conn.execute("UPDATE sources SET project_snapshot_id = ?, activation_state = 'active', updated_at = ? WHERE id = ?", (snapshot_id, now, row["source_id"]))
                 conn.execute(
                     """
                     UPDATE source_chunks
-                    SET cluster_id = ?, activation_state = 'active'
+                    SET activation_state = 'active'
                     WHERE source_id = ?
                     """,
-                    (project["primary_cluster_id"], row["source_id"]),
+                    (row["source_id"],),
+                )
+                move_source_cluster_membership(
+                    conn,
+                    source_id=str(row["source_id"]),
+                    target_cluster_id=str(project["primary_cluster_id"]),
+                    reason="Project snapshot membership was refreshed.",
+                    actor="project_snapshot_activation",
+                    expected_vault_id=str(project["vault_id"]),
+                    allowed_project_snapshot_id=snapshot_id,
+                    update_source_timestamp=False,
+                    prune_empty_cluster=False,
                 )
         count = conn.execute("SELECT COUNT(*) AS total FROM project_sources WHERE project_id = ?", (project_id,)).fetchone()["total"]
         conn.execute("UPDATE project_snapshot_sources SET stage_status = 'active', updated_at = ? WHERE snapshot_id = ?", (now, snapshot_id))
@@ -292,8 +750,9 @@ def activate_candidate(*, project_id: str, run_id: str, snapshot_id: str, job_id
             UPDATE projects SET active_snapshot_id = ?, active_manifest_snapshot_id = ?,
                 active_retrieval_snapshot_id = ?, candidate_snapshot_id = NULL, active_run_id = NULL,
                 status = CASE WHEN structure_status = 'partial' THEN 'partial' ELSE 'ready' END,
-                retrieval_status = 'ready', updated_at = ? WHERE id = ?
-            """, (snapshot_id, snapshot_id, snapshot_id, now, project_id),
+                retrieval_status = 'ready', change_fingerprint = ?,
+                last_change_checked_at = ?, changed_file_count = 0, updated_at = ? WHERE id = ?
+            """, (snapshot_id, snapshot_id, snapshot_id, change_fingerprint, now, now, project_id),
         )
         conn.execute("UPDATE clusters SET indexed_source_count = ?, index_status = ?, profile_status = 'needs_update', updated_at = ? WHERE id = ?",
                      (count, "ready" if count else "empty", now, project["primary_cluster_id"]))
