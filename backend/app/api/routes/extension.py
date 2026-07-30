@@ -171,6 +171,41 @@ def revoke_extension_client(client_id: str) -> None:
         _insert_extension_audit(conn, client_id=client_id, event_type="client_revoked", vault_id=None, detail="")
 
 
+@router.post("/clients/{client_id}/rotate", response_model=ExtensionClientCreateResponse)
+def rotate_extension_client(client_id: str) -> dict:
+    token = secrets.token_urlsafe(32)
+    now = utc_now()
+    with connect() as conn:
+        client = conn.execute(
+            "SELECT * FROM extension_clients WHERE id = ?",
+            (client_id,),
+        ).fetchone()
+        if client is None:
+            raise HTTPException(status_code=404, detail="Extension client not found")
+        if not bool(client["enabled"]):
+            raise HTTPException(status_code=409, detail="Enable this extension client before rotating its token")
+        conn.execute(
+            "UPDATE extension_clients SET token_hash = ?, updated_at = ? WHERE id = ?",
+            (_hash_token(token), now, client_id),
+        )
+        _insert_extension_audit(
+            conn,
+            client_id=client_id,
+            event_type="client_token_rotated",
+            vault_id=None,
+            detail="",
+        )
+        allowed_vault_ids = _json_list(client["allowed_vault_ids"])
+    return {
+        "id": client_id,
+        "name": client["name"],
+        "token": token,
+        "enabled": True,
+        "allowed_vault_ids": allowed_vault_ids,
+        "created_at": client["created_at"],
+    }
+
+
 @router.post("/pairing/start", response_model=ExtensionPairingRead)
 def start_extension_pairing(payload: ExtensionPairingStartRequest) -> dict:
     now_dt = datetime.now(UTC)

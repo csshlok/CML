@@ -29,6 +29,7 @@ from backend.app.core.bridge_security import (
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.background_jobs import enqueue_job
 from backend.app.core.cluster_bundle import build_cluster_bundle_context
+from backend.app.core.turbovec_runtime import UNCLUSTERED_SCOPE_ID
 from backend.app.core.context_packets import build_bridge_context_packet, render_context_packet
 from backend.app.core.project_graph import GraphQueryError, graph_view, graph_view_markdown
 from backend.app.core.embeddings import content_hash
@@ -530,6 +531,8 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
     settings, client_permissions, auth_mode = _authorize_bridge_runtime_token(x_cml_bridge_token)
     permissions = client_permissions or settings
 
+    if payload.unclustered_only and (payload.project_id or payload.cluster_id):
+        raise HTTPException(status_code=409, detail="unclustered_scope_conflict")
     if payload.project_id:
         with connect() as conn:
             project = conn.execute(
@@ -565,6 +568,13 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
         if permissions["allowed_vault_ids"] and vault_id not in permissions["allowed_vault_ids"]:
             _log_bridge_request(payload, mode_suffix="vault_not_allowed", client_id=client_permissions["id"] if client_permissions else None)
             raise HTTPException(status_code=403, detail="vault_not_allowed")
+        if payload.unclustered_only and vault_id not in permissions["allowed_vault_ids"]:
+            _log_bridge_request(
+                payload,
+                mode_suffix="unclustered_not_allowed",
+                client_id=client_permissions["id"] if client_permissions else None,
+            )
+            raise HTTPException(status_code=403, detail="unclustered_not_allowed")
 
         if payload.cluster_id:
             cluster = conn.execute(
@@ -583,7 +593,7 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
     bundle = build_cluster_bundle_context(
         vault_id=vault_id,
         query=payload.query,
-        cluster_id=payload.cluster_id,
+        cluster_id=UNCLUSTERED_SCOPE_ID if payload.unclustered_only else payload.cluster_id,
         token_budget=payload.limit,
         mode=payload.mode,
     )

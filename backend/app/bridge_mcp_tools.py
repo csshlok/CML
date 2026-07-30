@@ -92,6 +92,7 @@ TOOL_CONTRACTS = [
                 "query": _string(maximum=8_000, minimum=1),
                 "vault_id": _string(),
                 "cluster_id": _string(),
+                "unclustered_only": {"type": "boolean"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 30},
                 "format": _string(maximum=16, enum=["packet", "json"]),
                 "debug": {"type": "boolean"},

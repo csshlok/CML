@@ -121,6 +121,7 @@ def call_get_cluster_context(arguments: dict, request_id) -> dict:
         "query": arguments.get("query", ""),
         "vault_id": arguments.get("vault_id"),
         "cluster_id": arguments.get("cluster_id"),
+        "unclustered_only": bool(arguments.get("unclustered_only")),
         "limit": int(arguments.get("limit") or 5),
         "client_name": "cml-mcp",
     }

@@ -4,6 +4,7 @@ from backend.app.core.embeddings import cosine_similarity, decode_embedding, emb
 from backend.app.core.encrypted_storage import chunk_from_encrypted_row
 from backend.app.core.retrieval_trust import is_low_trust, trust_weight
 from backend.app.core.vector_maintenance import active_embedding_selector
+from backend.app.core.turbovec_runtime import UNCLUSTERED_SCOPE_ID
 
 ANALYSIS_RELEVANCE_FLOOR = 0.12
 
@@ -21,7 +22,9 @@ def build_analysis_packets(
     selector = active_embedding_selector()
     params: list[str] = [vault_id]
     cluster_clause = ""
-    if cluster_id:
+    if cluster_id == UNCLUSTERED_SCOPE_ID:
+        cluster_clause = "AND chunks.cluster_id IS NULL"
+    elif cluster_id:
         cluster_clause = "AND chunks.cluster_id = ?"
         params.append(cluster_id)
 

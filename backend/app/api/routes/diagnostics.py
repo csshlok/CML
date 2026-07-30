@@ -24,7 +24,7 @@ from backend.app.schemas import AppJobRead, DiagnosticBundleJobRequest, Diagnost
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 
-BUNDLE_FORMAT_VERSION = 1
+BUNDLE_FORMAT_VERSION = 2
 BACKEND_VERSION = app_version()
 
 
@@ -41,7 +41,10 @@ def create_diagnostic_bundle() -> dict:
         "app_version": BACKEND_VERSION,
         "backend_version": BACKEND_VERSION,
         "schema_version": schema_version,
-        "redaction": "Raw source text, extracted text, URLs, file paths, tokens, passphrases, and recovery keys are not included.",
+        "redaction": (
+            "Raw logs, source text, extracted text, prompts, URLs, file paths, "
+            "tokens, passphrases, and recovery keys are not included."
+        ),
         "encrypted_storage": (
             "Secured vault content is stored through encrypted_content/blob records; diagnostics include counts only."
         ),
@@ -55,20 +58,27 @@ def create_diagnostic_bundle() -> dict:
         "log-rotation-policy.json",
         "storage-accounting.json",
         "migration-staging-summary.json",
+        "log-summary.json",
     ]
     with ZipFile(bundle_path, "w", ZIP_DEFLATED) as bundle:
         bundle.writestr("manifest.json", json.dumps(manifest, indent=2))
         bundle.writestr("database-summary.json", json.dumps(_database_summary(), indent=2))
         bundle.writestr("runtime-summary.json", json.dumps(_runtime_summary(), indent=2))
-        bundle.writestr("startup-repair-summary.json", json.dumps(startup_repair_summary(), indent=2))
-        bundle.writestr("vector-summary.json", json.dumps(_vector_summary(), indent=2))
+        bundle.writestr(
+            "startup-repair-summary.json",
+            json.dumps(_privacy_safe(startup_repair_summary()), indent=2),
+        )
+        bundle.writestr("vector-summary.json", json.dumps(_privacy_safe(_vector_summary()), indent=2))
         bundle.writestr("log-rotation-policy.json", json.dumps(log_rotation_policy(), indent=2))
-        bundle.writestr("storage-accounting.json", json.dumps(storage_accounting(), indent=2))
-        bundle.writestr("migration-staging-summary.json", json.dumps(staging_summary(), indent=2))
-        for name, path in _candidate_logs(settings.data_dir):
-            if path.exists() and path.is_file():
-                bundle.writestr(f"logs/{name}", _redact_log(path.read_text(encoding="utf-8", errors="ignore")))
-                included_files.append(f"logs/{name}")
+        bundle.writestr(
+            "storage-accounting.json",
+            json.dumps(_privacy_safe(storage_accounting()), indent=2),
+        )
+        bundle.writestr(
+            "migration-staging-summary.json",
+            json.dumps(_privacy_safe(staging_summary()), indent=2),
+        )
+        bundle.writestr("log-summary.json", json.dumps(_log_summary(settings.data_dir), indent=2))
     return {
         "bundle_path": str(bundle_path),
         "bundle_format_version": BUNDLE_FORMAT_VERSION,
@@ -152,12 +162,12 @@ def _runtime_summary() -> dict:
             }
         )
     return {
-        "startup_status": read_startup_status(),
+        "startup_status": _safe_startup_status(read_startup_status()),
         "ocr": ocr_runtime_status(),
         "embedding": embedding_status(probe_model=False),
         "embedding_download": embedding_download_status(),
         "model_downloads": models,
-        "jobs": job_queue_status(),
+        "jobs": _safe_job_summary(job_queue_status()),
     }
 
 
@@ -170,12 +180,11 @@ def _vector_summary() -> dict:
 
 def log_rotation_policy() -> dict:
     return {
-        "backend_log_dir": str(get_settings().data_dir / "logs"),
         "backend_log_name": "backend.log",
         "max_log_file_bytes": 5 * 1024 * 1024,
         "retained_log_files": 10,
         "max_bundle_log_bytes_per_file": 200_000,
-        "redaction_required": True,
+        "raw_logs_included": False,
     }
 
 
@@ -206,3 +215,133 @@ def _redact_log(text: str) -> str:
     redacted = re.sub(r"(?i)\b(https?://)[^/\s\"'@]+@([^\s\"']+)", r"\1[redacted]@\2", redacted)
     redacted = re.sub(r"[A-Za-z]:\\[^\s\"']+", "[local-path]", redacted)
     return redacted[-200_000:]
+
+
+def _safe_startup_status(status: dict | None) -> dict | None:
+    if status is None:
+        return None
+    allowed = {
+        "startup_instance_id",
+        "sequence",
+        "phase",
+        "status",
+        "error_code",
+        "backend_mode",
+        "updated_at",
+        "total_elapsed_ms",
+        "previous_phase",
+        "previous_phase_duration_ms",
+    }
+    return {key: status.get(key) for key in allowed if key in status}
+
+
+def _safe_job_summary(summary: dict) -> dict:
+    safe: dict = {}
+    for key, value in summary.items():
+        if key in {"running_jobs", "latest"}:
+            if not isinstance(value, list):
+                continue
+            safe[key] = [
+                {
+                    field: row.get(field)
+                    for field in (
+                        "id",
+                        "job_type",
+                        "status",
+                        "attempts",
+                        "max_attempts",
+                        "error_code",
+                        "diagnostic_id",
+                        "created_at",
+                        "updated_at",
+                    )
+                    if isinstance(row, dict) and field in row
+                }
+                for row in value[:50]
+                if isinstance(row, dict)
+            ]
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            safe[key] = value
+    return safe
+
+
+def _privacy_safe(value, *, key: str = ""):
+    normalized_key = key.casefold()
+    if normalized_key.endswith("error_code") or normalized_key.endswith("diagnostic_id"):
+        return value
+    if any(
+        marker in normalized_key
+        for marker in (
+            "path",
+            "url",
+            "message",
+            "detail",
+            "prompt",
+            "token",
+            "passphrase",
+            "password",
+            "secret",
+            "recovery_key",
+            "raw_text",
+            "source_text",
+        )
+    ):
+        if value in (None, "", [], {}):
+            return value
+        return "[redacted]"
+    if normalized_key == "issues" and isinstance(value, list):
+        return [_issue_code(item) for item in value]
+    if isinstance(value, dict):
+        return {str(child_key): _privacy_safe(child, key=str(child_key)) for child_key, child in value.items()}
+    if isinstance(value, list):
+        return [_privacy_safe(item, key=key) for item in value]
+    if isinstance(value, str):
+        return _redact_log(value)
+    return value
+
+
+def _issue_code(value) -> str:
+    prefix = str(value or "").split(":", 1)[0].strip()
+    return prefix if re.fullmatch(r"[a-z][a-z0-9_]{2,80}", prefix) else "diagnostic_issue"
+
+
+def _read_log_tail(path: Path, max_bytes: int = 200_000) -> str:
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        size = handle.tell()
+        handle.seek(max(0, size - max_bytes))
+        return handle.read(max_bytes).decode("utf-8", errors="ignore")
+
+
+def _log_summary(data_dir: Path) -> dict:
+    files = []
+    level_pattern = re.compile(r"\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\b", re.IGNORECASE)
+    diagnostic_pattern = re.compile(r"\bdiagnostic(?:_id)?[=:]\s*([a-f0-9-]{8,64})\b", re.IGNORECASE)
+    for name, path in _candidate_logs(data_dir):
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            tail = _read_log_tail(path)
+            counts: dict[str, int] = {}
+            diagnostic_ids: list[str] = []
+            for line in tail.splitlines():
+                match = level_pattern.search(line)
+                if match:
+                    level = "warning" if match.group(1).casefold() == "warn" else match.group(1).casefold()
+                    counts[level] = counts.get(level, 0) + 1
+                diagnostic = diagnostic_pattern.search(line)
+                if diagnostic and diagnostic.group(1) not in diagnostic_ids:
+                    diagnostic_ids.append(diagnostic.group(1))
+            files.append(
+                {
+                    "name": name,
+                    "size_bytes": path.stat().st_size,
+                    "sampled_bytes": len(tail.encode("utf-8")),
+                    "line_count": len(tail.splitlines()),
+                    "level_counts": counts,
+                    "diagnostic_ids": diagnostic_ids[:100],
+                }
+            )
+        except OSError:
+            files.append({"name": name, "status": "unavailable"})
+    return {"raw_logs_included": False, "files": files}

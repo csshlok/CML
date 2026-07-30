@@ -54,6 +54,26 @@ class PublicErrorTests(unittest.TestCase):
         self.assertEqual(body["detail"], "Incorrect passphrase. Try again.")
         self.assertIsNone(body["error"]["diagnostic_id"])
 
+    def test_typed_public_error_preserves_action_and_retry_contract(self) -> None:
+        from backend.app.core.public_errors import api_error, public_http_exception
+
+        response = public_http_exception(
+            _request("/api/v1/jobs/job-1/resume"),
+            api_error(
+                status_code=409,
+                code="job_not_resumable",
+                message="This task cannot be resumed.",
+                action="Open task details.",
+                retryable=False,
+            ),
+        )
+        body = json.loads(response.body)
+
+        self.assertEqual(body["error"]["code"], "job_not_resumable")
+        self.assertEqual(body["error"]["message"], "This task cannot be resumed.")
+        self.assertEqual(body["error"]["action"], "Open task details.")
+        self.assertFalse(body["error"]["retryable"])
+
     def test_validation_error_does_not_expose_payload_or_schema_internals(self) -> None:
         from backend.app.core.public_errors import public_validation_exception
 

@@ -25,6 +25,27 @@ _SAFE_CODE_MESSAGES = {
 }
 
 
+def api_error(
+    *,
+    status_code: int,
+    code: str,
+    message: str,
+    action: str | None = None,
+    retryable: bool = False,
+    field_issues: list[dict] | None = None,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "message": message,
+            "action": action,
+            "retryable": bool(retryable),
+            "field_issues": field_issues or [],
+        },
+    )
+
+
 def public_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
     status = int(exc.status_code)
     raw_detail = exc.detail
@@ -34,6 +55,8 @@ def public_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
             "message": str(raw_detail["message"]),
             "action": raw_detail.get("action"),
             "diagnostic_id": raw_detail.get("diagnostic_id"),
+            "retryable": bool(raw_detail.get("retryable")),
+            "field_issues": raw_detail.get("field_issues") or [],
         }
         return JSONResponse(
             status_code=status,
@@ -60,6 +83,8 @@ def public_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
         "message": message,
         "action": _action_for_status(status),
         "diagnostic_id": diagnostic_id,
+        "retryable": status in {409, 429, 503} or status >= 500,
+        "field_issues": [],
     }
     return JSONResponse(
         status_code=status,
@@ -87,6 +112,8 @@ def public_unhandled_exception(request: Request, exc: Exception) -> JSONResponse
                 "message": message,
                 "action": "Try again. If it still fails, open Diagnostics.",
                 "diagnostic_id": diagnostic_id,
+                "retryable": True,
+                "field_issues": [],
             },
         },
     )
@@ -131,6 +158,8 @@ def public_validation_exception(
                 "message": message,
                 "action": "Review the information you entered.",
                 "diagnostic_id": diagnostic_id,
+                "retryable": False,
+                "field_issues": [],
             },
         },
     )

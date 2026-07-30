@@ -468,8 +468,48 @@ class AdditionalQACases(unittest.TestCase):
                 )
                 for item in models
             ]
-
         self.assertEqual(stable_fields(second["models"]), stable_fields(refreshed["models"]))
+
+    def test_whole_computer_model_scan_uses_available_drives_and_reports_walk_progress(self) -> None:
+        from backend.app.core.model_registry import (
+            discover_installed_models,
+            invalidate_model_discovery_cache,
+        )
+
+        drive_root = Path(self.tmp.name) / "drive"
+        nested = drive_root / "models" / "vendor" / "checkpoint"
+        nested.mkdir(parents=True)
+        model_file = nested / "qwen3-4b-q4_k_m.gguf"
+        model_file.write_bytes(b"GGUF")
+        updates: list[dict] = []
+        invalidate_model_discovery_cache()
+
+        with (
+            patch(
+                "backend.app.core.model_registry.installed_model_scan_locations",
+                return_value=[(drive_root, -1)],
+            ),
+            patch(
+                "backend.app.core.model_registry.model_compatibility_report",
+                return_value={
+                    "accepted": True,
+                    "family": "qwen",
+                    "family_name": "Qwen",
+                    "detail": "Compatible.",
+                },
+            ),
+        ):
+            discovery = discover_installed_models(
+                max_results=10,
+                refresh=True,
+                scan_all_drives=True,
+                progress_callback=updates.append,
+            )
+
+        self.assertEqual(discovery["scanned_root_count"], 1)
+        self.assertGreaterEqual(discovery["directories_checked"], 4)
+        self.assertTrue(any(update.get("directories_checked", 0) >= 4 for update in updates))
+        self.assertEqual(discovery["models"][0]["local_path"], str(model_file.resolve()))
 
     def test_first_run_readiness_skips_deep_embedding_probe(self) -> None:
         from backend.app.core.setup_readiness import first_run_readiness
@@ -1640,6 +1680,83 @@ class AdditionalQACases(unittest.TestCase):
                 (str(attachment_path),),
             ).fetchone()["count"]
         self.assertEqual(remaining_sources, 0)
+
+    def test_delete_final_chat_removes_legacy_empty_system_chats_cluster(self) -> None:
+        from backend.app.api.routes.chat import delete_chat_session
+        from backend.app.core.cluster_lifecycle import SYSTEM_CHATS_CLUSTER_DESCRIPTION
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-chat-cleanup", "Vault", self.tmp.name, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, name_origin, description, created_at, updated_at
+                )
+                VALUES (?, ?, 'Chats', 'user', ?, ?, ?)
+                """,
+                (
+                    "cluster-system-chats",
+                    "vault-chat-cleanup",
+                    SYSTEM_CHATS_CLUSTER_DESCRIPTION,
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, name_origin, description, created_at, updated_at
+                )
+                VALUES (
+                    'cluster-user-chats', 'vault-chat-cleanup', 'Chats', 'user',
+                    'User-created chat research notes.', ?, ?
+                )
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id, vault_id, title, saved, created_at, updated_at
+                )
+                VALUES ('chat-final', 'vault-chat-cleanup', 'Final chat', 1, ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO sources (
+                    id, vault_id, cluster_id, title, source_type, state, provenance,
+                    trust_tier, security_labels, parser_security_json, raw_text,
+                    extracted_text, summary, tags, created_at, updated_at
+                )
+                VALUES (
+                    'chat-source-chat-final-cluster-system-chats',
+                    'vault-chat-cleanup', 'cluster-system-chats',
+                    'Chat transcript - Final chat - Chats', 'chat_transcript', 'indexed',
+                    'chat_transcript', 'trusted_local', '[]', '{}', 'hello', 'hello',
+                    'Final chat transcript', '["CHAT","TRANSCRIPT"]', ?, ?
+                )
+                """,
+                (now, now),
+            )
+
+        delete_chat_session("chat-final")
+
+        with connect() as conn:
+            remaining_cluster = conn.execute(
+                "SELECT id FROM clusters WHERE id = 'cluster-system-chats'"
+            ).fetchone()
+            user_cluster = conn.execute(
+                "SELECT id FROM clusters WHERE id = 'cluster-user-chats'"
+            ).fetchone()
+        self.assertIsNone(remaining_cluster)
+        self.assertIsNotNone(user_cluster)
 
     def test_list_chat_sessions_validates_vault_and_paginates_large_history(self) -> None:
         from fastapi import HTTPException
