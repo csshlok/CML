@@ -32,10 +32,21 @@ test("model import and discovery expose durable job progress to onboarding", () 
 });
 
 test("model scanning states its real scope and supports a chosen folder", () => {
-  assert.match(onboardingSource, /Scan known folders/);
+  assert.match(onboardingSource, /Scan this computer/);
+  assert.match(onboardingSource, /Checking available drives/);
   assert.match(onboardingSource, /Choose folder/);
   assert.match(onboardingSource, /approveModelDiscoveryRoot\(normalized\)/);
   assert.match(onboardingSource, /refreshDetectedModels\(true, normalized\)/);
-  assert.doesNotMatch(onboardingSource, /Vault checks every available drive/);
   assert.doesNotMatch(onboardingSource, /Scan device/);
+});
+
+test("continue and completion use the selected chat model readiness", () => {
+  assert.match(
+    onboardingSource,
+    /const selected = models\.find\(\(model\) => model\.id === selectedModelId\);[\s\S]{0,120}Boolean\(selected && isModelRuntimeReady\(selected, modelRuntime\)\)/,
+  );
+  assert.match(
+    onboardingSource,
+    /const selectedChatModel = models\.find\(\(model\) => model\.id === selectedModelId\)/,
+  );
 });

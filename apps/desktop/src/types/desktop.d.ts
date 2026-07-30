@@ -13,14 +13,26 @@ declare global {
     | "recovery";
 
   interface DesktopSetupState {
-    schema_version: 1;
+    schema_version: 2;
+    revision: number;
     phase: DesktopSetupPhase;
+    editable_step: number;
+    completed_capabilities: string[];
+    next_required_action: string;
     recovery_reason?: "missing_vault_data" | "setup_state_invalid";
     profile: { display_name: string; avatar_path?: string };
     vault: { id: string; name: string; path: string };
     chat_setup: { status: string; model_id: string };
     model_storage: { download_root: string };
     memory_setup: { status: string; model_id: string };
+    security_setup: { status: string };
+    model_discovery: { status: string; operation_id: string; scan_all_drives: boolean };
+    recoverable_error: {
+      code: string;
+      message: string;
+      action: string;
+      diagnostic_id: string;
+    } | null;
     tour: { status: "pending" | "completed" | "skipped"; step: number; version: 1 };
     updated_at: string;
   }
@@ -28,7 +40,8 @@ declare global {
   type DesktopSetupStatePatch = Partial<
     Omit<
       DesktopSetupState,
-      "profile" | "vault" | "chat_setup" | "model_storage" | "memory_setup" | "tour"
+      "profile" | "vault" | "chat_setup" | "model_storage" | "memory_setup" |
+      "security_setup" | "model_discovery" | "tour"
     >
   > & {
     profile?: Partial<DesktopSetupState["profile"]>;
@@ -36,6 +49,8 @@ declare global {
     chat_setup?: Partial<DesktopSetupState["chat_setup"]>;
     model_storage?: Partial<DesktopSetupState["model_storage"]>;
     memory_setup?: Partial<DesktopSetupState["memory_setup"]>;
+    security_setup?: Partial<DesktopSetupState["security_setup"]>;
+    model_discovery?: Partial<DesktopSetupState["model_discovery"]>;
     tour?: Partial<DesktopSetupState["tour"]>;
   };
 

@@ -125,6 +125,12 @@ import {
   type DesktopProfile,
 } from "@/lib/profileState";
 import { notify } from "@/components/product/Notifications";
+import { ConfirmAction } from "@/components/product/Feedback";
+import {
+  canonicalSettingsSection,
+  settingsNoticeIsError,
+  type SettingsSectionId,
+} from "@/lib/settingsController";
 
 export const Route = createFileRoute("/_app/settings")({
   validateSearch: (search: Record<string, unknown>): { section?: string } => ({
@@ -143,35 +149,13 @@ const settingsSections = [
   { id: "advanced", label: "Advanced", icon: SlidersHorizontal },
 ] as const;
 
-const settingsAliases: Record<string, (typeof settingsSections)[number]["id"]> = {
-  storage: "library",
-  privacy: "library",
-  embeddings: "models",
-  ocr: "models",
-  odin: "connections",
-  diagnostics: "advanced",
-};
-
-function canonicalSettingsSection(value?: string) {
-  const candidate = value ? settingsAliases[value] ?? value : "profile";
-  return settingsSections.some((item) => item.id === candidate)
-    ? (candidate as (typeof settingsSections)[number]["id"])
-    : "profile";
-}
-
-function settingsNoticeIsError(message: string) {
-  return /\b(could not|failed|failure|invalid|unavailable|incorrect|error)\b/i.test(
-    message,
-  );
-}
-
 function SettingsView() {
   const { section } = Route.useSearch();
   const navigate = useNavigate();
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
   const backendHealth = useBackendHealth();
   const [mounted, setMounted] = useState(false);
-  const [activeSection, setActiveSection] = useState(() => canonicalSettingsSection(section));
+  const activeSection = canonicalSettingsSection(section);
   const [backendVault, setBackendVault] = useState<VaultRecord | null>(null);
   const [pathDraft, setPathDraft] = useState("");
   const [models, setModels] = useState<LocalModelRecord[]>([]);
@@ -297,17 +281,11 @@ function SettingsView() {
     return subscribeDesktopProfile(setProfile);
   }, []);
 
-  useEffect(() => {
-    const nextSection = canonicalSettingsSection(section);
-    setActiveSection(nextSection);
-  }, [section]);
-
   function selectSettingsSection(nextSection: string) {
     const validSection = canonicalSettingsSection(nextSection);
-    setActiveSection(validSection);
     void navigate({
       to: "/settings",
-      search: { section: validSection },
+      search: { section: validSection as SettingsSectionId },
       replace: true,
     });
   }
@@ -344,111 +322,103 @@ function SettingsView() {
   }, [activeSection, desktop]);
 
   const loadSettings = useCallback(async () => {
-      try {
-        const currentUnlock = await getUnlockStatus();
-        setHealthLoadError(null);
-        setUnlockStatus(currentUnlock);
-        if (currentUnlock.secured_vault_count > 0 && currentUnlock.state !== "ready") {
-          const vaultRows = await listVaults();
-          const firstVault = vaultRows[0] ?? null;
-          setBackendVault(firstVault ? { ...firstVault, path: "" } : null);
-          setTemporalFacts(null);
-          setReviewableFacts([]);
-          if (!pathDraftDirtyRef.current) setPathDraft("");
-          setHealthCheckedAt(new Date());
-          setPollingStatusMessage(
-            currentUnlock.message || "Library is locked. Unlock it from Privacy settings.",
-          );
-          return;
-        }
-        const results = await Promise.allSettled([
-          listVaults(),
-          listLocalModels(),
-          getModelRecommendations(),
-          discoverInstalledModels({ max_results: 24 }),
-          getModelRuntimeStatus(),
-          getEmbeddingRuntimeStatus(),
-          getEmbeddingDownloadStatus(),
-          getOCRRuntimeStatus(),
-          getHardwareStatus(),
-          getJobStatus(),
-          getChatEvidenceRetentionPolicy(),
-        ]);
-        const failures: string[] = [];
-        const readResult = <T,>(index: number, label: string): T | undefined => {
-          const result = results[index] as PromiseSettledResult<T>;
-          if (result.status === "fulfilled") return result.value;
-          failures.push(label);
-          return undefined;
-        };
-        const vaultRows = readResult<VaultRecord[]>(0, "library");
-        const modelRows = readResult<LocalModelRecord[]>(1, "models");
-        const recommendations = readResult<ModelRecommendationsRecord>(2, "recommendations");
-        const discoveredRows = readResult<{ models: DiscoveredInstalledModelRecord[] }>(3, "model scan");
-        const runtimeStatus = readResult<ModelRuntimeStatus>(4, "model runtime");
-        const embeddingStatus = readResult<EmbeddingRuntimeStatus>(5, "memory search");
-        const embeddingDownloadStatus = readResult<EmbeddingModelDownloadState>(6, "memory download");
-        const ocrStatus = readResult<OCRRuntimeStatusRead>(7, "document reading");
-        const hardwareStatus = readResult<HardwareStatusRead>(8, "hardware");
-        const jobStatus = readResult<JobQueueStatus>(9, "tasks");
-        const evidencePolicy = readResult<ChatEvidenceRetentionPolicy>(10, "chat evidence");
-        const firstVault = vaultRows?.[0];
-        if (vaultRows) {
-          setBackendVault(firstVault ?? null);
-          if (firstVault && !pathDraftDirtyRef.current) setPathDraft(firstVault.path);
-        }
-        if (firstVault) {
-          const dependent = await Promise.allSettled([
-              listIntegrationImports(firstVault.id),
-              listProjects(firstVault.id),
-              getTemporalFactStatus(firstVault.id),
-              listTemporalFacts(firstVault.id),
-          ]);
-          const readDependent = <T,>(index: number, label: string): T | undefined => {
-            const result = dependent[index] as PromiseSettledResult<T>;
-            if (result.status === "fulfilled") return result.value;
-            failures.push(label);
-            return undefined;
-          };
-          const importRows = readDependent<IntegrationImportRecord[]>(0, "connections");
-          const projectRows = readDependent<ProjectRecord[]>(1, "projects");
-          const temporalStatus = readDependent<TemporalFactDiagnostics>(2, "memory status");
-          const factRows = readDependent<TemporalFactRecord[]>(3, "memory facts");
-          if (importRows) setIntegrationImports(importRows);
-          if (projectRows) setProjects(projectRows);
-          if (temporalStatus) setTemporalFacts(temporalStatus);
-          if (factRows) setReviewableFacts(factRows);
-        }
-        if (modelRows) setModels(modelRows);
-        if (recommendations) setModelRecommendations(recommendations);
-        if (discoveredRows) setDiscoveredModels(discoveredRows.models);
-        if (runtimeStatus) setRuntime(runtimeStatus);
-        if (embeddingStatus) setEmbeddingRuntime(embeddingStatus);
-        if (embeddingStatus && !embeddingDraftDirtyRef.current) {
-          setEmbeddingCacheDraft(embeddingStatus.cache_dir ?? "");
-        }
-        if (embeddingDownloadStatus) setEmbeddingDownload(embeddingDownloadStatus);
-        if (ocrStatus) setOcrRuntime(ocrStatus);
-        if (hardwareStatus) setHardware(hardwareStatus);
-        if (jobStatus) setJobs(jobStatus);
-        if (evidencePolicy) setRetentionPolicy(evidencePolicy);
-        setHealthLoadError(
-          failures.length ? `Some settings could not refresh: ${failures.join(", ")}.` : null,
-        );
-        setHealthCheckedAt(new Date());
-        lastPollingNoticeRef.current = null;
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Vault settings are unavailable. Check Health and try again.";
-        setHealthLoadError(message);
-        setHealthCheckedAt(new Date());
-        setPollingStatusMessage(message);
-      }
-  }, [setPollingStatusMessage]);
+    try {
+      const currentUnlock = await getUnlockStatus();
+      setHealthLoadError(null);
+      setUnlockStatus(currentUnlock);
+      const vaultRows = await listVaults();
+      const firstVault = vaultRows[0] ?? null;
+      setBackendVault(firstVault ?? null);
+      if (firstVault && !pathDraftDirtyRef.current) setPathDraft(firstVault.path);
 
-  useVisiblePolling(loadSettings, 6000);
+      if (currentUnlock.secured_vault_count > 0 && currentUnlock.state !== "ready") {
+        setBackendVault(firstVault ? { ...firstVault, path: "" } : null);
+        setTemporalFacts(null);
+        setReviewableFacts([]);
+        if (!pathDraftDirtyRef.current) setPathDraft("");
+        setHealthCheckedAt(new Date());
+        setPollingStatusMessage(
+          currentUnlock.message || "Library is locked. Enter your passphrase to continue.",
+        );
+        return;
+      }
+
+      type SectionLoad = {
+        label: string;
+        request: Promise<unknown>;
+        apply: (value: unknown) => void;
+      };
+      const loads: SectionLoad[] = [];
+      const add = (
+        label: string,
+        request: Promise<unknown>,
+        apply: (value: unknown) => void,
+      ) => loads.push({ label, request, apply });
+
+      if (activeSection === "models") {
+        add("models", listLocalModels(), (value) => setModels(value as LocalModelRecord[]));
+        add("recommendations", getModelRecommendations(), (value) =>
+          setModelRecommendations(value as ModelRecommendationsRecord));
+      }
+      if (activeSection === "models" || activeSection === "health") {
+        add("model runtime", getModelRuntimeStatus(), (value) =>
+          setRuntime(value as ModelRuntimeStatus));
+        add("memory search", getEmbeddingRuntimeStatus(), (value) => {
+          const next = value as EmbeddingRuntimeStatus;
+          setEmbeddingRuntime(next);
+          if (!embeddingDraftDirtyRef.current) setEmbeddingCacheDraft(next.cache_dir ?? "");
+        });
+        add("memory download", getEmbeddingDownloadStatus(), (value) =>
+          setEmbeddingDownload(value as EmbeddingModelDownloadState));
+        add("document reading", getOCRRuntimeStatus(), (value) =>
+          setOcrRuntime(value as OCRRuntimeStatusRead));
+        add("hardware", getHardwareStatus(), (value) =>
+          setHardware(value as HardwareStatusRead));
+        add("tasks", getJobStatus(), (value) => setJobs(value as JobQueueStatus));
+      }
+      if (activeSection === "advanced") {
+        add("chat evidence", getChatEvidenceRetentionPolicy(), (value) =>
+          setRetentionPolicy(value as ChatEvidenceRetentionPolicy));
+      }
+      if (firstVault && activeSection === "library") {
+        add("folder sync", listIntegrationImports(firstVault.id), (value) =>
+          setIntegrationImports(value as IntegrationImportRecord[]));
+      }
+      if (firstVault && activeSection === "connections") {
+        add("projects", listProjects(firstVault.id), (value) =>
+          setProjects(value as ProjectRecord[]));
+      }
+      if (firstVault && activeSection === "advanced") {
+        add("memory status", getTemporalFactStatus(firstVault.id), (value) =>
+          setTemporalFacts(value as TemporalFactDiagnostics));
+        add("memory facts", listTemporalFacts(firstVault.id), (value) =>
+          setReviewableFacts(value as TemporalFactRecord[]));
+      }
+
+      const results = await Promise.allSettled(loads.map((item) => item.request));
+      const failures: string[] = [];
+      results.forEach((result, index) => {
+        const load = loads[index];
+        if (result.status === "fulfilled") load.apply(result.value);
+        else failures.push(load.label);
+      });
+      setHealthLoadError(
+        failures.length ? `Some settings could not refresh: ${failures.join(", ")}.` : null,
+      );
+      setHealthCheckedAt(new Date());
+      lastPollingNoticeRef.current = null;
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Vault settings are unavailable. Check Health and try again.";
+      setHealthLoadError(message);
+      setHealthCheckedAt(new Date());
+      setPollingStatusMessage(message);
+    }
+  }, [activeSection, setPollingStatusMessage]);
+
+  useVisiblePolling(loadSettings, 6000, true, undefined, activeSection);
   useVisiblePolling(refreshModelRows, 750, modelDownloadActive);
   useVisiblePolling(refreshEmbeddingRows, 750, embeddingDownloadActive);
 
@@ -512,14 +482,6 @@ function SettingsView() {
     if (backendVault && displayPath(backendVault.path) === displayPath(path)) {
       pathDraftDirtyRef.current = false;
       setStatusMessage("Library location is already current.");
-      return;
-    }
-    if (
-      backendVault &&
-      !window.confirm(
-        "Move this library to the selected folder? Vault will verify the copied database before switching and will roll back if startup fails.",
-      )
-    ) {
       return;
     }
     setActionBusy("vault-path", true);
@@ -1054,10 +1016,21 @@ function SettingsView() {
   async function installOrRepairOdin() {
     setOdinLauncherBusy(true);
     setCliAccessError(null);
+    const repairAndPair = Boolean(odinLauncher?.needs_repair);
     try {
       const installed = await desktop?.installOdinLauncher?.();
       if (!installed) throw new Error("Odin is available only in the desktop app.");
       setOdinLauncher(installed);
+      if (repairAndPair) {
+        const pairing = await desktop?.startOdinPairing?.();
+        if (!pairing?.started) {
+          throw new Error(
+            "Odin was repaired, but Vault could not open the approved pairing flow. Your prior registration was not removed.",
+          );
+        }
+        setStatusMessage("Odin was repaired. Approve the replacement pairing in PowerShell.");
+        return;
+      }
       setStatusMessage(
         installed.path_error
           ? "Odin is installed. Pairing works here, but Windows did not update PATH."
@@ -1555,15 +1528,16 @@ function SettingsView() {
               title="Odin command"
               description="Install Odin, then open a new PowerShell window and run odin --help."
               status={
-                odinLauncher?.installed
+                odinLauncher?.needs_repair
+                  ? "Repair needed"
+                  : odinLauncher?.installed
                   ? odinLauncher.path_error || odinLauncher.on_current_path === false
                     ? "Installed"
                     : "Ready"
-                  : odinLauncher?.needs_repair
-                    ? "Repair needed"
-                    : "Not installed"
+                  : "Not installed"
               }
               statusTone={
+                !odinLauncher?.needs_repair &&
                 odinLauncher?.installed &&
                 !odinLauncher.path_error &&
                 odinLauncher.on_current_path !== false
@@ -1574,7 +1548,7 @@ function SettingsView() {
               <div className="mt-5 flex flex-wrap gap-2">
                 <Button onClick={() => void installOrRepairOdin()} disabled={odinLauncherBusy || !desktop?.installOdinLauncher}>
                   {odinLauncher?.needs_repair
-                    ? "Repair Odin"
+                    ? "Repair and pair Odin"
                     : odinLauncher?.installed
                       ? "Reinstall Odin"
                       : "Install Odin"}
@@ -1919,7 +1893,7 @@ function SettingsView() {
                 Import approved model
               </Button>
               <Button variant="outline" onClick={() => void scanInstalledModels()} disabled={discoveringModels}>
-                {discoveringModels ? "Scanning..." : "Scan installed models"}
+                {discoveringModels ? "Scanning this computer…" : "Scan this computer"}
               </Button>
             </div>
             {customModelReport && (
@@ -1953,7 +1927,7 @@ function SettingsView() {
                 ))
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  Scan common local model folders to detect accepted local chat checkpoints already installed on this device.
+                  Search available drives for compatible local chat models. You can stop the scan at any time.
                 </p>
               )}
             </div>
@@ -2107,9 +2081,32 @@ function SettingsView() {
                     setPathDraft(displayPath(event.target.value));
                   }}
                 />
-                <Button variant="outline" onClick={() => void saveVaultPath()} disabled={isActionBusy("vault-path")}>
-                  Change location
-                </Button>
+                {backendVault &&
+                displayPath(backendVault.path) !== displayPath(pathDraft.trim()) ? (
+                  <ConfirmAction
+                    title="Move this library?"
+                    description="Vault will copy and verify the library before switching. If verification fails, the current location stays active."
+                    confirmLabel="Move library"
+                    onConfirm={saveVaultPath}
+                    destructive={false}
+                    disabled={isActionBusy("vault-path") || !pathDraft.trim()}
+                  >
+                    <Button
+                      variant="outline"
+                      disabled={isActionBusy("vault-path") || !pathDraft.trim()}
+                    >
+                      Change location
+                    </Button>
+                  </ConfirmAction>
+                ) : (
+                  <Button
+                    variant="outline"
+                    onClick={() => void saveVaultPath()}
+                    disabled={isActionBusy("vault-path") || !pathDraft.trim()}
+                  >
+                    Change location
+                  </Button>
+                )}
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
                 <Button
@@ -2626,7 +2623,7 @@ function SettingsView() {
           <SettingsCard
             icon={<Activity className="h-4 w-4" />}
             title="Diagnostics"
-            description="Collect logs and system information for troubleshooting."
+            description="Export system status and error codes without your files, prompts, or raw logs."
           >
             <Button variant="outline" className="mt-5 gap-2" onClick={() => void exportDiagnostics()}>
               <Download className="h-4 w-4" /> Export diagnostics

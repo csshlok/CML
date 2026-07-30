@@ -27,6 +27,12 @@ export async function saveDesktopProfile(
   }
   const state = await desktop.updateSetupState({ profile: patch });
   const profile = normalizeDesktopProfile(state.profile);
+  try {
+    await updateAppProfile(profile.display_name);
+  } catch {
+    // The desktop setup file remains authoritative while the backend is starting.
+    // AppShell retries this lightweight projection after health recovery.
+  }
   window.dispatchEvent(new CustomEvent<DesktopProfile>(PROFILE_CHANGED_EVENT, { detail: profile }));
   return profile;
 }
@@ -38,3 +44,4 @@ export function subscribeDesktopProfile(listener: (profile: DesktopProfile) => v
   window.addEventListener(PROFILE_CHANGED_EVENT, onProfileChanged);
   return () => window.removeEventListener(PROFILE_CHANGED_EVENT, onProfileChanged);
 }
+import { updateAppProfile } from "@/lib/backend";

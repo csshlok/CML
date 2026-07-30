@@ -34,7 +34,10 @@ import {
   getEmbeddingRuntimeStatus,
   importLocalModel,
   initializeVaultSecurity,
+  cancelJob,
   listLocalModels,
+  pauseJob,
+  resumeJob,
   startEmbeddingDownload,
   startModelDownload,
   type EmbeddingModelDownloadState,
@@ -85,6 +88,7 @@ function Onboarding() {
   const modelsLoadedRef = useRef(false);
   const modelSelectionDirtyRef = useRef(false);
   const autoActivationAttemptRef = useRef<string | null>(null);
+  const transitionLockRef = useRef(false);
   const [mounted, setMounted] = useState(false);
   const [setupLoaded, setSetupLoaded] = useState(false);
   const [missingLibraryPath, setMissingLibraryPath] = useState("");
@@ -112,6 +116,8 @@ function Onboarding() {
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredInstalledModelRecord[]>([]);
   const [modelDiscovery, setModelDiscovery] = useState<InstalledModelDiscoveryRecord | null>(null);
   const [discoveringModels, setDiscoveringModels] = useState(false);
+  const [modelDiscoveryJobId, setModelDiscoveryJobId] = useState("");
+  const [modelDiscoveryPaused, setModelDiscoveryPaused] = useState(false);
   const [hasScannedModels, setHasScannedModels] = useState(false);
   const [modelOperation, setModelOperation] = useState<ModelOperation | null>(null);
   const [embeddingChoice, setEmbeddingChoice] = useState<EmbeddingChoice>("recommended");
@@ -129,7 +135,9 @@ function Onboarding() {
   const [securityPassphrase, setSecurityPassphrase] = useState("");
   const [securityPassphraseConfirm, setSecurityPassphraseConfirm] = useState("");
   const [securitySaving, setSecuritySaving] = useState(false);
+  const [transitionBusy, setTransitionBusy] = useState(false);
   const [securityRecoveryKey, setSecurityRecoveryKey] = useState<string | null>(null);
+  const [recoveryKeyAcknowledged, setRecoveryKeyAcknowledged] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -205,7 +213,8 @@ function Onboarding() {
     if (step === 1) return displayName.trim().length >= 2;
     if (step === 2) return vaultName.trim().length >= 2 && vaultPath.trim().length > 0;
     if (step === 3) {
-      return models.some((model) => isModelRuntimeReady(model, modelRuntime));
+      const selected = models.find((model) => model.id === selectedModelId);
+      return Boolean(selected && isModelRuntimeReady(selected, modelRuntime));
     }
     if (step === 4) return Boolean(embeddingRuntime?.available);
     if (step === 5) {
@@ -223,6 +232,7 @@ function Onboarding() {
     modelRuntime?.model,
     modelRuntime?.state,
     models,
+    selectedModelId,
     step,
     securityPassphrase,
     securityPassphraseConfirm,
@@ -255,7 +265,10 @@ function Onboarding() {
           setSelectedModelId(state.chat_setup.model_id);
           modelSelectionDirtyRef.current = true;
         }
-        const resumedStep = setupPhaseToStep(state.phase);
+        const resumedStep =
+          state.phase === "recovery"
+            ? setupPhaseToStep(state.phase)
+            : (Math.max(0, Math.min(6, state.editable_step)) as Step);
         setStep(resumedStep);
         if (state.phase === "recovery") {
           if (state.recovery_reason === "missing_vault_data" && state.vault.path) {
@@ -452,13 +465,35 @@ function Onboarding() {
       kind: "scan",
       state: "active",
       title: "Scanning for models",
-      detail: selectedRoot ? `Checking ${displayPath(selectedRoot)}` : "Checking known model folders.",
+      detail: selectedRoot ? `Checking ${displayPath(selectedRoot)}` : "Checking available drives.",
       progress: 8,
     });
+    void desktop?.updateSetupState?.({
+      model_discovery: {
+        status: "in_progress",
+        operation_id: "",
+        scan_all_drives: refresh && !selectedRoot,
+      },
+    }).catch(() => undefined);
     try {
       const discovered = await discoverInstalledModels(
-        { max_results: 24, refresh },
-        (_job, detail) => {
+        {
+          max_results: 24,
+          refresh,
+          scan_all_drives: refresh && !selectedRoot,
+        },
+        (job, detail) => {
+          if (job?.id) {
+            setModelDiscoveryJobId(job.id);
+            setModelDiscoveryPaused(job.status === "paused");
+            void desktop?.updateSetupState?.({
+              model_discovery: {
+                status: "in_progress",
+                operation_id: job.id,
+                scan_all_drives: refresh && !selectedRoot,
+              },
+            });
+          }
           const candidates = numberFromJobDetail(detail.candidates_checked);
           const found = numberFromJobDetail(detail.models_found);
           setModelOperation({
@@ -470,7 +505,7 @@ function Onboarding() {
                 ? `Checked ${candidates.toLocaleString()} files · ${found.toLocaleString()} found`
                 : selectedRoot
                   ? `Checking ${displayPath(selectedRoot)}`
-                  : "Checking known model folders.",
+                  : "Checking available drives.",
             progress: Math.min(88, 8 + Math.sqrt(candidates) * 5),
           });
         },
@@ -487,6 +522,13 @@ function Onboarding() {
         detail: `Scanned ${discovered.scanned_root_count} ${discovered.scanned_root_count === 1 ? "folder" : "folders"}.`,
         progress: 100,
       });
+      await desktop?.updateSetupState?.({
+        model_discovery: {
+          status: "ready",
+          operation_id: "",
+          scan_all_drives: refresh && !selectedRoot,
+        },
+      });
     } catch (err) {
       setDiscoveredModels([]);
       setModelDiscovery(null);
@@ -500,9 +542,57 @@ function Onboarding() {
         progress: 100,
       });
       setError(detail);
+      await desktop?.updateSetupState?.({
+        model_discovery: {
+          status: "failed_recoverable",
+          operation_id: "",
+          scan_all_drives: refresh && !selectedRoot,
+        },
+        recoverable_error: {
+          code: "model_discovery_failed",
+          message: detail,
+          action: "Try again or choose a folder.",
+          diagnostic_id: "",
+        },
+      });
     } finally {
       setDiscoveringModels(false);
+      setModelDiscoveryJobId("");
+      setModelDiscoveryPaused(false);
       setHasScannedModels(true);
+    }
+  }
+
+  async function updateModelDiscoveryControl(action: "pause" | "resume" | "cancel") {
+    if (!modelDiscoveryJobId) return;
+    setError(null);
+    try {
+      if (action === "pause") {
+        await pauseJob(modelDiscoveryJobId);
+        setModelDiscoveryPaused(true);
+        await desktop?.updateSetupState?.({
+          model_discovery: {
+            status: "paused",
+            operation_id: modelDiscoveryJobId,
+            scan_all_drives: true,
+          },
+        });
+      } else if (action === "resume") {
+        await resumeJob(modelDiscoveryJobId);
+        setModelDiscoveryPaused(false);
+        await desktop?.updateSetupState?.({
+          model_discovery: {
+            status: "in_progress",
+            operation_id: modelDiscoveryJobId,
+            scan_all_drives: true,
+          },
+        });
+      } else {
+        await cancelJob(modelDiscoveryJobId);
+        setModelOperation(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Could not ${action} the model scan.`);
     }
   }
 
@@ -997,7 +1087,10 @@ function Onboarding() {
           });
           setSecurityRecoveryKey(result.recovery_key);
         }
-        await desktop?.updateSetupState?.({ phase: "security_complete" });
+        await desktop?.updateSetupState?.({
+          phase: "security_complete",
+          security_setup: { status: "ready" },
+        });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not protect this library.");
         return;
@@ -1006,6 +1099,18 @@ function Onboarding() {
       }
     }
     setStep(Math.min(step + 1, 6) as Step);
+  }
+
+  async function runSetupTransition(action: () => Promise<void>) {
+    if (transitionLockRef.current) return;
+    transitionLockRef.current = true;
+    setTransitionBusy(true);
+    try {
+      await action();
+    } finally {
+      transitionLockRef.current = false;
+      setTransitionBusy(false);
+    }
   }
 
   async function confirmSkipModels() {
@@ -1021,25 +1126,32 @@ function Onboarding() {
 
   async function confirmSkipSecurity() {
     setShowSkipSecurity(false);
-    await desktop?.updateSetupState?.({ phase: "security_complete" });
+    await desktop?.updateSetupState?.({
+      phase: "security_complete",
+      security_setup: { status: "skipped" },
+    });
     setStep(6);
   }
 
-  function back() {
+  async function back() {
     setError(null);
     setMessage(null);
-    setStep(Math.max(step - 1, 0) as Step);
+    const previousStep = Math.max(step - 1, 0) as Step;
+    setStep(previousStep);
+    await desktop?.updateSetupState?.({ editable_step: previousStep });
   }
 
   async function finish() {
-    const readyChatModel = models.find(
-      (model) => isModelRuntimeReady(model, modelRuntime),
-    );
+    const selectedChatModel = models.find((model) => model.id === selectedModelId);
+    const readyChatModel =
+      selectedChatModel && isModelRuntimeReady(selectedChatModel, modelRuntime)
+        ? selectedChatModel
+        : undefined;
     await desktop?.updateSetupState?.({
       phase: "complete",
       profile: { display_name: displayName.trim() },
       vault: {
-        id: vault?.id || "",
+        id: vault?.id || setupVaultId,
         name: vault?.name || vaultName.trim(),
         path: vaultPath.trim(),
       },
@@ -1068,7 +1180,21 @@ function Onboarding() {
   }
 
   if (!setupLoaded) {
-    return <main className="h-full bg-[#fbfbfb]" aria-label="Loading setup" />;
+    return (
+      <main
+        className="flex h-full items-center justify-center bg-[#fbfbfb] px-6 text-[#171717]"
+        aria-label="Loading setup"
+      >
+        <section className="w-full max-w-sm text-center" role="status" aria-live="polite">
+          <BrandLogo className="mx-auto h-12 w-auto select-none" />
+          <Loader2 className="mx-auto mt-8 h-5 w-5 animate-spin text-[#655f58] motion-reduce:animate-none" />
+          <h1 className="mt-4 text-lg font-semibold">Restoring setup</h1>
+          <p className="mt-2 text-sm leading-6 text-[#655f58]">
+            Vault is checking your saved library and completed setup steps.
+          </p>
+        </section>
+      </main>
+    );
   }
 
   if (missingLibraryPath) {
@@ -1115,7 +1241,8 @@ function Onboarding() {
           <h1 className="mt-20 text-[46px] font-bold tracking-[-0.035em]">Welcome to Vault</h1>
           <Button
             className="mt-11 h-[53px] min-w-[194px] rounded-[3px] bg-[#8d806e] text-white hover:bg-[#786d5f]"
-            onClick={() => void next()}
+            onClick={() => void runSetupTransition(next)}
+            disabled={transitionBusy}
           >
             Start Setup
             <ArrowRight className="ml-2 h-4 w-4" />
@@ -1384,8 +1511,8 @@ function Onboarding() {
                                     Models found on this computer
                                   </div>
                                   <div className="mt-1 text-muted-foreground">
-                                    Scan known model folders, or choose the folder that contains
-                                    your GGUF files.
+                                    Scan this computer, or choose the folder that contains your
+                                    GGUF files.
                                   </div>
                                 </div>
                                 <div className="flex flex-wrap gap-2">
@@ -1394,7 +1521,7 @@ function Onboarding() {
                                     onClick={() => void refreshDetectedModels(true)}
                                     disabled={discoveringModels}
                                   >
-                                    {discoveringModels ? "Scanning..." : "Scan known folders"}
+                                    {discoveringModels ? "Scanning…" : "Scan this computer"}
                                   </Button>
                                   <Button
                                     variant="outline"
@@ -1410,9 +1537,33 @@ function Onboarding() {
                               </div>
                               <div className="mt-3 grid gap-3">
                                 {discoveringModels ? (
-                                  <p className="text-xs text-muted-foreground">
-                                    Scanning available drives...
-                                  </p>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="mr-auto text-xs text-muted-foreground">
+                                      {modelDiscoveryPaused
+                                        ? "Scan paused."
+                                        : "Scanning available drives…"}
+                                    </p>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={!modelDiscoveryJobId}
+                                      onClick={() =>
+                                        void updateModelDiscoveryControl(
+                                          modelDiscoveryPaused ? "resume" : "pause",
+                                        )
+                                      }
+                                    >
+                                      {modelDiscoveryPaused ? "Resume" : "Pause"}
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      disabled={!modelDiscoveryJobId}
+                                      onClick={() => void updateModelDiscoveryControl("cancel")}
+                                    >
+                                      Cancel
+                                    </Button>
+                                  </div>
                                 ) : discoveredModels.length ? (
                                   discoveredModels.map((model) => (
                                     <div
@@ -1455,7 +1606,7 @@ function Onboarding() {
                                   </div>
                                 ) : (
                                   <p className="text-xs text-muted-foreground">
-                                    Scan known folders or choose a model folder.
+                                    Scan this computer or choose a model folder.
                                   </p>
                                 )}
                               </div>
@@ -1787,6 +1938,15 @@ function Onboarding() {
                           This is the only way to change a forgotten passphrase.
                         </p>
                         <code className="mt-3 block break-all text-xs">{securityRecoveryKey}</code>
+                        <label className="mt-4 flex items-start gap-2 text-xs text-foreground">
+                          <input
+                            type="checkbox"
+                            checked={recoveryKeyAcknowledged}
+                            onChange={(event) => setRecoveryKeyAcknowledged(event.target.checked)}
+                            className="mt-0.5 h-4 w-4"
+                          />
+                          I saved this recovery key.
+                        </label>
                       </div>
                     ) : null}
                   </SetupPanel>
@@ -1809,7 +1969,11 @@ function Onboarding() {
 
             <div className="shrink-0 border-t border-border px-6 pb-6 pt-5 sm:px-8">
               <div className="flex items-center justify-between gap-3">
-                <Button variant="ghost" onClick={back}>
+                <Button
+                  variant="ghost"
+                  onClick={() => void runSetupTransition(back)}
+                  disabled={transitionBusy}
+                >
                   <ArrowLeft className="h-4 w-4" />
                   Back
                 </Button>
@@ -1820,19 +1984,28 @@ function Onboarding() {
                   </div>
                   {step === 2 ? (
                     <Button
-                      onClick={() => void createVaultAfterFolderSelection()}
-                      disabled={!canContinue}
+                      onClick={() => void runSetupTransition(createVaultAfterFolderSelection)}
+                      disabled={!canContinue || transitionBusy}
                     >
                       Create vault
                       <ArrowRight className="h-4 w-4" />
                     </Button>
                   ) : step === 6 ? (
-                    <Button onClick={() => void finish()}>
+                    <Button
+                      onClick={() => void runSetupTransition(finish)}
+                      disabled={
+                        transitionBusy ||
+                        (Boolean(securityRecoveryKey) && !recoveryKeyAcknowledged)
+                      }
+                    >
                       Open Vault
                       <ArrowRight className="h-4 w-4" />
                     </Button>
                   ) : (
-                    <Button onClick={() => void next()} disabled={!canContinue || securitySaving}>
+                    <Button
+                      onClick={() => void runSetupTransition(next)}
+                      disabled={!canContinue || securitySaving || transitionBusy}
+                    >
                       {step === 5 ? "Protect and continue" : "Continue"}
                       <ArrowRight className="h-4 w-4" />
                     </Button>
@@ -1876,7 +2049,12 @@ function Onboarding() {
               <Button variant="outline" onClick={() => setShowSkipModels(false)}>
                 Cancel
               </Button>
-              <Button onClick={() => void confirmSkipModels()}>Confirm skip</Button>
+              <Button
+                onClick={() => void runSetupTransition(confirmSkipModels)}
+                disabled={transitionBusy}
+              >
+                Confirm skip
+              </Button>
             </div>
           </div>
         </div>
@@ -1906,7 +2084,12 @@ function Onboarding() {
               <Button variant="outline" onClick={() => setShowSkipSecurity(false)}>
                 Go back
               </Button>
-              <Button onClick={() => void confirmSkipSecurity()}>Confirm skip</Button>
+              <Button
+                onClick={() => void runSetupTransition(confirmSkipSecurity)}
+                disabled={transitionBusy}
+              >
+                Confirm skip
+              </Button>
             </div>
           </div>
         </div>

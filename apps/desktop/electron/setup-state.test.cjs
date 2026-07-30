@@ -42,6 +42,10 @@ test("new profile starts fresh and resumes durable setup progress", async () => 
   assert.equal(resumed.phase, "profile_complete");
   assert.equal(resumed.profile.display_name, "Ada");
   assert.equal(resumed.tour.status, "pending");
+  assert.equal(resumed.schema_version, 2);
+  assert.equal(resumed.revision, 1);
+  assert.ok(resumed.completed_capabilities.includes("profile"));
+  assert.equal(resumed.next_required_action, "choose_library");
 });
 
 test("legacy valid active vault is inferred complete without renderer storage", async () => {
@@ -132,4 +136,34 @@ test("reset removes only app setup state and leaves vault data untouched", async
 
   assert.equal((await readSetupState(root)).phase, "fresh");
   assert.equal(await fs.readFile(vaultFile, "utf8"), "vault-data");
+});
+
+test("version one setup state migrates to the authoritative capability snapshot", async () => {
+  const root = await temporaryUserData();
+  await fs.writeFile(
+    setupStatePath(root),
+    JSON.stringify({
+      schema_version: 1,
+      phase: "models_complete",
+      profile: { display_name: "Ada" },
+      vault: { id: "vault-1", name: "Library", path: "C:\\Library" },
+      chat_setup: { status: "ready", model_id: "model-1" },
+      model_storage: { download_root: "D:\\Models" },
+      memory_setup: { status: "pending", model_id: "" },
+      updated_at: new Date().toISOString(),
+    }),
+    "utf8",
+  );
+
+  const migrated = await readSetupState(root);
+
+  assert.equal(migrated.schema_version, 2);
+  assert.equal(migrated.phase, "models_complete");
+  assert.deepEqual(
+    migrated.completed_capabilities,
+    ["profile", "vault", "chat_model"],
+  );
+  assert.equal(migrated.next_required_action, "choose_memory_search");
+  assert.equal(migrated.security_setup.status, "not_started");
+  assert.equal(migrated.model_discovery.status, "not_started");
 });
