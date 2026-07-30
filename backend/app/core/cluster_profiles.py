@@ -171,15 +171,18 @@ def shortlist_cluster_candidates(
 def _cluster_centroid(conn, *, cluster_id: str, snapshot: dict) -> tuple[list[float], float]:
     rows = conn.execute(
         """
-        SELECT source_id, embedding
-        FROM source_chunks
-        WHERE cluster_id = ?
-          AND activation_state = 'active'
-          AND embedding_model_id = ?
-          AND index_version = ?
-          AND normalization_version = ?
-          AND extraction_version = ?
-          AND derived_state_epoch = ?
+        SELECT chunks.source_id, chunks.embedding
+        FROM source_chunks chunks
+        JOIN sources ON sources.id = chunks.source_id
+        WHERE chunks.cluster_id = ?
+          AND chunks.activation_state = 'active'
+          AND sources.deleted_at IS NULL
+          AND sources.source_type <> 'chat_transcript'
+          AND chunks.embedding_model_id = ?
+          AND chunks.index_version = ?
+          AND chunks.normalization_version = ?
+          AND chunks.extraction_version = ?
+          AND chunks.derived_state_epoch = ?
         """,
         (
             cluster_id,

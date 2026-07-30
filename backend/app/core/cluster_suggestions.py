@@ -198,6 +198,7 @@ def suggest_source_cluster_moves(conn, vault_id: str, limit: int = 12) -> list[d
           AND sources.state = 'indexed'
           AND sources.deleted_at IS NULL
           AND sources.project_id IS NULL
+          AND sources.source_type <> 'chat_transcript'
           AND (
               decisions.source_id IS NULL
               OR decisions.source_content_hash <> (

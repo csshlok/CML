@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,9 +56,11 @@ class ClusterSourceMoveTests(unittest.TestCase):
 
     def create_clustered_source(self) -> dict:
         from backend.app.api.routes.sources import create_source
+        from backend.app.core.database import connect
+        from backend.app.core.embeddings import reindex_source_chunks
         from backend.app.schemas import SourceCreate
 
-        return create_source(
+        source = create_source(
             SourceCreate(
                 vault_id="vault-1",
                 cluster_id="cluster-a",
@@ -66,6 +69,9 @@ class ClusterSourceMoveTests(unittest.TestCase):
                 raw_text="A source that should move without changing its saved content.",
             )
         )
+        with connect() as conn:
+            reindex_source_chunks(conn, source)
+        return source
 
     def test_one_source_moves_between_clusters_and_refreshes_membership(self) -> None:
         from backend.app.api.routes.sources import update_source
@@ -82,6 +88,13 @@ class ClusterSourceMoveTests(unittest.TestCase):
                 "SELECT cluster_id, raw_text FROM sources WHERE id = ?",
                 (source["id"],),
             ).fetchone()
+            chunk_memberships = {
+                row["cluster_id"]
+                for row in conn.execute(
+                    "SELECT cluster_id FROM source_chunks WHERE source_id = ? AND activation_state = 'active'",
+                    (source["id"],),
+                ).fetchall()
+            }
             counts = {
                 row["cluster_id"]: row["count"]
                 for row in conn.execute(
@@ -103,6 +116,7 @@ class ClusterSourceMoveTests(unittest.TestCase):
 
         self.assertEqual(moved["cluster_id"], "cluster-b")
         self.assertEqual(membership["cluster_id"], "cluster-b")
+        self.assertEqual(chunk_memberships, {"cluster-b"})
         self.assertIn("should move", moved["raw_text"])
         self.assertEqual(membership["raw_text"], source["raw_text"])
         self.assertEqual(counts.get("cluster-a", 0), 0)
@@ -145,6 +159,67 @@ class ClusterSourceMoveTests(unittest.TestCase):
 
         self.assertIsNone(source["cluster_id"])
 
+    def test_chat_only_cluster_does_not_block_first_document_cluster(self) -> None:
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import _run_source_cluster_reconciliation
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-chat-first", "Chat first", self.tmp.name, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (id, vault_id, name, name_origin, created_at, updated_at)
+                VALUES (?, ?, ?, 'user', ?, ?)
+                """,
+                ("cluster-chats", "vault-chat-first", "Chats", now, now),
+            )
+
+        create_source(
+            SourceCreate(
+                vault_id="vault-chat-first",
+                cluster_id="cluster-chats",
+                title="Existing chat",
+                source_type="chat_transcript",
+                raw_text="A saved conversation.",
+            )
+        )
+        document = create_source(
+            SourceCreate(
+                vault_id="vault-chat-first",
+                title="Architecture notes",
+                source_type="note",
+                raw_text="Architecture boundaries, services, and deployment notes.",
+            )
+        )
+        with connect() as conn:
+            conn.execute(
+                "UPDATE sources SET metadata_version = 3 WHERE id = ?",
+                (document["id"],),
+            )
+
+        _run_source_cluster_reconciliation(
+            {"vault_id": "vault-chat-first", "source_id": document["id"]}
+        )
+
+        with connect() as conn:
+            moved = conn.execute(
+                "SELECT cluster_id FROM sources WHERE id = ?",
+                (document["id"],),
+            ).fetchone()
+            created_cluster = conn.execute(
+                "SELECT name_origin FROM clusters WHERE id = ?",
+                (moved["cluster_id"],),
+            ).fetchone()
+
+        self.assertIsNotNone(moved["cluster_id"])
+        self.assertNotEqual(moved["cluster_id"], "cluster-chats")
+        self.assertEqual(created_cluster["name_origin"], "auto")
+
     def test_accepting_a_suggested_move_updates_membership_and_records_the_decision(self) -> None:
         from backend.app.api.routes.clusters import decide_cluster_suggestion
         from backend.app.core.database import connect
@@ -174,12 +249,309 @@ class ClusterSourceMoveTests(unittest.TestCase):
                 """,
                 (source["id"],),
             ).fetchone()
+            chunk_memberships = {
+                row["cluster_id"]
+                for row in conn.execute(
+                    "SELECT cluster_id FROM source_chunks WHERE source_id = ? AND activation_state = 'active'",
+                    (source["id"],),
+                ).fetchall()
+            }
 
         self.assertEqual(result["action"], "accepted")
         self.assertEqual(membership["cluster_id"], "cluster-b")
         self.assertEqual(decision["action"], "accepted")
         self.assertEqual(decision["suggested_cluster_id"], "cluster-b")
         self.assertEqual(decision["source_updated_at"], membership["updated_at"])
+        self.assertEqual(chunk_memberships, {"cluster-b"})
+
+    def test_cluster_merge_and_rollback_keep_chunks_aligned(self) -> None:
+        from backend.app.api.routes.clusters import (
+            merge_cluster,
+            rollback_cluster_merge_artifact,
+        )
+        from backend.app.core.database import connect
+        from backend.app.schemas import ClusterMergeRequest
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+
+        merge_cluster("cluster-a", ClusterMergeRequest(target_cluster_id="cluster-b"))
+
+        with connect() as conn:
+            artifact = conn.execute(
+                "SELECT id FROM cluster_merge_artifacts ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            moved_source = conn.execute(
+                "SELECT cluster_id FROM sources WHERE id = ?",
+                (source["id"],),
+            ).fetchone()
+            moved_chunks = {
+                row["cluster_id"]
+                for row in conn.execute(
+                    "SELECT cluster_id FROM source_chunks WHERE source_id = ? AND activation_state = 'active'",
+                    (source["id"],),
+                ).fetchall()
+            }
+        self.assertEqual(moved_source["cluster_id"], "cluster-b")
+        self.assertEqual(moved_chunks, {"cluster-b"})
+
+        rollback_cluster_merge_artifact(str(artifact["id"]))
+
+        with connect() as conn:
+            restored_source = conn.execute(
+                "SELECT cluster_id FROM sources WHERE id = ?",
+                (source["id"],),
+            ).fetchone()
+            restored_chunks = {
+                row["cluster_id"]
+                for row in conn.execute(
+                    "SELECT cluster_id FROM source_chunks WHERE source_id = ? AND activation_state = 'active'",
+                    (source["id"],),
+                ).fetchall()
+            }
+        self.assertEqual(restored_source["cluster_id"], "cluster-a")
+        self.assertEqual(restored_chunks, {"cluster-a"})
+
+    def test_deleting_cluster_unclusters_sources_and_chunks_together(self) -> None:
+        from backend.app.api.routes.clusters import delete_cluster
+        from backend.app.core.database import connect
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+
+        delete_cluster("cluster-a")
+
+        with connect() as conn:
+            membership = conn.execute(
+                "SELECT cluster_id FROM sources WHERE id = ?",
+                (source["id"],),
+            ).fetchone()
+            chunk_memberships = {
+                row["cluster_id"]
+                for row in conn.execute(
+                    "SELECT cluster_id FROM source_chunks WHERE source_id = ? AND activation_state = 'active'",
+                    (source["id"],),
+                ).fetchall()
+            }
+        self.assertIsNone(membership["cluster_id"])
+        self.assertEqual(chunk_memberships, {None})
+
+    def test_membership_move_rolls_back_source_and_chunks_on_derived_state_failure(self) -> None:
+        from backend.app.api.routes.sources import update_source
+        from backend.app.core.database import connect
+        from backend.app.schemas import SourceUpdate
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+        with connect() as conn:
+            initial_event_count = conn.execute(
+                "SELECT COUNT(*) AS total FROM cluster_membership_events WHERE source_id = ?",
+                (source["id"],),
+            ).fetchone()["total"]
+
+        with patch(
+            "backend.app.core.cluster_membership.rebuild_source_memory",
+            side_effect=RuntimeError("derived state failed"),
+        ):
+            with self.assertRaises(RuntimeError):
+                update_source(source["id"], SourceUpdate(cluster_id="cluster-b"))
+
+        with connect() as conn:
+            membership = conn.execute(
+                "SELECT cluster_id FROM sources WHERE id = ?",
+                (source["id"],),
+            ).fetchone()
+            chunk_memberships = {
+                row["cluster_id"]
+                for row in conn.execute(
+                    "SELECT cluster_id FROM source_chunks WHERE source_id = ? AND activation_state = 'active'",
+                    (source["id"],),
+                ).fetchall()
+            }
+            event_count = conn.execute(
+                "SELECT COUNT(*) AS total FROM cluster_membership_events WHERE source_id = ?",
+                (source["id"],),
+            ).fetchone()
+        self.assertEqual(membership["cluster_id"], "cluster-a")
+        self.assertEqual(chunk_memberships, {"cluster-a"})
+        self.assertEqual(event_count["total"], initial_event_count)
+
+    def test_membership_repair_is_bounded_and_idempotent(self) -> None:
+        from backend.app.core.cluster_membership import repair_cluster_membership_batch
+        from backend.app.core.database import connect
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+        with connect() as conn:
+            conn.execute(
+                "UPDATE source_chunks SET cluster_id = NULL WHERE source_id = ?",
+                (source["id"],),
+            )
+            repaired = repair_cluster_membership_batch(
+                conn,
+                vault_id="vault-1",
+                limit=1,
+            )
+        with connect() as conn:
+            repeated = repair_cluster_membership_batch(
+                conn,
+                vault_id="vault-1",
+                limit=1,
+            )
+            chunk_memberships = {
+                row["cluster_id"]
+                for row in conn.execute(
+                    "SELECT cluster_id FROM source_chunks WHERE source_id = ? AND activation_state = 'active'",
+                    (source["id"],),
+                ).fetchall()
+            }
+        self.assertEqual(repaired["sources_repaired"], 1)
+        self.assertGreater(repaired["chunks_repaired"], 0)
+        self.assertEqual(repeated["sources_repaired"], 0)
+        self.assertEqual(repeated["chunks_repaired"], 0)
+        self.assertEqual(chunk_memberships, {"cluster-a"})
+
+    def test_scoped_preflight_repairs_small_membership_mismatch(self) -> None:
+        from backend.app.core.cluster_membership import preflight_scoped_cluster_membership
+        from backend.app.core.database import connect
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+        with connect() as conn:
+            conn.execute(
+                "UPDATE source_chunks SET cluster_id = NULL WHERE source_id = ?",
+                (source["id"],),
+            )
+            result = preflight_scoped_cluster_membership(
+                conn,
+                vault_id="vault-1",
+                cluster_id="cluster-a",
+            )
+            remaining = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM source_chunks
+                WHERE source_id = ? AND activation_state = 'active'
+                  AND NOT (cluster_id IS 'cluster-a')
+                """,
+                (source["id"],),
+            ).fetchone()
+        self.assertEqual(result["mismatched_source_count"], 1)
+        self.assertEqual(result["sources_repaired"], 1)
+        self.assertFalse(result["repair_pending"])
+        self.assertEqual(remaining["total"], 0)
+
+    def test_chat_transcripts_do_not_feed_cluster_profile_generation(self) -> None:
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.cluster_lifecycle import refresh_cluster_profile
+        from backend.app.core.database import connect
+        from backend.app.schemas import SourceCreate
+
+        self.seed_clusters()
+        self.create_clustered_source()
+        create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                cluster_id="cluster-a",
+                title="Generated conversation",
+                source_type="chat_transcript",
+                raw_text="Assistant generated text that must not name the document cluster.",
+            )
+        )
+        observed_types: list[str] = []
+
+        def enrich(sources, **_kwargs):
+            observed_types.extend(str(source["source_type"]) for source in sources)
+            return {
+                "name": "Alpha documents",
+                "description": "Documents in Alpha.",
+                "summary": "Documents in Alpha.",
+                "glossary": [],
+            }
+
+        with connect() as conn, patch(
+            "backend.app.core.cluster_lifecycle.enrich_cluster_metadata",
+            side_effect=enrich,
+        ):
+            refresh_cluster_profile(conn, "cluster-a")
+        self.assertEqual(observed_types, ["note"])
+
+    def test_runtime_cluster_membership_writes_are_centralized(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "app"
+        pattern = re.compile(
+            r"UPDATE\s+sources\s+SET[\s\S]{0,180}?cluster_id\s*=",
+            re.IGNORECASE,
+        )
+        unauthorized: list[str] = []
+        for path in root.rglob("*.py"):
+            if path.name in {"cluster_membership.py", "database.py", "migrations.py"}:
+                continue
+            if pattern.search(path.read_text(encoding="utf-8")):
+                unauthorized.append(str(path.relative_to(root)))
+        self.assertEqual(unauthorized, [])
+
+    def test_startup_reconciliation_queues_membership_repair_for_mismatched_vault(self) -> None:
+        from backend.app.core.background_jobs import enqueue_startup_reconciliation_jobs
+        from backend.app.core.database import connect
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+        with connect() as conn:
+            conn.execute(
+                "UPDATE source_chunks SET cluster_id = NULL WHERE source_id = ?",
+                (source["id"],),
+            )
+
+        enqueue_startup_reconciliation_jobs()
+
+        with connect() as conn:
+            job = conn.execute(
+                """
+                SELECT job_type, scope_id, payload
+                FROM app_jobs
+                WHERE job_type = 'cluster_membership_repair' AND scope_id = 'vault-1'
+                """
+            ).fetchone()
+        self.assertIsNotNone(job)
+        self.assertIn('"vault_id":"vault-1"', job["payload"])
+
+    def test_membership_repair_job_persists_result_and_finishes_consistent(self) -> None:
+        from backend.app.core.background_jobs import (
+            _run_cluster_membership_repair,
+            enqueue_job,
+        )
+        from backend.app.core.cluster_membership import summarize_cluster_membership
+        from backend.app.core.database import connect
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+        with connect() as conn:
+            conn.execute(
+                "UPDATE source_chunks SET cluster_id = NULL WHERE source_id = ?",
+                (source["id"],),
+            )
+            job = enqueue_job(
+                conn,
+                job_type="cluster_membership_repair",
+                payload={"vault_id": "vault-1", "batch_size": 1, "user_initiated": True},
+                scope_id="vault-1",
+                user_initiated=True,
+            )
+
+        _run_cluster_membership_repair(
+            {"vault_id": "vault-1", "batch_size": 1, "user_initiated": True},
+            job["id"],
+        )
+
+        with connect() as conn:
+            repaired_job = conn.execute(
+                "SELECT result_json, status_detail FROM app_jobs WHERE id = ?",
+                (job["id"],),
+            ).fetchone()
+            audit = summarize_cluster_membership(conn, vault_id="vault-1")
+        self.assertIn('"chunks_repaired":', repaired_job["result_json"])
+        self.assertIn("repaired", repaired_job["status_detail"].casefold())
+        self.assertTrue(audit["consistent"])
 
     def test_suggestion_review_batch_does_not_regenerate_after_each_decision(self) -> None:
         from backend.app.api.routes.clusters import (
@@ -312,10 +684,191 @@ class ClusterSourceMoveTests(unittest.TestCase):
                 LIMIT 1
                 """
             ).fetchone()
+            semantic = conn.execute(
+                """
+                SELECT id FROM app_jobs
+                WHERE job_type = 'source_semantic_enrichment' AND scope_id = ?
+                LIMIT 1
+                """,
+                (source["id"],),
+            ).fetchone()
         self.assertIn("source move", updated["summary"])
         self.assertIn("source organization", updated["tags"])
         self.assertEqual(updated["metadata_version"], 3)
         self.assertIsNotNone(refresh)
+        self.assertIsNotNone(semantic)
+
+    def test_semantic_source_metadata_improves_fallback_without_changing_content(self) -> None:
+        from backend.app.core.background_jobs import _run_source_semantic_enrichment
+        from backend.app.core.database import connect
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+        with connect() as conn:
+            before = conn.execute(
+                "SELECT raw_text, extracted_text FROM sources WHERE id = ?",
+                (source["id"],),
+            ).fetchone()
+        with patch(
+            "backend.app.core.background_jobs.enrich_source_metadata",
+            return_value={
+                "summary": "Explains transactional source movement and retained retrieval context.",
+                "keywords": ["cluster movement", "retrieval context"],
+            },
+        ):
+            _run_source_semantic_enrichment({"source_id": source["id"]})
+
+        with connect() as conn:
+            updated = conn.execute(
+                """
+                SELECT raw_text, extracted_text, summary, tags, metadata_quality,
+                       semantic_metadata_version, semantic_metadata_updated_at
+                FROM sources WHERE id = ?
+                """,
+                (source["id"],),
+            ).fetchone()
+        self.assertEqual(updated["raw_text"], before["raw_text"])
+        self.assertEqual(updated["extracted_text"], before["extracted_text"])
+        self.assertIn("transactional source movement", updated["summary"])
+        self.assertIn("cluster movement", updated["tags"])
+        self.assertEqual(updated["metadata_quality"], "semantic")
+        self.assertEqual(updated["semantic_metadata_version"], 1)
+        self.assertIsNotNone(updated["semantic_metadata_updated_at"])
+
+    def test_semantic_enrichment_wave_coalesces_cluster_profile_refresh_at_scale(self) -> None:
+        from backend.app.core.background_jobs import (
+            _finalize_source_semantic_wave,
+            enqueue_job,
+        )
+        from backend.app.core.database import connect, utc_now
+
+        self.seed_clusters()
+        now = utc_now()
+        source_count = 128
+        with connect() as conn:
+            conn.execute(
+                "UPDATE clusters SET profile_status = 'stale' WHERE id = 'cluster-a'"
+            )
+            conn.executemany(
+                """
+                INSERT INTO sources (
+                    id, vault_id, cluster_id, title, source_type, state,
+                    provenance, trust_tier, security_labels, parser_security_json,
+                    raw_text, extracted_text, summary, tags, created_at, updated_at
+                )
+                VALUES (?, 'vault-1', 'cluster-a', ?, 'note', 'indexed',
+                        'local_import', 'trusted_local', '[]', '{}',
+                        ?, ?, '', '[]', ?, ?)
+                """,
+                [
+                    (
+                        f"source-wave-{index}",
+                        f"Wave source {index}",
+                        f"Semantic content {index}",
+                        f"Semantic content {index}",
+                        now,
+                        now,
+                    )
+                    for index in range(source_count)
+                ],
+            )
+            jobs = [
+                enqueue_job(
+                    conn,
+                    job_type="source_semantic_enrichment",
+                    payload={"source_id": f"source-wave-{index}"},
+                    dedupe_key=f"semantic-wave:{index}",
+                    scope_id=f"source-wave-{index}",
+                )
+                for index in range(source_count)
+            ]
+
+        self.assertFalse(
+            _finalize_source_semantic_wave({"source_id": "source-wave-0"})
+        )
+        with connect() as conn:
+            conn.execute(
+                "UPDATE app_jobs SET status = 'succeeded' WHERE job_type = 'source_semantic_enrichment'"
+            )
+        self.assertTrue(
+            _finalize_source_semantic_wave(
+                {"source_id": f"source-wave-{source_count - 1}"}
+            )
+        )
+        for index in range(source_count):
+            _finalize_source_semantic_wave({"source_id": f"source-wave-{index}"})
+
+        with connect() as conn:
+            refresh_count = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM app_jobs
+                WHERE job_type = 'refresh_cluster_profile'
+                  AND scope_id = 'cluster-a'
+                  AND status = 'queued'
+                """
+            ).fetchone()["count"]
+            semantic_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM app_jobs WHERE job_type = 'source_semantic_enrichment'"
+            ).fetchone()["count"]
+        self.assertEqual(semantic_count, len(jobs))
+        self.assertEqual(refresh_count, 1)
+
+    def test_semantic_job_refreshes_cluster_after_its_wave_finishes(self) -> None:
+        from backend.app.core.background_jobs import _run_claimed_job, enqueue_job
+        from backend.app.core.database import connect, dict_from_row, utc_now
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+        with connect() as conn:
+            conn.execute("DELETE FROM app_jobs")
+            job = enqueue_job(
+                conn,
+                job_type="source_semantic_enrichment",
+                payload={"source_id": source["id"]},
+                dedupe_key=f"semantic-wave:{source['id']}",
+                scope_id=source["id"],
+            )
+            conn.execute(
+                """
+                UPDATE app_jobs
+                SET status = 'running', attempts = 1, started_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (utc_now(), utc_now(), job["id"]),
+            )
+            claimed = dict_from_row(
+                conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job["id"],)).fetchone()
+            )
+
+        with patch(
+            "backend.app.core.background_jobs.enrich_source_metadata",
+            return_value={
+                "summary": "A semantic description produced once for this source.",
+                "keywords": ["semantic", "coalesced"],
+            },
+        ):
+            _run_claimed_job(claimed)
+
+        with connect() as conn:
+            completed = conn.execute(
+                "SELECT status FROM app_jobs WHERE id = ?", (job["id"],)
+            ).fetchone()
+            refreshes = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM app_jobs
+                WHERE job_type = 'refresh_cluster_profile'
+                  AND scope_id = 'cluster-a'
+                  AND status = 'queued'
+                """
+            ).fetchone()["count"]
+            cluster = conn.execute(
+                "SELECT profile_status FROM clusters WHERE id = 'cluster-a'"
+            ).fetchone()
+        self.assertEqual(completed["status"], "succeeded")
+        self.assertEqual(cluster["profile_status"], "stale")
+        self.assertEqual(refreshes, 1)
 
     def test_reconciliation_groups_related_analyzed_sources_after_model_recovery(self) -> None:
         from backend.app.api.routes.sources import create_source

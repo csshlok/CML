@@ -9,6 +9,12 @@ from backend.app.core.encrypted_storage import load_source_content_fields
 from backend.app.core.semantic_metadata import enrich_cluster_metadata
 
 
+SYSTEM_CHATS_CLUSTER_NAME = "Chats"
+SYSTEM_CHATS_CLUSTER_DESCRIPTION = (
+    "Chat transcripts that were not scoped to a specific context cluster."
+)
+
+
 def mark_cluster_needs_update(conn, cluster_id: str | None, detail: str) -> None:
     if not cluster_id:
         return
@@ -103,6 +109,52 @@ def prune_empty_auto_cluster(conn, cluster_id: str | None) -> bool:
     return True
 
 
+def prune_empty_system_chats_cluster(conn, cluster_id: str | None) -> bool:
+    """Remove the system Chats container after its final transcript disappears."""
+    if not cluster_id:
+        return False
+    cluster = conn.execute(
+        "SELECT id, name, description FROM clusters WHERE id = ?",
+        (cluster_id,),
+    ).fetchone()
+    if (
+        cluster is None
+        or str(cluster["name"] or "") != SYSTEM_CHATS_CLUSTER_NAME
+        or str(cluster["description"] or "") != SYSTEM_CHATS_CLUSTER_DESCRIPTION
+    ):
+        return False
+    blockers = conn.execute(
+        """
+        SELECT
+            EXISTS(
+                SELECT 1 FROM sources
+                WHERE cluster_id = ? AND deleted_at IS NULL
+            ) AS has_sources,
+            EXISTS(
+                SELECT 1 FROM chat_sessions
+                WHERE scope_cluster_id = ?
+            ) AS has_chats,
+            EXISTS(
+                SELECT 1 FROM projects
+                WHERE primary_cluster_id = ? AND deleted_at IS NULL
+            ) AS has_primary_project,
+            EXISTS(
+                SELECT 1 FROM project_cluster_links
+                WHERE cluster_id = ?
+            ) AS has_project_link
+        """,
+        (cluster_id, cluster_id, cluster_id, cluster_id),
+    ).fetchone()
+    if any(int(blockers[key] or 0) for key in blockers.keys()):
+        return False
+    conn.execute(
+        "DELETE FROM cluster_suggestion_decisions WHERE suggested_cluster_id = ?",
+        (cluster_id,),
+    )
+    conn.execute("DELETE FROM clusters WHERE id = ?", (cluster_id,))
+    return True
+
+
 def refresh_cluster_profile(
     conn,
     cluster_id: str,
@@ -150,6 +202,7 @@ def refresh_cluster_profile(
             SELECT id, vault_id, checksum, updated_at
             FROM sources
             WHERE cluster_id = ? AND deleted_at IS NULL AND state = 'indexed'
+              AND source_type <> 'chat_transcript'
             ORDER BY updated_at DESC, created_at DESC
             """,
             (cluster_id,),
@@ -188,6 +241,7 @@ def refresh_cluster_profile(
                        extracted_text, raw_text
                 FROM sources
                 WHERE cluster_id = ? AND deleted_at IS NULL AND state = 'indexed'
+                  AND source_type <> 'chat_transcript'
                 ORDER BY updated_at DESC, created_at DESC
                 LIMIT 50
                 """,

@@ -9,17 +9,21 @@ from backend.app.core.cluster_suggestions import (
     record_source_cluster_move_batch_decision,
 )
 from backend.app.core.database import connect, dict_from_row, utc_now
+from backend.app.core.cluster_membership import (
+    ClusterMembershipError,
+    move_source_cluster_membership,
+    summarize_cluster_membership,
+)
 from backend.app.core.pagination import cursor_page, decode_cursor
 from backend.app.core.cluster_lifecycle import (
     mark_cluster_needs_update,
-    prune_empty_auto_cluster,
     refresh_cluster_profile,
 )
-from backend.app.core.retrieval_cache import invalidate_caches_for_source
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
     ClusterCreate,
     ClusterMergeRequest,
+    ClusterMembershipRepairRequest,
     ClusterRead,
     ClusterSuggestionRead,
     ClusterSuggestionDecision,
@@ -52,12 +56,26 @@ def list_clusters(vault_id: str | None = None, limit: int = 500, offset: int = 0
 
 
 @router.get("/page")
-def list_clusters_page(vault_id: str | None = None, limit: int = 100, cursor: str | None = None) -> dict:
+def list_clusters_page(
+    vault_id: str | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+    q: str | None = None,
+) -> dict:
     clauses: list[str] = []
     params: list[object] = []
     if vault_id:
         clauses.append("vault_id = ?")
         params.append(vault_id)
+    query = str(q or "").strip().casefold()
+    if query:
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses.append(
+            "(LOWER(name) LIKE ? ESCAPE '\\' OR LOWER(description) LIKE ? ESCAPE '\\' "
+            "OR LOWER(cluster_summary) LIKE ? ESCAPE '\\')"
+        )
+        pattern = f"%{escaped}%"
+        params.extend([pattern, pattern, pattern])
     decoded = decode_cursor(cursor)
     if decoded:
         updated_at, item_id = decoded
@@ -193,14 +211,22 @@ def decide_cluster_suggestion(payload: ClusterSuggestionDecision) -> dict:
             source_content_hash = str(candidate_evidence["source_content_hash"])
         if payload.action == "accepted":
             source_updated_at = now
-            conn.execute(
-                "UPDATE sources SET cluster_id = ?, updated_at = ? WHERE id = ?",
-                (payload.suggested_cluster_id, now, payload.source_id),
-            )
-            mark_cluster_needs_update(conn, payload.suggested_cluster_id, "Source moved from a suggestion.")
-            if not prune_empty_auto_cluster(conn, previous_cluster_id):
-                mark_cluster_needs_update(conn, previous_cluster_id, "Source moved from a suggestion.")
-            invalidate_caches_for_source(payload.source_id, conn=conn)
+            try:
+                move_source_cluster_membership(
+                    conn,
+                    source_id=payload.source_id,
+                    target_cluster_id=payload.suggested_cluster_id,
+                    reason="Source moved from a suggestion.",
+                    actor="user_suggestion_accept",
+                    expected_vault_id=str(source["vault_id"]),
+                )
+            except ClusterMembershipError as exc:
+                raise HTTPException(status_code=409, detail="The source could not be moved.") from exc
+            moved_source = conn.execute(
+                "SELECT updated_at FROM sources WHERE id = ?",
+                (payload.source_id,),
+            ).fetchone()
+            source_updated_at = str(moved_source["updated_at"])
 
         conn.execute(
             """
@@ -246,6 +272,36 @@ def decide_cluster_suggestion(payload: ClusterSuggestionDecision) -> dict:
         "cluster_name": target["name"],
         "action": payload.action,
     }
+
+
+@router.get("/membership-audit")
+def get_cluster_membership_audit(vault_id: str) -> dict:
+    with connect() as conn:
+        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+        if vault is None:
+            raise HTTPException(status_code=404, detail="Vault not found")
+        return summarize_cluster_membership(conn, vault_id=vault_id)
+
+
+@router.post("/membership-repair")
+def start_cluster_membership_repair(payload: ClusterMembershipRepairRequest) -> dict:
+    with connect() as conn:
+        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (payload.vault_id,)).fetchone()
+        if vault is None:
+            raise HTTPException(status_code=404, detail="Vault not found")
+        job = enqueue_job(
+            conn,
+            job_type="cluster_membership_repair",
+            payload={
+                "vault_id": payload.vault_id,
+                "batch_size": payload.batch_size,
+                "user_initiated": True,
+            },
+            dedupe_key=f"cluster-membership-repair:{payload.vault_id}",
+            scope_id=payload.vault_id,
+            user_initiated=True,
+        )
+    return job
 
 
 @router.get("/{cluster_id}", response_model=ClusterRead)
@@ -326,16 +382,20 @@ def merge_cluster(cluster_id: str, payload: ClusterMergeRequest) -> dict:
             ),
         )
 
-        conn.execute(
-            "UPDATE sources SET cluster_id = ?, updated_at = ? WHERE cluster_id = ?",
-            (payload.target_cluster_id, now, cluster_id),
-        )
+        for source_id in moved_sources:
+            move_source_cluster_membership(
+                conn,
+                source_id=source_id,
+                target_cluster_id=payload.target_cluster_id,
+                reason="Clusters were merged.",
+                actor="user_cluster_merge",
+                expected_vault_id=str(source["vault_id"]),
+                prune_empty_cluster=False,
+            )
         conn.execute(
             "UPDATE chat_sessions SET scope_cluster_id = ?, updated_at = ? WHERE scope_cluster_id = ?",
             (payload.target_cluster_id, now, cluster_id),
         )
-        for source_id in moved_sources:
-            invalidate_caches_for_source(source_id, conn=conn)
         mark_cluster_needs_update(conn, payload.target_cluster_id, "Cluster sources changed after a merge.")
         conn.execute("DELETE FROM clusters WHERE id = ?", (cluster_id,))
         row = conn.execute("SELECT * FROM clusters WHERE id = ?", (payload.target_cluster_id,)).fetchone()
@@ -443,15 +503,15 @@ def rollback_cluster_merge_artifact(artifact_id: str) -> dict:
         moved_source_ids = _json_list(artifact["moved_source_ids"])
         moved_chat_ids = _json_list(artifact["moved_chat_session_ids"])
         for source_id in moved_source_ids:
-            conn.execute(
-                """
-                UPDATE sources
-                SET cluster_id = ?, updated_at = ?
-                WHERE id = ? AND vault_id = ? AND deleted_at IS NULL
-                """,
-                (source_cluster_id, now, source_id, artifact["vault_id"]),
+            move_source_cluster_membership(
+                conn,
+                source_id=source_id,
+                target_cluster_id=source_cluster_id,
+                reason="Cluster merge rollback restored sources.",
+                actor="user_cluster_merge_rollback",
+                expected_vault_id=str(artifact["vault_id"]),
+                prune_empty_cluster=False,
             )
-            invalidate_caches_for_source(source_id, conn=conn)
         for chat_id in moved_chat_ids:
             conn.execute(
                 """
@@ -475,13 +535,58 @@ def rollback_cluster_merge_artifact(artifact_id: str) -> dict:
 @router.delete("/{cluster_id}", status_code=204)
 def delete_cluster(cluster_id: str) -> None:
     with connect() as conn:
+        cluster = conn.execute(
+            "SELECT id, vault_id FROM clusters WHERE id = ?",
+            (cluster_id,),
+        ).fetchone()
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        project_reference = conn.execute(
+            """
+            SELECT 1
+            FROM projects
+            WHERE primary_cluster_id = ? AND deleted_at IS NULL
+            UNION ALL
+            SELECT 1
+            FROM project_cluster_links
+            WHERE cluster_id = ?
+            LIMIT 1
+            """,
+            (cluster_id, cluster_id),
+        ).fetchone()
+        if project_reference is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Remove this cluster from its project before deleting it.",
+            )
+        source_ids = [
+            str(row["id"])
+            for row in conn.execute(
+                "SELECT id FROM sources WHERE cluster_id = ? AND deleted_at IS NULL",
+                (cluster_id,),
+            ).fetchall()
+        ]
+        for source_id in source_ids:
+            move_source_cluster_membership(
+                conn,
+                source_id=source_id,
+                target_cluster_id=None,
+                reason="Cluster was deleted.",
+                actor="user_cluster_delete",
+                expected_vault_id=str(cluster["vault_id"]),
+                prune_empty_cluster=False,
+            )
+        conn.execute(
+            "UPDATE chat_sessions SET scope_cluster_id = NULL, updated_at = ? WHERE scope_cluster_id = ?",
+            (utc_now(), cluster_id),
+        )
         conn.execute(
             "DELETE FROM cluster_suggestion_decisions WHERE suggested_cluster_id = ?",
             (cluster_id,),
         )
         result = conn.execute("DELETE FROM clusters WHERE id = ?", (cluster_id,))
-        if result.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Cluster not found")
+        if result.rowcount != 1:
+            raise RuntimeError("Cluster deletion did not complete.")
 
 
 def _json_list(raw: str) -> list[str]:

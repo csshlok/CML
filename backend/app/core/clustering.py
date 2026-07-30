@@ -71,7 +71,7 @@ AUTO_PLACE_MIN_COHESION = 0.55
 
 def assign_or_create_cluster(conn, *, vault_id: str, title: str, text: str) -> str | None:
     ordered_keywords = keywords_for_text(f"{title} {text}", limit=10)
-    standalone_clusters = conn.execute(
+    standalone_document_clusters = conn.execute(
         """
         SELECT clusters.id
         FROM clusters
@@ -79,6 +79,21 @@ def assign_or_create_cluster(conn, *, vault_id: str, title: str, text: str) -> s
           AND NOT EXISTS (
               SELECT 1 FROM project_cluster_links links
               WHERE links.cluster_id = clusters.id
+          )
+          AND (
+              NOT EXISTS (
+                  SELECT 1
+                  FROM sources member
+                  WHERE member.cluster_id = clusters.id
+                    AND member.deleted_at IS NULL
+              )
+              OR EXISTS (
+                  SELECT 1
+                  FROM sources document_member
+                  WHERE document_member.cluster_id = clusters.id
+                    AND document_member.deleted_at IS NULL
+                    AND document_member.source_type <> 'chat_transcript'
+              )
           )
         LIMIT 2
         """,
@@ -117,7 +132,7 @@ def assign_or_create_cluster(conn, *, vault_id: str, title: str, text: str) -> s
 
     # Bootstrap only the first standalone cluster. Ambiguous later imports stay
     # unclustered until a persisted profile supports a clear placement.
-    if standalone_clusters:
+    if standalone_document_clusters:
         return None
 
     return create_auto_cluster(

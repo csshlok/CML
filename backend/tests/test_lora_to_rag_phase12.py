@@ -411,7 +411,21 @@ class LoraToRagPhase12Tests(unittest.TestCase):
             )
             mark_cluster_needs_update(conn, "cluster-1", "Source changed.")
 
-        processed = run_due_jobs_once(limit=5)
+        with (
+            patch(
+                "backend.app.core.llm_runtime.runtime_status",
+                return_value={"available": True, "state": "ready"},
+            ),
+            patch(
+                "backend.app.core.cluster_lifecycle.enrich_cluster_metadata",
+                return_value={
+                    "name": "Planning",
+                    "description": "Internal planning knowledge.",
+                    "summary": "Quarterly Roadmap milestones and launch dates.",
+                },
+            ),
+        ):
+            processed = run_due_jobs_once(limit=5)
 
         with connect() as conn:
             row = conn.execute(
@@ -539,8 +553,14 @@ class LoraToRagPhase12Tests(unittest.TestCase):
         self.assertEqual(response.json()["state"], "processing")
         with connect() as conn:
             job = conn.execute(
-                "SELECT job_type, status FROM app_jobs WHERE dedupe_key = ? ORDER BY created_at DESC LIMIT 1",
-                (f"reindex-source:{source['id']}",),
+                """
+                SELECT job_type, status
+                FROM app_jobs
+                WHERE scope_id = ? AND job_type = 'reindex_source'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (source["id"],),
             ).fetchone()
         self.assertIsNotNone(job)
         self.assertEqual(job["job_type"], "reindex_source")

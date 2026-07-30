@@ -1,7 +1,9 @@
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class ClusterCandidateProfileTests(unittest.TestCase):
@@ -204,6 +206,34 @@ class ClusterCandidateProfileTests(unittest.TestCase):
         self.assertEqual(paused["status"], "paused")
         self.assertEqual(resumed["status"], "queued")
 
+    def test_profile_backfill_queues_unclustered_source_reconciliation(self) -> None:
+        from backend.app.api.routes.jobs import backfill_cluster_profiles
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-organize", "Organize", self.tmp.name, now, now),
+            )
+
+        profile_job = backfill_cluster_profiles("vault-organize")
+
+        with connect() as conn:
+            reconciliation = conn.execute(
+                """
+                SELECT job_type, status, depends_on_job_id, scope_id
+                FROM app_jobs
+                WHERE job_type = 'source_cluster_reconciliation'
+                  AND scope_id = ?
+                """,
+                ("vault-organize",),
+            ).fetchone()
+
+        self.assertIsNotNone(reconciliation)
+        self.assertEqual(reconciliation["status"], "blocked_by_dependency")
+        self.assertEqual(reconciliation["depends_on_job_id"], profile_job["id"])
+
     def test_profile_backfill_prunes_abandoned_automatic_clusters(self) -> None:
         from backend.app.api.routes.jobs import backfill_cluster_profiles
         from backend.app.core.background_jobs import _run_cluster_profile_backfill
@@ -238,6 +268,110 @@ class ClusterCandidateProfileTests(unittest.TestCase):
                 "SELECT id FROM clusters WHERE id = 'cluster-empty'"
             ).fetchone()
         self.assertIsNone(cluster)
+
+    def test_profile_backfill_skips_transcript_only_cluster(self) -> None:
+        from backend.app.api.routes.jobs import backfill_cluster_profiles
+        from backend.app.core.background_jobs import _run_cluster_profile_backfill
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-chat", "Chat only", self.tmp.name, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, name_origin, profile_status, created_at, updated_at
+                )
+                VALUES ('cluster-chat', 'vault-chat', 'Chats', 'user', 'missing', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO sources (
+                    id, vault_id, cluster_id, title, source_type, state, provenance, trust_tier,
+                    security_labels, parser_security_json, raw_text, extracted_text, summary, tags,
+                    created_at, updated_at
+                )
+                VALUES (
+                    'source-chat', 'vault-chat', 'cluster-chat', 'Conversation', 'chat_transcript',
+                    'indexed', 'chat_transcript', 'trusted_local', '[]', '{}', 'hello', 'hello',
+                    'Conversation transcript', '[]', ?, ?
+                )
+                """,
+                (now, now),
+            )
+        job = backfill_cluster_profiles("vault-chat")
+        with connect() as conn:
+            conn.execute("UPDATE app_jobs SET status = 'running' WHERE id = ?", (job["id"],))
+
+        _run_cluster_profile_backfill({"vault_id": "vault-chat"}, job["id"])
+
+        with connect() as conn:
+            result = conn.execute(
+                "SELECT result_json, status_detail FROM app_jobs WHERE id = ?",
+                (job["id"],),
+            ).fetchone()
+        payload = json.loads(result["result_json"])
+        self.assertEqual(payload["processed"], 0)
+        self.assertEqual(payload["failures"], [])
+        self.assertEqual(result["status_detail"], "Refreshed 0 unique clusters.")
+
+    def test_profile_backfill_stops_when_refresh_makes_no_progress(self) -> None:
+        from backend.app.api.routes.jobs import backfill_cluster_profiles
+        from backend.app.core.background_jobs import _run_cluster_profile_backfill
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-stalled", "Stalled", self.tmp.name, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, name_origin, profile_status, created_at, updated_at
+                )
+                VALUES ('cluster-stalled', 'vault-stalled', 'Documents', 'user', 'missing', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO sources (
+                    id, vault_id, cluster_id, title, source_type, state, provenance, trust_tier,
+                    security_labels, parser_security_json, raw_text, extracted_text, summary, tags,
+                    created_at, updated_at
+                )
+                VALUES (
+                    'source-stalled', 'vault-stalled', 'cluster-stalled', 'Document', 'note',
+                    'indexed', 'local_import', 'trusted_local', '[]', '{}', 'text', 'text',
+                    'Document text', '[]', ?, ?
+                )
+                """,
+                (now, now),
+            )
+        job = backfill_cluster_profiles("vault-stalled")
+        with connect() as conn:
+            conn.execute("UPDATE app_jobs SET status = 'running' WHERE id = ?", (job["id"],))
+
+        with patch("backend.app.core.background_jobs.refresh_cluster_profile") as refresh:
+            _run_cluster_profile_backfill({"vault_id": "vault-stalled"}, job["id"])
+
+        with connect() as conn:
+            result = conn.execute(
+                "SELECT result_json, status_detail FROM app_jobs WHERE id = ?",
+                (job["id"],),
+            ).fetchone()
+        payload = json.loads(result["result_json"])
+        refresh.assert_called_once()
+        self.assertEqual(payload["processed"], 1)
+        self.assertEqual(payload["failures"][0]["reason"], "profile_remained_eligible")
+        self.assertIn("1 unique clusters", result["status_detail"])
 
 
 if __name__ == "__main__":

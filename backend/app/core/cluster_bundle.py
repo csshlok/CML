@@ -10,6 +10,7 @@ from backend.app.core.analysis_packets import build_analysis_packets
 from backend.app.core.context_memory import get_context_memory
 from backend.app.core.database import connect, dict_from_row
 from backend.app.schemas import SemanticSearchRequest
+from backend.app.core.turbovec_runtime import UNCLUSTERED_SCOPE_ID
 
 
 def build_cluster_bundle_context(
@@ -120,7 +121,7 @@ def retrieve_bundle_evidence(
                     f"SELECT * FROM clusters WHERE id IN ({','.join('?' for _ in cluster_ids)})",
                     cluster_ids,
                 ).fetchall()
-            elif cluster_id:
+            elif cluster_id and cluster_id != UNCLUSTERED_SCOPE_ID:
                 cluster_rows = conn.execute(
                     "SELECT * FROM clusters WHERE id = ? AND vault_id = ?",
                     (cluster_id, vault_id),
@@ -213,7 +214,8 @@ def retrieve_bundle_evidence(
     search_response = active_search(
         SemanticSearchRequest(
             vault_id=vault_id,
-            cluster_id=cluster_id,
+            cluster_id=None if cluster_id == UNCLUSTERED_SCOPE_ID else cluster_id,
+            unclustered_only=cluster_id == UNCLUSTERED_SCOPE_ID,
             query=query,
             limit=limit,
         )
