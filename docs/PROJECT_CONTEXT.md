@@ -1,5 +1,20 @@
 # Project Context
 
+## 2026-07-30 — current implementation
+
+- Chat routing is model-directed and context-aware: general questions bypass retrieval, while questions about saved objects receive bounded context.
+- Retrieved evidence has an explicit answer policy. Hostile evidence is extract/refuse only; contradictions are explained; weak relevant evidence permits qualified reasoning; sufficient evidence receives normal grounded synthesis.
+- Streaming and non-streaming paths enforce the same trust and synthesis gates. The policy is model-agnostic and does not depend on one local model's wording or behavior.
+- Trusted profile identity is available without allowing generic assistant refusals or the current assistant turn to become authoritative personal memory.
+- Cluster organization operates only on active-vault clusters. Ready sources may remain conservatively unclustered, and users can create/delete clusters and assign or move documents directly from Sources.
+- Empty chat clusters are removed after the last contained chat is deleted.
+- Semantic enrichment coalesces cluster-profile work after a source wave, avoiding a costly refresh for every enriched source. Job progress and finalization remain observable and restart-safe.
+- Project freshness and Odin synchronization compare against the active snapshot, eliminating Git-HEAD-only false warnings for already indexed changes.
+- Chat displays supported inline Markdown, including bold text, in saved and streaming answers.
+- Focused verification is green: 39 answer-policy/route tests plus 3 subtests, 6 semantic-batching tests, 5 chat-presentation Node tests, desktop TypeScript checking, and one focused rendered Markdown check. Full regression and release packaging are still required promotion gates and were not run as part of this focused pass.
+
+Last updated: 2026-07-30
+
 ## 2026-07-29 — deep-audit implementation
 
 - Desktop window controls now own one invisible 150-by-44 CSS safe rectangle. Application headers, Chat, onboarding, startup, and repair surfaces use the same 138-pixel control width, 32-pixel control height, and 12-pixel buffer. Tests reject the retired route-specific margin classes.
@@ -575,3 +590,89 @@ Open RAG supplies that independent external-corpus check for document retrieval.
 - Odin implementation: `backend/app/core/projects.py`, `backend/app/core/project_graph.py`, and `backend/app/api/routes/projects.py`
 - Temporal memory implementation: `backend/app/core/claim_semantics.py`, `backend/app/core/temporal_facts.py`, and `backend/app/core/typed_evidence_runtime.py`
 - Paired memory evaluation: `scripts/backend/evaluate_evolving_memory_api.py` and `scripts/backend/evaluate_locomo_temporal_paired.py`
+
+## July 29 Deep-Audit Implementation Pass
+
+The current deep-audit remediation is being delivered as product invariants,
+not fixture-specific patches. Atomic cluster membership, transcript exclusion,
+typed background-job failures, partial import recovery, adaptive metadata work,
+durable chat generation, model recovery, whole-computer model discovery,
+evidence-gated TurboVec activation, and unclustered-source retrieval are now in
+source with focused checks.
+
+Odin now treats project freshness as layered state. A normal Git sync reads only
+committed-since-baseline, staged, unstaged, untracked non-ignored, deleted, and
+renamed paths; unchanged sources and chunks remain stable. Retrieval can become
+current while the prior structure snapshot remains explicitly stale. Large,
+incomplete, non-Git, or baseline-less changes fall back deterministically to
+the phased full path. Project answer contracts expose evidence roles, snapshot
+identity, limitations, and currentness, and no longer imply authority without
+implementation evidence.
+
+Desktop validation also moved beyond static source checks. The window-control
+no-go zone uses measured collision geometry and passed a rendered 1024×680
+intersection check. The import-progress overlay was dragged across the viewport
+in a live render; that test exposed and then verified a reload-position race.
+The browser extension now keeps selection text out of page DOM and background
+storage, verifies active-tab identity, restricts cleartext transport to
+loopback, bounds uploads, and supports local token replacement.
+
+Remaining release work is Settings and recovery decomposition, broader
+accessibility/zoom/offline coverage, diagnostic-export verification, the final
+full regression, and packaged-Electron validation. No installer has been
+rebuilt during this pass.
+
+The diagnostics contract has since moved to bundle format v2. Raw logs are no
+longer included; the bundle contains bounded log-level and diagnostic-ID
+summaries plus privacy-filtered runtime state. A focused upgrade test also
+caught and fixed index-before-column ordering for pre-request-ID chat
+generation tables. CI now explicitly gates extension behavior, renderer
+security, interactive controls, rendered window geometry and popup dragging,
+Ruff, compilation, and optional packaged release-candidate smoke.
+
+Settings refresh work is now scoped to the visible section. In particular,
+timer-based Settings refresh can no longer launch a whole-computer model scan;
+discovery begins only after the user opens model management and chooses
+**Scan this computer**. Rendered recovery tests now cover wrong passphrases,
+focus restoration, model-unavailable notification, 200% text, reduced motion,
+minimum viewport geometry, and draggable import persistence. Source-folder
+group queries are server-filtered and bounded with pagination metadata.
+
+Source descriptions now have a progressive quality contract. Indexing writes a
+fast deterministic description and keywords immediately, so search and initial
+organization never wait for the chat model. A durable low-priority semantic job
+then improves the description when the local model is available, rechecks the
+source content hash before publication, and refreshes affected cluster
+metadata. The source inspector labels this temporary state **Improving**.
+Migration 25 persists quality, semantic version, and update time; focused
+migration, content-preservation, model-loss/resume, and desktop type checks
+cover the path.
+
+Direct Odin use during the pass also exposed an executable-approval drift
+failure after the local CLI changed. The security binding remains intact, but
+the CLI now returns a clear repair-and-pair explanation plus stable
+`executable_fingerprint_mismatch` and `next_action: repair_and_pair` fields.
+The active plan adds a single idempotent Settings repair flow, an Odin doctor
+contract, and a bounded project Changes inbox backed by the delta probe rather
+than a full tree re-index.
+
+Focused validation for this pass is green: four targeted metadata/migration/Odin
+backend tests and the semantic model-loss/resume test passed; desktop
+typechecking and 148 Electron behavior tests passed; all six rendered
+Playwright flows passed; and the 24 extension tests plus renderer, control, and
+lockfile audits passed. Python compilation passed. Ruff is not installed in
+the current local virtual environment and remains an explicit CI/final
+environment gate.
+
+The subsequent UI inefficiency sweep removed the last browser-native
+confirmations: library relocation and reversible cluster merge now use Vault's
+accessible confirmation component. It also replaced the cluster detail route's
+full-vault destination walk with escaped server search and a 50-item result
+window for move and merge. Focused backend, behavior, and TypeScript checks
+passed.
+
+`odin doctor` is now available as a content-free diagnostic. It checks the
+launcher, local Vault runtime descriptor, and executable approval, then returns
+stable status, error code, and next action fields. Running it against the
+current development launcher correctly identified executable approval drift
+and recommended `repair_and_pair`; two focused trust/doctor tests passed.

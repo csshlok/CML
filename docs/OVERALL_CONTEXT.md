@@ -1,5 +1,53 @@
 # Overall Context
 
+## 2026-07-30 — answer policy, cluster lifecycle, and queue throughput
+
+Chat now separates routing from answer generation instead of treating retrieval as
+the answer. General questions go directly to the selected model. Questions about
+saved material receive a bounded context packet and one of four model-agnostic
+policies: normal grounded synthesis for sufficient evidence, qualified reasoning
+for weak but relevant evidence, an explicit side-by-side conflict explanation for
+contradictory evidence, and extract/refuse behavior for unsafe or hostile evidence.
+The same guard is enforced for streaming and non-streaming responses. Prompt
+guidance makes source text evidence rather than instructions, while still allowing
+locally connected models to reason instead of returning a mechanical extract.
+
+Trusted profile fields are available to identity questions through a small
+profile-aware packet. Generic assistant refusals and the current conversation's
+assistant output are not promoted into authoritative personal memory. Answer
+diagnostics record the selected policy mode, so direct, qualified, conflict,
+grounded, and extraction behavior can be inspected without coupling the pipeline
+to one model family.
+
+Cluster maintenance is scoped to the active vault's durable cluster records rather
+than stale or source-level rows, so task progress no longer reports thousands of
+nonexistent clusters. Ready sources are reconciled with cluster membership and can
+remain conservatively unclustered when placement evidence is insufficient. Users
+can create a cluster, move ready or unclustered documents into it from Sources,
+move documents between clusters, and delete clusters. Empty chat clusters are
+cleaned up after their final chat is removed.
+
+Semantic enrichment finalizes source work independently and coalesces cluster
+profile refresh into bounded work after an enrichment wave. This removes the
+per-source refresh amplification that left large imports with long extraction
+queues. Adaptive scheduling, visible import controls, failed-source recovery,
+encrypted-source handling, and task reporting share the corrected lifecycle.
+
+Projects now report freshness against Odin's active indexed snapshot rather than
+raw Git HEAD alone. Working-tree changes already represented by the active
+snapshot do not become false “details unavailable” or unsynchronized warnings.
+Project details and Odin synchronization use the same snapshot semantics.
+
+Desktop chat renders supported inline Markdown such as `**bold**` instead of
+showing delimiters. The associated source changes were verified in focused
+batches: the answer-policy and route batch passed 39 tests plus 3 subtests,
+semantic batching passed 6 focused tests, chat presentation passed 5 Node tests
+and TypeScript checking, and the focused rendered Markdown check passed. A full
+regression run and a new Windows release artifact remain explicit promotion steps
+and have not been claimed for this source state.
+
+Last updated: 2026-07-30
+
 ## 2026-07-29 — deep audit implementation
 
 The latest cross-layer review found that project indexing activation updated source membership but not chunk membership. This produced a misleading state: the UI and Odin correctly showed the selected project while retrieval returned no evidence. Activation and migration 16 now enforce and repair that invariant, with focused Odin and chat retrieval tests.
@@ -1407,3 +1455,87 @@ This is a separate workload from LongMemEval. Open RAG's 2,672.1 prompt tokens/q
 The first implementation pass converted the earlier UI backlog into verified reductions. Home activity hierarchy and OCR settings wrapping were normalized. Map now exposes authoritative links, unclustered items, reset behavior, and large-vault mock coverage. The redundant cluster-detail right rail and nonfunctional close button were removed; cluster rows now navigate directly; duplicate cluster-local Map and source/status surfaces were removed. Global Saved chats, the Settings utility rail, the unused legacy `ClusterMap`, 29 unused UI primitives, and a stale Figma export utility were also removed.
 
 The browser audit passed 46 TSX interaction checks and rendered 13 routes at 1440x900 and 768x900, plus the cluster route at 512 px, without page-level overflow, unlabeled controls, browser errors, or failed close/reset interactions. Remaining work is intentionally narrower: source-inspector persistence, stale embedded project/search/chat paths, Bridge and Settings decomposition, keyboard and automated accessibility, 200% zoom, locked/offline behavior, and packaged Electron validation. `docs/UI_RECOMMENDATIONS_BACKLOG.md` tracks the remaining work.
+
+## July 29 Deep-Audit Remediation Status
+
+The active audit implementation now has end-to-end foundations for atomic
+cluster membership, transcript isolation, typed and resumable background work,
+partial import reporting/retry, adaptive metadata scheduling, durable chat
+generation, model discovery/recovery, evidence-gated TurboVec activation, and
+retrieval of unclustered sources. These paths preserve source authority and
+degrade optional enrichment independently from search and ingestion.
+
+Odin project freshness is now a layered, versioned contract. Git projects
+combine baseline-to-HEAD, staged, unstaged, untracked non-ignored, deleted, and
+rename-side paths into one bounded delta. Delta application reads and embeds
+only those paths, retains unchanged identities, publishes retrieval atomically,
+and exposes the old structure snapshot as stale. Full rebuilding is an
+explained fallback, not the ordinary sync action. Project answers now return
+evidence roles, snapshot IDs, freshness, limitations, and bounded authority.
+
+Rendered desktop verification found zero collisions with the measured
+window-control exclusion at 1024×680. The import overlay can be dragged across
+the viewport and remembers a normalized position. A live reload initially
+reset that position; the portal lifecycle dependency was corrected and the
+rendered retest retained `(229, 171)`. Browser-extension selection, tab,
+transport, upload-size, and token-rotation boundaries have focused regression
+coverage. The next pass covers remaining Settings/recovery structure,
+accessibility and zoom, diagnostics, then the complete regression/build gates.
+
+Diagnostic bundle format v2 now excludes raw logs and privacy-filters paths,
+prompts, messages, credentials, recovery material, and unstructured worker
+errors. It keeps bounded counts, error codes, diagnostic IDs, and runtime
+capabilities. Focused testing exposed an upgrade-only startup defect where the
+chat-generation request index preceded its column; startup now adds the column
+first and a legacy-schema regression protects the order. The CI contract also
+now includes extension unit checks, rendered desktop Playwright geometry and
+drag persistence, renderer security, control auditing, Ruff, compilation, and
+an explicit opt-in packaged Windows smoke job.
+
+The Settings loader no longer polls all domains from every tab. It loads only
+the visible section and never starts model discovery implicitly. The rendered
+suite now verifies wrong-passphrase feedback and focus, model-loss visibility,
+200% text with reduced motion, minimum-size chrome exclusion, and persisted
+import dragging. Source folder groups now have a bounded, searchable server
+contract with `total`, `offset`, and `has_more`, preventing large collections
+from becoming an unbounded metadata response.
+
+The metadata audit confirmed why large imports could remain with raw-looking
+descriptions even after indexing: production source enrichment explicitly
+disabled model use. Source processing is now progressive instead of blocked or
+misrepresented. Tier one produces bounded deterministic metadata immediately;
+tier two is a resumable, content-hash-guarded local-model job that publishes a
+semantic description later and refreshes organization. Metadata quality is
+explicit in schema/API/UI, upgraded vaults receive migration 25, and model loss
+blocks only tier two while automatic recovery wakes it.
+
+First-hand Odin execution verified the expanded delta-oriented command surface
+but exposed launcher approval drift as an unactionable authentication failure.
+Odin now emits a plain repair-and-pair explanation and stable machine fields
+for that state. The product plan keeps executable fingerprint binding, requires
+approval for replacement, adds an idempotent combined repair flow and
+`odin doctor`, and presents only a bounded changed-path inbox. Ordinary
+freshness checks remain revision/status probes and never crawl or restructure
+the full project tree.
+
+The focused gate after these changes passed four metadata/migration/Odin
+backend checks, the semantic model-prerequisite recovery check, desktop
+typechecking, 148 Electron behavior checks, six real-browser recovery and
+geometry flows, 24 extension checks, renderer/control/lockfile audits, and
+Python compilation. Local Ruff execution is currently unavailable because the
+tool is absent from this virtual environment; CI installs and runs it, and the
+final environment sweep must preserve that gate.
+
+A follow-up interaction and scale scan found two native confirmation prompts
+and a full-vault cluster-destination traversal. Both are removed. Destructive
+or high-impact actions now use the application confirmation surface, while
+source move and cluster merge destinations use bounded, escaped server-side
+search. This keeps modal behavior consistent and avoids hydrating every
+cluster merely to populate a select control.
+
+Odin's planned diagnostic contract is now partially delivered:
+`odin doctor` inspects launcher/runtime/approval health without listing or
+reading projects. Its live JSON result in this pass identified the changed
+development executable as `repair_needed` with the stable next action
+`repair_and_pair`, demonstrating that launcher trust drift can be explained
+without weakening the executable binding.

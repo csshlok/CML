@@ -21,6 +21,14 @@ Vault gives AI a durable memory outside the chat window. Add the material you al
 
 It is a local-first Windows desktop app, a retrieval system, and a controlled bridge between your private context and the AI tools you choose to use. A configurable Home workspace keeps active work, imports, recent sources, clusters, projects, and conversations within reach without turning the app into a crowded dashboard.
 
+Chat does not force every question through retrieval. General questions go directly
+to the selected model. Questions about saved material receive a bounded evidence
+packet, and the model is told how strong and trustworthy that evidence is: sufficient
+evidence supports a grounded answer, weak but relevant evidence permits qualified
+reasoning, contradictory evidence must be explained, and hostile source text cannot
+take control of the answer. Profile questions can use trusted local profile facts
+without treating previous assistant replies as personal memory.
+
 > [!IMPORTANT]
 > Vault is pre-release software. The repository is currently the supported way to run it; a public installer is not ready yet.
 
@@ -46,8 +54,9 @@ Vault keeps that context outside the model and retrieves only what a question ne
 - **Import files naturally** with the file picker, folder import, or desktop drag and drop.
 - **Track large imports from any screen** with file counts, percentage, current-file details, and controls to pause, resume, or stop safely.
 - **Ask grounded questions** and inspect the source passages used to answer them.
+- **Use the selected model's own reasoning** for general questions and qualified analysis when retrieved evidence is relevant but incomplete.
 - **Group related work into clusters** for projects, clients, research topics, or areas of responsibility.
-- **Move one source between clusters** without merging or reorganizing the rest of either cluster.
+- **Create, delete, and reorganize clusters**, or move ready and unclustered sources into a cluster without reorganizing the rest of the vault.
 - **Search across your context** without remembering where a detail was originally stored.
 - **Shape Home around your workflow** with Focused, Library, and Activity presets, type and sort controls, density choices, and reorderable sections.
 - **Continue where you left off** across recently opened sources, chats, clusters, and projects.
@@ -63,10 +72,11 @@ Vault keeps that context outside the model and retrieves only what a question ne
 2. Add files, folders, links, notes, screenshots, or a code project.
 3. Follow ingestion progress while Vault extracts the content, creates searchable chunks, and builds a local index.
 4. Pause or resume a large import when needed without losing confirmed work.
-5. Organize related sources into clusters, move individual sources, or let Vault suggest useful groupings.
+5. Organize related sources into clusters, move individual sources, or let Vault suggest useful groupings. Ready sources that do not yet meet conservative automatic-placement thresholds remain visibly unclustered.
 6. Ask a question from Home or Chat, scoped to the complete vault or a selected cluster.
-7. Vault retrieves the strongest supporting evidence and builds a bounded context packet.
-8. The answer includes citations so you can inspect the original material.
+7. Vault decides whether the question needs no retrieval, trusted local context, or a bounded evidence packet.
+8. The selected model answers directly or synthesizes the evidence under the applicable trust and sufficiency policy.
+9. Grounded answers include citations so you can inspect the original material.
 
 ```text
 Your sources
