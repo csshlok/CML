@@ -385,7 +385,7 @@ class ChatCompletionRegressionTests(unittest.TestCase):
                     self.assertEqual(route["intent"], expected_intent)
                     self.assertEqual(route["context_sources"], decision["context_sources"])
 
-    def test_invalid_router_contract_falls_back_without_searching_entire_vault(self) -> None:
+    def test_invalid_router_contract_falls_back_to_bounded_vault_retrieval(self) -> None:
         from backend.app.api.routes.chat import _classify_chat_route
         from backend.app.core.llm_runtime import LLMResult
         from backend.app.schemas import ChatContextRequest
@@ -418,8 +418,10 @@ class ChatCompletionRegressionTests(unittest.TestCase):
                 source_count=5000,
             )
 
-        self.assertEqual(route["intent"], "general_chat")
-        self.assertEqual(route["reason"], "router_unavailable_safe_direct")
+        self.assertEqual(route["intent"], "vault_question")
+        self.assertEqual(route["reason"], "router_unavailable_bounded_retrieval")
+        self.assertEqual(route["answer_mode"], "grounded")
+        self.assertEqual(route["context_sources"], ["vault_documents"])
 
     def test_profile_context_is_shared_by_direct_and_grounded_prompts(self) -> None:
         from backend.app.core.llm_runtime import _direct_messages, _grounded_messages
