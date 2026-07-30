@@ -122,12 +122,18 @@ class AtomicSemanticEnrichmentTests(unittest.TestCase):
             )
         self.assertIsNotNone(job)
 
-        with patch(
-            "backend.app.core.llm_runtime.generate_local_structured_json",
-            return_value=LLMResult(
-                text=json.dumps(response),
-                provider="openai-compatible",
-                model="test-local",
+        with (
+            patch(
+                "backend.app.core.llm_runtime.runtime_status",
+                return_value={"available": True, "state": "ready"},
+            ),
+            patch(
+                "backend.app.core.llm_runtime.generate_local_structured_json",
+                return_value=LLMResult(
+                    text=json.dumps(response),
+                    provider="openai-compatible",
+                    model="test-local",
+                ),
             ),
         ):
             self.assertEqual(run_due_jobs_once(limit=1), 1)

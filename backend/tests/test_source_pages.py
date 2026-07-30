@@ -295,7 +295,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIn("adversarial_query_count", text)
         self.assertIn("context-hostile-source-003", text)
 
-    def test_persisted_chat_builds_distilled_memory_and_working_memory(self) -> None:
+    def test_persisted_assistant_answer_does_not_become_user_memory(self) -> None:
         from unittest.mock import patch
 
         from backend.app.api.routes.chat import build_chat_context
@@ -346,7 +346,7 @@ class SourcePageIndexingTests(unittest.TestCase):
             ).fetchone()
 
         self.assertEqual(session["memory_status"], "indexed")
-        self.assertGreaterEqual(memory_count, 1)
+        self.assertEqual(memory_count, 0)
         self.assertIsNotNone(working)
         self.assertIn("memory", working["summary"].lower())
 
@@ -1542,7 +1542,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertEqual(response["citations"], [])
         self.assertIn("local LLM runtime", response["answer"])
 
-    def test_retrieval_first_default_routes_natural_prompt_into_vault_search(self) -> None:
+    def test_model_selected_document_context_routes_natural_prompt_into_vault_search(self) -> None:
         from unittest.mock import patch
 
         from backend.app.api.routes.chat import build_chat_context
@@ -1567,7 +1567,28 @@ class SourcePageIndexingTests(unittest.TestCase):
         )
         run_due_jobs_once(limit=1)
 
-        with patch("backend.app.api.routes.chat.generate_grounded_answer") as generate:
+        route_decision = SimpleNamespace(
+            text=json.dumps(
+                {
+                    "answer_mode": "grounded",
+                    "context_sources": ["vault_documents"],
+                    "reason": "the request depends on saved material",
+                }
+            ),
+            provider="test",
+            model="test",
+        )
+        with (
+            patch(
+                "backend.app.api.routes.chat.runtime_status",
+                return_value={"available": True, "state": "ready"},
+            ),
+            patch(
+                "backend.app.api.routes.chat.generate_local_structured_json",
+                return_value=route_decision,
+            ),
+            patch("backend.app.api.routes.chat.generate_grounded_answer") as generate,
+        ):
             generate.return_value = SimpleNamespace(text="grounded", provider="test", model="test")
             response = build_chat_context(
                 ChatContextRequest(vault_id="vault-1", prompt="Give me an overview", persist=False)
@@ -2072,13 +2093,14 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertGreaterEqual(ledger["citations_selected"], 5)
         self.assertGreaterEqual(len(seen["citations"]), 5)
 
-    def test_conflicting_evidence_stays_extractive_and_skips_synthesis(self) -> None:
+    def test_conflicting_evidence_is_explained_without_silently_selecting_a_side(self) -> None:
         from unittest.mock import patch
 
         from backend.app.api.routes.chat import build_chat_context
         from backend.app.api.routes.sources import create_source
         from backend.app.core.background_jobs import run_due_jobs_once
         from backend.app.core.database import connect, utc_now
+        from backend.app.core.llm_runtime import LLMResult
         from backend.app.schemas import ChatContextRequest, SourceCreate
 
         now = utc_now()
@@ -2105,15 +2127,45 @@ class SourcePageIndexingTests(unittest.TestCase):
         )
         run_due_jobs_once(limit=2)
 
-        with patch("backend.app.api.routes.chat.generate_grounded_answer") as generate:
+        captured = {}
+
+        def explain_conflict(**kwargs):
+            captured.update(kwargs)
+            return LLMResult(
+                text=(
+                    "Decision A requires retrieval first, while Decision B rejects that requirement. "
+                    "The available evidence does not establish which decision supersedes the other."
+                ),
+                provider="test",
+                model="test",
+            )
+
+        with (
+            patch(
+                "backend.app.api.routes.chat._classify_chat_route",
+                return_value={
+                    "intent": "vault_question",
+                    "reason": "test_grounded_scope",
+                    "answer_mode": "grounded",
+                    "context_sources": ["vault_documents"],
+                },
+            ),
+            patch(
+                "backend.app.api.routes.chat.generate_grounded_answer",
+                side_effect=explain_conflict,
+            ) as generate,
+        ):
             response = build_chat_context(
                 ChatContextRequest(vault_id="vault-1", prompt="What did we decide about retrieval first?")
             )
 
-        generate.assert_not_called()
-        self.assertEqual(response["coverage_ledger"]["partial_failure_mode"], "conflicting_evidence_extract_only")
+        generate.assert_called_once()
+        self.assertEqual(captured["synthesis_strategy"], "explain_conflict")
+        self.assertEqual(response["coverage_ledger"]["answer_policy_mode"], "explain_conflict")
+        self.assertEqual(response["coverage_ledger"]["partial_failure_mode"], "none")
         self.assertTrue(response["coverage_ledger"]["contradiction_detected"])
         self.assertTrue(any("conflicts" in warning.lower() for warning in response["warnings"]))
+        self.assertIn("does not establish", response["answer"])
 
     def test_chat_context_marks_runtime_fallback_as_partial_failure(self) -> None:
         from unittest.mock import patch
@@ -2141,9 +2193,20 @@ class SourcePageIndexingTests(unittest.TestCase):
         )
         run_due_jobs_once(limit=1)
 
-        with patch(
-            "backend.app.api.routes.chat.generate_grounded_answer",
-            side_effect=LLMRuntimeError("runtime offline"),
+        with (
+            patch(
+                "backend.app.api.routes.chat._classify_chat_route",
+                return_value={
+                    "intent": "vault_question",
+                    "reason": "test_grounded_scope",
+                    "answer_mode": "grounded",
+                    "context_sources": ["vault_documents"],
+                },
+            ),
+            patch(
+                "backend.app.api.routes.chat.generate_grounded_answer",
+                side_effect=LLMRuntimeError("runtime offline"),
+            ),
         ):
             response = build_chat_context(
                 ChatContextRequest(vault_id="vault-1", prompt="What vault note mentions runtime fallback cited evidence?")
@@ -2352,7 +2415,7 @@ class SourcePageIndexingTests(unittest.TestCase):
             self.assertIn("manifest.json", bundle.namelist())
             self.assertIn("database-summary.json", bundle.namelist())
 
-    def test_diagnostic_bundle_excludes_source_text_and_redacts_logs(self) -> None:
+    def test_diagnostic_bundle_excludes_source_text_and_raw_logs(self) -> None:
         from pathlib import Path
         from zipfile import ZipFile
 
@@ -2387,12 +2450,14 @@ class SourcePageIndexingTests(unittest.TestCase):
 
         with ZipFile(response["bundle_path"]) as bundle:
             payload = "\n".join(bundle.read(name).decode("utf-8") for name in bundle.namelist())
+            names = set(bundle.namelist())
         self.assertNotIn(secret, payload)
         self.assertNotIn(f"user:{secret}@example.com", payload)
         self.assertNotIn("abc.def", payload)
         self.assertNotIn("alice", payload)
-        self.assertIn("https://[redacted]@example.com/private", payload)
-        self.assertIn("[redacted]", payload)
+        self.assertNotIn("logs/backend.log", names)
+        self.assertIn("log-summary.json", names)
+        self.assertIn('"raw_logs_included": false', payload)
 
     def test_startup_recovery_marks_in_flight_generations_retriable(self) -> None:
         from backend.app.core.database import connect, utc_now
@@ -2458,6 +2523,13 @@ class SourcePageIndexingTests(unittest.TestCase):
             quarantine_table = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'source_quarantine_records'"
             ).fetchone()
+            scheduler_table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scheduler_lane_state'"
+            ).fetchone()
+            source_columns = {
+                column["name"]
+                for column in conn.execute("PRAGMA table_info(sources)").fetchall()
+            }
         self.assertEqual(row["version"], SCHEMA_VERSION)
         self.assertEqual(row["status"], "succeeded")
         self.assertEqual(user_version, SCHEMA_VERSION)
@@ -2465,6 +2537,12 @@ class SourcePageIndexingTests(unittest.TestCase):
         self.assertIsNotNone(encrypted_table)
         self.assertIsNotNone(derived_table)
         self.assertIsNotNone(quarantine_table)
+        self.assertIsNotNone(scheduler_table)
+        self.assertIn("metadata_quality", source_columns)
+        self.assertIn("semantic_metadata_version", source_columns)
+        self.assertIn("semantic_metadata_updated_at", source_columns)
+        self.assertIn("ingestion_stage", source_columns)
+        self.assertIn("ingestion_generation", source_columns)
 
     def test_disk_preflight_reports_available_space(self) -> None:
         from backend.app.core.preflight import disk_preflight

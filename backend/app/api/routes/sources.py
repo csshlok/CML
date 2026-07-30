@@ -1,10 +1,10 @@
 import json
 from pathlib import Path
+from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
-from backend.app.core.clustering import assign_or_create_cluster
 from backend.app.core.background_jobs import (
     cancel_job,
     enqueue_job,
@@ -13,7 +13,11 @@ from backend.app.core.background_jobs import (
     wake_background_worker,
 )
 from backend.app.core.database import connect, utc_now
-from backend.app.core.embeddings import content_hash, require_embeddings_available
+from backend.app.core.cluster_membership import (
+    ClusterMembershipError,
+    move_source_cluster_membership,
+)
+from backend.app.core.embeddings import content_hash
 from backend.app.core.encrypted_storage import (
     delete_source_encrypted_content,
     load_source_content_fields,
@@ -31,6 +35,10 @@ from backend.app.core.network_security import strip_url_credentials
 from backend.app.core.quarantine import attach_quarantine_record, ingest_file_through_quarantine
 from backend.app.core.retrieval_cache import invalidate_caches_for_source
 from backend.app.core.source_records import replace_source_pages, source_type_for_suffix
+from backend.app.core.source_ingestion import (
+    begin_source_ingestion,
+    source_ingestion_identity,
+)
 from backend.app.core.sql import build_update_assignments
 from backend.app.core.turbovec_runtime import maybe_remove_source_chunks_from_sidecar
 from backend.app.schemas import (
@@ -47,6 +55,34 @@ from backend.app.schemas import (
 )
 
 router = APIRouter(prefix="/sources", tags=["sources"])
+
+
+def _enqueue_source_reindex(
+    conn,
+    *,
+    source_id: str,
+    user_initiated: bool = False,
+    restart_generation: bool = False,
+):
+    identity = (
+        begin_source_ingestion(conn, source_id=source_id)
+        if restart_generation
+        else source_ingestion_identity(conn, source_id)
+    )
+    if identity is None:
+        raise ValueError("source_not_found")
+    return enqueue_job(
+        conn,
+        job_type="reindex_source",
+        payload={
+            "source_id": source_id,
+            "ingestion_generation": identity.generation,
+            "source_checksum": identity.checksum,
+        },
+        dedupe_key=f"reindex-source:{source_id}:{identity.job_suffix}",
+        scope_id=source_id,
+        user_initiated=user_initiated,
+    )
 
 
 def _source_list_clauses(
@@ -287,23 +323,38 @@ def source_counts_by_type(vault_id: str) -> dict:
 
 
 @router.get("/folders")
-def list_source_folders(vault_id: str, q: str | None = None) -> dict:
+def list_source_folders(
+    vault_id: str,
+    q: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict:
     normalized_query = (q or "").strip().lower()
+    pattern = f"%{normalized_query}%"
     with connect() as conn:
         _validate_source_list_filters(conn, vault_id=vault_id, cluster_id=None)
         rows = conn.execute(
             """
-            SELECT import_root_path, COUNT(*) AS source_count, MAX(updated_at) AS updated_at
-            FROM sources
-            WHERE vault_id = ?
-              AND import_root_path IS NOT NULL
-              AND deleted_at IS NULL
-              AND (activation_state IS NULL OR activation_state = 'active')
-            GROUP BY import_root_path
-            HAVING COUNT(*) >= 20
-            ORDER BY MAX(updated_at) DESC, import_root_path
+            WITH grouped AS (
+                SELECT import_root_path,
+                       COUNT(*) AS source_count,
+                       MAX(updated_at) AS updated_at
+                FROM sources
+                WHERE vault_id = ?
+                  AND import_root_path IS NOT NULL
+                  AND deleted_at IS NULL
+                  AND (activation_state IS NULL OR activation_state = 'active')
+                GROUP BY import_root_path
+                HAVING COUNT(*) >= 20
+            )
+            SELECT import_root_path, source_count, updated_at,
+                   COUNT(*) OVER() AS total
+            FROM grouped
+            WHERE ? = '' OR LOWER(import_root_path) LIKE ?
+            ORDER BY updated_at DESC, import_root_path
+            LIMIT ? OFFSET ?
             """,
-            (vault_id,),
+            (vault_id, normalized_query, pattern, limit, offset),
         ).fetchall()
     items = [
         {
@@ -314,12 +365,14 @@ def list_source_folders(vault_id: str, q: str | None = None) -> dict:
         }
         for row in rows
     ]
-    if normalized_query:
-        items = [
-            item for item in items
-            if normalized_query in item["name"].lower() or normalized_query in item["root_path"].lower()
-        ]
-    return {"items": items}
+    total = int(rows[0]["total"]) if rows else 0
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(items) < total,
+    }
 
 
 @router.get("/latest-by-cluster")
@@ -364,11 +417,6 @@ def _create_source_record(
         raw_text = _sanitize_source_text("\n\n".join(page for page in page_texts if page.strip()).strip())
     with connect() as conn:
         _validate_source_target(conn, payload.vault_id, payload.cluster_id)
-        if payload.raw_text:
-            try:
-                require_embeddings_available("Source ingestion")
-            except RuntimeError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
         cluster_id = payload.cluster_id
 
         checksum = payload.checksum or (content_hash(raw_text) if raw_text else None)
@@ -396,18 +444,11 @@ def _create_source_record(
                 ).fetchone()
             if existing is not None:
                 return source_from_row(existing, conn=conn)
-        if cluster_id is None and raw_text:
-            cluster_id = assign_or_create_cluster(
-                conn,
-                vault_id=payload.vault_id,
-                title=payload.title,
-                text=raw_text,
-            )
-
+        initial_cluster_id = cluster_id
         source = {
             "id": f"source-{uuid4()}",
             "vault_id": payload.vault_id,
-            "cluster_id": cluster_id,
+            "cluster_id": None,
             "title": payload.title,
             "source_type": payload.source_type,
             "state": "indexed" if payload.raw_text else "waiting",
@@ -418,6 +459,15 @@ def _create_source_record(
             "trust_tier": "trusted_local",
             "security_labels": "[]",
             "parser_security_json": "{}",
+            "ingestion_stage": "imported",
+            "ingestion_generation": 1,
+            "ingestion_error_code": "",
+            "ingestion_status_detail": (
+                "Source content is waiting for search publication."
+                if raw_text
+                else "Source content has not been extracted."
+            ),
+            "ingestion_updated_at": now,
             "raw_text": raw_text,
             "extracted_text": raw_text,
             "summary": payload.summary
@@ -438,16 +488,35 @@ def _create_source_record(
             INSERT INTO sources (
                 id, vault_id, cluster_id, title, source_type, state, original_path, url,
                 checksum, provenance, trust_tier, security_labels, parser_security_json,
+                ingestion_stage, ingestion_generation, ingestion_error_code,
+                ingestion_status_detail, ingestion_updated_at,
                 raw_text, extracted_text, summary, tags, cover_image_url, created_at, updated_at
             )
             VALUES (
                 :id, :vault_id, :cluster_id, :title, :source_type, :state, :original_path, :url,
                 :checksum, :provenance, :trust_tier, :security_labels, :parser_security_json,
+                :ingestion_stage, :ingestion_generation, :ingestion_error_code,
+                :ingestion_status_detail, :ingestion_updated_at,
                 :raw_text, :extracted_text, :summary, :tags, :cover_image_url, :created_at, :updated_at
             )
             """,
             stored_source,
         )
+        if initial_cluster_id is not None:
+            move_source_cluster_membership(
+                conn,
+                source_id=source["id"],
+                target_cluster_id=initial_cluster_id,
+                reason="Source was added to a cluster.",
+                actor=(
+                    "user_source_create"
+                    if payload.cluster_id is not None
+                    else "automatic_initial_placement"
+                ),
+                expected_vault_id=payload.vault_id,
+                prune_empty_cluster=False,
+                refresh_derived_memory=False,
+            )
         if page_texts:
             replace_source_pages(
                 conn,
@@ -458,12 +527,7 @@ def _create_source_record(
             )
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source["id"],)).fetchone()
         if row is not None and source["state"] == "indexed":
-            enqueue_job(
-                conn,
-                job_type="reindex_source",
-                payload={"source_id": source["id"]},
-                dedupe_key=f"reindex-source:{source['id']}",
-            )
+            _enqueue_source_reindex(conn, source_id=source["id"])
     return source_from_row(row)
 
 
@@ -544,8 +608,7 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
             conn.execute(
                 """
                 UPDATE sources
-                SET cluster_id = ?,
-                    title = ?,
+                SET title = ?,
                     source_type = ?,
                     state = 'indexed',
                     original_path = ?,
@@ -562,7 +625,6 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
                 WHERE id = ? AND deleted_at IS NULL
                 """,
                 (
-                    target_cluster_id,
                     title,
                     source_type,
                     payload.path,
@@ -579,6 +641,14 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
                     source_id,
                 ),
             )
+            move_source_cluster_membership(
+                conn,
+                source_id=source_id,
+                target_cluster_id=target_cluster_id,
+                reason="Source was re-imported.",
+                actor="source_file_reimport",
+                expected_vault_id=payload.vault_id,
+            )
             replace_source_pages(
                 conn,
                 source_id=source_id,
@@ -586,15 +656,13 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
                 page_texts=pages,
                 now=now,
             )
-            enqueue_job(
+            _enqueue_source_reindex(
                 conn,
-                job_type="reindex_source",
-                payload={"source_id": source_id},
-                dedupe_key=f"reindex-source:{source_id}",
+                source_id=source_id,
+                restart_generation=True,
             )
-            mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
-            mark_cluster_needs_update(conn, target_cluster_id, "Source changed or moved.")
-            invalidate_caches_for_source(source_id, conn=conn)
+            if existing["cluster_id"] == target_cluster_id:
+                mark_cluster_needs_update(conn, target_cluster_id, "Source content changed.")
         conn.execute(
             """
             UPDATE sources
@@ -689,6 +757,7 @@ def create_source_import_job(payload: SourceImportJobRequest) -> dict:
             "imported_files": 0,
             "updated_files": 0,
             "failed_files": 0,
+            "failed_indices": [],
             "failures": [],
             "completed_indices": [],
             "current_file": "",
@@ -770,6 +839,100 @@ def stop_source_import(job_id: str) -> dict:
         return cancel_job(job_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/import-jobs/{job_id}/retry-failures", response_model=AppJobRead)
+def retry_source_import_failures(job_id: str) -> dict:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="File import not found")
+        job = dict(row)
+        if job["job_type"] != "source_import_batch":
+            raise HTTPException(status_code=409, detail="This task is not a file import")
+        if job["status"] not in {"partial_success", "failed", "manual_review"}:
+            raise HTTPException(status_code=409, detail="This file import has no failed files to retry")
+
+        active = conn.execute(
+            """
+            SELECT id FROM app_jobs
+            WHERE job_type = 'source_import_batch'
+              AND scope_id = ?
+              AND status IN ('queued', 'running', 'paused')
+              AND id <> ?
+            LIMIT 1
+            """,
+            (job["scope_id"], job_id),
+        ).fetchone()
+        if active is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Another file import is active. Finish or stop it before retrying.",
+            )
+
+        try:
+            payload = json.loads(job["payload"])
+            progress = json.loads(job["result_json"] or "{}")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=409, detail="This import cannot be retried safely") from exc
+        paths = [str(path) for path in payload.get("paths") or []]
+        failed_indices = {
+            int(index)
+            for index in progress.get("failed_indices") or []
+            if isinstance(index, int) and 0 <= index < len(paths)
+        }
+        if not failed_indices:
+            failures = progress.get("failures") or []
+            names = [str(item.get("file_name") or "") for item in failures if isinstance(item, dict)]
+            for name in names:
+                matches = [index for index, path in enumerate(paths) if Path(path).name == name]
+                if len(matches) != 1:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="This older import has ambiguous file names and cannot be retried safely.",
+                    )
+                failed_indices.add(matches[0])
+        if not failed_indices:
+            raise HTTPException(status_code=409, detail="This file import has no failed files to retry")
+
+        completed_indices = {
+            int(index)
+            for index in progress.get("completed_indices") or []
+            if isinstance(index, int) and 0 <= index < len(paths)
+        } - failed_indices
+        progress.update(
+            {
+                "completed_indices": sorted(completed_indices),
+                "completed_files": len(completed_indices),
+                "failed_files": 0,
+                "failed_indices": [],
+                "failures": [],
+                "current_file": "",
+            }
+        )
+        now = utc_now()
+        conn.execute(
+            """
+            UPDATE app_jobs
+            SET status = 'queued',
+                result_json = ?,
+                attempts = 0,
+                last_error = '',
+                error_code = '',
+                diagnostic_id = '',
+                status_detail = 'Retry queued.',
+                cancellation_requested = 0,
+                cancellation_requested_at = NULL,
+                started_at = NULL,
+                completed_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (json.dumps(progress, separators=(",", ":")), now, job_id),
+        )
+        retried = conn.execute("SELECT * FROM app_jobs WHERE id = ?", (job_id,)).fetchone()
+    wake_background_worker()
+    return dict(retried)
 
 
 @router.post("/from-text", response_model=SourceRead)
@@ -859,8 +1022,7 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
             conn.execute(
                 """
                 UPDATE sources
-                SET cluster_id = ?,
-                    title = ?,
+                SET title = ?,
                     source_type = 'link',
                     state = 'indexed',
                     url = ?,
@@ -877,7 +1039,6 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
                 WHERE id = ? AND deleted_at IS NULL
                 """,
                 (
-                    target_cluster_id,
                     title,
                     sanitized_url,
                     stored_updates["raw_text"],
@@ -893,6 +1054,14 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
                     source_id,
                 ),
             )
+            move_source_cluster_membership(
+                conn,
+                source_id=source_id,
+                target_cluster_id=target_cluster_id,
+                reason="Link source was refreshed.",
+                actor="source_link_refresh",
+                expected_vault_id=payload.vault_id,
+            )
             replace_source_pages(
                 conn,
                 source_id=source_id,
@@ -900,15 +1069,13 @@ def create_source_from_url(payload: SourceUrlCreate) -> dict:
                 page_texts=[text] if text else [],
                 now=now,
             )
-            enqueue_job(
+            _enqueue_source_reindex(
                 conn,
-                job_type="reindex_source",
-                payload={"source_id": source_id},
-                dedupe_key=f"reindex-source:{source_id}",
+                source_id=source_id,
+                restart_generation=True,
             )
-            mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
-            mark_cluster_needs_update(conn, target_cluster_id, "Source changed or moved.")
-            invalidate_caches_for_source(source_id, conn=conn)
+            if existing["cluster_id"] == target_cluster_id:
+                mark_cluster_needs_update(conn, target_cluster_id, "Source content changed.")
         conn.execute(
             """
             UPDATE sources
@@ -1040,10 +1207,6 @@ def get_source_stats(source_id: str) -> dict:
 
 @router.post("/{source_id}/reindex")
 def reindex_source(source_id: str) -> dict:
-    try:
-        require_embeddings_available("Source reindexing")
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
     with connect() as conn:
         source = conn.execute(
             """
@@ -1064,13 +1227,11 @@ def reindex_source(source_id: str) -> dict:
                 "UPDATE sources SET state = 'indexed', updated_at = ? WHERE id = ?",
                 (utc_now(), source_id),
             )
-        job = enqueue_job(
+        job = _enqueue_source_reindex(
             conn,
-            job_type="reindex_source",
-            payload={"source_id": source_id},
-            dedupe_key=f"reindex-source:{source_id}",
-            scope_id=source_id,
+            source_id=source_id,
             user_initiated=True,
+            restart_generation=True,
         )
     return {"source_id": source_id, "job_id": job["id"], "status": job["status"]}
 
@@ -1078,6 +1239,8 @@ def reindex_source(source_id: str) -> dict:
 @router.patch("/{source_id}", response_model=SourceRead)
 def update_source(source_id: str, payload: SourceUpdate) -> dict:
     updates = payload.model_dump(exclude_unset=True)
+    cluster_update_requested = "cluster_id" in updates
+    target_cluster_id = updates.pop("cluster_id", None) if cluster_update_requested else None
     for text_key in ("raw_text", "extracted_text"):
         if text_key in updates and updates[text_key] is not None:
             updates[text_key] = _sanitize_source_text(updates[text_key])
@@ -1089,7 +1252,7 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
         updates["metadata_version"] = 1
     if "tags" in updates:
         updates["tags"] = json.dumps(updates["tags"])
-    if not updates:
+    if not updates and not cluster_update_requested:
         return get_source(source_id)
 
     updates["updated_at"] = utc_now()
@@ -1100,13 +1263,6 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
         ).fetchone()
         if existing is None:
             raise HTTPException(status_code=404, detail="Source not found")
-        if updates.get("cluster_id"):
-            cluster = conn.execute(
-                "SELECT id FROM clusters WHERE id = ? AND vault_id = ?",
-                (updates["cluster_id"], existing["vault_id"]),
-            ).fetchone()
-            if cluster is None:
-                raise HTTPException(status_code=404, detail="Cluster not found")
         stored_updates = update_source_content_fields(
             conn,
             vault_id=existing["vault_id"],
@@ -1117,7 +1273,6 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
         assignments = build_update_assignments(
             stored_updates,
             {
-                "cluster_id",
                 "title",
                 "state",
                 "raw_text",
@@ -1131,6 +1286,20 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
         )
         params = {"id": source_id, **stored_updates}
         conn.execute(f"UPDATE sources SET {assignments} WHERE id = :id", params)
+        if cluster_update_requested:
+            try:
+                move_source_cluster_membership(
+                    conn,
+                    source_id=source_id,
+                    target_cluster_id=target_cluster_id,
+                    reason="Source was moved.",
+                    actor="user_source_move",
+                    expected_vault_id=str(existing["vault_id"]),
+                )
+            except ClusterMembershipError as exc:
+                if str(exc) in {"target_cluster_not_found", "target_cluster_vault_mismatch"}:
+                    raise HTTPException(status_code=404, detail="Cluster not found") from exc
+                raise HTTPException(status_code=409, detail="The source could not be moved.") from exc
         if "raw_text" in updates or "extracted_text" in updates:
             text = str(updates.get("extracted_text") or updates.get("raw_text") or "")
             replace_source_pages(
@@ -1141,31 +1310,28 @@ def update_source(source_id: str, payload: SourceUpdate) -> dict:
                 now=updates["updated_at"],
             )
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
-        if row is not None and any(key in updates for key in {"cluster_id", "raw_text", "extracted_text", "state"}):
+        source_changed = any(key in updates for key in {"raw_text", "extracted_text", "state"})
+        if row is not None and (cluster_update_requested or source_changed):
             source = source_from_encrypted_row(conn, row)
-            if source["state"] == "indexed":
-                enqueue_job(
-                    conn,
-                    job_type="reindex_source",
-                    payload={"source_id": source_id},
-                    dedupe_key=f"reindex-source:{source_id}",
-                )
-            else:
-                maybe_remove_source_chunks_from_sidecar(
-                    conn,
-                    source_id=source_id,
-                    vault_id=existing["vault_id"],
-                    rebuild_reason=f"source_state_change:{source_id}",
-                )
-                conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
-            if not (
-                "cluster_id" in updates
-                and existing["cluster_id"] != source["cluster_id"]
-                and prune_empty_auto_cluster(conn, existing["cluster_id"])
-            ):
+            if source_changed:
+                if source["state"] == "indexed":
+                    _enqueue_source_reindex(
+                        conn,
+                        source_id=source_id,
+                        restart_generation=True,
+                    )
+                else:
+                    maybe_remove_source_chunks_from_sidecar(
+                        conn,
+                        source_id=source_id,
+                        vault_id=existing["vault_id"],
+                        rebuild_reason=f"source_state_change:{source_id}",
+                    )
+                    conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
+            if source_changed:
                 mark_cluster_needs_update(conn, existing["cluster_id"], "Source changed or moved.")
-            mark_cluster_needs_update(conn, source["cluster_id"], "Source changed or moved.")
-            invalidate_caches_for_source(source_id, conn=conn)
+                mark_cluster_needs_update(conn, source["cluster_id"], "Source changed or moved.")
+                invalidate_caches_for_source(source_id, conn=conn)
         return source_from_row(row, conn=conn)
 
 

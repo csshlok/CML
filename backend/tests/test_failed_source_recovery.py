@@ -58,9 +58,9 @@ class FailedSourceRecoveryTests(unittest.TestCase):
                 """
                 UPDATE app_jobs
                 SET status = 'failed', last_error = ?, updated_at = ?
-                WHERE dedupe_key = ?
+                WHERE scope_id = ? AND job_type = 'reindex_source'
                 """,
-                ("Embedding runtime stopped.", utc_now(), f"reindex-source:{source['id']}"),
+                ("Embedding runtime stopped.", utc_now(), source["id"]),
             )
 
         stats = get_source_stats(source["id"])
@@ -85,9 +85,9 @@ class FailedSourceRecoveryTests(unittest.TestCase):
                 """
                 UPDATE app_jobs
                 SET status = 'failed', last_error = 'Temporary failure', updated_at = ?
-                WHERE dedupe_key = ?
+                WHERE scope_id = ? AND job_type = 'reindex_source'
                 """,
-                (utc_now(), f"reindex-source:{source['id']}"),
+                (utc_now(), source["id"]),
             )
             conn.execute("UPDATE sources SET state = 'failed' WHERE id = ?", (source["id"],))
 

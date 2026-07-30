@@ -338,12 +338,18 @@ class EncryptedStoragePhase3Tests(unittest.TestCase):
         bundle = create_diagnostic_bundle()
         with zipfile.ZipFile(bundle["bundle_path"]) as archive:
             manifest = archive.read("manifest.json").decode("utf-8")
-            log_text = archive.read("logs/backend.log").decode("utf-8")
+            names = archive.namelist()
+            bundle_text = "\n".join(
+                archive.read(name).decode("utf-8")
+                for name in names
+                if name.endswith(".json")
+            )
 
         self.assertIn("encrypted_content/blob records", manifest)
-        self.assertNotIn("phase-three", log_text)
-        self.assertNotIn(recovery_key, log_text)
-        self.assertIn("[local-path]", log_text)
+        self.assertNotIn("logs/backend.log", names)
+        self.assertNotIn("phase three pass", bundle_text)
+        self.assertNotIn(recovery_key, bundle_text)
+        self.assertNotIn(r"C:\Users\name\Secret\file.txt", bundle_text)
 
     def _assert_plaintext_not_in_database_files(self, secret: str) -> None:
         needle = secret.encode("utf-8")

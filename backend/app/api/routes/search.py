@@ -30,6 +30,7 @@ from backend.app.core.turbovec_runtime import (
     turbovec_sidecar_repair_plan,
     turbovec_sidecar_status,
     vector_backend_policy,
+    UNCLUSTERED_SCOPE_ID,
 )
 from backend.app.schemas import SemanticSearchRequest, SemanticSearchResponse
 
@@ -48,7 +49,7 @@ def semantic_search(payload: SemanticSearchRequest) -> dict:
         search = semantic_search_results(
             payload.vault_id,
             query_vector,
-            cluster_id=payload.cluster_id,
+            cluster_id=UNCLUSTERED_SCOPE_ID if payload.unclustered_only else payload.cluster_id,
             limit=payload.limit,
         )
     except KeyError as exc:
