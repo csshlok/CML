@@ -149,6 +149,66 @@ class TurbovecRuntimeTests(unittest.TestCase):
         self.assertGreaterEqual(payload["eligible_count"], 2)
         self.assertEqual(payload["results"][0]["source_title"], "Alpha")
 
+    def test_unclustered_semantic_scope_excludes_clustered_sources(self) -> None:
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.database import connect, dict_from_row, utc_now
+        from backend.app.core.embeddings import reindex_source_chunks
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.vault_dir), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO clusters (id, vault_id, name, description, created_at, updated_at)
+                VALUES ('cluster-1', 'vault-1', 'Grouped', '', ?, ?)
+                """,
+                (now, now),
+            )
+        loose = create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Loose Alpha",
+                source_type="note",
+                raw_text="alpha loose context",
+            )
+        )
+        grouped = create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                cluster_id="cluster-1",
+                title="Grouped Alpha",
+                source_type="note",
+                raw_text="alpha grouped context",
+            )
+        )
+        with connect() as conn:
+            for source_id in (loose["id"], grouped["id"]):
+                row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+                reindex_source_chunks(conn, dict_from_row(row))
+
+        client = self._client()
+        try:
+            response = client.post(
+                "/api/v1/search/semantic",
+                json={
+                    "vault_id": "vault-1",
+                    "query": "alpha context",
+                    "unclustered_only": True,
+                    "limit": 5,
+                },
+            )
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 200)
+        titles = {item["source_title"] for item in response.json()["results"]}
+        self.assertIn("Loose Alpha", titles)
+        self.assertNotIn("Grouped Alpha", titles)
+
     def test_corrupt_manifest_path_falls_back_to_exact_and_reports_corrupt_status(self) -> None:
         from backend.app.api.routes.sources import create_source
         from backend.app.core.database import connect, dict_from_row, utc_now

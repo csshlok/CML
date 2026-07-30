@@ -15,7 +15,7 @@ from backend.app.core.setup_readiness import first_run_readiness
 from backend.app.core.startup_repair import startup_repair_summary
 from backend.app.core.startup_status import read_startup_status, startup_status_staleness, validate_startup_phase_registry
 from backend.app.core.config import get_settings
-from backend.app.core.database import connect, dict_from_row
+from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.runtime_identity import backend_runtime_identity
 from backend.app.core.storage_accounting import storage_accounting
 from backend.app.core.unlock_state import (
@@ -31,6 +31,8 @@ from backend.app.core.unlock_state import (
 )
 from backend.app.core.vault_safety import vault_safety_status
 from backend.app.schemas import (
+    AppProfileRead,
+    AppProfileUpdate,
     DiskPreflightRequest,
     DiskPreflightResponse,
     HardwareStatusRead,
@@ -278,6 +280,33 @@ def run_security_migration_staging_gc(
 @router.get("/hardware", response_model=HardwareStatusRead)
 def get_hardware_status() -> dict:
     return hardware_status()
+
+
+@router.get("/profile", response_model=AppProfileRead)
+def get_app_profile() -> dict:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT display_name, updated_at FROM app_profile WHERE id = 'local'"
+        ).fetchone()
+    return dict(row) if row is not None else {"display_name": "", "updated_at": None}
+
+
+@router.put("/profile", response_model=AppProfileRead)
+def update_app_profile(payload: AppProfileUpdate) -> dict:
+    display_name = " ".join(payload.display_name.split()).strip()
+    now = utc_now()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_profile (id, display_name, updated_at)
+            VALUES ('local', ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                display_name = excluded.display_name,
+                updated_at = excluded.updated_at
+            """,
+            (display_name, now),
+        )
+    return {"display_name": display_name, "updated_at": now}
 
 
 @router.get("/ocr", response_model=OCRRuntimeStatusRead)

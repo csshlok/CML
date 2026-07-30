@@ -41,6 +41,7 @@ PHASE_C_MIN_LATENCY_IMPROVEMENT = 3.0
 PHASE_C_MAX_SIZE_RATIO = 0.25
 PHASE_C_MAX_COLD_LOAD_SECONDS = 1.5
 EXACT_CACHE_MAX_ITEMS = 8
+UNCLUSTERED_SCOPE_ID = "__unclustered__"
 
 
 @dataclass
@@ -657,7 +658,9 @@ def _build_exact_search_snapshot(
 ) -> ExactSearchSnapshot:
     params: list[Any] = [vault_id]
     cluster_clause = ""
-    if cluster_id:
+    if cluster_id == UNCLUSTERED_SCOPE_ID:
+        cluster_clause = "AND chunks.cluster_id IS NULL"
+    elif cluster_id:
         cluster_clause = "AND chunks.cluster_id = ?"
         params.append(cluster_id)
     tuple_clause, tuple_params = chunk_eligibility_sql("chunks", snapshot)
@@ -714,7 +717,9 @@ def _exact_cache_key(conn, vault_id: str, *, snapshot: dict, cluster_id: str | N
 def _eligible_chunk_count(conn, vault_id: str, snapshot: dict, *, cluster_id: str | None) -> int:
     params: list[Any] = [vault_id]
     cluster_clause = ""
-    if cluster_id:
+    if cluster_id == UNCLUSTERED_SCOPE_ID:
+        cluster_clause = "AND chunks.cluster_id IS NULL"
+    elif cluster_id:
         cluster_clause = "AND chunks.cluster_id = ?"
         params.append(cluster_id)
     tuple_clause, tuple_params = chunk_eligibility_sql("chunks", snapshot)
@@ -736,7 +741,9 @@ def _eligible_chunk_count(conn, vault_id: str, snapshot: dict, *, cluster_id: st
 def _eligible_chunk_ids(conn, vault_id: str, *, snapshot: dict, cluster_id: str | None) -> list[str]:
     params: list[Any] = [vault_id]
     cluster_clause = ""
-    if cluster_id:
+    if cluster_id == UNCLUSTERED_SCOPE_ID:
+        cluster_clause = "AND chunks.cluster_id IS NULL"
+    elif cluster_id:
         cluster_clause = "AND chunks.cluster_id = ?"
         params.append(cluster_id)
     tuple_clause, tuple_params = chunk_eligibility_sql("chunks", snapshot)
@@ -765,7 +772,9 @@ def _hydrate_candidate_rows(
 ) -> list[dict[str, Any]]:
     params: list[Any] = [vault_id]
     cluster_clause = ""
-    if cluster_id:
+    if cluster_id == UNCLUSTERED_SCOPE_ID:
+        cluster_clause = "AND chunks.cluster_id IS NULL"
+    elif cluster_id:
         cluster_clause = "AND chunks.cluster_id = ?"
         params.append(cluster_id)
     tuple_clause, tuple_params = chunk_eligibility_sql("chunks", snapshot)

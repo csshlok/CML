@@ -8,6 +8,56 @@ from zipfile import ZipFile
 
 
 class RuntimeContractTests(unittest.TestCase):
+    def test_existing_chat_generation_table_is_upgraded_before_request_index(self) -> None:
+        import sqlite3
+        import tempfile
+
+        from backend.app.core.config import get_settings
+        from backend.app.core.database import init_db
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root = Path(temporary)
+            database_path = root / "legacy.sqlite3"
+            with sqlite3.connect(database_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE chat_generations (
+                        id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        vault_id TEXT NOT NULL,
+                        user_message_id TEXT,
+                        assistant_message_id TEXT,
+                        prompt TEXT NOT NULL DEFAULT '',
+                        state TEXT NOT NULL DEFAULT 'queued',
+                        error TEXT NOT NULL DEFAULT '',
+                        citations_json TEXT NOT NULL DEFAULT '[]',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        completed_at TEXT
+                    )
+                    """
+                )
+            with patch.dict(
+                os.environ,
+                {
+                    "CML_DATA_DIR": str(root),
+                    "CML_DATABASE_PATH": str(database_path),
+                },
+            ):
+                get_settings.cache_clear()
+                init_db()
+                with sqlite3.connect(database_path) as conn:
+                    columns = {
+                        row[1] for row in conn.execute("PRAGMA table_info(chat_generations)")
+                    }
+                    indexes = {
+                        row[1] for row in conn.execute("PRAGMA index_list(chat_generations)")
+                    }
+            get_settings.cache_clear()
+
+        self.assertIn("request_id", columns)
+        self.assertIn("idx_chat_generations_request_id", indexes)
+
     def tearDown(self) -> None:
         os.environ.pop("CML_LLM_TIMEOUT_SECONDS", None)
         os.environ.pop("CML_DATA_DIR", None)
@@ -123,7 +173,7 @@ class RuntimeContractTests(unittest.TestCase):
             runtime_summary = json.loads(archive.read("runtime-summary.json").decode("utf-8"))
         self.assertIn("SentenceTransformers", runtime_summary["embedding"]["detail"])
 
-    def test_diagnostics_bundle_includes_packaged_electron_logs_when_startup_status_points_to_user_data(self) -> None:
+    def test_diagnostics_bundle_summarizes_packaged_logs_without_including_content(self) -> None:
         temp_dir = Path(__file__).resolve().parents[2] / ".tmp" / "runtime-contracts-electron-logs"
         user_data_dir = temp_dir / "user-data"
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -146,16 +196,22 @@ class RuntimeContractTests(unittest.TestCase):
         bundle = create_diagnostic_bundle()
         with ZipFile(bundle["bundle_path"]) as archive:
             names = set(archive.namelist())
-            desktop_runtime = archive.read("logs/desktop-runtime.log").decode("utf-8")
-            backend_stdout = archive.read("logs/backend-stdout.log").decode("utf-8")
-            backend_stderr = archive.read("logs/backend-stderr.log").decode("utf-8")
+            summary = json.loads(archive.read("log-summary.json").decode("utf-8"))
+            bundle_text = "\n".join(
+                archive.read(name).decode("utf-8") for name in archive.namelist()
+            )
 
-        self.assertIn("logs/desktop-runtime.log", names)
-        self.assertIn("logs/backend-stdout.log", names)
-        self.assertIn("logs/backend-stderr.log", names)
-        self.assertIn("[local-path]", desktop_runtime)
-        self.assertIn("token=[redacted]", backend_stdout)
-        self.assertIn("authorization: bearer [redacted]", backend_stderr.lower())
+        self.assertNotIn("logs/desktop-runtime.log", names)
+        self.assertNotIn("logs/backend-stdout.log", names)
+        self.assertNotIn("logs/backend-stderr.log", names)
+        self.assertFalse(summary["raw_logs_included"])
+        self.assertEqual(
+            {item["name"] for item in summary["files"]},
+            {"desktop-runtime.log", "backend-stdout.log", "backend-stderr.log"},
+        )
+        self.assertNotIn("secret-value", bundle_text)
+        self.assertNotIn("abc123", bundle_text)
+        self.assertNotIn("C:\\Users\\me", bundle_text)
 
     def test_bridge_entrypoints_use_only_loopback_defaults_and_no_contributor_machine_paths(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

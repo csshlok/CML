@@ -216,7 +216,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
 
-    def test_text_ingestion_is_rejected_when_embeddings_are_unavailable(self) -> None:
+    def test_text_ingestion_is_persisted_when_embeddings_are_unavailable(self) -> None:
         from backend.app.core.database import connect, utc_now
 
         now = utc_now()
@@ -228,19 +228,25 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
 
         client = self._client()
         try:
-            with patch(
-                "backend.app.api.routes.sources.require_embeddings_available",
-                side_effect=RuntimeError("Source ingestion requires the local embedding model, but embeddings are unavailable"),
-            ):
-                response = client.post(
-                    "/api/v1/sources/from-text",
-                    json={"vault_id": "vault-1", "title": "Blocked", "text": "memory search content"},
-                )
+            response = client.post(
+                "/api/v1/sources/from-text",
+                json={"vault_id": "vault-1", "title": "Queued", "text": "memory search content"},
+            )
         finally:
             client.close()
 
-        self.assertEqual(response.status_code, 409)
-        self.assertIn("requires the local embedding model", response.json()["detail"])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["ingestion_stage"], "imported")
+        with connect() as conn:
+            job = conn.execute(
+                """
+                SELECT status
+                FROM app_jobs
+                WHERE scope_id = ? AND job_type = 'reindex_source'
+                """,
+                (response.json()["id"],),
+            ).fetchone()
+        self.assertEqual(job["status"], "queued")
 
     def test_configure_embeddings_rejects_hash_without_dev_flag(self) -> None:
         from backend.app.core.config import get_settings
@@ -550,9 +556,9 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         with connect() as conn:
             queued = enqueue_job(
                 conn,
-                job_type="source_metadata_enrichment",
+                job_type="source_semantic_enrichment",
                 payload={"source_id": "source-waits-for-model", "source_updated_at": "now"},
-                dedupe_key="source-metadata:source-waits-for-model:now",
+                dedupe_key="source-semantic:source-waits-for-model:now",
                 scope_id="source-waits-for-model",
             )
         unavailable = {
@@ -606,6 +612,8 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
                     "id": "model-1",
                     "name": "Model One",
                     "local_path": str(self.data_dir / "model.gguf"),
+                    "installed": True,
+                    "compatibility": {"chat_role_accepted": True},
                 },
             ),
             patch(

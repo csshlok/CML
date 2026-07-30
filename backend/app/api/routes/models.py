@@ -128,6 +128,7 @@ def queue_model_discovery(payload: ModelDiscoveryJobRequest) -> dict:
             payload={
                 "max_results": payload.max_results,
                 "include_rejected": payload.include_rejected,
+                "scan_all_drives": payload.scan_all_drives,
             },
             dedupe_key=payload.idempotency_key or "model-discovery:active",
             user_initiated=True,

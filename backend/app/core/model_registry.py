@@ -1,6 +1,8 @@
 from dataclasses import asdict, dataclass
+import ctypes
 import hashlib
 import os
+import platform
 from pathlib import Path
 import re
 import time
@@ -1085,14 +1087,16 @@ def discover_installed_models(
     refresh: bool = False,
     progress_callback: Any | None = None,
     cancellation_callback: Any | None = None,
+    scan_all_drives: bool = False,
 ) -> dict[str, Any]:
     settings = get_settings()
-    locations = installed_model_scan_locations()
+    locations = installed_model_scan_locations(scan_all_drives=scan_all_drives)
     cache_ttl = max(0, int(getattr(settings, "model_scan_cache_seconds", 30) or 0))
     cache_key = (
         tuple((_normalized_path(root), depth) for root, depth in locations),
         bool(include_rejected),
         int(max_results),
+        bool(scan_all_drives),
     )
     if not refresh and cache_ttl > 0:
         with _MODEL_DISCOVERY_CACHE_LOCK:
@@ -1107,6 +1111,8 @@ def discover_installed_models(
     seen_paths: set[str] = set()
     compatible_count = 0
     truncated = False
+    directories_checked = 0
+    skipped_directories = 0
     imported_paths: set[str] = set()
     for _metadata_path, payload in _canonical_import_records():
         for key in ("local_path", "source_path"):
@@ -1124,7 +1130,34 @@ def discover_installed_models(
             missing_roots.append(str(root))
             continue
         scanned_roots.append(normalized_root)
-        for candidate in _iter_model_candidates(root, max_depth=scan_depth):
+        if scan_depth < 0:
+            walk_progress: dict[str, int] = {}
+
+            def report_walk(progress: dict[str, int]) -> None:
+                nonlocal directories_checked, skipped_directories
+                directories_checked += int(progress.get("directories_checked") or 0)
+                skipped_directories += int(progress.get("skipped_directories") or 0)
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "phase": "scanning",
+                            "roots_scanned": len(scanned_roots),
+                            "directories_checked": directories_checked,
+                            "skipped_directories": skipped_directories,
+                            "candidates_checked": len(seen_paths),
+                            "models_found": len(models),
+                        }
+                    )
+
+            candidates = _iter_model_candidates_with_progress(
+                root,
+                max_depth=scan_depth,
+                progress_callback=report_walk,
+                cancellation_callback=cancellation_callback,
+            )
+        else:
+            candidates = _iter_model_candidates(root, max_depth=scan_depth)
+        for candidate in candidates:
             if cancellation_callback is not None:
                 cancellation_callback()
             normalized = _normalized_path(candidate)
@@ -1163,6 +1196,8 @@ def discover_installed_models(
                     {
                         "phase": "scanning",
                         "roots_scanned": len(scanned_roots),
+                        "directories_checked": directories_checked,
+                        "skipped_directories": skipped_directories,
                         "candidates_checked": len(seen_paths),
                         "models_found": len(models),
                     }
@@ -1181,6 +1216,8 @@ def discover_installed_models(
         "scanned_root_count": len(scanned_roots),
         "scanned_roots": scanned_roots,
         "missing_roots": missing_roots,
+        "directories_checked": directories_checked,
+        "skipped_directories": skipped_directories,
         "truncated": truncated,
         "scan_duration_ms": round((time.perf_counter() - started) * 1000, 2),
     }
@@ -1197,7 +1234,7 @@ def installed_model_scan_roots() -> list[Path]:
     return [root for root, _depth in installed_model_scan_locations()]
 
 
-def installed_model_scan_locations() -> list[tuple[Path, int]]:
+def installed_model_scan_locations(*, scan_all_drives: bool = False) -> list[tuple[Path, int]]:
     settings = get_settings()
     configured_depth = max(0, int(settings.model_scan_max_depth))
     locations: list[tuple[Path, int]] = [(models_dir(), configured_depth)]
@@ -1237,6 +1274,8 @@ def installed_model_scan_locations() -> list[tuple[Path, int]]:
             model_path = Path(str(value))
             if str(value).strip() and len(model_path.parents) >= 2:
                 locations.append((model_path.parents[1], configured_depth))
+    if scan_all_drives:
+        locations.extend((root, -1) for root in _available_drive_roots())
 
     unique: list[tuple[Path, int]] = []
     seen: set[str] = set()
@@ -1247,6 +1286,30 @@ def installed_model_scan_locations() -> list[tuple[Path, int]]:
         seen.add(normalized)
         unique.append((root, depth))
     return unique
+
+
+def _available_drive_roots() -> list[Path]:
+    if platform.system().casefold() == "windows":
+        try:
+            mask = int(ctypes.windll.kernel32.GetLogicalDrives())
+        except Exception:
+            mask = 0
+        return [
+            Path(f"{chr(ord('A') + index)}:\\")
+            for index in range(26)
+            if mask & (1 << index)
+        ]
+    try:
+        import psutil
+
+        roots = {
+            Path(str(partition.mountpoint))
+            for partition in psutil.disk_partitions(all=False)
+            if str(partition.mountpoint).strip()
+        }
+        return sorted(roots, key=lambda item: str(item))
+    except Exception:
+        return [Path("/")]
 
 
 def _download_root_for_target(target_dir: str | None) -> Path:
@@ -1341,25 +1404,57 @@ def _find_local_model_file(model: LocalModel) -> Path | None:
 
 
 def _iter_model_candidates(root: Path, *, max_depth: int) -> list[Path]:
+    return _iter_model_candidates_with_progress(root, max_depth=max_depth)
+
+
+def _iter_model_candidates_with_progress(
+    root: Path,
+    *,
+    max_depth: int,
+    progress_callback: Any | None = None,
+    cancellation_callback: Any | None = None,
+) -> list[Path]:
     discovered: list[Path] = []
     stack: list[tuple[Path, int]] = [(root, 0)]
     seen: set[str] = set()
+    checked_since_report = 0
+    skipped_since_report = 0
+
+    def report(*, force: bool = False) -> None:
+        nonlocal checked_since_report, skipped_since_report
+        if progress_callback is None or (not force and checked_since_report < 250):
+            return
+        progress_callback(
+            {
+                "directories_checked": checked_since_report,
+                "skipped_directories": skipped_since_report,
+            }
+        )
+        checked_since_report = 0
+        skipped_since_report = 0
+
     while stack:
+        if cancellation_callback is not None and len(seen) % 100 == 0:
+            cancellation_callback()
         current, depth = stack.pop()
         normalized = _normalized_path(current)
         if normalized in seen:
             continue
         seen.add(normalized)
+        checked_since_report += 1
+        report()
         if not current.exists() or not current.is_dir():
+            skipped_since_report += 1
             continue
         if _is_transformers_model_dir(current):
             discovered.append(current)
             continue
-        if depth >= max_depth:
+        if max_depth >= 0 and depth >= max_depth:
             continue
         try:
             entries = sorted(current.iterdir(), key=lambda item: item.name.lower())
         except OSError:
+            skipped_since_report += 1
             continue
         for entry in entries:
             if entry.is_file() and entry.suffix.casefold() == ".gguf":
@@ -1367,8 +1462,10 @@ def _iter_model_candidates(root: Path, *, max_depth: int) -> list[Path]:
         children = [entry for entry in entries if entry.is_dir()]
         for child in reversed(children):
             if child.name.lower() in MODEL_SCAN_SKIP_DIRS:
+                skipped_since_report += 1
                 continue
             stack.append((child, depth + 1))
+    report(force=True)
     return discovered
 
 
