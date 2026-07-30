@@ -32,7 +32,7 @@ function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, backendIdentityMatches, rendererSecurityHeaders, sanitizeRendererBody, imageMimeType, imageDimensions, resolveApprovedMediaTarget, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, resolveSetupLaunchState, collectSupportedFiles, findOpenPort, loadStartupProgress, loadStartupFailure, loadRendererFailure, truncateDesktopLogValue, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, assertSafeVaultMoveRoots, verifyCopiedVault, finalizeActiveVaultDeletion, reconcilePendingVaultDeletion, __setMainWindow: (value) => { mainWindow = value; }, __setTunnelManager: (value) => { tunnelManager = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; }, __setEnsureBackend: (value) => { ensureBackend = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, backendIdentityMatches, rendererSecurityHeaders, sanitizeRendererBody, imageMimeType, imageDimensions, resolveApprovedMediaTarget, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, resolveSetupLaunchState, collectSupportedFiles, findOpenPort, loadStartupProgress, loadStartupFailure, loadRendererFailure, truncateDesktopLogValue, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, assertSafeVaultMoveRoots, verifyCopiedVault, finalizeActiveVaultDeletion, reconcilePendingVaultDeletion, __setMainWindow: (value) => { mainWindow = value; }, __setTunnelManager: (value) => { tunnelManager = value; }, __setStopBackendDependents: (value) => { stopBackendDependents = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; }, __setEnsureBackend: (value) => { ensureBackend = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -266,9 +266,11 @@ test("image dimensions are read from headers without decoding untrusted pixels",
 test("vault deletion tombstones data before clearing the active pointer", async () => {
   const { exported, userDataDir } = loadMainModule();
   const tunnelEvents = [];
+  const shutdownEvents = [];
   exported.__setTunnelManager({
     disconnect: async (options) => tunnelEvents.push(options),
   });
+  exported.__setStopBackendDependents(async () => shutdownEvents.push("model-runtime-stopped"));
   const vaultRoot = await makeTempDirAsync("cml-delete-vault-");
   await exported.setActiveVaultPath(vaultRoot);
   await fs.promises.writeFile(path.join(vaultRoot, ".vault", "cml.sqlite3"), "fixture");
@@ -293,6 +295,7 @@ test("vault deletion tombstones data before clearing the active pointer", async 
   assert.equal(fs.existsSync(path.join(vaultRoot, ".vault")), false);
   assert.equal(fs.existsSync(path.join(userDataDir, "vault-deletion.json")), false);
   assert.equal(JSON.stringify(tunnelEvents), JSON.stringify([{ forget: true }]));
+  assert.deepEqual(shutdownEvents, ["model-runtime-stopped"]);
 });
 
 test("vault deletion restores data, pointer, and setup state when pre-vault restart fails", async () => {

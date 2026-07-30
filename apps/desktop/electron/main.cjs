@@ -64,6 +64,7 @@ let rendererReadyPath = null;
 let pendingActiveVaultPath = null;
 let odinRuntimeDescriptorPath = null;
 let tunnelManager = null;
+let stopBackendDependents = stopManagedRuntimeBeforeBackendStop;
 const desktopRuntimeLogValueLimit = 8000;
 
 function normalizeApiPrefix(value) {
@@ -1384,8 +1385,9 @@ async function finalizeActiveVaultDeletion() {
     tombstone,
     updated_at: new Date().toISOString(),
   });
-  await stopBackendProcess();
   try {
+    await stopBackendDependents();
+    await stopBackendProcess(5000, false);
     if (await pathExists(vaultData)) {
       await fs.rename(vaultData, tombstone);
     }
@@ -1416,7 +1418,11 @@ async function finalizeActiveVaultDeletion() {
     await clearVaultDeletionJournal();
     return { deleted: true, path: activeRoot };
   } catch (error) {
-    await stopBackendProcess();
+    try {
+      await stopBackendProcess(5000, false);
+    } catch (stopError) {
+      writeDesktopRuntimeLog("backend did not stop during vault deletion rollback", stopError);
+    }
     backendUrl = null;
     if (await pathExists(tombstone) && !(await pathExists(vaultData))) {
       try {
@@ -1521,12 +1527,21 @@ async function verifyCopiedVault(vaultDataPath) {
   }
 }
 
-async function stopBackendProcess(timeoutMs = 5000) {
+async function stopBackendProcess(timeoutMs = 5000, stopDependents = true) {
   const child = backendProcess;
   backendProcess = null;
   if (!child || child.exitCode !== null || child.killed) {
     closeBackendLogStreams();
     return;
+  }
+  if (stopDependents) {
+    try {
+      await stopBackendDependents();
+    } catch (error) {
+      writeDesktopRuntimeLog("managed runtime did not stop before backend shutdown", error);
+      backendProcess = child;
+      throw error;
+    }
   }
   await new Promise((resolve, reject) => {
     let settled = false;
@@ -1921,6 +1936,52 @@ function httpJson(url, timeoutMs, token = "") {
     });
     request.on("error", reject);
   });
+}
+
+function httpPostJson(url, timeoutMs, token = "") {
+  return new Promise((resolve, reject) => {
+    const headers = {
+      ...(token ? { "x-cml-api-token": token } : {}),
+      "content-length": "0",
+    };
+    const request = http.request(
+      url,
+      { method: "POST", timeout: timeoutMs, headers },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            reject(new HttpStatusError(response.statusCode, body));
+            return;
+          }
+          try {
+            resolve(JSON.parse(body));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
+    request.on("timeout", () => {
+      request.destroy(new Error("Timed out"));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+async function stopManagedRuntimeBeforeBackendStop() {
+  if (!backendUrl) return;
+  const token = await getBackendApiToken();
+  await httpPostJson(
+    `${backendUrl}${apiPrefix}/models/runtime/stop`,
+    12000,
+    token,
+  );
 }
 
 class HttpStatusError extends Error {

@@ -233,6 +233,35 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertNotIn("http://0.0.0.0", bridge_cli)
         self.assertNotIn("http://0.0.0.0", bridge_script)
 
+def test_model_runtime_stop_route_stops_managed_child_before_reporting_status() -> None:
+    from backend.app.api.routes import models
+
+    stopped: list[str] = []
+    with (
+        patch.object(
+            models,
+            "stop_managed_runtime",
+            side_effect=lambda: stopped.append("stopped"),
+        ),
+        patch.object(
+            models,
+            "runtime_status",
+            return_value={
+                "provider": "managed-llama.cpp",
+                "base_url": "",
+                "model": "",
+                "available": False,
+                "state": "stopped",
+                "in_flight": 0,
+                "detail": "The managed local model is stopped.",
+            },
+        ),
+    ):
+        result = models.stop_runtime()
+
+    assert stopped == ["stopped"]
+    assert result["state"] == "stopped"
+
 
 if __name__ == "__main__":
     unittest.main()

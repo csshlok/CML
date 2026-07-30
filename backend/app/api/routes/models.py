@@ -12,6 +12,7 @@ from backend.app.core.embeddings import (
     start_embedding_model_download,
 )
 from backend.app.core.llm_runtime import runtime_status
+from backend.app.core.model_runtime_supervisor import stop_managed_runtime
 from backend.app.core.background_jobs import (
     enqueue_job,
     notify_embedding_prerequisite_changed,
@@ -145,6 +146,12 @@ def add_model_discovery_root(payload: ModelScanRootRequest) -> dict:
 
 @router.get("/runtime", response_model=ModelRuntimeStatus)
 def get_runtime_status() -> dict:
+    return runtime_status()
+
+
+@router.post("/runtime/stop", response_model=ModelRuntimeStatus)
+def stop_runtime() -> dict:
+    stop_managed_runtime()
     return runtime_status()
 
 
