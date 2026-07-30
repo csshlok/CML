@@ -36,16 +36,17 @@ test("a source move is confirmed by the backend before the row disappears", () =
   assert.match(clusterDetailSource, /role="alert"/);
 });
 
-test("move destinations page through the vault and exclude the current cluster", () => {
+test("move destinations are bounded, searchable, and exclude the current cluster", () => {
   assert.match(
     clusterDetailSource,
-    /listClustersPage\(vaultId, \{ limit: 200, cursor \}\)/,
+    /listClustersPage\(vaultId, \{ limit: 50, query \}\)/,
   );
-  assert.match(clusterDetailSource, /seenCursors\.has\(page\.next_cursor\)/);
-  assert.match(clusterDetailSource, /listAllVaultClusters\(clusterRow\.vault_id\)/);
+  assert.match(clusterDetailSource, /aria-label="Search move destinations"/);
+  assert.match(clusterDetailSource, /aria-label="Search merge destinations"/);
+  assert.doesNotMatch(clusterDetailSource, /listAllVaultClusters/);
   assert.match(
     clusterDetailSource,
-    /filter\(\(item\) => item\.id !== clusterRow\.id\)/,
+    /filter\(\(item\) => item\.id !== clusterId\)/,
   );
   assert.match(
     clusterDetailSource,

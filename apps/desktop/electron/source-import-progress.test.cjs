@@ -31,8 +31,15 @@ test("file import progress persists above app routes with counts and percentage"
   assert.match(progressSource, /aria-label=\{`\$\{percent\}% of files processed`\}/);
   assert.match(progressSource, /aria-label="Dismiss file import progress"/);
   assert.match(progressSource, /fixed bottom-4 right-4/);
+  assert.match(progressSource, /import \{ createPortal \} from "react-dom"/);
+  assert.match(progressSource, /setPortalRoot\(document\.body\)/);
+  assert.match(progressSource, /return createPortal\(/);
+  assert.match(progressSource, /data-source-import-popup="true"/);
   assert.match(progressSource, /aria-label="Move file import progress"/);
   assert.match(progressSource, /source-import-drag-handle/);
+  assert.match(progressSource, /vault\.source-import-popup\.position\.v1/);
+  assert.match(progressSource, /availableWidth/);
+  assert.match(progressSource, /localStorage\.setItem/);
   assert.match(progressSource, /window\.addEventListener\("pointermove", moveDragging/);
   assert.match(progressSource, /window\.addEventListener\("pointerup", stopDragging/);
   assert.match(progressSource, /captureTarget\.setPointerCapture/);
@@ -44,6 +51,11 @@ test("file import progress persists above app routes with counts and percentage"
   assert.doesNotMatch(
     styles,
     /\.source-import-popup\s*\{[^}]*\bleft\s*:/,
+  );
+  assert.match(
+    styles,
+    /\.vault-desktop-content\s*>\s*\*\s*\{[^}]*height:\s*100%/s,
+    "the popup must remain portaled because direct route children are forced to full height",
   );
 });
 

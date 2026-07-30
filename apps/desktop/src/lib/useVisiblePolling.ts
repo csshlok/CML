@@ -5,6 +5,7 @@ export function useVisiblePolling(
   intervalMs: number,
   enabled = true,
   onError?: (error: unknown) => void,
+  restartKey?: unknown,
 ) {
   const taskRef = useRef(task);
   const errorRef = useRef(onError);
@@ -72,5 +73,5 @@ export function useVisiblePolling(
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("focus", onFocus);
     };
-  }, [enabled, intervalMs]);
+  }, [enabled, intervalMs, restartKey]);
 }

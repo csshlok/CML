@@ -11,6 +11,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { FileUp, GripVertical, Pause, Play, Square, X } from "lucide-react";
 import {
   getActiveSourceImportJob,
@@ -28,7 +29,8 @@ import { Button } from "@/components/ui/button";
 import { ConfirmAction } from "@/components/product/Feedback";
 
 const activeImportStatuses = new Set(["queued", "running", "paused"]);
-const terminalImportStatuses = new Set(["succeeded", "failed", "cancelled", "manual_review"]);
+const terminalImportStatuses = new Set(["succeeded", "partial_success", "failed", "cancelled", "manual_review"]);
+const sourceImportPopupPositionKey = "vault.source-import-popup.position.v1";
 
 type SourceImportContextValue = {
   job: AppJobRecord | null;
@@ -82,6 +84,12 @@ export function SourceImportProvider({ children }: { children: ReactNode }) {
         detail: { reason: "source-import", jobId: job.id },
       }),
     );
+  }, [job]);
+
+  useEffect(() => {
+    if (!job || !terminalImportStatuses.has(job.status)) return;
+    const timer = window.setTimeout(() => setDismissedJobId(job.id), 20_000);
+    return () => window.clearTimeout(timer);
   }, [job]);
 
   const start = useCallback(
@@ -191,6 +199,7 @@ export function SourceImportInlineProgress() {
 
 function SourceImportViewport({ hidden }: { hidden: boolean }) {
   const sourceImport = useSourceImport();
+  const [portalRoot, setPortalRoot] = useState<HTMLElement | null>(null);
   const popupRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{
     pointerId: number;
@@ -200,6 +209,11 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
   } | null>(null);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    setPortalRoot(document.body);
+    return () => setPortalRoot(null);
+  }, []);
 
   const constrainPosition = useCallback((x: number, y: number) => {
     const popup = popupRef.current;
@@ -211,6 +225,20 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
       x: Math.min(maxX, Math.max(edge, x)),
       y: Math.min(maxY, Math.max(edge, y)),
     };
+  }, []);
+
+  const savePosition = useCallback((next: { x: number; y: number }) => {
+    const popup = popupRef.current;
+    if (!popup) return;
+    const availableWidth = Math.max(1, window.innerWidth - popup.offsetWidth);
+    const availableHeight = Math.max(1, window.innerHeight - popup.offsetHeight);
+    window.localStorage.setItem(
+      sourceImportPopupPositionKey,
+      JSON.stringify({
+        x: Math.max(0, Math.min(1, next.x / availableWidth)),
+        y: Math.max(0, Math.min(1, next.y / availableHeight)),
+      }),
+    );
   }, []);
 
   const startDragging = useCallback((event: ReactPointerEvent<HTMLElement>) => {
@@ -241,12 +269,12 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
     const moveDragging = (event: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag || drag.pointerId !== event.pointerId) return;
-      setPosition(
-        constrainPosition(
-          event.clientX - drag.offsetX,
-          event.clientY - drag.offsetY,
-        ),
+      const next = constrainPosition(
+        event.clientX - drag.offsetX,
+        event.clientY - drag.offsetY,
       );
+      setPosition(next);
+      savePosition(next);
       event.preventDefault();
     };
     const stopDragging = (event: PointerEvent) => {
@@ -254,6 +282,8 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
       if (!drag || drag.pointerId !== event.pointerId) return;
       dragRef.current = null;
       setDragging(false);
+      const popup = popupRef.current;
+      if (popup) savePosition({ x: popup.offsetLeft, y: popup.offsetTop });
       if (drag.captureTarget?.hasPointerCapture?.(event.pointerId)) {
         drag.captureTarget.releasePointerCapture(event.pointerId);
       }
@@ -273,12 +303,13 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
       window.removeEventListener("pointercancel", stopDragging, { capture: true });
       window.removeEventListener("blur", stopOnBlur);
     };
-  }, [constrainPosition]);
+  }, [constrainPosition, savePosition]);
 
   const moveWithKeyboard = useCallback(
     (event: ReactKeyboardEvent<HTMLButtonElement>) => {
       if (event.key === "Escape") {
         setPosition(null);
+        window.localStorage.removeItem(sourceImportPopupPositionKey);
         return;
       }
       const movement = {
@@ -291,19 +322,43 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
       const popup = popupRef.current;
       if (!popup) return;
       const bounds = popup.getBoundingClientRect();
-      setPosition(
-        constrainPosition(bounds.left + movement[0], bounds.top + movement[1]),
-      );
+      const next = constrainPosition(bounds.left + movement[0], bounds.top + movement[1]);
+      setPosition(next);
+      savePosition(next);
       event.preventDefault();
     },
-    [constrainPosition],
+    [constrainPosition, savePosition],
   );
 
   useEffect(() => {
     dragRef.current = null;
     setDragging(false);
-    setPosition(null);
-  }, [sourceImport.job?.id]);
+    const frame = window.requestAnimationFrame(() => {
+      const popup = popupRef.current;
+      if (!popup) return;
+      try {
+        const stored = JSON.parse(
+          window.localStorage.getItem(sourceImportPopupPositionKey) || "null",
+        ) as { x?: number; y?: number } | null;
+        if (!stored || !Number.isFinite(stored.x) || !Number.isFinite(stored.y)) {
+          setPosition(null);
+          return;
+        }
+        const availableWidth = Math.max(1, window.innerWidth - popup.offsetWidth);
+        const availableHeight = Math.max(1, window.innerHeight - popup.offsetHeight);
+        setPosition(
+          constrainPosition(
+            Number(stored.x) * availableWidth,
+            Number(stored.y) * availableHeight,
+          ),
+        );
+      } catch {
+        window.localStorage.removeItem(sourceImportPopupPositionKey);
+        setPosition(null);
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [constrainPosition, hidden, portalRoot, sourceImport.job?.id]);
 
   useEffect(() => {
     const keepInsideViewport = () => {
@@ -327,7 +382,14 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
     return () => observer.disconnect();
   }, [constrainPosition, hidden, sourceImport.job?.id]);
 
-  if (hidden || !sourceImport.job || !sourceImport.progress) return null;
+  if (
+    !portalRoot
+    || hidden
+    || !sourceImport.job
+    || !sourceImport.progress
+  ) {
+    return null;
+  }
   const popupStyle: CSSProperties | undefined = position
     ? {
         left: position.x,
@@ -337,9 +399,10 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
       }
     : undefined;
 
-  return (
+  return createPortal(
     <div
       ref={popupRef}
+      data-source-import-popup="true"
       className="source-import-popup fixed bottom-4 right-4 z-[60] w-[min(21rem,calc(100vw-2rem))]"
       style={popupStyle}
     >
@@ -358,7 +421,8 @@ function SourceImportViewport({ hidden }: { hidden: boolean }) {
           dragging,
         }}
       />
-    </div>
+    </div>,
+    portalRoot,
   );
 }
 
@@ -565,6 +629,7 @@ function sourceImportTitle(job: AppJobRecord, progress: SourceImportProgress) {
     return progress.completed_files > 0 ? "File import queued to resume" : "File import queued";
   }
   if (job.status === "cancelled") return "File import stopped";
+  if (job.status === "partial_success") return "File import finished with errors";
   if (job.status === "failed" || job.status === "manual_review") return "File import needs attention";
   if (job.status === "succeeded") {
     return progress.failed_files > 0 ? "File import finished with errors" : "Files imported";

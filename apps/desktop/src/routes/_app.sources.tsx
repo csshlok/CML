@@ -32,6 +32,7 @@ import {
   useSourceImport,
 } from "@/components/product/SourceImportProgress";
 import {
+  sourceIngestionStageLabel,
   sourceStateLabel,
   type Cluster,
   type Source,
@@ -50,6 +51,7 @@ import {
   listSourcesPage,
   listVaults,
   reindexSource,
+  updateSource,
   type SourceImportProgress,
   type SourcePageRecord,
   type SourceStatsRecord,
@@ -182,7 +184,7 @@ function SourcesView() {
         }),
         requestedSourceId ? getSource(requestedSourceId).catch(() => null) : Promise.resolve(null),
         listProjectsPage(activeVault.id, { limit: 200 }),
-        listSourceFolders(activeVault.id),
+        listSourceFolders(activeVault.id, deferredQuery, { limit: 100 }),
       ]);
       if (requestId !== sourceRequestRef.current) return;
       if (sourceResult.status === "rejected") throw sourceResult.reason;
@@ -512,6 +514,29 @@ function SourcesView() {
     }
   }
 
+  async function handleMoveSource(source: Source, target: Cluster) {
+    try {
+      const moved = await updateSource(source.id, { cluster_id: target.id });
+      if (moved.cluster_id !== target.id) {
+        throw new Error("Vault could not confirm the new cluster.");
+      }
+      const updated = sourceFromRecord(moved);
+      setBackendSources((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      setSelected((current) => (current?.id === updated.id ? updated : current));
+      notify({
+        title: "Source moved",
+        description: `${source.title} is now in ${target.name}.`,
+        tone: "success",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not move this source.";
+      notify({ title: "Source move failed", description: message, tone: "error" });
+      throw error;
+    }
+  }
+
   return (
     <div
       className="sources-layout vault-page-wash relative grid h-full overflow-y-auto xl:overflow-hidden"
@@ -767,7 +792,7 @@ function SourcesView() {
                       </td>
                       <td className="hidden px-3 py-5 text-muted-foreground 2xl:table-cell">{sourceTypeLabel(source)}</td>
                       <td className="hidden px-3 py-5 xl:table-cell">
-                        <StateChip state={source.state} />
+                        <StateChip source={source} />
                       </td>
                       <td className="hidden px-3 py-5 lg:table-cell">
                         {cluster ? (
@@ -824,6 +849,7 @@ function SourcesView() {
         <SourceInspector
           source={inspectorSource}
           cluster={inspectorCluster}
+          clusters={clusters}
           pages={selectedPages}
           stats={selectedStats}
           onClose={() => {
@@ -842,6 +868,7 @@ function SourcesView() {
           }}
           onReindex={handleReindexSource}
           onRemove={handleRemoveSource}
+          onMove={handleMoveSource}
         />
       ) : null}
 
@@ -907,23 +934,48 @@ function SourcesView() {
 function SourceInspector({
   source,
   cluster,
+  clusters,
   pages,
   stats,
   onClose,
   onOpen,
   onReindex,
   onRemove,
+  onMove,
 }: {
   source: Source;
   cluster?: Cluster;
+  clusters: Cluster[];
   pages: SourcePageRecord[];
   stats: SourceStatsRecord | null;
   onClose: () => void;
   onOpen: (source: Source) => Promise<boolean | undefined>;
   onReindex: (source: Source) => Promise<void>;
   onRemove: (source: Source) => Promise<void>;
+  onMove: (source: Source, target: Cluster) => Promise<void>;
 }) {
   const Icon = typeIcon[source.type];
+  const [moveBusy, setMoveBusy] = useState(false);
+  const [moveError, setMoveError] = useState<string | null>(null);
+
+  async function moveToCluster(targetId: string) {
+    if (targetId === source.clusterId) return;
+    const target = clusters.find((item) => item.id === targetId);
+    if (!target) {
+      setMoveError("Choose an available cluster.");
+      return;
+    }
+    setMoveBusy(true);
+    setMoveError(null);
+    try {
+      await onMove(source, target);
+    } catch (error) {
+      setMoveError(error instanceof Error ? error.message : "Could not move this source.");
+    } finally {
+      setMoveBusy(false);
+    }
+  }
+
   return (
     <aside className="source-inspector overflow-y-visible border-t border-border bg-card/35 px-7 py-8 xl:overflow-y-auto xl:border-l xl:border-t-0 xl:px-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -951,6 +1003,18 @@ function SourceInspector({
 
       <div className="mt-8 border-b border-border pb-3 text-sm font-medium">Source details</div>
 
+      {source.ingestionStage === "paused" ? (
+        <section className="mt-6 rounded-md border border-[var(--status-warning)]/35 bg-[var(--status-warning-bg)] p-4">
+          <div className="font-medium text-[var(--status-warning)]">Indexing is paused</div>
+          <p className="mt-1 break-words text-sm leading-6 text-[var(--text-body)]">
+            {source.ingestionStatusDetail || "A required local runtime is unavailable. Vault will resume automatically when it is ready."}
+          </p>
+          <Button className="mt-3" size="sm" onClick={() => void onReindex(source)}>
+            <RefreshCw className="h-4 w-4" /> Check and resume
+          </Button>
+        </section>
+      ) : null}
+
       {source.state === "failed" ? (
         <section className="mt-6 rounded-md border border-[var(--status-error)]/35 bg-[var(--status-error-bg)] p-4">
           <div className="font-medium text-[var(--status-error)]">Indexing did not complete</div>
@@ -976,19 +1040,32 @@ function SourceInspector({
       ) : null}
 
       <section className="mt-6">
-        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Description</div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Description</div>
+          {source.state === "indexed" && source.metadataQuality !== "semantic" ? (
+            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--status-warning)]" aria-hidden="true" />
+              Improving
+            </span>
+          ) : null}
+        </div>
         <p className="mt-4 break-words text-sm leading-6 text-muted-foreground">
           {source.state === "failed"
             ? "No description is available because indexing did not complete."
             : source.summary || source.preview || "Vault has not generated a description for this source yet."}
         </p>
+        {source.state === "indexed" && source.metadataQuality !== "semantic" ? (
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+            This basic description is searchable now. Vault will improve it when the local model is available.
+          </p>
+        ) : null}
       </section>
 
       <section className="mt-7 space-y-4 text-sm">
         <InspectorRow label="Pages" value={stats ? stats.page_count.toLocaleString() : "—"} icon={<FileText className="h-4 w-4" />} />
         <InspectorRow
-          label="OCR status"
-          value={source.state === "processing" ? "In progress" : source.state === "failed" ? "Needs review" : "Completed"}
+          label="Ingestion"
+          value={sourceIngestionStageLabel[source.ingestionStage]}
           icon={<RefreshCw className="h-4 w-4" />}
         />
         <InspectorRow
@@ -1001,6 +1078,41 @@ function SourceInspector({
           value={cluster?.name ?? "Unclustered"}
           icon={<ClusterDot tint={cluster?.tint ?? "sage"} />}
         />
+      </section>
+
+      <section className="mt-8">
+        <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground" htmlFor="source-cluster-target">
+          Move to cluster
+        </label>
+        <Select
+          value={source.clusterId ?? "__unclustered__"}
+          onValueChange={(targetId) => void moveToCluster(targetId)}
+          disabled={moveBusy || clusters.length === 0}
+        >
+          <SelectTrigger id="source-cluster-target" className="mt-3 w-full" aria-label="Move source to cluster">
+            <SelectValue placeholder="Choose a cluster" />
+          </SelectTrigger>
+          <SelectContent>
+            {!source.clusterId ? (
+              <SelectItem value="__unclustered__" disabled>
+                Unclustered
+              </SelectItem>
+            ) : null}
+            {clusters.map((item) => (
+              <SelectItem key={item.id} value={item.id}>
+                {item.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
+          {moveBusy ? "Moving source…" : "Choose a destination to move this source immediately."}
+        </p>
+        {moveError ? (
+          <p className="mt-2 text-sm text-destructive" role="alert">
+            {moveError}
+          </p>
+        ) : null}
       </section>
 
       <section className="mt-8">
@@ -1035,7 +1147,7 @@ function SourceInspector({
             className="w-full justify-start gap-2"
             onClick={() => void onReindex(source)}
           >
-            <RefreshCw className="h-4 w-4" /> {source.state === "failed" ? "Retry indexing" : "Reindex"}
+            <RefreshCw className="h-4 w-4" /> {source.ingestionStage === "paused" ? "Check and resume" : source.state === "failed" ? "Retry indexing" : "Reindex"}
           </Button>
           <ConfirmAction
             title={`Delete “${source.title}”?`}
@@ -1068,17 +1180,20 @@ function InspectorRow({ label, value, icon }: { label: string; value: string; ic
   );
 }
 
-function StateChip({ state }: { state: Source["state"] }) {
+function StateChip({ source }: { source: Source }) {
+  const { state, ingestionStage } = source;
   const color =
-    state === "indexed"
+    ingestionStage === "ready"
       ? "var(--status-ready)"
-      : state === "failed"
+      : ingestionStage === "needs_attention"
         ? "var(--status-issue)"
+        : ingestionStage === "paused"
+          ? "var(--status-warning)"
         : "var(--status-learning)";
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
       <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
-      {sourceStateLabel[state]}
+      {sourceIngestionStageLabel[ingestionStage] ?? sourceStateLabel[state]}
     </span>
   );
 }
@@ -1097,9 +1212,10 @@ function sourceTypeLabel(source: Source) {
 }
 
 function lastIndexed(source: Source) {
-  if (source.state === "failed") return "Needs review";
-  if (source.state === "processing") return "In progress";
-  return formatDate(source.updatedAt);
+  if (source.ingestionStage === "needs_attention") return "Needs review";
+  if (source.ingestionStage === "paused") return "Paused";
+  if (source.ingestionStage !== "ready") return "In progress";
+  return formatDate(source.ingestionUpdatedAt || source.updatedAt);
 }
 
 function formatDate(value: string) {

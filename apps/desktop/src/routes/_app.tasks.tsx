@@ -13,6 +13,7 @@ import {
   listProjectRunSummary,
   pauseJob,
   reindexProject,
+  retrySourceImportFailures,
   resumeJob,
   runJobsOnce,
   type AppJobRecord,
@@ -149,6 +150,17 @@ function TasksView() {
       await load();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not update this task.");
+    }
+  }
+
+  async function retryFailedFiles(jobId: string) {
+    try {
+      const next = await retrySourceImportFailures(jobId);
+      setSelected(next);
+      setMessage("Failed files are queued to retry.");
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not retry these files.");
     }
   }
 
@@ -313,8 +325,9 @@ function TasksView() {
               <Meta label="Attempts" value={`${activeJob.attempts} / ${activeJob.max_attempts}`}/>
               <Meta label="Timeout" value={activeJob.timeout_seconds ? `${activeJob.timeout_seconds}s` : "none"}/>
               <Meta label="Started" value={activeJob.started_at ? formatDate(activeJob.started_at) : "not started"}/>
+              {activeJob.diagnostic_id ? <Meta label="Reference" value={activeJob.diagnostic_id}/> : null}
             </dl>
-            <ImportFailures job={activeJob} />
+            <ImportFailures job={activeJob} onRetry={retryFailedFiles} />
             <div className="mt-5 flex flex-wrap gap-2">
               <Button variant="outline" onClick={() => void load()}>
                 <RefreshCw className="h-4 w-4" />
@@ -350,7 +363,13 @@ function TasksView() {
   );
 }
 
-function ImportFailures({ job }: { job: AppJobRecord }) {
+function ImportFailures({
+  job,
+  onRetry,
+}: {
+  job: AppJobRecord;
+  onRetry: (jobId: string) => Promise<void>;
+}) {
   if (job.job_type !== "source_import_batch" || !job.result_json) return null;
   try {
     const result = JSON.parse(job.result_json) as {
@@ -371,6 +390,10 @@ function ImportFailures({ job }: { job: AppJobRecord }) {
             </li>
           ))}
         </ul>
+        <Button className="mt-3" variant="outline" size="sm" onClick={() => void onRetry(job.id)}>
+          <RefreshCw className="h-4 w-4" />
+          Retry failed files
+        </Button>
       </div>
     );
   } catch {
@@ -399,7 +422,7 @@ function uniqueJobs(rows: AppJobRecord[]) {
 function matchesFilter(job: AppJobRecord, filter: TaskFilter) {
   if (filter === "running") return job.status === "running";
   if (filter === "queued") return ["queued", "paused", "blocked_by_dependency", "blocked_setup_required", "deferred"].includes(job.status);
-  if (filter === "failed") return ["failed", "manual_review"].includes(job.status);
+  if (filter === "failed") return ["failed", "partial_success", "manual_review"].includes(job.status);
   if (filter === "completed") return ["succeeded", "cancelled"].includes(job.status) && job.user_visible !== 0;
   return ["orphan_vector_cleanup", "artifact_cleanup", "vault_integrity_check", "diagnostic_bundle"].includes(job.job_type);
 }
@@ -428,7 +451,7 @@ function jobTitle(type: string) {
 
 function statusIcon(status: string) {
   if (status === "running") return <Clock3 className="h-4 w-4 text-primary" />;
-  if (status === "failed" || status === "manual_review") return <AlertTriangle className="h-4 w-4 text-destructive" />;
+  if (status === "failed" || status === "partial_success" || status === "manual_review") return <AlertTriangle className="h-4 w-4 text-destructive" />;
   if (status === "succeeded") return <CheckCircle2 className="h-4 w-4 text-[var(--status-ready)]" />;
   if (status === "paused" || status === "cancelled") return <Pause className="h-4 w-4 text-muted-foreground" />;
   return <Clock3 className="h-4 w-4 text-muted-foreground" />;

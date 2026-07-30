@@ -15,6 +15,10 @@ const adaptersSource = fs.readFileSync(
   path.join(__dirname, "..", "src", "lib", "recordAdapters.ts"),
   "utf8",
 );
+const clusterDetailSource = fs.readFileSync(
+  path.join(__dirname, "..", "src", "routes", "_app.clusters.$clusterId.tsx"),
+  "utf8",
+);
 
 test("cluster list has restrained search and filter controls", () => {
   assert.match(clustersSource, /aria-label="Search clusters"/);
@@ -35,4 +39,10 @@ test("source previews are cleaned and kept distinct from descriptions", () => {
   assert.match(adaptersSource, /buildRepresentativePreview\(extracted, record\.summary\)/);
   assert.match(adaptersSource, /\.replace\(\/<\[\^>\]\+>\/g, " "\)/);
   assert.match(adaptersSource, /comparisonKey\(sentence\) !== summaryKey/);
+});
+
+test("cluster merges use an accessible reversible confirmation", () => {
+  assert.match(clusterDetailSource, /confirmLabel="Merge cluster"/);
+  assert.match(clusterDetailSource, /You can restore this merge later/);
+  assert.doesNotMatch(clusterDetailSource, /window\.confirm/);
 });

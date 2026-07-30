@@ -28,6 +28,15 @@ export type SourceType =
   | "external_artifact";
 
 export type SourceState = "waiting" | "processing" | "indexed" | "failed";
+export type SourceIngestionStage =
+  | "imported"
+  | "extracting"
+  | "searchable"
+  | "organizing"
+  | "describing"
+  | "ready"
+  | "paused"
+  | "needs_attention";
 
 export interface Source {
   id: string;
@@ -35,11 +44,19 @@ export interface Source {
   type: SourceType;
   clusterId: string | null;
   state: SourceState;
+  ingestionStage: SourceIngestionStage;
+  ingestionGeneration: number;
+  ingestionErrorCode?: string;
+  ingestionStatusDetail: string;
+  ingestionUpdatedAt?: string;
   createdAt: string;
   updatedAt: string;
   preview: string;
   summary: string;
   tags: string[];
+  metadataQuality: "fallback" | "semantic" | string;
+  semanticMetadataVersion: number;
+  semanticMetadataUpdatedAt?: string;
   coverImageUrl?: string;
   vaultPath?: string;
   localPath?: string;
@@ -107,4 +124,15 @@ export const sourceStateLabel: Record<SourceState, string> = {
   processing: "Processing",
   indexed: "Indexed",
   failed: "Needs attention",
+};
+
+export const sourceIngestionStageLabel: Record<SourceIngestionStage, string> = {
+  imported: "Imported",
+  extracting: "Extracting",
+  searchable: "Searchable",
+  organizing: "Organizing",
+  describing: "Describing",
+  ready: "Ready",
+  paused: "Paused",
+  needs_attention: "Needs attention",
 };

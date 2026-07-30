@@ -10,6 +10,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Trash2,
 } from "lucide-react";
 import { type Cluster, type Source } from "@/lib/domain";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ import { PageHeader } from "@/components/layout/WindowAware";
 import { KnowledgeMap } from "@/components/KnowledgeMap";
 import {
   createChatSession,
+  deleteCluster,
   getCluster,
   getMapNeighborhood,
   listClusterMergeArtifacts,
@@ -30,7 +32,6 @@ import {
   updateSource,
   updateCluster,
   type ClusterMergeArtifact,
-  type ClusterRecord,
   type ChatSessionRecord,
   type ProjectRecord,
   type MapGraphResponse,
@@ -46,6 +47,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { notify } from "@/components/product/Notifications";
+import { ConfirmAction } from "@/components/product/Feedback";
 
 export const Route = createFileRoute("/_app/clusters/$clusterId")({
   head: () => ({ meta: [{ title: "Cluster" }] }),
@@ -54,23 +56,9 @@ export const Route = createFileRoute("/_app/clusters/$clusterId")({
 
 const tabs = ["Overview", "Sources", "Chats", "Map", "Memory profile"] as const;
 
-async function listAllVaultClusters(vaultId: string) {
-  const clusters: ClusterRecord[] = [];
-  const seenCursors = new Set<string>();
-  let cursor: string | null = null;
-
-  do {
-    const page = await listClustersPage(vaultId, { limit: 200, cursor });
-    clusters.push(...page.items);
-    if (!page.next_cursor) break;
-    if (seenCursors.has(page.next_cursor)) {
-      throw new Error("Cluster pagination did not advance.");
-    }
-    seenCursors.add(page.next_cursor);
-    cursor = page.next_cursor;
-  } while (cursor);
-
-  return clusters;
+async function listClusterDestinations(vaultId: string, query = "") {
+  const page = await listClustersPage(vaultId, { limit: 50, query });
+  return page.items;
 }
 
 function ClusterDetail() {
@@ -87,6 +75,7 @@ function ClusterDetail() {
   const [manageOpen, setManageOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [mergeTargetId, setMergeTargetId] = useState("");
+  const [mergeDestinationQuery, setMergeDestinationQuery] = useState("");
   const [manageMessage, setManageMessage] = useState<string | null>(null);
   const [manageBusy, setManageBusy] = useState(false);
   const [backendProject, setBackendProject] = useState<ProjectRecord | null>(null);
@@ -97,6 +86,7 @@ function ClusterDetail() {
   const [mapOverview, setMapOverview] = useState<MapGraphResponse | null>(null);
   const [sourceToMove, setSourceToMove] = useState<Source | null>(null);
   const [moveTargetId, setMoveTargetId] = useState("");
+  const [moveDestinationQuery, setMoveDestinationQuery] = useState("");
   const [moveSourceBusy, setMoveSourceBusy] = useState(false);
   const [moveSourceError, setMoveSourceError] = useState<string | null>(null);
 
@@ -124,7 +114,7 @@ function ClusterDetail() {
         const [sourceResult, chatResult, clusterResult, artifactResult, projectResult, mapResult] = await Promise.allSettled([
           listSources(clusterRow.vault_id, { clusterId: clusterRow.id, limit: 1000 }),
           listChatSessions(clusterRow.vault_id),
-          listAllVaultClusters(clusterRow.vault_id),
+          listClusterDestinations(clusterRow.vault_id),
           listClusterMergeArtifacts(clusterRow.id),
           listProjects(clusterRow.vault_id, { clusterId: clusterRow.id, limit: 200 }),
           getMapNeighborhood(clusterRow.vault_id, clusterRow.id),
@@ -166,6 +156,36 @@ function ClusterDetail() {
       cancelled = true;
     };
   }, [clusterId]);
+
+  useEffect(() => {
+    if (!backendVaultId || (!manageOpen && !sourceToMove)) return;
+    let cancelled = false;
+    const query = sourceToMove ? moveDestinationQuery : mergeDestinationQuery;
+    const timer = window.setTimeout(() => {
+      void listClusterDestinations(backendVaultId, query)
+        .then((items) => {
+          if (!cancelled) {
+            setPeerClusters(
+              items.filter((item) => item.id !== clusterId).map(clusterFromRecord),
+            );
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setPeerClusters([]);
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    backendVaultId,
+    clusterId,
+    manageOpen,
+    mergeDestinationQuery,
+    moveDestinationQuery,
+    sourceToMove,
+  ]);
 
   if (loadState === "loading") {
     return (
@@ -228,13 +248,6 @@ function ClusterDetail() {
     if (!mergeTargetId) return;
     const target = peerClusters.find((candidate) => candidate.id === mergeTargetId);
     if (!target) return;
-    const confirmed = window.confirm(
-      `Merge "${clusterNameForActions}" into "${target.name}"? ` +
-        `${clusterSources.length} source${clusterSources.length === 1 ? "" : "s"} and ` +
-        `${clusterChats.length} scoped chat${clusterChats.length === 1 ? "" : "s"} will move. ` +
-        "The original cluster will be archived, and you can undo this merge from the target cluster's Manage panel.",
-    );
-    if (!confirmed) return;
     setManageBusy(true);
     setManageMessage(null);
     try {
@@ -255,6 +268,24 @@ function ClusterDetail() {
     } catch (error) {
       setManageMessage(error instanceof Error ? error.message : "Could not restore the merged cluster.");
       setManageBusy(false);
+    }
+  }
+
+  async function deleteCurrentCluster() {
+    setManageBusy(true);
+    setManageMessage(null);
+    try {
+      await deleteCluster(clusterIdForActions);
+      notify({
+        title: "Cluster deleted",
+        description: `${clusterNameForActions} was deleted. Its sources are now unclustered.`,
+        tone: "success",
+      });
+      setManageOpen(false);
+      navigate({ to: "/clusters" });
+    } catch (error) {
+      setManageBusy(false);
+      throw error;
     }
   }
 
@@ -279,6 +310,7 @@ function ClusterDetail() {
   function openMoveSource(source: Source) {
     setSourceToMove(source);
     setMoveTargetId("");
+    setMoveDestinationQuery("");
     setMoveSourceError(null);
   }
 
@@ -305,6 +337,7 @@ function ClusterDetail() {
       );
       setSourceToMove(null);
       setMoveTargetId("");
+      setMoveDestinationQuery("");
       notify({
         title: "Source moved",
         description: `${sourceToMove.title} is now in ${target.name}.`,
@@ -464,7 +497,16 @@ function ClusterDetail() {
         )}
       </main>
 
-      <Dialog open={manageOpen} onOpenChange={setManageOpen}>
+      <Dialog
+        open={manageOpen}
+        onOpenChange={(open) => {
+          setManageOpen(open);
+          if (!open) {
+            setMergeDestinationQuery("");
+            setMergeTargetId("");
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Manage cluster</DialogTitle>
@@ -484,6 +526,13 @@ function ClusterDetail() {
             </div>
             <div>
               <label className="text-sm font-medium" htmlFor="merge-target">Merge into</label>
+              <Input
+                className="mt-2"
+                value={mergeDestinationQuery}
+                onChange={(event) => setMergeDestinationQuery(event.target.value)}
+                placeholder="Search clusters"
+                aria-label="Search merge destinations"
+              />
               <select
                 id="merge-target"
                 className="mt-2 h-9 w-full rounded-md border border-input bg-card px-3 text-sm"
@@ -496,9 +545,21 @@ function ClusterDetail() {
               <p className="mt-2 text-xs leading-5 text-muted-foreground">
                 Sources and scoped chats move to the target. CML keeps a reversible merge record.
               </p>
-              <Button className="mt-3" disabled={manageBusy || !mergeTargetId} onClick={() => void mergeCluster()}>
-                Merge cluster
-              </Button>
+              <ConfirmAction
+                title={`Merge ${clusterNameForActions}?`}
+                description={
+                  mergeTargetId
+                    ? `${clusterSources.length} source${clusterSources.length === 1 ? "" : "s"} and ${clusterChats.length} chat${clusterChats.length === 1 ? "" : "s"} will move to ${peerClusters.find((item) => item.id === mergeTargetId)?.name ?? "the selected cluster"}. You can restore this merge later.`
+                    : "Choose a destination cluster first."
+                }
+                confirmLabel="Merge cluster"
+                onConfirm={mergeCluster}
+                disabled={manageBusy || !mergeTargetId}
+              >
+                <Button className="mt-3" disabled={manageBusy || !mergeTargetId}>
+                  Merge cluster
+                </Button>
+              </ConfirmAction>
             </div>
             {mergeArtifacts.some((item) => item.reversible && !item.rolled_back_at) && (
               <div>
@@ -515,6 +576,27 @@ function ClusterDetail() {
                 </div>
               </div>
             )}
+            <div className="border-t border-border pt-5">
+              <div className="text-sm font-medium text-destructive">Delete cluster</div>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                Sources remain in Vault and move to Unclustered. Scoped chats become unscoped.
+              </p>
+              <ConfirmAction
+                title={`Delete ${clusterNameForActions}?`}
+                description={`This permanently deletes the cluster. Its ${clusterSources.length} source${clusterSources.length === 1 ? "" : "s"} will remain available under Unclustered.`}
+                confirmLabel="Delete cluster"
+                onConfirm={deleteCurrentCluster}
+                disabled={manageBusy}
+              >
+                <Button
+                  variant="outline"
+                  className="mt-3 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  disabled={manageBusy}
+                >
+                  <Trash2 className="h-4 w-4" /> Delete cluster
+                </Button>
+              </ConfirmAction>
+            </div>
             {manageMessage && <p className="text-sm text-muted-foreground">{manageMessage}</p>}
           </div>
           <DialogFooter>
@@ -529,6 +611,7 @@ function ClusterDetail() {
           if (!open && !moveSourceBusy) {
             setSourceToMove(null);
             setMoveTargetId("");
+            setMoveDestinationQuery("");
             setMoveSourceError(null);
           }
         }}
@@ -545,6 +628,14 @@ function ClusterDetail() {
             <label className="text-sm font-medium" htmlFor="move-source-target">
               Destination cluster
             </label>
+            <Input
+              className="mt-2"
+              value={moveDestinationQuery}
+              onChange={(event) => setMoveDestinationQuery(event.target.value)}
+              placeholder="Search clusters"
+              aria-label="Search move destinations"
+              disabled={moveSourceBusy}
+            />
             <select
               id="move-source-target"
               className="mt-2 h-9 w-full rounded-md border border-input bg-card px-3 text-sm"
@@ -571,7 +662,12 @@ function ClusterDetail() {
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setSourceToMove(null)}
+              onClick={() => {
+                setSourceToMove(null);
+                setMoveTargetId("");
+                setMoveDestinationQuery("");
+                setMoveSourceError(null);
+              }}
               disabled={moveSourceBusy}
             >
               Cancel

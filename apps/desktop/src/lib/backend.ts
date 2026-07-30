@@ -497,6 +497,10 @@ export type ProjectRecord = {
   indexed_commit: string | null;
   working_tree_dirty: boolean;
   changed_file_count: number;
+  auto_sync_enabled: boolean;
+  sync_mode: "automatic" | "notify" | "manual";
+  change_fingerprint: string;
+  last_change_checked_at: string | null;
   status: string;
   structure_status: string;
   retrieval_status: string;
@@ -627,6 +631,8 @@ export type AppJobRecord = {
   attempts: number;
   max_attempts: number;
   last_error: string;
+  error_code?: string;
+  diagnostic_id?: string;
   created_at: string;
   updated_at: string;
 };
@@ -640,6 +646,7 @@ export type JobQueueStatus = {
   deferred: number;
   running: number;
   succeeded: number;
+  partial_success: number;
   failed: number;
   cancelled: number;
   manual_review: number;
@@ -647,9 +654,15 @@ export type JobQueueStatus = {
   latest: AppJobRecord[];
 };
 
+export type AppProfileRecord = {
+  display_name: string;
+  updated_at: string | null;
+};
+
 export type SourceImportFailure = {
   file_name: string;
   reason: string;
+  path_index?: number;
 };
 
 export type SourceImportProgress = {
@@ -715,12 +728,28 @@ export type SourceRecord = {
   title: string;
   source_type: string;
   state: string;
+  ingestion_stage:
+    | "imported"
+    | "extracting"
+    | "searchable"
+    | "organizing"
+    | "describing"
+    | "ready"
+    | "paused"
+    | "needs_attention";
+  ingestion_generation: number;
+  ingestion_error_code: string | null;
+  ingestion_status_detail: string;
+  ingestion_updated_at: string | null;
   original_path: string | null;
   url: string | null;
   raw_text: string;
   extracted_text: string;
   summary: string;
   tags: string[];
+  metadata_quality?: "fallback" | "semantic" | string;
+  semantic_metadata_version?: number;
+  semantic_metadata_updated_at?: string | null;
   cover_image_url: string | null;
   created_at: string;
   updated_at: string;
@@ -865,6 +894,7 @@ export type ChatSessionRecord = {
   title: string;
   scope_cluster_id: string | null;
   scope_project_id: string | null;
+  scope_unclustered: boolean;
   saved: boolean;
   memory_status: string;
   memory_updated_at: string | null;
@@ -1601,12 +1631,13 @@ export async function listClusters(vaultId?: string, options: { limit?: number; 
 
 export async function listClustersPage(
   vaultId?: string,
-  options: { limit?: number; cursor?: string | null } = {},
+  options: { limit?: number; cursor?: string | null; query?: string } = {},
 ) {
   const params = new URLSearchParams();
   if (vaultId) params.set("vault_id", vaultId);
   if (options.limit !== undefined) params.set("limit", String(options.limit));
   if (options.cursor) params.set("cursor", options.cursor);
+  if (options.query?.trim()) params.set("q", options.query.trim());
   const query = params.size ? `?${params.toString()}` : "";
   return request<CursorPage<ClusterRecord>>(`/api/v1/clusters/page${query}`);
 }
@@ -1806,6 +1837,67 @@ export async function listCliClients() {
   return request<CliClientRecord[]>("/api/v1/cli-auth/clients");
 }
 
+export type ProjectChangeItem = {
+  kind: "added" | "modified" | "deleted" | "renamed" | "copied";
+  path: string;
+  previous_path: string | null;
+};
+
+export type ProjectChangesRecord = {
+  project_id: string;
+  changed: boolean;
+  change_fingerprint: string;
+  previous_fingerprint: string;
+  fingerprint_changed: boolean;
+  detection_mode: string;
+  changed_paths: string[];
+  change_items: ProjectChangeItem[];
+  changed_path_count: number;
+  truncated: boolean;
+  requires_full_scan: boolean;
+  repository_detection_mode: string;
+  repository_changed_paths: string[];
+  repository_change_items: ProjectChangeItem[];
+  repository_changed_path_count: number;
+  repository_truncated: boolean;
+  working_tree_dirty: boolean;
+  last_checked_at: string | null;
+  auto_sync_enabled: boolean;
+  sync_mode: "automatic" | "notify" | "manual";
+};
+
+export async function getProjectChanges(id: string, maxPaths = 500) {
+  return request<ProjectChangesRecord>(
+    `/api/v1/projects/${encodeURIComponent(id)}/changes?max_paths=${maxPaths}`,
+  );
+}
+
+export async function synchronizeProjectChanges(id: string) {
+  return request<{
+    project_id: string;
+    changed: boolean;
+    sync_queued: boolean;
+    job_id: string | null;
+    changed_paths: string[];
+    change_items: ProjectChangeItem[];
+    sync_kind: string | null;
+    next_action: string;
+  }>(`/api/v1/projects/${encodeURIComponent(id)}/sync-changes`, { method: "POST" });
+}
+
+export async function synchronizeProjectPaths(id: string, paths: string[]) {
+  return request<{
+    project: ProjectRecord;
+    run: ProjectIndexRunRecord;
+    freshness_token: string;
+    targeted_paths: string[];
+    next_action: string;
+  }>(`/api/v1/projects/${encodeURIComponent(id)}/sync-targeted`, {
+    method: "POST",
+    body: JSON.stringify({ paths }),
+  });
+}
+
 export async function listCliClientsPage(
   state: "active" | "history",
   options: { limit?: number; cursor?: string | null } = {},
@@ -1867,7 +1959,13 @@ export async function cancelProjectRun(id: string) {
 
 export async function updateProject(
   id: string,
-  payload: { name?: string; root_path?: string; discovery_scope?: "context" | "code" },
+  payload: {
+    name?: string;
+    root_path?: string;
+    discovery_scope?: "context" | "code";
+    auto_sync_enabled?: boolean;
+    sync_mode?: "automatic" | "notify" | "manual";
+  },
 ) {
   return request<ProjectRecord>(`/api/v1/projects/${encodeURIComponent(id)}`, {
     method: "PATCH",
@@ -2087,6 +2185,7 @@ export async function createProject(payload: {
   root_path: string;
   name?: string | null;
   discovery_scope?: "context" | "code";
+  sync_mode?: "automatic" | "notify" | "manual";
   sync?: boolean;
 }) {
   return request<ProjectRecord>("/api/v1/projects", {
@@ -2146,6 +2245,13 @@ export async function resumeSourceImportJob(jobId: string) {
 export async function stopSourceImportJob(jobId: string) {
   return request<AppJobRecord>(
     `/api/v1/sources/import-jobs/${encodeURIComponent(jobId)}/stop`,
+    { method: "POST" },
+  );
+}
+
+export async function retrySourceImportFailures(jobId: string) {
+  return request<AppJobRecord>(
+    `/api/v1/sources/import-jobs/${encodeURIComponent(jobId)}/retry-failures`,
     { method: "POST" },
   );
 }
@@ -2256,10 +2362,22 @@ export type SourceFolderRecord = {
   updated_at: string;
 };
 
-export async function listSourceFolders(vaultId: string, query?: string) {
+export async function listSourceFolders(
+  vaultId: string,
+  query?: string,
+  options: { limit?: number; offset?: number } = {},
+) {
   const params = new URLSearchParams({ vault_id: vaultId });
   if (query?.trim()) params.set("q", query.trim());
-  return request<{ items: SourceFolderRecord[] }>(
+  params.set("limit", String(options.limit ?? 100));
+  if (options.offset) params.set("offset", String(options.offset));
+  return request<{
+    items: SourceFolderRecord[];
+    total: number;
+    limit: number;
+    offset: number;
+    has_more: boolean;
+  }>(
     `/api/v1/sources/folders?${params.toString()}`,
   );
 }
@@ -2305,6 +2423,7 @@ export async function semanticSearch(payload: {
   vault_id: string;
   query: string;
   cluster_id?: string | null;
+  unclustered_only?: boolean;
   limit?: number;
 }) {
   return request<SemanticSearchResponse>("/api/v1/search/semantic", {
@@ -2343,12 +2462,15 @@ export async function buildChatContext(payload: {
   vault_id: string;
   prompt: string;
   cluster_id?: string | null;
+  unclustered_only?: boolean;
   session_id?: string | null;
   persist?: boolean;
   limit?: number;
   attachments?: Array<{ path: string; cluster_id?: string | null }>;
   expanded_analysis?: boolean;
   complete_analysis?: boolean;
+  request_id?: string;
+  retry_generation_id?: string | null;
 }) {
   return request<ChatContextResponse>("/api/v1/chat/context", {
     method: "POST",
@@ -2368,12 +2490,15 @@ export async function streamChatContext(
     vault_id: string;
     prompt: string;
     cluster_id?: string | null;
+    unclustered_only?: boolean;
     session_id?: string | null;
     persist?: boolean;
     limit?: number;
     attachments?: Array<{ path: string; cluster_id?: string | null }>;
     expanded_analysis?: boolean;
     complete_analysis?: boolean;
+    request_id?: string;
+    retry_generation_id?: string | null;
   },
   handlers: {
     onMeta?: (
@@ -2397,7 +2522,7 @@ export async function streamChatContext(
   const token = await getBackendToken();
   const headers = new Headers({ "Content-Type": "application/json" });
   if (token) headers.set("x-cml-api-token", token);
-  const response = await fetch(`${backendUrl}${apiPath("/api/v1/chat/context/stream")}`, {
+  const response = await fetch(`${backendUrl}${apiPath("/api/v1/chat/context/durable-stream")}`, {
     method: "POST",
     headers,
     body: JSON.stringify(payload),
@@ -2536,6 +2661,7 @@ export async function createChatSession(payload: {
   title?: string | null;
   scope_cluster_id?: string | null;
   scope_project_id?: string | null;
+  scope_unclustered?: boolean;
 }) {
   return request<ChatSessionRecord>("/api/v1/chat/sessions", {
     method: "POST",
@@ -2604,7 +2730,12 @@ export async function listRecentChatGenerations(vaultId: string, limit = 30) {
 
 export async function updateChatSession(
   id: string,
-  payload: Partial<Pick<ChatSessionRecord, "title" | "scope_cluster_id" | "scope_project_id" | "saved">>,
+  payload: Partial<
+    Pick<
+      ChatSessionRecord,
+      "title" | "scope_cluster_id" | "scope_project_id" | "scope_unclustered" | "saved"
+    >
+  >,
 ) {
   return request<ChatSessionRecord>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`, {
     method: "PATCH",
@@ -2766,6 +2897,7 @@ export async function discoverInstalledModels(payload?: {
   max_results?: number;
   include_rejected?: boolean;
   refresh?: boolean;
+  scan_all_drives?: boolean;
 }, onProgress?: ModelJobProgressCallback) {
   if (payload?.refresh) {
     const queued = await request<AppJobRecord>("/api/v1/models/discover/jobs", {
@@ -2773,6 +2905,7 @@ export async function discoverInstalledModels(payload?: {
       body: JSON.stringify({
         max_results: payload.max_results ?? 32,
         include_rejected: Boolean(payload.include_rejected),
+        scan_all_drives: Boolean(payload.scan_all_drives),
         idempotency_key: crypto.randomUUID(),
       }),
     });
@@ -3167,6 +3300,52 @@ type BackendRequestInit = RequestInit & {
   timeoutMs?: number;
 };
 
+export class VaultRequestError extends Error {
+  readonly code: string;
+  readonly status: number;
+  readonly action: string;
+  readonly diagnosticId: string;
+  readonly retryable: boolean;
+  readonly fieldIssues: Array<{ field: string; message: string }>;
+
+  constructor(input: {
+    message: string;
+    code?: string;
+    status: number;
+    action?: string;
+    diagnosticId?: string;
+    retryable?: boolean;
+    fieldIssues?: Array<{ field: string; message: string }>;
+  }) {
+    super(input.message);
+    this.name = "VaultRequestError";
+    this.code = input.code || "request_failed";
+    this.status = input.status;
+    this.action = input.action || "";
+    this.diagnosticId = input.diagnosticId || "";
+    this.retryable = Boolean(input.retryable);
+    this.fieldIssues = input.fieldIssues || [];
+  }
+}
+
+export async function rotateExtensionClient(clientId: string) {
+  return request<ExtensionClientCreateResponse>(
+    `/api/v1/extension/clients/${encodeURIComponent(clientId)}/rotate`,
+    { method: "POST" },
+  );
+}
+
+export async function getAppProfile() {
+  return request<AppProfileRecord>("/api/v1/system/profile");
+}
+
+export async function updateAppProfile(displayName: string) {
+  return request<AppProfileRecord>("/api/v1/system/profile", {
+    method: "PUT",
+    body: JSON.stringify({ display_name: displayName }),
+  });
+}
+
 async function request<T>(path: string, init?: BackendRequestInit): Promise<T> {
   const backendUrl = await getBackendUrl();
   const token = await getBackendToken();
@@ -3199,6 +3378,9 @@ async function request<T>(path: string, init?: BackendRequestInit): Promise<T> {
     let detail = "";
     let errorCode = "";
     let diagnosticId = "";
+    let action = "";
+    let retryable = false;
+    let fieldIssues: Array<{ field: string; message: string }> = [];
     try {
       const body = await response.json();
       if (body?.error && typeof body.error === "object") {
@@ -3206,13 +3388,34 @@ async function request<T>(path: string, init?: BackendRequestInit): Promise<T> {
         errorCode = typeof body.error.code === "string" ? body.error.code : "";
         diagnosticId =
           typeof body.error.diagnostic_id === "string" ? body.error.diagnostic_id : "";
+        action = typeof body.error.action === "string" ? body.error.action : "";
+        retryable = Boolean(body.error.retryable);
+        fieldIssues = Array.isArray(body.error.field_issues)
+          ? body.error.field_issues.filter(
+              (item: unknown): item is { field: string; message: string } =>
+                Boolean(
+                  item
+                  && typeof item === "object"
+                  && typeof (item as { field?: unknown }).field === "string"
+                  && typeof (item as { message?: unknown }).message === "string",
+                ),
+            )
+          : [];
       }
       if (!detail) detail = typeof body.detail === "string" ? body.detail : "";
     } catch {
       detail = await response.text().catch(() => "");
     }
     const message = userFacingError(detail || errorCode, response.status);
-    throw new Error(diagnosticId ? `${message} Reference ${diagnosticId}.` : message);
+    throw new VaultRequestError({
+      message,
+      code: errorCode,
+      status: response.status,
+      action,
+      diagnosticId,
+      retryable,
+      fieldIssues,
+    });
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -3250,10 +3453,11 @@ export function userFacingError(detail: string, status?: number) {
   if (/failed to fetch|networkerror|load failed/i.test(text)) {
     return "Vault's local service is unavailable. Open Health to reconnect.";
   }
-  return text
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase())
-    .replace(/\.$/, "") + ".";
+  if (/^[a-z][a-z0-9_:-]*$/i.test(text) && /[_:-]/.test(text)) {
+    const words = text.replaceAll("_", " ").replaceAll(":", " ").replaceAll("-", " ");
+    return `${words.charAt(0).toUpperCase()}${words.slice(1)}.`;
+  }
+  return /[.!?]$/.test(text) ? text : `${text}.`;
 }
 
 function apiPath(path: string) {
