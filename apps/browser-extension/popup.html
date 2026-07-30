@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CML Capture</title>
+    <title>Vault Capture</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <main class="shell">
       <header class="header">
-        <div class="eyebrow">CML Extension</div>
-        <h1>Save To CML</h1>
-        <p>Import setup once from the desktop app, then capture links and screenshots without re-entering config.</p>
+        <div class="eyebrow">Vault extension</div>
+        <h1>Save to Vault</h1>
+        <p>Choose what to save from the active page.</p>
       </header>
 
       <section class="card">
@@ -26,13 +26,18 @@
       </section>
 
       <section class="card">
-        <div class="summary" id="setupSummary">Import setup from the CML desktop app to enable capture.</div>
+        <div class="summary" id="setupSummary">Import setup from Vault to enable capture.</div>
       </section>
 
       <section class="card">
+        <div class="capture-preview" id="capturePreview">Checking the active page…</div>
         <div class="stack">
-          <button id="capturePage" class="button button-primary">Save Link To Vault</button>
-          <button id="captureScreenshot" class="button">Take &amp; Save Screenshot</button>
+          <button id="capturePage" class="button button-primary">Save page</button>
+          <button id="captureSelection" class="button">Save selection</button>
+          <button id="capturePdfLink" class="button" hidden>Save PDF link</button>
+          <button id="captureScreenshot" class="button">Save screenshot</button>
+          <label class="button file-button" for="captureFile">Save a file</label>
+          <input id="captureFile" type="file" hidden />
         </div>
       </section>
 

@@ -5,6 +5,9 @@ export function createPopupController(deps) {
     async loadConfig() {
       return deps.getStoredConfig();
     },
+    async getCapturePreview() {
+      return deps.getCapturePreview();
+    },
     async importSetup(rawSetupJson) {
       const parsed = parseSetupJson(rawSetupJson);
       const config = {
@@ -39,7 +42,7 @@ export function createPopupController(deps) {
         optionalActions: Array.isArray(current.optionalActions) ? current.optionalActions : [],
       };
       if (!config.token) {
-        throw new Error("Import setup from the CML desktop app before capturing.");
+        throw new Error("Import setup from Vault before capturing.");
       }
       await deps.saveConfig(config);
       return config;
@@ -92,6 +95,26 @@ export function createChromePopupDeps(chromeApi, fetchImpl) {
     },
     async saveConfig(config) {
       await chromeApi.storage.local.set(config);
+    },
+    async getCapturePreview() {
+      const tabs = await chromeApi.tabs.query({ active: true, currentWindow: true });
+      const tab = tabs[0];
+      if (!tab?.id || !/^https?:|^file:/i.test(String(tab.url || ""))) {
+        throw new Error("Open a page to save.");
+      }
+      let origin = "Local file";
+      try {
+        const parsed = new URL(tab.url);
+        origin = parsed.protocol === "file:" ? "Local file" : parsed.origin;
+      } catch {
+        // Keep the local fallback.
+      }
+      return {
+        tabId: tab.id,
+        title: String(tab.title || "").trim(),
+        origin,
+        pdf: /\.pdf(?:$|[?#])/i.test(String(tab.url || "")),
+      };
     },
     async checkStatus(config) {
       const response = await fetchImpl(`${config.backendUrl}${apiPath(config, "/extension/status")}`, {
@@ -153,6 +176,9 @@ async function readBrowserFile(file) {
   const name = String(file?.name || "").trim();
   if (!name) {
     throw new Error("Choose a file before saving.");
+  }
+  if (Number(file?.size || 0) > 20 * 1024 * 1024) {
+    throw new Error("Choose a file smaller than 20 MB.");
   }
   const buffer = await file.arrayBuffer();
   if (!buffer || buffer.byteLength === 0) {

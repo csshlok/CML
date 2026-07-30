@@ -1,8 +1,6 @@
 let selectionTimer = null;
 let lastSelection = { title: "", text: "", url: "" };
 
-document.documentElement?.setAttribute("data-cml-capture-ready", "1");
-
 function flushSelectionSnapshot() {
   const text = String(window.getSelection()?.toString() || "").trim();
   if (!text) return;
@@ -12,16 +10,6 @@ function flushSelectionSnapshot() {
     text,
     url: location.href,
   };
-  document.documentElement?.setAttribute("data-cml-last-selection-length", String(text.length));
-  document.documentElement?.setAttribute("data-cml-last-selection-title", lastSelection.title);
-  document.documentElement?.setAttribute("data-cml-last-selection-text", lastSelection.text);
-  document.documentElement?.setAttribute("data-cml-last-selection-url", lastSelection.url);
-  void chrome.runtime.sendMessage({
-    type: "cml:selection-cache",
-    selection: lastSelection,
-  }).catch(() => {
-    // Ignore cache update failures; live selection capture may still work.
-  });
 }
 
 function scheduleSelectionSnapshot() {
@@ -46,7 +34,12 @@ document.addEventListener("keyup", () => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (!message || message.type !== "cml:get-selection") {
+  if (
+    !message ||
+    message.type !== "cml:get-selection" ||
+    typeof message.nonce !== "string" ||
+    message.nonce.length < 16
+  ) {
     return false;
   }
   const currentText = String(window.getSelection()?.toString() || "").trim();
@@ -58,6 +51,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       url: location.href,
     };
   }
-  sendResponse(lastSelection);
+  sendResponse({ ...lastSelection, nonce: message.nonce });
+  if (message.consume) {
+    lastSelection = { title: "", text: "", url: "" };
+  }
   return false;
 });

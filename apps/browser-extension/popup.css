@@ -97,6 +97,25 @@ textarea {
   gap: 8px;
 }
 
+.capture-preview {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.capture-preview span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.file-button {
+  display: block;
+  text-align: center;
+}
+
 .button {
   padding: 10px 12px;
   background: #f4ede4;

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "CML Capture",
+  "name": "Vault Capture",
   "version": "0.1.0",
-  "description": "Save page text, selections, files, PDF links, and screenshots into a local CML vault.",
+  "description": "Save pages, selections, files, PDF links, and screenshots into your local Vault library.",
   "permissions": ["activeTab", "storage", "scripting", "tabs"],
   "host_permissions": [
     "http://127.0.0.1/*",
@@ -20,7 +20,7 @@
     }
   ],
   "action": {
-    "default_title": "Save to CML",
+    "default_title": "Save to Vault",
     "default_popup": "popup.html"
   },
   "commands": {
@@ -28,13 +28,13 @@
       "suggested_key": {
         "default": "Ctrl+Shift+Y"
       },
-      "description": "Open the CML Capture popup"
+      "description": "Open the Vault Capture popup"
     },
     "capture_screenshot": {
       "suggested_key": {
         "default": "Ctrl+Shift+U"
       },
-      "description": "Save a screenshot to CML"
+      "description": "Save a screenshot to Vault"
     }
   },
   "icons": {

@@ -8,6 +8,12 @@ export function normalizeBackendUrl(value) {
   if (!/^https?:$/.test(parsed.protocol)) {
     throw new Error("Backend URL must use http or https.");
   }
+  if (parsed.username || parsed.password) {
+    throw new Error("Backend URL must not include credentials.");
+  }
+  if (parsed.protocol === "http:" && !isLoopbackHostname(parsed.hostname)) {
+    throw new Error("Plain HTTP is allowed only for a local Vault service.");
+  }
   parsed.pathname = "";
   parsed.search = "";
   parsed.hash = "";
@@ -45,6 +51,13 @@ export function parseSetupJson(rawText) {
     primaryActions: Array.isArray(parsed.primary_actions) ? parsed.primary_actions.map((item) => String(item)) : [],
     optionalActions: Array.isArray(parsed.optional_actions) ? parsed.optional_actions.map((item) => String(item)) : [],
   };
+}
+
+function isLoopbackHostname(hostname) {
+  const normalized = String(hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
+  if (normalized === "localhost" || normalized === "::1") return true;
+  const match = /^(\d{1,3})(?:\.\d{1,3}){3}$/.exec(normalized);
+  return Boolean(match && Number(match[1]) === 127);
 }
 
 export function normalizeApiPrefix(value) {

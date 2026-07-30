@@ -91,3 +91,19 @@ test("trimPageText keeps readable content and marks truncation when needed", asy
   assert.match(trimmed, /\[Truncated by extension before upload\]/);
   assert.ok(trimmed.length > 20);
 });
+
+test("backend URLs require HTTPS unless they resolve to loopback", async () => {
+  const mod = await import("../extension-core.js");
+
+  assert.equal(mod.normalizeBackendUrl("http://127.42.0.1:7343"), "http://127.42.0.1:7343");
+  assert.equal(mod.normalizeBackendUrl("http://[::1]:7343"), "http://[::1]:7343");
+  assert.equal(mod.normalizeBackendUrl("https://vault.example.com/api"), "https://vault.example.com");
+  assert.throws(
+    () => mod.normalizeBackendUrl("http://192.168.1.20:7343"),
+    /Plain HTTP is allowed only/,
+  );
+  assert.throws(
+    () => mod.normalizeBackendUrl("http://token@localhost:7343"),
+    /must not include credentials/,
+  );
+});

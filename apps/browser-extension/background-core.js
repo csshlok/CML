@@ -19,7 +19,8 @@ export function createBackgroundController(deps) {
         throw new Error("No capture-ready browser tab is available.");
       }
       if (message.captureMode === "selection") {
-        const selection = await deps.readSelectionFromTab(tab.id);
+        const selection = await deps.readSelectionFromTab(tab.id, tab.url || "");
+        await verifyTab(deps, tab);
         const payload = buildExtensionCaptureRequest({
           vaultId: config.vaultId,
           clusterId: config.clusterId,
@@ -34,6 +35,7 @@ export function createBackgroundController(deps) {
         if (!isPdfLikeUrl(tab.url || "")) {
           throw new Error("The current tab does not look like a PDF URL.");
         }
+        await verifyTab(deps, tab);
         const payload = buildExtensionCaptureRequest({
           vaultId: config.vaultId,
           clusterId: config.clusterId,
@@ -46,7 +48,9 @@ export function createBackgroundController(deps) {
       }
       if (message.captureMode === "screenshot") {
         await deps.focusTab(tab.id);
+        await verifyTab(deps, tab);
         const imageDataUrl = await deps.captureVisibleTab(tab.windowId);
+        await verifyTab(deps, tab);
         const imagePayload = parseDataUrl(imageDataUrl);
         const payload = buildExtensionUploadRequest({
           vaultId: config.vaultId,
@@ -61,6 +65,7 @@ export function createBackgroundController(deps) {
         return deps.postUploadCapture(config, payload);
       }
       const page = await deps.readPageFromTab(tab.id);
+      await verifyTab(deps, tab);
       const payload = buildExtensionCaptureRequest({
         vaultId: config.vaultId,
         clusterId: config.clusterId,
@@ -94,35 +99,21 @@ export function createChromeBackgroundDeps(chromeApi, fetchImpl) {
       };
     },
     async getCaptureTab() {
-      const tabs = await chromeApi.tabs.query({ lastFocusedWindow: true });
-      const candidates = tabs
-        .filter((tab) => isCaptureCandidateTab(tab))
-        .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0));
-      return candidates[0] || null;
+      const tabs = await chromeApi.tabs.query({ active: true, currentWindow: true });
+      return tabs.find((tab) => isCaptureCandidateTab(tab)) || null;
     },
     async focusTab(tabId) {
       await chromeApi.tabs.update(tabId, { active: true });
     },
-    async cacheSelection(tabId, selection) {
-      if (!tabId) return;
-      await chromeApi.storage.session.set({
-        [`selection:${tabId}`]: {
-          title: String(selection?.title || "").trim(),
-          text: String(selection?.text || "").trim(),
-          url: String(selection?.url || "").trim(),
-          updatedAt: Date.now(),
-        },
-      });
-    },
-    async getCachedSelection(tabId) {
-      if (!tabId) return { title: "", text: "", url: "" };
-      const stored = await chromeApi.storage.session.get([`selection:${tabId}`]);
-      const cached = stored[`selection:${tabId}`] || {};
-      return {
-        title: String(cached.title || "").trim(),
-        text: String(cached.text || "").trim(),
-        url: String(cached.url || "").trim(),
-      };
+    async assertTabUnchanged(tab) {
+      const current = await chromeApi.tabs.get(tab.id);
+      if (
+        !current ||
+        current.id !== tab.id ||
+        String(current.url || "") !== String(tab.url || "")
+      ) {
+        throw new Error("The page changed before capture finished. Try again.");
+      }
     },
     async postCapture(config, payload) {
       return postJsonCapture(config, payload, fetchImpl, "capture");
@@ -135,10 +126,19 @@ export function createChromeBackgroundDeps(chromeApi, fetchImpl) {
         format: "png",
       });
     },
-    async readSelectionFromTab(tabId) {
+    async readSelectionFromTab(tabId, expectedUrl) {
+      const nonce = createCaptureNonce();
       try {
-        const fromContent = await chromeApi.tabs.sendMessage(tabId, { type: "cml:get-selection" });
-        if (String(fromContent?.text || "").trim()) {
+        const fromContent = await chromeApi.tabs.sendMessage(tabId, {
+          type: "cml:get-selection",
+          nonce,
+          consume: true,
+        });
+        if (
+          fromContent?.nonce === nonce &&
+          (!expectedUrl || String(fromContent?.url || "") === String(expectedUrl)) &&
+          String(fromContent?.text || "").trim()
+        ) {
           return {
             title: String(fromContent.title || "").trim(),
             text: String(fromContent.text || "").trim(),
@@ -146,31 +146,29 @@ export function createChromeBackgroundDeps(chromeApi, fetchImpl) {
           };
         }
       } catch {
-        // Fall back to direct script execution when the content script is unavailable.
+        // Fall back to a one-time isolated-world read when the content script is unavailable.
       }
       const [{ result }] = await chromeApi.scripting.executeScript({
         target: { tabId },
         func: () => {
           const selection = window.getSelection()?.toString().trim() || "";
-          const root = document.documentElement;
-          const cachedText = root?.getAttribute("data-cml-last-selection-text") || "";
-          const cachedTitle = root?.getAttribute("data-cml-last-selection-title") || "";
-          const cachedUrl = root?.getAttribute("data-cml-last-selection-url") || location.href;
-          const title = selection
-            ? `Selection from ${document.title || location.hostname || "page"}`
-            : "";
           return {
-            title: title || cachedTitle,
-            text: selection || cachedText,
-            url: location.href || cachedUrl,
+            title: selection
+              ? `Selection from ${document.title || location.hostname || "page"}`
+              : "",
+            text: selection,
+            url: location.href,
           };
         },
       });
       const live = result || { title: "", text: "", url: "" };
-      if (String(live.text || "").trim()) {
+      if (
+        (!expectedUrl || String(live.url || "") === String(expectedUrl)) &&
+        String(live.text || "").trim()
+      ) {
         return live;
       }
-      return this.getCachedSelection(tabId);
+      return { title: "", text: "", url: String(expectedUrl || "") };
     },
     async readPageFromTab(tabId) {
       const [{ result }] = await chromeApi.scripting.executeScript({
@@ -186,6 +184,18 @@ export function createChromeBackgroundDeps(chromeApi, fetchImpl) {
       return result || { title: "", text: "" };
     },
   };
+}
+
+function createCaptureNonce() {
+  const values = new Uint32Array(4);
+  globalThis.crypto.getRandomValues(values);
+  return Array.from(values, (value) => value.toString(16).padStart(8, "0")).join("");
+}
+
+async function verifyTab(deps, tab) {
+  if (typeof deps.assertTabUnchanged === "function") {
+    await deps.assertTabUnchanged(tab);
+  }
 }
 
 function postJsonCapture(config, payload, fetchImpl, endpoint) {

@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 test("background controller posts selected text capture with chosen vault scope", async () => {
   const mod = await import("../background-core.js");
@@ -107,18 +109,26 @@ test("background controller uploads visible screenshots through the binary captu
   assert.match(postedUpload.file_name, /^cml-screenshot-/);
 });
 
-test("chrome background deps prefer the most recently used non-extension tab for capture", async () => {
+test("chrome background deps capture only the active tab in the current window", async () => {
   const mod = await import("../background-core.js");
   const deps = mod.createChromeBackgroundDeps(
     {
       storage: { local: { get: async () => ({}) } },
       tabs: {
-        query: async () => [
+        query: async (query) => {
+          assert.deepEqual(query, { active: true, currentWindow: true });
+          return [
           { id: 1, url: "chrome-extension://abc/popup.html", lastAccessed: 200 },
           { id: 2, url: "https://example.com/docs", lastAccessed: 300 },
           { id: 3, url: "file:///C:/notes.txt", lastAccessed: 100 },
-        ],
-        sendMessage: async () => ({ title: "Selection from Docs", text: "tab message selection", url: "https://example.com/docs" }),
+          ];
+        },
+        sendMessage: async (_tabId, message) => ({
+          title: "Selection from Docs",
+          text: "tab message selection",
+          url: "https://example.com/docs",
+          nonce: message.nonce,
+        }),
         update: async () => {},
         captureVisibleTab: async () => "data:image/png;base64,aaaa",
       },
@@ -172,7 +182,7 @@ test("chrome background deps post captures through imported api prefix", async (
   assert.equal(requestedUrl, "http://127.0.0.1:7343/custom/v2/extension/capture");
 });
 
-test("selection capture falls back to cached selection when live selection is empty", async () => {
+test("selection capture can use the content script's isolated previous selection", async () => {
   const mod = await import("../background-core.js");
   let posted = null;
   const controller = mod.createBackgroundController({
@@ -235,4 +245,47 @@ test("background controller command shortcut can trigger screenshot capture", as
 
   assert.equal(result.capture_id, "cap-shortcut");
   assert.equal(postedUpload.capture_type, "screenshot");
+});
+
+test("capture aborts when the active tab navigates before content is saved", async () => {
+  const mod = await import("../background-core.js");
+  let posted = false;
+  const controller = mod.createBackgroundController({
+    loadConfig: async () => ({
+      backendUrl: "http://127.0.0.1:7343",
+      token: "token-123",
+      vaultId: "vault-1",
+      clusterId: "",
+    }),
+    getCaptureTab: async () => ({
+      id: 5,
+      title: "Original",
+      url: "https://example.com/original",
+    }),
+    readPageFromTab: async () => ({ title: "Original", text: "page contents" }),
+    assertTabUnchanged: async () => {
+      throw new Error("The page changed before capture finished. Try again.");
+    },
+    postCapture: async () => {
+      posted = true;
+    },
+  });
+
+  await assert.rejects(
+    () => controller.handleCapture({ captureMode: "page" }),
+    /page changed before capture finished/i,
+  );
+  assert.equal(posted, false);
+});
+
+test("selection content stays out of page-readable DOM attributes and uses a nonce", () => {
+  const contentSource = fs.readFileSync(
+    path.join(__dirname, "..", "content.js"),
+    "utf8",
+  );
+
+  assert.doesNotMatch(contentSource, /setAttribute\([^)]*selection/i);
+  assert.doesNotMatch(contentSource, /data-cml-last-selection/i);
+  assert.match(contentSource, /message\.nonce/);
+  assert.match(contentSource, /lastSelection = \{ title: "", text: "", url: "" \}/);
 });

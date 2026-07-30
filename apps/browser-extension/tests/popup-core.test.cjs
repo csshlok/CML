@@ -233,3 +233,34 @@ test("popup controller can run from stored config without manual field re-entry"
   assert.equal(capture.capture_id, "cap-6");
   assert.equal(saved.vaultId, "vault-1");
 });
+
+test("capture preview names the active page and only exposes the PDF-link action for PDFs", async () => {
+  const mod = await import("../popup-core.js");
+  const deps = mod.createChromePopupDeps(
+    {
+      storage: {
+        local: {
+          get: async () => ({}),
+          set: async () => {},
+        },
+      },
+      tabs: {
+        query: async (query) => {
+          assert.deepEqual(query, { active: true, currentWindow: true });
+          return [{
+            id: 9,
+            title: "Research paper",
+            url: "https://example.com/papers/report.pdf?download=1",
+          }];
+        },
+      },
+    },
+    async () => ({ ok: true, json: async () => ({}) }),
+  );
+
+  const preview = await deps.getCapturePreview();
+
+  assert.equal(preview.title, "Research paper");
+  assert.equal(preview.origin, "https://example.com");
+  assert.equal(preview.pdf, true);
+});
