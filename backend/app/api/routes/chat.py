@@ -1944,13 +1944,17 @@ def _classify_chat_route(payload: ChatContextRequest, *, source_count: int) -> d
             "answer_mode": "direct",
             "context_sources": ["profile", "conversation"],
         }
-    # When the local router is unavailable, avoid searching every document for
-    # an unscoped prompt. The direct model is told when it lacks vault evidence.
+    # When the optional local router is unavailable, preserve the bounded
+    # retrieval contract for ambiguous questions if indexed vault evidence
+    # exists. Explicit conversation, direct-task, world-knowledge, and
+    # no-vault requests have already been handled above. Defaulting the
+    # remaining cases to direct chat would silently bypass typed evidence,
+    # citation snapshots, and retrieval diagnostics.
     return {
-        "intent": "general_chat",
-        "reason": "router_unavailable_safe_direct",
-        "answer_mode": "direct",
-        "context_sources": ["profile", "conversation"],
+        "intent": "vault_question",
+        "reason": "router_unavailable_bounded_retrieval",
+        "answer_mode": "grounded",
+        "context_sources": ["vault_documents"],
     }
 
 
