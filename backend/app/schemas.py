@@ -60,6 +60,11 @@ class ClusterMergeRequest(BaseModel):
     target_cluster_id: str
 
 
+class ClusterMembershipRepairRequest(BaseModel):
+    vault_id: str
+    batch_size: int = Field(default=100, ge=1, le=500)
+
+
 class ClusterRead(BaseModel):
     id: str
     vault_id: str
@@ -98,6 +103,8 @@ class ProjectCreate(BaseModel):
     root_path: str = Field(min_length=1)
     name: str | None = Field(default=None, min_length=1, max_length=120)
     discovery_scope: Literal["context", "code"] = "context"
+    auto_sync_enabled: bool | None = None
+    sync_mode: Literal["automatic", "notify", "manual"] | None = None
     sync: bool = True
 
 
@@ -105,6 +112,8 @@ class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     root_path: str | None = Field(default=None, min_length=1)
     discovery_scope: Literal["context", "code"] | None = None
+    auto_sync_enabled: bool | None = None
+    sync_mode: Literal["automatic", "notify", "manual"] | None = None
 
 
 class ProjectSnapshotRead(BaseModel):
@@ -172,6 +181,10 @@ class ProjectRead(BaseModel):
     indexed_commit: str | None = None
     working_tree_dirty: bool = False
     changed_file_count: int = 0
+    auto_sync_enabled: bool = True
+    sync_mode: Literal["automatic", "notify", "manual"] = "automatic"
+    change_fingerprint: str = ""
+    last_change_checked_at: str | None = None
     status: str
     structure_status: str
     retrieval_status: str
@@ -202,6 +215,10 @@ class ProjectSyncResponse(BaseModel):
 
 class ProjectSyncRequest(BaseModel):
     discovery_scope: Literal["context", "code"] | None = None
+
+
+class ProjectTargetedSyncRequest(BaseModel):
+    paths: list[str] = Field(min_length=1, max_length=100)
 
 
 class ProjectReindexRequest(BaseModel):
@@ -353,6 +370,14 @@ class SourceRead(BaseModel):
     extracted_text: str
     summary: str
     tags: list[str]
+    metadata_quality: str = "fallback"
+    semantic_metadata_version: int = 0
+    semantic_metadata_updated_at: str | None = None
+    ingestion_stage: str = "ready"
+    ingestion_generation: int = 1
+    ingestion_error_code: str = ""
+    ingestion_status_detail: str = ""
+    ingestion_updated_at: str | None = None
     cover_image_url: str | None
     deleted_at: str | None = None
     created_at: str
@@ -387,6 +412,7 @@ class SemanticSearchRequest(BaseModel):
     vault_id: str
     query: str = Field(min_length=1)
     cluster_id: str | None = None
+    unclustered_only: bool = False
     limit: int = Field(default=8, ge=1, le=30)
 
 
@@ -449,6 +475,7 @@ class BridgeContextRequest(BaseModel):
     vault_id: str | None = None
     query: str = Field(min_length=1)
     cluster_id: str | None = None
+    unclustered_only: bool = False
     project_id: str | None = None
     mode: str = "context"
     client_name: str = "unknown"
@@ -786,6 +813,7 @@ class ChatContextRequest(BaseModel):
     vault_id: str
     prompt: str = Field(min_length=1)
     cluster_id: str | None = None
+    unclustered_only: bool = False
     project_id: str | None = None
     session_id: str | None = None
     persist: bool = True
@@ -793,8 +821,10 @@ class ChatContextRequest(BaseModel):
     expanded_analysis: bool = False
     complete_analysis: bool = False
     attachments: list[ChatAttachmentInput] = Field(default_factory=list)
+    request_id: str | None = Field(default=None, min_length=8, max_length=240, pattern=r"^[A-Za-z0-9._:-]+$")
+    retry_generation_id: str | None = Field(default=None, min_length=1, max_length=240)
 
-    @field_validator("cluster_id", "project_id", "session_id", mode="before")
+    @field_validator("cluster_id", "project_id", "session_id", "request_id", "retry_generation_id", mode="before")
     @classmethod
     def normalize_optional_ids(cls, value: str | None) -> str | None:
         return _blank_to_none(value)
@@ -849,6 +879,8 @@ class ChatCoverageLedger(BaseModel):
     token_estimate: dict = {}
     bundle_status: dict = {}
     typed_evidence: dict = {}
+    answer_mode: str = "direct"
+    context_sources: list[str] = []
 
 
 class ChatContextResponse(BaseModel):
@@ -873,6 +905,7 @@ class ChatSessionCreate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=160)
     scope_cluster_id: str | None = None
     scope_project_id: str | None = None
+    scope_unclustered: bool = False
 
     @field_validator("scope_cluster_id", "scope_project_id", mode="before")
     @classmethod
@@ -884,6 +917,7 @@ class ChatSessionUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=160)
     scope_cluster_id: str | None = None
     scope_project_id: str | None = None
+    scope_unclustered: bool | None = None
     saved: bool | None = None
 
     @field_validator("scope_cluster_id", "scope_project_id", mode="before")
@@ -920,6 +954,7 @@ class ChatSessionRead(BaseModel):
     title: str
     scope_cluster_id: str | None
     scope_project_id: str | None = None
+    scope_unclustered: bool = False
     saved: bool
     memory_status: str = "idle"
     memory_updated_at: str | None = None
@@ -1006,6 +1041,7 @@ class ModelScanRootRequest(BaseModel):
 class ModelDiscoveryJobRequest(BaseModel):
     max_results: int = Field(default=32, ge=1, le=200)
     include_rejected: bool = False
+    scan_all_drives: bool = False
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=240)
 
 
@@ -1171,6 +1207,15 @@ class HardwareStatusRead(BaseModel):
     hardware_tier: str
     training_supported: bool
     detail: str
+
+
+class AppProfileRead(BaseModel):
+    display_name: str = ""
+    updated_at: str | None = None
+
+
+class AppProfileUpdate(BaseModel):
+    display_name: str = Field(default="", max_length=120)
 
 
 class LocalFolderScanRequest(BaseModel):
@@ -1552,6 +1597,8 @@ class AppJobRead(BaseModel):
     attempts: int
     max_attempts: int
     last_error: str
+    error_code: str = ""
+    diagnostic_id: str = ""
     status_detail: str | None = None
     cancellation_requested: int = 0
     cancellation_requested_at: str | None = None
@@ -1645,6 +1692,7 @@ class JobQueueStatus(BaseModel):
     deferred: int = 0
     running: int
     succeeded: int
+    partial_success: int = 0
     failed: int
     cancelled: int = 0
     manual_review: int = 0

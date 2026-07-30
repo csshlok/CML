@@ -11,6 +11,7 @@ from backend.app.core.llm_runtime import (
 )
 
 SOURCE_METADATA_VERSION = 3
+SOURCE_SEMANTIC_METADATA_VERSION = 1
 
 _BOILERPLATE_PATTERNS = (
     re.compile(r"^\s*<[^>]+>"),
@@ -83,11 +84,14 @@ def enrich_source_metadata(
     source_type: str,
     text: str,
     require_model: bool = False,
+    allow_model: bool = True,
 ) -> dict[str, object]:
     fallback = fallback_source_summary(title=title, text=text)
     cleaned = clean_extracted_text(text, max_chars=8_000)
     fallback_keywords = keywords_for_text(f"{title} {cleaned}", limit=6)
     if not cleaned:
+        return {"summary": fallback, "keywords": fallback_keywords}
+    if not allow_model:
         return {"summary": fallback, "keywords": fallback_keywords}
     try:
         result = generate_local_structured_json(

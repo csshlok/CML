@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 from backend.app.core.database import connect, utc_now
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 28
 
 
 class MigrationError(RuntimeError):
@@ -980,6 +980,155 @@ def _migration_018_stable_cluster_suggestion_evidence(conn) -> None:
         _add_column_if_missing(conn, table, "candidate_profile_version", "INTEGER NOT NULL DEFAULT 0")
 
 
+def _migration_019_cluster_membership_integrity(conn) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS cluster_membership_events (
+            id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            previous_cluster_id TEXT,
+            target_cluster_id TEXT,
+            reason TEXT NOT NULL DEFAULT '',
+            actor TEXT NOT NULL DEFAULT 'system',
+            source_updated INTEGER NOT NULL DEFAULT 0,
+            chunks_updated INTEGER NOT NULL DEFAULT 0,
+            facts_updated INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_cluster_membership_events_source
+            ON cluster_membership_events(source_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_cluster_membership_events_vault
+            ON cluster_membership_events(vault_id, created_at DESC);
+        """
+    )
+
+
+def _migration_020_job_diagnostics(conn) -> None:
+    if not _table_exists(conn, "app_jobs"):
+        return
+    _add_column_if_missing(conn, "app_jobs", "error_code", "TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(conn, "app_jobs", "diagnostic_id", "TEXT NOT NULL DEFAULT ''")
+
+
+def _migration_021_chat_generation_identity(conn) -> None:
+    if not _table_exists(conn, "chat_generations"):
+        return
+    _add_column_if_missing(conn, "chat_generations", "request_id", "TEXT")
+    _add_column_if_missing(conn, "chat_generations", "parent_generation_id", "TEXT")
+    _add_column_if_missing(conn, "chat_generations", "attempt_number", "INTEGER NOT NULL DEFAULT 1")
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_generations_request_id
+        ON chat_generations(vault_id, request_id)
+        WHERE request_id IS NOT NULL AND request_id <> ''
+        """
+    )
+
+
+def _migration_022_app_profile(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_profile (
+            id TEXT PRIMARY KEY CHECK (id = 'local'),
+            display_name TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _migration_023_project_delta_sync(conn) -> None:
+    _add_column_if_missing(conn, "projects", "auto_sync_enabled", "INTEGER NOT NULL DEFAULT 1")
+    _add_column_if_missing(conn, "projects", "change_fingerprint", "TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(conn, "projects", "last_change_checked_at", "TEXT")
+
+
+def _migration_024_unclustered_chat_scope(conn) -> None:
+    if not _table_exists(conn, "chat_sessions"):
+        return
+    _add_column_if_missing(
+        conn,
+        "chat_sessions",
+        "scope_unclustered",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+
+
+def _migration_025_semantic_source_metadata(conn) -> None:
+    _add_column_if_missing(conn, "sources", "metadata_quality", "TEXT NOT NULL DEFAULT 'fallback'")
+    _add_column_if_missing(conn, "sources", "semantic_metadata_version", "INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing(conn, "sources", "semantic_metadata_updated_at", "TEXT")
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(sources)").fetchall()}
+    if {"vault_id", "state", "deleted_at"} <= columns:
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sources_semantic_metadata_backlog
+            ON sources(vault_id, semantic_metadata_version, state, deleted_at)
+            """
+        )
+
+
+def _migration_026_source_ingestion_stages(conn) -> None:
+    _add_column_if_missing(conn, "sources", "ingestion_stage", "TEXT NOT NULL DEFAULT 'ready'")
+    _add_column_if_missing(conn, "sources", "ingestion_generation", "INTEGER NOT NULL DEFAULT 1")
+    _add_column_if_missing(conn, "sources", "ingestion_error_code", "TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(conn, "sources", "ingestion_status_detail", "TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(conn, "sources", "ingestion_updated_at", "TEXT")
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(sources)").fetchall()}
+    if {"state", "updated_at"} <= columns:
+        conn.execute(
+            """
+            UPDATE sources
+            SET ingestion_stage = CASE
+                    WHEN state = 'failed' THEN 'needs_attention'
+                    WHEN state = 'waiting' THEN 'imported'
+                    WHEN state = 'processing' THEN 'extracting'
+                    ELSE 'ready'
+                END,
+                ingestion_updated_at = COALESCE(ingestion_updated_at, updated_at)
+            WHERE ingestion_updated_at IS NULL OR ingestion_updated_at = ''
+            """
+        )
+    if {"vault_id", "id"} <= columns:
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sources_ingestion_progress
+            ON sources(vault_id, ingestion_stage, ingestion_updated_at, id)
+            """
+        )
+
+
+def _migration_027_adaptive_scheduler_state(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scheduler_lane_state (
+            capability_fingerprint TEXT NOT NULL,
+            lane TEXT NOT NULL,
+            current_limit INTEGER NOT NULL,
+            stable_observations INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            last_latency_ms REAL NOT NULL DEFAULT 0,
+            last_pressure_event TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (capability_fingerprint, lane)
+        )
+        """
+    )
+
+
+def _migration_028_project_sync_modes(conn) -> None:
+    _add_column_if_missing(conn, "projects", "sync_mode", "TEXT NOT NULL DEFAULT 'automatic'")
+    conn.execute(
+        """
+        UPDATE projects
+        SET sync_mode = CASE WHEN auto_sync_enabled = 1 THEN 'automatic' ELSE 'manual' END
+        WHERE sync_mode IS NULL OR sync_mode = '' OR sync_mode NOT IN ('automatic', 'notify', 'manual')
+        """
+    )
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migration_001_baseline,
     2: _migration_002_vault_security_metadata,
@@ -999,6 +1148,16 @@ MIGRATIONS: dict[int, Migration] = {
     16: _migration_016_repair_project_chunk_scope,
     17: _migration_017_cluster_candidate_profiles,
     18: _migration_018_stable_cluster_suggestion_evidence,
+    19: _migration_019_cluster_membership_integrity,
+    20: _migration_020_job_diagnostics,
+    21: _migration_021_chat_generation_identity,
+    22: _migration_022_app_profile,
+    23: _migration_023_project_delta_sync,
+    24: _migration_024_unclustered_chat_scope,
+    25: _migration_025_semantic_source_metadata,
+    26: _migration_026_source_ingestion_stages,
+    27: _migration_027_adaptive_scheduler_state,
+    28: _migration_028_project_sync_modes,
 }
 
 

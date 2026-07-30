@@ -30,6 +30,14 @@ def init_db() -> None:
         _add_column_if_missing_if_table_exists(conn, "sources", "provenance", "TEXT NOT NULL DEFAULT 'local_import'")
         _add_column_if_missing_if_table_exists(conn, "sources", "trust_tier", "TEXT NOT NULL DEFAULT 'trusted_local'")
         _add_column_if_missing_if_table_exists(conn, "sources", "metadata_version", "INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing_if_table_exists(conn, "sources", "metadata_quality", "TEXT NOT NULL DEFAULT 'fallback'")
+        _add_column_if_missing_if_table_exists(conn, "sources", "semantic_metadata_version", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing_if_table_exists(conn, "sources", "semantic_metadata_updated_at", "TEXT")
+        _add_column_if_missing_if_table_exists(conn, "sources", "ingestion_stage", "TEXT NOT NULL DEFAULT 'ready'")
+        _add_column_if_missing_if_table_exists(conn, "sources", "ingestion_generation", "INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing_if_table_exists(conn, "sources", "ingestion_error_code", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing_if_table_exists(conn, "sources", "ingestion_status_detail", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing_if_table_exists(conn, "sources", "ingestion_updated_at", "TEXT")
         _add_column_if_missing_if_table_exists(conn, "source_chunks", "embedding_model_id", "TEXT NOT NULL DEFAULT 'hash'")
         _add_column_if_missing_if_table_exists(conn, "source_chunks", "index_version", "TEXT NOT NULL DEFAULT 'v1'")
         _add_column_if_missing_if_table_exists(conn, "source_chunks", "normalization_version", "TEXT NOT NULL DEFAULT 'norm-v1'")
@@ -122,6 +130,14 @@ def init_db() -> None:
                 security_labels TEXT NOT NULL DEFAULT '[]',
                 parser_security_json TEXT NOT NULL DEFAULT '{}',
                 metadata_version INTEGER NOT NULL DEFAULT 1,
+                metadata_quality TEXT NOT NULL DEFAULT 'fallback',
+                semantic_metadata_version INTEGER NOT NULL DEFAULT 0,
+                semantic_metadata_updated_at TEXT,
+                ingestion_stage TEXT NOT NULL DEFAULT 'ready',
+                ingestion_generation INTEGER NOT NULL DEFAULT 1,
+                ingestion_error_code TEXT NOT NULL DEFAULT '',
+                ingestion_status_detail TEXT NOT NULL DEFAULT '',
+                ingestion_updated_at TEXT,
                 raw_text TEXT NOT NULL DEFAULT '',
                 extracted_text TEXT NOT NULL DEFAULT '',
                 summary TEXT NOT NULL DEFAULT '',
@@ -400,6 +416,8 @@ def init_db() -> None:
                 attempts INTEGER NOT NULL DEFAULT 0,
                 max_attempts INTEGER NOT NULL DEFAULT 3,
                 last_error TEXT NOT NULL DEFAULT '',
+                error_code TEXT NOT NULL DEFAULT '',
+                diagnostic_id TEXT NOT NULL DEFAULT '',
                 status_detail TEXT NOT NULL DEFAULT '',
                 cancellation_requested INTEGER NOT NULL DEFAULT 0,
                 cancellation_requested_at TEXT,
@@ -407,6 +425,18 @@ def init_db() -> None:
                 completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS scheduler_lane_state (
+                capability_fingerprint TEXT NOT NULL,
+                lane TEXT NOT NULL,
+                current_limit INTEGER NOT NULL,
+                stable_observations INTEGER NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                last_latency_ms REAL NOT NULL DEFAULT 0,
+                last_pressure_event TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (capability_fingerprint, lane)
             );
 
             CREATE TABLE IF NOT EXISTS source_chunks (
@@ -494,6 +524,7 @@ def init_db() -> None:
                 title TEXT NOT NULL,
                 scope_cluster_id TEXT,
                 scope_project_id TEXT,
+                scope_unclustered INTEGER NOT NULL DEFAULT 0,
                 saved INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -733,10 +764,19 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 completed_at TEXT,
+                request_id TEXT,
+                parent_generation_id TEXT,
+                attempt_number INTEGER NOT NULL DEFAULT 1,
                 FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
                 FOREIGN KEY (user_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL,
                 FOREIGN KEY (assistant_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL,
-                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE,
+                FOREIGN KEY (parent_generation_id) REFERENCES chat_generations(id) ON DELETE SET NULL
+            );
+            CREATE TABLE IF NOT EXISTS app_profile (
+                id TEXT PRIMARY KEY CHECK (id = 'local'),
+                display_name TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS chat_attachments (
@@ -872,6 +912,10 @@ def init_db() -> None:
                 indexed_commit TEXT,
                 working_tree_dirty INTEGER NOT NULL DEFAULT 0,
                 changed_file_count INTEGER NOT NULL DEFAULT 0,
+                auto_sync_enabled INTEGER NOT NULL DEFAULT 1,
+                sync_mode TEXT NOT NULL DEFAULT 'automatic',
+                change_fingerprint TEXT NOT NULL DEFAULT '',
+                last_change_checked_at TEXT,
                 status TEXT NOT NULL DEFAULT 'registered',
                 structure_status TEXT NOT NULL DEFAULT 'waiting',
                 retrieval_status TEXT NOT NULL DEFAULT 'waiting',
@@ -1176,6 +1220,21 @@ def init_db() -> None:
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS cluster_membership_events (
+                id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                previous_cluster_id TEXT,
+                target_cluster_id TEXT,
+                reason TEXT NOT NULL DEFAULT '',
+                actor TEXT NOT NULL DEFAULT 'system',
+                source_updated INTEGER NOT NULL DEFAULT 0,
+                chunks_updated INTEGER NOT NULL DEFAULT 0,
+                facts_updated INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS cluster_suggestion_decisions (
                 source_id TEXT PRIMARY KEY,
                 vault_id TEXT NOT NULL,
@@ -1373,6 +1432,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_bridge_writeback_reviews_source ON bridge_writeback_reviews(source_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_query_evidence_cache_vault ON query_evidence_cache(vault_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_cluster_merge_artifacts_vault ON cluster_merge_artifacts(vault_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_cluster_membership_events_source
+                ON cluster_membership_events(source_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_cluster_membership_events_vault
+                ON cluster_membership_events(vault_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_extension_pairing_status ON extension_pairing_sessions(status, expires_at);
             CREATE INDEX IF NOT EXISTS idx_extension_permission_audit_client ON extension_permission_audit(client_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_vault_security_unlock_mode ON vault_security_metadata(unlock_mode);
@@ -1434,6 +1497,7 @@ def init_db() -> None:
         _add_column_if_missing(conn, "chat_sessions", "memory_status", "TEXT NOT NULL DEFAULT 'idle'")
         _add_column_if_missing(conn, "chat_sessions", "memory_updated_at", "TEXT")
         _add_column_if_missing(conn, "chat_sessions", "scope_project_id", "TEXT")
+        _add_column_if_missing(conn, "chat_sessions", "scope_unclustered", "INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_sessions_project ON chat_sessions(scope_project_id, updated_at DESC)"
         )
@@ -1499,6 +1563,30 @@ def init_db() -> None:
         _add_column_if_missing(conn, "source_chunks", "project_id", "TEXT")
         _add_column_if_missing(conn, "source_chunks", "project_snapshot_id", "TEXT")
         _add_column_if_missing(conn, "source_chunks", "activation_state", "TEXT NOT NULL DEFAULT 'active'")
+        _add_column_if_missing(conn, "app_jobs", "error_code", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "app_jobs", "diagnostic_id", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "chat_generations", "request_id", "TEXT")
+        _add_column_if_missing(conn, "chat_generations", "parent_generation_id", "TEXT")
+        _add_column_if_missing(conn, "chat_generations", "attempt_number", "INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing(conn, "projects", "auto_sync_enabled", "INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing(conn, "projects", "sync_mode", "TEXT NOT NULL DEFAULT 'automatic'")
+        _add_column_if_missing(conn, "projects", "change_fingerprint", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "projects", "last_change_checked_at", "TEXT")
+        _add_column_if_missing(conn, "sources", "metadata_quality", "TEXT NOT NULL DEFAULT 'fallback'")
+        _add_column_if_missing(conn, "sources", "semantic_metadata_version", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "sources", "semantic_metadata_updated_at", "TEXT")
+        _add_column_if_missing(conn, "sources", "ingestion_stage", "TEXT NOT NULL DEFAULT 'ready'")
+        _add_column_if_missing(conn, "sources", "ingestion_generation", "INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing(conn, "sources", "ingestion_error_code", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "sources", "ingestion_status_detail", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "sources", "ingestion_updated_at", "TEXT")
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_generations_request_id
+            ON chat_generations(vault_id, request_id)
+            WHERE request_id IS NOT NULL AND request_id <> ''
+            """
+        )
         _add_column_if_missing(conn, "source_chunks", "indexed_at", "TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sources_project_snapshot "
@@ -1531,6 +1619,12 @@ def init_db() -> None:
         _add_column_if_missing(conn, "app_jobs", "cancellation_requested_at", "TEXT")
         _add_column_if_missing(conn, "app_jobs", "started_at", "TEXT")
         _add_column_if_missing(conn, "app_jobs", "completed_at", "TEXT")
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sources_ingestion_progress
+            ON sources(vault_id, ingestion_stage, ingestion_updated_at, id)
+            """
+        )
         _add_column_if_missing(conn, "extension_clients", "allowed_vault_ids", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_vault_security_metadata_schema(conn)
         _ensure_encrypted_content_schema(conn)
