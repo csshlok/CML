@@ -11,7 +11,6 @@ $trackedVersionFiles = @(
   (Join-Path $repoRoot "package.json"),
   (Join-Path $repoRoot "package-lock.json"),
   (Join-Path $repoRoot "apps\desktop\package.json"),
-  (Join-Path $repoRoot "apps\desktop\package-lock.json"),
   (Join-Path $repoRoot "backend\pyproject.toml")
 )
 $originalContent = @{}

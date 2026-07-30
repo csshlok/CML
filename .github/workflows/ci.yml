@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      packaged_smoke:
+        description: Build and smoke-test the Windows release candidate
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -48,9 +54,21 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - run: npm run lockfile:check
       - run: npm ci
+      - run: npm run test:extension
+      - run: npm run security:renderer
+      - run: npm run audit:controls
       - run: npm run lint
       - run: npm run build
+      - run: npx playwright install chromium
+      - run: npm run test:desktop:e2e
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: desktop-playwright-results
+          path: test-results
+          if-no-files-found: warn
 
   backend:
     name: Backend ${{ matrix.tier }}
@@ -82,6 +100,12 @@ jobs:
           -Tier ${{ matrix.tier }}
           -Python python
           -JunitPath test-results/backend-${{ matrix.tier }}.xml
+      - name: Check Python formatting and imports
+        if: matrix.tier == 'quick'
+        run: python -m ruff check backend/app backend/tests
+      - name: Compile Python sources
+        if: matrix.tier == 'quick'
+        run: python -m compileall -q backend/app
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -105,3 +129,32 @@ jobs:
       - name: Run explicit scale suite
         shell: pwsh
         run: ./scripts/backend/run-tests.ps1 -Tier scale -Python python
+
+  packaged-smoke:
+    name: Windows packaged release-candidate smoke
+    if: github.event_name == 'workflow_dispatch' && inputs.packaged_smoke
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - run: python -m pip install -e "./backend[test]" playwright==1.60.0 psutil==7.2.2
+      - run: npm run package:win
+      - name: Smoke unpacked startup and renderer
+        shell: pwsh
+        run: |
+          ./scripts/packaging/smoke-packaged-app-launch.ps1 -PackageRoot apps/desktop/release/win-unpacked
+          python scripts/packaging/smoke-packaged-ui.py --package-root apps/desktop/release/win-unpacked --report test-results/packaged-ui.json --screenshot test-results/packaged-ui.png
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: packaged-smoke-results
+          path: test-results
+          if-no-files-found: warn

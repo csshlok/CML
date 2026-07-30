@@ -2,6 +2,10 @@
   "name": "cml",
   "version": "0.1.11",
   "private": true,
+  "packageManager": "npm@11.6.2",
+  "engines": {
+    "node": ">=22 <25"
+  },
   "workspaces": [
     "apps/*"
   ],
@@ -17,7 +21,10 @@
     "package:win": "npm run package:win --workspace @cml/desktop",
     "security:renderer": "node scripts/security/audit-renderer-html-safety.mjs",
     "audit:controls": "node scripts/ui/audit-interactive-controls.mjs",
+    "test:extension": "node --test apps/browser-extension/tests/*.test.cjs",
+    "test:desktop:e2e": "npm run test:e2e --workspace @cml/desktop",
     "security:package": "node scripts/packaging/generate-helper-manifest.cjs && node scripts/packaging/audit-package-layout.cjs apps/desktop/packaging apps/desktop/packaging",
-    "security:e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\security\\run-security-e2e.ps1"
+    "security:e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\security\\run-security-e2e.ps1",
+    "lockfile:check": "node scripts/dev/check-lockfile-policy.cjs"
   }
 }

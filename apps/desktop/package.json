@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && vite build",
     "lint": "npm run typecheck && node --test electron/*.test.cjs",
+    "test:e2e": "playwright test",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\..\\scripts\\packaging\\package-windows.ps1 -OutputDir release"
   },
   "dependencies": {
@@ -45,6 +46,7 @@
   "devDependencies": {
     "@eslint/js": "^9.32.0",
     "@lovable.dev/vite-tanstack-config": "^1.7.0",
+    "@playwright/test": "^1.60.0",
     "@types/node": "^22.16.5",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",

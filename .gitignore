@@ -1,5 +1,7 @@
 # Dependencies
 node_modules/
+apps/*/package-lock.json
+apps/*/bun.lock
 .venv/
 .venv-*/
 venv/
