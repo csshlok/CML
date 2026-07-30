@@ -38,7 +38,15 @@ def rebuild_chat_session_memory(conn, *, vault_id: str, session_id: str) -> None
     if not messages:
         return
     cluster_id = session["scope_cluster_id"]
-    text = "\n".join(f"{row['role']}: {row['content']}" for row in messages if str(row["content"] or "").strip())
+    # Durable personal memory is sourced from the user's own statements.
+    # Assistant turns remain available through recent conversation and the
+    # provenance-aware temporal ledgers, but cannot silently become user facts.
+    text = "\n".join(
+        str(row["content"])
+        for row in messages
+        if str(row["role"] or "").strip().casefold() == "user"
+        and str(row["content"] or "").strip()
+    )
     _replace_memory_items(
         conn,
         vault_id=vault_id,
@@ -47,6 +55,8 @@ def rebuild_chat_session_memory(conn, *, vault_id: str, session_id: str) -> None
         session_id=session_id,
         text=text,
         origin_prefix=f"chat-session:{session_id}",
+        review_state="user_asserted",
+        include_fallback=False,
     )
     sync_chat_session_temporal_facts(
         conn,
@@ -90,9 +100,21 @@ def get_context_memory(
     cluster_id: str | None,
     query: str,
     limit: int = 8,
+    personal_only: bool = False,
 ) -> tuple[list[dict], dict]:
-    working = _latest_working_memory(conn, vault_id=vault_id, cluster_id=cluster_id)
-    memory_items = _select_memory_items(conn, vault_id=vault_id, cluster_id=cluster_id, query=query, limit=limit)
+    working = (
+        {}
+        if personal_only
+        else _latest_working_memory(conn, vault_id=vault_id, cluster_id=cluster_id)
+    )
+    memory_items = _select_memory_items(
+        conn,
+        vault_id=vault_id,
+        cluster_id=cluster_id,
+        query=query,
+        limit=limit,
+        personal_only=personal_only,
+    )
     temporal_items = _select_temporal_memory_items(
         conn,
         vault_id=vault_id,
@@ -111,13 +133,24 @@ def get_context_memory(
             query=query,
             limit=limit,
         )
+    if personal_only:
+        temporal_items = [
+            item
+            for item in temporal_items
+            if str(item.get("speaker_role") or "").casefold() == "user"
+        ]
+        v2_items = [
+            item
+            for item in v2_items
+            if str(item.get("speaker_role") or "").casefold() == "user"
+        ]
     memory_items = _merge_memory_items(
         temporal_items,
         v2_items,
         memory_items,
         limit=limit,
     )
-    if not working:
+    if not working and not personal_only:
         refresh_bootstrap_memory_map(conn, vault_id=vault_id, cluster_id=cluster_id)
         working = _latest_working_memory(conn, vault_id=vault_id, cluster_id=cluster_id)
     return memory_items, working or {}
@@ -417,9 +450,11 @@ def _replace_memory_items(
     session_id: str | None,
     text: str,
     origin_prefix: str,
+    review_state: str = "auto",
+    include_fallback: bool = True,
 ) -> None:
     _invalidate_memory_items(conn, source_id=source_id, session_id=session_id)
-    items = _extract_memory_candidates(text)
+    items = _extract_memory_candidates(text, include_fallback=include_fallback)
     now = utc_now()
     for index, item in enumerate(items, start=1):
         fingerprint = content_hash(f"{origin_prefix}:{item['kind']}:{item['summary']}")
@@ -429,7 +464,7 @@ def _replace_memory_items(
                 id, vault_id, cluster_id, source_id, session_id, kind, summary, detail_text,
                 confidence, freshness, review_state, status, origin_fingerprint, created_at, updated_at, invalidated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', 'active', ?, ?, ?, NULL)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL)
             """,
             (
                 f"memory-{uuid4()}",
@@ -442,6 +477,7 @@ def _replace_memory_items(
                 item["detail_text"],
                 item["confidence"],
                 item["freshness"],
+                review_state,
                 fingerprint,
                 now,
                 now,
@@ -449,7 +485,11 @@ def _replace_memory_items(
         )
 
 
-def _extract_memory_candidates(text: str) -> list[dict]:
+def _extract_memory_candidates(
+    text: str,
+    *,
+    include_fallback: bool = True,
+) -> list[dict]:
     cleaned = " ".join(str(text or "").split())
     if not cleaned:
         return []
@@ -478,7 +518,7 @@ def _extract_memory_candidates(text: str) -> list[dict]:
                 "freshness": 0.9,
             }
         )
-    if not items and cleaned:
+    if not items and cleaned and include_fallback:
         items.append(
             {
                 "kind": "fact",
@@ -583,19 +623,32 @@ def _invalidate_memory_items(conn, *, source_id: str | None = None, session_id: 
         )
 
 
-def _select_memory_items(conn, *, vault_id: str, cluster_id: str | None, query: str, limit: int) -> list[dict]:
+def _select_memory_items(
+    conn,
+    *,
+    vault_id: str,
+    cluster_id: str | None,
+    query: str,
+    limit: int,
+    personal_only: bool = False,
+) -> list[dict]:
     params: list[str] = [vault_id]
     cluster_clause = ""
     if cluster_id:
         cluster_clause = "AND (cluster_id = ? OR cluster_id IS NULL)"
         params.append(cluster_id)
+    personal_clause = (
+        "AND session_id IS NOT NULL AND review_state = 'user_asserted'"
+        if personal_only
+        else ""
+    )
     bounded_limit = max(1, min(limit, 50))
     candidate_limit = min(500, max(100, bounded_limit * 12))
     rows = conn.execute(
         f"""
         SELECT *
         FROM memory_items
-        WHERE vault_id = ? AND status = 'active' {cluster_clause}
+        WHERE vault_id = ? AND status = 'active' {cluster_clause} {personal_clause}
         ORDER BY updated_at DESC
         LIMIT ?
         """,

@@ -14,6 +14,7 @@ def analyze_synthesis_readiness(prompt: str, citations: list[dict]) -> dict:
             "unsupported_claims": [],
             "allow_synthesis": False,
             "mode": "no_evidence",
+            "strategy": "none",
             "warnings": [],
         }
 
@@ -24,28 +25,34 @@ def analyze_synthesis_readiness(prompt: str, citations: list[dict]) -> dict:
     warnings: list[str] = []
     mode = "supported"
     allow_synthesis = True
-    if contradiction:
-        mode = "conflicting_evidence"
-        allow_synthesis = False
-        warnings.append(
-            "Synthesis gate: top evidence conflicts on a key claim, so CML is staying extractive instead of composing a single synthesized answer."
-        )
-    elif hostile_instruction:
+    strategy = "grounded"
+    # Hostile evidence must win over every other classification. A poisoned
+    # packet can also contain contradictory prose, but that must never make it
+    # eligible for the conflict-explanation model path.
+    if hostile_instruction:
         mode = "hostile_evidence"
         allow_synthesis = False
+        strategy = "extract"
         warnings.append(
             "Synthesis gate: retrieved evidence contains instruction-like or prompt-injection text, so CML is staying extractive instead of sending it into model synthesis."
         )
+    elif contradiction:
+        mode = "conflicting_evidence"
+        strategy = "explain_conflict"
+        warnings.append(
+            "Synthesis policy: top evidence conflicts on a key claim, so CML will explain the disagreement without silently choosing a side."
+        )
     elif not supported_claims:
         mode = "weak_support"
-        allow_synthesis = False
+        strategy = "qualified"
         warnings.append(
-            "Synthesis gate: retrieved evidence is too weak or fragmentary to safely synthesize."
+            "Synthesis policy: retrieved evidence is relevant but fragmentary, so CML will reason from it cautiously and label limitations or inferences."
         )
     elif unsupported_claims:
         mode = "supported_with_gaps"
+        strategy = "qualified"
         warnings.append(
-            "Synthesis gate: some retrieved evidence is weak or unsupported, so CML is prioritizing directly supported claims."
+            "Synthesis policy: some retrieved evidence has gaps, so CML will distinguish supported facts from qualified inference."
         )
     return {
         "supported_claims": supported_claims,
@@ -54,6 +61,7 @@ def analyze_synthesis_readiness(prompt: str, citations: list[dict]) -> dict:
         "unsupported_claims": unsupported_claims,
         "allow_synthesis": allow_synthesis,
         "mode": mode,
+        "strategy": strategy,
         "warnings": warnings,
     }
 

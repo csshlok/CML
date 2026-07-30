@@ -1,7 +1,9 @@
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class ChatCompletionRegressionTests(unittest.TestCase):
@@ -89,6 +91,67 @@ class ChatCompletionRegressionTests(unittest.TestCase):
         self.assertEqual(state["source_message_count"], 2)
         self.assertGreaterEqual(state["fact_count"], 1)
         self.assertEqual(fact["object_text"], "Pune")
+
+    def test_unclustered_scope_is_persisted_without_a_synthetic_cluster(self) -> None:
+        from backend.app.api.routes.chat import create_chat_session, update_chat_session
+        from backend.app.schemas import ChatSessionCreate, ChatSessionUpdate
+
+        created = create_chat_session(
+            ChatSessionCreate(
+                vault_id="vault-chat",
+                title="Loose sources",
+                scope_unclustered=True,
+            )
+        )
+        self.assertTrue(created["scope_unclustered"])
+        self.assertIsNone(created["scope_cluster_id"])
+
+        updated = update_chat_session(
+            created["id"],
+            ChatSessionUpdate(scope_unclustered=False),
+        )
+        self.assertFalse(updated["scope_unclustered"])
+
+    def test_durable_generation_finishes_from_only_its_persisted_generation_id(self) -> None:
+        from backend.app.api.routes.chat import (
+            _start_chat_generation,
+            run_durable_chat_generation,
+        )
+        from backend.app.core.database import connect
+
+        generation = _start_chat_generation(
+            vault_id="vault-chat",
+            session_id=None,
+            cluster_id=None,
+            prompt="Summarize my library.",
+            request_id="durable-request-1",
+        )
+        context = {
+            "answer": "The durable answer was saved.",
+            "clusters_used": [],
+            "citations": [],
+            "coverage_ledger": {"token_budget": 256},
+            "warnings": [],
+        }
+        with patch(
+            "backend.app.api.routes.chat._build_retrieval_context",
+            return_value=context,
+        ):
+            run_durable_chat_generation(generation["generation_id"])
+
+        with connect() as conn:
+            stored = conn.execute(
+                """
+                SELECT generations.state, messages.content
+                FROM chat_generations generations
+                JOIN chat_messages messages
+                  ON messages.id = generations.assistant_message_id
+                WHERE generations.id = ?
+                """,
+                (generation["generation_id"],),
+            ).fetchone()
+        self.assertEqual(stored["state"], "completed")
+        self.assertEqual(stored["content"], "The durable answer was saved.")
 
     def test_chat_message_hydration_returns_attachment_names_without_rewriting_prompt(self) -> None:
         from backend.app.api.routes.chat import _messages_from_rows, _start_chat_generation
@@ -229,8 +292,389 @@ class ChatCompletionRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(general["intent"], "general_chat")
-        self.assertEqual(general["reason"], "obvious_world_knowledge")
+        self.assertEqual(general["reason"], "world_knowledge_fallback")
         self.assertEqual(grounded["intent"], "cluster_question")
+
+    def test_model_router_can_keep_ambiguous_conversation_out_of_retrieval(self) -> None:
+        from backend.app.api.routes.chat import _classify_chat_route
+        from backend.app.core.llm_runtime import LLMResult
+        from backend.app.schemas import ChatContextRequest
+
+        with (
+            patch(
+                "backend.app.api.routes.chat.runtime_status",
+                return_value={"available": True},
+            ),
+            patch(
+                "backend.app.api.routes.chat.generate_local_structured_json",
+                return_value=LLMResult(
+                    text=json.dumps(
+                        {
+                            "answer_mode": "contextual",
+                            "context_sources": ["profile", "conversation"],
+                            "reason": "profile and current dialogue are sufficient",
+                        }
+                    ),
+                    provider="local",
+                    model="test",
+                ),
+            ),
+        ):
+            route = _classify_chat_route(
+                ChatContextRequest(
+                    vault_id="vault-chat",
+                    prompt="How are you, and can you remind me what name I entered?",
+                ),
+                source_count=50,
+            )
+        self.assertEqual(route["intent"], "general_chat")
+        self.assertEqual(route["reason"], "model_directed_context_selection")
+        self.assertEqual(route["context_sources"], ["profile", "conversation"])
+
+    def test_model_router_selects_information_classes_without_phrase_rules(self) -> None:
+        from backend.app.api.routes.chat import _classify_chat_route
+        from backend.app.core.llm_runtime import LLMResult
+        from backend.app.schemas import ChatContextRequest
+
+        cases = [
+            (
+                "Could you recap the stable details I have shared about myself?",
+                {
+                    "answer_mode": "contextual",
+                    "context_sources": ["profile", "personal_memory", "conversation"],
+                    "reason": "requires user-specific context but no documents",
+                },
+                "general_chat",
+            ),
+            (
+                "Connect the architecture decisions across the material I saved.",
+                {
+                    "answer_mode": "grounded",
+                    "context_sources": ["vault_documents"],
+                    "reason": "depends on saved documents",
+                },
+                "vault_question",
+            ),
+            (
+                "Suggest three names for a coffee shop.",
+                {
+                    "answer_mode": "direct",
+                    "context_sources": ["conversation"],
+                    "reason": "creative task using model knowledge",
+                },
+                "general_chat",
+            ),
+        ]
+        with patch(
+            "backend.app.api.routes.chat.runtime_status",
+            return_value={"available": True},
+        ):
+            for prompt, decision, expected_intent in cases:
+                with self.subTest(prompt=prompt), patch(
+                    "backend.app.api.routes.chat.generate_local_structured_json",
+                    return_value=LLMResult(
+                        text=json.dumps(decision),
+                        provider="local",
+                        model="test",
+                    ),
+                ):
+                    route = _classify_chat_route(
+                        ChatContextRequest(vault_id="vault-chat", prompt=prompt),
+                        source_count=5000,
+                    )
+                    self.assertEqual(route["intent"], expected_intent)
+                    self.assertEqual(route["context_sources"], decision["context_sources"])
+
+    def test_invalid_router_contract_falls_back_without_searching_entire_vault(self) -> None:
+        from backend.app.api.routes.chat import _classify_chat_route
+        from backend.app.core.llm_runtime import LLMResult
+        from backend.app.schemas import ChatContextRequest
+
+        with (
+            patch(
+                "backend.app.api.routes.chat.runtime_status",
+                return_value={"available": True},
+            ),
+            patch(
+                "backend.app.api.routes.chat.generate_local_structured_json",
+                return_value=LLMResult(
+                    text=json.dumps(
+                        {
+                            "answer_mode": "direct",
+                            "context_sources": ["vault_documents"],
+                            "reason": "inconsistent contract",
+                        }
+                    ),
+                    provider="local",
+                    model="test",
+                ),
+            ),
+        ):
+            route = _classify_chat_route(
+                ChatContextRequest(
+                    vault_id="vault-chat",
+                    prompt="Consider the situation and tell me what you think.",
+                ),
+                source_count=5000,
+            )
+
+        self.assertEqual(route["intent"], "general_chat")
+        self.assertEqual(route["reason"], "router_unavailable_safe_direct")
+
+    def test_profile_context_is_shared_by_direct_and_grounded_prompts(self) -> None:
+        from backend.app.core.llm_runtime import _direct_messages, _grounded_messages
+
+        trusted = {"profile": {"display_name": "Shlok"}}
+        direct = _direct_messages(
+            "Please introduce me.",
+            trusted_context=trusted,
+        )
+        grounded = _grounded_messages(
+            "Relate this file to me.",
+            citations=[],
+            clusters_used=[],
+            trusted_context=trusted,
+        )
+
+        self.assertIn("User-selected display name: Shlok", direct[0]["content"])
+        self.assertIn("User-selected display name: Shlok", grounded[-1]["content"])
+        self.assertIn("not verified facts about the user", direct[0]["content"])
+
+    def test_grounded_model_guidance_distinguishes_qualified_and_conflict_reasoning(self) -> None:
+        from backend.app.core.llm_runtime import _grounded_messages
+
+        citation = {
+            "source_id": "source-1",
+            "source_title": "Project context",
+            "snippet": "The project context is incomplete.",
+            "score": 0.8,
+            "trust_tier": "trusted_local",
+        }
+        qualified = _grounded_messages(
+            "Is this project good?",
+            [citation],
+            [],
+            synthesis_strategy="qualified",
+        )
+        conflict = _grounded_messages(
+            "What did the project decide?",
+            [citation],
+            [],
+            synthesis_strategy="explain_conflict",
+        )
+
+        self.assertIn("separate directly supported facts", qualified[-1]["content"])
+        self.assertIn("apply your own reasoning", qualified[-1]["content"])
+        self.assertIn("do not silently choose a winner", conflict[-1]["content"])
+        self.assertIn("additional evidence could resolve it", conflict[-1]["content"])
+
+    def test_personal_memory_keeps_user_provenance_and_excludes_assistant_claims(self) -> None:
+        from backend.app.core.context_memory import (
+            get_context_memory,
+            rebuild_chat_session_memory,
+        )
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id, vault_id, title, scope_cluster_id, scope_project_id,
+                    scope_unclustered, saved, memory_status, created_at, updated_at
+                ) VALUES ('session-provenance', 'vault-chat', 'Provenance', NULL, NULL,
+                          0, 0, 'idle', ?, ?)
+                """,
+                (now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_messages (
+                    id, session_id, role, content, clusters_used, citations,
+                    warnings, created_at, useful, saved
+                ) VALUES
+                    ('message-user', 'session-provenance', 'user',
+                     'My name is Shlok.', '[]', '[]', '[]', ?, 0, 0),
+                    ('message-assistant', 'session-provenance', 'assistant',
+                     'Your name is WrongName and I cannot verify it.', '[]', '[]', '[]', ?, 0, 0)
+                """,
+                (now, now),
+            )
+            rebuild_chat_session_memory(
+                conn,
+                vault_id="vault-chat",
+                session_id="session-provenance",
+            )
+            items, _ = get_context_memory(
+                conn,
+                vault_id="vault-chat",
+                cluster_id=None,
+                query="name",
+                personal_only=True,
+            )
+            legacy = conn.execute(
+                """
+                SELECT detail_text, review_state
+                FROM memory_items
+                WHERE session_id = 'session-provenance' AND status = 'active'
+                """
+            ).fetchall()
+
+        rendered = " ".join(
+            str(item.get("summary") or item.get("detail_text") or "")
+            for item in items
+        )
+        self.assertIn("Shlok", rendered)
+        self.assertNotIn("WrongName", rendered)
+        self.assertTrue(
+            all(
+                not item.get("speaker_role") or item.get("speaker_role") == "user"
+                for item in items
+            )
+        )
+        self.assertTrue(all(row["review_state"] == "user_asserted" for row in legacy))
+        self.assertNotIn("WrongName", " ".join(row["detail_text"] for row in legacy))
+
+    def test_role_aware_chat_memory_is_bounded_for_large_conversations(self) -> None:
+        from backend.app.core.context_memory import rebuild_chat_session_memory
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id, vault_id, title, scope_cluster_id, scope_project_id,
+                    scope_unclustered, saved, memory_status, created_at, updated_at
+                ) VALUES ('session-scale', 'vault-chat', 'Scale', NULL, NULL,
+                          0, 0, 'idle', ?, ?)
+                """,
+                (now, now),
+            )
+            rows = []
+            for index in range(300):
+                rows.extend(
+                    [
+                        (
+                            f"user-scale-{index}",
+                            "session-scale",
+                            "user",
+                            f"I want to complete milestone {index}.",
+                            "[]",
+                            "[]",
+                            "[]",
+                            now,
+                            0,
+                            0,
+                        ),
+                        (
+                            f"assistant-scale-{index}",
+                            "session-scale",
+                            "assistant",
+                            f"You cannot complete fabricated assistant milestone {index}.",
+                            "[]",
+                            "[]",
+                            "[]",
+                            now,
+                            0,
+                            0,
+                        ),
+                    ]
+                )
+            conn.executemany(
+                """
+                INSERT INTO chat_messages (
+                    id, session_id, role, content, clusters_used, citations,
+                    warnings, created_at, useful, saved
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            rebuild_chat_session_memory(
+                conn,
+                vault_id="vault-chat",
+                session_id="session-scale",
+            )
+            active = conn.execute(
+                """
+                SELECT detail_text
+                FROM memory_items
+                WHERE session_id = 'session-scale' AND status = 'active'
+                """
+            ).fetchall()
+
+        self.assertLessEqual(len(active), 10)
+        self.assertNotIn(
+            "fabricated assistant milestone",
+            " ".join(row["detail_text"] for row in active),
+        )
+
+    def test_retry_generation_reuses_the_durable_user_turn(self) -> None:
+        from backend.app.api.routes.chat import _start_chat_generation
+        from backend.app.core.database import connect
+
+        first = _start_chat_generation(
+            vault_id="vault-chat",
+            session_id=None,
+            cluster_id=None,
+            prompt="Explain the selected project.",
+            request_id="request-original-123",
+        )
+        retry = _start_chat_generation(
+            vault_id="vault-chat",
+            session_id=first["session_id"],
+            cluster_id=None,
+            prompt="Explain the selected project.",
+            request_id="request-retry-123",
+            retry_generation_id=first["generation_id"],
+        )
+        with connect() as conn:
+            user_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM chat_messages WHERE session_id = ? AND role = 'user'",
+                (first["session_id"],),
+            ).fetchone()["count"]
+            attempts = conn.execute(
+                """
+                SELECT parent_generation_id, attempt_number
+                FROM chat_generations WHERE id = ?
+                """,
+                (retry["generation_id"],),
+            ).fetchone()
+        self.assertEqual(user_count, 1)
+        self.assertEqual(retry["user_message_id"], first["user_message_id"])
+        self.assertEqual(attempts["parent_generation_id"], first["generation_id"])
+        self.assertEqual(attempts["attempt_number"], 2)
+
+    def test_generation_request_id_rejects_duplicate_persistence(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.chat import _start_chat_generation
+        from backend.app.core.database import connect
+
+        _start_chat_generation(
+            vault_id="vault-chat",
+            session_id=None,
+            cluster_id=None,
+            prompt="One durable turn.",
+            request_id="request-once-123",
+        )
+        with self.assertRaises(HTTPException) as raised:
+            _start_chat_generation(
+                vault_id="vault-chat",
+                session_id=None,
+                cluster_id=None,
+                prompt="One durable turn.",
+                request_id="request-once-123",
+            )
+        self.assertEqual(raised.exception.status_code, 409)
+        with connect() as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) AS count FROM chat_generations WHERE request_id = ?",
+                    ("request-once-123",),
+                ).fetchone()["count"],
+                1,
+            )
 
     def test_two_thousand_message_chat_opens_as_bounded_cursor_pages(self) -> None:
         from backend.app.api.routes.chat import (

@@ -113,14 +113,20 @@ def test_v2_production_job_uses_dedicated_model_and_retrieval_reads_fact() -> No
             )
         assert job is not None
 
-        with patch(
-            "backend.app.core.llm_runtime.generate_local_structured_json",
-            return_value=LLMResult(
-                text=_response(),
-                provider="openai-compatible",
-                model="extractor-model",
+        with (
+            patch(
+                "backend.app.core.llm_runtime.runtime_status",
+                return_value={"available": True, "state": "ready"},
             ),
-        ) as generate:
+            patch(
+                "backend.app.core.llm_runtime.generate_local_structured_json",
+                return_value=LLMResult(
+                    text=_response(),
+                    provider="openai-compatible",
+                    model="extractor-model",
+                ),
+            ) as generate,
+        ):
             assert run_due_jobs_once(limit=1) == 1
 
         assert generate.call_args.kwargs["model"] == "extractor-model"
@@ -171,12 +177,18 @@ def test_v2_retrieval_flag_preserves_existing_production_output() -> None:
             _enqueue_atomic_semantic_enrichment(
                 conn, vault_id="vault-1", session_id="session-1"
             )
-        with patch(
-            "backend.app.core.llm_runtime.generate_local_structured_json",
-            return_value=LLMResult(
-                text=_response(),
-                provider="openai-compatible",
-                model="extractor-model",
+        with (
+            patch(
+                "backend.app.core.llm_runtime.runtime_status",
+                return_value={"available": True, "state": "ready"},
+            ),
+            patch(
+                "backend.app.core.llm_runtime.generate_local_structured_json",
+                return_value=LLMResult(
+                    text=_response(),
+                    provider="openai-compatible",
+                    model="extractor-model",
+                ),
             ),
         ):
             assert run_due_jobs_once(limit=1) == 1

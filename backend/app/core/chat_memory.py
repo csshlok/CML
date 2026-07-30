@@ -8,7 +8,12 @@ from backend.app.core.encrypted_storage import (
     store_source_content_fields,
     update_source_content_fields,
 )
-from backend.app.core.cluster_lifecycle import mark_cluster_needs_update
+from backend.app.core.cluster_lifecycle import (
+    SYSTEM_CHATS_CLUSTER_DESCRIPTION,
+    SYSTEM_CHATS_CLUSTER_NAME,
+    mark_cluster_needs_update,
+)
+from backend.app.core.cluster_membership import move_source_cluster_membership
 from backend.app.core.memory_card import summarize_text
 
 
@@ -65,8 +70,7 @@ def upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> N
             conn.execute(
                 """
                 UPDATE sources
-                SET cluster_id = :cluster_id,
-                    title = :title,
+                SET title = :title,
                     state = :state,
                     raw_text = :raw_text,
                     extracted_text = :extracted_text,
@@ -76,6 +80,15 @@ def upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> N
                 WHERE id = :id
                 """,
                 stored_payload,
+            )
+            move_source_cluster_membership(
+                conn,
+                source_id=source_id,
+                target_cluster_id=str(cluster["id"]),
+                reason="Chat transcript scope was refreshed.",
+                actor="chat_transcript_memory",
+                expected_vault_id=vault_id,
+                prune_empty_cluster=False,
             )
         else:
             stored_payload = store_source_content_fields(conn, payload, now=now)
@@ -121,8 +134,13 @@ def _transcript_target_clusters(conn, *, vault_id: str, session, messages) -> li
 
 def _ensure_chats_cluster(conn, vault_id: str) -> dict:
     row = conn.execute(
-        "SELECT id, name FROM clusters WHERE vault_id = ? AND name = 'Chats' LIMIT 1",
-        (vault_id,),
+        """
+        SELECT id, name
+        FROM clusters
+        WHERE vault_id = ? AND name = ? AND description = ?
+        LIMIT 1
+        """,
+        (vault_id, SYSTEM_CHATS_CLUSTER_NAME, SYSTEM_CHATS_CLUSTER_DESCRIPTION),
     ).fetchone()
     if row is not None:
         return dict_from_row(row)
@@ -130,8 +148,9 @@ def _ensure_chats_cluster(conn, vault_id: str) -> dict:
     cluster = {
         "id": f"cluster-{uuid4()}",
         "vault_id": vault_id,
-        "name": "Chats",
-        "description": "Chat transcripts that were not scoped to a specific context cluster.",
+        "name": SYSTEM_CHATS_CLUSTER_NAME,
+        "name_origin": "auto",
+        "description": SYSTEM_CHATS_CLUSTER_DESCRIPTION,
         "color": "sand",
         "index_status": "empty",
         "profile_status": "missing",
@@ -143,11 +162,11 @@ def _ensure_chats_cluster(conn, vault_id: str) -> dict:
     conn.execute(
         """
         INSERT INTO clusters (
-            id, vault_id, name, description, color, index_status, profile_status,
+            id, vault_id, name, name_origin, description, color, index_status, profile_status,
             cluster_summary, cluster_glossary, created_at, updated_at
         )
         VALUES (
-            :id, :vault_id, :name, :description, :color, :index_status, :profile_status,
+            :id, :vault_id, :name, :name_origin, :description, :color, :index_status, :profile_status,
             :cluster_summary, :cluster_glossary, :created_at, :updated_at
         )
         """,

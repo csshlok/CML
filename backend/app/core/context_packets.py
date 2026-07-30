@@ -54,6 +54,7 @@ def build_chat_context_packet(
     cluster_profile: dict | None = None,
     token_estimate: dict | None = None,
     bundle_status: dict | None = None,
+    trusted_context: dict | None = None,
 ) -> dict:
     normalized_citations = citations or []
     evidence = [
@@ -90,6 +91,8 @@ def build_chat_context_packet(
             for turn in recent_turns
             if str(turn.get("content") or "").strip()
         ]
+    if trusted_context:
+        packet["trusted_context"] = trusted_context
     return packet
 
 
@@ -101,6 +104,7 @@ def render_context_packet(packet: dict) -> str:
     memory_items = packet.get("memory_items") or []
     working_memory = packet.get("working_memory") or {}
     recent_turns = packet.get("recent_turns") or []
+    trusted_context = packet.get("trusted_context") or {}
     retrieval_authority = bool(packet.get("retrieval_authority", True))
     cluster_profile = packet.get("cluster_profile") or {}
     token_estimate = packet.get("token_estimate") or {}
@@ -118,8 +122,22 @@ def render_context_packet(packet: dict) -> str:
         f"- Cluster scope: {', '.join(_cluster_label(cluster) for cluster in clusters) if clusters else 'No cluster scope selected.'}",
         f"- Evidence items: {len(evidence)}",
         "",
-        "Cluster Profile",
+        "Trusted Application Context",
     ]
+    profile = trusted_context.get("profile") or {}
+    display_name = str(profile.get("display_name") or "").strip()
+    lines.append(
+        f"- User-selected display name: {display_name}"
+        if display_name
+        else "- No user profile attributes were supplied."
+    )
+    lines.extend(
+        [
+            "- Application context is trusted metadata, not retrieved document evidence.",
+            "",
+        "Cluster Profile",
+        ]
+    )
     summary = str(cluster_profile.get("summary") or "").strip()
     lines.append(f"- Summary: {summary or 'No cluster summary is available yet.'}")
     local_terms = ", ".join(str(item).strip() for item in cluster_profile.get("local_terms") or [] if str(item).strip())
