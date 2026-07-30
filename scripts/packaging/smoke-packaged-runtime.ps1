@@ -55,6 +55,15 @@ $env:CML_DATABASE_PATH = $dbPath
 $env:CML_STARTUP_STATUS_PATH = $statusPath
 $env:CML_API_TOKEN = "packaged-smoke-token"
 
+$turbovecJson = & $python -I -c "import json; from turbovec import IdMapIndex; print(json.dumps({'available': IdMapIndex is not None}))"
+if ($LASTEXITCODE -ne 0) {
+  throw "Packaged TurboVec import probe failed."
+}
+$turbovecStatus = $turbovecJson | ConvertFrom-Json
+if (-not $turbovecStatus.available) {
+  throw "Packaged TurboVec runtime is unavailable."
+}
+
 $ocrJson = & $python -s $ocrProbePath
 if ($LASTEXITCODE -ne 0) {
   throw "Packaged OCR probe failed."
@@ -187,6 +196,7 @@ try {
     embedding_setup_status_available = $true
     hash_embeddings_blocked_without_dev_mode = $true
     embedding_cache_configurable = $true
+    turbovec_runtime_available = [bool]$turbovecStatus.available
     image_ocr_available = [bool]$ocrStatus.image_ocr_available
     pdf_ocr_available = [bool]$ocrStatus.pdf_ocr_available
     pdf_ocr_engine = $ocrStatus.pdf_ocr_engine

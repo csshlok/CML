@@ -58,6 +58,7 @@ Vault keeps that context outside the model and retrieves only what a question ne
 - **Group related work into clusters** for projects, clients, research topics, or areas of responsibility.
 - **Create, delete, and reorganize clusters**, or move ready and unclustered sources into a cluster without reorganizing the rest of the vault.
 - **Search across your context** without remembering where a detail was originally stored.
+- **Accelerate large-vault retrieval automatically** after a per-vault TurboVec quality and performance gate passes, with exact search retained as the safe fallback.
 - **Shape Home around your workflow** with Focused, Library, and Activity presets, type and sort controls, density choices, and reorderable sections.
 - **Continue where you left off** across recently opened sources, chats, clusters, and projects.
 - **Index codebases with Odin** and ask how a project works without browsing every file manually.

@@ -150,6 +150,7 @@ jobs:
       - name: Smoke unpacked startup and renderer
         shell: pwsh
         run: |
+          ./scripts/packaging/smoke-packaged-runtime.ps1 -PackageRoot apps/desktop/release/win-unpacked
           ./scripts/packaging/smoke-packaged-app-launch.ps1 -PackageRoot apps/desktop/release/win-unpacked
           python scripts/packaging/smoke-packaged-ui.py --package-root apps/desktop/release/win-unpacked --report test-results/packaged-ui.json --screenshot test-results/packaged-ui.png
       - uses: actions/upload-artifact@v7

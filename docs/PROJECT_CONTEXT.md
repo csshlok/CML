@@ -1,5 +1,12 @@
 # Project Context
 
+## 2026-07-30 — TurboVec distribution correction
+
+- `turbovec==0.8.0` is part of backend, development, and portable Windows runtime dependencies.
+- Package creation, package layout auditing, packaged startup smoke, and clean-machine validation reject a missing real `IdMapIndex` runtime.
+- Vector search defaults to `auto`. Vaults below the threshold or without a successful Phase-C approval remain on exact search.
+- The sidecar remains derived state under the vault path; SQLite remains authoritative and unhealthy sidecars fail closed.
+
 ## 2026-07-30 — current implementation
 
 - Chat routing is model-directed and context-aware: general questions bypass retrieval, while questions about saved objects receive bounded context.

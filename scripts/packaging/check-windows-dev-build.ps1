@@ -68,7 +68,7 @@ if ([int]$pythonState.bits -ne 64) {
   throw "The repository virtual environment must use 64-bit Python."
 }
 
-& $python -c "import importlib.util as u, sys; names=('PIL','playwright','sentence_transformers'); missing=[name for name in names if u.find_spec(name) is None]; print('Missing Python modules: ' + ', '.join(missing) if missing else 'Python packaging modules found.'); sys.exit(1 if missing else 0)"
+& $python -c "import importlib.util as u, sys; names=('PIL','playwright','sentence_transformers','turbovec'); missing=[name for name in names if u.find_spec(name) is None]; print('Missing Python modules: ' + ', '.join(missing) if missing else 'Python packaging modules found.'); sys.exit(1 if missing else 0)"
 if ($LASTEXITCODE -ne 0) {
   throw "The virtual environment is incomplete. Install requirements\contributors-backend.txt before packaging."
 }

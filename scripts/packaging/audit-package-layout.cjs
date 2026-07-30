@@ -1,3 +1,4 @@
+const fs = require("node:fs");
 const path = require("node:path");
 const {
   defaultWritableRoots,
@@ -15,6 +16,12 @@ async function main() {
     : packageRoot;
   const helperPaths = resolvePackagedHelperPaths(resourcesRoot);
   const manifestReport = await verifyHelperManifest(resourcesRoot);
+  const requiredRuntimeDependencies = [
+    path.join(resourcesRoot, "python-runtime", "Lib", "site-packages", "turbovec"),
+  ];
+  const missingRuntimeDependencies = requiredRuntimeDependencies.filter(
+    (dependencyPath) => !fs.existsSync(dependencyPath),
+  );
   const layoutReport = packageLayoutAudit({
     packageRoot,
     resourcesRoot,
@@ -37,10 +44,12 @@ async function main() {
     manifest_ok: manifestReport.ok,
     layout_ok: layoutReport.ok,
     manifest_entry_count: manifestReport.entry_count,
+    runtime_dependencies_ok: missingRuntimeDependencies.length === 0,
+    missing_runtime_dependencies: missingRuntimeDependencies,
     overlaps: layoutReport.overlaps,
   };
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  if (!manifestReport.ok || !layoutReport.ok) {
+  if (!manifestReport.ok || !layoutReport.ok || missingRuntimeDependencies.length > 0) {
     process.exitCode = 1;
   }
 }

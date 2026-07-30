@@ -67,6 +67,7 @@ $backendRuntimePackages = @(
   "cryptography==48.0.1",
   "psutil==7.2.2",
   "numpy==2.4.6",
+  "turbovec==0.8.0",
   "pypdf==6.14.2",
   "python-docx==1.2.0",
   "PyMuPDF==1.26.7",
@@ -444,7 +445,7 @@ Complete-PackagePhase $stagingDir
 $runtimePython = Join-Path $runtimeDir "python.exe"
 $backendRuntimeStampPath = Join-Path $runtimeDir ".cml-runtime-stamp"
 $backendRuntimeFingerprint = Get-StringFingerprint @(
-  "python-runtime-v7",
+  "python-runtime-v8",
   "base_python_root=$basePythonRoot",
   "prune=docs-tests-pip",
   "dependency_policy=pinned",
@@ -457,6 +458,7 @@ if (-not $Release) {
   $backendRuntimeRequiredPaths += (Join-Path $runtimeDir "Lib\site-packages\tree_sitter")
   $backendRuntimeRequiredPaths += (Join-Path $runtimeDir "Lib\site-packages\tree_sitter_typescript")
   $backendRuntimeRequiredPaths += (Join-Path $runtimeDir "Lib\site-packages\sentence_transformers")
+  $backendRuntimeRequiredPaths += (Join-Path $runtimeDir "Lib\site-packages\turbovec")
   $backendRuntimeReady = Test-StagedRuntime `
     -RuntimeDir $runtimeDir `
     -StampPath $backendRuntimeStampPath `
@@ -475,6 +477,10 @@ if ($backendRuntimeReady) {
   & $runtimePython -I -m pip install --upgrade @effectiveBackendRuntimePackages
   Optimize-PortablePythonRuntime $runtimeDir
   Write-StagedRuntimeStamp $backendRuntimeStampPath $backendRuntimeFingerprint
+}
+& $runtimePython -I -c "from turbovec import IdMapIndex; assert IdMapIndex is not None"
+if ($LASTEXITCODE -ne 0) {
+  throw "The packaged Python runtime cannot import turbovec.IdMapIndex."
 }
 Complete-PackagePhase $runtimeDir
 

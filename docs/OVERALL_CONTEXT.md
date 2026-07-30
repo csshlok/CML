@@ -1,5 +1,17 @@
 # Overall Context
 
+## 2026-07-30 — TurboVec packaged-runtime activation
+
+TurboVec is now a production runtime dependency rather than code-only optional
+wiring. Version 0.8.0 is pinned across backend metadata, contributor setup, and
+the portable Windows Python package. Packaging cache validation requires the
+module directory, packaging itself executes a real `IdMapIndex` import, the
+layout audit rejects a missing runtime, and packaged/clean-machine smokes report
+TurboVec availability. The default vector policy is `auto`: eligible large
+vaults enqueue the existing Phase-C comparison, and only an approved active
+tuple uses the sidecar; missing, unhealthy, stale, or unapproved state continues
+to fail closed to exact search.
+
 ## 2026-07-30 — answer policy, cluster lifecycle, and queue throughput
 
 Chat now separates routing from answer generation instead of treating retrieval as

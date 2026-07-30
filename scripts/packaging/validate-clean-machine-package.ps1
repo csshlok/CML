@@ -23,6 +23,7 @@ $resources = Join-Path $packageRootPath "resources"
 $runtimePython = Join-Path $resources "python-runtime\python.exe"
 $psutilRuntime = Join-Path $resources "python-runtime\Lib\site-packages\psutil"
 $sentenceTransformersRuntime = Join-Path $resources "python-runtime\Lib\site-packages\sentence_transformers"
+$turbovecRuntime = Join-Path $resources "python-runtime\Lib\site-packages\turbovec"
 $backend = Join-Path $resources "backend"
 $ocrManifest = Join-Path $backend "bin\ocr\manifest.json"
 $playwrightRuntime = Join-Path $resources "ms-playwright"
@@ -42,6 +43,7 @@ $checks = @(
   @{ name = "python_runtime_exists"; ok = Test-PathPresent $runtimePython; path = $runtimePython },
   @{ name = "psutil_runtime_exists"; ok = Test-PathPresent $psutilRuntime; path = $psutilRuntime },
   @{ name = "sentence_transformers_runtime_exists"; ok = Test-PathPresent $sentenceTransformersRuntime; path = $sentenceTransformersRuntime },
+  @{ name = "turbovec_runtime_exists"; ok = Test-PathPresent $turbovecRuntime; path = $turbovecRuntime },
   @{ name = "playwright_runtime_exists"; ok = Test-PathPresent $playwrightRuntime; path = $playwrightRuntime },
   @{ name = "llm_runtime_exists"; ok = Test-PathPresent $llmRuntime; path = $llmRuntime },
   @{ name = "llm_cuda_runtime_exists"; ok = Test-PathPresent $llmCudaRuntime; path = $llmCudaRuntime },
