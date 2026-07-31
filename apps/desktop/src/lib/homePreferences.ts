@@ -41,7 +41,7 @@ export type HomePreferences = {
 };
 
 const PRESET_SECTIONS: Record<HomePreset, HomeSectionId[]> = {
-  focused: ["ask", "attention", "suggestedMoves", "continue", "clusters", "quick"],
+  focused: ["ask", "quick", "attention", "suggestedMoves", "continue", "clusters"],
   library: ["recentSources", "inbox", "clusters", "sourceTypes", "quick"],
   activity: ["timeline", "tasks", "recentChats", "quick"],
 };

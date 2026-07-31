@@ -11,7 +11,7 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { createChatSession, listClusters, listSources, listVaults, type ClusterRecord, type SourceRecord } from "@/lib/backend";
-import { MessageSquare, Layers, Files, Globe2, Settings, Plus, FolderOpen, Cable, LockKeyhole } from "lucide-react";
+import { MessageSquare, Layers, Files, Globe2, Settings, Plus, FolderOpen, Cable, HeartPulse, LockKeyhole } from "lucide-react";
 
 interface PaletteState {
   open: boolean;
@@ -28,11 +28,13 @@ export function CommandPalette({
   open,
   onOpenChange,
   onLock,
+  onOpenHealth,
   lockAvailable,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onLock: () => Promise<void>;
+  onOpenHealth: () => Promise<void>;
   lockAvailable: boolean;
 }) {
   const navigate = useNavigate();
@@ -111,6 +113,11 @@ export function CommandPalette({
           </CommandItem>
           <CommandItem onSelect={() => go(() => navigate({ to: "/settings", search: { section: "storage" } }))}>
             <FolderOpen className="mr-2 h-4 w-4" /> Library settings
+          </CommandItem>
+          <CommandItem onSelect={() => go(onOpenHealth)}>
+            <HeartPulse className="mr-2 h-4 w-4" />
+            Health status
+            <span className="ml-auto text-xs text-muted-foreground">Ctrl+Shift+H</span>
           </CommandItem>
           {lockAvailable ? (
             <CommandItem onSelect={() => go(onLock)}>

@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Clock3, Pause, Play, RefreshCw, Search, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronRight, Clock3, Pause, Play, RefreshCw, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/layout/WindowAware";
@@ -30,13 +30,14 @@ export const Route = createFileRoute("/_app/tasks")({
   component: TasksView,
 });
 
-type TaskFilter = "running" | "queued" | "failed" | "completed" | "maintenance";
+type TaskFilter = "active" | "running" | "queued" | "failed" | "completed" | "maintenance";
 type ProjectTask = { project: ProjectRecord; run: ProjectIndexRunRecord };
+const taskFilters: TaskFilter[] = ["active", "running", "queued", "failed", "completed", "maintenance"];
 
 function TasksView() {
   const { job: requestedJobId } = Route.useSearch();
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
-  const [filter, setFilter] = useState<TaskFilter>("running");
+  const [filter, setFilter] = useState<TaskFilter>("active");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<AppJobRecord | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -44,8 +45,11 @@ function TasksView() {
   const [jobRows, setJobRows] = useState<AppJobRecord[]>([]);
   const [nextJobCursor, setNextJobCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
 
   async function load() {
+    setRefreshing(true);
     const [statusResult, jobsResult, summaryResult] = await Promise.allSettled([
       getJobStatus(),
       listJobsPage({ limit: 100 }),
@@ -54,10 +58,6 @@ function TasksView() {
     if (statusResult.status === "fulfilled") {
       const status = statusResult.value;
       setJobs(status);
-      const requested = requestedJobId
-        ? [...status.running_jobs, ...status.latest].find((job) => job.id === requestedJobId)
-        : null;
-      setSelected((current) => requested ?? current);
     }
     if (jobsResult.status === "fulfilled") {
       setJobRows(jobsResult.value.items);
@@ -74,6 +74,16 @@ function TasksView() {
       setJobs(null);
       setMessage("Tasks are temporarily unavailable.");
     }
+    if (requestedJobId) {
+      const requested = uniqueJobs([
+        ...(statusResult.status === "fulfilled" ? statusResult.value.running_jobs : []),
+        ...(statusResult.status === "fulfilled" ? statusResult.value.latest : []),
+        ...(jobsResult.status === "fulfilled" ? jobsResult.value.items : []),
+      ]).find((job) => job.id === requestedJobId);
+      if (requested) setSelected(requested);
+    }
+    setHasLoaded(true);
+    setRefreshing(false);
   }
 
   const hasActiveWork = Boolean(
@@ -86,14 +96,17 @@ function TasksView() {
   );
   useVisiblePolling(load, hasActiveWork ? 5000 : 30000);
 
-  const rows = useMemo(() => {
+  const allJobs = useMemo(() => {
     const running = jobs?.running_jobs ?? [];
-    const merged = uniqueJobs([...running, ...jobRows, ...(jobs?.latest ?? [])]);
+    return uniqueJobs([...running, ...jobRows, ...(jobs?.latest ?? [])]);
+  }, [jobRows, jobs]);
+
+  const rows = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return merged
+    return allJobs
       .filter((job) => matchesFilter(job, filter))
       .filter((job) => !normalized || `${job.job_type} ${job.status} ${job.write_scope ?? ""}`.toLowerCase().includes(normalized));
-  }, [filter, jobRows, jobs, query]);
+  }, [allJobs, filter, query]);
 
   async function loadMoreJobs() {
     if (!nextJobCursor || loadingMore) return;
@@ -113,6 +126,17 @@ function TasksView() {
     return projectTasks.filter(({ run }) => matchesProjectFilter(run, filter))
       .filter(({ project, run }) => !normalized || `${project.name} ${run.phase} ${run.status} ${run.trigger_source}`.toLowerCase().includes(normalized));
   }, [filter, projectTasks, query]);
+  const filterCounts = useMemo(
+    () =>
+      Object.fromEntries(
+        taskFilters.map((item) => [
+          item,
+          allJobs.filter((job) => matchesFilter(job, item)).length
+            + projectTasks.filter(({ run }) => matchesProjectFilter(run, item)).length,
+        ]),
+      ) as Record<TaskFilter, number>,
+    [allJobs, projectTasks],
+  );
 
   async function runOnce() {
     try {
@@ -164,26 +188,30 @@ function TasksView() {
     }
   }
 
-  const activeJob = rows.find((job) => job.id === selected?.id) ?? null;
+  const activeJob = selected
+    ? allJobs.find((job) => job.id === selected.id) ?? selected
+    : null;
 
   return (
     <div
       className={
         "vault-page-wash grid h-full grid-cols-1 overflow-y-auto bg-background xl:overflow-hidden " +
-        (activeJob ? "xl:grid-cols-[minmax(0,1fr)_320px]" : "")
+        (activeJob ? "xl:grid-cols-[minmax(0,1fr)_360px]" : "")
       }
     >
-      <main className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:overflow-y-auto">
+      <main className="mx-auto w-full max-w-[1280px] min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:overflow-y-auto">
         <PageHeader className="border-b border-border pb-6">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
               <h1 className="page-title">Tasks</h1>
-              <p className="mt-2 text-sm text-muted-foreground">Background work that keeps your vault current.</p>
+              <p className="mt-2 max-w-[65ch] text-sm text-muted-foreground">
+                See what is running, what is waiting, and anything that needs your attention.
+              </p>
             </div>
             <div className="flex w-full gap-2 sm:w-auto">
-              <Button variant="outline" onClick={() => void load()}>
-                <RefreshCw className="h-4 w-4" />
-                Refresh
+              <Button variant="outline" onClick={() => void load()} disabled={refreshing}>
+                <RefreshCw className={refreshing ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+                {refreshing ? "Refreshing" : "Refresh"}
               </Button>
               <Button onClick={() => void runOnce()}>
                 <Play className="h-4 w-4" />
@@ -191,33 +219,46 @@ function TasksView() {
               </Button>
             </div>
           </div>
-          <div className="mt-6 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-            <div className="relative min-w-0 max-w-xl">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input aria-label="Search tasks" className="pl-9" placeholder="Search tasks..." value={query} onChange={(event) => setQuery(event.target.value)} />
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {(["running", "queued", "failed", "completed", "maintenance"] as const).map((item) => (
-                <button
-                  key={item}
-                  type="button"
-                  onClick={() => setFilter(item)}
-                  className={`rounded-md border px-3 py-2 text-sm transition-colors ${
-                    filter === item ? "border-primary bg-accent text-foreground" : "border-border bg-card text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {labelForFilter(item)}
-                </button>
-              ))}
-            </div>
-          </div>
         </PageHeader>
 
         {message && (
-          <div className="mt-5 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
-            {message}
+          <div
+            className="mt-5 flex items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground"
+            role="status"
+          >
+            <span>{message}</span>
+            <Button variant="ghost" size="icon" aria-label="Dismiss task message" onClick={() => setMessage(null)}>
+              <X className="h-4 w-4" />
+            </Button>
           </div>
         )}
+
+        <nav
+          aria-label="Task status"
+          className="mt-6 flex overflow-x-auto rounded-md border border-border bg-card"
+        >
+          {taskFilters.map((item) => (
+            <button
+              key={item}
+              type="button"
+              aria-pressed={filter === item}
+              onClick={() => {
+                setFilter(item);
+                setSelected(null);
+              }}
+              className={`flex min-w-[112px] flex-1 items-center justify-between gap-3 border-r border-border px-4 py-3 text-left text-sm transition-colors last:border-r-0 ${
+                filter === item
+                  ? "bg-accent font-medium text-foreground"
+                  : "text-muted-foreground hover:bg-accent/35 hover:text-foreground"
+              }`}
+            >
+              <span>{labelForFilter(item)}</span>
+              <span className="min-w-6 rounded-full bg-secondary px-1.5 py-0.5 text-center text-xs tabular-nums text-secondary-foreground">
+                {filterCounts[item].toLocaleString()}
+              </span>
+            </button>
+          ))}
+        </nav>
 
         {visibleProjectTasks.length > 0 && (
           <section className="mt-6">
@@ -246,23 +287,44 @@ function TasksView() {
         )}
 
         <section className="mt-6 overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex flex-col gap-3 border-b border-border px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-sm font-semibold">Vault jobs</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {rows.length} {rows.length === 1 ? "job" : "jobs"} in {labelForFilter(filter).toLowerCase()}
+              </p>
+            </div>
+            <div className="relative min-w-0 sm:w-72">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                aria-label="Search tasks"
+                className="pl-9"
+                placeholder="Search this view"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </div>
+          </div>
           <div className="overflow-x-auto">
             <div className="min-w-[720px]">
-              <div className="grid grid-cols-[104px_minmax(0,1fr)_120px_112px_104px_80px] border-b border-border px-4 py-3 text-xs text-muted-foreground">
+              <div className="grid grid-cols-[88px_minmax(0,1fr)_120px_128px_112px_32px] border-b border-border px-4 py-3 text-xs text-muted-foreground">
                 <span>Priority</span>
                 <span>Job</span>
                 <span>Scope</span>
                 <span>Status</span>
-                <span>Estimate</span>
-                <span className="text-right">Control</span>
+                <span>Timing</span>
+                <span className="sr-only">Open details</span>
               </div>
               <div className="divide-y divide-border">
                 {rows.map((job) => (
                   <button
                     key={job.id}
                     type="button"
+                    aria-pressed={activeJob?.id === job.id}
                     onClick={() => setSelected(job)}
-                    className="grid w-full grid-cols-[104px_minmax(0,1fr)_120px_112px_104px_80px] items-center px-4 py-4 text-left text-sm transition-colors hover:bg-accent/35"
+                    className={`grid w-full grid-cols-[88px_minmax(0,1fr)_120px_128px_112px_32px] items-center px-4 py-3.5 text-left text-sm transition-colors hover:bg-accent/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
+                      activeJob?.id === job.id ? "bg-accent/60" : ""
+                    }`}
                   >
                     <span className="capitalize text-muted-foreground">{job.priority ?? "normal"}</span>
                     <span className="min-w-0">
@@ -275,20 +337,33 @@ function TasksView() {
                       <span className="capitalize">{job.status.replace(/_/g, " ")}</span>
                     </span>
                     <span className="font-mono text-xs text-muted-foreground">{formatEstimate(job)}</span>
-                    <span className="text-right text-xs text-muted-foreground">
-                      {job.status === "paused" && job.preemptable
-                        ? "Resume"
-                        : ["queued", "running"].includes(job.status) && job.preemptable
-                          ? "Pause"
-                          : job.cancellable && ["queued", "running", "blocked_by_dependency", "blocked_setup_required", "deferred"].includes(job.status)
-                            ? "Cancel"
-                            : "-"}
-                    </span>
+                    <ChevronRight className="h-4 w-4 justify-self-end text-muted-foreground" aria-hidden="true" />
                   </button>
                 ))}
-                {rows.length === 0 && (
-                  <div className="px-4 py-10 text-center text-sm text-muted-foreground">No jobs in this view.</div>
-                )}
+                {!hasLoaded && rows.length === 0 ? (
+                  <div className="space-y-3 px-4 py-6" aria-label="Loading tasks">
+                    <div className="h-12 animate-pulse rounded bg-secondary" />
+                    <div className="h-12 animate-pulse rounded bg-secondary" />
+                  </div>
+                ) : rows.length === 0 ? (
+                  <div className="px-5 py-12 text-center">
+                    <h3 className="text-sm font-medium text-foreground">
+                      {visibleProjectTasks.length > 0
+                        ? "No additional vault jobs"
+                        : emptyTitle(filter, Boolean(query.trim()))}
+                    </h3>
+                    <p className="mx-auto mt-2 max-w-[52ch] text-sm leading-6 text-muted-foreground">
+                      {visibleProjectTasks.length > 0
+                        ? "Project indexing work in this view is grouped above."
+                        : emptyDescription(filter, Boolean(query.trim()))}
+                    </p>
+                    {query.trim() ? (
+                      <Button className="mt-4" variant="outline" size="sm" onClick={() => setQuery("")}>
+                        Clear search
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
@@ -302,7 +377,7 @@ function TasksView() {
         ) : null}
       </main>
 
-      {activeJob ? <aside className="min-w-0 border-t border-border bg-card px-4 py-6 sm:px-6 xl:w-[var(--panel-width)] xl:min-w-[var(--panel-width)] xl:overflow-y-auto xl:border-l xl:border-t-0 xl:py-8">
+      {activeJob ? <aside className="min-w-0 border-t border-border bg-card px-4 py-6 sm:px-6 xl:overflow-y-auto xl:border-l xl:border-t-0 xl:py-8">
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-sm font-semibold">Job detail</h2>
           <Button variant="ghost" size="icon" aria-label="Close job detail" onClick={() => setSelected(null)}>
@@ -420,8 +495,19 @@ function uniqueJobs(rows: AppJobRecord[]) {
 }
 
 function matchesFilter(job: AppJobRecord, filter: TaskFilter) {
+  if (filter === "active") {
+    return [
+      "running",
+      "queued",
+      "paused",
+      "blocked_by_dependency",
+      "blocked_setup_required",
+      "blocked_local_model",
+      "deferred",
+    ].includes(job.status);
+  }
   if (filter === "running") return job.status === "running";
-  if (filter === "queued") return ["queued", "paused", "blocked_by_dependency", "blocked_setup_required", "deferred"].includes(job.status);
+  if (filter === "queued") return ["queued", "paused", "blocked_by_dependency", "blocked_setup_required", "blocked_local_model", "deferred"].includes(job.status);
   if (filter === "failed") return ["failed", "partial_success", "manual_review"].includes(job.status);
   if (filter === "completed") return ["succeeded", "cancelled"].includes(job.status) && job.user_visible !== 0;
   return ["orphan_vector_cleanup", "artifact_cleanup", "vault_integrity_check", "diagnostic_bundle"].includes(job.job_type);
@@ -429,11 +515,36 @@ function matchesFilter(job: AppJobRecord, filter: TaskFilter) {
 
 function labelForFilter(filter: TaskFilter) {
   return {
+    active: "Active",
     running: "Running",
-    queued: "Queued",
-    failed: "Failed",
-    completed: "Completed",
+    queued: "Waiting",
+    failed: "Needs attention",
+    completed: "History",
     maintenance: "Maintenance",
+  }[filter];
+}
+
+function emptyTitle(filter: TaskFilter, hasQuery: boolean) {
+  if (hasQuery) return "No matching tasks";
+  return {
+    active: "All caught up",
+    running: "Nothing is running",
+    queued: "Nothing is waiting",
+    failed: "Nothing needs attention",
+    completed: "No task history yet",
+    maintenance: "No maintenance work",
+  }[filter];
+}
+
+function emptyDescription(filter: TaskFilter, hasQuery: boolean) {
+  if (hasQuery) return "Try another job name, status, or scope.";
+  return {
+    active: "There is no background work running or waiting right now.",
+    running: "Work that starts will appear here with live progress.",
+    queued: "Paused, blocked, deferred, and queued work will appear here.",
+    failed: "Failed or partially completed work will appear here with recovery details.",
+    completed: "Finished and cancelled tasks will appear here.",
+    maintenance: "Cleanup, integrity checks, and diagnostics will appear here.",
   }[filter];
 }
 
@@ -475,6 +586,7 @@ function formatDate(value: string) {
 }
 
 function matchesProjectFilter(run: ProjectIndexRunRecord, filter: TaskFilter) {
+  if (filter === "active") return ["queued", "running"].includes(run.status);
   if (filter === "running") return run.status === "running";
   if (filter === "queued") return run.status === "queued";
   if (filter === "failed") return ["failed", "partial", "interrupted"].includes(run.status);

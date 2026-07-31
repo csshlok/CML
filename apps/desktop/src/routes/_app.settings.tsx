@@ -277,7 +277,7 @@ function SettingsView() {
     setMounted(true);
     void desktop?.getSetupState?.().then((state) => {
       setProfile(normalizeDesktopProfile(state?.profile));
-      setModelDownloadRoot(state?.model_storage.download_root ?? "");
+      setModelDownloadRoot(state?.model_storage?.download_root ?? "");
     });
     return subscribeDesktopProfile(setProfile);
   }, []);
@@ -1385,6 +1385,7 @@ function SettingsView() {
             <>
               <ProfileSettings
                 profile={profile}
+                vaultName={backendVault?.name ?? ""}
                 vaultPath={backendVault?.path ?? ""}
                 savingName={isActionBusy("profile-name")}
                 savingPhoto={isActionBusy("profile-photo")}
@@ -2920,6 +2921,7 @@ function formatBytes(value: number) {
 
 function ProfileSettings({
   profile,
+  vaultName,
   vaultPath,
   savingName,
   savingPhoto,
@@ -2927,6 +2929,7 @@ function ProfileSettings({
   onChooseImage,
 }: {
   profile: DesktopProfile;
+  vaultName: string;
   vaultPath: string;
   savingName: boolean;
   savingPhoto: boolean;
@@ -2969,7 +2972,12 @@ function ProfileSettings({
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="text-xl font-semibold">{displayName.trim() || savedDisplayName}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">{displayPath(vaultPath) || "No library selected"}</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {vaultName ? `Library: ${vaultName}` : "No library selected"}
+            </p>
+            {vaultPath ? (
+              <p className="mt-1 break-all text-xs text-muted-foreground">{displayPath(vaultPath)}</p>
+            ) : null}
             <Button variant="outline" size="sm" className="mt-3" disabled={savingPhoto} onClick={() => void onChooseImage()}>
               {savingPhoto ? "Saving…" : "Change photo"}
             </Button>

@@ -7,15 +7,25 @@ declare module "@/lib/bridge-presentation.js" {
 
 declare module "@/lib/chat-presentation" {
   export type ChatInlineMarkdownToken = {
-    type: "text" | "strong";
+    type: "text" | "strong" | "emphasis" | "code";
     content: string;
   };
+  export type ChatMarkdownBlock =
+    | { type: "paragraph"; content: string }
+    | { type: "heading"; level: number; content: string }
+    | { type: "blockquote"; content: string }
+    | { type: "code"; language: string; content: string[] }
+    | {
+        type: "ordered-list" | "unordered-list";
+        items: Array<{ content: string; depth: number }>;
+      };
 
   export function analysisModeLabel(intent: string, coverageLedger?: Record<string, unknown> | null): string;
   export function describeCoverage(coverageLedger?: Record<string, unknown> | null): string | null;
   export function describePartialFailure(mode?: string | null): string | null;
   export function statusToneForPartialFailure(mode?: string | null): "neutral" | "critical" | "warning" | "muted";
   export function tokenizeChatInlineMarkdown(value?: string | null): ChatInlineMarkdownToken[];
+  export function parseChatMarkdown(value?: string | null): ChatMarkdownBlock[];
 }
 
 declare module "@/lib/chat-presentation.js" {

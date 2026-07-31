@@ -68,6 +68,31 @@ test("Home preferences persist a fully visible custom layout", () => {
   assert.deepEqual(restored.hiddenSections, []);
 });
 
+test("Focused Home puts Quick actions second without rewriting saved custom order", () => {
+  assert.deepEqual(DEFAULT_HOME_PREFERENCES.sectionOrder.slice(0, 2), ["ask", "quick"]);
+
+  const focused = homePreferencesForPreset(DEFAULT_HOME_PREFERENCES, "focused");
+  assert.deepEqual(focused.sectionOrder.slice(0, 2), ["ask", "quick"]);
+
+  const customOrder = [
+    "clusters",
+    "ask",
+    ...DEFAULT_HOME_PREFERENCES.sectionOrder.filter(
+      (sectionId) => sectionId !== "clusters" && sectionId !== "ask",
+    ),
+  ];
+  const storage = {
+    getItem: () =>
+      JSON.stringify({
+        ...DEFAULT_HOME_PREFERENCES,
+        sectionOrder: customOrder,
+      }),
+  };
+
+  const restored = readHomePreferences(storage);
+  assert.deepEqual(restored.sectionOrder, customOrder);
+});
+
 test("invalid saved Home preferences fall back safely without losing valid visibility", () => {
   const storage = {
     getItem: () =>

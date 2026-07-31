@@ -78,25 +78,126 @@ export function tokenizeChatInlineMarkdown(value) {
   let cursor = 0;
 
   while (cursor < text.length) {
-    const opening = text.indexOf("**", cursor);
-    if (opening < 0) {
+    const marker = nextInlineMarker(text, cursor);
+    if (!marker) {
       tokens.push({ type: "text", content: text.slice(cursor) });
       break;
     }
-    const closing = text.indexOf("**", opening + 2);
-    if (closing < 0 || closing === opening + 2) {
+    const closing = text.indexOf(marker.marker, marker.index + marker.marker.length);
+    if (closing < 0 || closing === marker.index + marker.marker.length) {
       tokens.push({ type: "text", content: text.slice(cursor) });
       break;
     }
-    if (opening > cursor) {
-      tokens.push({ type: "text", content: text.slice(cursor, opening) });
+    if (marker.index > cursor) {
+      tokens.push({ type: "text", content: text.slice(cursor, marker.index) });
     }
-    tokens.push({ type: "strong", content: text.slice(opening + 2, closing) });
-    cursor = closing + 2;
+    tokens.push({
+      type:
+        marker.marker === "**" || marker.marker === "__"
+          ? "strong"
+          : marker.marker === "`"
+            ? "code"
+            : "emphasis",
+      content: text.slice(marker.index + marker.marker.length, closing),
+    });
+    cursor = closing + marker.marker.length;
   }
 
   if (tokens.length === 0) {
     tokens.push({ type: "text", content: text });
   }
   return tokens;
+}
+
+export function parseChatMarkdown(value) {
+  const lines = String(value ?? "").replace(/\r\n?/g, "\n").split("\n");
+  const blocks = [];
+  let paragraph = [];
+  let list = null;
+  let code = null;
+
+  const flushParagraph = () => {
+    if (paragraph.length === 0) return;
+    blocks.push({ type: "paragraph", content: paragraph.join("\n") });
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list) return;
+    blocks.push(list);
+    list = null;
+  };
+
+  for (const line of lines) {
+    if (code) {
+      if (/^\s*```/.test(line)) {
+        blocks.push(code);
+        code = null;
+      } else {
+        code.content.push(line);
+      }
+      continue;
+    }
+    const fence = line.match(/^\s*```([\w-]*)\s*$/);
+    if (fence) {
+      flushParagraph();
+      flushList();
+      code = { type: "code", language: fence[1] || "", content: [] };
+      continue;
+    }
+    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      blocks.push({
+        type: "heading",
+        level: heading[1].length,
+        content: heading[2],
+      });
+      continue;
+    }
+    const unordered = line.match(/^(\s*)[-+*]\s+(.+)$/);
+    const ordered = line.match(/^(\s*)\d+[.)]\s+(.+)$/);
+    const item = unordered || ordered;
+    if (item) {
+      flushParagraph();
+      const listType = ordered ? "ordered-list" : "unordered-list";
+      if (list?.type !== listType) {
+        flushList();
+        list = { type: listType, items: [] };
+      }
+      list.items.push({
+        content: item[2],
+        depth: Math.max(0, Math.floor(item[1].replace(/\t/g, "  ").length / 2)),
+      });
+      continue;
+    }
+    const quote = line.match(/^\s*>\s?(.*)$/);
+    if (quote) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "blockquote", content: quote[1] });
+      continue;
+    }
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    flushList();
+    paragraph.push(line);
+  }
+
+  if (code) {
+    blocks.push(code);
+  }
+  flushParagraph();
+  flushList();
+  return blocks.length > 0 ? blocks : [{ type: "paragraph", content: "" }];
+}
+
+function nextInlineMarker(text, cursor) {
+  const match = /(\*\*|__|`|\*)/g;
+  match.lastIndex = cursor;
+  const found = match.exec(text);
+  return found ? { marker: found[0], index: found.index } : null;
 }

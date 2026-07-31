@@ -18,6 +18,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { CommandPalette, useCommandPalette } from "@/components/CommandPalette";
+import { HealthStatusPanel } from "@/components/HealthStatusPanel";
 import { BrandLogo } from "@/components/BrandLogo";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
@@ -101,6 +102,10 @@ export function AppShell() {
   const [savedChats, setSavedChats] = useState<ChatSessionRecord[]>([]);
   const [suggestedMoves, setSuggestedMoves] = useState<ClusterSuggestionRecord[]>([]);
   const [unlockStatus, setUnlockStatus] = useState<UnlockStatusRead | null>(null);
+  const [runtime, setRuntime] = useState<ModelRuntimeStatus | null>(null);
+  const [healthPanelOpen, setHealthPanelOpen] = useState(false);
+  const [healthCheckedAt, setHealthCheckedAt] = useState<Date | null>(null);
+  const [healthRefreshing, setHealthRefreshing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tour, setTour] = useState<DesktopSetupState["tour"] | null>(null);
   const [profile, setProfile] = useState<DesktopProfile>(() => normalizeDesktopProfile(null));
@@ -144,6 +149,7 @@ export function AppShell() {
       let runtime: ModelRuntimeStatus | null = null;
       try {
         runtime = await getModelRuntimeStatus();
+        setRuntime(runtime);
       } catch {
         // Job state still remains useful when the runtime status probe fails.
       }
@@ -351,6 +357,21 @@ export function AppShell() {
     window.dispatchEvent(new CustomEvent("vault:lock-state", { detail: next }));
   }, [securedVaultId]);
 
+  const refreshHealthStatus = useCallback(async () => {
+    setHealthRefreshing(true);
+    try {
+      await Promise.allSettled([refreshJobs(), refreshLibrary()]);
+      setHealthCheckedAt(new Date());
+    } finally {
+      setHealthRefreshing(false);
+    }
+  }, [refreshJobs, refreshLibrary]);
+
+  const openHealthStatus = useCallback(async () => {
+    setHealthPanelOpen(true);
+    await refreshHealthStatus();
+  }, [refreshHealthStatus]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -374,10 +395,14 @@ export function AppShell() {
         e.preventDefault();
         navigate({ to: "/settings" });
       }
+      if (mod && e.shiftKey && e.key.toLowerCase() === "h") {
+        e.preventDefault();
+        void openHealthStatus();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [lockCurrentVault, navigate, setOpen]);
+  }, [lockCurrentVault, navigate, openHealthStatus, setOpen]);
   const currentPage =
     [...primaryNav, ...secondaryNav].find((item) => pathname.startsWith(item.to))?.label ?? "Vault";
   const currentVaultName = vault?.name ?? (vaultPath ? vaultName(vaultPath) : "Vault");
@@ -559,7 +584,19 @@ export function AppShell() {
         open={openPalette}
         onOpenChange={setOpen}
         onLock={lockCurrentVault}
+        onOpenHealth={openHealthStatus}
         lockAvailable={Boolean(securedVaultId) && !securityLockActive}
+      />
+      <HealthStatusPanel
+        open={healthPanelOpen}
+        backendStatus={backend.status}
+        vault={vault}
+        jobs={jobs}
+        runtime={runtime}
+        checkedAt={healthCheckedAt}
+        refreshing={healthRefreshing}
+        onRefresh={refreshHealthStatus}
+        onClose={() => setHealthPanelOpen(false)}
       />
       <AppStatusAnnouncer
         message={

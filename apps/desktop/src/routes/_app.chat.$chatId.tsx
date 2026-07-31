@@ -23,6 +23,7 @@ import {
 import {
   analysisModeLabel,
   describePartialFailure,
+  parseChatMarkdown,
   statusToneForPartialFailure,
   tokenizeChatInlineMarkdown,
 } from "@/lib/chat-presentation";
@@ -971,10 +972,10 @@ function ChatView() {
                         {streamStatus}
                       </div>
                     )}
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                      <ChatInlineMarkdown content={streamText} />
+                    <div className="text-sm leading-relaxed">
+                      <ChatMarkdown content={streamText} />
                       <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-foreground/40 align-middle" />
-                    </p>
+                    </div>
                   </div>
                 )}
                 {projectId && latestVisualizationRequest && (
@@ -1278,9 +1279,7 @@ function Message({
           })}
         </div>
       )}
-      <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-        <ChatInlineMarkdown content={msg.content} />
-      </p>
+      <ChatMarkdown content={msg.content} />
       {msg.citations && msg.citations.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-1.5">
           {msg.citations.map((cit, i) => {
@@ -1396,9 +1395,76 @@ function ChatInlineMarkdown({ content }: { content: string }) {
       <strong key={index} className="font-semibold">
         {token.content}
       </strong>
+    ) : token.type === "emphasis" ? (
+      <em key={index}>{token.content}</em>
+    ) : token.type === "code" ? (
+      <code key={index} className="rounded bg-secondary px-1 py-0.5 font-mono text-[0.9em]">
+        {token.content}
+      </code>
     ) : (
       token.content
     ),
+  );
+}
+
+function ChatMarkdown({ content }: { content: string }) {
+  return (
+    <div className="space-y-3 break-words text-sm leading-relaxed">
+      {parseChatMarkdown(content).map((block, index) => {
+        if (block.type === "heading") {
+          const className =
+            block.level <= 2
+              ? "pt-1 text-base font-semibold"
+              : "pt-1 text-sm font-semibold";
+          return (
+            <h3 key={index} className={className}>
+              <ChatInlineMarkdown content={block.content} />
+            </h3>
+          );
+        }
+        if (block.type === "ordered-list" || block.type === "unordered-list") {
+          const List = block.type === "ordered-list" ? "ol" : "ul";
+          return (
+            <List
+              key={index}
+              className={block.type === "ordered-list" ? "space-y-1 pl-5 list-decimal" : "space-y-1 pl-5 list-disc"}
+            >
+              {block.items.map((item, itemIndex) => (
+                <li
+                  key={itemIndex}
+                  className="pl-1"
+                  style={item.depth ? { marginLeft: `${item.depth * 16}px` } : undefined}
+                >
+                  <ChatInlineMarkdown content={item.content} />
+                </li>
+              ))}
+            </List>
+          );
+        }
+        if (block.type === "blockquote") {
+          return (
+            <blockquote key={index} className="border-l border-border pl-3 text-muted-foreground">
+              <ChatInlineMarkdown content={block.content} />
+            </blockquote>
+          );
+        }
+        if (block.type === "code") {
+          return (
+            <pre key={index} className="overflow-x-auto rounded-md bg-secondary p-3 font-mono text-xs leading-5">
+              <code>{block.content.join("\n")}</code>
+            </pre>
+          );
+        }
+        if (block.type === "paragraph") {
+          return (
+            <p key={index} className="whitespace-pre-wrap">
+              <ChatInlineMarkdown content={block.content} />
+            </p>
+          );
+        }
+        return null;
+      })}
+    </div>
   );
 }
 

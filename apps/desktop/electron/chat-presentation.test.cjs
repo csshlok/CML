@@ -67,3 +67,27 @@ test("tokenizeChatInlineMarkdown preserves incomplete model output literally", a
     [{ type: "text", content: "<script>alert(1)</script>" }],
   );
 });
+
+test("parseChatMarkdown structures headings, lists, emphasis, and safe literal HTML", async () => {
+  const mod = await import("../src/lib/chat-presentation.js");
+  const blocks = mod.parseChatMarkdown(
+    "### Database fundamentals\n\n- *External level*: user views\n  - **Conceptual level**: shared schema\n\n<script>alert(1)</script>",
+  );
+
+  assert.deepEqual(blocks, [
+    { type: "heading", level: 3, content: "Database fundamentals" },
+    {
+      type: "unordered-list",
+      items: [
+        { content: "*External level*: user views", depth: 0 },
+        { content: "**Conceptual level**: shared schema", depth: 1 },
+      ],
+    },
+    { type: "paragraph", content: "<script>alert(1)</script>" },
+  ]);
+  assert.deepEqual(mod.tokenizeChatInlineMarkdown("*External* and `schema`"), [
+    { type: "emphasis", content: "External" },
+    { type: "text", content: " and " },
+    { type: "code", content: "schema" },
+  ]);
+});

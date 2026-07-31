@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useDeferredValue, useEffect, useState } from "react";
-import { Bot, FileText, GitBranch, Search, X } from "lucide-react";
+import { Bot, FileText, GitBranch, RefreshCw, Search, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/layout/WindowAware";
@@ -19,6 +19,7 @@ type ActivityKind = "source" | "chat" | "cluster";
 
 type ActivityItem = ActivityRecord;
 const PAGE_SIZE = 100;
+const TIMELINE_REFRESH_INTERVAL_MS = 60_000;
 
 function TimelineRoute() {
   const [activities, setActivities] = useState<ActivityItem[]>([]);
@@ -30,6 +31,8 @@ function TimelineRoute() {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<ActivityItem | null>(null);
   const [page, setPage] = useState(1);
+  const [refreshCycle, setRefreshCycle] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
   const deferredQuery = useDeferredValue(query);
 
   useEffect(() => {
@@ -51,11 +54,25 @@ function TimelineRoute() {
   useEffect(() => {
     if (!vaultId) {
       setLoaded(true);
+      setRefreshing(false);
       return;
     }
     let cancelled = false;
+    let timer: number | null = null;
+
+    function scheduleNextRefresh() {
+      if (cancelled) return;
+      timer = window.setTimeout(() => void loadPage(), TIMELINE_REFRESH_INTERVAL_MS);
+    }
+
     async function loadPage() {
+      if (cancelled) return;
+      if (document.hidden) {
+        scheduleNextRefresh();
+        return;
+      }
       setLoadError(false);
+      setRefreshing(true);
       try {
         const response = await listActivity(vaultId, {
           kind: filter === "all" ? undefined : filter,
@@ -73,14 +90,19 @@ function TimelineRoute() {
           setLoadError(true);
         }
       } finally {
-        if (!cancelled) setLoaded(true);
+        if (!cancelled) {
+          setLoaded(true);
+          setRefreshing(false);
+          scheduleNextRefresh();
+        }
       }
     }
     void loadPage();
     return () => {
       cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
     };
-  }, [deferredQuery, filter, page, vaultId]);
+  }, [deferredQuery, filter, page, refreshCycle, vaultId]);
 
   const totalPages = Math.max(1, Math.ceil(activityTotal / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -96,8 +118,23 @@ function TimelineRoute() {
     >
       <main className="min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:overflow-y-auto">
         <PageHeader className="border-b border-border pb-6">
-          <h1 className="page-title">Timeline</h1>
-          <p className="mt-2 text-sm text-muted-foreground">Your source, cluster, and conversation history. Operational work stays in Tasks; external access stays in Bridge.</p>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h1 className="page-title">Timeline</h1>
+              <p className="mt-2 text-sm text-muted-foreground">Your source, cluster, and conversation history. Operational work stays in Tasks; external access stays in Bridge.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-xs text-muted-foreground">Updates automatically every 60 seconds</span>
+              <Button
+                variant="outline"
+                onClick={() => setRefreshCycle((value) => value + 1)}
+                disabled={!vaultId || refreshing}
+              >
+                <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+                {refreshing ? "Refreshing..." : "Refresh"}
+              </Button>
+            </div>
+          </div>
           <div className="mt-6 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
             <div className="relative min-w-0 max-w-xl">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
