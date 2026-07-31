@@ -256,7 +256,10 @@ def apply_project_delta(
     """Apply a complete Git path delta without walking or restructuring the repository."""
 
     from backend.app.core.projects import (
+        DiscoveryResult,
         EXTRACTOR_VERSION,
+        ManifestFile,
+        _build_brief,
         _git_metadata,
         discover_project_paths,
         get_project,
@@ -595,6 +598,77 @@ def apply_project_delta(
             ).fetchone()["total"]
             or 0
         )
+        brief = str(project_row["brief"] or "")
+        purpose_paths = {"readme.md", "readme.mdx", "readme.txt", "readme", "package.json", "pyproject.toml"}
+        if any(path.casefold() in purpose_paths for path in changed_paths):
+            purpose_rows = conn.execute(
+                """
+                SELECT ps.relative_path, ps.file_role, ps.content_hash, s.*
+                FROM project_sources ps
+                JOIN sources s ON s.id = ps.source_id
+                WHERE ps.project_id = ?
+                  AND lower(ps.relative_path) IN (
+                      'readme.md', 'readme.mdx', 'readme.txt', 'readme',
+                      'package.json', 'pyproject.toml'
+                  )
+                ORDER BY ps.relative_path
+                """,
+                (project_id,),
+            ).fetchall()
+            purpose_files = []
+            for purpose_row in purpose_rows:
+                source = source_from_encrypted_row(conn, purpose_row)
+                purpose_files.append(
+                    ManifestFile(
+                        Path(source["original_path"] or purpose_row["relative_path"]),
+                        str(purpose_row["relative_path"]),
+                        str(purpose_row["content_hash"]),
+                        str(source["extracted_text"] or source["raw_text"] or ""),
+                        "",
+                        str(purpose_row["file_role"]),
+                    )
+                )
+            structure = None
+            structure_snapshot_id = project_row["active_structure_snapshot_id"]
+            if structure_snapshot_id:
+                node_counts = conn.execute(
+                    """
+                    SELECT
+                        SUM(CASE WHEN kind NOT IN ('project', 'file', 'route', 'package') THEN 1 ELSE 0 END)
+                            AS symbols,
+                        SUM(CASE WHEN kind = 'route' THEN 1 ELSE 0 END) AS routes
+                    FROM code_nodes
+                    WHERE project_id = ? AND snapshot_id = ?
+                    """,
+                    (project_id, structure_snapshot_id),
+                ).fetchone()
+                edge_count = conn.execute(
+                    "SELECT COUNT(*) AS total FROM code_edges WHERE project_id = ? AND snapshot_id = ?",
+                    (project_id, structure_snapshot_id),
+                ).fetchone()["total"]
+                structure = {
+                    "symbol_count": int(node_counts["symbols"] or 0),
+                    "edge_count": int(edge_count or 0),
+                    "route_count": int(node_counts["routes"] or 0),
+                }
+            discovery = DiscoveryResult(
+                files=purpose_files,
+                ignored_count=0,
+                generated_count=0,
+                failed_count=0,
+                languages=json.loads(project_row["languages_json"] or "{}"),
+                entrypoints=json.loads(project_row["entrypoints_json"] or "[]"),
+                workspace_count=int(project_row["workspace_count"] or 0),
+                manifest_hash="",
+                discovery_scope=str(project_row["discovery_scope"]),
+            )
+            brief = _build_brief(
+                str(project_row["name"]),
+                repository_kind,
+                discovery,
+                structure,
+                indexed_file_count=source_count,
+            )
         conn.execute(
             """
             UPDATE project_snapshot_sources
@@ -622,11 +696,22 @@ def apply_project_delta(
                     WHEN active_structure_snapshot_id IS NULL THEN 'unavailable'
                     ELSE 'stale'
                 END,
+                brief = ?,
                 change_fingerprint = ?, last_change_checked_at = ?,
                 indexed_commit = ?, changed_file_count = 0, updated_at = ?
             WHERE id = ?
             """,
-            (snapshot_id, snapshot_id, snapshot_id, change_fingerprint, now, commit, now, project_id),
+            (
+                snapshot_id,
+                snapshot_id,
+                snapshot_id,
+                brief,
+                change_fingerprint,
+                now,
+                commit,
+                now,
+                project_id,
+            ),
         )
         conn.execute(
             """

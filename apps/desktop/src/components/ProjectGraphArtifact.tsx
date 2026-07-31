@@ -34,7 +34,7 @@ export type ProjectVisualizationRequest = {
 export function detectProjectVisualizationRequest(prompt: string): ProjectVisualizationRequest | null {
   const normalized = prompt.trim();
   const asksToShow = /\b(show|draw|display|render|visuali[sz]e|map|diagram|give me|open)\b/i.test(normalized);
-  const graphTerm = /\b(graph|dependency map|call flow|relationship map|architecture diagram)\b/i.test(normalized);
+  const graphTerm = /\b(graph|project map|dependency map|call flow|relationship map|architecture diagram)\b/i.test(normalized);
   const treeTerm = /\b(tree|hierarchy|directory structure|project structure|file structure)\b/i.test(normalized);
   if (!asksToShow || (!graphTerm && !treeTerm)) return null;
   return { mode: treeTerm && !graphTerm ? "tree" : "graph", query: normalized };

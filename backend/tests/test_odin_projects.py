@@ -88,6 +88,58 @@ class OdinProjectTests(unittest.TestCase):
         self.assertEqual(paths, {"package.json", "src/auth.ts", "src/main.ts"})
         self.assertGreaterEqual(node_count, 6)
 
+    def test_project_brief_uses_readme_purpose_and_refreshes_after_sync(self) -> None:
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.projects import get_project, probe_project_changes
+
+        readme = self.repo / "README.md"
+        readme.write_text(
+            "# Sample\n\nSample coordinates access decisions across local application services.\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.email", "odin-test@example.invalid"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.name", "Odin Test"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-q", "-m", "baseline"],
+            check=True,
+        )
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            sync=True,
+        )
+
+        self.assertIn(
+            "Sample coordinates access decisions across local application services.",
+            project["brief"],
+        )
+        self.assertIn("Indexed as a", project["brief"])
+        self.assertNotIn("model-written project brief", project["brief"])
+
+        readme.write_text(
+            "# Sample\n\nSample now coordinates authorization and audit workflows for local services.\n",
+            encoding="utf-8",
+        )
+        report = probe_project_changes(project["id"])
+        self.assertEqual(report["sync_kind"], "git_delta")
+        run_due_jobs_once(limit=20)
+        refreshed = get_project(project["id"])
+
+        self.assertIn(
+            "Sample now coordinates authorization and audit workflows for local services.",
+            refreshed["brief"],
+        )
+        self.assertNotIn("coordinates access decisions", refreshed["brief"])
+
     def test_delta_probe_detects_a_new_untracked_file_and_queues_sync(self) -> None:
         from backend.app.core.projects import get_project, probe_project_changes
 

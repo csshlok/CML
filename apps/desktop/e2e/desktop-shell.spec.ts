@@ -220,10 +220,50 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   await page.route(`${backendOrigin}/api/v1/clusters*`, (route) =>
     route.fulfill({ json: [] }),
   );
+  await page.route(`${backendOrigin}/api/v1/projects/${project.id}/graph/view*`, (route) =>
+    route.fulfill({
+      json: {
+        version: 1,
+        project_id: project.id,
+        snapshot_id: "snapshot-active",
+        indexed_commit: project.indexed_commit,
+        mode: "graph",
+        direction: "balanced",
+        query: "Open the project map.",
+        root: "",
+        nodes: [],
+        edges: [],
+        truncated: false,
+        limits: { max_nodes: 90, max_depth: 2 },
+        warnings: [],
+        insights: {
+          summary: "No mapped nodes.",
+          key_areas: [],
+          flows: [],
+          node_kinds: {},
+          relationship_types: {},
+          component_count: 0,
+        },
+      },
+    }),
+  );
 
   await page.goto(`/projects/${project.id}`);
   await expect(page).toHaveTitle("Project");
   await expect(page.getByRole("heading", { name: project.name })).toBeVisible();
+  await expect(page.getByText(project.brief)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ask about this project" })).toBeVisible();
+  await expect(page.getByLabel("Ask about this project")).toBeVisible();
+  const suggestedQuestions = page
+    .getByRole("navigation", { name: "Suggested project questions" })
+    .getByRole("button");
+  await expect(suggestedQuestions.first()).toContainText("Open the project map.");
+  await expect(
+    page.getByRole("button", { name: /Explain the application flow starting at src\/main\.ts/ }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /How is the detected package or workspace in Snapshot semantics organized/ }),
+  ).toBeVisible();
   await expect(page.getByRole("heading", { name: "Odin freshness" })).toBeVisible();
   await expect(
     page.getByText(/The active Odin snapshot matches the current eligible files\./).first(),
@@ -231,13 +271,16 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   await expect(page.getByRole("heading", { name: "Git repository status" })).toBeVisible();
   await expect(page.getByText(/Git reports 2 changed working-tree paths/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Sync changes" })).toHaveCount(0);
+  if (process.env.CML_QA_SCREENSHOT) {
+    await suggestedQuestions.first().scrollIntoViewIfNeeded();
+    await page.screenshot({ path: process.env.CML_QA_SCREENSHOT, fullPage: false });
+  }
+  await suggestedQuestions.first().click();
+  await expect(page).toHaveURL(/\/project-map\?.*project=project-rendered/);
+  await page.goBack();
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.getByRole("heading", { name: "Project settings" })).toBeVisible();
   expect(consoleProblems).toEqual([]);
-
-  if (process.env.CML_QA_SCREENSHOT) {
-    await page.screenshot({ path: process.env.CML_QA_SCREENSHOT, fullPage: true });
-  }
 });
 
 test("unknown routes provide keyboard-focused recovery", async ({ page }) => {

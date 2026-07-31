@@ -117,19 +117,7 @@ function ProjectWorkspace() {
         .slice(0, 5),
     [project],
   );
-  const questions = project?.entrypoints.length
-    ? [
-        `Explain what starts in ${project.entrypoints[0]}.`,
-        "What are the major areas of this project?",
-        "Where is request validation handled?",
-        "Show the architecture graph for this project.",
-      ]
-    : [
-        "What are the major areas of this project?",
-        "Explain the main application flow.",
-        "Which configuration controls the runtime?",
-        "Show the architecture tree for this project.",
-      ];
+  const questions = useMemo(() => (project ? projectQuestions(project) : []), [project]);
 
   async function ask(prompt = question) {
     if (!project || !prompt.trim()) return;
@@ -374,7 +362,11 @@ function ProjectWorkspace() {
                 <span>{languages.map(([language]) => language).join(", ")}</span>
               )}
               {project.workspace_count > 0 && (
-                <span>{project.workspace_count} packages or workspaces</span>
+                <span>
+                  {project.workspace_count === 1
+                    ? "1 package or workspace"
+                    : `${project.workspace_count} packages or workspaces`}
+                </span>
               )}
               <span>Updated {formatDate(project.updated_at)}</span>
             </div>
@@ -383,7 +375,7 @@ function ProjectWorkspace() {
           <section className="mt-10 max-w-4xl border-t border-border pt-8">
             <div className="flex flex-wrap items-baseline justify-between gap-3">
               <div>
-                <h2 className="text-lg font-semibold">Ask this project</h2>
+                <h2 className="text-lg font-semibold">Ask about this project</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
                   Answers stay scoped to this project and cite the indexed evidence they use.
                 </p>
@@ -394,7 +386,7 @@ function ProjectWorkspace() {
             </div>
             <div className="mt-5 rounded-md border border-border bg-card p-3 focus-within:border-primary/60">
               <Textarea
-                aria-label="Ask this project"
+                aria-label="Ask about this project"
                 value={question}
                 onChange={(event) => setQuestion(event.target.value)}
                 placeholder="Ask how something works, where it is defined, or what depends on it…"
@@ -410,7 +402,10 @@ function ProjectWorkspace() {
                 </Button>
               </div>
             </div>
-            <div className="mt-4 grid gap-1 sm:grid-cols-2">
+            <nav
+              aria-label="Suggested project questions"
+              className="mt-4 grid gap-1 sm:grid-cols-2"
+            >
               {questions.map((item) => (
                 <button
                   key={item}
@@ -421,7 +416,7 @@ function ProjectWorkspace() {
                   {item} <ArrowRight className="ml-1 inline h-3.5 w-3.5" />
                 </button>
               ))}
-            </div>
+            </nav>
           </section>
         </main>
 
@@ -556,6 +551,37 @@ function RunStrip({
       </div>
     </section>
   );
+}
+
+export function projectQuestions(project: ProjectRecord): string[] {
+  const primaryLanguage = Object.entries(project.languages).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const questions = ["Open the project map."];
+
+  if (project.entrypoints[0]) {
+    questions.push(`Explain the application flow starting at ${project.entrypoints[0]}.`);
+  } else {
+    questions.push(`Explain the main application flow in ${project.name}.`);
+  }
+
+  if (project.workspace_count > 0) {
+    questions.push(
+      project.workspace_count === 1
+        ? `How is the detected package or workspace in ${project.name} organized?`
+        : `How are the ${project.workspace_count} detected packages or workspaces in ${project.name} organized?`,
+    );
+  } else if (primaryLanguage) {
+    questions.push(`How is the ${primaryLanguage} code in ${project.name} organized?`);
+  } else {
+    questions.push(`What are the major areas of ${project.name}?`);
+  }
+
+  if (project.entrypoints[1]) {
+    questions.push(`How does ${project.entrypoints[1]} connect to the rest of ${project.name}?`);
+  } else {
+    questions.push(`Which configuration files control ${project.name}?`);
+  }
+
+  return questions;
 }
 
 function ProjectChangesInbox({

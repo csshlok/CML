@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import html
 import json
 import os
+import re
 import subprocess
 from collections import Counter
 from dataclasses import dataclass
@@ -2040,12 +2042,25 @@ def _build_brief(
     repository_kind: str,
     discovery: DiscoveryResult,
     structure: dict | None = None,
+    *,
+    indexed_file_count: int | None = None,
 ) -> str:
+    purpose = _project_purpose_from_files(name, discovery.files)
+    file_count = len(discovery.files) if indexed_file_count is None else indexed_file_count
     language_names = list(discovery.languages)[:3]
     language_text = ", ".join(language_names) if language_names else "text"
     kind = "Git repository" if repository_kind == "git" else "code folder"
+    identity_text = (
+        f"Indexed as a {kind} with {file_count} files, primarily {language_text}."
+        if purpose
+        else f"{name} is a {kind} with {file_count} indexed files, primarily {language_text}."
+    )
     workspace_text = (
-        f" It contains {discovery.workspace_count} detected package or workspace manifests."
+        (
+            " It contains 1 detected package or workspace manifest."
+            if discovery.workspace_count == 1
+            else f" It contains {discovery.workspace_count} detected package or workspace manifests."
+        )
         if discovery.workspace_count
         else ""
     )
@@ -2060,8 +2075,67 @@ def _build_brief(
             f" Odin extracted {structure['symbol_count']} symbols, {structure['edge_count']} evidence-backed relationships, "
             f"and {structure['route_count']} routes."
         )
-    return (
-        f"{name} is a {kind} with {len(discovery.files)} indexed files, primarily {language_text}."
-        f"{workspace_text}{entrypoint_text}{structure_text} Retrieval indexing is local and the optional "
-        "model-written project brief remains a separate derived layer."
+    return f"{purpose + ' ' if purpose else ''}{identity_text}{workspace_text}{entrypoint_text}{structure_text}"
+
+
+def _project_purpose_from_files(name: str, files: list[ManifestFile]) -> str:
+    """Extract a concise, author-written purpose without invoking a model."""
+    by_path = {item.relative_path.casefold(): item for item in files}
+    readme = next(
+        (
+            by_path[path]
+            for path in ("readme.md", "readme.mdx", "readme.txt", "readme")
+            if path in by_path
+        ),
+        None,
     )
+    if readme is not None:
+        purpose = _first_readme_description(readme.text, name)
+        if purpose:
+            return purpose
+
+    for path in ("package.json", "pyproject.toml"):
+        manifest = by_path.get(path)
+        if manifest is None:
+            continue
+        purpose = _manifest_description(manifest.text, path)
+        if purpose:
+            return purpose
+    return ""
+
+
+def _first_readme_description(text: str, name: str) -> str:
+    cleaned = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"!\[[^\]]*]\([^)]*\)", "", cleaned)
+    cleaned = re.sub(r"\[([^\]]+)]\([^)]*\)", r"\1", cleaned)
+    cleaned = re.sub(r"<img\b[^>]*>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<[^>]+>", "", cleaned)
+    cleaned = html.unescape(cleaned).replace("\r\n", "\n")
+    normalized_name = re.sub(r"\W+", "", name).casefold()
+    for paragraph in re.split(r"\n\s*\n", cleaned):
+        value = " ".join(
+            line.strip().lstrip("#>*- ").strip()
+            for line in paragraph.splitlines()
+            if line.strip()
+        )
+        value = re.sub(r"\s+", " ", value).strip()
+        normalized_value = re.sub(r"\W+", "", value).casefold()
+        if len(value) < 40 or len(value) > 600:
+            continue
+        if normalized_value == normalized_name:
+            continue
+        if value.count("|") >= 2 or re.search(r"\b(installation|quick start|license|status badge)\b", value, re.I):
+            continue
+        return value
+    return ""
+
+
+def _manifest_description(text: str, path: str) -> str:
+    if path == "package.json":
+        try:
+            value = json.loads(text).get("description")
+        except (json.JSONDecodeError, AttributeError):
+            return ""
+        return str(value).strip()[:600] if value else ""
+    match = re.search(r'(?m)^\s*description\s*=\s*["\'](.+?)["\']\s*$', text)
+    return match.group(1).strip()[:600] if match else ""
