@@ -47,6 +47,7 @@ import {
   listClusters,
   listProjectsPage,
   listSourceFolders,
+  listSourceFolderTree,
   listSourcePages,
   listSourcesPage,
   listVaults,
@@ -57,6 +58,7 @@ import {
   type SourceStatsRecord,
   type ProjectRecord,
   type SourceFolderRecord,
+  type SourceFolderTreeRecord,
   type VaultRecord,
 } from "@/lib/backend";
 import { clusterFromRecord, sourceFromRecord } from "@/lib/recordAdapters";
@@ -78,11 +80,12 @@ import {
 } from "@/components/ui/select";
 
 export const Route = createFileRoute("/_app/sources")({
-  validateSearch: (search: Record<string, unknown>): { filter?: "unsorted"; source?: string; project?: string; folder?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { filter?: "unsorted"; source?: string; project?: string; folder?: string; subfolder?: string } => ({
     filter: search.filter === "unsorted" ? "unsorted" : undefined,
     source: typeof search.source === "string" ? search.source : undefined,
     project: typeof search.project === "string" ? search.project : undefined,
     folder: typeof search.folder === "string" ? search.folder : undefined,
+    subfolder: typeof search.subfolder === "string" ? search.subfolder : undefined,
   }),
   head: () => ({ meta: [{ title: "Sources" }] }),
   component: SourcesView,
@@ -103,7 +106,7 @@ const typeIcon = {
 function SourcesView() {
   const navigate = useNavigate();
   const sourceImport = useSourceImport();
-  const { filter, source: requestedSourceId, project: projectId, folder: folderPath } = Route.useSearch();
+  const { filter, source: requestedSourceId, project: projectId, folder: folderPath, subfolder } = Route.useSearch();
   const inboxOnly = filter === "unsorted";
   const pageSize = 25;
   const [q, setQ] = useState("");
@@ -118,6 +121,7 @@ function SourcesView() {
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [sourceFolders, setSourceFolders] = useState<SourceFolderRecord[]>([]);
+  const [sourceFolderTree, setSourceFolderTree] = useState<SourceFolderTreeRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -153,7 +157,7 @@ function SourcesView() {
         setBackendClusters([]);
         return;
       }
-      const [sourceResult, clusterResult, countResult, requestedResult, projectResult, folderResult] = await Promise.allSettled([
+      const [sourceResult, clusterResult, countResult, requestedResult, projectResult, folderResult, folderTreeResult] = await Promise.allSettled([
         listSourcesPage(activeVault.id, {
           limit: pageSize,
           cursor: pageCursors[pageIndex] ?? null,
@@ -167,6 +171,8 @@ function SourcesView() {
           query: deferredQuery,
           projectId,
           importRootPath: folderPath,
+          importRelativePrefix: subfolder,
+          importDirectOnly: Boolean(folderPath),
           excludeGroupedProjects: !projectId && !folderPath && !inboxOnly,
         }),
         listClusters(activeVault.id),
@@ -181,11 +187,16 @@ function SourcesView() {
           query: deferredQuery,
           projectId,
           importRootPath: folderPath,
+          importRelativePrefix: subfolder,
+          importDirectOnly: Boolean(folderPath),
           excludeGroupedProjects: !projectId && !folderPath && !inboxOnly,
         }),
         requestedSourceId ? getSource(requestedSourceId).catch(() => null) : Promise.resolve(null),
         listProjectsPage(activeVault.id, { limit: 200 }),
         listSourceFolders(activeVault.id, deferredQuery, { limit: 100 }),
+        folderPath
+          ? listSourceFolderTree(activeVault.id, folderPath)
+          : Promise.resolve({ root_path: "", total_files: 0, items: [] }),
       ]);
       if (requestId !== sourceRequestRef.current) return;
       if (sourceResult.status === "rejected") throw sourceResult.reason;
@@ -195,6 +206,7 @@ function SourcesView() {
       const requestedSource = requestedResult.status === "fulfilled" ? requestedResult.value : null;
       if (projectResult.status === "fulfilled") setProjects(projectResult.value.items);
       if (folderResult.status === "fulfilled") setSourceFolders(folderResult.value.items);
+      if (folderTreeResult.status === "fulfilled") setSourceFolderTree(folderTreeResult.value.items);
       if (count && count.total > 0 && sourcePage.items.length === 0 && pageIndex > 0) {
         setPageIndex(Math.max(0, Math.ceil(count.total / pageSize) - 1));
         return;
@@ -235,12 +247,12 @@ function SourcesView() {
 
   useEffect(() => {
     void refreshBackendSources();
-  }, [deferredQuery, folderPath, inboxOnly, pageIndex, projectId, requestedSourceId, pageCursors, stateFilter, typeFilter]);
+  }, [deferredQuery, folderPath, inboxOnly, pageIndex, projectId, requestedSourceId, pageCursors, stateFilter, subfolder, typeFilter]);
 
   useEffect(() => {
     setPageIndex(0);
     setPageCursors([null]);
-  }, [folderPath, inboxOnly, projectId]);
+  }, [folderPath, inboxOnly, projectId, subfolder]);
 
   useEffect(() => {
     setPageIndex(0);
@@ -287,6 +299,10 @@ function SourcesView() {
   const filtered = useMemo(() => sources, [sources]);
   const activeProject = projects.find((project) => project.id === projectId) ?? null;
   const activeSourceFolder = sourceFolders.find((folder) => folder.root_path === folderPath) ?? null;
+  const activeNestedFolder = sourceFolderTree.find((folder) => folder.path === subfolder) ?? null;
+  const visibleNestedFolders = folderPath
+    ? sourceFolderTree.filter((folder) => folder.parent_path === (subfolder ?? ""))
+    : [];
   const visibleProjectFolders = useMemo(() => {
     if (projectId || folderPath || inboxOnly || !["all", "code"].includes(typeFilter) || !["all", "indexed"].includes(stateFilter)) {
       return [];
@@ -573,11 +589,45 @@ function SourcesView() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               {activeProject || activeSourceFolder ? (
-                <Link to="/sources" search={{}} className="mb-2 inline-flex items-center text-xs text-muted-foreground hover:text-foreground">
-                  Sources / <span className="ml-1 text-foreground">{activeProject?.name ?? activeSourceFolder?.name}</span>
-                </Link>
+                <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                  <Link to="/sources" search={{}} className="hover:text-foreground">Sources</Link>
+                  <span>/</span>
+                  {activeSourceFolder && subfolder ? (
+                    <Link
+                      to="/sources"
+                      search={{ folder: activeSourceFolder.root_path }}
+                      className="hover:text-foreground"
+                    >
+                      {activeSourceFolder.name}
+                    </Link>
+                  ) : (
+                    <span className="text-foreground">{activeProject?.name ?? activeSourceFolder?.name}</span>
+                  )}
+                  {subfolder
+                    ? subfolder.split("/").map((part, index, parts) => {
+                        const path = parts.slice(0, index + 1).join("/");
+                        const last = index === parts.length - 1;
+                        return (
+                          <span key={path} className="flex items-center gap-1">
+                            <span>/</span>
+                            {last ? (
+                              <span className="text-foreground">{part}</span>
+                            ) : (
+                              <Link
+                                to="/sources"
+                                search={{ folder: activeSourceFolder?.root_path, subfolder: path }}
+                                className="hover:text-foreground"
+                              >
+                                {part}
+                              </Link>
+                            )}
+                          </span>
+                        );
+                      })
+                    : null}
+                </div>
               ) : null}
-              <h1 className="page-title">{inboxOnly ? "Inbox" : activeProject?.name ?? activeSourceFolder?.name ?? "Sources"}</h1>
+              <h1 className="page-title">{inboxOnly ? "Inbox" : activeProject?.name ?? activeNestedFolder?.name ?? activeSourceFolder?.name ?? "Sources"}</h1>
             </div>
             {inboxOnly && (
               <Link
@@ -593,7 +643,7 @@ function SourcesView() {
             {inboxOnly
               ? "Unclustered sources that are still waiting, processing, or need review."
               : activeProject || activeSourceFolder
-                ? `${(activeProject?.source_count ?? activeSourceFolder?.source_count ?? 0).toLocaleString()} files, grouped together.`
+                ? `${(activeProject?.source_count ?? activeNestedFolder?.source_count ?? activeSourceFolder?.source_count ?? 0).toLocaleString()} files, grouped together.`
                 : "Files, links, notes, images, transcripts, and large project folders stored locally."}
           </p>
           <div className="mt-9 flex flex-wrap items-center gap-2">
@@ -673,7 +723,7 @@ function SourcesView() {
 
         {loading ? (
           <SkeletonRegion className="py-8" lines={9} />
-        ) : filtered.length === 0 && visibleProjectFolders.length === 0 && visibleSourceFolders.length === 0 ? (
+        ) : filtered.length === 0 && visibleProjectFolders.length === 0 && visibleSourceFolders.length === 0 && visibleNestedFolders.length === 0 ? (
           <EmptyState
             title={inboxOnly ? "Inbox clear" : q ? "No sources match" : "Add your first source"}
             description={inboxOnly
@@ -697,6 +747,47 @@ function SourcesView() {
                 </tr>
               </thead>
               <tbody>
+                {visibleNestedFolders.map((folder) => (
+                  <tr
+                    key={`${activeSourceFolder?.root_path}:${folder.path}`}
+                    tabIndex={0}
+                    aria-label={`Open ${folder.name} folder`}
+                    className="cursor-pointer border-b border-border hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                    onClick={() =>
+                      navigate({
+                        to: "/sources",
+                        search: { folder: activeSourceFolder?.root_path, subfolder: folder.path },
+                      })
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        navigate({
+                          to: "/sources",
+                          search: { folder: activeSourceFolder?.root_path, subfolder: folder.path },
+                        });
+                      }
+                    }}
+                  >
+                    <td className="px-3 py-5">
+                      <div className="flex items-center gap-4">
+                        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground">
+                          <Folder className="h-5 w-5" />
+                        </span>
+                        <div className="min-w-0">
+                          <div className="break-words font-semibold">{folder.name}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {folder.source_count.toLocaleString()} files
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="hidden px-3 py-5 text-muted-foreground 2xl:table-cell">Folder</td>
+                    <td className="hidden px-3 py-5 text-muted-foreground xl:table-cell">Ready</td>
+                    <td className="hidden px-3 py-5 text-muted-foreground lg:table-cell">-</td>
+                    <td className="hidden px-3 py-5 text-muted-foreground 2xl:table-cell">-</td>
+                  </tr>
+                ))}
                 {visibleSourceFolders.map((folder) => (
                   <tr
                     key={folder.root_path}
@@ -835,6 +926,7 @@ function SourcesView() {
             Showing {filtered.length} of {sourceTotal.toLocaleString()} sources
             {visibleProjectFolders.length > 0 ? ` and ${visibleProjectFolders.length} folders` : ""}
             {visibleSourceFolders.length > 0 ? ` and ${visibleSourceFolders.length} folders` : ""}
+            {visibleNestedFolders.length > 0 ? ` and ${visibleNestedFolders.length} folders` : ""}
           </span>
           <div className="flex items-center gap-4">
             <button

@@ -32,6 +32,12 @@ if (typeof window !== "undefined") {
     if (trustedUrl) {
       resolvedBackendUrl = trustedUrl;
       publishHealth({ status: "checking", url: trustedUrl });
+      const pendingCheck = healthCheckPromise;
+      if (pendingCheck) {
+        void pendingCheck.finally(() => coordinateHealthCheck());
+      } else {
+        void coordinateHealthCheck();
+      }
     }
   });
   void window.cmlDesktop?.getBackendToken?.().then((token) => {
@@ -112,6 +118,10 @@ function subscribeHealth(listener: () => void) {
 async function runHealthCheck() {
   const generation = backendGeneration;
   const token = await getBackendToken();
+  if (desktopManagedBackend && !resolvedBackendUrl) {
+    const desktopUrl = safeRuntimeBackendUrl(await window.cmlDesktop?.getBackendUrl?.());
+    if (desktopUrl) resolvedBackendUrl = desktopUrl;
+  }
   const candidates = desktopManagedBackend
     ? (resolvedBackendUrl ? [resolvedBackendUrl] : [])
     : resolvedBackendUrl
@@ -742,6 +752,8 @@ export type SourceRecord = {
   ingestion_status_detail: string;
   ingestion_updated_at: string | null;
   original_path: string | null;
+  import_root_path?: string | null;
+  import_relative_path?: string | null;
   url: string | null;
   raw_text: string;
   extracted_text: string;
@@ -2128,6 +2140,8 @@ export async function listSourcesPage(
     sourceTypes?: string[];
     projectId?: string;
     importRootPath?: string;
+    importRelativePrefix?: string;
+    importDirectOnly?: boolean;
     excludeGroupedProjects?: boolean;
   } = {},
 ) {
@@ -2141,6 +2155,8 @@ export async function listSourcesPage(
   if (options.sourceTypes?.length) params.set("source_types", options.sourceTypes.join(","));
   if (options.projectId) params.set("project_id", options.projectId);
   if (options.importRootPath) params.set("import_root_path", options.importRootPath);
+  if (options.importRelativePrefix) params.set("import_relative_prefix", options.importRelativePrefix);
+  if (options.importDirectOnly) params.set("import_direct_only", "true");
   if (options.excludeGroupedProjects) params.set("exclude_grouped_projects", "true");
   if (options.query?.trim()) params.set("q", options.query.trim());
   const query = params.size ? `?${params.toString()}` : "";
@@ -2338,6 +2354,8 @@ export async function countSources(
     sourceTypes?: string[];
     projectId?: string;
     importRootPath?: string;
+    importRelativePrefix?: string;
+    importDirectOnly?: boolean;
     excludeGroupedProjects?: boolean;
   } = {},
 ) {
@@ -2349,6 +2367,8 @@ export async function countSources(
   if (options.sourceTypes?.length) params.set("source_types", options.sourceTypes.join(","));
   if (options.projectId) params.set("project_id", options.projectId);
   if (options.importRootPath) params.set("import_root_path", options.importRootPath);
+  if (options.importRelativePrefix) params.set("import_relative_prefix", options.importRelativePrefix);
+  if (options.importDirectOnly) params.set("import_direct_only", "true");
   if (options.excludeGroupedProjects) params.set("exclude_grouped_projects", "true");
   if (options.query?.trim()) params.set("q", options.query.trim());
   const query = params.size ? `?${params.toString()}` : "";
@@ -2360,6 +2380,15 @@ export type SourceFolderRecord = {
   name: string;
   source_count: number;
   updated_at: string;
+};
+
+export type SourceFolderTreeRecord = {
+  path: string;
+  parent_path: string;
+  name: string;
+  depth: number;
+  source_count: number;
+  direct_source_count: number;
 };
 
 export async function listSourceFolders(
@@ -2380,6 +2409,18 @@ export async function listSourceFolders(
   }>(
     `/api/v1/sources/folders?${params.toString()}`,
   );
+}
+
+export async function listSourceFolderTree(vaultId: string, rootPath: string) {
+  const params = new URLSearchParams({
+    vault_id: vaultId,
+    root_path: rootPath,
+  });
+  return request<{
+    root_path: string;
+    total_files: number;
+    items: SourceFolderTreeRecord[];
+  }>(`/api/v1/sources/folders/tree?${params.toString()}`);
 }
 
 export type SourceClusterCountRecord = {

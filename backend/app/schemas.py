@@ -360,6 +360,8 @@ class SourceRead(BaseModel):
     source_type: str
     state: str
     original_path: str | None
+    import_root_path: str | None = None
+    import_relative_path: str | None = None
     url: str | None
     checksum: str | None = None
     provenance: str = "local_import"

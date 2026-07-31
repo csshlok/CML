@@ -331,6 +331,80 @@ class SourceImportJobTests(unittest.TestCase):
         self.assertEqual(count_sources(vault_id="vault-import", exclude_grouped_projects=True)["total"], 0)
         self.assertEqual(len(folder_page["items"]), 20)
 
+    def test_folder_import_preserves_nested_directory_navigation(self) -> None:
+        from backend.app.api.routes.sources import (
+            count_sources,
+            create_source_import_job,
+            list_source_folder_tree,
+            list_sources_page,
+        )
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.schemas import SourceImportJobRequest
+
+        folder = Path(self.tmp.name) / "nested-folder"
+        nested_a = folder / "a"
+        nested_deep = nested_a / "deep"
+        nested_b = folder / "b"
+        nested_deep.mkdir(parents=True)
+        nested_b.mkdir(parents=True)
+        paths: list[str] = []
+        for parent, count in ((folder, 4), (nested_a, 7), (nested_deep, 5), (nested_b, 4)):
+            for index in range(count):
+                path = parent / f"item-{index}.txt"
+                path.write_text(f"{parent.name} item {index}", encoding="utf-8")
+                paths.append(str(path))
+
+        create_source_import_job(
+            SourceImportJobRequest(
+                vault_id="vault-import",
+                paths=paths,
+                folder_roots=[str(folder)],
+            )
+        )
+        self.assertEqual(run_due_jobs_once(limit=1), 1)
+
+        root_path = str(folder.resolve())
+        tree = list_source_folder_tree("vault-import", root_path)
+        nodes = {item["path"]: item for item in tree["items"]}
+        root_files = list_sources_page(
+            vault_id="vault-import",
+            import_root_path=root_path,
+            import_direct_only=True,
+            limit=100,
+        )
+        a_files = list_sources_page(
+            vault_id="vault-import",
+            import_root_path=root_path,
+            import_relative_prefix="a",
+            import_direct_only=True,
+            limit=100,
+        )
+
+        self.assertEqual(tree["total_files"], 20)
+        self.assertEqual(nodes["a"]["source_count"], 12)
+        self.assertEqual(nodes["a"]["direct_source_count"], 7)
+        self.assertEqual(nodes["a/deep"]["source_count"], 5)
+        self.assertEqual(nodes["b"]["source_count"], 4)
+        self.assertEqual(len(root_files["items"]), 4)
+        self.assertEqual(len(a_files["items"]), 7)
+        self.assertEqual(
+            count_sources(
+                vault_id="vault-import",
+                import_root_path=root_path,
+                import_relative_prefix="a",
+            )["total"],
+            12,
+        )
+        self.assertEqual(
+            count_sources(
+                vault_id="vault-import",
+                import_root_path=root_path,
+                import_relative_prefix="a",
+                import_direct_only=True,
+            )["total"],
+            7,
+        )
+
     def test_source_content_persists_and_reports_paused_when_embeddings_are_unavailable(self) -> None:
         from backend.app.api.routes.sources import create_source_from_text, get_source
         from backend.app.core.background_jobs import run_due_jobs_once

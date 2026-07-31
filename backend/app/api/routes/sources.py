@@ -91,6 +91,8 @@ def _source_list_clauses(
     cluster_id: str | None,
     project_id: str | None,
     import_root_path: str | None,
+    import_relative_prefix: str | None,
+    import_direct_only: bool,
     exclude_grouped_projects: bool,
     unclustered: bool,
     states: str | None,
@@ -113,6 +115,22 @@ def _source_list_clauses(
     elif import_root_path:
         clauses.append("import_root_path = ?")
         params.append(import_root_path)
+        normalized_prefix = str(import_relative_prefix or "").replace("\\", "/").strip("/")
+        if normalized_prefix:
+            prefix = f"{normalized_prefix}/"
+            clauses.append(
+                "substr(REPLACE(COALESCE(import_relative_path, ''), char(92), '/'), 1, length(?)) = ?"
+            )
+            params.extend([prefix, prefix])
+            if import_direct_only:
+                clauses.append(
+                    "instr(substr(REPLACE(COALESCE(import_relative_path, ''), char(92), '/'), length(?) + 1), '/') = 0"
+                )
+                params.append(prefix)
+        elif import_direct_only:
+            clauses.append(
+                "instr(REPLACE(COALESCE(import_relative_path, ''), char(92), '/'), '/') = 0"
+            )
     elif exclude_grouped_projects:
         clauses.append(
             """
@@ -158,6 +176,8 @@ def list_sources(
     cluster_id: str | None = None,
     project_id: str | None = None,
     import_root_path: str | None = None,
+    import_relative_prefix: str | None = None,
+    import_direct_only: bool = False,
     exclude_grouped_projects: bool = False,
     unclustered: bool = False,
     states: str | None = None,
@@ -173,6 +193,8 @@ def list_sources(
         cluster_id=cluster_id,
         project_id=project_id,
         import_root_path=import_root_path,
+        import_relative_prefix=import_relative_prefix,
+        import_direct_only=import_direct_only,
         exclude_grouped_projects=exclude_grouped_projects,
         unclustered=unclustered,
         states=states,
@@ -204,6 +226,8 @@ def list_sources_page(
     cluster_id: str | None = None,
     project_id: str | None = None,
     import_root_path: str | None = None,
+    import_relative_prefix: str | None = None,
+    import_direct_only: bool = False,
     exclude_grouped_projects: bool = False,
     unclustered: bool = False,
     states: str | None = None,
@@ -218,6 +242,8 @@ def list_sources_page(
         cluster_id=cluster_id,
         project_id=project_id,
         import_root_path=import_root_path,
+        import_relative_prefix=import_relative_prefix,
+        import_direct_only=import_direct_only,
         exclude_grouped_projects=exclude_grouped_projects,
         unclustered=unclustered,
         states=states,
@@ -251,6 +277,8 @@ def count_sources(
     cluster_id: str | None = None,
     project_id: str | None = None,
     import_root_path: str | None = None,
+    import_relative_prefix: str | None = None,
+    import_direct_only: bool = False,
     exclude_grouped_projects: bool = False,
     unclustered: bool = False,
     states: str | None = None,
@@ -262,6 +290,8 @@ def count_sources(
         cluster_id=cluster_id,
         project_id=project_id,
         import_root_path=import_root_path,
+        import_relative_prefix=import_relative_prefix,
+        import_direct_only=import_direct_only,
         exclude_grouped_projects=exclude_grouped_projects,
         unclustered=unclustered,
         states=states,
@@ -372,6 +402,61 @@ def list_source_folders(
         "limit": limit,
         "offset": offset,
         "has_more": offset + len(items) < total,
+    }
+
+
+@router.get("/folders/tree")
+def list_source_folder_tree(vault_id: str, root_path: str) -> dict:
+    with connect() as conn:
+        _validate_source_list_filters(conn, vault_id=vault_id, cluster_id=None)
+        rows = conn.execute(
+            """
+            SELECT import_relative_path, COUNT(*) AS source_count
+            FROM sources
+            WHERE vault_id = ?
+              AND import_root_path = ?
+              AND import_relative_path IS NOT NULL
+              AND deleted_at IS NULL
+              AND (activation_state IS NULL OR activation_state = 'active')
+            GROUP BY import_relative_path
+            ORDER BY import_relative_path
+            """,
+            (vault_id, root_path),
+        ).fetchall()
+
+    directories: dict[str, dict[str, object]] = {}
+    total_files = 0
+    for row in rows:
+        file_count = int(row["source_count"] or 0)
+        total_files += file_count
+        relative_path = str(row["import_relative_path"] or "").replace("\\", "/").strip("/")
+        parts = [part for part in relative_path.split("/") if part]
+        parent_parts = parts[:-1]
+        for index, name in enumerate(parent_parts):
+            path = "/".join(parent_parts[: index + 1])
+            parent_path = "/".join(parent_parts[:index])
+            node = directories.setdefault(
+                path,
+                {
+                    "path": path,
+                    "parent_path": parent_path,
+                    "name": name,
+                    "depth": index,
+                    "source_count": 0,
+                    "direct_source_count": 0,
+                },
+            )
+            node["source_count"] = int(node["source_count"]) + file_count
+            if index == len(parent_parts) - 1:
+                node["direct_source_count"] = int(node["direct_source_count"]) + file_count
+
+    return {
+        "root_path": root_path,
+        "total_files": total_files,
+        "items": sorted(
+            directories.values(),
+            key=lambda item: (int(item["depth"]), str(item["path"]).casefold()),
+        ),
     }
 
 
