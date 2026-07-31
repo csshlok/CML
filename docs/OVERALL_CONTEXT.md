@@ -1,5 +1,52 @@
 # Overall Context
 
+## 2026-07-31 — desktop workflow and external-context integration
+
+The desktop now exposes current library identity and operational health without
+forcing users into diagnostic settings. Profile shows the active library name and
+path. The command palette provides a discoverable Health status action with
+`Ctrl+Shift+H`; its draggable bottom-right panel reports the most recent local
+service, library, chat runtime, and background-job state. Backend discovery was
+hardened so an asynchronous desktop URL cannot leave the shell indefinitely in a
+Checking state, and older setup records without model-storage metadata remain
+readable.
+
+Chat presentation now parses a deliberately bounded Markdown subset into React
+elements. Headings, ordered and unordered lists, nested list depth, emphasis,
+strong text, inline code, blockquotes, and fenced code render consistently in
+saved and streaming answers. Incomplete streaming delimiters remain literal until
+complete, snake_case is not interpreted as emphasis, and raw HTML is displayed as
+text rather than executed.
+
+Folder grouping no longer flattens all descendants into one visual collection.
+The existing import root and relative path fields are exposed through source
+responses, used by bounded prefix/direct-child queries, and summarized by a
+folder-tree endpoint. Sources renders breadcrumbs, immediate child directories,
+and direct files at each level while retaining normal filtering and pagination.
+SQLite remains authoritative; no parallel folder metadata store was introduced.
+
+Bridge now presents the normal-user path before protocol details: choose scope,
+create a connection, and ask the assistant to use Vault. Access, review, activity,
+and manual fallback tools are separate views. For read-and-save connections, the
+existing MCP `log_external_turn` and `capture_external_artifact` tools are the
+integration boundary. A connected assistant can send its response directly into
+Vault's trust classification, review, indexing, and retrieval pipeline. This
+avoids a second writeback mechanism and retains explicit permission boundaries.
+
+Operational surfaces were also tightened. Quick actions occupy the second default
+Home position, Timeline refreshes on demand and otherwise once every 60 seconds,
+and Tasks prioritizes useful active-state information instead of leaving a large
+empty workspace or stale selected details.
+
+Verification stayed focused. Desktop TypeScript passed; the chat-presentation
+suite passed 6 tests; the nested-folder regression plus the Bridge MCP suite passed
+30 tests; and four Playwright workflows passed for Profile/Health, Markdown,
+nested-folder navigation, and Bridge writeback guidance. Rendered screenshots were
+inspected for each flow. The full regression suite and release packaging were not
+run for this source state.
+
+Last updated: 2026-07-31
+
 ## 2026-07-30 — TurboVec packaged-runtime activation
 
 TurboVec is now a production runtime dependency rather than code-only optional

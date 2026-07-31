@@ -1,5 +1,31 @@
 # Project Context
 
+## 2026-07-31 — desktop workflows, nested sources, and connected assistants
+
+- Profile settings show the active library name and path. The command palette adds
+  **Health status** (`Ctrl+Shift+H`), which opens a draggable bottom-right panel
+  with the latest backend, library, local-chat, and background-work state.
+- Chat answers use a safe structured Markdown renderer for headings, lists,
+  emphasis, strong text, inline code, blockquotes, and fenced code. Model output
+  no longer exposes supported `#` and `*` delimiters as plain text, and raw HTML
+  remains inert.
+- Folder imports retain `import_root_path` and `import_relative_path` as the
+  navigation authority. Sources exposes a bounded folder-tree endpoint and lets
+  users browse nested directories without flattening child folders into the
+  selected root.
+- Bridge is organized around Connect, Access, Review, Activity, and Manual tools.
+  Read-and-save connections use the existing MCP capture tools to send an external
+  assistant's answer through trust review, indexing, and normal retrieval without
+  requiring manual copy/paste. Manual capture remains an explicit fallback.
+- Home keeps Quick actions in the second default section. Timeline supports manual
+  refresh and otherwise polls once per minute. Tasks emphasizes active work and
+  removes stale detail when filters change.
+- Focused validation is green: desktop TypeScript, 6 chat-presentation tests,
+  30 nested-folder and Bridge backend tests, and four rendered workflows covering
+  Profile/Health, Markdown, nested folders, and Bridge. No release build was made.
+
+Last updated: 2026-07-31
+
 ## 2026-07-30 — TurboVec distribution correction
 
 - `turbovec==0.8.0` is part of backend, development, and portable Windows runtime dependencies.
@@ -58,7 +84,7 @@ Vault is a local-first Windows context-management layer. It turns a user's files
 - Storage: explicit local vaults backed by SQLite and local indexes
 - External access: Bridge, MCP, local HTTP API, and CLI
 - Codebase context: Odin project indexing, retrieval, scoped chat, and request-only graph/tree artifacts
-- Current version: `0.1.11` release candidate
+- Current version: `0.1.12`
 
 ## Current Project Phase
 

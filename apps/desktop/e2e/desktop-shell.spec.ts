@@ -10,6 +10,20 @@ async function installDesktopBridge(page: Page) {
       value: {
         getBackendUrl: async () => origin,
         getBackendToken: async () => "rendered-shell-test-token",
+        getSetupState: async () => ({
+          phase: "complete",
+          profile: { display_name: "Shlok", avatar_path: "" },
+        }),
+        getMcpFeatureFlags: async () => ({
+          chatgpt_mcp_setup: true,
+          secure_mcp_tunnel: true,
+          chatgpt_mcp_write_tools: true,
+          mcp_streaming: false,
+          mcp_remote_http: false,
+        }),
+        getMcpLauncher: async () => null,
+        getTunnelStatus: async () => null,
+        onTunnelStatusChanged: () => () => undefined,
         notifyRendererReady: async () => undefined,
         windowControls: {
           getState: async () => state,
@@ -46,7 +60,340 @@ test.beforeEach(async ({ page }) => {
   await installBaseRoutes(page);
 });
 
-test("assistant messages render bold Markdown without visible delimiters", async ({ page }) => {
+test("default Home places Quick actions in the second section", async ({ page }) => {
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+
+  await page.goto("/home");
+  await expect(page).toHaveTitle("Home");
+  await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ask Vault" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Quick actions" })).toBeAttached();
+
+  const visibleSectionText = await page.locator("main section").evaluateAll((sections) =>
+    sections.map((section) => section.textContent?.replace(/\s+/g, " ").trim() ?? ""),
+  );
+  expect(visibleSectionText[0]).toContain("Ask Vault");
+  expect(visibleSectionText[1]).toContain("Add source");
+  expect(visibleSectionText[1]).toContain("Start chat");
+  expect(consoleProblems).toEqual([]);
+
+  if (process.env.CML_QA_HOME_SCREENSHOT) {
+    await page.screenshot({
+      path: process.env.CML_QA_HOME_SCREENSHOT,
+      fullPage: false,
+    });
+  }
+});
+
+test("Tasks opens on active work and clears stale detail across filters", async ({ page }) => {
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+
+  const now = "2026-07-31T10:00:00Z";
+  const makeJob = (overrides: Record<string, unknown>) => ({
+    id: "job-default",
+    job_type: "source_metadata_enrichment",
+    status: "queued",
+    payload: "{}",
+    result_json: null,
+    dedupe_key: null,
+    priority: "normal",
+    write_scope: "source",
+    scope_id: null,
+    resource_cost: "normal",
+    user_visible: 1,
+    cancellable: 1,
+    preemptable: 1,
+    timeout_seconds: 600,
+    started_at: null,
+    completed_at: null,
+    elapsed_seconds: null,
+    estimated_remaining_seconds: null,
+    status_detail: "Waiting for an available worker.",
+    cancellation_requested: 0,
+    cancellation_requested_at: null,
+    attempts: 0,
+    max_attempts: 3,
+    last_error: "",
+    error_code: "",
+    diagnostic_id: "",
+    created_at: now,
+    updated_at: now,
+    ...overrides,
+  });
+  const runningJob = makeJob({
+    id: "job-running",
+    job_type: "refresh_cluster_profile",
+    status: "running",
+    status_detail: "Refreshed 42 clusters.",
+    started_at: now,
+    elapsed_seconds: 18,
+  });
+  const queuedJob = makeJob({
+    id: "job-queued",
+    job_type: "source_cluster_reconciliation",
+  });
+  const failedJob = makeJob({
+    id: "job-failed",
+    job_type: "vault_integrity_check",
+    status: "failed",
+    status_detail: "Integrity check stopped.",
+    last_error: "Integrity check stopped.",
+    cancellable: 0,
+    preemptable: 0,
+    attempts: 1,
+  });
+
+  await page.route(`${backendOrigin}/api/v1/jobs/status`, (route) =>
+    route.fulfill({
+      json: {
+        queued: 1,
+        paused: 0,
+        blocked_by_dependency: 0,
+        blocked_setup_required: 0,
+        blocked_local_model: 0,
+        deferred: 0,
+        running: 1,
+        succeeded: 0,
+        partial_success: 0,
+        failed: 1,
+        cancelled: 0,
+        manual_review: 0,
+        running_jobs: [runningJob],
+        latest: [runningJob, queuedJob, failedJob],
+      },
+    }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/jobs",
+    (route) =>
+      route.fulfill({
+        json: {
+          items: [runningJob, queuedJob, failedJob],
+          next_cursor: null,
+          has_more: false,
+        },
+      }),
+  );
+  await page.route(`${backendOrigin}/api/v1/projects/project-run-summary?*`, (route) =>
+    route.fulfill({ json: { items: [] } }),
+  );
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/tasks");
+  await expect(page).toHaveTitle("Tasks");
+  await expect(page.getByRole("heading", { name: "Tasks" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Active 2/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("Update cluster details", { exact: true })).toBeVisible();
+  await expect(page.getByText("Organize analyzed sources", { exact: true })).toBeVisible();
+  await expect(page.getByText("Vault Integrity Check", { exact: true })).not.toBeVisible();
+
+  await page.getByText("Organize analyzed sources", { exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Job detail" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Organize analyzed sources" })).toBeVisible();
+
+  await page.getByRole("button", { name: /Needs attention 1/ }).click();
+  await expect(page.getByText("Vault Integrity Check", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Job detail" })).not.toBeVisible();
+  await page.getByText("Vault Integrity Check", { exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Vault Integrity Check" })).toBeVisible();
+  expect(consoleProblems).toEqual([]);
+
+  if (process.env.CML_QA_TASKS_SCREENSHOT) {
+    await page.screenshot({
+      path: process.env.CML_QA_TASKS_SCREENSHOT,
+      fullPage: false,
+    });
+  }
+});
+
+test("timeline refreshes on demand and once per visible minute", async ({ page }) => {
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+  await page.clock.install({ time: new Date("2026-07-31T09:00:00Z") });
+
+  let activityRequests = 0;
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
+    route.fulfill({
+      json: [{
+        id: "vault-timeline",
+        name: "Timeline vault",
+        path: "T:\\timeline",
+        created_at: "2026-07-31T08:00:00Z",
+        updated_at: "2026-07-31T08:00:00Z",
+      }],
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/activity*`, (route) => {
+    activityRequests += 1;
+    return route.fulfill({
+      json: {
+        items: [{
+          id: `activity-${activityRequests}`,
+          kind: "source",
+          time: "2026-07-31T08:30:00Z",
+          title: `Timeline activity ${activityRequests}`,
+          detail: `Refresh response ${activityRequests}`,
+          href: "/sources",
+        }],
+        next_cursor: null,
+        has_more: false,
+        total: 1,
+        limit: 100,
+        offset: 0,
+      },
+    });
+  });
+
+  await page.goto("/timeline");
+  await expect(page).toHaveTitle("Timeline");
+  await expect(page.getByRole("heading", { name: "Timeline" })).toBeVisible();
+  await expect(page.getByText("Timeline activity 1")).toBeVisible();
+  await expect(page.getByText("Updates automatically every 60 seconds")).toBeVisible();
+  expect(activityRequests).toBe(1);
+
+  await page.clock.fastForward(59_000);
+  expect(activityRequests).toBe(1);
+
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByText("Timeline activity 2")).toBeVisible();
+  expect(activityRequests).toBe(2);
+
+  await page.clock.fastForward(59_000);
+  expect(activityRequests).toBe(2);
+  await page.clock.fastForward(1_000);
+  await expect(page.getByText("Timeline activity 3")).toBeVisible();
+  expect(activityRequests).toBe(3);
+  expect(consoleProblems).toEqual([]);
+
+  if (process.env.CML_QA_TIMELINE_SCREENSHOT) {
+    await page.screenshot({
+      path: process.env.CML_QA_TIMELINE_SCREENSHOT,
+      fullPage: false,
+    });
+  }
+});
+
+test("Profile shows its library and the Health command opens a draggable latest check", async ({ page }) => {
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+
+  const now = "2026-07-31T10:00:00Z";
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/vaults",
+    (route) =>
+    route.fulfill({
+      json: [{
+        id: "vault-profile",
+        name: "Research Library",
+        path: "T:\\research",
+        created_at: now,
+        updated_at: now,
+      }],
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/system/unlock/status`, (route) =>
+    route.fulfill({
+      json: {
+        state: "ready",
+        vault_id: "vault-profile",
+        unlock_mode: "convenience",
+        pin_enabled: false,
+        message: "Ready",
+        verification_error: "",
+        updated_at: now,
+        ready: true,
+        secured_vault_count: 0,
+        secured_vault_ids: [],
+        has_vendor_recovery: false,
+      },
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/jobs/status`, (route) =>
+    route.fulfill({
+      json: {
+        queued: 0,
+        paused: 0,
+        blocked_by_dependency: 0,
+        blocked_setup_required: 0,
+        blocked_local_model: 0,
+        deferred: 0,
+        running: 0,
+        succeeded: 4,
+        partial_success: 0,
+        failed: 0,
+        cancelled: 0,
+        manual_review: 0,
+        running_jobs: [],
+        latest: [],
+      },
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/models/runtime`, (route) =>
+    route.fulfill({ json: { state: "ready", available: true, detail: "Local chat is ready." } }),
+  );
+
+  await page.goto("/home");
+  await expect(page.locator(".vault-mobile-status").getByText("Ready", { exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
+  await page.goto("/settings?section=profile");
+  await expect(page).toHaveTitle("Settings");
+  await expect(page.getByText("Library: Research Library", { exact: true })).toBeVisible();
+  await expect(page.getByRole("paragraph").filter({ hasText: "T:/research" })).toBeVisible();
+
+  await page.keyboard.press("Control+K");
+  const healthCommand = page.getByRole("option", { name: /Health status/ });
+  await expect(healthCommand).toBeVisible();
+  await healthCommand.click();
+
+  const panel = page.getByRole("dialog", { name: "Health status" });
+  await expect(panel).toBeVisible();
+  await expect(panel.getByText("Research Library", { exact: true })).toBeVisible();
+  await expect(panel.getByText(/Latest check:/)).not.toContainText("not run yet");
+  const initial = await panel.boundingBox();
+  const handle = panel.getByRole("heading", { name: "Health status" });
+  const handleBox = await handle.boundingBox();
+  expect(initial).not.toBeNull();
+  expect(handleBox).not.toBeNull();
+  if (initial && handleBox) {
+    await page.mouse.move(handleBox.x + 20, handleBox.y + 10);
+    await page.mouse.down();
+    await page.mouse.move(handleBox.x - 70, handleBox.y - 60, { steps: 5 });
+    await page.mouse.up();
+    const moved = await panel.boundingBox();
+    expect(moved?.x).toBeLessThan(initial.x);
+    expect(moved?.y).toBeLessThan(initial.y);
+  }
+  expect(consoleProblems).toEqual([]);
+
+  if (process.env.CML_QA_HEALTH_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_HEALTH_SCREENSHOT, fullPage: false });
+  }
+});
+
+test("assistant messages render structured Markdown without visible delimiters", async ({ page }) => {
   const consoleProblems: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error" || message.type() === "warning") {
@@ -98,7 +445,7 @@ test("assistant messages render bold Markdown without visible delimiters", async
             id: "message-assistant",
             session_id: sessionId,
             role: "assistant",
-            content: "This is a **bold assessment** with safe <script>text</script>.",
+            content: "### Database fundamentals\n\n- *External level*: users' views\n  - **Conceptual level**: shared schema\n\nThis is a **bold assessment** with safe <script>text</script>.",
             clusters_used: [],
             citations: [],
             warnings: [],
@@ -122,16 +469,205 @@ test("assistant messages render bold Markdown without visible delimiters", async
 
   await page.goto(`/chat/${sessionId}`);
   await expect(page).toHaveTitle("Chat");
+  await expect(page.getByRole("heading", { name: "Database fundamentals" })).toBeVisible();
+  await expect(page.locator("em", { hasText: "External level" })).toBeVisible();
+  await expect(page.locator("li", { hasText: "Conceptual level" })).toBeVisible();
   const strong = page.locator("strong", { hasText: "bold assessment" });
   await expect(strong).toBeVisible();
   const answer = page.locator("p").filter({ hasText: "This is a bold assessment" });
   await expect(answer).toContainText("This is a bold assessment with safe <script>text</script>.");
   await expect(answer).not.toContainText("**");
+  await expect(page.getByText("### Database fundamentals", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("*External level*", { exact: true })).toHaveCount(0);
   await expect(answer.locator("script")).toHaveCount(0);
   expect(consoleProblems).toEqual([]);
 
   if (process.env.CML_QA_SCREENSHOT) {
     await page.screenshot({ path: process.env.CML_QA_SCREENSHOT, fullPage: false });
+  }
+});
+
+test("Sources preserves nested folders inside a grouped folder import", async ({ page }) => {
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+
+  const now = "2026-07-31T10:00:00Z";
+  const rootPath = "T:\\folder-x";
+  const source = (id: string, title: string, relativePath: string) => ({
+    id,
+    vault_id: "vault-folders",
+    cluster_id: null,
+    title,
+    source_type: "file",
+    state: "indexed",
+    ingestion_stage: "ready",
+    ingestion_generation: 1,
+    ingestion_error_code: "",
+    ingestion_status_detail: "",
+    ingestion_updated_at: now,
+    original_path: `${rootPath}\\${relativePath.replaceAll("/", "\\")}`,
+    import_root_path: rootPath,
+    import_relative_path: relativePath,
+    url: null,
+    raw_text: "",
+    extracted_text: "",
+    summary: `${title} summary`,
+    tags: [],
+    metadata_quality: "semantic",
+    semantic_metadata_version: 1,
+    semantic_metadata_updated_at: now,
+    cover_image_url: null,
+    created_at: now,
+    updated_at: now,
+  });
+
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
+    route.fulfill({
+      json: [{
+        id: "vault-folders",
+        name: "Folder Library",
+        path: "T:\\folder-library",
+        created_at: now,
+        updated_at: now,
+      }],
+    }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/sources/folders/tree",
+    (route) =>
+      route.fulfill({
+        json: {
+          root_path: rootPath,
+          total_files: 20,
+          items: [
+            { path: "a", parent_path: "", name: "a", depth: 0, source_count: 8, direct_source_count: 5 },
+            { path: "b", parent_path: "", name: "b", depth: 0, source_count: 6, direct_source_count: 6 },
+            { path: "c", parent_path: "", name: "c", depth: 0, source_count: 2, direct_source_count: 2 },
+            { path: "a/deep", parent_path: "a", name: "deep", depth: 1, source_count: 3, direct_source_count: 3 },
+          ],
+        },
+      }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/sources/folders",
+    (route) =>
+      route.fulfill({
+        json: {
+          items: [{ root_path: rootPath, name: "folder-x", source_count: 20, updated_at: now }],
+          total: 1,
+          limit: 100,
+          offset: 0,
+          has_more: false,
+        },
+      }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/sources/page",
+    (route) => {
+      const url = new URL(route.request().url());
+      const inFolder = url.searchParams.get("import_root_path") === rootPath;
+      const prefix = url.searchParams.get("import_relative_prefix");
+      const items = !inFolder
+        ? []
+        : prefix === "a"
+          ? [source("source-a", "a-note.txt", "a/a-note.txt")]
+          : [source("source-root", "root-note.txt", "root-note.txt")];
+      return route.fulfill({ json: { items, next_cursor: null, has_more: false, total: items.length } });
+    },
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/sources/count",
+    (route) => {
+      const url = new URL(route.request().url());
+      const total = url.searchParams.has("import_root_path") ? 1 : 0;
+      return route.fulfill({ json: { total } });
+    },
+  );
+
+  await page.goto("/sources");
+  await expect(page).toHaveTitle("Sources");
+  await page.getByRole("row", { name: "Open folder-x folder" }).click();
+  await expect(page.getByRole("heading", { name: "folder-x" })).toBeVisible();
+  await expect(page.getByRole("row", { name: "Open a folder" })).toBeVisible();
+  await expect(page.getByRole("row", { name: "Open b folder" })).toBeVisible();
+  await expect(page.getByRole("row", { name: "Open c folder" })).toBeVisible();
+  await expect(page.getByText("root-note.txt", { exact: true })).toBeVisible();
+
+  await page.getByRole("row", { name: "Open a folder" }).click();
+  await expect(page.getByRole("heading", { name: "a" })).toBeVisible();
+  await expect(page.getByRole("row", { name: "Open deep folder" })).toBeVisible();
+  await expect(page.getByText("a-note.txt", { exact: true })).toBeVisible();
+  expect(consoleProblems).toEqual([]);
+
+  if (process.env.CML_QA_FOLDERS_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_FOLDERS_SCREENSHOT, fullPage: false });
+  }
+});
+
+test("Bridge presents connected AI write-back as a guided workflow", async ({ page }) => {
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+
+  const now = "2026-07-31T10:00:00Z";
+  await page.route(`${backendOrigin}/api/v1/bridge/status`, (route) =>
+    route.fulfill({
+      json: {
+        schema_version: 1,
+        enabled: true,
+        mcp: "available",
+        http_api: "available",
+        cli: "available",
+        allowed_vault_ids: ["vault-bridge"],
+        allowed_cluster_ids: [],
+        allow_raw_snippets: false,
+        allow_cluster_profile: true,
+        bridge_token: "",
+        approval_requests_pending: 0,
+        last_refreshed_at: now,
+      },
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
+    route.fulfill({
+      json: [{
+        id: "vault-bridge",
+        name: "Connected Library",
+        path: "T:\\connected-library",
+        created_at: now,
+        updated_at: now,
+      }],
+    }),
+  );
+
+  await page.goto("/bridge");
+  await expect(page).toHaveTitle("Bridge");
+  await expect(page.getByRole("heading", { name: "Connect AI tools" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Connect", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Access", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Activity", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Manual tools", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Save useful answers without copying" })).toBeVisible();
+  await expect(page.getByText(/Save this answer to Vault/)).toBeVisible();
+  await expect(page.getByText("Connections allowed", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Manual tools", exact: true }).click();
+  await expect(page.getByText(/fallback for tools that cannot call Vault directly/i)).toBeVisible();
+  await expect(page.getByText("Set up an AI connection", { exact: true })).not.toBeVisible();
+  expect(consoleProblems).toEqual([]);
+
+  if (process.env.CML_QA_BRIDGE_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_BRIDGE_SCREENSHOT, fullPage: false });
   }
 });
 

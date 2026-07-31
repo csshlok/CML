@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import type { ReactNode } from "react";
-import { Cable, Copy, ExternalLink, HelpCircle, Plus, RefreshCw, Shield, Terminal, Trash2 } from "lucide-react";
+import { Cable, CheckCircle2, Copy, ExternalLink, HelpCircle, Plus, RefreshCw, Shield, Terminal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmAction } from "@/components/product/Feedback";
 import { PageHeader } from "@/components/layout/WindowAware";
@@ -610,7 +609,7 @@ function BridgeView() {
   const chatGptWriteVerified = requests.some(
     (request) =>
       request.client_id === chatGptClientId &&
-      request.mode === "external_artifact" &&
+      ["external_artifact", "external_turn"].includes(request.mode) &&
       request.decision === "captured",
   );
   const extensionSetupText = extensionToken
@@ -625,17 +624,13 @@ function BridgeView() {
 
   return (
     <div className="vault-page-wash h-full overflow-y-auto">
-      <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
+      <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
         <PageHeader className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Cable className="h-4 w-4" />
-              Bridge
-            </div>
-            <h1 className="page-title mt-2">Bridge</h1>
+            <h1 className="page-title">Connect AI tools</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Connect an outside AI app to Vault so it can read only the libraries and clusters you
-              choose.
+              Let another AI use selected Vault context—and, when you allow it, send useful answers
+              back for review and indexing.
             </p>
             <div className="mt-2 text-xs text-muted-foreground">
               Permissions refresh every minute. Pending approvals {status?.approval_requests_pending ?? 0}. Last checked{" "}
@@ -658,10 +653,10 @@ function BridgeView() {
               />
               <div>
                 <div className="text-sm font-medium">
-                  {status?.enabled ? "Bridge running" : "Bridge off"}
+                  {status?.enabled ? "Connections allowed" : "Connections paused"}
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  HTTP API {status?.http_api ?? "checking"}
+                  {backend.status === "online" ? "Local service ready" : "Local service unavailable"}
                 </div>
               </div>
             </div>
@@ -686,61 +681,72 @@ function BridgeView() {
               type="button"
               onClick={() => setBridgeView(item)}
               aria-current={bridgeView === item ? "page" : undefined}
-              className={`min-h-9 shrink-0 rounded-md px-3 text-sm font-medium capitalize ${
+              className={`min-h-9 shrink-0 rounded-md px-3 text-sm font-medium ${
                 bridgeView === item ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
               }`}
             >
-              {item}
+              {bridgeViewLabel(item)}
               {item === "reviews" && approvalRequests.length + reviews.length > 0 ? ` (${approvalRequests.length + reviews.length})` : ""}
             </button>
           ))}
         </nav>
 
-        <div className={`${bridgeView === "overview" ? "grid" : "hidden"} mt-6 gap-4 md:grid-cols-3`}>
-          <BridgeCard
-            icon={<ExternalLink className="h-4 w-4" />}
-            title="MCP"
-            body="Expose tools such as list_clusters and get_cluster_context."
-          />
-          <BridgeCard
-            icon={<Terminal className="h-4 w-4" />}
-            title="CLI"
-            body="Retrieve context from the terminal and pipe it into another local model."
-          />
-          <BridgeCard
-            icon={<Copy className="h-4 w-4" />}
-            title="Copy context"
-            body="Build a source-grounded prompt packet for manual paste into another AI app."
-          />
-        </div>
-
-        <section className={bridgeSectionClass("overview", bridgeView, "mt-6")}>
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-            <div className="min-w-0">
-              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                Local backend
-              </div>
-              <p className="mt-1 text-sm">
-                {backend.status === "online"
-                  ? "Backend is reachable."
-                  : backend.status === "checking"
-                    ? "Checking backend..."
-                    : "Backend is not running."}
+        <section
+          hidden={bridgeView !== "overview"}
+          style={{ display: bridgeView === "overview" ? undefined : "none" }}
+          className={bridgeSectionClass("overview", bridgeView, "mt-6")}
+        >
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-secondary">
+              <Cable className="h-4 w-4" />
+            </span>
+            <div>
+              <h2 className="text-sm font-semibold">Connect an assistant</h2>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+                Start with read-only access. You can add permission to save answers after the
+                connection works.
               </p>
             </div>
-            <code className="max-w-full break-all rounded-md bg-muted px-2 py-1 text-xs">{backend.url}</code>
           </div>
+          <ol className="mt-5 divide-y divide-border border-y border-border">
+            <BridgeStep
+              number="1"
+              title="Choose what it can access"
+              detail={
+                status?.allowed_vault_ids.length || status?.allowed_cluster_ids.length
+                  ? "A library or cluster scope is selected."
+                  : "Select at least one library or cluster below."
+              }
+              complete={Boolean(status?.allowed_vault_ids.length || status?.allowed_cluster_ids.length)}
+            />
+            <BridgeStep
+              number="2"
+              title="Create and connect"
+              detail={clients.length > 0 ? `${clients.length} connection ${clients.length === 1 ? "is" : "are"} configured.` : "Open setup below and choose your AI app."}
+              complete={clients.length > 0}
+            />
+            <BridgeStep
+              number="3"
+              title="Ask it to use Vault"
+              detail={chatGptReadVerified ? "Vault received a successful context request." : "After connecting, ask the assistant to list your Vault clusters."}
+              complete={chatGptReadVerified}
+            />
+          </ol>
         </section>
 
-        <details className="mt-4 rounded-md border border-border bg-card">
+        <details
+          hidden={bridgeView !== "overview"}
+          style={{ display: bridgeView === "overview" ? undefined : "none" }}
+          className="mt-4 rounded-md border border-border bg-card"
+          open={clients.length === 0 ? true : undefined}
+        >
           <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
-            Connect an MCP client
+            Set up an AI connection
           </summary>
           <div className="border-t border-border px-4 py-4">
             <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-              Choose your client, copy the configuration, and paste it into that
-              client&apos;s MCP settings. Create a client token below first so the
-              one-time token is filled in automatically.
+              Choose the app you use. Vault will show only the setup fields and checks needed for
+              that connection.
             </p>
             <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="MCP client">
               {(
@@ -1027,7 +1033,11 @@ function BridgeView() {
           </div>
         </details>
 
-        <section className={bridgeSectionClass("overview", bridgeView)}>
+        <section
+          hidden={bridgeView !== "overview"}
+          style={{ display: bridgeView === "overview" ? undefined : "none" }}
+          className={bridgeSectionClass("overview", bridgeView)}
+        >
           {status?.enabled && status.allowed_vault_ids.length === 0 && (
             <div className="mb-4 rounded-md border border-[var(--status-learning)]/40 bg-[var(--status-learning)]/10 px-3 py-2 text-sm">
               Bridge is on, but no library is allowed. MCP clients will receive no_active_vault until you allow one.
@@ -1097,7 +1107,44 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className={bridgeSectionClass("clients", bridgeView, "mt-6")}>
+        <section
+          hidden={bridgeView !== "overview"}
+          style={{ display: bridgeView === "overview" ? undefined : "none" }}
+          className={bridgeSectionClass("overview", bridgeView)}
+        >
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-secondary">
+              <CheckCircle2 className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold">Save useful answers without copying</h2>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+                Give a connection <span className="font-medium text-foreground">Read and save</span>{" "}
+                access, then ask the connected assistant to “Save this answer to Vault.” It sends
+                the prompt and answer through CML’s trust checks, review queue, indexing, and normal
+                retrieval pipeline.
+              </p>
+              <p className="mt-3 text-xs leading-5 text-muted-foreground">
+                Answers that are weakly grounded, conflicting, or unsafe remain gated in Review.
+                Manual paste remains available under Manual tools as a fallback.
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={() => setBridgeView("clients")}>
+                  Manage connection access
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setBridgeView("reviews")}>
+                  Open review queue
+                </Button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section
+          hidden={bridgeView !== "clients"}
+          style={{ display: bridgeView === "clients" ? undefined : "none" }}
+          className={bridgeSectionClass("clients", bridgeView, "mt-6")}
+        >
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -1195,7 +1242,11 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className={bridgeSectionClass("clients", bridgeView)}>
+        <section
+          hidden={bridgeView !== "clients"}
+          style={{ display: bridgeView === "clients" ? undefined : "none" }}
+          className={bridgeSectionClass("clients", bridgeView)}
+        >
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -1286,7 +1337,11 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className={bridgeSectionClass("history", bridgeView, "mt-6")}>
+        <section
+          hidden={bridgeView !== "history"}
+          style={{ display: bridgeView === "history" ? undefined : "none" }}
+          className={bridgeSectionClass("history", bridgeView, "mt-6")}
+        >
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -1324,14 +1379,19 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className={bridgeSectionClass("advanced", bridgeView, "mt-6")}>
+        <section
+          hidden={bridgeView !== "advanced"}
+          style={{ display: bridgeView === "advanced" ? undefined : "none" }}
+          className={bridgeSectionClass("advanced", bridgeView, "mt-6")}
+        >
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
                 Save external context
               </div>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                Paste an external answer or a full prompt-response pair and store it directly in Vault.
+                Fallback for tools that cannot call Vault directly. Connected assistants should use
+                the automatic save tools instead.
               </p>
             </div>
             <div className="flex flex-wrap gap-2 lg:justify-end">
@@ -1424,7 +1484,11 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className={bridgeSectionClass("reviews", bridgeView, "mt-6")}>
+        <section
+          hidden={bridgeView !== "reviews"}
+          style={{ display: bridgeView === "reviews" ? undefined : "none" }}
+          className={bridgeSectionClass("reviews", bridgeView, "mt-6")}
+        >
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -1482,7 +1546,11 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className={bridgeSectionClass("clients", bridgeView)}>
+        <section
+          hidden={bridgeView !== "clients"}
+          style={{ display: bridgeView === "clients" ? undefined : "none" }}
+          className={bridgeSectionClass("clients", bridgeView)}
+        >
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -1579,7 +1647,11 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className={bridgeSectionClass("reviews", bridgeView)}>
+        <section
+          hidden={bridgeView !== "reviews"}
+          style={{ display: bridgeView === "reviews" ? undefined : "none" }}
+          className={bridgeSectionClass("reviews", bridgeView)}
+        >
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -1633,7 +1705,11 @@ function BridgeView() {
           )}
         </section>
 
-        <section className={bridgeSectionClass("history", bridgeView)}>
+        <section
+          hidden={bridgeView !== "history"}
+          style={{ display: bridgeView === "history" ? undefined : "none" }}
+          className={bridgeSectionClass("history", bridgeView)}
+        >
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -1679,7 +1755,11 @@ function BridgeView() {
           </div>
         </section>
 
-        <section className={bridgeSectionClass("history", bridgeView)}>
+        <section
+          hidden={bridgeView !== "history"}
+          style={{ display: bridgeView === "history" ? undefined : "none" }}
+          className={bridgeSectionClass("history", bridgeView)}
+        >
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
             Recent context requests
           </div>
@@ -1851,21 +1931,47 @@ function PermissionRow({
 }
 
 function bridgeSectionClass(
-  section: "overview" | "clients" | "reviews" | "history" | "advanced",
-  active: "overview" | "clients" | "reviews" | "history" | "advanced",
+  _section: "overview" | "clients" | "reviews" | "history" | "advanced",
+  _active: "overview" | "clients" | "reviews" | "history" | "advanced",
   margin = "mt-4",
 ) {
-  return `${section === active ? "block" : "hidden"} ${margin} rounded-md border border-border bg-card p-4`;
+  return `${margin} rounded-md border border-border bg-card p-4`;
 }
 
-function BridgeCard({ icon, title, body }: { icon: ReactNode; title: string; body: string }) {
+function bridgeViewLabel(view: "overview" | "clients" | "reviews" | "history" | "advanced") {
+  return {
+    overview: "Connect",
+    clients: "Access",
+    reviews: "Review",
+    history: "Activity",
+    advanced: "Manual tools",
+  }[view];
+}
+
+function BridgeStep({
+  number,
+  title,
+  detail,
+  complete,
+}: {
+  number: string;
+  title: string;
+  detail: string;
+  complete: boolean;
+}) {
   return (
-    <div className="rounded-md border border-border bg-card p-4">
-      <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
-        <span className="shrink-0">{icon}</span>
-        {title}
+    <li className="flex gap-3 py-3">
+      <span
+        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-medium ${
+          complete ? "bg-[var(--status-ready)] text-white" : "bg-secondary text-secondary-foreground"
+        }`}
+      >
+        {complete ? <CheckCircle2 className="h-3.5 w-3.5" /> : number}
+      </span>
+      <div className="min-w-0">
+        <div className="text-sm font-medium">{title}</div>
+        <p className="mt-0.5 break-words text-xs leading-5 text-muted-foreground">{detail}</p>
       </div>
-      <p className="mt-2 text-sm leading-6 text-muted-foreground">{body}</p>
-    </div>
+    </li>
   );
 }

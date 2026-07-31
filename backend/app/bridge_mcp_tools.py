@@ -180,7 +180,7 @@ TOOL_CONTRACTS = [
     ),
     _tool(
         "log_external_turn",
-        "Save a model prompt and response into an allowed Vault library.",
+        "When the user asks to save or remember the current answer in Vault, send the original user prompt and your full response through Vault review, indexing, and retrieval.",
         _object(
             {
                 "vault_id": _string(),
@@ -200,7 +200,7 @@ TOOL_CONTRACTS = [
     ),
     _tool(
         "capture_external_artifact",
-        "Save generated notes, code, or analysis into an allowed Vault library.",
+        "When the user asks to save generated notes, code, or analysis in Vault, send the artifact through Vault review, indexing, and retrieval.",
         _object(
             {
                 "vault_id": _string(),
