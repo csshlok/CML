@@ -206,6 +206,7 @@ function SettingsView() {
   const [retentionResult, setRetentionResult] = useState<ChatEvidenceRetentionResult | null>(null);
   const [unlockStatus, setUnlockStatus] = useState<UnlockStatusRead | null>(null);
   const [vaultPassphrase, setVaultPassphrase] = useState("");
+  const vaultPassphraseRef = useRef<HTMLInputElement>(null);
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [recoveryKeyDraft, setRecoveryKeyDraft] = useState("");
@@ -432,20 +433,27 @@ function SettingsView() {
 
   async function unlockVault() {
     const vaultId = backendVault?.id ?? unlockStatus?.secured_vault_ids[0];
-    if (!vaultId || !vaultPassphrase.trim()) {
+    const enteredPassphrase = vaultPassphraseRef.current?.value ?? vaultPassphrase;
+    if (!vaultId || !enteredPassphrase.trim()) {
       setUnlockError(
         vaultId
           ? "Enter your library passphrase."
           : "Choose a library before unlocking.",
       );
+      if (vaultId) vaultPassphraseRef.current?.focus();
+      return;
+    }
+    if (!unlockStatus?.secured_vault_count && enteredPassphrase.length < 12) {
+      setUnlockError("Use at least 12 characters for your library passphrase.");
+      vaultPassphraseRef.current?.focus();
       return;
     }
     setUnlockError(null);
     setActionBusy("security", true);
     try {
       const next = unlockStatus?.secured_vault_count
-        ? await unlockVaultWithPassphrase({ vault_id: vaultId, passphrase: vaultPassphrase })
-        : await initializeVaultSecurity({ vault_id: vaultId, passphrase: vaultPassphrase, unlock_mode: "strict" });
+        ? await unlockVaultWithPassphrase({ vault_id: vaultId, passphrase: enteredPassphrase })
+        : await initializeVaultSecurity({ vault_id: vaultId, passphrase: enteredPassphrase, unlock_mode: "strict" });
       setUnlockStatus(next);
       window.dispatchEvent(new CustomEvent("vault:lock-state", { detail: next }));
       const recoveryKey = "recovery_key" in next && typeof next.recovery_key === "string" ? next.recovery_key : null;
@@ -2308,6 +2316,7 @@ function SettingsView() {
             <div className="mt-4 grid gap-2 md:grid-cols-[1fr_auto_auto]">
               <div>
                 <Input
+                  ref={vaultPassphraseRef}
                   type="password"
                   autoComplete={
                     unlockStatus?.secured_vault_count
@@ -2320,7 +2329,14 @@ function SettingsView() {
                       : "Create library passphrase"
                   }
                   aria-invalid={Boolean(unlockError)}
-                  aria-describedby={unlockError ? "library-unlock-error" : undefined}
+                  aria-describedby={
+                    [
+                      !unlockStatus?.secured_vault_count ? "library-passphrase-requirements" : "",
+                      unlockError ? "library-unlock-error" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ") || undefined
+                  }
                   value={vaultPassphrase}
                   onChange={(event) => {
                     setVaultPassphrase(event.target.value);
@@ -2335,6 +2351,14 @@ function SettingsView() {
                   disabled={isActionBusy("security")}
                   placeholder={unlockStatus?.secured_vault_count ? "Library passphrase" : "Create library passphrase"}
                 />
+                {!unlockStatus?.secured_vault_count ? (
+                  <p
+                    id="library-passphrase-requirements"
+                    className="mt-1.5 text-xs text-muted-foreground"
+                  >
+                    Use at least 12 characters. Vault cannot recover it for you.
+                  </p>
+                ) : null}
                 {unlockError ? (
                   <p
                     id="library-unlock-error"
@@ -2349,7 +2373,8 @@ function SettingsView() {
                 onClick={() => void unlockVault()}
                 disabled={
                   isActionBusy("security") ||
-                  !(backendVault?.id ?? unlockStatus?.secured_vault_ids[0])
+                  !(backendVault?.id ?? unlockStatus?.secured_vault_ids[0]) ||
+                  (!unlockStatus?.secured_vault_count && vaultPassphrase.length < 12)
                 }
               >
                 {unlockStatus?.secured_vault_count ? "Unlock" : "Set passphrase"}

@@ -5,6 +5,14 @@ import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/layout/WindowAware";
 import { Input } from "@/components/ui/input";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   createCluster,
   decideClusterSuggestion,
   getLatestSourcesByCluster,
@@ -41,6 +49,7 @@ function ClustersList() {
   const [sourceCountRows, setSourceCountRows] = useState<Array<{ cluster_id: string | null; state: string; total: number }>>([]);
   const [projectClusterIds, setProjectClusterIds] = useState<Set<string>>(new Set());
   const [newClusterName, setNewClusterName] = useState("");
+  const [newClusterOpen, setNewClusterOpen] = useState(false);
   const [creatingCluster, setCreatingCluster] = useState(false);
   const [renamingCluster, setRenamingCluster] = useState<Cluster | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -153,6 +162,7 @@ function ClustersList() {
         color: nextTint(backendClusters.length),
       });
       setNewClusterName("");
+      setNewClusterOpen(false);
       await loadData();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not create this cluster.");
@@ -273,19 +283,57 @@ function ClustersList() {
             <Button variant="outline" onClick={() => void refreshOrganization()}>
               Refresh organization
             </Button>
-            <Input
-              aria-label="New cluster name"
-              className="h-9 w-48"
-              value={newClusterName}
-              placeholder="Cluster name"
-              onChange={(event) => setNewClusterName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void handleNewCluster();
-              }}
-            />
-            <Button onClick={() => void handleNewCluster()} disabled={!newClusterName.trim() || creatingCluster}>
+            <Button type="button" onClick={() => setNewClusterOpen(true)}>
               <Plus className="h-4 w-4" /> New cluster
             </Button>
+            {newClusterOpen ? (
+              <Dialog
+                open
+                onOpenChange={(open) => {
+                  if (creatingCluster) return;
+                  setNewClusterOpen(open);
+                  if (!open) setNewClusterName("");
+                }}
+              >
+              <DialogContent>
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void handleNewCluster();
+                  }}
+                >
+                  <DialogHeader>
+                    <DialogTitle>Create a cluster</DialogTitle>
+                    <DialogDescription>
+                      Name this group for the sources you want to organize together.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <Input
+                    autoFocus
+                    aria-label="Cluster name"
+                    className="mt-5"
+                    value={newClusterName}
+                    placeholder="For example, Product research"
+                    onChange={(event) => setNewClusterName(event.target.value)}
+                    disabled={creatingCluster}
+                  />
+                  <DialogFooter className="mt-5">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setNewClusterOpen(false)}
+                      disabled={creatingCluster}
+                    >
+                      Cancel
+                    </Button>
+                    <Button type="submit" disabled={!newClusterName.trim() || creatingCluster}>
+                      {creatingCluster ? "Creatingâ€¦" : "Create cluster"}
+                    </Button>
+                  </DialogFooter>
+                </form>
+              </DialogContent>
+              </Dialog>
+            ) : null}
           </div>
         </PageHeader>
 

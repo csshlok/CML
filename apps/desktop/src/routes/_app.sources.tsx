@@ -136,6 +136,7 @@ function SourcesView() {
   const sourceRequestRef = useRef(0);
   const hasLoadedSourcesRef = useRef(false);
   const summarizedImportJobRef = useRef<string | null>(null);
+  const importSummaryTimerRef = useRef<number | null>(null);
 
   async function refreshBackendSources() {
     const requestId = ++sourceRequestRef.current;
@@ -258,9 +259,26 @@ function SourcesView() {
       return;
     }
     summarizedImportJobRef.current = job.id;
-    setIngestMessage(formatSourceImportResult(job.status, progress));
+    const summary = formatSourceImportResult(job.status, progress);
+    setIngestMessage(summary);
+    if (importSummaryTimerRef.current !== null) {
+      window.clearTimeout(importSummaryTimerRef.current);
+    }
+    importSummaryTimerRef.current = window.setTimeout(() => {
+      setIngestMessage((current) => (current === summary ? null : current));
+      importSummaryTimerRef.current = null;
+    }, 10_000);
     void refreshBackendSources();
   }, [sourceImport.active, sourceImport.job, sourceImport.progress]);
+
+  useEffect(
+    () => () => {
+      if (importSummaryTimerRef.current !== null) {
+        window.clearTimeout(importSummaryTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const usingBackend = Boolean(vault);
   const sources = usingBackend ? backendSources : [];

@@ -389,6 +389,192 @@ test("import progress is viewport draggable and restores its saved position", as
   expect(reset!.y).toBeGreaterThan(450);
 });
 
+test("completed import summary disappears after ten seconds", async ({ page }) => {
+  const pageErrors: string[] = [];
+  const consoleErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.stack || error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  const now = "2026-07-31T08:00:00Z";
+  const job = {
+    id: "rendered-import-complete",
+    job_type: "source_import_batch",
+    status: "partial_success",
+    payload: "{}",
+    result_json: JSON.stringify({
+      total_files: 18,
+      completed_files: 18,
+      imported_files: 10,
+      updated_files: 0,
+      failed_files: 8,
+      failures: [],
+      current_file: "",
+      truncated_at: null,
+    }),
+    dedupe_key: null,
+    attempts: 1,
+    max_attempts: 3,
+    last_error: "",
+    created_at: now,
+    updated_at: now,
+  };
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
+    route.fulfill({
+      json: [{
+        id: "vault-import",
+        name: "Import vault",
+        path: "T:\\import",
+        created_at: now,
+        updated_at: now,
+      }],
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/sources/import-jobs/active*`, (route) =>
+    route.fulfill({ json: job }),
+  );
+
+  const terminalJobLoaded = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/v1/sources/import-jobs/active",
+  );
+  await page.goto("/sources");
+  await terminalJobLoaded;
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+  const summary = page.getByText("Import finished: 10 imported, 0 updated, 8 failed.");
+  await expect(summary).toBeVisible();
+  await expect(summary).toHaveCount(0, { timeout: 11_500 });
+});
+
+test("new cluster asks for its name after the action is chosen", async ({ page }) => {
+  const now = "2026-07-31T08:00:00Z";
+  const clusters: Array<Record<string, unknown>> = [];
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
+    route.fulfill({
+      json: [{
+        id: "vault-clusters",
+        name: "Cluster vault",
+        path: "T:\\clusters",
+        created_at: now,
+        updated_at: now,
+      }],
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/clusters/page*`, (route) =>
+    route.fulfill({ json: { items: clusters, next_cursor: null, has_more: false } }),
+  );
+  await page.route(`${backendOrigin}/api/v1/clusters/suggestions*`, (route) =>
+    route.fulfill({ json: [] }),
+  );
+  await page.route(`${backendOrigin}/api/v1/sources/counts-by-cluster*`, (route) =>
+    route.fulfill({ json: { items: [] } }),
+  );
+  await page.route(`${backendOrigin}/api/v1/projects/cluster-membership-summary*`, (route) =>
+    route.fulfill({ json: { cluster_ids: [] } }),
+  );
+  await page.route(`${backendOrigin}/api/v1/sources/latest-by-cluster*`, (route) =>
+    route.fulfill({ json: { items: [] } }),
+  );
+  await page.route(`${backendOrigin}/api/v1/clusters`, async (route) => {
+    const payload = route.request().postDataJSON() as { name: string; vault_id: string; color: string };
+    const cluster = {
+      id: "cluster-created",
+      vault_id: payload.vault_id,
+      name: payload.name,
+      description: "",
+      color: payload.color,
+      index_status: "empty",
+      profile_status: "needs_update",
+      cluster_summary: "",
+      cluster_glossary: "[]",
+      created_at: now,
+      updated_at: now,
+    };
+    clusters.push(cluster);
+    return route.fulfill({ json: cluster });
+  });
+
+  const clustersLoaded = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/v1/clusters/page",
+  );
+  await page.goto("/clusters");
+  await clustersLoaded;
+  await expect(page.getByRole("heading", { name: "Clusters" })).toBeVisible();
+  await expect(page.getByLabel("Cluster name")).toHaveCount(0);
+  await page.getByRole("button", { name: "New cluster" }).click();
+  await expect(page.getByRole("heading", { name: "Create a cluster" })).toBeVisible();
+  const name = page.getByLabel("Cluster name");
+  await expect(name).toBeFocused();
+  if (process.env.CML_QA_CLUSTER_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_CLUSTER_SCREENSHOT, fullPage: false });
+  }
+  await name.fill("Research notes");
+  await page.getByRole("button", { name: "Create cluster" }).click();
+  await expect(page.getByRole("heading", { name: "Create a cluster" })).toHaveCount(0);
+  await expect(page.getByText("Research notes", { exact: true })).toBeVisible();
+});
+
+test("settings explains passphrase requirements before protected setup", async ({ page }) => {
+  const now = "2026-07-31T08:00:00Z";
+  let initializeRequests = 0;
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
+    route.fulfill({
+      json: [{
+        id: "vault-unprotected",
+        name: "Unprotected vault",
+        path: "T:\\unprotected",
+        created_at: now,
+        updated_at: now,
+      }],
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/system/unlock/status`, (route) =>
+    route.fulfill({
+      json: {
+        state: "ready",
+        ready: true,
+        secured_vault_count: 0,
+        secured_vault_ids: [],
+        vault_id: "vault-unprotected",
+        unlock_mode: "strict",
+        pin_enabled: false,
+        message: "Library ready.",
+        verification_error: "",
+        updated_at: now,
+        has_vendor_recovery: false,
+      },
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/system/unlock/initialize`, (route) => {
+    initializeRequests += 1;
+    return route.fulfill({ status: 500, json: { detail: "Should not be called." } });
+  });
+
+  const unlockLoaded = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/v1/system/unlock/status",
+  );
+  const vaultLoaded = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/v1/vaults",
+  );
+  await page.goto("/settings?section=library");
+  await Promise.all([unlockLoaded, vaultLoaded]);
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await expect(
+    page.getByText("Use at least 12 characters. Vault cannot recover it for you."),
+  ).toBeVisible();
+  const passphrase = page.getByLabel("Create library passphrase");
+  await passphrase.fill("too short");
+  await expect(passphrase).toHaveValue("too short");
+  await expect(page.getByRole("button", { name: "Set passphrase" })).toBeDisabled();
+  if (process.env.CML_QA_PASSPHRASE_SCREENSHOT) {
+    await page
+      .getByText("Use at least 12 characters. Vault cannot recover it for you.")
+      .scrollIntoViewIfNeeded();
+    await page.screenshot({ path: process.env.CML_QA_PASSPHRASE_SCREENSHOT, fullPage: false });
+  }
+  expect(initializeRequests).toBe(0);
+});
+
 test("locked library reports a wrong passphrase beside the unlock form", async ({ page }) => {
   let locked = true;
   const status = () => ({
