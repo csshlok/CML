@@ -103,6 +103,8 @@ def _ocr_pdf_with_ocrmypdf(path: Path, tesseract_executable: Path) -> list[str]:
                 check=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=1800,
                 env=env,
             )
@@ -164,6 +166,8 @@ def _run_tesseract(executable: Path, input_path: Path) -> str:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
             env=env,
         )
@@ -262,6 +266,8 @@ def _tesseract_usable(executable: Path) -> bool:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             env=_ocr_env(executable),
         )
