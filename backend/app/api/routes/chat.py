@@ -63,6 +63,10 @@ from backend.app.core.retrieval_trust import (
 from backend.app.core.context_budget_policy import select_context_budget
 from backend.app.core.context_memory import get_context_memory
 from backend.app.core.context_reduction import build_context_reduction_plan
+from backend.app.core.harm_safety import (
+    classify_harmful_capability_request,
+    safety_refusal_text,
+)
 from backend.app.core.typed_evidence_runtime import (
     contract_memory_item,
     evaluate_runtime_evidence,
@@ -927,6 +931,7 @@ def _build_retrieval_context(
     *,
     attachment_source_ids: list[str] | None = None,
 ) -> dict:
+    safety_decision = classify_harmful_capability_request(payload.prompt)
     retrieval_cluster_id = _retrieval_scope_cluster_id(payload)
     pinned_attachment_source_ids = list(dict.fromkeys(attachment_source_ids or []))
     scope_membership = {
@@ -944,20 +949,21 @@ def _build_retrieval_context(
         profile_display_name = str(profile_row["display_name"] if profile_row else "")
         if payload.cluster_id:
             _ensure_cluster(conn, payload.cluster_id, payload.vault_id)
-            scope_membership = preflight_scoped_cluster_membership(
-                conn,
-                vault_id=payload.vault_id,
-                cluster_id=payload.cluster_id,
-            )
-            if scope_membership["repair_pending"]:
-                enqueue_job(
+            if safety_decision["action"] != "refuse":
+                scope_membership = preflight_scoped_cluster_membership(
                     conn,
-                    job_type="cluster_membership_repair",
-                    payload={"vault_id": payload.vault_id, "batch_size": 100},
-                    dedupe_key=f"cluster-membership-repair:{payload.vault_id}",
-                    scope_id=payload.vault_id,
-                    user_initiated=False,
+                    vault_id=payload.vault_id,
+                    cluster_id=payload.cluster_id,
                 )
+                if scope_membership["repair_pending"]:
+                    enqueue_job(
+                        conn,
+                        job_type="cluster_membership_repair",
+                        payload={"vault_id": payload.vault_id, "batch_size": 100},
+                        dedupe_key=f"cluster-membership-repair:{payload.vault_id}",
+                        scope_id=payload.vault_id,
+                        user_initiated=False,
+                    )
         session = None
         if payload.session_id:
             session = conn.execute(
@@ -966,25 +972,36 @@ def _build_retrieval_context(
             ).fetchone()
             if session is None:
                 raise HTTPException(status_code=404, detail="Chat session not found")
-        source_count = _count_indexed_sources(
-            conn,
-            vault_id=payload.vault_id,
-            cluster_id=retrieval_cluster_id,
-        )
-        recent_turns = _load_recent_chat_turns(
-            conn,
-            session_id=payload.session_id,
-            vault_id=payload.vault_id,
-            current_prompt=payload.prompt,
-        )
-        if not pinned_attachment_source_ids and payload.session_id:
-            pinned_attachment_source_ids = session_attachment_source_ids(
+        if safety_decision["action"] == "refuse":
+            source_count = 0
+            recent_turns = []
+        else:
+            source_count = _count_indexed_sources(
                 conn,
                 vault_id=payload.vault_id,
-                session_id=payload.session_id,
-                prompt=payload.prompt,
+                cluster_id=retrieval_cluster_id,
             )
+            recent_turns = _load_recent_chat_turns(
+                conn,
+                session_id=payload.session_id,
+                vault_id=payload.vault_id,
+                current_prompt=payload.prompt,
+            )
+            if not pinned_attachment_source_ids and payload.session_id:
+                pinned_attachment_source_ids = session_attachment_source_ids(
+                    conn,
+                    vault_id=payload.vault_id,
+                    session_id=payload.session_id,
+                    prompt=payload.prompt,
+                )
 
+    if safety_decision["action"] == "refuse":
+        return _build_safety_refusal_context(
+            payload,
+            runtime_state=str(runtime_status().get("state") or "unknown"),
+            category=safety_decision["category"],
+            reason=safety_decision["reason"],
+        )
     route = (
         {
             "intent": "attachment_question",
@@ -1606,6 +1623,67 @@ def _build_direct_chat_context(
     }
 
 
+def _build_safety_refusal_context(
+    payload: ChatContextRequest,
+    *,
+    runtime_state: str,
+    category: str | None,
+    reason: str,
+) -> dict:
+    return {
+        "answer": safety_refusal_text(),
+        "clusters_used": [],
+        "citations": [],
+        "synthesis_citations": [],
+        "coverage_ledger": {
+            "sources_considered": 0,
+            "sources_analyzed": 0,
+            "sources_low_relevance": 0,
+            "relevance_threshold": 0.0,
+            "scope": (
+                "unclustered"
+                if payload.unclustered_only
+                else "cluster"
+                if payload.cluster_id
+                else "vault"
+            ),
+            "route_policy": "safety_pre_retrieval",
+            "route_reason": reason,
+            "answer_mode": "direct",
+            "context_sources": [],
+            "retrieval_attempted": False,
+            "retrieval_authority": False,
+            "scope_source_count": 0,
+            "token_budget": 0,
+            "prompt_tokens_estimate": _estimate_tokens(payload.prompt),
+            "evidence_tokens_estimate": 0,
+            "history_tokens_estimate": 0,
+            "history_turns_selected": 0,
+            "history_turns_trimmed": 0,
+            "citations_selected": 0,
+            "citations_trimmed": 0,
+            "budget_applied": False,
+            "partial_failure_mode": "safety_refusal",
+            "safety_category": category,
+        },
+        "intent": "safety_refusal",
+        "runtime_state": runtime_state,
+        "warnings": ["Safety policy answered directly without searching vault content."],
+        "recent_turns": [],
+        "memory_items": [],
+        "working_memory": {},
+        "trusted_context": {},
+        "context_sources": [],
+        "profile_display_name": "",
+        "direct_answer_fallback": False,
+        "direct_answer_prefix": "",
+        "typed_evidence_resolved": False,
+        "supported_claims": [],
+        "synthesis_allowed": False,
+        "synthesis_strategy": "refuse",
+    }
+
+
 def _grounded_answer_kwargs(
     *,
     prompt: str,
@@ -1872,6 +1950,15 @@ def _is_conversational_prompt(prompt: str) -> bool:
 
 
 def _classify_chat_route(payload: ChatContextRequest, *, source_count: int) -> dict:
+    safety_decision = classify_harmful_capability_request(payload.prompt)
+    if safety_decision["action"] == "refuse":
+        return {
+            "intent": "safety_refusal",
+            "reason": safety_decision["reason"],
+            "answer_mode": "direct",
+            "context_sources": [],
+            "safety_category": safety_decision["category"],
+        }
     if payload.attachments:
         return {
             "intent": "attachment_ingestion",
