@@ -570,6 +570,11 @@ export type ProjectGraphNode = {
   end_line: number | null;
   signature: string;
   source_id: string | null;
+  centrality?: number;
+  in_degree?: number;
+  out_degree?: number;
+  community?: { id: string; label: string };
+  cycle?: { id: string; size: number } | null;
 };
 
 export type ProjectGraphEdge = {
@@ -595,6 +600,7 @@ export type ProjectGraphView = {
   edges: ProjectGraphEdge[];
   truncated: boolean;
   limits: { max_nodes: number; max_depth: number };
+  project_totals: { nodes: number; edges: number };
   warnings: string[];
   insights: {
     summary: string;
@@ -604,16 +610,95 @@ export type ProjectGraphView = {
       kind: string;
       relative_path: string;
       connections: number;
+      centrality?: number;
+      community?: { id: string; label: string };
+      why?: string;
     }>;
     flows: Array<{
       node_ids: string[];
       steps: string[];
       relationships: string[];
+      confidence: "extracted" | "user_confirmed";
+      reason: string;
     }>;
     node_kinds: Record<string, number>;
     relationship_types: Record<string, number>;
     component_count: number;
   };
+};
+
+export type ProjectGraphPath = {
+  status: "found" | "not_found" | "timeout" | "node_budget_exceeded" | "edge_budget_exceeded";
+  path: Array<ProjectGraphNode & { display_label?: string }>;
+  edges: Array<{
+    id: string;
+    source_node_id: string;
+    target_node_id: string;
+    edge_type: string;
+    confidence_class: string;
+    source_line: number | null;
+  }>;
+  visited_nodes: number;
+  examined_edges?: number;
+  elapsed_ms: number;
+};
+
+export type ProjectIntelligenceSnapshot = {
+  id: string | null;
+  contract_version: string;
+  project_id: string;
+  owning_snapshot_id: string | null;
+  structure_snapshot_id: string | null;
+  retrieval_snapshot_id: string | null;
+  indexed_commit: string | null;
+  generated_at: string | null;
+  identity: {
+    name: string;
+    repository_kind: string;
+    purpose: string | null;
+    purpose_candidates: Array<{
+      text: string;
+      source_type: "readme" | "manifest";
+      relative_path: string;
+      evidence_id: string;
+      authority: number;
+    }>;
+    technologies: Array<{ name: string; file_count: number }>;
+  };
+  architecture: Record<string, unknown>;
+  repository_signals: Record<string, unknown>;
+  decisions: Record<string, unknown>;
+  interpretation: {
+    deterministic_synopsis: string;
+    generated_synopsis: string | null;
+    primary_evidence_ids: string[];
+    generated_evidence_ids?: string[];
+    generated_fact_ids?: string[];
+    generation?: { model_id: string; prompt_version: string };
+  };
+  freshness: Record<string, unknown>;
+  layers: Record<string, {
+    status: "waiting" | "building" | "ready" | "partial" | "stale" | "unavailable" | "failed";
+    version: string;
+    generated_at: string | null;
+    truncated: boolean;
+    unknown_reason: { code: string; detail: string } | null;
+  }>;
+  evidence: Array<{
+    id: string;
+    source_type: string;
+    source_id: string | null;
+    relative_path: string;
+    source_snapshot: string | null;
+    start_line: number | null;
+    end_line: number | null;
+    extraction_method: string;
+    extractor_version: string;
+    confidence_class: string;
+    excerpt_hash: string;
+    verification_state: string;
+    label: string;
+  }>;
 };
 
 export type AppJobRecord = {
@@ -1789,6 +1874,55 @@ export async function getProject(id: string) {
   return request<ProjectRecord>(`/api/v1/projects/${encodeURIComponent(id)}`);
 }
 
+export async function getProjectIntelligence(id: string) {
+  return request<ProjectIntelligenceSnapshot>(`/api/v1/projects/${encodeURIComponent(id)}/intelligence`);
+}
+
+export type ProjectOperationName =
+  | "overview"
+  | "code_context"
+  | "project_state"
+  | "change_context"
+  | "blast_radius"
+  | "decisions"
+  | "coverage";
+
+export type ProjectOperationResult = {
+  version: string;
+  project_id: string;
+  operation: ProjectOperationName;
+  display: "compact" | "expanded";
+  data: Record<string, unknown>;
+};
+
+export async function runProjectOperation(
+  id: string,
+  payload: {
+    operation: ProjectOperationName;
+    query?: string;
+    target?: string;
+    targets?: string[];
+    changed_paths?: string[];
+    changed_lines?: Record<string, number[]>;
+    compact?: boolean;
+  },
+) {
+  return request<ProjectOperationResult>(`/api/v1/projects/${encodeURIComponent(id)}/operations`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function refreshProjectIntelligence(
+  id: string,
+  layer: "all" | "overview" | "graph" | "git" | "decisions" = "all",
+) {
+  return request<{ project_id: string; snapshot_id: string; jobs: AppJobRecord[]; queued_layers: string[] }>(
+    `/api/v1/projects/${encodeURIComponent(id)}/intelligence/refresh?layer=${encodeURIComponent(layer)}`,
+    { method: "POST" },
+  );
+}
+
 export async function getProjectGraphView(
   id: string,
   options: {
@@ -1808,6 +1942,13 @@ export async function getProjectGraphView(
   if (options.direction) params.set("direction", options.direction);
   return request<ProjectGraphView>(
     `/api/v1/projects/${encodeURIComponent(id)}/graph/view?${params.toString()}`,
+  );
+}
+
+export async function getProjectGraphPath(id: string, source: string, target: string) {
+  const params = new URLSearchParams({ source, target });
+  return request<ProjectGraphPath>(
+    `/api/v1/projects/${encodeURIComponent(id)}/graph/path?${params.toString()}`,
   );
 }
 

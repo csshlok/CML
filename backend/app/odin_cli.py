@@ -284,6 +284,29 @@ def build_parser() -> argparse.ArgumentParser:
     tree.add_argument("--max-nodes", type=int, default=160)
     tree.add_argument("--format", choices=("markdown", "json"), default="markdown")
 
+    for operation, help_text in (
+        ("overview", "Show the evidence-backed project overview."),
+        ("state", "Show live Git and indexed repository state."),
+        ("change-context", "Explain current changes and their test impact."),
+        ("decisions", "List active and stale architectural decisions."),
+    ):
+        command = project_commands.add_parser(operation, help=help_text)
+        _add_project_target(command)
+        command.add_argument("--expanded", action="store_true")
+    code_context = project_commands.add_parser("code-context", help="Find structural code context for a question.")
+    _add_project_target(code_context)
+    code_context.add_argument("query")
+    code_context.add_argument("--expanded", action="store_true")
+    blast = project_commands.add_parser("blast-radius", help="Show bounded upstream impact for a symbol or path.")
+    _add_project_target(blast)
+    blast.add_argument("target")
+    blast.add_argument("--expanded", action="store_true")
+    coverage = project_commands.add_parser("coverage", help="Show coverage state or test impact for changed paths.")
+    _add_project_target(coverage)
+    coverage.add_argument("--changed-path", action="append", default=[])
+    coverage.add_argument("--import-lcov", default="")
+    coverage.add_argument("--expanded", action="store_true")
+
     remove = project_commands.add_parser("remove", help="Remove an Odin index. Repository files are untouched.")
     _add_project_target(remove)
     remove.add_argument("--yes", action="store_true")
@@ -416,6 +439,19 @@ def dispatch(client: OdinClient, args: argparse.Namespace) -> object:
         if args.format == "json":
             return view
         return _format_graph_markdown(dict(view))
+    operation_names = {
+        "overview": "overview", "state": "project_state", "change-context": "change_context",
+        "code-context": "code_context", "blast-radius": "blast_radius", "decisions": "decisions",
+        "coverage": "coverage",
+    }
+    if action in operation_names:
+        if action == "coverage" and args.import_lcov:
+            return client.request("POST", f"projects/{project_id}/coverage/import", {"artifact_path": str(Path(args.import_lcov).resolve())})
+        body = {"operation": operation_names[action], "compact": not args.expanded}
+        if action == "code-context": body["query"] = args.query
+        if action == "blast-radius": body["target"] = args.target
+        if action == "coverage": body["changed_paths"] = args.changed_path
+        return client.request("POST", f"projects/{project_id}/operations", body)
     if action == "remove":
         if not args.yes and sys.stdin.isatty():
             print(f"Remove {project['name']} from CML?")

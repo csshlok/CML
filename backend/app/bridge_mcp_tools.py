@@ -13,6 +13,7 @@ READ_ONLY_TOOLS = {
     "list_clusters",
     "list_writeback_reviews",
     "list_captures",
+    "get_project_operation",
 }
 WRITE_TOOLS = {
     "log_external_turn",
@@ -84,6 +85,24 @@ def _tool(
 
 
 TOOL_CONTRACTS = [
+    _tool(
+        "get_project_operation",
+        "Retrieve a compact, typed Odin project operation without exposing internal retrieval handles.",
+        _object(
+            {
+                "project_id": _string(minimum=1),
+                "operation": _string(maximum=32, enum=["overview", "code_context", "project_state", "change_context", "blast_radius", "decisions", "coverage"]),
+                "query": _string(maximum=8_000),
+                "target": _string(maximum=1_000),
+                "targets": {"type": "array", "items": _string(maximum=1_000), "maxItems": 100},
+                "changed_paths": {"type": "array", "items": _string(maximum=2_000), "maxItems": 5000},
+                "compact": {"type": "boolean"},
+            },
+            ["project_id", "operation"],
+        ),
+        read_only=True,
+        idempotent=True,
+    ),
     _tool(
         "get_cluster_context",
         "Retrieve source-grounded context from allowed local Vault libraries.",
@@ -303,4 +322,13 @@ def _validate_value(key: str, value: object, schema: dict) -> str | None:
             return f"Tool argument must be an integer: {key}"
         if value < schema.get("minimum", value) or value > schema.get("maximum", value):
             return f"Tool argument is out of range: {key}"
+    elif expected == "array":
+        if not isinstance(value, list):
+            return f"Tool argument must be an array: {key}"
+        if len(value) > int(schema.get("maxItems", len(value))):
+            return f"Tool argument has too many items: {key}"
+        for item in value:
+            error = _validate_value(key, item, schema.get("items") or {})
+            if error:
+                return error
     return None

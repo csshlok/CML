@@ -92,6 +92,8 @@ def handle_message(message: dict) -> dict | None:
             return error(request_id, -32602, validation_error)
         if name == "get_cluster_context":
             return result(request_id, call_get_cluster_context(arguments, request_id))
+        if name == "get_project_operation":
+            return result(request_id, call_get_project_operation(arguments, request_id))
         if name == "expand_context_item":
             return result(request_id, call_expand_context_item(arguments, request_id))
         if name == "list_clusters":
@@ -141,6 +143,32 @@ def call_get_cluster_context(arguments: dict, request_id) -> dict:
             }
         ]
     }
+
+
+def call_get_project_operation(arguments: dict, request_id) -> dict:
+    project_id = str(arguments["project_id"])
+    payload = {
+        "operation": arguments["operation"],
+        "query": arguments.get("query", ""),
+        "target": arguments.get("target", ""),
+        "targets": arguments.get("targets", []),
+        "changed_paths": arguments.get("changed_paths", []),
+        "compact": bool(arguments.get("compact", True)),
+    }
+    data = http_json(
+        f"{api_path('/projects')}/{project_id}/operations", method="POST", payload=payload,
+        headers={"x-cml-bridge-token": BRIDGE_TOKEN}, request_id=request_id,
+    )
+    clean = _strip_internal_handles(data)
+    return {"content": [{"type": "text", "text": json.dumps(clean, indent=2, ensure_ascii=False)}]}
+
+
+def _strip_internal_handles(value):
+    if isinstance(value, dict):
+        return {key: _strip_internal_handles(item) for key, item in value.items()
+                if key not in {"handle", "context_handle", "chunk_handle"}}
+    if isinstance(value, list): return [_strip_internal_handles(item) for item in value]
+    return value
 
 
 def call_list_clusters(arguments: dict | None, request_id) -> dict:

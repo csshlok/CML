@@ -15,6 +15,9 @@ from backend.app.core.project_graph import (
     node_neighbors,
     shortest_path,
 )
+from backend.app.core.project_intelligence import get_project_intelligence
+from backend.app.core.project_decisions import create_project_decision, relate_project_decisions, set_decision_status
+from backend.app.core.project_operations import enqueue_project_intelligence_layers, run_project_operation, route_project_intent
 
 from backend.app.core.projects import (
     ProjectError,
@@ -39,6 +42,7 @@ from backend.app.core.projects import (
 from backend.app.schemas import (
     ProjectCreate,
     ProjectIndexRunRead,
+    ProjectIntelligenceSnapshotRead,
     ProjectLinkCreate,
     ProjectLinkRead,
     ProjectRead,
@@ -75,6 +79,41 @@ router = APIRouter(
     tags=["projects"],
     dependencies=[Depends(_enforce_cli_project_vault)],
 )
+
+
+class ProjectOperationRequest(BaseModel):
+    operation: str = Field(pattern="^(overview|code_context|project_state|change_context|blast_radius|decisions|coverage)$")
+    query: str = Field(default="", max_length=8_000)
+    target: str = Field(default="", max_length=1_000)
+    targets: list[str] = Field(default_factory=list, max_length=100)
+    changed_paths: list[str] = Field(default_factory=list, max_length=5_000)
+    changed_lines: dict[str, list[int]] = Field(default_factory=dict)
+    compact: bool = True
+
+
+class ProjectIntentRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=8_000)
+
+
+class ProjectDecisionCreateRequest(BaseModel):
+    statement: str = Field(min_length=1, max_length=2_000)
+    rationale: str = Field(default="", max_length=4_000)
+    governed_paths: list[str] = Field(default_factory=list, max_length=200)
+    idempotency_key: str = Field(default="", max_length=240)
+
+
+class ProjectDecisionStatusRequest(BaseModel):
+    status: str = Field(pattern="^(active|superseded|dismissed)$")
+
+
+class ProjectDecisionRelationshipRequest(BaseModel):
+    target_decision_id: str = Field(min_length=1, max_length=240)
+    relationship_type: str = Field(pattern="^(supersedes|refines|relates_to|conflicts_with)$")
+    confirmed: bool = False
+
+
+class ProjectCoverageImportRequest(BaseModel):
+    artifact_path: str = Field(min_length=1, max_length=4_000)
 
 
 class ProjectContextRequest(BaseModel):
@@ -209,6 +248,88 @@ def project_get(project_id: str) -> dict:
         return get_project(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@router.get("/{project_id}/intelligence", response_model=ProjectIntelligenceSnapshotRead)
+def project_intelligence_get(project_id: str) -> dict:
+    try:
+        return get_project_intelligence(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@router.post("/{project_id}/intelligence/refresh", status_code=202)
+def project_intelligence_refresh(project_id: str, layer: str = Query(default="all", pattern="^(all|overview|graph|git|decisions)$")) -> dict:
+    try:
+        layers = ["overview", "graph", "git", "decisions"] if layer == "all" else [layer]
+        return enqueue_project_intelligence_layers(project_id, layers=layers, user_initiated=True)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@router.post("/{project_id}/intent")
+def project_intent(project_id: str, payload: ProjectIntentRequest) -> dict:
+    try:
+        get_project(project_id)
+        return {"project_id": project_id, **route_project_intent(payload.query, project_id=project_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+@router.post("/{project_id}/operations")
+def project_operation(project_id: str, payload: ProjectOperationRequest) -> dict:
+    try:
+        return run_project_operation(project_id, payload.operation, query=payload.query, target=payload.target,
+                                     targets=payload.targets,
+                                     changed_paths=payload.changed_paths, changed_lines=payload.changed_lines,
+                                     compact=payload.compact)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project or target not found") from exc
+    except (ValueError, GraphQueryError, ProjectError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/decisions", status_code=201)
+def project_decision_create(project_id: str, payload: ProjectDecisionCreateRequest) -> dict:
+    try:
+        return create_project_decision(project_id, statement=payload.statement, rationale=payload.rationale,
+                                       governed_paths=payload.governed_paths, idempotency_key=payload.idempotency_key)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/{project_id}/decisions/{decision_id}")
+def project_decision_status(project_id: str, decision_id: str, payload: ProjectDecisionStatusRequest) -> dict:
+    try:
+        return set_decision_status(project_id, decision_id, payload.status)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Decision not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/decisions/{decision_id}/relationships")
+def project_decision_relationship(project_id: str, decision_id: str, payload: ProjectDecisionRelationshipRequest) -> dict:
+    try:
+        return relate_project_decisions(project_id, decision_id, payload.target_decision_id,
+                                        payload.relationship_type, confirmed=payload.confirmed)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Decision not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/coverage/import", status_code=202)
+def project_coverage_import(project_id: str, payload: ProjectCoverageImportRequest) -> dict:
+    try:
+        return enqueue_project_intelligence_layers(project_id, layers=["coverage"],
+                                                   artifact_path=payload.artifact_path, user_initiated=True)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{project_id}/changes")
