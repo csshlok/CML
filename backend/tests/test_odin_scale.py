@@ -12,6 +12,7 @@ from backend.app.core.projects import discover_project
 
 
 @pytest.mark.skipif(os.getenv("ODIN_RUN_SCALE_TESTS") != "1", reason="Run explicitly for the Odin release scale gate.")
+@pytest.mark.timeout(300)
 def test_discovery_handles_50000_files_with_bounded_peak_memory() -> None:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
         root = Path(directory)

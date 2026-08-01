@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 from backend.app.core.database import connect, utc_now
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 30
 
 
 class MigrationError(RuntimeError):
@@ -1129,6 +1129,273 @@ def _migration_028_project_sync_modes(conn) -> None:
     )
 
 
+def _migration_029_project_intelligence_foundation(conn) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS project_intelligence_snapshots (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            owning_snapshot_id TEXT NOT NULL,
+            structure_snapshot_id TEXT,
+            retrieval_snapshot_id TEXT,
+            contract_version TEXT NOT NULL,
+            identity_json TEXT NOT NULL DEFAULT '{}',
+            architecture_json TEXT NOT NULL DEFAULT '{}',
+            repository_signals_json TEXT NOT NULL DEFAULT '{}',
+            decisions_json TEXT NOT NULL DEFAULT '{}',
+            interpretation_json TEXT NOT NULL DEFAULT '{}',
+            freshness_json TEXT NOT NULL DEFAULT '{}',
+            layer_states_json TEXT NOT NULL DEFAULT '{}',
+            generated_at TEXT NOT NULL,
+            activated_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (owning_snapshot_id) REFERENCES project_snapshots(id) ON DELETE CASCADE,
+            FOREIGN KEY (structure_snapshot_id) REFERENCES project_snapshots(id) ON DELETE SET NULL,
+            FOREIGN KEY (retrieval_snapshot_id) REFERENCES project_snapshots(id) ON DELETE SET NULL,
+            UNIQUE(project_id, owning_snapshot_id)
+        );
+        CREATE TABLE IF NOT EXISTS project_intelligence_evidence (
+            id TEXT PRIMARY KEY,
+            intelligence_snapshot_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            source_id TEXT,
+            relative_path TEXT NOT NULL DEFAULT '',
+            source_snapshot TEXT,
+            start_line INTEGER,
+            end_line INTEGER,
+            extraction_method TEXT NOT NULL,
+            extractor_version TEXT NOT NULL,
+            confidence_class TEXT NOT NULL,
+            excerpt_hash TEXT NOT NULL,
+            verification_state TEXT NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (intelligence_snapshot_id) REFERENCES project_intelligence_snapshots(id) ON DELETE CASCADE,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_intelligence_active
+            ON project_intelligence_snapshots(project_id, owning_snapshot_id, generated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_project_intelligence_structure
+            ON project_intelligence_snapshots(project_id, structure_snapshot_id, generated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_project_intelligence_evidence_snapshot
+            ON project_intelligence_evidence(intelligence_snapshot_id, source_type, relative_path);
+        """
+    )
+
+
+def _migration_030_project_intelligence_layers(conn) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS project_graph_metrics (
+            project_id TEXT NOT NULL,
+            snapshot_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            pagerank REAL NOT NULL DEFAULT 0,
+            in_degree INTEGER NOT NULL DEFAULT 0,
+            out_degree INTEGER NOT NULL DEFAULT 0,
+            scc_id TEXT NOT NULL DEFAULT '',
+            scc_size INTEGER NOT NULL DEFAULT 1,
+            community_id TEXT NOT NULL DEFAULT '',
+            community_label TEXT NOT NULL DEFAULT '',
+            is_cycle INTEGER NOT NULL DEFAULT 0,
+            computed_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, snapshot_id, node_id),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (snapshot_id) REFERENCES project_snapshots(id) ON DELETE CASCADE,
+            FOREIGN KEY (node_id) REFERENCES code_nodes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_graph_metrics_rank
+            ON project_graph_metrics(project_id, snapshot_id, pagerank DESC);
+        CREATE INDEX IF NOT EXISTS idx_project_graph_metrics_community
+            ON project_graph_metrics(project_id, snapshot_id, community_id, pagerank DESC);
+
+        CREATE TABLE IF NOT EXISTS project_graph_communities (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            snapshot_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            root_path TEXT NOT NULL DEFAULT '',
+            node_count INTEGER NOT NULL DEFAULT 0,
+            file_count INTEGER NOT NULL DEFAULT 0,
+            summary_json TEXT NOT NULL DEFAULT '{}',
+            computed_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (snapshot_id) REFERENCES project_snapshots(id) ON DELETE CASCADE,
+            UNIQUE(project_id, snapshot_id, root_path)
+        );
+
+        CREATE TABLE IF NOT EXISTS project_execution_flows (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            snapshot_id TEXT NOT NULL,
+            start_node_id TEXT NOT NULL,
+            end_node_id TEXT NOT NULL,
+            node_ids_json TEXT NOT NULL,
+            relationships_json TEXT NOT NULL,
+            confidence_class TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            computed_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (snapshot_id) REFERENCES project_snapshots(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_execution_flows_snapshot
+            ON project_execution_flows(project_id, snapshot_id, start_node_id);
+
+        CREATE TABLE IF NOT EXISTS project_git_snapshots (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            owning_snapshot_id TEXT,
+            indexed_commit TEXT,
+            head_commit TEXT,
+            branch TEXT,
+            history_available INTEGER NOT NULL DEFAULT 0,
+            history_truncated INTEGER NOT NULL DEFAULT 0,
+            shallow_history INTEGER NOT NULL DEFAULT 0,
+            commit_count INTEGER NOT NULL DEFAULT 0,
+            live_state_json TEXT NOT NULL DEFAULT '{}',
+            recent_commits_json TEXT NOT NULL DEFAULT '[]',
+            error_detail TEXT NOT NULL DEFAULT '',
+            generated_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (owning_snapshot_id) REFERENCES project_snapshots(id) ON DELETE SET NULL,
+            UNIQUE(project_id, owning_snapshot_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_git_snapshots_latest
+            ON project_git_snapshots(project_id, generated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS project_git_file_signals (
+            project_id TEXT NOT NULL,
+            git_snapshot_id TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            additions INTEGER NOT NULL DEFAULT 0,
+            deletions INTEGER NOT NULL DEFAULT 0,
+            commit_count INTEGER NOT NULL DEFAULT 0,
+            bugfix_commit_count INTEGER NOT NULL DEFAULT 0,
+            last_commit_id TEXT,
+            last_commit_at TEXT,
+            last_commit_subject TEXT NOT NULL DEFAULT '',
+            ownership_json TEXT NOT NULL DEFAULT '[]',
+            history_truncated INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (git_snapshot_id, relative_path),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (git_snapshot_id) REFERENCES project_git_snapshots(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_git_file_signals_path
+            ON project_git_file_signals(project_id, relative_path);
+
+        CREATE TABLE IF NOT EXISTS project_cochange_edges (
+            project_id TEXT NOT NULL,
+            git_snapshot_id TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            target_path TEXT NOT NULL,
+            touch_count INTEGER NOT NULL,
+            confidence_class TEXT NOT NULL,
+            heuristic_label TEXT NOT NULL,
+            PRIMARY KEY (git_snapshot_id, source_path, target_path),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (git_snapshot_id) REFERENCES project_git_snapshots(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_cochange_source
+            ON project_cochange_edges(project_id, source_path, touch_count DESC);
+
+        CREATE TABLE IF NOT EXISTS project_decisions (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            owning_snapshot_id TEXT,
+            statement TEXT NOT NULL,
+            rationale TEXT NOT NULL DEFAULT '',
+            governed_paths_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL,
+            confidence_class TEXT NOT NULL,
+            verification_state TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            user_created INTEGER NOT NULL DEFAULT 0,
+            stale_reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (owning_snapshot_id) REFERENCES project_snapshots(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_decisions_active
+            ON project_decisions(project_id, status, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS project_decision_evidence (
+            id TEXT PRIMARY KEY,
+            decision_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            source_id TEXT,
+            relative_path TEXT NOT NULL DEFAULT '',
+            start_line INTEGER,
+            end_line INTEGER,
+            excerpt_hash TEXT NOT NULL,
+            extraction_method TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (decision_id) REFERENCES project_decisions(id) ON DELETE CASCADE,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS project_decision_edges (
+            project_id TEXT NOT NULL,
+            source_decision_id TEXT NOT NULL,
+            target_decision_id TEXT NOT NULL,
+            relationship_type TEXT NOT NULL,
+            verification_state TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (source_decision_id, target_decision_id, relationship_type),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_decision_id) REFERENCES project_decisions(id) ON DELETE CASCADE,
+            FOREIGN KEY (target_decision_id) REFERENCES project_decisions(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS project_coverage_snapshots (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            owning_snapshot_id TEXT,
+            indexed_commit TEXT,
+            artifact_path TEXT NOT NULL DEFAULT '',
+            format TEXT NOT NULL,
+            status TEXT NOT NULL,
+            file_count INTEGER NOT NULL DEFAULT 0,
+            test_count INTEGER NOT NULL DEFAULT 0,
+            generated_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (owning_snapshot_id) REFERENCES project_snapshots(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_coverage_latest
+            ON project_coverage_snapshots(project_id, generated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS project_coverage_files (
+            coverage_snapshot_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            covered_lines_json TEXT NOT NULL DEFAULT '[]',
+            missed_lines_json TEXT NOT NULL DEFAULT '[]',
+            PRIMARY KEY (coverage_snapshot_id, relative_path),
+            FOREIGN KEY (coverage_snapshot_id) REFERENCES project_coverage_snapshots(id) ON DELETE CASCADE,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS project_coverage_test_map (
+            coverage_snapshot_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            test_name TEXT NOT NULL,
+            test_path TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            covered_lines_json TEXT NOT NULL DEFAULT '[]',
+            PRIMARY KEY (coverage_snapshot_id, test_name, source_path),
+            FOREIGN KEY (coverage_snapshot_id) REFERENCES project_coverage_snapshots(id) ON DELETE CASCADE,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_coverage_source
+            ON project_coverage_test_map(project_id, source_path, test_path);
+        """
+    )
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migration_001_baseline,
     2: _migration_002_vault_security_metadata,
@@ -1158,6 +1425,8 @@ MIGRATIONS: dict[int, Migration] = {
     26: _migration_026_source_ingestion_stages,
     27: _migration_027_adaptive_scheduler_state,
     28: _migration_028_project_sync_modes,
+    29: _migration_029_project_intelligence_foundation,
+    30: _migration_030_project_intelligence_layers,
 }
 
 

@@ -88,6 +88,109 @@ class OdinProjectTests(unittest.TestCase):
         self.assertEqual(paths, {"package.json", "src/auth.ts", "src/main.ts"})
         self.assertGreaterEqual(node_count, 6)
 
+    def test_project_intelligence_keeps_purpose_candidates_separate_and_evidenced(self) -> None:
+        from backend.app.api.routes.projects import project_intelligence_get
+        from backend.app.core.database import connect
+        from backend.app.core.project_intelligence import get_project_intelligence
+        from backend.app.schemas import ProjectIntelligenceSnapshotRead
+
+        (self.repo / "README.md").write_text(
+            "# Sample\n\nSample coordinates authorization, audit, and policy workflows for local services.\n",
+            encoding="utf-8",
+        )
+        (self.repo / "package.json").write_text(
+            json.dumps({"name": "sample", "description": "A package-level description kept as separate evidence."}),
+            encoding="utf-8",
+        )
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+
+        intelligence = get_project_intelligence(project["id"])
+        routed_intelligence = project_intelligence_get(project["id"])
+        validated = ProjectIntelligenceSnapshotRead.model_validate(intelligence)
+        candidates = validated.identity["purpose_candidates"]
+
+        self.assertEqual(validated.contract_version, "odin-project-intelligence-v1")
+        self.assertEqual(routed_intelligence["id"], intelligence["id"])
+        self.assertEqual(validated.layers["identity"].status, "ready")
+        self.assertEqual(validated.layers["architecture"].status, "ready")
+        self.assertEqual(validated.indexed_commit, project["indexed_commit"])
+        self.assertEqual([item["source_type"] for item in candidates], ["readme", "manifest"])
+        self.assertEqual(validated.identity["purpose"], candidates[0]["text"])
+        self.assertIsNone(validated.interpretation["generated_synopsis"])
+        self.assertEqual(len(validated.evidence), 2)
+        self.assertTrue(all(item.source_id for item in validated.evidence))
+        self.assertTrue(all(item.start_line and item.end_line for item in validated.evidence))
+        self.assertTrue(all(len(item.excerpt_hash) == 64 for item in validated.evidence))
+        with connect() as conn:
+            stored = conn.execute(
+                "SELECT COUNT(*) AS total FROM project_intelligence_snapshots WHERE project_id = ?",
+                (project["id"],),
+            ).fetchone()["total"]
+        self.assertEqual(stored, 1)
+
+    def test_project_intelligence_rejects_readme_chrome_as_purpose(self) -> None:
+        from backend.app.core.project_intelligence import get_project_intelligence
+
+        (self.repo / "README.md").write_text(
+            "# Sample\n\n[Docs](docs) | [Issues](issues) | [Releases](releases) | [Discord](chat)\n\n"
+            "## Installation\n\nnpm install sample-package\n",
+            encoding="utf-8",
+        )
+        (self.repo / "package.json").write_text(
+            json.dumps({"name": "sample", "description": "Indexes local source code for explainable project navigation."}),
+            encoding="utf-8",
+        )
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+
+        intelligence = get_project_intelligence(project["id"])
+
+        self.assertEqual(intelligence["identity"]["purpose"], "Indexes local source code for explainable project navigation.")
+        self.assertEqual(len(intelligence["identity"]["purpose_candidates"]), 1)
+        self.assertEqual(intelligence["identity"]["purpose_candidates"][0]["source_type"], "manifest")
+
+    def test_project_intelligence_is_bounded_by_supported_root_sources_and_has_legacy_fallback(self) -> None:
+        from backend.app.core.database import connect
+        from backend.app.core.migrations import run_migrations
+        from backend.app.core.project_intelligence import _purpose_candidates, get_project_intelligence
+        from backend.app.core.projects import ManifestFile, register_project
+
+        files = [
+            ManifestFile(Path(f"src/generated-{index}.ts"), f"src/generated-{index}.ts", str(index), "README-like prose that must be ignored.", "TypeScript", "code")
+            for index in range(5000)
+        ]
+        candidates, evidence = _purpose_candidates(
+            project_id="project-scale",
+            intelligence_id="intelligence-scale",
+            owning_snapshot_id="snapshot-scale",
+            files=files,
+            created_at="2026-08-01T00:00:00Z",
+            source_by_path={},
+        )
+        self.assertEqual(candidates, [])
+        self.assertEqual(evidence, [])
+
+        project = register_project(vault_id="vault-odin", root_path=str(self.repo), name="Legacy", sync=False)
+        fallback = get_project_intelligence(project["id"])
+        self.assertIsNone(fallback["id"])
+        self.assertTrue(fallback["freshness"]["not_built"])
+        self.assertEqual(fallback["layers"]["identity"]["unknown_reason"]["code"], "not_built")
+        self.assertIsNone(fallback["interpretation"]["generated_synopsis"])
+        run_migrations()
+        run_migrations()
+        with connect() as conn:
+            tables = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'project_intelligence_%'"
+                ).fetchall()
+            }
+            snapshot_rows = conn.execute(
+                "SELECT COUNT(*) AS total FROM project_intelligence_snapshots WHERE project_id = ?",
+                (project["id"],),
+            ).fetchone()["total"]
+        self.assertEqual(tables, {"project_intelligence_snapshots", "project_intelligence_evidence"})
+        self.assertEqual(snapshot_rows, 0)
+
     def test_project_brief_uses_readme_purpose_and_refreshes_after_sync(self) -> None:
         from backend.app.core.background_jobs import run_due_jobs_once
         from backend.app.core.projects import get_project, probe_project_changes
@@ -133,12 +236,19 @@ class OdinProjectTests(unittest.TestCase):
         self.assertEqual(report["sync_kind"], "git_delta")
         run_due_jobs_once(limit=20)
         refreshed = get_project(project["id"])
+        from backend.app.core.project_intelligence import get_project_intelligence
+        refreshed_intelligence = get_project_intelligence(project["id"])
 
         self.assertIn(
             "Sample now coordinates authorization and audit workflows for local services.",
             refreshed["brief"],
         )
         self.assertNotIn("coordinates access decisions", refreshed["brief"])
+        self.assertEqual(
+            refreshed_intelligence["identity"]["purpose"],
+            "Sample now coordinates authorization and audit workflows for local services.",
+        )
+        self.assertEqual(refreshed_intelligence["owning_snapshot_id"], refreshed["active_snapshot_id"])
 
     def test_delta_probe_detects_a_new_untracked_file_and_queues_sync(self) -> None:
         from backend.app.core.projects import get_project, probe_project_changes
@@ -1327,9 +1437,27 @@ class OdinProjectTests(unittest.TestCase):
         self.assertTrue(any(node["label"] == "authorize" for node in view["nodes"]))
         self.assertTrue(any(edge["type"] in {"calls", "contains", "exports"} for edge in view["edges"]))
         self.assertEqual(view["direction"], "outbound")
+        self.assertGreaterEqual(view["project_totals"]["nodes"], len(view["nodes"]))
+        self.assertGreaterEqual(view["project_totals"]["edges"], len(view["edges"]))
+        for flow in view["insights"]["flows"]:
+            self.assertIn(flow["confidence"], {"extracted", "user_confirmed"})
+            self.assertIn("relationships found in the indexed code", flow["reason"])
         packet = graph_view_markdown(view)
         self.assertIn("# Odin Graph Context", packet)
         self.assertIn("authorize", packet)
+
+    def test_tree_view_filters_meaningful_terms_without_unrelated_fallback(self) -> None:
+        from backend.app.core.project_graph import graph_view
+
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+
+        matched = graph_view(project["id"], mode="tree", query="show project structure for auth")
+        missing = graph_view(project["id"], mode="tree", query="symbol_that_does_not_exist_anywhere")
+        generic = graph_view(project["id"], mode="tree", query="show the project file tree")
+
+        self.assertTrue(any("auth" in node["relative_path"] for node in matched["nodes"]))
+        self.assertEqual(missing["nodes"], [])
+        self.assertTrue(any(node["kind"] == "file" for node in generic["nodes"]))
 
     def test_graph_view_direction_prioritizes_the_requested_edge_orientation(self) -> None:
         from backend.app.core.code_structure import _insert_edge, _insert_node

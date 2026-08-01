@@ -278,6 +278,9 @@ def graph_view(
     direction: str = "outbound",
 ) -> dict:
     """Return a bounded, evidence-backed projection suitable for UI and LLM clients."""
+    # Older or partially activated projects build this optional layer on first map use.
+    from backend.app.core.project_graph_intelligence import get_graph_intelligence
+    graph_intelligence = get_graph_intelligence(project_id)
     normalized_mode = mode.strip().casefold()
     if normalized_mode not in {"graph", "tree"}:
         raise GraphQueryError("Graph view mode must be 'graph' or 'tree'.")
@@ -306,6 +309,34 @@ def graph_view(
                 edge_types=allowed_edges,
                 direction=normalized_direction,
             )
+        metric_node_ids = [str(node["id"]) for node in nodes if not str(node["id"]).startswith(("dir:", "project:"))]
+        if metric_node_ids and graph_intelligence.get("status") == "ready":
+            metric_rows = conn.execute(
+                f"""SELECT node_id, pagerank, in_degree, out_degree, scc_id, scc_size,
+                           community_id, community_label, is_cycle
+                    FROM project_graph_metrics WHERE project_id = ? AND snapshot_id = ?
+                      AND node_id IN ({','.join('?' for _ in metric_node_ids)})""",
+                [project_id, snapshot_id, *metric_node_ids],
+            ).fetchall()
+            metrics = {row["node_id"]: dict_from_row(row) for row in metric_rows}
+            for node in nodes:
+                metric = metrics.get(node["id"])
+                if metric:
+                    node["centrality"] = float(metric["pagerank"])
+                    node["in_degree"] = int(metric["in_degree"])
+                    node["out_degree"] = int(metric["out_degree"])
+                    node["community"] = {"id": metric["community_id"], "label": metric["community_label"]}
+                    node["cycle"] = {"id": metric["scc_id"], "size": int(metric["scc_size"])} if metric["is_cycle"] else None
+        project_totals = {
+            "nodes": int(conn.execute(
+                "SELECT COUNT(*) AS total FROM code_nodes WHERE project_id = ? AND snapshot_id = ?",
+                (project_id, snapshot_id),
+            ).fetchone()["total"] or 0),
+            "edges": int(conn.execute(
+                "SELECT COUNT(*) AS total FROM code_edges WHERE project_id = ? AND snapshot_id = ?",
+                (project_id, snapshot_id),
+            ).fetchone()["total"] or 0),
+        }
         insights = _graph_insights(nodes, edges)
         return {
             "version": 1,
@@ -320,6 +351,7 @@ def graph_view(
             "edges": edges,
             "truncated": truncated,
             "limits": {"max_nodes": node_limit, "max_depth": depth_limit},
+            "project_totals": project_totals,
             "warnings": ["This is a bounded projection, not the entire project graph."] if truncated else [],
             "insights": insights,
         }
@@ -489,10 +521,22 @@ def _tree_projection(
     if scope:
         clauses.append("relative_path LIKE ?")
         params.append(f"{scope}%")
-    if query.strip():
-        clauses.append("(display_label LIKE ? OR qualified_id LIKE ? OR relative_path LIKE ?)")
-        needle = f"%{query.strip()}%"
-        params.extend([needle, needle, needle])
+    stopwords = {
+        "architecture", "codebase", "dependency", "diagram", "directory", "display", "draw",
+        "file", "for", "graph", "hierarchy", "map", "please", "project", "relationship",
+        "render", "repository", "show", "structure", "the", "tree", "visualize",
+    }
+    terms = [
+        term for term in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", query)
+        if term.casefold() not in stopwords
+    ][:6]
+    if terms:
+        matches = []
+        for term in terms:
+            matches.append("(display_label LIKE ? OR qualified_id LIKE ? OR relative_path LIKE ?)")
+            needle = f"%{term}%"
+            params.extend([needle, needle, needle])
+        clauses.append(f"({' OR '.join(matches)})")
     else:
         clauses.append("kind = 'file'")
     params.append(max_nodes + 1)
@@ -506,12 +550,10 @@ def _tree_projection(
         """,
         params,
     ).fetchall()
-    if not rows and query.strip():
-        return _tree_projection(
-            conn, project_id, snapshot_id, query="", root=root, max_nodes=max_nodes
-        )
     truncated = len(rows) > max_nodes
     code_nodes = [dict_from_row(row) for row in rows[:max_nodes]]
+    if not code_nodes:
+        return [], [], False
     nodes: dict[str, dict] = {
         f"project:{project_id}": {
             "id": f"project:{project_id}", "qualified_id": project_id, "kind": "project",
@@ -667,7 +709,7 @@ def _graph_insights(nodes: list[dict], edges: list[dict]) -> dict:
         }
     node_by_id = {str(node["id"]): node for node in nodes}
     degree = {node_id: 0 for node_id in node_by_id}
-    outgoing: dict[str, list[tuple[str, str]]] = {node_id: [] for node_id in node_by_id}
+    outgoing: dict[str, list[tuple[str, str, str]]] = {node_id: [] for node_id in node_by_id}
     undirected: dict[str, set[str]] = {node_id: set() for node_id in node_by_id}
     relationship_types: dict[str, int] = {}
     node_kinds: dict[str, int] = {}
@@ -683,7 +725,7 @@ def _graph_insights(nodes: list[dict], edges: list[dict]) -> dict:
         relationship_types[edge_type] = relationship_types.get(edge_type, 0) + 1
         degree[source] += 1
         degree[target] += 1
-        outgoing[source].append((target, edge_type))
+        outgoing[source].append((target, edge_type, str(edge.get("confidence") or "extracted")))
         undirected[source].add(target)
         undirected[target].add(source)
 
@@ -691,6 +733,7 @@ def _graph_insights(nodes: list[dict], edges: list[dict]) -> dict:
     for node_id in sorted(
         node_by_id,
         key=lambda candidate: (
+            float(node_by_id[candidate].get("centrality") or 0),
             degree[candidate],
             node_by_id[candidate].get("kind") in {"route", "file", "module", "class"},
             str(node_by_id[candidate].get("label") or ""),
@@ -705,6 +748,9 @@ def _graph_insights(nodes: list[dict], edges: list[dict]) -> dict:
                 "kind": node.get("kind") or "item",
                 "relative_path": node.get("relative_path") or "",
                 "connections": degree[node_id],
+                "centrality": float(node.get("centrality") or 0),
+                "community": node.get("community"),
+                "why": "High project-wide centrality" if node.get("centrality") else "Highly connected in this view",
             }
         )
 
@@ -728,17 +774,19 @@ def _graph_insights(nodes: list[dict], edges: list[dict]) -> dict:
     for start in flow_starts:
         path = [start]
         edge_path: list[str] = []
+        confidence_path: list[str] = []
         while len(path) < 5:
             choices = [
-                (target, edge_type)
-                for target, edge_type in outgoing[path[-1]]
+                (target, edge_type, confidence)
+                for target, edge_type, confidence in outgoing[path[-1]]
                 if target not in path
             ]
             if not choices:
                 break
-            target, edge_type = max(choices, key=lambda item: degree[item[0]])
+            target, edge_type, confidence = max(choices, key=lambda item: degree[item[0]])
             path.append(target)
             edge_path.append(edge_type)
+            confidence_path.append(confidence)
         if len(path) < 3:
             continue
         signature = tuple(path)
@@ -749,6 +797,8 @@ def _graph_insights(nodes: list[dict], edges: list[dict]) -> dict:
                 "node_ids": path,
                 "steps": [str(node_by_id[node_id].get("label") or node_id) for node_id in path],
                 "relationships": edge_path,
+                "confidence": "user_confirmed" if confidence_path and all(value == "user_confirmed" for value in confidence_path) else "extracted",
+                "reason": "Follows " + ", then ".join(value.replace("_", " ") for value in edge_path) + " relationships found in the indexed code.",
             }
         )
         if len(flows) == 4:

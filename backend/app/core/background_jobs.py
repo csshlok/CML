@@ -114,6 +114,7 @@ LOCAL_MODEL_JOB_TYPES = {
     "cluster_profile_backfill",
     "refresh_cluster_profile",
     "source_semantic_enrichment",
+    "project_intelligence_overview",
 }
 
 
@@ -206,6 +207,41 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         timeout_seconds=600,
         soft_timeout_seconds=None,
         timeout_action="defer",
+    ),
+    "project_intelligence_overview": JobPolicy(
+        priority="high", idempotency_class="idempotent", restart_policy="requeue",
+        dependency_failure_policy="cancel", write_scope="project", concurrency_group="local_llm",
+        resource_cost="heavy", can_run_during_synthesis=False, user_visible=True,
+        user_initiated=True, cancellable=True, preemptable=True, timeout_seconds=300,
+        soft_timeout_seconds=120, timeout_action="defer",
+    ),
+    "project_graph_metrics": JobPolicy(
+        priority="normal", idempotency_class="idempotent", restart_policy="requeue",
+        dependency_failure_policy="cancel", write_scope="project", concurrency_group="project_intelligence",
+        resource_cost="heavy", can_run_during_synthesis=False, user_visible=True,
+        user_initiated=False, cancellable=True, preemptable=False, timeout_seconds=1800,
+        soft_timeout_seconds=300, timeout_action="defer",
+    ),
+    "project_git_intelligence": JobPolicy(
+        priority="normal", idempotency_class="idempotent", restart_policy="requeue",
+        dependency_failure_policy="cancel", write_scope="project", concurrency_group="project_intelligence",
+        resource_cost="medium", can_run_during_synthesis=True, user_visible=True,
+        user_initiated=False, cancellable=True, preemptable=False, timeout_seconds=300,
+        soft_timeout_seconds=120, timeout_action="defer",
+    ),
+    "project_decision_refresh": JobPolicy(
+        priority="low", idempotency_class="idempotent", restart_policy="requeue",
+        dependency_failure_policy="cancel", write_scope="project", concurrency_group="project_intelligence",
+        resource_cost="medium", can_run_during_synthesis=True, user_visible=True,
+        user_initiated=False, cancellable=True, preemptable=True, timeout_seconds=300,
+        soft_timeout_seconds=120, timeout_action="defer",
+    ),
+    "project_coverage_ingest": JobPolicy(
+        priority="normal", idempotency_class="idempotent", restart_policy="requeue",
+        dependency_failure_policy="cancel", write_scope="project", concurrency_group="project_intelligence",
+        resource_cost="medium", can_run_during_synthesis=True, user_visible=True,
+        user_initiated=True, cancellable=True, preemptable=False, timeout_seconds=600,
+        soft_timeout_seconds=180, timeout_action="defer",
     ),
     "project_delta_probe": JobPolicy(
         priority="low",
@@ -1411,6 +1447,11 @@ def _run_claimed_job(job: dict) -> None:
             _run_project_delta_probe(payload, job["id"])
         elif job["job_type"] == "project_delta_apply":
             _run_project_delta_apply(payload, job["id"])
+        elif job["job_type"] in {
+            "project_intelligence_overview", "project_graph_metrics", "project_git_intelligence",
+            "project_decision_refresh", "project_coverage_ingest",
+        }:
+            _run_project_intelligence_job(job["job_type"], payload, job["id"])
         elif job["job_type"] == "reindex_source":
             _run_reindex_source(payload, job["id"])
         elif job["job_type"] == "source_import_batch":
@@ -1845,6 +1886,47 @@ def _run_chat_answer_generation(payload: dict, job_id: str | None = None) -> Non
         {"generation_id": generation_id},
         detail="Answer saved.",
     )
+
+
+def _run_project_intelligence_job(job_type: str, payload: dict, job_id: str) -> None:
+    _raise_if_job_cancelled(job_id)
+    project_id = str(payload["project_id"])
+    with connect() as conn:
+        _update_job_progress(conn, job_id, {
+            "phase": "building_optional_layer",
+            "layer": job_type,
+            "progress_percent": 5.0,
+            "snapshot_id": payload.get("snapshot_id"),
+        })
+    if job_type == "project_intelligence_overview":
+        from backend.app.core.project_intelligence import generate_project_synopsis
+        result = generate_project_synopsis(project_id)
+        summary = {"project_id": project_id, "generated": bool(result.get("interpretation", {}).get("generated_synopsis"))}
+    elif job_type == "project_graph_metrics":
+        from backend.app.core.project_graph_intelligence import refresh_graph_intelligence
+        result = refresh_graph_intelligence(project_id)
+        summary = result
+    elif job_type == "project_git_intelligence":
+        from backend.app.core.project_git_intelligence import refresh_git_intelligence
+        result = refresh_git_intelligence(project_id, max_commits=int(payload.get("max_commits") or 1000))
+        summary = {"project_id": project_id, "status": result.get("status"), "commit_count": result.get("commit_count", 0)}
+    elif job_type == "project_decision_refresh":
+        from backend.app.core.project_decisions import refresh_project_decisions
+        result = refresh_project_decisions(project_id)
+        summary = {"project_id": project_id, "decision_count": result.get("count", 0)}
+    else:
+        from backend.app.core.project_coverage import import_project_coverage
+        result = import_project_coverage(project_id, str(payload["artifact_path"]))
+        summary = {"project_id": project_id, "coverage_snapshot_id": result.get("id"), "status": result.get("status")}
+    _raise_if_job_cancelled(job_id)
+    with connect() as conn:
+        _update_job_progress(conn, job_id, {
+            "phase": "publishing_optional_layer",
+            "layer": job_type,
+            "progress_percent": 95.0,
+            "snapshot_id": payload.get("snapshot_id"),
+        })
+    _set_job_result(job_id, summary, detail=f"{job_type.replace('_', ' ').title()} completed.")
 
 
 def _run_chat_transcript_memory(payload: dict, job_id: str | None = None) -> None:
