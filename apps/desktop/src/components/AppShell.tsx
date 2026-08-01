@@ -24,6 +24,9 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKe
 import {
   getJobStatus,
   getModelRuntimeStatus,
+  approveCliPairingChallenge,
+  denyCliPairingChallenge,
+  listCliPairingChallenges,
   listChatSessions,
   listRecentChatGenerations,
   listClusterSuggestions,
@@ -34,6 +37,7 @@ import {
   updateAppProfile,
   unlockVaultWithPassphrase,
   type ChatSessionRecord,
+  type CliPairingChallenge,
   useBackendHealth,
   type ClusterRecord,
   type JobQueueStatus,
@@ -92,7 +96,9 @@ const secondaryNav: NavItem[] = [
 ] as const;
 
 export function AppShell() {
-  const pathname = useRouterState({ select: (r) => r.location.pathname });
+  const routeLocation = useRouterState({ select: (r) => r.location });
+  const pathname = routeLocation.pathname;
+  const settingsSection = (routeLocation.search as { section?: unknown }).section;
   const navigate = useNavigate();
   const { open: openPalette, setOpen } = useCommandPalette();
   const backend = useBackendHealth();
@@ -113,6 +119,7 @@ export function AppShell() {
   const contentRef = useRef<HTMLElement>(null);
   const recentChatGenerationsRef = useRef<{ vaultId: string; ids: Set<string> } | null>(null);
   const modelAvailabilityNoticeRef = useRef<"unknown" | "ready" | "unavailable">("unknown");
+  const notifiedOdinPairingIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -239,8 +246,74 @@ export function AppShell() {
     }
   }, [navigate]);
 
+  const decideOdinPairing = useCallback(
+    async (challenge: CliPairingChallenge, approve: boolean, vaultId: string) => {
+      try {
+        if (approve) {
+          await approveCliPairingChallenge(challenge.id, challenge.requested_scopes, [vaultId]);
+          notify({
+            title: "Odin access approved",
+            description: `${challenge.requester_name} can now use this library.`,
+            tone: "success",
+          });
+        } else {
+          await denyCliPairingChallenge(challenge.id);
+          notify({
+            title: "Odin request cancelled",
+            description: `${challenge.requester_name} was not given access.`,
+          });
+        }
+      } catch (error) {
+        notify({
+          title: "Odin request was not updated",
+          description: error instanceof Error ? error.message : "Open Code Connections and try again.",
+          tone: "error",
+          actionLabel: "Open Code Connections",
+          onAction: () => navigate({ to: "/settings", search: { section: "connections" } }),
+        });
+      }
+    },
+    [navigate],
+  );
+
+  const onCodeConnectionsPage = pathname === "/settings" && settingsSection === "connections";
+  const refreshOdinPairings = useCallback(async () => {
+    if (onCodeConnectionsPage) return;
+    try {
+      const [challenges, activeVaults] = await Promise.all([
+        listCliPairingChallenges(),
+        vault ? Promise.resolve([vault]) : listVaults(),
+      ]);
+      const pairingVault = activeVaults[0];
+      if (!pairingVault) return;
+      for (const challenge of challenges) {
+        if (notifiedOdinPairingIdsRef.current.has(challenge.id)) continue;
+        notifiedOdinPairingIdsRef.current.add(challenge.id);
+        const scopes = challenge.requested_scopes
+          .map((scope) => scope.replaceAll("_", " "))
+          .join(", ");
+        notify({
+          title: "Odin is requesting access",
+          description: `${challenge.requester_name} requests ${scopes || "project access"}. Expires ${new Date(challenge.expires_at).toLocaleTimeString()}. App identity ${challenge.executable_fingerprint.slice(0, 16)}.`,
+          persistent: true,
+          secondaryActionLabel: "Cancel request",
+          onSecondaryAction: () => void decideOdinPairing(challenge, false, pairingVault.id),
+          actionLabel: "Approve",
+          onAction: () => void decideOdinPairing(challenge, true, pairingVault.id),
+        });
+      }
+    } catch {
+      // Code Connections remains available if a background pairing check is interrupted.
+    }
+  }, [decideOdinPairing, onCodeConnectionsPage, vault]);
+
   useVisiblePolling(refreshJobs, 10_000, backend.status === "online");
   useVisiblePolling(refreshLibrary, 30_000, backend.status === "online");
+  useVisiblePolling(
+    refreshOdinPairings,
+    2_000,
+    backend.status !== "offline" && !onCodeConnectionsPage,
+  );
   useVisiblePolling(
     async () => {
       if (!vault) {

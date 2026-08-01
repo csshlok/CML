@@ -10,6 +10,9 @@ type NotificationInput = {
   tone?: NotificationTone;
   actionLabel?: string;
   onAction?: () => void;
+  secondaryActionLabel?: string;
+  onSecondaryAction?: () => void;
+  persistent?: boolean;
 };
 
 type NotificationRecord = NotificationInput & {
@@ -56,6 +59,7 @@ export function NotificationViewport() {
     const onNotification = (event: Event) => {
       const notification = (event as CustomEvent<NotificationRecord>).detail;
       setNotifications((current) => [...current.slice(-2), notification]);
+      if (notification.persistent) return;
       const fade = window.setTimeout(() => {
         setLeavingIds((current) => new Set(current).add(notification.id));
       }, notificationFadeAfterMs);
@@ -94,6 +98,7 @@ export function NotificationViewport() {
             role={tone === "error" ? "alert" : "status"}
             className={cn(
               "pointer-events-auto flex w-full max-w-sm items-start gap-3 rounded-md px-4 py-3 text-sm transition-[opacity,transform] duration-500 ease-out motion-reduce:transition-none",
+              notification.persistent && "max-w-lg",
               leavingIds.has(notification.id) &&
                 "translate-y-1 opacity-0 motion-reduce:translate-y-0",
               tone === "error" && "bg-destructive text-destructive-foreground",
@@ -111,16 +116,30 @@ export function NotificationViewport() {
                 </div>
               )}
               {notification.actionLabel && notification.onAction ? (
-                <button
-                  type="button"
-                  className="mt-2 text-xs font-medium underline underline-offset-2"
-                  onClick={() => {
-                    notification.onAction?.();
-                    dismiss(notification.id);
-                  }}
-                >
-                  {notification.actionLabel}
-                </button>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {notification.secondaryActionLabel && notification.onSecondaryAction ? (
+                    <button
+                      type="button"
+                      className="rounded-sm border border-current/35 px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-current/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current"
+                      onClick={() => {
+                        notification.onSecondaryAction?.();
+                        dismiss(notification.id);
+                      }}
+                    >
+                      {notification.secondaryActionLabel}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="rounded-sm bg-background px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:bg-background/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current"
+                    onClick={() => {
+                      notification.onAction?.();
+                      dismiss(notification.id);
+                    }}
+                  >
+                    {notification.actionLabel}
+                  </button>
+                </div>
               ) : null}
             </div>
             <button
