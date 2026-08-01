@@ -2,11 +2,8 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
-  ArrowRight,
   Clock3,
-  Code2,
   FolderOpen,
-  GitBranch,
   RefreshCw,
   Send,
   Settings2,
@@ -54,6 +51,7 @@ function ProjectWorkspace() {
   const [runs, setRuns] = useState<ProjectIndexRunRecord[]>([]);
   const [question, setQuestion] = useState("");
   const [message, setMessage] = useState<string | null>(null);
+  const [detailsWarning, setDetailsWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [name, setName] = useState("");
@@ -84,7 +82,9 @@ function ProjectWorkspace() {
         clustersResult.status === "rejected" ? "clusters" : "",
         changesResult.status === "rejected" ? "changes" : "",
       ].filter(Boolean);
-      setMessage(unavailable.length ? `Some project details are unavailable: ${unavailable.join(", ")}.` : null);
+      setDetailsWarning(
+        unavailable.length ? `Unavailable right now: ${unavailable.join(", ")}.` : null,
+      );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Vault could not load this project.");
     }
@@ -114,7 +114,7 @@ function ProjectWorkspace() {
     () =>
       Object.entries(project?.languages ?? {})
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 5),
+        .slice(0, 3),
     [project],
   );
   const questions = useMemo(() => (project ? projectQuestions(project) : []), [project]);
@@ -165,7 +165,7 @@ function ProjectWorkspace() {
   const commit = project.indexed_commit?.slice(0, 8);
   return (
     <div className="vault-page-wash h-full overflow-y-auto">
-      <div className="mx-auto grid min-h-full max-w-[1500px] grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="mx-auto min-h-full max-w-5xl">
         <main className="min-w-0 px-4 py-6 sm:px-7 sm:py-8 lg:px-10">
           <Link
             to="/projects"
@@ -173,40 +173,18 @@ function ProjectWorkspace() {
           >
             <ArrowLeft className="h-4 w-4" /> Projects
           </Link>
-          <PageHeader className="mt-7 flex flex-wrap items-start justify-between gap-5 border-b border-border pb-7">
+          <PageHeader className="mt-6 flex flex-wrap items-start justify-between gap-5 pb-5">
             <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-3">
-                <h1 className="page-title break-words">{project.name}</h1>
-                <span className="inline-flex items-center gap-1.5 rounded border border-border px-2 py-1 text-xs text-muted-foreground">
-                  <Code2 className="h-3.5 w-3.5" /> Project
-                </span>
-              </div>
-              <p className="mt-3 flex flex-wrap gap-x-2 gap-y-1 text-sm text-muted-foreground">
-                {project.default_branch && (
-                  <span className="inline-flex items-center gap-1">
-                    <GitBranch className="h-3.5 w-3.5" /> {project.default_branch}
-                  </span>
-                )}
-                {commit && <span>Indexed at {commit}</span>}
-                {Boolean(changes?.changed_path_count) && (
-                  <span
-                    role="status"
-                    className="inline-flex items-center rounded border border-[var(--status-warn)] bg-[var(--status-warn-bg)] px-2 py-0.5 text-xs font-medium text-foreground"
-                    title="Synchronize to include these pending file changes in Odin answers."
-                  >
-                    {changes!.changed_path_count.toLocaleString()}{" "}
-                    {changes!.changed_path_count === 1 ? "change" : "changes"} pending for Odin
-                  </span>
-                )}
-                {changes?.working_tree_dirty && (
-                  <span
-                    className="inline-flex items-center rounded border border-border px-2 py-0.5 text-xs text-muted-foreground"
-                    title="Git repository state is reported separately from Odin index freshness."
-                  >
-                    Git working tree: {changes.repository_changed_path_count.toLocaleString()} changed
-                  </span>
-                )}
+              <h1 className="page-title break-words">{project.name}</h1>
+              <p className="mt-2 flex flex-wrap gap-x-2 text-sm text-muted-foreground">
+                {project.default_branch && <span>{project.default_branch}</span>}
                 <span>{project.source_count.toLocaleString()} files</span>
+                {Boolean(changes?.changed_path_count) && (
+                  <span role="status" className="text-foreground">
+                    {changes!.changed_path_count.toLocaleString()}{" "}
+                    {changes!.changed_path_count === 1 ? "change" : "changes"} pending
+                  </span>
+                )}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -233,7 +211,6 @@ function ProjectWorkspace() {
           {activeRun && (
             <RunStrip
               run={activeRun}
-              project={project}
               onCancel={() =>
                 void runAction(
                   () => cancelProjectRun(project.id),
@@ -250,40 +227,6 @@ function ProjectWorkspace() {
               {message}
             </div>
           )}
-          {project.structure_status === "stale" && !activeRun && (
-            <div
-              role="status"
-              className="mt-5 flex max-w-4xl flex-wrap items-center justify-between gap-3 border-y border-border py-3"
-            >
-              <p className="text-sm text-muted-foreground">
-                Search includes the latest file changes. Update the map when you need current
-                relationships.
-              </p>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy}
-                onClick={() =>
-                  void runAction(
-                    () => reindexProject(project.id, "structure"),
-                    "Project map update queued.",
-                  )
-                }
-              >
-                <RefreshCw className="h-4 w-4" /> Update map
-              </Button>
-            </div>
-          )}
-          <ProjectChangesInbox
-            changes={changes}
-            busy={busy || Boolean(activeRun)}
-            onSync={() =>
-              void runAction(
-                () => synchronizeProjectChanges(project.id),
-                "Changed files are queued for synchronization.",
-              )
-            }
-          />
           {settingsOpen && (
             <>
               <ProjectScopeSettings
@@ -351,153 +294,150 @@ function ProjectWorkspace() {
             />
           )}
 
-          <section className="mt-8 max-w-3xl">
-            <h2 className="text-lg font-semibold">What this project does</h2>
-            <p className="mt-3 max-w-[72ch] text-sm leading-7 text-foreground/90">
+          <section className="mt-6 max-w-3xl" aria-label="Project overview">
+            <p className="max-w-[68ch] text-base leading-7 text-foreground/90">
               {project.brief ||
                 "Odin has registered this project. Synchronize it to build a local, searchable overview."}
             </p>
-            <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-sm text-muted-foreground">
+            <div className="mt-3 flex flex-wrap gap-x-2 text-sm text-muted-foreground">
               {languages.length > 0 && (
                 <span>{languages.map(([language]) => language).join(", ")}</span>
-              )}
-              {project.workspace_count > 0 && (
-                <span>
-                  {project.workspace_count === 1
-                    ? "1 package or workspace"
-                    : `${project.workspace_count} packages or workspaces`}
-                </span>
               )}
               <span>Updated {formatDate(project.updated_at)}</span>
             </div>
           </section>
 
-          <section className="mt-10 max-w-4xl border-t border-border pt-8">
-            <div className="flex flex-wrap items-baseline justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-semibold">Ask about this project</h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Answers stay scoped to this project and cite the indexed evidence they use.
-                </p>
-              </div>
-              <span className="rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground">
-                Scope: {project.name}
-              </span>
-            </div>
-            <div className="mt-5 rounded-md border border-border bg-card p-3 focus-within:border-primary/60">
+          <section className="mt-8 max-w-3xl">
+            <h2 className="text-lg font-semibold">Ask Odin</h2>
+            <div className="mt-3 rounded-md border border-border bg-card p-2 focus-within:border-primary/60">
               <Textarea
                 aria-label="Ask about this project"
                 value={question}
                 onChange={(event) => setQuestion(event.target.value)}
                 placeholder="Ask how something works, where it is defined, or what depends on it…"
-                className="min-h-28 resize-y border-0 bg-transparent p-2 shadow-none focus-visible:ring-0"
+                className="min-h-20 resize-y border-0 bg-transparent p-2 shadow-none focus-visible:ring-0"
                 onKeyDown={(event) => {
                   if ((event.ctrlKey || event.metaKey) && event.key === "Enter") void ask();
                 }}
               />
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
-                <span className="text-xs text-muted-foreground">Ctrl + Enter to ask</span>
+              <div className="flex justify-end px-1 pb-1">
                 <Button size="sm" disabled={!question.trim()} onClick={() => void ask()}>
                   <Send className="h-4 w-4" /> Ask Odin
                 </Button>
               </div>
             </div>
-            <nav
-              aria-label="Suggested project questions"
-              className="mt-4 grid gap-1 sm:grid-cols-2"
-            >
-              {questions.map((item) => (
-                <button
-                  key={item}
-                  type="button"
-                  className="rounded px-2 py-2 text-left text-sm text-muted-foreground hover:bg-card hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  onClick={() => void ask(item)}
-                >
-                  {item} <ArrowRight className="ml-1 inline h-3.5 w-3.5" />
-                </button>
-              ))}
-            </nav>
+            <details className="mt-3 text-sm text-muted-foreground">
+              <summary className="w-fit cursor-pointer rounded py-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                Suggested questions
+              </summary>
+              <nav
+                aria-label="Suggested project questions"
+                className="mt-2 grid gap-1 sm:grid-cols-2"
+              >
+                {questions.map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    className="rounded px-2 py-2 text-left hover:bg-card hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() => void ask(item)}
+                  >
+                    {item}
+                  </button>
+                ))}
+              </nav>
+            </details>
           </section>
-        </main>
 
-        <aside className="min-w-0 border-t border-border px-5 py-7 xl:border-l xl:border-t-0">
-          <h2 className="text-sm font-semibold">Index health</h2>
-          <div className="mt-5 divide-y divide-border border-y border-border">
-            <Layer label="Structure" value={project.structure_status} />
-            <Layer label="Search" value={project.retrieval_status} />
-            <Layer
-              label="Interpretation"
-              value={
-                project.interpretation_status === "unavailable"
-                  ? "Not enabled"
-                  : project.interpretation_status
+          <details className="mt-8 max-w-3xl border-t border-border py-5 text-sm">
+            <summary className="w-fit cursor-pointer rounded font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              Project details
+            </summary>
+            <div className="mt-5 grid gap-7 sm:grid-cols-2">
+              <section aria-labelledby="index-status-title">
+                <h2 id="index-status-title" className="text-sm font-semibold">
+                  Index status
+                </h2>
+                <div className="mt-2 divide-y divide-border">
+                  <Layer label="Structure" value={project.structure_status} />
+                  <Layer label="Search" value={project.retrieval_status} />
+                  <Layer
+                    label="Interpretation"
+                    value={
+                      project.interpretation_status === "unavailable"
+                        ? "Not enabled"
+                        : project.interpretation_status
+                    }
+                  />
+                </div>
+                {commit && (
+                  <p className="mt-2 text-xs text-muted-foreground">Indexed at {commit}</p>
+                )}
+              </section>
+              <section aria-labelledby="project-activity-title">
+                <h2 id="project-activity-title" className="text-sm font-semibold">
+                  Activity
+                </h2>
+                {project.entrypoints.length > 0 && (
+                  <p className="mt-2 break-all font-mono text-xs text-muted-foreground">
+                    Entry: {project.entrypoints[0]}
+                  </p>
+                )}
+                <div className="mt-3 space-y-2">
+                  {runs.slice(0, 3).map((run) => (
+                    <p key={run.id} className="text-xs text-muted-foreground">
+                      <span className="capitalize text-foreground">
+                        {run.status.replaceAll("_", " ")}
+                      </span>{" "}
+                      · {formatDate(run.updated_at)}
+                    </p>
+                  ))}
+                </div>
+                <Link to="/tasks" className="mt-3 inline-flex text-sm text-primary">
+                  View tasks
+                </Link>
+              </section>
+            </div>
+            {detailsWarning && (
+              <p role="status" className="mt-5 text-xs text-muted-foreground">
+                {detailsWarning}
+              </p>
+            )}
+            {project.structure_status === "stale" && !activeRun && (
+              <div role="status" className="mt-5 flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-muted-foreground">The project map needs an update.</p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    void runAction(
+                      () => reindexProject(project.id, "structure"),
+                      "Project map update queued.",
+                    )
+                  }
+                >
+                  <RefreshCw className="h-4 w-4" /> Update map
+                </Button>
+              </div>
+            )}
+            <ProjectChangesInbox
+              changes={changes}
+              busy={busy || Boolean(activeRun)}
+              onSync={() =>
+                void runAction(
+                  () => synchronizeProjectChanges(project.id),
+                  "Changed files are queued for synchronization.",
+                )
               }
             />
-          </div>
-          <section className="mt-7">
-            <h3 className="text-sm font-medium">Freshness</h3>
-            <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              {commit ? `Indexed commit ${commit}.` : "Indexed from the registered local folder."}{" "}
-              {changes
-                ? changes.changed_path_count
-                  ? `${changes.changed_path_count.toLocaleString()} file changes are pending for Odin.`
-                  : "The active Odin snapshot matches the current eligible files."
-                : project.changed_file_count
-                  ? `${project.changed_file_count.toLocaleString()} file changes may be pending verification.`
-                  : "Freshness is being verified."}
-              {changes?.working_tree_dirty
-                ? ` Git separately reports ${changes.repository_changed_path_count.toLocaleString()} working-tree paths.`
-                : changes
-                  ? " The Git working tree is clean."
-                  : ""}
-            </p>
-          </section>
-          {project.entrypoints.length > 0 && (
-            <section className="mt-7">
-              <h3 className="text-sm font-medium">Entry points</h3>
-              <ul className="mt-2 space-y-2">
-                {project.entrypoints.slice(0, 6).map((entry) => (
-                  <li key={entry} className="break-all font-mono text-xs text-muted-foreground">
-                    {entry}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-          <section className="mt-8">
-            <h3 className="text-sm font-medium">Recent runs</h3>
-            <div className="mt-2 space-y-3">
-              {runs.slice(0, 5).map((run) => (
-                <div key={run.id} className="border-l border-border pl-3 text-xs">
-                  <div className="font-medium capitalize">{run.status.replaceAll("_", " ")}</div>
-                  <div className="mt-1 text-muted-foreground">
-                    {run.phase.replaceAll("_", " ")} · {formatDate(run.updated_at)}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <Link to="/tasks" className="mt-4 inline-flex text-sm text-primary">
-              View tasks
-            </Link>
-          </section>
-          <p className="mt-8 text-xs leading-5 text-muted-foreground">
-            Odin reads eligible files locally. It does not execute or modify repository code.
-          </p>
-        </aside>
+          </details>
+        </main>
       </div>
     </div>
   );
 }
 
-function RunStrip({
-  run,
-  project,
-  onCancel,
-}: {
-  run: ProjectIndexRunRecord;
-  project: ProjectRecord;
-  onCancel: () => void;
-}) {
+function RunStrip({ run, onCancel }: { run: ProjectIndexRunRecord; onCancel: () => void }) {
   const total = run.phase_total_count || run.eligible_total;
   const complete = run.phase_completed_count || run.completed_count;
   const percent = total ? Math.min(100, Math.round((complete / total) * 100)) : 0;
@@ -505,39 +445,27 @@ function RunStrip({
   return (
     <section
       aria-label="Project indexing progress"
-      className="mt-5 rounded-md border border-border bg-card px-4 py-3"
+      className="mt-3 rounded-md bg-muted/60 px-3 py-2"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <Clock3 className="h-4 w-4 text-primary" />
-            <span>Step {phase.step} of 4</span>
-            <span aria-hidden="true" className="text-muted-foreground">
-              ·
-            </span>
-            <span>{phase.label}</span>
-          </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {total
-              ? `${complete.toLocaleString()} / ${total.toLocaleString()} files in this phase`
-              : "Preparing this phase"}{" "}
-            · the active{" "}
-            {project.active_retrieval_snapshot_id
-              ? "index remains available"
-              : "index is being prepared"}
-          </p>
+        <div className="flex min-w-0 items-center gap-2 text-sm">
+          <Clock3 className="h-4 w-4 text-primary" />
+          <span className="font-medium">{phase.label}</span>
+          <span className="text-xs text-muted-foreground">
+            {total ? `${complete.toLocaleString()} / ${total.toLocaleString()}` : "Preparing"}
+          </span>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={onCancel}>
             <Square className="h-3.5 w-3.5" /> Cancel
           </Button>
           <Button variant="outline" size="sm" asChild>
-            <Link to="/tasks">View task</Link>
+            <Link to="/tasks">Task</Link>
           </Button>
         </div>
       </div>
       <div
-        className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted"
+        className="mt-2 h-1 overflow-hidden rounded-full bg-background"
         role="progressbar"
         aria-label={`${phase.label}: ${percent}%`}
         aria-valuemin={0}
@@ -632,8 +560,8 @@ function ProjectChangesInbox({
       )}
       {changes.truncated && (
         <p className="mt-2 text-xs text-muted-foreground">
-          This list is bounded. Synchronization will use the complete detected delta or explain
-          why a full refresh is required.
+          This list is bounded. Synchronization will use the complete detected delta or explain why
+          a full refresh is required.
         </p>
       )}
       <div className="mt-4 border-t border-border pt-4">
@@ -652,10 +580,10 @@ function ProjectChangesInbox({
 function projectRunPhase(value: string) {
   const phase = value.toLowerCase();
   if (phase.startsWith("discover") || phase === "candidate_build")
-    return { step: 1, label: "Discovering files" };
-  if (phase.startsWith("structure")) return { step: 2, label: "Building structure" };
-  if (phase.startsWith("retrieval")) return { step: 3, label: "Preparing search" };
-  return { step: 4, label: "Activating index" };
+    return { label: "Discovering files" };
+  if (phase.startsWith("structure")) return { label: "Building structure" };
+  if (phase.startsWith("retrieval")) return { label: "Preparing search" };
+  return { label: "Activating index" };
 }
 
 function ProjectScopeSettings({
@@ -926,11 +854,8 @@ function ProjectSettings({
             <h3 className="text-sm font-semibold text-destructive">Remove from Vault</h3>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
               This removes Vault's index and project record. Files in{" "}
-              <span className="font-medium text-foreground">
-                {displayPath(project.root_path)}
-              </span>{" "}
-              will not be
-              changed.
+              <span className="font-medium text-foreground">{displayPath(project.root_path)}</span>{" "}
+              will not be changed.
             </p>
             <Input
               className="mt-3"

@@ -44,3 +44,51 @@ test("Odin launcher drift has one repair-and-pair action", () => {
   assert.match(settingsSource, /repairAndPair = Boolean\(odinLauncher\?\.needs_repair\)/);
   assert.match(settingsSource, /if \(repairAndPair\)[\s\S]{0,120}startOdinPairing/);
 });
+
+test("Code Connections leads with setup and exposes the complete Odin command surface", () => {
+  const installIndex = settingsSource.indexOf('title="Install Odin"');
+  const projectsIndex = settingsSource.indexOf('title="Odin code projects"');
+  const accessIndex = settingsSource.indexOf('title="Odin command-line access"');
+  const referenceIndex = settingsSource.indexOf('title="Odin command reference"');
+  assert.ok(installIndex >= 0 && installIndex < projectsIndex);
+  assert.ok(projectsIndex < accessIndex);
+  assert.ok(accessIndex < referenceIndex);
+  assert.match(settingsSource, /How to install and connect/);
+  assert.match(settingsSource, /Install and connect Odin/);
+  for (const command of [
+    "odin doctor",
+    "odin auth pair",
+    "odin auth status",
+    "odin auth logout",
+    "odin auth forget",
+    "odin project add",
+    "odin project list",
+    "odin project status",
+    "odin project changes",
+    "odin project sync",
+    "odin project reindex",
+    "odin project rename",
+    "odin project link",
+    "odin project unlink",
+    "odin project links",
+    "odin project explain",
+    "odin project path",
+    "odin project graph",
+    "odin project tree",
+    "odin project remove",
+    "odin context",
+  ]) {
+    assert.match(settingsSource, new RegExp(command.replaceAll(" ", "\\s+")));
+  }
+});
+
+test("Memory history keeps job state live and replaces indefinite loading with a retry", () => {
+  assert.match(
+    settingsSource,
+    /firstVault && activeSection === "library"[\s\S]{0,200}add\("tasks", getJobStatus\(\)/,
+  );
+  assert.match(settingsSource, /const temporalRefreshPending = temporalBackfillBusy \|\| temporalBackfillActive/);
+  assert.match(settingsSource, /memoryInsightsError[\s\S]{0,120}"Unavailable"/);
+  assert.match(settingsSource, /<span role="alert">\{memoryInsightsError\}<\/span>/);
+  assert.match(settingsSource, /onClick=\{\(\) => void refreshMemoryInsights\(\)\}[\s\S]{0,100}Try again/);
+});

@@ -1,12 +1,25 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Cable, CheckCircle2, Copy, ExternalLink, HelpCircle, Plus, RefreshCw, Shield, Terminal, Trash2 } from "lucide-react";
+import {
+  Cable,
+  Copy,
+  ExternalLink,
+  HelpCircle,
+  Plus,
+  RefreshCw,
+  Shield,
+  Terminal,
+  Trash2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmAction } from "@/components/product/Feedback";
 import { PageHeader } from "@/components/layout/WindowAware";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { describeBridgeCaptureResult, describeBridgeReviewDecision } from "@/lib/bridge-presentation.js";
+import {
+  describeBridgeCaptureResult,
+  describeBridgeReviewDecision,
+} from "@/lib/bridge-presentation.js";
 import { buildExtensionSetupText, describeExtensionScope } from "@/lib/extension-presentation.js";
 import {
   approveBridgeApprovalRequest,
@@ -66,7 +79,9 @@ export const Route = createFileRoute("/_app/bridge")({
 
 function BridgeView() {
   const backend = useBackendHealth();
-  const [bridgeView, setBridgeView] = useState<"overview" | "clients" | "reviews" | "history" | "advanced">("overview");
+  const [bridgeView, setBridgeView] = useState<
+    "overview" | "clients" | "reviews" | "history" | "advanced"
+  >("overview");
   const [status, setStatus] = useState<BridgeStatus | null>(null);
   const [requests, setRequests] = useState<BridgeRequest[]>([]);
   const [approvalRequests, setApprovalRequests] = useState<BridgeApprovalRequest[]>([]);
@@ -98,10 +113,12 @@ function BridgeView() {
   const [extensionToken, setExtensionToken] = useState<string | null>(null);
   const [extensionNotice, setExtensionNotice] = useState<string | null>(null);
   const [extensionVaultId, setExtensionVaultId] = useState("");
-  const [mcpSetupClient, setMcpSetupClient] = useState<
-    "chatgpt" | "claude" | "cursor" | "other"
-  >("chatgpt");
-  const [mcpCapabilityProfile, setMcpCapabilityProfile] = useState<"read_only" | "read_write">("read_only");
+  const [mcpSetupClient, setMcpSetupClient] = useState<"chatgpt" | "claude" | "cursor" | "other">(
+    "chatgpt",
+  );
+  const [mcpCapabilityProfile, setMcpCapabilityProfile] = useState<"read_only" | "read_write">(
+    "read_only",
+  );
   const [mcpFeatureFlags, setMcpFeatureFlags] = useState<DesktopMcpFeatureFlags>({
     chatgpt_mcp_setup: true,
     secure_mcp_tunnel: true,
@@ -135,24 +152,23 @@ function BridgeView() {
       extensionPairingsResult,
       extensionAuditResult,
     ] = await Promise.allSettled([
-        getBridgeStatus(),
-        listBridgeRequests(),
-        listBridgeApprovalRequests(),
-        listBridgeAuditEvents(),
-        listBridgeTokenRotations(),
-        listBridgeClients(),
-        listVaults(),
-        listClusters(),
-        listBridgeCaptures(),
-        listBridgeWritebackReviews(undefined, true),
-        listExtensionClients(),
-        listExtensionCaptures(),
-        listExtensionPairings(),
-        listExtensionPermissionAudit(),
-      ] as const);
+      getBridgeStatus(),
+      listBridgeRequests(),
+      listBridgeApprovalRequests(),
+      listBridgeAuditEvents(),
+      listBridgeTokenRotations(),
+      listBridgeClients(),
+      listVaults(),
+      listClusters(),
+      listBridgeCaptures(),
+      listBridgeWritebackReviews(undefined, true),
+      listExtensionClients(),
+      listExtensionCaptures(),
+      listExtensionPairings(),
+      listExtensionPermissionAudit(),
+    ] as const);
     const nextVaults = vaultsResult.status === "fulfilled" ? vaultsResult.value : vaults;
-    const nextClusters =
-      clustersResult.status === "fulfilled" ? clustersResult.value : clusters;
+    const nextClusters = clustersResult.status === "fulfilled" ? clustersResult.value : clusters;
     if (statusResult.status === "fulfilled") {
       const nextStatus = statusResult.value;
       const vaultIds = new Set(nextVaults.map((vault) => vault.id));
@@ -204,11 +220,14 @@ function BridgeView() {
 
   useEffect(() => {
     let cancelled = false;
-    void window.cmlDesktop?.getMcpLauncher(mcpCapabilityProfile).then((launcher) => {
-      if (!cancelled) setMcpLauncher(launcher);
-    }).catch(() => {
-      if (!cancelled) setMcpLauncher(null);
-    });
+    void window.cmlDesktop
+      ?.getMcpLauncher(mcpCapabilityProfile)
+      .then((launcher) => {
+        if (!cancelled) setMcpLauncher(launcher);
+      })
+      .catch(() => {
+        if (!cancelled) setMcpLauncher(null);
+      });
     return () => {
       cancelled = true;
     };
@@ -335,7 +354,9 @@ function BridgeView() {
   async function rejectRequest(requestRow: BridgeApprovalRequest) {
     setSaving(true);
     try {
-      await rejectBridgeApprovalRequest(requestRow.id, { detail: "Rejected in Vault Bridge settings." });
+      await rejectBridgeApprovalRequest(requestRow.id, {
+        detail: "Rejected in Vault Bridge settings.",
+      });
       await loadBridgeState();
     } finally {
       setSaving(false);
@@ -597,8 +618,8 @@ function BridgeView() {
   const connectedBridgeClient = clients.find((client) => client.id === chatGptClientId);
   const chatGptScopeReady = Boolean(
     connectedBridgeClient &&
-      (connectedBridgeClient.allowed_vault_ids.length > 0 ||
-        connectedBridgeClient.allowed_cluster_ids.length > 0),
+    (connectedBridgeClient.allowed_vault_ids.length > 0 ||
+      connectedBridgeClient.allowed_cluster_ids.length > 0),
   );
   const chatGptReadVerified = requests.some(
     (request) =>
@@ -612,6 +633,27 @@ function BridgeView() {
       ["external_artifact", "external_turn"].includes(request.mode) &&
       request.decision === "captured",
   );
+  const nextConnectionStep = !(
+    status?.allowed_vault_ids.length || status?.allowed_cluster_ids.length
+  )
+    ? {
+        title: "Choose what the assistant can access",
+        detail: "Select a library or cluster, then continue with setup.",
+      }
+    : clients.length === 0
+      ? {
+          title: "Connect your AI app",
+          detail: "Open setup below and choose the assistant you use.",
+        }
+      : !chatGptReadVerified
+        ? {
+            title: "Verify the connection",
+            detail: "Ask the connected assistant to list your Vault clusters.",
+          }
+        : {
+            title: "Connection ready",
+            detail: "Your assistant can use the approved Vault context.",
+          };
   const extensionSetupText = extensionToken
     ? buildExtensionSetupText({
         backendUrl: backend.url,
@@ -628,14 +670,6 @@ function BridgeView() {
         <PageHeader className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
             <h1 className="page-title">Connect AI tools</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Let another AI use selected Vault context—and, when you allow it, send useful answers
-              back for review and indexing.
-            </p>
-            <div className="mt-2 text-xs text-muted-foreground">
-              Permissions refresh every minute. Pending approvals {status?.approval_requests_pending ?? 0}. Last checked{" "}
-              {status?.last_refreshed_at ?? "not yet"}.
-            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 lg:shrink-0">
@@ -644,52 +678,94 @@ function BridgeView() {
               How to connect
             </Button>
             <div className="flex items-center gap-2 rounded-md border border-border bg-card p-3">
-            <div className="flex items-center gap-3">
-              <Switch
-                aria-label="Enable Bridge"
-                checked={Boolean(status?.enabled)}
-                disabled={!status || saving}
-                onCheckedChange={(checked) => void patchSettings({ enabled: checked })}
-              />
-              <div>
-                <div className="text-sm font-medium">
-                  {status?.enabled ? "Connections allowed" : "Connections paused"}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {backend.status === "online" ? "Local service ready" : "Local service unavailable"}
+              <div className="flex items-center gap-3">
+                <Switch
+                  aria-label="Enable Bridge"
+                  checked={Boolean(status?.enabled)}
+                  disabled={!status || saving}
+                  onCheckedChange={(checked) => void patchSettings({ enabled: checked })}
+                />
+                <div>
+                  <div className="text-sm font-medium">
+                    {status?.enabled ? "Connections allowed" : "Connections paused"}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {backend.status === "online"
+                      ? "Local service ready"
+                      : "Local service unavailable"}
+                  </div>
                 </div>
               </div>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              disabled={saving || backend.status !== "online"}
-              aria-label="Refresh Bridge permissions"
-              title="Refresh Bridge permissions"
-              onClick={() => void loadBridgeState()}
-            >
-              <RefreshCw className="h-4 w-4" />
-            </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={saving || backend.status !== "online"}
+                aria-label="Refresh Bridge permissions"
+                title="Refresh Bridge permissions"
+                onClick={() => void loadBridgeState()}
+              >
+                <RefreshCw className="h-4 w-4" />
+              </Button>
             </div>
           </div>
         </PageHeader>
 
-        <nav className="mt-8 flex gap-1 overflow-x-auto border-b border-border pb-2" aria-label="Bridge sections">
-          {(["overview", "clients", "reviews", "history", "advanced"] as const).map((item) => (
+        <nav
+          className="mt-8 flex gap-1 overflow-x-auto border-b border-border pb-2"
+          aria-label="Bridge sections"
+        >
+          {(["overview", "reviews", "history", "clients"] as const).map((item) => (
             <button
               key={item}
               type="button"
               onClick={() => setBridgeView(item)}
-              aria-current={bridgeView === item ? "page" : undefined}
+              aria-current={
+                bridgeView === item || (item === "clients" && bridgeView === "advanced")
+                  ? "page"
+                  : undefined
+              }
               className={`min-h-9 shrink-0 rounded-md px-3 text-sm font-medium ${
-                bridgeView === item ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                bridgeView === item
+                  ? "bg-accent text-foreground"
+                  : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
               }`}
             >
               {bridgeViewLabel(item)}
-              {item === "reviews" && approvalRequests.length + reviews.length > 0 ? ` (${approvalRequests.length + reviews.length})` : ""}
+              {item === "reviews" && approvalRequests.length + reviews.length > 0
+                ? ` (${approvalRequests.length + reviews.length})`
+                : ""}
             </button>
           ))}
         </nav>
+
+        {bridgeView === "clients" || bridgeView === "advanced" ? (
+          <nav className="mt-5 flex gap-4 text-sm" aria-label="Advanced connection tools">
+            <button
+              type="button"
+              className={
+                bridgeView === "clients"
+                  ? "font-medium text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }
+              aria-current={bridgeView === "clients" ? "page" : undefined}
+              onClick={() => setBridgeView("clients")}
+            >
+              Connection access
+            </button>
+            <button
+              type="button"
+              className={
+                bridgeView === "advanced"
+                  ? "font-medium text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }
+              aria-current={bridgeView === "advanced" ? "page" : undefined}
+              onClick={() => setBridgeView("advanced")}
+            >
+              Manual save
+            </button>
+          </nav>
+        ) : null}
 
         <section
           hidden={bridgeView !== "overview"}
@@ -708,30 +784,10 @@ function BridgeView() {
               </p>
             </div>
           </div>
-          <ol className="mt-5 divide-y divide-border border-y border-border">
-            <BridgeStep
-              number="1"
-              title="Choose what it can access"
-              detail={
-                status?.allowed_vault_ids.length || status?.allowed_cluster_ids.length
-                  ? "A library or cluster scope is selected."
-                  : "Select at least one library or cluster below."
-              }
-              complete={Boolean(status?.allowed_vault_ids.length || status?.allowed_cluster_ids.length)}
-            />
-            <BridgeStep
-              number="2"
-              title="Create and connect"
-              detail={clients.length > 0 ? `${clients.length} connection ${clients.length === 1 ? "is" : "are"} configured.` : "Open setup below and choose your AI app."}
-              complete={clients.length > 0}
-            />
-            <BridgeStep
-              number="3"
-              title="Ask it to use Vault"
-              detail={chatGptReadVerified ? "Vault received a successful context request." : "After connecting, ask the assistant to list your Vault clusters."}
-              complete={chatGptReadVerified}
-            />
-          </ol>
+          <div className="mt-5 border-y border-border py-3">
+            <div className="text-sm font-medium">{nextConnectionStep.title}</div>
+            <p className="mt-1 text-xs text-muted-foreground">{nextConnectionStep.detail}</p>
+          </div>
         </section>
 
         <details
@@ -749,16 +805,12 @@ function BridgeView() {
               that connection.
             </p>
             <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="MCP client">
-              {(
-                [
-                  ...(mcpFeatureFlags.chatgpt_mcp_setup
-                    ? ([["chatgpt", "ChatGPT"]] as const)
-                    : []),
-                  ["claude", "Claude Desktop"] as const,
-                  ["cursor", "Cursor"] as const,
-                  ["other", "Other"] as const,
-                ]
-              ).map(([id, label]) => (
+              {[
+                ...(mcpFeatureFlags.chatgpt_mcp_setup ? ([["chatgpt", "ChatGPT"]] as const) : []),
+                ["claude", "Claude Desktop"] as const,
+                ["cursor", "Cursor"] as const,
+                ["other", "Other"] as const,
+              ].map(([id, label]) => (
                 <Button
                   key={id}
                   type="button"
@@ -800,8 +852,8 @@ function BridgeView() {
                     <li>
                       <span className="font-medium">3. Add the app in ChatGPT web.</span>{" "}
                       <span className="text-muted-foreground">
-                        In Settings, open Apps and enable Developer mode if your workspace allows it.
-                        Create an app, enter the tunnel connection, and scan tools.
+                        In Settings, open Apps and enable Developer mode if your workspace allows
+                        it. Create an app, enter the tunnel connection, and scan tools.
                       </span>
                     </li>
                     <li>
@@ -809,7 +861,7 @@ function BridgeView() {
                       <span className="text-muted-foreground">
                         {chatGptReadVerified
                           ? "Vault received a successful list_clusters call."
-                          : 'Ask ChatGPT: “Use Vault to list my clusters.” Then refresh this page.'}
+                          : "Ask ChatGPT: “Use Vault to list my clusters.” Then refresh this page."}
                       </span>
                     </li>
                     {mcpCapabilityProfile === "read_write" ? (
@@ -818,7 +870,7 @@ function BridgeView() {
                         <span className="text-muted-foreground">
                           {chatGptWriteVerified
                             ? "Vault received a test save. Review it, then remove it from Sources."
-                            : 'Ask ChatGPT to save an artifact named “Vault connection test.” Confirm the action, review it here, then remove it from Sources.'}
+                            : "Ask ChatGPT to save an artifact named “Vault connection test.” Confirm the action, review it here, then remove it from Sources."}
                         </span>
                       </li>
                     ) : null}
@@ -885,7 +937,10 @@ function BridgeView() {
                     : "Start with read only. Read and save requires a ChatGPT workspace that allows write actions."}
                 </p>
                 {!mcpFeatureFlags.secure_mcp_tunnel ? (
-                  <div role="status" className="rounded-md border border-border bg-muted px-3 py-2 text-sm">
+                  <div
+                    role="status"
+                    className="rounded-md border border-border bg-muted px-3 py-2 text-sm"
+                  >
                     ChatGPT connection is unavailable in this Vault release.
                   </div>
                 ) : null}
@@ -920,17 +975,31 @@ function BridgeView() {
                   </div>
                 </div>
                 {tunnelError && (
-                  <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  <div
+                    role="alert"
+                    className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                  >
                     {tunnelError}
                   </div>
                 )}
                 <div className="flex flex-wrap gap-2">
                   {tunnelStatus?.state === "connected" ? (
                     <>
-                      <Button type="button" size="sm" variant="outline" onClick={() => void window.cmlDesktop?.openTunnelUi()}>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void window.cmlDesktop?.openTunnelUi()}
+                      >
                         Open connection status
                       </Button>
-                      <Button type="button" size="sm" variant="outline" disabled={tunnelBusy} onClick={() => void disconnectChatGptTunnel(false)}>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={tunnelBusy}
+                        onClick={() => void disconnectChatGptTunnel(false)}
+                      >
                         Disconnect
                       </Button>
                       <ConfirmAction
@@ -978,7 +1047,11 @@ function BridgeView() {
                     type="button"
                     size="sm"
                     variant="outline"
-                    onClick={() => void window.cmlDesktop?.openExternal("https://platform.openai.com/settings/organization/tunnels")}
+                    onClick={() =>
+                      void window.cmlDesktop?.openExternal(
+                        "https://platform.openai.com/settings/organization/tunnels",
+                      )
+                    }
                   >
                     Open tunnel settings
                     <ExternalLink className="h-3.5 w-3.5" />
@@ -1034,13 +1107,14 @@ function BridgeView() {
         </details>
 
         <section
-          hidden={bridgeView !== "overview"}
-          style={{ display: bridgeView === "overview" ? undefined : "none" }}
-          className={bridgeSectionClass("overview", bridgeView)}
+          hidden={bridgeView !== "clients"}
+          style={{ display: bridgeView === "clients" ? undefined : "none" }}
+          className={bridgeSectionClass("clients", bridgeView, "mt-6")}
         >
           {status?.enabled && status.allowed_vault_ids.length === 0 && (
             <div className="mb-4 rounded-md border border-[var(--status-learning)]/40 bg-[var(--status-learning)]/10 px-3 py-2 text-sm">
-              Bridge is on, but no library is allowed. MCP clients will receive no_active_vault until you allow one.
+              Bridge is on, but no library is allowed. MCP clients will receive no_active_vault
+              until you allow one.
             </div>
           )}
           <div className="flex items-center gap-2">
@@ -1108,39 +1182,6 @@ function BridgeView() {
         </section>
 
         <section
-          hidden={bridgeView !== "overview"}
-          style={{ display: bridgeView === "overview" ? undefined : "none" }}
-          className={bridgeSectionClass("overview", bridgeView)}
-        >
-          <div className="flex items-start gap-3">
-            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-secondary">
-              <CheckCircle2 className="h-4 w-4" />
-            </span>
-            <div className="min-w-0">
-              <h2 className="text-sm font-semibold">Save useful answers without copying</h2>
-              <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-                Give a connection <span className="font-medium text-foreground">Read and save</span>{" "}
-                access, then ask the connected assistant to “Save this answer to Vault.” It sends
-                the prompt and answer through CML’s trust checks, review queue, indexing, and normal
-                retrieval pipeline.
-              </p>
-              <p className="mt-3 text-xs leading-5 text-muted-foreground">
-                Answers that are weakly grounded, conflicting, or unsafe remain gated in Review.
-                Manual paste remains available under Manual tools as a fallback.
-              </p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => setBridgeView("clients")}>
-                  Manage connection access
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setBridgeView("reviews")}>
-                  Open review queue
-                </Button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section
           hidden={bridgeView !== "clients"}
           style={{ display: bridgeView === "clients" ? undefined : "none" }}
           className={bridgeSectionClass("clients", bridgeView, "mt-6")}
@@ -1151,7 +1192,8 @@ function BridgeView() {
                 Extension pairing
               </div>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                Set up a browser/extension capture client without dropping to raw API calls. Start a pairing, approve it here, and then monitor captures.
+                Set up a browser/extension capture client without dropping to raw API calls. Start a
+                pairing, approve it here, and then monitor captures.
               </p>
             </div>
             <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap lg:w-auto lg:justify-end">
@@ -1174,10 +1216,19 @@ function BridgeView() {
                 className="h-8 w-full sm:w-52"
                 aria-label="Extension client name"
               />
-              <Button size="sm" variant="outline" disabled={saving} onClick={() => void createPairingSession()}>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={saving}
+                onClick={() => void createPairingSession()}
+              >
                 Start pairing
               </Button>
-              <Button size="sm" disabled={saving} onClick={() => void createManualExtensionClient()}>
+              <Button
+                size="sm"
+                disabled={saving}
+                onClick={() => void createManualExtensionClient()}
+              >
                 Create token
               </Button>
             </div>
@@ -1204,7 +1255,10 @@ function BridgeView() {
               )}
             </div>
           )}
-          <div className="mt-2 text-xs text-muted-foreground">{extensionNotice ?? "Use pairing for approve-in-app setup, or create a direct token if you are configuring it yourself."}</div>
+          <div className="mt-2 text-xs text-muted-foreground">
+            {extensionNotice ??
+              "Use pairing for approve-in-app setup, or create a direct token if you are configuring it yourself."}
+          </div>
           <div className="mt-4 divide-y divide-border border-y border-border">
             {extensionPairings.length > 0 ? (
               extensionPairings.slice(0, 6).map((pairing) => (
@@ -1216,20 +1270,32 @@ function BridgeView() {
                         {pairing.status}
                       </span>
                     </div>
-                    <div className="mt-1 break-all font-mono text-xs text-muted-foreground">{pairing.pairing_code}</div>
+                    <div className="mt-1 break-all font-mono text-xs text-muted-foreground">
+                      {pairing.pairing_code}
+                    </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       Expires {new Date(pairing.expires_at).toLocaleString()}
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      Scope: {describeExtensionScope(pairing.allowed_vault_ids, extensionVaultNamesById)}
+                      Scope:{" "}
+                      {describeExtensionScope(pairing.allowed_vault_ids, extensionVaultNamesById)}
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-                    <Button variant="outline" size="sm" disabled={saving} onClick={() => void copyBridgeText(pairing.pairing_code)}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={saving}
+                      onClick={() => void copyBridgeText(pairing.pairing_code)}
+                    >
                       Copy code
                     </Button>
                     {pairing.status === "pending" && (
-                      <Button size="sm" disabled={saving} onClick={() => void approvePairing(pairing.id)}>
+                      <Button
+                        size="sm"
+                        disabled={saving}
+                        onClick={() => void approvePairing(pairing.id)}
+                      >
                         Approve
                       </Button>
                     )}
@@ -1237,7 +1303,9 @@ function BridgeView() {
                 </div>
               ))
             ) : (
-              <div className="py-4 text-sm text-muted-foreground">No extension pairing sessions yet.</div>
+              <div className="py-4 text-sm text-muted-foreground">
+                No extension pairing sessions yet.
+              </div>
             )}
           </div>
         </section>
@@ -1272,16 +1340,33 @@ function BridgeView() {
                       </span>
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      Scope {describeExtensionScope(client.allowed_vault_ids, extensionVaultNamesById)} / updated {new Date(client.updated_at).toLocaleString()}
+                      Scope{" "}
+                      {describeExtensionScope(client.allowed_vault_ids, extensionVaultNamesById)} /
+                      updated {new Date(client.updated_at).toLocaleString()}
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-                    <Switch aria-label={`${client.enabled ? "Disable" : "Enable"} ${client.name}`} checked={client.enabled} disabled={saving} onCheckedChange={(enabled) => void toggleExtensionClient(client, enabled)} />
+                    <Switch
+                      aria-label={`${client.enabled ? "Disable" : "Enable"} ${client.name}`}
+                      checked={client.enabled}
+                      disabled={saving}
+                      onCheckedChange={(enabled) => void toggleExtensionClient(client, enabled)}
+                    />
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={saving || !extensionVaultId || (client.allowed_vault_ids.length === 1 && client.allowed_vault_ids[0] === extensionVaultId)}
-                      onClick={() => void scopeExtensionClient(client, extensionVaultId ? [extensionVaultId] : [])}
+                      disabled={
+                        saving ||
+                        !extensionVaultId ||
+                        (client.allowed_vault_ids.length === 1 &&
+                          client.allowed_vault_ids[0] === extensionVaultId)
+                      }
+                      onClick={() =>
+                        void scopeExtensionClient(
+                          client,
+                          extensionVaultId ? [extensionVaultId] : [],
+                        )
+                      }
                     >
                       Use selected library
                     </Button>
@@ -1308,7 +1393,12 @@ function BridgeView() {
                       disabled={saving}
                       onConfirm={() => removeExtensionClient(client)}
                     >
-                      <Button variant="ghost" size="icon" disabled={saving} aria-label={`Revoke ${client.name}`}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        disabled={saving}
+                        aria-label={`Revoke ${client.name}`}
+                      >
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </ConfirmAction>
@@ -1316,7 +1406,9 @@ function BridgeView() {
                 </div>
               ))
             ) : (
-              <div className="py-4 text-sm text-muted-foreground">No extension clients configured yet.</div>
+              <div className="py-4 text-sm text-muted-foreground">
+                No extension clients configured yet.
+              </div>
             )}
           </div>
           <div className="mt-4 divide-y divide-border border-y border-border">
@@ -1332,7 +1424,9 @@ function BridgeView() {
                 </div>
               ))
             ) : (
-              <div className="py-4 text-sm text-muted-foreground">No extension captures stored yet.</div>
+              <div className="py-4 text-sm text-muted-foreground">
+                No extension captures stored yet.
+              </div>
             )}
           </div>
         </section>
@@ -1348,7 +1442,8 @@ function BridgeView() {
                 Extension permission audit
               </div>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                Recent extension setup and capture-permission events so users can verify what was approved, denied, or revoked.
+                Recent extension setup and capture-permission events so users can verify what was
+                approved, denied, or revoked.
               </p>
             </div>
             <div className="text-xs text-muted-foreground">{extensionAudit.length} recent</div>
@@ -1359,7 +1454,9 @@ function BridgeView() {
                 <div key={event.id} className="grid gap-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <div className="truncate text-sm font-medium">{event.event_type.replace(/_/g, " ")}</div>
+                      <div className="truncate text-sm font-medium">
+                        {event.event_type.replace(/_/g, " ")}
+                      </div>
                       {event.vault_id && (
                         <span className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
                           {extensionVaultNamesById.get(event.vault_id) || event.vault_id}
@@ -1370,11 +1467,15 @@ function BridgeView() {
                       {event.detail || "No extra detail recorded."}
                     </div>
                   </div>
-                  <div className="text-xs text-muted-foreground lg:text-right">{new Date(event.created_at).toLocaleString()}</div>
+                  <div className="text-xs text-muted-foreground lg:text-right">
+                    {new Date(event.created_at).toLocaleString()}
+                  </div>
                 </div>
               ))
             ) : (
-              <div className="py-4 text-sm text-muted-foreground">No extension permission events recorded yet.</div>
+              <div className="py-4 text-sm text-muted-foreground">
+                No extension permission events recorded yet.
+              </div>
             )}
           </div>
         </section>
@@ -1386,9 +1487,7 @@ function BridgeView() {
         >
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
-              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                Save external context
-              </div>
+              <h2 className="text-sm font-semibold">Manual save</h2>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
                 Fallback for tools that cannot call Vault directly. Connected assistants should use
                 the automatic save tools instead.
@@ -1446,12 +1545,18 @@ function BridgeView() {
             </label>
             <label className="space-y-1 md:col-span-2">
               <span className="text-xs text-muted-foreground">Client label</span>
-              <Input value={captureClientName} onChange={(event) => setCaptureClientName(event.target.value)} />
+              <Input
+                value={captureClientName}
+                onChange={(event) => setCaptureClientName(event.target.value)}
+              />
             </label>
             {captureMode === "artifact" ? (
               <label className="space-y-1 md:col-span-2">
                 <span className="text-xs text-muted-foreground">Title</span>
-                <Input value={captureTitle} onChange={(event) => setCaptureTitle(event.target.value)} />
+                <Input
+                  value={captureTitle}
+                  onChange={(event) => setCaptureTitle(event.target.value)}
+                />
               </label>
             ) : (
               <label className="space-y-1 md:col-span-2">
@@ -1476,9 +1581,14 @@ function BridgeView() {
           </div>
           <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0 break-words text-xs text-muted-foreground">
-              {captureNotice ?? "Stored captures inherit the same Bridge trust and review rules as external MCP writeback."}
+              {captureNotice ??
+                "Stored captures inherit the same Bridge trust and review rules as external MCP writeback."}
             </div>
-            <Button size="sm" disabled={saving || !captureVaultId || !captureResponse.trim()} onClick={() => void submitManualCapture()}>
+            <Button
+              size="sm"
+              disabled={saving || !captureVaultId || !captureResponse.trim()}
+              onClick={() => void submitManualCapture()}
+            >
               Save to Vault
             </Button>
           </div>
@@ -1495,8 +1605,8 @@ function BridgeView() {
                 Pending approvals
               </div>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                Claimed client names are never treated as verified identity on their own. Review the observed path and
-                signature signal before approving.
+                Claimed client names are never treated as verified identity on their own. Review the
+                observed path and signature signal before approving.
               </p>
             </div>
             <div className="text-xs text-muted-foreground">
@@ -1520,28 +1630,39 @@ function BridgeView() {
                         </span>
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">
-                        {item.requested_vault_ids.length || 0} libraries / {item.requested_cluster_ids.length || 0} clusters / raw text{" "}
+                        {item.requested_vault_ids.length || 0} libraries /{" "}
+                        {item.requested_cluster_ids.length || 0} clusters / raw text{" "}
                         {item.allow_raw_snippets ? "requested" : "off"}
                       </div>
                       <div className="mt-1 break-all text-xs text-muted-foreground">
-                        Path {displayPath(item.observed_executable_path || item.executable_path_claim) || "not provided"}
+                        Path{" "}
+                        {displayPath(item.observed_executable_path || item.executable_path_claim) ||
+                          "not provided"}
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">
-                        Publisher {item.publisher_name || "not available"} / expires {new Date(item.expires_at).toLocaleString()}
+                        Publisher {item.publisher_name || "not available"} / expires{" "}
+                        {new Date(item.expires_at).toLocaleString()}
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                       <Button size="sm" disabled={saving} onClick={() => void approveRequest(item)}>
                         Approve
                       </Button>
-                      <Button variant="outline" size="sm" disabled={saving} onClick={() => void rejectRequest(item)}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={saving}
+                        onClick={() => void rejectRequest(item)}
+                      >
                         Reject
                       </Button>
                     </div>
                   </div>
                 ))
             ) : (
-              <div className="py-4 text-sm text-muted-foreground">No pending Bridge approval requests.</div>
+              <div className="py-4 text-sm text-muted-foreground">
+                No pending Bridge approval requests.
+              </div>
             )}
           </div>
         </section>
@@ -1557,7 +1678,8 @@ function BridgeView() {
                 Client tokens
               </div>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                Give each external tool its own token and permission set. Newly created tokens are shown once.
+                Give each external tool its own token and permission set. Newly created tokens are
+                shown once.
               </p>
             </div>
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-end">
@@ -1567,7 +1689,12 @@ function BridgeView() {
                 className="h-8 w-full sm:w-52"
                 aria-label="Bridge client name"
               />
-              <Button size="sm" className="gap-1" disabled={saving || !status} onClick={() => void addBridgeClient()}>
+              <Button
+                size="sm"
+                className="gap-1"
+                disabled={saving || !status}
+                onClick={() => void addBridgeClient()}
+              >
                 <Plus className="h-3.5 w-3.5" />
                 Add
               </Button>
@@ -1598,18 +1725,27 @@ function BridgeView() {
                       </span>
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      {client.allowed_vault_ids.length || 0} libraries / {client.allowed_cluster_ids.length || 0} clusters / raw text {client.allow_raw_snippets ? "on" : "off"}
+                      {client.allowed_vault_ids.length || 0} libraries /{" "}
+                      {client.allowed_cluster_ids.length || 0} clusters / raw text{" "}
+                      {client.allow_raw_snippets ? "on" : "off"}
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      Identity {client.verified_identity ? client.verified_identity_label : "unverified"} / signature{" "}
-                      {client.signature_status.replace(/_/g, " ")}
+                      Identity{" "}
+                      {client.verified_identity ? client.verified_identity_label : "unverified"} /
+                      signature {client.signature_status.replace(/_/g, " ")}
                     </div>
                     <div className="mt-1 break-all text-xs text-muted-foreground">
-                      Path {displayPath(client.observed_executable_path || client.executable_path_claim) || "not recorded"}
+                      Path{" "}
+                      {displayPath(
+                        client.observed_executable_path || client.executable_path_claim,
+                      ) || "not recorded"}
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      Requests {client.request_count_total} / bytes {client.response_bytes_total.toLocaleString()}
-                      {client.last_request_at ? ` / last ${new Date(client.last_request_at).toLocaleString()}` : ""}
+                      Requests {client.request_count_total} / bytes{" "}
+                      {client.response_bytes_total.toLocaleString()}
+                      {client.last_request_at
+                        ? ` / last ${new Date(client.last_request_at).toLocaleString()}`
+                        : ""}
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 lg:justify-end">
@@ -1634,7 +1770,12 @@ function BridgeView() {
                       disabled={saving}
                       onConfirm={() => removeClient(client)}
                     >
-                      <Button variant="ghost" size="icon" disabled={saving} aria-label={`Delete ${client.name}`}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        disabled={saving}
+                        aria-label={`Delete ${client.name}`}
+                      >
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </ConfirmAction>
@@ -1642,7 +1783,9 @@ function BridgeView() {
                 </div>
               ))
             ) : (
-              <div className="py-4 text-sm text-muted-foreground">No Bridge clients have dedicated tokens yet.</div>
+              <div className="py-4 text-sm text-muted-foreground">
+                No Bridge clients have dedicated tokens yet.
+              </div>
             )}
           </div>
         </section>
@@ -1658,7 +1801,8 @@ function BridgeView() {
                 Capture review queue
               </div>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                External answers that only partially used library context, contradicted it, or skipped it stay here until you approve them.
+                External answers that only partially used library context, contradicted it, or
+                skipped it stay here until you approve them.
               </p>
             </div>
             <div className="text-xs text-muted-foreground">{reviews.length} pending</div>
@@ -1666,7 +1810,10 @@ function BridgeView() {
           <div className="mt-4 divide-y divide-border border-y border-border">
             {reviews.length > 0 ? (
               reviews.map((review) => (
-                <div key={review.source_id} className="grid gap-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto]">
+                <div
+                  key={review.source_id}
+                  className="grid gap-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto]"
+                >
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <div className="truncate text-sm font-medium">{review.title}</div>
@@ -1685,17 +1832,28 @@ function BridgeView() {
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-                    <Button size="sm" disabled={saving} onClick={() => void reviewCapture(review.source_id, true)}>
+                    <Button
+                      size="sm"
+                      disabled={saving}
+                      onClick={() => void reviewCapture(review.source_id, true)}
+                    >
                       Approve
                     </Button>
-                    <Button variant="outline" size="sm" disabled={saving} onClick={() => void reviewCapture(review.source_id, false)}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={saving}
+                      onClick={() => void reviewCapture(review.source_id, false)}
+                    >
                       Keep gated
                     </Button>
                   </div>
                 </div>
               ))
             ) : (
-              <div className="py-4 text-sm text-muted-foreground">No Bridge captures are waiting for review.</div>
+              <div className="py-4 text-sm text-muted-foreground">
+                No Bridge captures are waiting for review.
+              </div>
             )}
           </div>
           {reviewNotice && (
@@ -1724,7 +1882,10 @@ function BridgeView() {
           <div className="mt-4 divide-y divide-border border-y border-border">
             {captures.length > 0 ? (
               captures.slice(0, 8).map((capture) => (
-                <div key={capture.source_id} className="grid gap-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                <div
+                  key={capture.source_id}
+                  className="grid gap-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto]"
+                >
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <div className="truncate text-sm font-medium">{capture.title}</div>
@@ -1739,7 +1900,10 @@ function BridgeView() {
                       </span>
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      {capture.approved ? "Approved for trusted reuse" : "Stored with current trust gate"} / {new Date(capture.created_at).toLocaleString()}
+                      {capture.approved
+                        ? "Approved for trusted reuse"
+                        : "Stored with current trust gate"}{" "}
+                      / {new Date(capture.created_at).toLocaleString()}
                     </div>
                     {capture.security_labels.length > 0 && (
                       <div className="mt-1 break-words text-xs text-muted-foreground">
@@ -1750,7 +1914,9 @@ function BridgeView() {
                 </div>
               ))
             ) : (
-              <div className="py-4 text-sm text-muted-foreground">No Bridge captures stored yet.</div>
+              <div className="py-4 text-sm text-muted-foreground">
+                No Bridge captures stored yet.
+              </div>
             )}
           </div>
         </section>
@@ -1766,7 +1932,10 @@ function BridgeView() {
           {requests.length > 0 ? (
             <div className="mt-3 divide-y divide-border text-sm">
               {requests.slice(0, 5).map((request) => (
-                <div key={request.id} className="grid gap-1 py-2 sm:grid-cols-[120px_minmax(0,1fr)_90px] sm:gap-3">
+                <div
+                  key={request.id}
+                  className="grid gap-1 py-2 sm:grid-cols-[120px_minmax(0,1fr)_90px] sm:gap-3"
+                >
                   <span className="truncate text-muted-foreground">{request.client_name}</span>
                   <span className="truncate">{request.query}</span>
                   <span className="text-right text-xs text-muted-foreground">{request.mode}</span>
@@ -1828,12 +1997,18 @@ function BridgeView() {
           </div>
           {rotations.length > 0 && (
             <div className="mt-4 border-t border-border pt-4">
-              <div className="text-xs font-medium text-muted-foreground">Token rotation history</div>
+              <div className="text-xs font-medium text-muted-foreground">
+                Token rotation history
+              </div>
               <div className="mt-2 space-y-1 text-xs text-muted-foreground">
                 {rotations.slice(0, 3).map((rotation) => (
                   <div key={rotation.id} className="flex flex-wrap justify-between gap-3">
-                    <span className="min-w-0 break-words">{rotation.reason.replace(/_/g, " ")}</span>
-                    <span className="shrink-0">{new Date(rotation.rotated_at).toLocaleString()}</span>
+                    <span className="min-w-0 break-words">
+                      {rotation.reason.replace(/_/g, " ")}
+                    </span>
+                    <span className="shrink-0">
+                      {new Date(rotation.rotated_at).toLocaleString()}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -1841,11 +2016,15 @@ function BridgeView() {
           )}
           {auditEvents.length > 0 && (
             <div className="mt-4 border-t border-border pt-4">
-              <div className="text-xs font-medium text-muted-foreground">Recent Bridge security events</div>
+              <div className="text-xs font-medium text-muted-foreground">
+                Recent Bridge security events
+              </div>
               <div className="mt-2 space-y-1 text-xs text-muted-foreground">
                 {auditEvents.slice(0, 5).map((event) => (
                   <div key={event.id} className="flex flex-wrap justify-between gap-3">
-                    <span className="min-w-0 break-words">{event.event_type.replace(/_/g, " ")}</span>
+                    <span className="min-w-0 break-words">
+                      {event.event_type.replace(/_/g, " ")}
+                    </span>
                     <span className="shrink-0">{new Date(event.created_at).toLocaleString()}</span>
                   </div>
                 ))}
@@ -1864,24 +2043,32 @@ function BridgeView() {
           >
             <div className="text-xs font-medium text-primary">Bridge setup {tourStep + 1} of 3</div>
             <h2 id="bridge-tour-title" className="mt-2 text-xl font-semibold">
-              {[
-                "Choose what the AI app can read",
-                "Create a private connection",
-                "Paste the setup into your AI app",
-              ][tourStep]}
+              {
+                [
+                  "Choose what the AI app can read",
+                  "Create a private connection",
+                  "Paste the setup into your AI app",
+                ][tourStep]
+              }
             </h2>
             <p className="mt-3 text-sm leading-6 text-muted-foreground">
-              {[
-                "Turn Bridge on, then select at least one library. Cluster access is optional and narrows what the app can see.",
-                "Open Clients, name the outside app, and create it. Vault shows its token once, so copy it before leaving.",
-                "Return to Overview, choose Claude Desktop, Cursor, or Other, then copy the configuration. Paste it into that app's MCP settings and restart the app.",
-              ][tourStep]}
+              {
+                [
+                  "Turn Bridge on, then select at least one library. Cluster access is optional and narrows what the app can see.",
+                  "Open Clients, name the outside app, and create it. Vault shows its token once, so copy it before leaving.",
+                  "Return to Overview, choose Claude Desktop, Cursor, or Other, then copy the configuration. Paste it into that app's MCP settings and restart the app.",
+                ][tourStep]
+              }
             </p>
             <div className="mt-6 flex items-center justify-between gap-3">
-              <Button variant="ghost" onClick={() => setTourStep(null)}>Close</Button>
+              <Button variant="ghost" onClick={() => setTourStep(null)}>
+                Close
+              </Button>
               <div className="flex gap-2">
                 {tourStep > 0 ? (
-                  <Button variant="outline" onClick={() => setTourStep(tourStep - 1)}>Back</Button>
+                  <Button variant="outline" onClick={() => setTourStep(tourStep - 1)}>
+                    Back
+                  </Button>
                 ) : null}
                 <Button
                   onClick={() => {
@@ -1941,37 +2128,9 @@ function bridgeSectionClass(
 function bridgeViewLabel(view: "overview" | "clients" | "reviews" | "history" | "advanced") {
   return {
     overview: "Connect",
-    clients: "Access",
+    clients: "Advanced",
     reviews: "Review",
     history: "Activity",
-    advanced: "Manual tools",
+    advanced: "Advanced",
   }[view];
-}
-
-function BridgeStep({
-  number,
-  title,
-  detail,
-  complete,
-}: {
-  number: string;
-  title: string;
-  detail: string;
-  complete: boolean;
-}) {
-  return (
-    <li className="flex gap-3 py-3">
-      <span
-        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-medium ${
-          complete ? "bg-[var(--status-ready)] text-white" : "bg-secondary text-secondary-foreground"
-        }`}
-      >
-        {complete ? <CheckCircle2 className="h-3.5 w-3.5" /> : number}
-      </span>
-      <div className="min-w-0">
-        <div className="text-sm font-medium">{title}</div>
-        <p className="mt-0.5 break-words text-xs leading-5 text-muted-foreground">{detail}</p>
-      </div>
-    </li>
-  );
 }
