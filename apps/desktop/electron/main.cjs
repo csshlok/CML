@@ -65,6 +65,8 @@ let pendingActiveVaultPath = null;
 let odinRuntimeDescriptorPath = null;
 let tunnelManager = null;
 let stopBackendDependents = stopManagedRuntimeBeforeBackendStop;
+let shutdownPromise = null;
+let shutdownComplete = false;
 const desktopRuntimeLogValueLimit = 8000;
 
 function normalizeApiPrefix(value) {
@@ -2093,7 +2095,7 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", () => {
+async function shutdownApplication() {
   tunnelManager?.shutdownSync();
   if (odinRuntimeDescriptorPath) {
     try {
@@ -2104,9 +2106,31 @@ app.on("before-quit", () => {
   }
   if (rendererServer) {
     rendererServer.close();
+    rendererServer = null;
   }
-  if (backendProcess && !backendProcess.killed) {
-    backendProcess.kill();
+  try {
+    await stopBackendProcess(12000);
+  } catch (error) {
+    writeDesktopRuntimeLog("graceful backend shutdown failed", error);
+    try {
+      await stopBackendProcess(5000, false);
+    } catch (stopError) {
+      writeDesktopRuntimeLog("forced backend shutdown failed", stopError);
+    }
   }
   closeBackendLogStreams();
+}
+
+app.on("before-quit", (event) => {
+  if (shutdownComplete) return;
+  event.preventDefault();
+  if (shutdownPromise) return;
+  shutdownPromise = shutdownApplication()
+    .catch((error) => {
+      writeDesktopRuntimeLog("application shutdown failed", error);
+    })
+    .finally(() => {
+      shutdownComplete = true;
+      app.quit();
+    });
 });

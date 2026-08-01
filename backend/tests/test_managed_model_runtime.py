@@ -255,6 +255,41 @@ class ManagedModelRuntimeTests(unittest.TestCase):
                 model_paths={str(self.model_path)},
             )
 
+    def test_stop_recovers_verified_runtime_orphan_from_persisted_state(self) -> None:
+        from backend.app.core.model_runtime_supervisor import stop_managed_runtime
+
+        persisted = {
+            "state": "stopped",
+            "available": False,
+            "pid": None,
+            "runtime_binary": "C:/Vault/runtime/llama-server.exe",
+            "model_path": "C:/Vault/models/model.gguf",
+        }
+        with (
+            patch(
+                "backend.app.core.model_runtime_supervisor._load_state_locked",
+                return_value=persisted,
+            ),
+            patch("backend.app.core.model_runtime_supervisor._stop_locked") as stop,
+            patch(
+                "backend.app.core.model_runtime_supervisor._terminate_verified_orphans_locked",
+                return_value={"count": 1, "pids": [27904]},
+            ) as terminate_orphans,
+            patch("backend.app.core.model_runtime_supervisor._persist_state_locked") as persist,
+        ):
+            stop_managed_runtime()
+
+        stop.assert_called_once_with(mark_stopped=False)
+        terminate_orphans.assert_called_once_with(
+            runtime_binaries={"C:/Vault/runtime/llama-server.exe"},
+            model_paths={"C:/Vault/models/model.gguf"},
+        )
+        saved = persist.call_args.args[0]
+        self.assertEqual(saved["state"], "stopped")
+        self.assertFalse(saved["available"])
+        self.assertIsNone(saved["pid"])
+        self.assertEqual(saved["orphan_cleanup"], {"count": 1, "pids": [27904]})
+
     def test_models_health_without_generation_does_not_activate(self) -> None:
         from backend.app.core.model_registry import activate_model_runtime, registry_state
         from backend.app.core.model_runtime_supervisor import managed_runtime_status
