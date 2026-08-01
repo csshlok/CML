@@ -744,6 +744,26 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   await page.route(`${backendOrigin}/api/v1/projects/${project.id}`, (route) =>
     route.fulfill({ json: project }),
   );
+  await page.route(`${backendOrigin}/api/v1/projects/${project.id}/intelligence`, (route) =>
+    route.fulfill({ json: {
+      id: null,
+      contract_version: "odin-project-intelligence-v1",
+      project_id: project.id,
+      owning_snapshot_id: project.active_snapshot_id,
+      structure_snapshot_id: project.active_snapshot_id,
+      retrieval_snapshot_id: project.active_snapshot_id,
+      indexed_commit: project.indexed_commit,
+      generated_at: project.updated_at,
+      identity: { name: project.name, repository_kind: "git", purpose: null, purpose_candidates: [], technologies: [] },
+      architecture: { indexed_file_count: project.source_count },
+      repository_signals: {},
+      decisions: {},
+      interpretation: { deterministic_synopsis: project.brief, generated_synopsis: null, primary_evidence_ids: [] },
+      freshness: {},
+      layers: { identity: { status: "partial", version: "test", generated_at: project.updated_at, truncated: false, unknown_reason: { code: "fixture", detail: "No supported root description in this fixture." } } },
+      evidence: [],
+    } }),
+  );
   await page.route(`${backendOrigin}/api/v1/projects/${project.id}/runs*`, (route) =>
     route.fulfill({ json: [] }),
   );
@@ -753,6 +773,35 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   await page.route(`${backendOrigin}/api/v1/projects/${project.id}/changes*`, (route) =>
     route.fulfill({ json: changes }),
   );
+  await page.route(`${backendOrigin}/api/v1/projects/${project.id}/operations`, async (route) => {
+    const payload = route.request().postDataJSON() as { operation: string };
+    const data = payload.operation === "project_state"
+      ? {
+          status: "ready",
+          live_state: {
+            branch: "main",
+            indexed_relation: "equal",
+            counts: { modified: 2 },
+            files: [
+              { status: "modified", relative_path: "backend/app/core/projects.py" },
+              { status: "modified", relative_path: "apps/desktop/src/routes/project.tsx" },
+            ],
+          },
+        }
+      : payload.operation === "decisions"
+        ? {
+            count: 1,
+            items: [{
+              id: "decision-1",
+              statement: "Keep project indexing local.",
+              status: "active",
+              confidence_class: "documented",
+              evidence: [{ id: "evidence-1" }],
+            }],
+          }
+        : { status: "unknown", exact_tests: [], unknown_reason: "No LCOV artifact has been imported." };
+    await route.fulfill({ json: { version: "odin-project-operations-v1", project_id: project.id, operation: payload.operation, display: "compact", data } });
+  });
   await page.route(`${backendOrigin}/api/v1/clusters*`, (route) =>
     route.fulfill({ json: [] }),
   );
@@ -771,6 +820,7 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
         edges: [],
         truncated: false,
         limits: { max_nodes: 90, max_depth: 2 },
+        project_totals: { nodes: 0, edges: 0 },
         warnings: [],
         insights: {
           summary: "No mapped nodes.",
@@ -789,6 +839,18 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   await expect(page.getByRole("heading", { name: project.name })).toBeVisible();
   await expect(page.getByText(project.brief)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Ask about this project" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Understand what is happening" })).toBeVisible();
+  await page.getByRole("button", { name: "Current work" }).click();
+  await expect(page.getByText("2 changed paths")).toBeVisible();
+  await expect(page.getByText(/backend\/app\/core\/projects\.py/)).toBeVisible();
+  await page.getByRole("button", { name: "Decisions" }).click();
+  await expect(page.getByText("Keep project indexing local.")).toBeVisible();
+  await page.getByRole("button", { name: "Test impact" }).click();
+  await expect(page.getByText("No LCOV artifact has been imported.")).toBeVisible();
+  if (process.env.CML_QA_INTELLIGENCE_SCREENSHOT) {
+    await page.getByRole("heading", { name: "Understand what is happening" }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: process.env.CML_QA_INTELLIGENCE_SCREENSHOT, fullPage: false });
+  }
   await expect(page.getByLabel("Ask about this project")).toBeVisible();
   const suggestedQuestions = page
     .getByRole("navigation", { name: "Suggested project questions" })
@@ -827,7 +889,7 @@ test("unknown routes provide keyboard-focused recovery", async ({ page }) => {
   const recovery = page.getByRole("link", { name: "Return home" });
   await recovery.focus();
   await recovery.press("Enter");
-  await expect(page).toHaveURL(/\/onboarding$/);
+  await expect(page).toHaveURL(/\/home$/);
 });
 
 test("window-aware controls never intersect native controls at minimum size", async ({ page }) => {

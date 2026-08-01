@@ -9,12 +9,16 @@ import {
   Network,
   RotateCcw,
   Search,
+  SlidersHorizontal,
+  Waypoints,
   X,
 } from "lucide-react";
 import {
+  getProjectGraphPath,
   getProjectGraphView,
   type ProjectGraphEdge,
   type ProjectGraphNode,
+  type ProjectGraphPath,
   type ProjectGraphView,
 } from "@/lib/backend";
 import { Button } from "@/components/ui/button";
@@ -85,6 +89,12 @@ export function ProjectGraphWorkspace({
   const [maxDepth, setMaxDepth] = useState(2);
   const [maxNodes, setMaxNodes] = useState(initialMode === "tree" ? 180 : 90);
   const [spread, setSpread] = useState<"normal" | "wide">("normal");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [pathSource, setPathSource] = useState("");
+  const [pathTarget, setPathTarget] = useState("");
+  const [pathResult, setPathResult] = useState<ProjectGraphPath | null>(null);
+  const [pathError, setPathError] = useState<string | null>(null);
+  const [pathLoading, setPathLoading] = useState(false);
   const [view, setView] = useState<ProjectGraphView | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -154,6 +164,20 @@ export function ProjectGraphWorkspace({
     [view],
   );
   const selected = view?.nodes.find((node) => node.id === selectedId) ?? null;
+  const selectedConnections = useMemo(() => {
+    if (!view || !selectedId) return { upstream: [], downstream: [] };
+    const byId = new Map(view.nodes.map((node) => [node.id, node]));
+    return {
+      upstream: view.edges
+        .filter((edge) => String(edge.target) === selectedId)
+        .map((edge) => ({ edge, node: byId.get(String(edge.source)) }))
+        .filter((item): item is { edge: ProjectGraphEdge; node: ProjectGraphNode } => Boolean(item.node)),
+      downstream: view.edges
+        .filter((edge) => String(edge.source) === selectedId)
+        .map((edge) => ({ edge, node: byId.get(String(edge.target)) }))
+        .filter((item): item is { edge: ProjectGraphEdge; node: ProjectGraphNode } => Boolean(item.node)),
+    };
+  }, [selectedId, view]);
 
   useEffect(() => {
     if (mode !== "graph" || !ForceGraph || !view || view.nodes.length === 0) return;
@@ -178,6 +202,20 @@ export function ProjectGraphWorkspace({
   }
 
   const canExpand = maxDepth < 4 || maxNodes < 300;
+
+  async function findPath() {
+    if (!pathSource.trim() || !pathTarget.trim()) return;
+    setPathLoading(true);
+    setPathError(null);
+    try {
+      setPathResult(await getProjectGraphPath(projectId, pathSource.trim(), pathTarget.trim()));
+    } catch (reason) {
+      setPathResult(null);
+      setPathError(pathErrorMessage(reason));
+    } finally {
+      setPathLoading(false);
+    }
+  }
 
   return (
     <div className="flex min-h-full flex-col bg-background">
@@ -229,41 +267,104 @@ export function ProjectGraphWorkspace({
               aria-label="Filter project map"
             />
           </div>
+          <Button type="submit">Show</Button>
           {mode === "graph" ? (
-            <>
-              <label className="relative">
-                <span className="sr-only">Relationship direction</span>
-                <select
-                  value={direction}
-                  onChange={(event) => setDirection(event.target.value as typeof direction)}
-                  className="h-10 appearance-none rounded-md border border-input bg-card pl-3 pr-8 text-sm"
-                >
-                  <option value="balanced">Both directions</option>
-                  <option value="outbound">What this calls</option>
-                  <option value="inbound">What calls this</option>
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-2.5 top-3 h-4 w-4 text-muted-foreground" />
-              </label>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setSpread((current) => (current === "normal" ? "wide" : "normal"))}
-              >
-                {spread === "wide" ? "Normal spacing" : "Spread out"}
-              </Button>
-              <Button type="button" variant="outline" disabled={!canExpand || loading} onClick={expandView}>
-                <Maximize2 className="h-4 w-4" /> Show more
-              </Button>
-            </>
+            <Button type="button" variant="outline" disabled={!canExpand || loading} onClick={expandView}>
+              <Maximize2 className="h-4 w-4" /> Show more
+            </Button>
           ) : null}
-          <Button type="submit">Apply</Button>
+          <Button
+            type="button"
+            variant="ghost"
+            aria-expanded={advancedOpen}
+            onClick={() => setAdvancedOpen((current) => !current)}
+          >
+            <SlidersHorizontal className="h-4 w-4" /> Advanced
+          </Button>
         </form>
+        {advancedOpen ? (
+          <div className={`mt-4 grid gap-4 border-t border-border pt-4 ${mode === "graph" ? "lg:grid-cols-[minmax(0,280px)_minmax(0,1fr)]" : ""}`}>
+            {mode === "graph" ? <div>
+              <div className="text-sm font-medium">Relationship view</div>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                Change which side of a matched item Odin follows. These controls never change the index.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <label className="relative">
+                  <span className="sr-only">Relationship direction</span>
+                  <select
+                    value={direction}
+                    onChange={(event) => setDirection(event.target.value as typeof direction)}
+                    className="h-9 appearance-none rounded-md border border-input bg-card pl-3 pr-8 text-sm"
+                  >
+                    <option value="balanced">Both directions</option>
+                    <option value="outbound">What this calls</option>
+                    <option value="inbound">What calls this</option>
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                </label>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setSpread((current) => (current === "normal" ? "wide" : "normal"))}
+                >
+                  {spread === "wide" ? "Normal spacing" : "Spread out"}
+                </Button>
+              </div>
+            </div> : null}
+            <div className={mode === "graph" ? "border-t border-border pt-4 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0" : ""}>
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Waypoints className="h-4 w-4" /> Trace a path
+              </div>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                Enter two exact file, route, class, or function names to see whether indexed relationships connect them.
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+                <Input value={pathSource} list={`${projectId}-path-items`} onChange={(event) => setPathSource(event.target.value)} placeholder="Start item" aria-label="Path start item" />
+                <Input value={pathTarget} list={`${projectId}-path-items`} onChange={(event) => setPathTarget(event.target.value)} placeholder="End item" aria-label="Path end item" />
+                <Button type="button" variant="outline" disabled={pathLoading || !pathSource.trim() || !pathTarget.trim()} onClick={() => void findPath()}>
+                  {pathLoading ? "Tracing…" : "Trace"}
+                </Button>
+              </div>
+              <datalist id={`${projectId}-path-items`}>
+                {(view?.nodes ?? []).map((node) => (
+                  <option key={node.id} value={node.qualified_id}>{node.label}</option>
+                ))}
+              </datalist>
+              {pathError ? <p className="mt-2 text-xs text-destructive">{pathError}</p> : null}
+              {pathResult ? (
+                <div className="mt-3 border-l-2 border-primary/50 pl-3 text-xs leading-5">
+                  {pathResult.status === "found"
+                    ? pathResult.path.map((node) => node.label || node.display_label || node.qualified_id).join(" → ")
+                    : `No path was found in this bounded search (${humanize(pathResult.status)}).`}
+                  <div className="mt-1 text-muted-foreground">
+                    Checked {pathResult.visited_nodes.toLocaleString()} items in {pathResult.elapsed_ms.toLocaleString()} ms.
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
       </PageHeader>
 
       {error ? (
         <div className="m-6 border border-destructive/40 px-4 py-3 text-sm text-destructive">{error}</div>
       ) : (
-        <div className={`grid min-h-0 flex-1 ${selected ? "xl:grid-cols-[minmax(0,1fr)_320px]" : ""}`}>
+        <div className="flex min-h-0 flex-1 flex-col">
+          {view && !loading ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card/40 px-4 py-2 text-xs text-muted-foreground sm:px-6">
+              <span>
+                {submittedQuery ? `Focused on “${submittedQuery}”` : "Showing the most connected indexed areas"}
+                {` · ${mode === "graph" ? humanize(direction) : "File hierarchy"}`}
+              </span>
+              <span>
+                Showing {view.nodes.length.toLocaleString()} of {view.project_totals.nodes.toLocaleString()} indexed items
+                {view.truncated ? " · expand to see more of this slice" : ""}
+              </span>
+            </div>
+          ) : null}
+          <div className={`grid min-h-0 flex-1 ${selected ? "xl:grid-cols-[minmax(0,1fr)_320px]" : ""}`}>
           <main className="grid min-h-0 min-w-0 lg:grid-cols-[minmax(0,1fr)_300px]">
             <div ref={setContainerElement} className="relative min-h-[560px] overflow-hidden">
               {loading ? (
@@ -274,6 +375,16 @@ export function ProjectGraphWorkspace({
                 </div>
               ) : mode === "graph" && ForceGraph ? (
                 <>
+                  <div className="pointer-events-none absolute left-4 top-4 z-10 border border-border bg-card/95 px-3 py-2 text-[11px] text-muted-foreground">
+                    <div className="font-medium text-foreground">Color key</div>
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                      <LegendDot color={colorForKind("file")} label="file" />
+                      <LegendDot color={colorForKind("function")} label="function" />
+                      <LegendDot color={colorForKind("class")} label="class" />
+                      <LegendDot color={colorForKind("route")} label="route" />
+                    </div>
+                    <div className="mt-1">Arrows follow the indexed relationship.</div>
+                  </div>
                   <ForceGraph
                     ref={graphRef}
                     width={size.width}
@@ -341,6 +452,14 @@ export function ProjectGraphWorkspace({
                   {selected.signature}
                 </div>
               ) : null}
+              <p className="mt-5 border-t border-border pt-4 text-xs leading-5 text-muted-foreground">
+                {submittedQuery
+                  ? `This item appears because it is connected to the “${submittedQuery}” slice.`
+                  : "This item appears in Odin's most connected project slice."}
+                {selected.source_id ? " Its location is backed by an indexed source file." : " It is a structural project node."}
+              </p>
+              <ConnectionList title="Called or contained by" items={selectedConnections.upstream} onSelect={setSelectedId} />
+              <ConnectionList title="Calls or contains" items={selectedConnections.downstream} onSelect={setSelectedId} />
               <Button
                 className="mt-5"
                 size="sm"
@@ -355,6 +474,7 @@ export function ProjectGraphWorkspace({
               </Button>
             </aside>
           ) : null}
+          </div>
         </div>
       )}
     </div>
@@ -389,6 +509,10 @@ function GraphExplanation({
                 <span className="mt-0.5 block truncate text-xs text-muted-foreground">
                   {area.connections} connections · {displayPath(area.relative_path) || area.kind}
                 </span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                  {area.why || "Connected to several items in this bounded view"}
+                  {area.community?.label ? ` · ${area.community.label}` : ""}
+                </span>
               </button>
             ))}
           </div>
@@ -397,20 +521,72 @@ function GraphExplanation({
       {view.insights.flows.length ? (
         <section className="mt-6">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Observed flows</h2>
-          <ol className="mt-3 space-y-3">
+          <ol className="mt-3 divide-y divide-border border-y border-border">
             {view.insights.flows.map((flow, index) => (
-              <li key={`${flow.node_ids.join(":")}-${index}`} className="text-xs leading-5 text-muted-foreground">
-                {flow.steps.join(" → ")}
+              <li key={`${flow.node_ids.join(":")}-${index}`}>
+                <button
+                  type="button"
+                  className="w-full py-3 text-left"
+                  onClick={() => onSelect(flow.node_ids[0])}
+                >
+                  <span className="block text-sm text-foreground">
+                    {flow.steps[0]} → {flow.steps.at(-1)}
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                    {flow.relationships.map(humanize).join(" → ")} · {humanize(flow.confidence)}
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-muted-foreground">{flow.reason}</span>
+                </button>
               </li>
             ))}
           </ol>
         </section>
       ) : null}
       <div className="mt-6 border-t border-border pt-3 text-xs text-muted-foreground">
-        {view.nodes.length} items · {view.edges.length} relationships
-        {view.truncated ? " · more available" : ""}
+        Showing {view.nodes.length.toLocaleString()} items and {view.edges.length.toLocaleString()} relationships
+        {view.truncated ? ` · bounded at ${view.limits.max_nodes.toLocaleString()} items` : ""}
       </div>
     </aside>
+  );
+}
+
+function ConnectionList({
+  title,
+  items,
+  onSelect,
+}: {
+  title: string;
+  items: Array<{ edge: ProjectGraphEdge; node: ProjectGraphNode }>;
+  onSelect: (id: string) => void;
+}) {
+  if (!items.length) return null;
+  return (
+    <section className="mt-5">
+      <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
+      <div className="mt-2 divide-y divide-border border-y border-border">
+        {items.slice(0, 8).map(({ edge, node }) => (
+          <button
+            key={edge.id}
+            type="button"
+            className="block w-full py-2 text-left"
+            onClick={() => onSelect(node.id)}
+          >
+            <span className="block truncate text-xs text-foreground">{node.label}</span>
+            <span className="mt-0.5 block text-[11px] text-muted-foreground">
+              {humanize(edge.type)} · {humanize(edge.confidence)}
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function LegendDot({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} /> {label}
+    </span>
   );
 }
 
@@ -460,4 +636,19 @@ function colorForKind(kind: string) {
   if (kind === "file" || kind === "module") return "#4A78A8";
   if (kind === "package") return "#B8944A";
   return "#7C6E5A";
+}
+
+function humanize(value: string) {
+  return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+}
+
+function pathErrorMessage(reason: unknown) {
+  const message = reason instanceof Error ? reason.message : "";
+  if (/ambiguous/i.test(message)) {
+    return "More than one indexed item has that name. Choose a specific item from the field suggestions.";
+  }
+  if (/not found|could not find/i.test(message)) {
+    return "Odin could not find one of those items in the active project map.";
+  }
+  return message || "Could not trace a path between these items.";
 }

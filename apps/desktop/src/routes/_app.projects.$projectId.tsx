@@ -23,13 +23,17 @@ import {
   createChatSession,
   getProject,
   getProjectChanges,
+  getProjectIntelligence,
+  getJob,
   getProjectRun,
   linkProjectCluster,
   listClusters,
   listProjectLinks,
   listProjectRuns,
   reindexProject,
+  refreshProjectIntelligence,
   removeProject,
+  runProjectOperation,
   synchronizeProjectChanges,
   unlinkProjectCluster,
   updateProject,
@@ -37,6 +41,9 @@ import {
   type ProjectRecord,
   type ProjectChangesRecord,
   type ProjectLinkRecord,
+  type ProjectIntelligenceSnapshot,
+  type ProjectOperationName,
+  type ProjectOperationResult,
   type ClusterRecord,
 } from "@/lib/backend";
 import { displayPath } from "@/lib/displayPath";
@@ -62,27 +69,32 @@ function ProjectWorkspace() {
   const [clusters, setClusters] = useState<ClusterRecord[]>([]);
   const [linkTarget, setLinkTarget] = useState("");
   const [changes, setChanges] = useState<ProjectChangesRecord | null>(null);
+  const [intelligence, setIntelligence] = useState<ProjectIntelligenceSnapshot | null>(null);
+  const [overviewBusy, setOverviewBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const nextProject = await getProject(projectId);
-      const [runsResult, linksResult, clustersResult, changesResult] = await Promise.allSettled([
+      const [runsResult, linksResult, clustersResult, changesResult, intelligenceResult] = await Promise.allSettled([
         listProjectRuns(projectId, 12),
         listProjectLinks(projectId),
         listClusters(nextProject.vault_id),
         getProjectChanges(projectId, 200),
+        getProjectIntelligence(projectId),
       ]);
       setProject(nextProject);
       if (runsResult.status === "fulfilled") setRuns(runsResult.value);
       if (linksResult.status === "fulfilled") setLinks(linksResult.value);
       if (clustersResult.status === "fulfilled") setClusters(clustersResult.value);
       if (changesResult.status === "fulfilled") setChanges(changesResult.value);
+      if (intelligenceResult.status === "fulfilled") setIntelligence(intelligenceResult.value);
       setName(nextProject.name);
       const unavailable = [
         runsResult.status === "rejected" ? "history" : "",
         linksResult.status === "rejected" ? "links" : "",
         clustersResult.status === "rejected" ? "clusters" : "",
         changesResult.status === "rejected" ? "changes" : "",
+        intelligenceResult.status === "rejected" ? "intelligence" : "",
       ].filter(Boolean);
       setMessage(unavailable.length ? `Some project details are unavailable: ${unavailable.join(", ")}.` : null);
     } catch (error) {
@@ -151,6 +163,26 @@ function ProjectWorkspace() {
       setMessage(error instanceof Error ? error.message : "The project could not be updated.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function improveOverview() {
+    setOverviewBusy(true);
+    setMessage(null);
+    try {
+      const queued = await refreshProjectIntelligence(projectId, "overview");
+      const job = queued.jobs.find((item) => item.job_type === "project_intelligence_overview");
+      if (!job) throw new Error("Odin could not queue the overview wording task.");
+      const completed = await waitForProjectJob(job.id);
+      if (completed.status !== "succeeded") {
+        throw new Error(completed.status_detail || completed.last_error || "The local overview wording was not completed.");
+      }
+      setIntelligence(await getProjectIntelligence(projectId));
+      setMessage("Overview wording updated from the active local model. Structured facts remain authoritative.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The overview wording could not be updated.");
+    } finally {
+      setOverviewBusy(false);
     }
   }
 
@@ -352,11 +384,36 @@ function ProjectWorkspace() {
           )}
 
           <section className="mt-8 max-w-3xl">
-            <h2 className="text-lg font-semibold">What this project does</h2>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold">What this project does</h2>
+              {intelligence?.id && intelligence.interpretation && (
+                <Button size="sm" variant="ghost" disabled={overviewBusy} onClick={() => void improveOverview()}>
+                  <RefreshCw className={`h-3.5 w-3.5 ${overviewBusy ? "animate-spin motion-reduce:animate-none" : ""}`} />
+                  {intelligence.interpretation.generated_synopsis ? "Rewrite locally" : "Improve wording locally"}
+                </Button>
+              )}
+            </div>
             <p className="mt-3 max-w-[72ch] text-sm leading-7 text-foreground/90">
-              {project.brief ||
+              {intelligence?.interpretation?.generated_synopsis || intelligence?.identity?.purpose || project.brief ||
                 "Odin has registered this project. Synchronize it to build a local, searchable overview."}
             </p>
+            {intelligence?.interpretation?.generated_synopsis ? (
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                Worded by {intelligence.interpretation.generation?.model_id || "your local model"} from {intelligence.interpretation.generated_fact_ids?.length || 0} structured facts. Open the explanation below to inspect provenance.
+              </p>
+            ) : intelligence?.identity.purpose ? (
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                Based on {intelligence.evidence[0]?.label || "a supported root project file"}
+                {intelligence.identity.purpose_candidates.length > 1
+                  ? ` · ${intelligence.identity.purpose_candidates.length - 1} other supported source${intelligence.identity.purpose_candidates.length === 2 ? "" : "s"}`
+                  : ""}
+                . Odin keeps source descriptions separate instead of blending them into a generated claim.
+              </p>
+            ) : intelligence?.layers.identity.unknown_reason ? (
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                Purpose is unknown: {intelligence.layers.identity.unknown_reason.detail}
+              </p>
+            ) : null}
             <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-sm text-muted-foreground">
               {languages.length > 0 && (
                 <span>{languages.map(([language]) => language).join(", ")}</span>
@@ -370,7 +427,36 @@ function ProjectWorkspace() {
               )}
               <span>Updated {formatDate(project.updated_at)}</span>
             </div>
+            {intelligence && (
+              <details className="mt-5 border-t border-border pt-4">
+                <summary className="cursor-pointer text-sm font-medium text-foreground">
+                  How Odin formed this overview
+                </summary>
+                <div className="mt-3 space-y-3 text-xs leading-5 text-muted-foreground">
+                  <p>
+                    {Number(intelligence.architecture.indexed_file_count || project.source_count).toLocaleString()} indexed files
+                    {Number(intelligence.architecture.relationship_count || 0) > 0
+                      ? ` · ${Number(intelligence.architecture.relationship_count).toLocaleString()} observed relationships`
+                      : ""}
+                    {Number(intelligence.architecture.community_count || 0) > 0
+                      ? ` · ${Number(intelligence.architecture.community_count).toLocaleString()} project areas`
+                      : ""}.
+                  </p>
+                  <p>
+                    Snapshot {intelligence.owning_snapshot_id || "not built"}. Each layer reports its own freshness;
+                    unavailable Git history, decisions, or coverage do not make indexed code unavailable.
+                  </p>
+                  {intelligence.interpretation?.generated_synopsis && (
+                    <p>
+                      Optional wording by {intelligence.interpretation.generation?.model_id || "a local model"}; factual claims are limited to cited overview evidence.
+                    </p>
+                  )}
+                </div>
+              </details>
+            )}
           </section>
+
+          <ProjectUnderstanding projectId={project.id} changedPaths={changes?.changed_paths ?? []} />
 
           <section className="mt-10 max-w-4xl border-t border-border pt-8">
             <div className="flex flex-wrap items-baseline justify-between gap-3">
@@ -487,6 +573,153 @@ function ProjectWorkspace() {
       </div>
     </div>
   );
+}
+
+function ProjectUnderstanding({ projectId, changedPaths }: { projectId: string; changedPaths: string[] }) {
+  const [selected, setSelected] = useState<ProjectOperationName | null>(null);
+  const [result, setResult] = useState<ProjectOperationResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function inspect(operation: ProjectOperationName) {
+    setSelected(operation);
+    setLoading(true);
+    setError(null);
+    try {
+      setResult(await runProjectOperation(projectId, {
+        operation,
+        changed_paths: operation === "coverage" ? changedPaths : undefined,
+        compact: true,
+      }));
+    } catch (nextError) {
+      setResult(null);
+      setError(nextError instanceof Error ? nextError.message : "Odin could not inspect this project signal.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="mt-10 max-w-4xl border-t border-border pt-8" aria-labelledby="project-understanding-title">
+      <h2 id="project-understanding-title" className="text-lg font-semibold">Understand what is happening</h2>
+      <p className="mt-1 max-w-[68ch] text-sm leading-6 text-muted-foreground">
+        Inspect live work, recorded decisions, or exact test evidence only when you need it.
+      </p>
+      <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label="Project intelligence views">
+        {([
+          ["project_state", "Current work"],
+          ["decisions", "Decisions"],
+          ["coverage", "Test impact"],
+        ] as const).map(([operation, label]) => (
+          <Button
+            key={operation}
+            size="sm"
+            variant={selected === operation ? "default" : "outline"}
+            aria-pressed={selected === operation}
+            disabled={loading && selected === operation}
+            onClick={() => void inspect(operation)}
+          >
+            {label}
+          </Button>
+        ))}
+      </div>
+      <div className="mt-4 min-h-16 border-y border-border py-4" aria-live="polite">
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Inspecting {operationLabel(selected)}…</p>
+        ) : error ? (
+          <p className="text-sm text-destructive">{error}</p>
+        ) : result ? (
+          <ProjectOperationSummary result={result} changedPathCount={changedPaths.length} />
+        ) : (
+          <p className="text-sm text-muted-foreground">Choose one view. Odin will keep unknown evidence clearly marked instead of guessing.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ProjectOperationSummary({ result, changedPathCount }: { result: ProjectOperationResult; changedPathCount: number }) {
+  const data = asRecord(result.data);
+  if (result.operation === "project_state") {
+    if (data.status !== "ready") {
+      return <p className="text-sm text-muted-foreground">{textValue(data.unknown_reason) || "Git state is unavailable for this folder."}</p>;
+    }
+    const live = asRecord(data.live_state);
+    const files = asArray(live.files).map(asRecord);
+    const counts = asRecord(live.counts);
+    const changed = Object.values(counts).reduce<number>((total, value) => total + (Number(value) || 0), 0);
+    return (
+      <div className="text-sm">
+        <p><span className="font-medium">{textValue(live.branch) || "Detached worktree"}</span> · {changed ? `${changed} changed path${changed === 1 ? "" : "s"}` : "working tree clean"}</p>
+        <p className="mt-1 text-xs text-muted-foreground">Compared with Odin’s active index: {textValue(live.indexed_relation) || "unknown"}.</p>
+        {files.length > 0 && (
+          <ul className="mt-3 space-y-1 font-mono text-xs text-muted-foreground">
+            {files.slice(0, 6).map((file) => <li key={textValue(file.relative_path)}>{textValue(file.status)} · {textValue(file.relative_path)}</li>)}
+            {files.length > 6 && <li>+ {files.length - 6} more</li>}
+          </ul>
+        )}
+      </div>
+    );
+  }
+  if (result.operation === "decisions") {
+    const items = asArray(data.items).map(asRecord);
+    if (!items.length) return <p className="text-sm text-muted-foreground">No supported project decisions were found.</p>;
+    return (
+      <ol className="space-y-3">
+        {items.slice(0, 5).map((item, index) => (
+          <li key={textValue(item.id) || String(index)} className="text-sm">
+            <p className="font-medium">{textValue(item.statement)}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{textValue(item.status)} · {textValue(item.confidence_class)}{asArray(item.evidence).length ? ` · ${asArray(item.evidence).length} source${asArray(item.evidence).length === 1 ? "" : "s"}` : ""}</p>
+          </li>
+        ))}
+      </ol>
+    );
+  }
+  const exactTests = asArray(data.exact_tests).map(asRecord);
+  if (data.status === "unknown") {
+    return <p className="text-sm text-muted-foreground">{textValue(data.unknown_reason) || "No coverage map is available."}</p>;
+  }
+  if (data.known_empty) {
+    return <p className="text-sm">Coverage is available, but it maps no tests to the {changedPathCount} pending path{changedPathCount === 1 ? "" : "s"}.</p>;
+  }
+  if (!exactTests.length) {
+    return <p className="text-sm text-muted-foreground">Coverage is available. Select this view after files change to calculate exact test impact.</p>;
+  }
+  return (
+    <div>
+      <p className="text-sm font-medium">{exactTests.length} exact test {exactTests.length === 1 ? "match" : "matches"}</p>
+      <ul className="mt-3 space-y-1 font-mono text-xs text-muted-foreground">
+        {exactTests.slice(0, 8).map((test, index) => <li key={`${textValue(test.test_path)}-${index}`}>{textValue(test.test_path)}{textValue(test.test_name) ? ` · ${textValue(test.test_name)}` : ""}</li>)}
+      </ul>
+      {data.status === "stale" && <p className="mt-3 text-xs text-muted-foreground">This coverage belongs to a different indexed commit.</p>}
+    </div>
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function textValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function operationLabel(operation: ProjectOperationName | null): string {
+  return operation === "project_state" ? "current work" : operation === "decisions" ? "decisions" : "test evidence";
+}
+
+async function waitForProjectJob(jobId: string) {
+  const terminal = new Set(["succeeded", "partial_success", "failed", "cancelled", "manual_review", "blocked_setup_required"]);
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    const job = await getJob(jobId);
+    if (terminal.has(job.status)) return job;
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+  }
+  throw new Error("The local overview is still running. You can follow it from Tasks.");
 }
 
 function RunStrip({
