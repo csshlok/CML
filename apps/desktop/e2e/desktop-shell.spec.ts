@@ -1298,6 +1298,20 @@ test("settings explains passphrase requirements before protected setup", async (
     initializeRequests += 1;
     return route.fulfill({ status: 500, json: { detail: "Should not be called." } });
   });
+  await page.route(`${backendOrigin}/api/v1/jobs/temporal-facts/status*`, (route) =>
+    route.fulfill({
+      json: {
+        vault_id: "vault-unprotected",
+        extractor_version: "test",
+        session_count: 0,
+        indexed_session_count: 0,
+        pending_session_count: 0,
+        fact_count: 0,
+        status_counts: { current: 0 },
+        latest_observed_at: null,
+      },
+    }),
+  );
 
   const unlockLoaded = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/api/v1/system/unlock/status",
