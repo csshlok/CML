@@ -52,6 +52,10 @@ export function HealthStatusPanel({
 
   function startDrag(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
+    if (
+      event.target instanceof Element
+      && event.target.closest("[data-health-panel-control]")
+    ) return;
     const panel = event.currentTarget.closest<HTMLElement>("[data-health-panel]");
     if (!panel) return;
     const bounds = panel.getBoundingClientRect();
@@ -100,7 +104,13 @@ export function HealthStatusPanel({
         <GripHorizontal className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
         <HeartPulse className="h-4 w-4" aria-hidden="true" />
         <h2 className="min-w-0 flex-1 text-sm font-semibold">Health status</h2>
-        <Button variant="ghost" size="icon" aria-label="Close health status" onClick={onClose}>
+        <Button
+          data-health-panel-control
+          variant="ghost"
+          size="icon"
+          aria-label="Close health status"
+          onClick={onClose}
+        >
           <X className="h-4 w-4" />
         </Button>
       </div>

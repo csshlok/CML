@@ -18,6 +18,14 @@ class ProjectIndexCancelled(RuntimeError):
     pass
 
 
+def _table_exists(conn, table_name: str) -> bool:
+    """Keep optional post-migration layers from becoming a prerequisite for core indexing."""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone() is not None
+
+
 def discover_candidate(*, project_id: str, run_id: str, snapshot_id: str, job_id: str) -> dict:
     from backend.app.core.projects import (
         EXTRACTOR_VERSION, _git_metadata, discover_project, get_project,
@@ -122,6 +130,7 @@ def discover_candidate(*, project_id: str, run_id: str, snapshot_id: str, job_id
 
 
 def index_candidate_structure(*, project_id: str, run_id: str, snapshot_id: str, job_id: str) -> dict:
+    from backend.app.core.project_intelligence import build_project_intelligence
     from backend.app.core.projects import EXTRACTOR_VERSION, ManifestFile, _build_brief, get_project
 
     _require_running(run_id, phase="structure")
@@ -150,6 +159,22 @@ def index_candidate_structure(*, project_id: str, run_id: str, snapshot_id: str,
         snapshot = conn.execute("SELECT * FROM project_snapshots WHERE id = ?", (snapshot_id,)).fetchone()
         discovery = _discovery_facade(snapshot, files)
         brief = _build_brief(project["name"], project["repository_kind"], discovery, result)
+        if _table_exists(conn, "project_intelligence_snapshots"):
+            build_project_intelligence(
+                conn,
+                project=project,
+                owning_snapshot_id=snapshot_id,
+                structure_snapshot_id=snapshot_id,
+                retrieval_snapshot_id=snapshot_id,
+                files=files,
+                discovery=discovery,
+                structure=result,
+                generated_at=now,
+                source_by_path=source_by_path,
+                architecture_status=status,
+                structure_extractor_version=EXTRACTOR_VERSION,
+                indexed_commit=snapshot["git_commit"],
+            )
         for file_result in result.get("file_results", []):
             conn.execute(
                 "UPDATE project_snapshot_sources SET parser_status = ?, stage_status = 'structured', error_category = ?, updated_at = ? WHERE snapshot_id = ? AND relative_path = ?",
@@ -255,6 +280,7 @@ def apply_project_delta(
 ) -> dict:
     """Apply a complete Git path delta without walking or restructuring the repository."""
 
+    from backend.app.core.project_intelligence import build_project_intelligence
     from backend.app.core.projects import (
         DiscoveryResult,
         EXTRACTOR_VERSION,
@@ -669,6 +695,23 @@ def apply_project_delta(
                 structure,
                 indexed_file_count=source_count,
             )
+            if _table_exists(conn, "project_intelligence_snapshots"):
+                build_project_intelligence(
+                    conn,
+                    project=dict_from_row(project_row),
+                    owning_snapshot_id=snapshot_id,
+                    structure_snapshot_id=str(structure_snapshot_id) if structure_snapshot_id else None,
+                    retrieval_snapshot_id=snapshot_id,
+                    files=purpose_files,
+                    discovery=discovery,
+                    structure=structure,
+                    generated_at=now,
+                    source_by_path={str(row["relative_path"]): str(row["id"]) for row in purpose_rows},
+                    indexed_file_count=source_count,
+                    architecture_status="stale" if structure_snapshot_id else "unavailable",
+                    structure_extractor_version=EXTRACTOR_VERSION,
+                    indexed_commit=commit,
+                )
         conn.execute(
             """
             UPDATE project_snapshot_sources
@@ -738,12 +781,15 @@ def apply_project_delta(
             """,
             (now, now, now, run_id),
         )
+    from backend.app.core.project_operations import enqueue_project_intelligence_layers
+    layer_refresh = enqueue_project_intelligence_layers(project_id)
     return {
         "project_id": project_id,
         "snapshot_id": snapshot_id,
         "changed_path_count": len(changed_paths),
         "source_count": source_count,
         "structure_refresh_available": True,
+        "intelligence_layers": layer_refresh,
     }
 
 
@@ -849,7 +895,10 @@ def activate_candidate(*, project_id: str, run_id: str, snapshot_id: str, job_id
             """, (now, now, now, run_id),
         )
         updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return _project_from_row(conn, updated)
+        result = _project_from_row(conn, updated)
+    from backend.app.core.project_operations import enqueue_project_intelligence_layers
+    result["intelligence_layers"] = enqueue_project_intelligence_layers(project_id)
+    return result
 
 
 def cleanup_candidate(*, project_id: str, run_id: str, snapshot_id: str, job_id: str) -> dict:

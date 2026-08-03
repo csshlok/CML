@@ -151,7 +151,25 @@ def restore_selected_model(model_id: str, model_path: str) -> None:
 
 def stop_managed_runtime() -> None:
     with _LOCK:
-        _stop_locked(mark_stopped=True)
+        previous = dict(_load_state_locked())
+        _stop_locked(mark_stopped=False)
+        runtime_binary = str(previous.get("runtime_binary") or "")
+        model_path = str(previous.get("model_path") or "")
+        cleanup = _terminate_verified_orphans_locked(
+            runtime_binaries={runtime_binary} if runtime_binary else set(),
+            model_paths={model_path} if model_path else set(),
+        )
+        previous.update(
+            {
+                "state": "stopped",
+                "available": False,
+                "pid": None,
+                "detail": "The managed local model is stopped.",
+                "orphan_cleanup": cleanup,
+                "updated_at": utc_now(),
+            }
+        )
+        _persist_state_locked(previous)
 
 
 def _start_locked(

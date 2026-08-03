@@ -618,6 +618,10 @@ New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
       "from": "packaging/docs",
       "to": "docs",
       "filter": ["model-integrity-manifest.json"]
+    },
+    {
+      "from": "build/stop-installed-runtimes.ps1",
+      "to": "uninstall/stop-installed-runtimes.ps1"
     }
   ],
   "win": {
@@ -640,6 +644,7 @@ New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
     "createStartMenuShortcut": true,
     "shortcutName": "CML",
     "runAfterFinish": true,
+    "include": "build/installer.nsh",
     "deleteAppDataOnUninstall": false,
     "artifactName": "test-$desktopVersion-Setup.`${ext}"
   }

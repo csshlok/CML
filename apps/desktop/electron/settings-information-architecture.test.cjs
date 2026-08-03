@@ -33,6 +33,14 @@ test("library moves use the product confirmation surface", () => {
   assert.doesNotMatch(settingsSource, /window\.confirm/);
 });
 
+test("successful library deletion stays inside the desktop router", () => {
+  assert.match(
+    settingsSource,
+    /finalizeActiveVaultDeletion\?\.\(\)[\s\S]{0,250}await navigate\(\{ to: "\/onboarding" \}\)/,
+  );
+  assert.doesNotMatch(settingsSource, /window\.location\.assign\("\/onboarding"\)/);
+});
+
 test("the URL is the single owner of the active Settings section", () => {
   assert.match(settingsSource, /const activeSection = canonicalSettingsSection\(section\)/);
   assert.doesNotMatch(settingsSource, /\[activeSection, setActiveSection\]/);

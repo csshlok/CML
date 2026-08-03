@@ -1126,7 +1126,7 @@ function SettingsView() {
       if (!finalized?.deleted) {
         throw new Error("The library was authorized for deletion, but its local data folder could not be finalized.");
       }
-      window.location.assign("/onboarding");
+      await navigate({ to: "/onboarding" });
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not delete the library.");
       setActionBusy("delete", false);

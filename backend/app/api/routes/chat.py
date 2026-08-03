@@ -727,7 +727,7 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                         answer_parts.append(chunk)
                         yield _sse("token", {"text": chunk})
                     warnings.append("Answered by streaming local model runtime.")
-                except LLMRuntimeError as exc:
+                except LLMRuntimeError:
                     fallback = (
                         _build_conflict_answer(active_payload.prompt, citations)
                         if context.get("synthesis_strategy") == "explain_conflict"
@@ -1014,6 +1014,11 @@ def _build_retrieval_context(
     )
     intent = route["intent"]
     context_sources = list(route.get("context_sources") or [])
+    if payload.project_id:
+        from backend.app.core.project_operations import route_project_intent
+        project_route = route_project_intent(payload.prompt, project_id=payload.project_id)
+        if project_route.get("operation") == "project_state":
+            return _build_project_state_chat_context(payload, recent_turns=recent_turns)
     trusted_context = {
         "profile": {
             "display_name": profile_display_name,
@@ -1345,7 +1350,7 @@ def _build_retrieval_context(
             ))
             answer = result.text
             warnings.append(f"Answered by local model runtime: {result.provider} / {result.model}.")
-        except LLMRuntimeError as exc:
+        except LLMRuntimeError:
             answer = (
                 _build_conflict_answer(payload.prompt, citations)
                 if synthesis_guard["strategy"] == "explain_conflict"
@@ -1357,7 +1362,7 @@ def _build_retrieval_context(
         answer = _build_extract_answer(payload.prompt, citations)
 
     return {
-        "answer": answer,
+        "answer": _sanitize_project_answer(answer) if payload.project_id else answer,
         "clusters_used": clusters_used,
         "citations": citations,
         "synthesis_citations": synthesis_citations,
@@ -1621,6 +1626,45 @@ def _build_direct_chat_context(
         "direct_answer_fallback": False,
         "direct_answer_prefix": "",
     }
+
+
+def _build_project_state_chat_context(payload: ChatContextRequest, *, recent_turns: list[dict]) -> dict:
+    from backend.app.core.project_git_intelligence import refresh_git_intelligence
+    state = refresh_git_intelligence(str(payload.project_id))
+    live = state.get("live_state") or {}
+    counts = live.get("counts") or {}
+    changed = len(live.get("files") or [])
+    head = str(state.get("head_commit") or "")[:8] or "unavailable"
+    branch = state.get("branch") or "unknown"
+    if state.get("status") == "unavailable":
+        answer = state.get("error_detail") or "This project is not a Git repository, so live repository state is unavailable."
+    else:
+        summary = ", ".join(f"{value} {key}" for key, value in sorted(counts.items())) or "clean working tree"
+        answer = (
+            f"Current repository state: branch {branch}, HEAD {head}, {summary}. "
+            f"Odin's indexed commit relation is {live.get('indexed_relation', 'unknown')}."
+        )
+        if changed:
+            paths = ", ".join(item["relative_path"] for item in live.get("files", [])[:12])
+            answer += f" Changed paths: {paths}."
+    return {
+        "answer": _sanitize_project_answer(answer), "clusters_used": [], "citations": [], "synthesis_citations": [],
+        "coverage_ledger": {"route_policy": "typed_project_state", "route_reason": "live_repository_state_language",
+                            "answer_mode": "deterministic", "context_sources": ["project_state"],
+                            "retrieval_attempted": False, "retrieval_authority": True,
+                            "partial_failure_mode": "none", "sources_considered": 0, "sources_analyzed": 0,
+                            "sources_low_relevance": 0, "token_budget": 0},
+        "intent": "project_state", "runtime_state": runtime_status().get("state"), "warnings": [],
+        "recent_turns": recent_turns, "memory_items": [], "working_memory": {},
+        "trusted_context": {}, "context_sources": ["project_state"], "project_state": state,
+        "profile_display_name": "", "direct_answer_fallback": False, "direct_answer_prefix": "",
+    }
+
+
+def _sanitize_project_answer(value: str) -> str:
+    clean = re.sub(r"\b(?:chunk|source|context_handle):[A-Za-z0-9_.:-]+", "indexed evidence", str(value), flags=re.I)
+    clean = re.sub(r"\[[^\]]+\]\((?:cml|vault|chunk|source)://[^)]+\)", "", clean, flags=re.I)
+    return re.sub(r"[ \t]+\n", "\n", clean).strip()
 
 
 def _build_safety_refusal_context(

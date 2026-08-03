@@ -1131,8 +1131,6 @@ def discover_installed_models(
             continue
         scanned_roots.append(normalized_root)
         if scan_depth < 0:
-            walk_progress: dict[str, int] = {}
-
             def report_walk(progress: dict[str, int]) -> None:
                 nonlocal directories_checked, skipped_directories
                 directories_checked += int(progress.get("directories_checked") or 0)

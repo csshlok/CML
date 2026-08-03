@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from backend.app.core.claim_semantics import extract_structured_claims, split_claim_units
-from backend.app.core.context_reduction import estimate_tokens
 from backend.app.core.multi_session_ledger import (
     ConsolidationGroup,
     LedgerEntry,

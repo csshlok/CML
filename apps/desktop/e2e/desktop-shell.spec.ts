@@ -912,6 +912,26 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   await page.route(`${backendOrigin}/api/v1/projects/${project.id}`, (route) =>
     route.fulfill({ json: project }),
   );
+  await page.route(`${backendOrigin}/api/v1/projects/${project.id}/intelligence`, (route) =>
+    route.fulfill({ json: {
+      id: null,
+      contract_version: "odin-project-intelligence-v1",
+      project_id: project.id,
+      owning_snapshot_id: project.active_snapshot_id,
+      structure_snapshot_id: project.active_snapshot_id,
+      retrieval_snapshot_id: project.active_snapshot_id,
+      indexed_commit: project.indexed_commit,
+      generated_at: project.updated_at,
+      identity: { name: project.name, repository_kind: "git", purpose: null, purpose_candidates: [], technologies: [] },
+      architecture: { indexed_file_count: project.source_count },
+      repository_signals: {},
+      decisions: {},
+      interpretation: { deterministic_synopsis: project.brief, generated_synopsis: null, primary_evidence_ids: [] },
+      freshness: {},
+      layers: { identity: { status: "partial", version: "test", generated_at: project.updated_at, truncated: false, unknown_reason: { code: "fixture", detail: "No supported root description in this fixture." } } },
+      evidence: [],
+    } }),
+  );
   await page.route(`${backendOrigin}/api/v1/projects/${project.id}/runs*`, (route) =>
     route.fulfill({ json: [activeRun] }),
   );
@@ -940,6 +960,7 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
         edges: [],
         truncated: false,
         limits: { max_nodes: 90, max_depth: 2 },
+        project_totals: { nodes: 0, edges: 0 },
         warnings: [],
         insights: {
           summary: "No mapped nodes.",
@@ -1008,7 +1029,7 @@ test("unknown routes provide keyboard-focused recovery", async ({ page }) => {
   const recovery = page.getByRole("link", { name: "Return home" });
   await recovery.focus();
   await recovery.press("Enter");
-  await expect(page).toHaveURL(/\/onboarding$/);
+  await expect(page).toHaveURL(/\/home$/);
 });
 
 test("window-aware controls never intersect native controls at minimum size", async ({ page }) => {
@@ -1277,6 +1298,20 @@ test("settings explains passphrase requirements before protected setup", async (
     initializeRequests += 1;
     return route.fulfill({ status: 500, json: { detail: "Should not be called." } });
   });
+  await page.route(`${backendOrigin}/api/v1/jobs/temporal-facts/status*`, (route) =>
+    route.fulfill({
+      json: {
+        vault_id: "vault-unprotected",
+        extractor_version: "test",
+        session_count: 0,
+        indexed_session_count: 0,
+        pending_session_count: 0,
+        fact_count: 0,
+        status_counts: { current: 0 },
+        latest_observed_at: null,
+      },
+    }),
+  );
 
   const unlockLoaded = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/api/v1/system/unlock/status",

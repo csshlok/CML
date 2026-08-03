@@ -15,7 +15,11 @@ from backend.app.bridge_mcp_tools import (
     tools_for_profile,
     validate_tool_arguments as validate_contract_arguments,
 )
-from backend.app.bridge_mcp_stdio import ConcurrentMCPRuntime, RequestCancellation, run_stdio
+from backend.app.bridge_mcp_stdio import (  # noqa: F401 - compatibility re-exports
+    ConcurrentMCPRuntime,
+    RequestCancellation,
+    run_stdio,
+)
 
 
 def _normalize_api_prefix(value: str) -> str:
@@ -65,7 +69,9 @@ def handle_message(message: dict) -> dict | None:
     if request_id is None:
         return None
     if method == "initialize":
-        requested_version = str((message.get("params") or {}).get("protocolVersion") or SUPPORTED_PROTOCOL_VERSIONS[-1])
+        requested_version = str(
+            (message.get("params") or {}).get("protocolVersion") or SUPPORTED_PROTOCOL_VERSIONS[-1]
+        )
         negotiated_version = (
             requested_version
             if requested_version in SUPPORTED_PROTOCOL_VERSIONS
@@ -92,6 +98,8 @@ def handle_message(message: dict) -> dict | None:
             return error(request_id, -32602, validation_error)
         if name == "get_cluster_context":
             return result(request_id, call_get_cluster_context(arguments, request_id))
+        if name == "get_project_operation":
+            return result(request_id, call_get_project_operation(arguments, request_id))
         if name == "expand_context_item":
             return result(request_id, call_expand_context_item(arguments, request_id))
         if name == "list_clusters":
@@ -137,10 +145,45 @@ def call_get_cluster_context(arguments: dict, request_id) -> dict:
         "content": [
             {
                 "type": "text",
-                "text": raw_text if output_format == "json" or debug else _format_context_packet(data, raw_text=raw_text),
+                "text": raw_text
+                if output_format == "json" or debug
+                else _format_context_packet(data, raw_text=raw_text),
             }
         ]
     }
+
+
+def call_get_project_operation(arguments: dict, request_id) -> dict:
+    project_id = str(arguments["project_id"])
+    payload = {
+        "operation": arguments["operation"],
+        "query": arguments.get("query", ""),
+        "target": arguments.get("target", ""),
+        "targets": arguments.get("targets", []),
+        "changed_paths": arguments.get("changed_paths", []),
+        "compact": bool(arguments.get("compact", True)),
+    }
+    data = http_json(
+        f"{api_path('/projects')}/{project_id}/operations",
+        method="POST",
+        payload=payload,
+        headers={"x-cml-bridge-token": BRIDGE_TOKEN},
+        request_id=request_id,
+    )
+    clean = _strip_internal_handles(data)
+    return {"content": [{"type": "text", "text": json.dumps(clean, indent=2, ensure_ascii=False)}]}
+
+
+def _strip_internal_handles(value):
+    if isinstance(value, dict):
+        return {
+            key: _strip_internal_handles(item)
+            for key, item in value.items()
+            if key not in {"handle", "context_handle", "chunk_handle"}
+        }
+    if isinstance(value, list):
+        return [_strip_internal_handles(item) for item in value]
+    return value
 
 
 def call_list_clusters(arguments: dict | None, request_id) -> dict:
@@ -178,13 +221,17 @@ def call_list_writeback_reviews(arguments: dict, request_id) -> dict:
         headers={"x-cml-bridge-token": BRIDGE_TOKEN},
         request_id=request_id,
     )
-    page = data if isinstance(data, dict) else {"items": data, "next_cursor": None, "has_more": False}
+    page = (
+        data if isinstance(data, dict) else {"items": data, "next_cursor": None, "has_more": False}
+    )
     raw_text = json.dumps(data, indent=2, ensure_ascii=False)
     return {
         "content": [
             {
                 "type": "text",
-                "text": raw_text if output_format == "json" or debug else _format_reviews_summary(page.get("items", []), page=page),
+                "text": raw_text
+                if output_format == "json" or debug
+                else _format_reviews_summary(page.get("items", []), page=page),
             }
         ]
     }
@@ -210,7 +257,9 @@ def call_decide_writeback_review(arguments: dict, request_id) -> dict:
         "content": [
             {
                 "type": "text",
-                "text": raw_text if output_format == "json" or debug else _format_review_decision_receipt(data),
+                "text": raw_text
+                if output_format == "json" or debug
+                else _format_review_decision_receipt(data),
             }
         ]
     }
@@ -229,13 +278,17 @@ def call_list_captures(arguments: dict, request_id) -> dict:
         headers={"x-cml-bridge-token": BRIDGE_TOKEN},
         request_id=request_id,
     )
-    page = data if isinstance(data, dict) else {"items": data, "next_cursor": None, "has_more": False}
+    page = (
+        data if isinstance(data, dict) else {"items": data, "next_cursor": None, "has_more": False}
+    )
     raw_text = json.dumps(data, indent=2, ensure_ascii=False)
     return {
         "content": [
             {
                 "type": "text",
-                "text": raw_text if output_format == "json" or debug else _format_captures_summary(page.get("items", []), page=page),
+                "text": raw_text
+                if output_format == "json" or debug
+                else _format_captures_summary(page.get("items", []), page=page),
             }
         ]
     }
@@ -285,7 +338,9 @@ def call_log_external_turn(arguments: dict, request_id) -> dict:
         "content": [
             {
                 "type": "text",
-                "text": raw_text if output_format == "json" or debug else _format_capture_receipt(data, capture_kind="external_turn"),
+                "text": raw_text
+                if output_format == "json" or debug
+                else _format_capture_receipt(data, capture_kind="external_turn"),
             }
         ]
     }
@@ -316,7 +371,9 @@ def call_capture_external_artifact(arguments: dict, request_id) -> dict:
         "content": [
             {
                 "type": "text",
-                "text": raw_text if output_format == "json" or debug else _format_capture_receipt(data, capture_kind="external_artifact"),
+                "text": raw_text
+                if output_format == "json" or debug
+                else _format_capture_receipt(data, capture_kind="external_artifact"),
             }
         ]
     }
@@ -469,17 +526,41 @@ def safe_application_error(detail: str) -> tuple[str, str, bool]:
     mapping = {
         "no_active_vault": ("no_active_vault", "No library is allowed for this connection.", False),
         "bridge_disabled": ("bridge_disabled", "Bridge is turned off in Vault.", False),
-        "bridge_token_invalid": ("client_revoked", "This connection is no longer authorized.", False),
-        "bridge_shared_token_disabled": ("client_revoked", "This connection must be paired again.", False),
+        "bridge_token_invalid": (
+            "client_revoked",
+            "This connection is no longer authorized.",
+            False,
+        ),
+        "bridge_shared_token_disabled": (
+            "client_revoked",
+            "This connection must be paired again.",
+            False,
+        ),
         "vault_not_allowed": ("scope_denied", "This library is outside the allowed scope.", False),
-        "cluster_not_allowed": ("scope_denied", "This cluster is outside the allowed scope.", False),
+        "cluster_not_allowed": (
+            "scope_denied",
+            "This cluster is outside the allowed scope.",
+            False,
+        ),
         "scope_denied": ("scope_denied", "This item is outside the allowed scope.", False),
         "capability_denied": ("capability_denied", "This connection has read-only access.", False),
         "bridge_rate_limited": ("rate_limited", "Too many requests. Try again shortly.", True),
-        "vault_not_found": ("vault_missing", "The requested library is no longer available.", False),
-        "cluster_not_found": ("cluster_missing", "The requested cluster is no longer available.", False),
+        "vault_not_found": (
+            "vault_missing",
+            "The requested library is no longer available.",
+            False,
+        ),
+        "cluster_not_found": (
+            "cluster_missing",
+            "The requested cluster is no longer available.",
+            False,
+        ),
         "bridge_review_not_found": ("conflict", "That review is no longer available.", False),
-        "bridge_review_changed": ("conflict", "That review changed. Refresh it before deciding.", False),
+        "bridge_review_changed": (
+            "conflict",
+            "That review changed. Refresh it before deciding.",
+            False,
+        ),
         "idempotency_key_reused": (
             "conflict",
             "This request key was already used for different content.",
@@ -498,7 +579,10 @@ def _bounded_tool_output(value: dict) -> dict:
     content = value.get("content") if isinstance(value, dict) else None
     if not isinstance(content, list):
         return value
-    if len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= MAX_TOOL_OUTPUT_BYTES:
+    if (
+        len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        <= MAX_TOOL_OUTPUT_BYTES
+    ):
         return value
     marker = "\n\n[Output shortened. Request a smaller page or context limit.]"
     bounded: list = []
@@ -509,12 +593,21 @@ def _bounded_tool_output(value: dict) -> dict:
     }
     for item in content:
         candidate = [*bounded, item]
-        if len(
-            json.dumps({**base, "content": candidate}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        ) <= MAX_TOOL_OUTPUT_BYTES:
+        if (
+            len(
+                json.dumps(
+                    {**base, "content": candidate}, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
+            )
+            <= MAX_TOOL_OUTPUT_BYTES
+        ):
             bounded.append(item)
             continue
-        if not isinstance(item, dict) or item.get("type") != "text" or not isinstance(item.get("text"), str):
+        if (
+            not isinstance(item, dict)
+            or item.get("type") != "text"
+            or not isinstance(item.get("text"), str)
+        ):
             break
         encoded = item["text"].encode("utf-8")
         low, high = 0, len(encoded)
@@ -524,7 +617,9 @@ def _bounded_tool_output(value: dict) -> dict:
             clipped = encoded[:midpoint].decode("utf-8", errors="ignore") + marker
             trial = [*bounded, {**item, "text": clipped}]
             size = len(
-                json.dumps({**base, "content": trial}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                json.dumps(
+                    {**base, "content": trial}, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
             )
             if size <= MAX_TOOL_OUTPUT_BYTES:
                 best = clipped
@@ -545,9 +640,13 @@ def _format_context_packet(data: dict, *, raw_text: str) -> str:
     packet = build_bridge_context_packet(
         query=str(data.get("query") or ""),
         context_request_id=str(data.get("context_request_id") or "") or None,
-        selected_clusters=[item for item in data.get("selected_clusters") or [] if isinstance(item, dict)],
+        selected_clusters=[
+            item for item in data.get("selected_clusters") or [] if isinstance(item, dict)
+        ],
         citations=[item for item in data.get("citations") or [] if isinstance(item, dict)],
-        source_snippets=[item for item in data.get("source_snippets") or [] if isinstance(item, dict)],
+        source_snippets=[
+            item for item in data.get("source_snippets") or [] if isinstance(item, dict)
+        ],
         warnings=[str(item).strip() for item in data.get("warnings") or [] if str(item).strip()],
         memory_items=[item for item in data.get("memory_items") or [] if isinstance(item, dict)],
         working_memory=data.get("working_memory") or {},
@@ -572,7 +671,9 @@ def _format_capture_receipt(data: dict, *, capture_kind: str) -> str:
     trust_tier = str(data.get("trust_tier") or "unknown")
     warnings = [str(item).strip() for item in data.get("warnings") or [] if str(item).strip()]
     reasons = [str(item).strip() for item in data.get("reasons") or [] if str(item).strip()]
-    security_labels = [str(item).strip() for item in data.get("security_labels") or [] if str(item).strip()]
+    security_labels = [
+        str(item).strip() for item in data.get("security_labels") or [] if str(item).strip()
+    ]
     title = "External Turn Saved" if capture_kind == "external_turn" else "External Artifact Saved"
     lines = [
         f"CML Capture Receipt: {title}",
@@ -602,7 +703,9 @@ def _format_capture_receipt(data: dict, *, capture_kind: str) -> str:
         lines.extend(f"- {warning}" for warning in warnings)
     lines.append("Next Step")
     if review_required:
-        lines.append("- Keep this capture as audit/history until a user reviews and approves it in CML.")
+        lines.append(
+            "- Keep this capture as audit/history until a user reviews and approves it in CML."
+        )
     elif quality_state == "user_artifact":
         lines.append("- This was stored as a user artifact, not auto-promoted as grounded memory.")
     else:
@@ -626,9 +729,13 @@ def _format_reviews_summary(data: list[dict], *, page: dict | None = None) -> st
             f"- {source_id}: {title} | quality={quality_state} | trust={trust_tier} | approved={'yes' if approved else 'no'}"
         )
     lines.append("Next Step")
-    lines.append("- Use decide_writeback_review with one source_id after checking the capture in CML.")
+    lines.append(
+        "- Use decide_writeback_review with one source_id after checking the capture in CML."
+    )
     if page and page.get("has_more") and page.get("next_cursor"):
-        lines.append(f"- More results are available. Call this tool again with cursor: {page['next_cursor']}")
+        lines.append(
+            f"- More results are available. Call this tool again with cursor: {page['next_cursor']}"
+        )
     return "\n".join(lines)
 
 
@@ -642,7 +749,9 @@ def _format_review_decision_receipt(data: dict) -> str:
         f"- Trust tier: {data.get('trust_tier') or 'unknown'}",
     ]
     reasons = [str(item).strip() for item in data.get("reasons") or [] if str(item).strip()]
-    security_labels = [str(item).strip() for item in data.get("security_labels") or [] if str(item).strip()]
+    security_labels = [
+        str(item).strip() for item in data.get("security_labels") or [] if str(item).strip()
+    ]
     if reasons:
         lines.append("Reasons")
         lines.extend(f"- {reason}" for reason in reasons)
@@ -664,7 +773,9 @@ def _format_captures_summary(data: list[dict], *, page: dict | None = None) -> s
             f"quality={item.get('quality_state') or 'unknown'} | approved={'yes' if bool(item.get('approved')) else 'no'}"
         )
     if page and page.get("has_more") and page.get("next_cursor"):
-        lines.append(f"- More results are available. Call this tool again with cursor: {page['next_cursor']}")
+        lines.append(
+            f"- More results are available. Call this tool again with cursor: {page['next_cursor']}"
+        )
     return "\n".join(lines)
 
 

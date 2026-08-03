@@ -205,6 +205,71 @@ class ProjectRead(BaseModel):
     updated_at: str
 
 
+class UnknownReason(BaseModel):
+    code: Literal[
+        "not_built",
+        "no_authoritative_evidence",
+        "no_decisions",
+        "not_git",
+        "unsupported",
+        "truncated",
+        "stale",
+        "failed",
+    ]
+    detail: str
+
+
+class IntelligenceLayerState(BaseModel):
+    status: Literal["waiting", "building", "ready", "partial", "stale", "unavailable", "failed"]
+    version: str
+    generated_at: str | None = None
+    truncated: bool = False
+    unknown_reason: UnknownReason | None = None
+
+
+class IntelligenceEvidence(BaseModel):
+    id: str
+    source_type: Literal["readme", "manifest", "code_graph", "git_commit", "adr", "comment", "user"]
+    source_id: str | None = None
+    relative_path: str = ""
+    source_snapshot: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    extraction_method: str
+    extractor_version: str
+    confidence_class: Literal["extracted", "inferred", "generated"]
+    excerpt_hash: str
+    verification_state: Literal["exact", "derived", "model_summarized", "unverified"]
+    label: str = ""
+
+
+class ProjectPurposeCandidate(BaseModel):
+    text: str
+    source_type: Literal["readme", "manifest"]
+    relative_path: str
+    evidence_id: str
+    authority: int = Field(ge=0, le=100)
+
+
+class ProjectIntelligenceSnapshotRead(BaseModel):
+    id: str | None = None
+    contract_version: str
+    project_id: str
+    owning_snapshot_id: str | None = None
+    structure_snapshot_id: str | None = None
+    retrieval_snapshot_id: str | None = None
+    indexed_commit: str | None = None
+    generated_at: str | None = None
+    identity: dict
+    architecture: dict
+    repository_signals: dict
+    decisions: dict
+    interpretation: dict
+    freshness: dict
+    layers: dict[str, IntelligenceLayerState]
+    evidence: list[IntelligenceEvidence]
+
+
 class ProjectSyncResponse(BaseModel):
     project: ProjectRead
     run: ProjectIndexRunRead

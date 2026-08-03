@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from backend.app.core.model_recommender.catalog import minimum_tier_satisfied
-from backend.app.core.model_recommender.hardware_profile import best_gpu, gib_to_bytes
+from backend.app.core.model_recommender.hardware_profile import best_gpu
 
 _FRAMEWORK_OVERHEAD_BYTES = 400 * 1024**2
 _ACTIVATION_BASE_BYTES = 350 * 1024**2

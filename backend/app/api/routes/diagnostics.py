@@ -20,7 +20,7 @@ from backend.app.core.version import app_version
 from backend.app.core.storage_accounting import storage_accounting
 from backend.app.core.vault_crypto import redact_security_material
 from backend.app.core.vector_maintenance import embedding_index_policy, vector_repair_plan
-from backend.app.schemas import AppJobRead, DiagnosticBundleJobRequest, DiagnosticBundleResponse
+from backend.app.schemas import AppJobRead, DiagnosticBundleJobRequest
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 

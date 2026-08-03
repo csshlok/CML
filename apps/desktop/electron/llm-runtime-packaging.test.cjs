@@ -20,6 +20,14 @@ const helperSource = fs.readFileSync(
   path.join(__dirname, "helper-integrity.cjs"),
   "utf8",
 );
+const installerInclude = fs.readFileSync(
+  path.join(repoRoot, "apps", "desktop", "build", "installer.nsh"),
+  "utf8",
+);
+const uninstallCleanupScript = fs.readFileSync(
+  path.join(repoRoot, "apps", "desktop", "build", "stop-installed-runtimes.ps1"),
+  "utf8",
+);
 
 test("Windows packages pin verified CPU and CUDA llama.cpp runtimes", () => {
   assert.match(stagingScript, /llama-b9374-bin-win-cpu-x64\.zip/);
@@ -49,4 +57,16 @@ test("packaging and clean-machine checks require the CUDA fallback pair", () => 
   assert.match(validationScript, /llm_cuda_backend_exists/);
   assert.match(helperSource, /llmCudaRuntimeServer/);
   assert.match(helperSource, /CML_LLM_RUNTIME_CUDA_BINARY/);
+});
+
+test("Windows uninstall stops only runtime processes owned by the installation", () => {
+  assert.match(packageScript, /"include": "build\/installer\.nsh"/);
+  assert.match(packageScript, /uninstall\/stop-installed-runtimes\.ps1/);
+  assert.match(installerInclude, /customUnInstall/);
+  assert.match(installerInclude, /stop-installed-runtimes\.ps1/);
+  assert.match(uninstallCleanupScript, /llama-server\.exe/);
+  assert.match(uninstallCleanupScript, /ExecutablePath/);
+  assert.match(uninstallCleanupScript, /GetPathRoot/);
+  assert.match(uninstallCleanupScript, /StartsWith\(/);
+  assert.match(uninstallCleanupScript, /OrdinalIgnoreCase/);
 });

@@ -32,7 +32,7 @@ function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, backendIdentityMatches, rendererSecurityHeaders, sanitizeRendererBody, imageMimeType, imageDimensions, resolveApprovedMediaTarget, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, resolveSetupLaunchState, collectSupportedFiles, findOpenPort, loadStartupProgress, loadStartupFailure, loadRendererFailure, truncateDesktopLogValue, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, assertSafeVaultMoveRoots, verifyCopiedVault, finalizeActiveVaultDeletion, reconcilePendingVaultDeletion, __setMainWindow: (value) => { mainWindow = value; }, __setTunnelManager: (value) => { tunnelManager = value; }, __setStopBackendDependents: (value) => { stopBackendDependents = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; }, __setEnsureBackend: (value) => { ensureBackend = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, backendIdentityMatches, rendererSecurityHeaders, sanitizeRendererBody, imageMimeType, imageDimensions, resolveApprovedMediaTarget, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, resolveSetupLaunchState, collectSupportedFiles, findOpenPort, loadStartupProgress, loadStartupFailure, loadRendererFailure, truncateDesktopLogValue, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, assertSafeVaultMoveRoots, verifyCopiedVault, finalizeActiveVaultDeletion, reconcilePendingVaultDeletion, shutdownApplication, __setMainWindow: (value) => { mainWindow = value; }, __setTunnelManager: (value) => { tunnelManager = value; }, __setStopBackendDependents: (value) => { stopBackendDependents = value; }, __setBackendProcess: (value) => { backendProcess = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; }, __setEnsureBackend: (value) => { ensureBackend = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -336,6 +336,28 @@ test("vault deletion restores data, pointer, and setup state when pre-vault rest
   assert.equal(restored.phase, "complete");
   assert.equal(restored.vault.path, vaultRoot);
   assert.equal(fs.existsSync(path.join(userDataDir, "vault-deletion.json")), false);
+});
+
+test("application shutdown stops the managed model before the backend", async () => {
+  const { exported } = loadMainModule();
+  const events = [];
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.killed = false;
+  child.kill = () => {
+    events.push("backend-stopped");
+    child.killed = true;
+    queueMicrotask(() => child.emit("exit", 0));
+    return true;
+  };
+  exported.__setBackendProcess(child);
+  exported.__setStopBackendDependents(async () => {
+    events.push("model-runtime-stopped");
+  });
+
+  await exported.shutdownApplication();
+
+  assert.deepEqual(events, ["model-runtime-stopped", "backend-stopped"]);
 });
 
 test("prepared vault folder does not become active until committed", async () => {

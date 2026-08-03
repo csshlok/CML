@@ -52,7 +52,6 @@ def publish_cluster_candidate_profile(
         embedding_model_id=selector["embedding_model_id"],
         index_version=selector["index_version"],
     )
-    source_ids = [str(source.get("id") or "") for source in sources if source.get("id")]
     source_types = Counter(str(source.get("source_type") or "unknown") for source in sources)
     term_counts: Counter[str] = Counter()
     for source in sources:
