@@ -10,6 +10,7 @@ from backend.app.core.claim_semantics import extract_structured_claims, split_cl
 from backend.app.core.multi_session_ledger import (
     ConsolidationGroup,
     LedgerEntry,
+    LedgerPlan,
     build_evidence_ledger,
     consolidation_groups,
     ledger_anchor_keys,
@@ -19,6 +20,15 @@ from backend.app.core.multi_session_ledger import (
 
 CLAIM_PACKER_VERSION = "claim-first-cited-v3-ledger"
 CONSOLIDATED_CLAIM_PACKER_VERSION = "claim-first-cited-v4-consolidated"
+READER_EVIDENCE_PACKER_VERSION = "claim-first-cited-v5-compact-reader-evidence"
+READER_EVIDENCE_CONSOLIDATED_PACKER_VERSION = (
+    "claim-first-cited-v6-compact-reader-evidence-consolidated"
+)
+
+# DEAD EXPERIMENT (2026-08-03): the reader-evidence presentation regressed the
+# frozen local A/B twice (0.64 -> 0.62 and 0.50 -> 0.44). Keep its renderer only
+# as audit evidence; production and benchmark callers must use ``legacy``.
+DEAD_READER_EVIDENCE_EXPERIMENT = True
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _AGGREGATION_RE = re.compile(
@@ -27,11 +37,48 @@ _AGGREGATION_RE = re.compile(
     re.IGNORECASE,
 )
 _STOPWORDS = {
-    "about", "after", "again", "also", "been", "before", "could", "did", "does",
-    "from", "have", "into", "many", "more", "much", "should", "that", "their",
-    "them", "then", "there", "these", "they", "this", "those", "what", "when",
-    "where", "which", "with", "would", "your", "you", "were", "was", "are", "the",
-    "and", "for", "how", "who", "why",
+    "about",
+    "after",
+    "again",
+    "also",
+    "been",
+    "before",
+    "could",
+    "did",
+    "does",
+    "from",
+    "have",
+    "into",
+    "many",
+    "more",
+    "much",
+    "should",
+    "that",
+    "their",
+    "them",
+    "then",
+    "there",
+    "these",
+    "they",
+    "this",
+    "those",
+    "what",
+    "when",
+    "where",
+    "which",
+    "with",
+    "would",
+    "your",
+    "you",
+    "were",
+    "was",
+    "are",
+    "the",
+    "and",
+    "for",
+    "how",
+    "who",
+    "why",
 }
 
 
@@ -83,16 +130,27 @@ def pack_claim_evidence(
     token_budget: int,
     question_type: str = "",
     consolidate: bool = False,
+    presentation: str = "legacy",
 ) -> tuple[str, dict]:
     if token_budget <= 0:
         raise ValueError("token_budget must be positive")
+    if presentation not in {"legacy", "reader_evidence"}:
+        raise ValueError("presentation must be 'legacy' or 'reader_evidence'")
+    if presentation == "reader_evidence":
+        raise RuntimeError(
+            "reader_evidence is dead experimental code: it failed the frozen accuracy gates"
+        )
     claims = _claims(sessions, atomic=consolidate)
     if not claims:
         return "", _metadata([], [], token_budget=token_budget, used_tokens=0)
 
     scores = _score_claims(question, question_type, claims)
     ledger_plan, ledger_entries = build_evidence_ledger(
-        question, question_type, claims, consolidate=consolidate
+        question,
+        question_type,
+        claims,
+        consolidate=consolidate,
+        numeric_semantics="legacy" if presentation == "legacy" else "current",
     )
     groups = consolidation_groups(ledger_entries) if consolidate else []
     for claim in claims:
@@ -162,22 +220,19 @@ def pack_claim_evidence(
         selected.values(),
         key=lambda item: (item.date, item.session_id, item.turn_index, item.sentence_index),
     )
-    context = _render(
+    context = _render_presentation(
         ordered,
         ledger_entries=ledger_entries,
         consolidation=groups,
-        annotate=True,
+        ledger_plan=ledger_plan,
+        presentation=presentation,
     )
     actual_estimate = estimate_claim_tokens(context)
     if actual_estimate > token_budget:
         # Rendering headers can push the estimate slightly over the selection allowance.
         # Remove the lowest-scored non-coverage claims until the complete packet fits.
         removable = sorted(
-            (
-                claim
-                for claim in ordered
-                if selection_reason.get(claim.key) != "session_coverage"
-            ),
+            (claim for claim in ordered if selection_reason.get(claim.key) != "session_coverage"),
             key=lambda item: scores[item.key],
         )
         while actual_estimate > token_budget and removable:
@@ -186,11 +241,12 @@ def pack_claim_evidence(
                 selected.values(),
                 key=lambda item: (item.date, item.session_id, item.turn_index, item.sentence_index),
             )
-            context = _render(
+            context = _render_presentation(
                 ordered,
                 ledger_entries=ledger_entries,
                 consolidation=groups,
-                annotate=True,
+                ledger_plan=ledger_plan,
+                presentation=presentation,
             )
             actual_estimate = estimate_claim_tokens(context)
 
@@ -199,8 +255,13 @@ def pack_claim_evidence(
         ordered,
         token_budget=token_budget,
         used_tokens=actual_estimate,
+        ledger_entries=ledger_entries,
+        ledger_plan=ledger_plan,
+        presentation=presentation,
     )
-    meta["selection_reasons"] = dict(Counter(selection_reason.get(item.key, "unknown") for item in ordered))
+    meta["selection_reasons"] = dict(
+        Counter(selection_reason.get(item.key, "unknown") for item in ordered)
+    )
     selected_ledger = [ledger_entries[item.key] for item in ordered]
     meta["ledger"] = {
         "operation": ledger_plan.operation,
@@ -213,12 +274,17 @@ def pack_claim_evidence(
             len(group.claim_keys) for group in _renderable_groups(groups, ordered)
         ),
         "conflicting_preference_group_count": sum(
-            group.conflicting_preference_stances
-            for group in _renderable_groups(groups, ordered)
+            group.conflicting_preference_stances for group in _renderable_groups(groups, ordered)
         ),
     }
     meta["packing"] = (
-        CONSOLIDATED_CLAIM_PACKER_VERSION if consolidate else CLAIM_PACKER_VERSION
+        CONSOLIDATED_CLAIM_PACKER_VERSION
+        if presentation == "legacy" and consolidate
+        else CLAIM_PACKER_VERSION
+        if presentation == "legacy"
+        else READER_EVIDENCE_CONSOLIDATED_PACKER_VERSION
+        if consolidate
+        else READER_EVIDENCE_PACKER_VERSION
     )
     return context, meta
 
@@ -273,24 +339,26 @@ def _claims(sessions: Iterable[SessionEnvelope], *, atomic: bool = False) -> lis
 def _sentences(content: str) -> list[str]:
     if not content:
         return []
-    initial = [
-        item.strip()
-        for item in re.split(r"(?<=[.!?])\s+|\n+", content)
-        if item.strip()
-    ]
+    initial = [item.strip() for item in re.split(r"(?<=[.!?])\s+|\n+", content) if item.strip()]
     output: list[str] = []
     for sentence in initial:
         if len(sentence) <= 700:
             output.append(sentence)
             continue
-        clauses = [item.strip() for item in re.split(r"(?<=[;:])\s+|\s+[—–-]\s+", sentence) if item.strip()]
+        clauses = [
+            item.strip() for item in re.split(r"(?<=[;:])\s+|\s+[—–-]\s+", sentence) if item.strip()
+        ]
         if len(clauses) == 1:
-            clauses = [sentence[index : index + 600].strip() for index in range(0, len(sentence), 600)]
+            clauses = [
+                sentence[index : index + 600].strip() for index in range(0, len(sentence), 600)
+            ]
         output.extend(clauses)
     return output
 
 
-def _score_claims(question: str, question_type: str, claims: list[Claim]) -> dict[tuple[str, int, int], float]:
+def _score_claims(
+    question: str, question_type: str, claims: list[Claim]
+) -> dict[tuple[str, int, int], float]:
     query_tokens = _terms(question)
     document_frequency: Counter[str] = Counter()
     claim_terms: dict[tuple[str, int, int], set[str]] = {}
@@ -300,16 +368,37 @@ def _score_claims(question: str, question_type: str, claims: list[Claim]) -> dic
         document_frequency.update(terms)
     count = max(len(claims), 1)
     aggregation = bool(_AGGREGATION_RE.search(question))
-    asks_numeric = bool(re.search(r"\b(how many|how much|how long|percent|total|more|less|older|younger)\b", question, re.I))
-    asks_temporal = "temporal" in question_type or bool(re.search(r"\b(when|before|after|latest|current|now|changed)\b", question, re.I))
+    asks_numeric = bool(
+        re.search(
+            r"\b(how many|how much|how long|percent|total|more|less|older|younger)\b",
+            question,
+            re.I,
+        )
+    )
+    asks_temporal = "temporal" in question_type or bool(
+        re.search(r"\b(when|before|after|latest|current|now|changed)\b", question, re.I)
+    )
     scores: dict[tuple[str, int, int], float] = {}
     for claim in claims:
         overlap = query_tokens & claim_terms[claim.key]
-        lexical = sum(math.log((count + 1) / (document_frequency[term] + 1)) + 1 for term in overlap)
+        lexical = sum(
+            math.log((count + 1) / (document_frequency[term] + 1)) + 1 for term in overlap
+        )
         phrase = sum(1.5 for pair in _bigrams(question) if pair in claim.text.casefold())
         numeric = 1.5 if asks_numeric and re.search(r"\b\d[\d,./:%-]*\b", claim.text) else 0.0
-        temporal = 1.0 if asks_temporal and re.search(r"\b(today|yesterday|tomorrow|last|next|since|until|\d{4})\b", claim.text, re.I) else 0.0
-        role = 0.75 if question_type == "single-session-assistant" and claim.speaker == "assistant" else 0.0
+        temporal = (
+            1.0
+            if asks_temporal
+            and re.search(
+                r"\b(today|yesterday|tomorrow|last|next|since|until|\d{4})\b", claim.text, re.I
+            )
+            else 0.0
+        )
+        role = (
+            0.75
+            if question_type == "single-session-assistant" and claim.speaker == "assistant"
+            else 0.0
+        )
         if question_type != "single-session-assistant" and claim.speaker == "user":
             role += 0.25
         rank_prior = 1.0 / (1 + claim.retrieval_rank)
@@ -327,7 +416,9 @@ def _terms(text: str) -> set[str]:
 
 
 def _bigrams(text: str) -> set[str]:
-    tokens = [token.casefold() for token in _TOKEN_RE.findall(text) if token.casefold() not in _STOPWORDS]
+    tokens = [
+        token.casefold() for token in _TOKEN_RE.findall(text) if token.casefold() not in _STOPWORDS
+    ]
     return {f"{left} {right}" for left, right in zip(tokens, tokens[1:])}
 
 
@@ -336,14 +427,61 @@ def _render(
     *,
     ledger_entries: dict[tuple[str, int, int], LedgerEntry] | None = None,
     consolidation: list[ConsolidationGroup] | None = None,
-    annotate: bool = False,
+    ledger_plan: LedgerPlan | None = None,
+) -> str:
+    evidence_ids = {claim.key: f"E{index}" for index, claim in enumerate(claims, start=1)}
+    operation = str(getattr(ledger_plan, "operation", "fact_lookup")).replace("_", " ")
+    lines: list[str] = [
+        f"Evidence | chronological exact quotes | task: {operation}",
+        "Labels: done=completed; total=running total; increment=separate contribution; measure=measurement.",
+        "",
+    ]
+    groups = _renderable_groups(consolidation or [], claims)
+    if groups:
+        lines.append("Cross-session index (navigation only; evidence below is authoritative)")
+        for group in groups:
+            cited = ", ".join(f"[{evidence_ids[key]}]" for key in group.claim_keys)
+            stance = "; preference conflict" if group.conflicting_preference_stances else ""
+            lines.append(
+                f"- {group.topic_key}: {cited}; latest [{evidence_ids[group.latest_claim_key]}]{stance}"
+            )
+        lines.append("")
+    current: tuple[str, str] | None = None
+    for claim in claims:
+        header = (claim.session_id, claim.date)
+        if header != current:
+            if lines:
+                lines.append("")
+            lines.append(f"Session {claim.session_id} | {claim.date}")
+            current = header
+        ledger = (ledger_entries or {}).get(claim.key)
+        labels = _reader_labels(ledger)
+        label_text = f" [{'; '.join(labels)}]" if labels else ""
+        lines.append(
+            f"- [{evidence_ids[claim.key]}] {claim.speaker} t{claim.turn_index}.{claim.sentence_index}"
+            f"{label_text} {claim.text}"
+        )
+    return "\n".join(lines)
+
+
+def _render_legacy(
+    claims: list[Claim],
+    *,
+    ledger_entries: dict[tuple[str, int, int], LedgerEntry] | None = None,
+    consolidation: list[ConsolidationGroup] | None = None,
 ) -> str:
     lines: list[str] = []
     groups = _renderable_groups(consolidation or [], claims)
     if groups:
-        lines.append("Consolidated evidence index (navigation only; cited source claims below are authoritative)")
+        lines.append(
+            "Consolidated evidence index (navigation only; cited source claims below are authoritative)"
+        )
         for group in groups:
-            stance = ", conflicting explicit preference stances" if group.conflicting_preference_stances else ""
+            stance = (
+                ", conflicting explicit preference stances"
+                if group.conflicting_preference_stances
+                else ""
+            )
             lines.append(
                 f"- {group.topic_key}: {len(group.claim_keys)} cited observations across "
                 f"{len(group.session_ids)} sessions; latest citation {group.latest_claim_key[0]}{stance}"
@@ -358,11 +496,51 @@ def _render(
             lines.append(f"Session {claim.session_id} — {claim.date}")
             current = header
         ledger = (ledger_entries or {}).get(claim.key)
-        annotation = f" {{{ledger.annotation}}}" if annotate and ledger and ledger.annotation else ""
+        annotation = f" {{{ledger.annotation}}}" if ledger and ledger.annotation else ""
         lines.append(
-            f"- [{claim.speaker} turn {claim.turn_index} sentence {claim.sentence_index}]{annotation} {claim.text}"
+            f"- [{claim.speaker} turn {claim.turn_index} sentence {claim.sentence_index}]"
+            f"{annotation} {claim.text}"
         )
     return "\n".join(lines)
+
+
+def _render_presentation(
+    claims: list[Claim],
+    *,
+    ledger_entries: dict[tuple[str, int, int], LedgerEntry] | None,
+    consolidation: list[ConsolidationGroup] | None,
+    ledger_plan: LedgerPlan | None,
+    presentation: str,
+) -> str:
+    if presentation == "legacy":
+        return _render_legacy(
+            claims,
+            ledger_entries=ledger_entries,
+            consolidation=consolidation,
+        )
+    return _render(
+        claims,
+        ledger_entries=ledger_entries,
+        consolidation=consolidation,
+        ledger_plan=ledger_plan,
+    )
+
+
+def _reader_labels(entry: LedgerEntry | None) -> list[str]:
+    if entry is None:
+        return []
+    labels: list[str] = []
+    if entry.assertion_mode != "unknown":
+        labels.append("done" if entry.assertion_mode == "completed" else entry.assertion_mode)
+    if entry.numeric_role == "cumulative_snapshot":
+        labels.append("total")
+    elif entry.numeric_role == "delta":
+        labels.append("increment")
+    elif entry.numeric_role == "measurement":
+        labels.append("measure")
+    if entry.event_role != "none":
+        labels.append(entry.event_role)
+    return labels
 
 
 def _renderable_groups(
@@ -394,6 +572,9 @@ def _metadata(
     *,
     token_budget: int,
     used_tokens: int,
+    ledger_entries: dict[tuple[str, int, int], LedgerEntry] | None = None,
+    ledger_plan: LedgerPlan | None = None,
+    presentation: str = "legacy",
 ) -> dict:
     selected_sessions = list(dict.fromkeys(item.session_id for item in selected))
     all_sessions = list(dict.fromkeys(item.session_id for item in all_claims))
@@ -401,7 +582,15 @@ def _metadata(
         "packing": CLAIM_PACKER_VERSION,
         "token_budget": token_budget,
         "packed_tokens_estimate": used_tokens,
-        "unbounded_claim_tokens_estimate": estimate_claim_tokens(_render(all_claims)),
+        "unbounded_claim_tokens_estimate": estimate_claim_tokens(
+            _render_presentation(
+                all_claims,
+                ledger_entries=ledger_entries,
+                consolidation=None,
+                ledger_plan=ledger_plan,
+                presentation=presentation,
+            )
+        ),
         "candidate_claim_count": len(all_claims),
         "selected_claim_count": len(selected),
         "omitted_claim_count": max(0, len(all_claims) - len(selected)),

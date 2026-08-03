@@ -5,9 +5,7 @@ from dataclasses import dataclass
 from typing import Iterable, Literal, Protocol
 
 
-AssertionMode = Literal[
-    "completed", "current", "planned", "suggested", "hypothetical", "unknown"
-]
+AssertionMode = Literal["completed", "current", "planned", "suggested", "hypothetical", "unknown"]
 NumericRole = Literal["cumulative_snapshot", "delta", "measurement", "unknown"]
 EventRole = Literal["start", "end", "update", "none"]
 
@@ -76,27 +74,79 @@ class ConsolidationGroup:
 
 
 _STOPWORDS = {
-    "about", "after", "again", "also", "been", "before", "could", "did",
-    "does", "from", "have", "into", "many", "more", "much", "should",
-    "that", "their", "them", "then", "there", "these", "they", "this",
-    "those", "what", "when", "where", "which", "with", "would", "your",
-    "you", "were", "was", "are", "the", "and", "for", "how", "who",
-    "why", "does", "did", "get",
+    "about",
+    "after",
+    "again",
+    "also",
+    "been",
+    "before",
+    "could",
+    "did",
+    "does",
+    "from",
+    "have",
+    "into",
+    "many",
+    "more",
+    "much",
+    "should",
+    "that",
+    "their",
+    "them",
+    "then",
+    "there",
+    "these",
+    "they",
+    "this",
+    "those",
+    "what",
+    "when",
+    "where",
+    "which",
+    "with",
+    "would",
+    "your",
+    "you",
+    "were",
+    "was",
+    "are",
+    "the",
+    "and",
+    "for",
+    "how",
+    "who",
+    "why",
+    "does",
+    "did",
+    "get",
 }
 
 _NUMBER_WORDS = {
-    "zero": 0.0, "one": 1.0, "two": 2.0, "three": 3.0, "four": 4.0,
-    "five": 5.0, "six": 6.0, "seven": 7.0, "eight": 8.0, "nine": 9.0,
-    "ten": 10.0, "eleven": 11.0, "twelve": 12.0, "thirteen": 13.0,
-    "fourteen": 14.0, "fifteen": 15.0, "sixteen": 16.0,
-    "seventeen": 17.0, "eighteen": 18.0, "nineteen": 19.0,
+    "zero": 0.0,
+    "one": 1.0,
+    "two": 2.0,
+    "three": 3.0,
+    "four": 4.0,
+    "five": 5.0,
+    "six": 6.0,
+    "seven": 7.0,
+    "eight": 8.0,
+    "nine": 9.0,
+    "ten": 10.0,
+    "eleven": 11.0,
+    "twelve": 12.0,
+    "thirteen": 13.0,
+    "fourteen": 14.0,
+    "fifteen": 15.0,
+    "sixteen": 16.0,
+    "seventeen": 17.0,
+    "eighteen": 18.0,
+    "nineteen": 19.0,
     "twenty": 20.0,
 }
 
 
-def plan_ledger(
-    question: str, question_type: str = "", *, consolidate: bool = False
-) -> LedgerPlan:
+def plan_ledger(question: str, question_type: str = "", *, consolidate: bool = False) -> LedgerPlan:
     lowered = question.casefold()
     if "temporal" in question_type or re.search(
         r"\bhow long\b|\b(days?|weeks?|months?|years?)\b|\bwhen\b", lowered
@@ -129,11 +179,13 @@ def build_evidence_ledger(
     claims: Iterable[ClaimLike],
     *,
     consolidate: bool = False,
+    # ``current`` belongs to the dead reader-evidence accuracy experiment. It
+    # remains importable for audit reproduction, but production stays legacy.
+    numeric_semantics: Literal["legacy", "current"] = "legacy",
 ) -> tuple[LedgerPlan, dict[tuple[str, int, int], LedgerEntry]]:
     plan = plan_ledger(question, question_type, consolidate=consolidate)
     entries = {
-        claim.key: _entry(claim, plan)
-        for claim in claims
+        claim.key: _entry(claim, plan, numeric_semantics=numeric_semantics) for claim in claims
     }
     return plan, entries
 
@@ -156,7 +208,11 @@ def ledger_priority(entry: LedgerEntry, plan: LedgerPlan) -> float:
         score += 2.2
     if plan.operation == "latest_state" and entry.event_role == "update":
         score += 1.8
-    if plan.consolidate and plan.operation == "preference" and "preference" in entry.structured_kinds:
+    if (
+        plan.consolidate
+        and plan.operation == "preference"
+        and "preference" in entry.structured_kinds
+    ):
         score += 2.0
     if plan.consolidate and plan.operation == "multi_session" and entry.structured_topic_keys:
         score += 1.2
@@ -231,11 +287,7 @@ def consolidation_groups(
             topic_entries,
             key=lambda entry: (entry.session_date, -entry.retrieval_rank, entry.claim_key),
         )
-        stances = {
-            polarity
-            for entry in ordered
-            for polarity in entry.preference_polarities
-        }
+        stances = {polarity for entry in ordered for polarity in entry.preference_polarities}
         groups.append(
             ConsolidationGroup(
                 topic_key=topic_key,
@@ -252,7 +304,12 @@ def consolidation_groups(
     return groups[: max(1, limit)]
 
 
-def _entry(claim: ClaimLike, plan: LedgerPlan) -> LedgerEntry:
+def _entry(
+    claim: ClaimLike,
+    plan: LedgerPlan,
+    *,
+    numeric_semantics: Literal["legacy", "current"] = "current",
+) -> LedgerEntry:
     text = claim.text
     lowered = text.casefold()
     assertion_mode = _assertion_mode(lowered, claim.speaker)
@@ -261,9 +318,7 @@ def _entry(claim: ClaimLike, plan: LedgerPlan) -> LedgerEntry:
         for value in re.findall(r"(?<![\w.])\d+(?:,\d{3})*(?:\.\d+)?", text)
     )
     word_values = tuple(
-        _NUMBER_WORDS[token]
-        for token in re.findall(r"[a-z]+", lowered)
-        if token in _NUMBER_WORDS
+        _NUMBER_WORDS[token] for token in re.findall(r"[a-z]+", lowered) if token in _NUMBER_WORDS
     )
     numeric_values = digit_values + word_values
     return LedgerEntry(
@@ -274,13 +329,15 @@ def _entry(claim: ClaimLike, plan: LedgerPlan) -> LedgerEntry:
         speaker=claim.speaker,
         text=text,
         assertion_mode=assertion_mode,
-        numeric_role=_numeric_role(lowered, bool(numeric_values)),
+        numeric_role=_numeric_role(
+            lowered,
+            bool(numeric_values),
+            legacy=numeric_semantics == "legacy",
+        ),
         numeric_values=numeric_values,
         event_role=_event_role(lowered),
         query_overlap=len(plan.target_terms & _terms(text)),
-        provenance_authority=(
-            1 if claim.speaker == "user" and plan.prefer_user_provenance else 0
-        ),
+        provenance_authority=(1 if claim.speaker == "user" and plan.prefer_user_provenance else 0),
         structured_topic_keys=tuple(getattr(claim, "structured_topic_keys", ()) or ()),
         structured_kinds=tuple(getattr(claim, "structured_kinds", ()) or ()),
         preference_polarities=tuple(getattr(claim, "preference_polarities", ()) or ()),
@@ -305,7 +362,7 @@ def _assertion_mode(text: str, speaker: str) -> AssertionMode:
     return "unknown"
 
 
-def _numeric_role(text: str, has_number: bool) -> NumericRole:
+def _numeric_role(text: str, has_number: bool, *, legacy: bool = False) -> NumericRole:
     if not has_number:
         return "unknown"
     if re.search(r"\b(so far|in total|total of|altogether|already|now|to date|that's)\b", text):
@@ -314,7 +371,16 @@ def _numeric_role(text: str, has_number: bool) -> NumericRole:
         return "delta"
     if re.search(r"\b(ounces?|pounds?|kg|kilograms?|miles?|km|percent|%)\b", text):
         return "measurement"
-    return "cumulative_snapshot"
+    if legacy:
+        return "cumulative_snapshot"
+    if re.search(
+        r"\b(attended|bought|sold|completed|visited|went|made|fixed|assembled|"
+        r"watched|ran|donated|added|received|created)\b",
+        text,
+    ):
+        return "delta"
+    # A bare number is not a running total unless the source says that it is.
+    return "measurement"
 
 
 def _event_role(text: str) -> EventRole:

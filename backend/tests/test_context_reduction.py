@@ -16,19 +16,54 @@ class ContextReductionTests(unittest.TestCase):
         self.assertIn("token reduction", excerpt.lower())
         self.assertNotIn("General introduction", excerpt)
 
+    @unittest.skip("DEAD EXPERIMENT: reader-v4 source ordering missed its promotion gate")
+    def test_salient_excerpt_restores_source_order_after_relevance_selection(self) -> None:
+        from backend.app.core.context_reduction import salient_excerpt
+
+        text = (
+            "The migration started on Monday. "
+            "Unrelated archival background fills this sentence with extra detail. "
+            "The migration failed on Tuesday because the schema was stale. "
+            "The migration was repaired on Wednesday after applying the schema update."
+        )
+
+        excerpt = salient_excerpt(text, prompt="migration schema failed repaired", token_budget=34)
+
+        self.assertLess(excerpt.index("failed on Tuesday"), excerpt.index("repaired on Wednesday"))
+
     def test_build_context_reduction_plan_dedupes_and_emits_diagnostics(self) -> None:
         from backend.app.core.context_reduction import build_context_reduction_plan
 
         citations = [
-            {"source_id": "a", "source_title": "One", "snippet": "Benchmark packet latency and token reduction proof.", "score": 0.9},
-            {"source_id": "a", "source_title": "One", "snippet": "Benchmark packet latency and token reduction proof.", "score": 0.8},
-            {"source_id": "b", "source_title": "Two", "snippet": "Different source about ingestion timing and parser speed.", "score": 0.7},
+            {
+                "source_id": "a",
+                "source_title": "One",
+                "snippet": "Benchmark packet latency and token reduction proof.",
+                "score": 0.9,
+            },
+            {
+                "source_id": "a",
+                "source_title": "One",
+                "snippet": "Benchmark packet latency and token reduction proof.",
+                "score": 0.8,
+            },
+            {
+                "source_id": "b",
+                "source_title": "Two",
+                "snippet": "Different source about ingestion timing and parser speed.",
+                "score": 0.7,
+            },
         ]
         memory_items = [
-            {"kind": "fact", "summary": "Users care about repeated-turn token savings and first-answer speed."},
+            {
+                "kind": "fact",
+                "summary": "Users care about repeated-turn token savings and first-answer speed.",
+            },
             {"kind": "fact", "summary": "Less relevant archival note."},
         ]
-        working_memory = {"summary": "Current benchmark focus is parser speed, token reduction, and retrieval proof."}
+        working_memory = {
+            "summary": "Current benchmark focus is parser speed, token reduction, and retrieval proof."
+        }
 
         plan = build_context_reduction_plan(
             prompt="benchmark token reduction and parser speed",
@@ -43,7 +78,10 @@ class ContextReductionTests(unittest.TestCase):
         self.assertLessEqual(len(plan["citations"]), 3)
         self.assertEqual(plan["diagnostics"]["raw_candidate_citation_count"], 3)
         self.assertGreaterEqual(plan["diagnostics"]["dropped_citation_count"], 1)
-        self.assertIn("duplicate_evidence", {item["reason"] for item in plan["diagnostics"]["dropped_citations"]})
+        self.assertIn(
+            "duplicate_evidence",
+            {item["reason"] for item in plan["diagnostics"]["dropped_citations"]},
+        )
         self.assertIn("strategy", plan["diagnostics"])
         self.assertTrue(plan["memory_items"])
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from backend.app.core.claim_evidence_packing import (
     CLAIM_PACKER_VERSION,
     CONSOLIDATED_CLAIM_PACKER_VERSION,
@@ -25,10 +27,7 @@ def test_claim_packer_respects_budget_and_preserves_session_coverage() -> None:
         _session(
             f"session-{index}",
             index,
-            " ".join(
-                f"I discussed deployment target {index} item {item}."
-                for item in range(20)
-            )
+            " ".join(f"I discussed deployment target {index} item {item}." for item in range(20))
             + f"The release marker is value {index}.",
         )
         for index in range(5)
@@ -94,6 +93,106 @@ def test_consolidated_packer_splits_compound_claims_and_preserves_sources() -> N
     assert meta["ledger"]["cross_session_consolidated_claim_count"] == 2
 
 
+@pytest.mark.skip(reason="DEAD EXPERIMENT: reader-evidence presentation failed accuracy gates")
+def test_reader_evidence_packet_makes_temporal_updates_explicit_and_chronological() -> None:
+    context, _ = pack_claim_evidence(
+        question="What is my current reading choice?",
+        sessions=[
+            _session("old", 0, "I am currently reading Dune."),
+            SessionEnvelope(
+                session_id="new",
+                date="2025-02-01",
+                turns=[{"role": "user", "content": "I am now reading Foundation."}],
+                retrieval_rank=1,
+            ),
+        ],
+        token_budget=220,
+        question_type="knowledge-update",
+        consolidate=True,
+        presentation="reader_evidence",
+    )
+
+    assert "task: latest state" in context
+    assert context.index("Session old") < context.index("Session new")
+    assert context.index("[E1]") < context.index("[E2]")
+    assert "Dune" in context and "Foundation" in context
+    assert "{current" not in context
+
+
+@pytest.mark.skip(reason="DEAD EXPERIMENT: reader-evidence presentation failed accuracy gates")
+def test_reader_evidence_packet_distinguishes_running_totals_from_contributions() -> None:
+    context, _ = pack_claim_evidence(
+        question="How many workshops have I attended in total?",
+        sessions=[
+            _session("first", 0, "I attended two workshops."),
+            _session("latest", 1, "I have attended five workshops so far."),
+        ],
+        token_budget=220,
+        question_type="multi-session",
+        presentation="reader_evidence",
+    )
+
+    assert "task: aggregate" in context
+    assert "increment=separate contribution" in context
+    assert "total=running total" in context
+    assert "[done; increment]" in context
+    assert "[done; total]" in context
+
+
+@pytest.mark.skip(reason="DEAD EXPERIMENT: reader-evidence presentation failed accuracy gates")
+def test_reader_evidence_packet_scales_ids_without_repeating_claim_text() -> None:
+    sessions = [
+        _session(f"session-{index}", index, f"I completed project milestone {index}.")
+        for index in range(12)
+    ]
+
+    context, meta = pack_claim_evidence(
+        question="Which project milestones did I complete?",
+        sessions=sessions,
+        token_budget=600,
+        question_type="multi-session",
+        presentation="reader_evidence",
+    )
+
+    assert meta["included_session_count"] == 12
+    for index in range(1, 13):
+        assert context.count(f"[E{index}]") == 1
+    for index in range(12):
+        assert context.count(f"I completed project milestone {index}.") == 1
+
+
+@pytest.mark.skip(reason="DEAD EXPERIMENT: reader-evidence presentation failed accuracy gates")
+def test_reader_evidence_packet_does_not_force_task_labels_onto_generic_text() -> None:
+    context, _ = pack_claim_evidence(
+        question="What color was discussed?",
+        sessions=[_session("generic", 0, "The notebook was blue.")],
+        token_budget=100,
+        question_type="single-session-user",
+        presentation="reader_evidence",
+    )
+
+    assert "The notebook was blue." in context
+    assert "[done" not in context
+    assert "[total" not in context
+    assert "[start" not in context
+
+
+@pytest.mark.skip(reason="DEAD EXPERIMENT: paired reader benchmark is retired")
+def test_legacy_presentation_is_frozen_for_local_ab_comparison() -> None:
+    context, meta = pack_claim_evidence(
+        question="How many workshops did I attend?",
+        sessions=[_session("legacy", 0, "I attended three workshops.")],
+        token_budget=120,
+        question_type="multi-session",
+        presentation="legacy",
+    )
+
+    assert meta["packing"] == "claim-first-cited-v3-ledger"
+    assert "[user turn 0 sentence 0]" in context
+    assert "{completed,cumulative_snapshot}" in context
+    assert "Evidence packet - chronological" not in context
+
+
 def test_budget_accuracy_reports_over_and_under_groups() -> None:
     hypotheses = [
         {
@@ -131,8 +230,7 @@ def test_budget_accuracy_reports_over_and_under_groups() -> None:
         {"question_id": "under-correct", "autoeval_label": {"label": True}},
     ]
     independent = [
-        {"question_id": row["question_id"], "autoeval_label": {"label": True}}
-        for row in hypotheses
+        {"question_id": row["question_id"], "autoeval_label": {"label": True}} for row in hypotheses
     ]
     metrics = _budget_accuracy_metrics(
         hypotheses,

@@ -13,14 +13,18 @@ def build_context_reduction_plan(
     token_budget: int,
     cluster_descriptions: list[str] | None = None,
 ) -> dict:
-    raw_history_tokens = sum(estimate_tokens(turn.get("content", "")) for turn in (recent_turns or []))
+    raw_history_tokens = sum(
+        estimate_tokens(turn.get("content", "")) for turn in (recent_turns or [])
+    )
     raw_memory_tokens = sum(
         estimate_tokens(str(item.get("summary") or item.get("text") or ""))
         for item in (memory_items or [])
     )
     raw_working_memory_tokens = estimate_tokens(str((working_memory or {}).get("summary") or ""))
     trimmed_turns = trim_recent_turns_to_budget(recent_turns or [], token_budget=token_budget)
-    history_tokens_estimate = sum(estimate_tokens(turn.get("content", "")) for turn in trimmed_turns)
+    history_tokens_estimate = sum(
+        estimate_tokens(turn.get("content", "")) for turn in trimmed_turns
+    )
     history_turns_trimmed = max(0, len(recent_turns or []) - len(trimmed_turns))
     memory_plan = reduce_memory_items(
         prompt=prompt,
@@ -42,11 +46,15 @@ def build_context_reduction_plan(
     )
     remaining = max(token_budget - base_tokens, 80)
     citation_plan = reduce_citations(prompt=prompt, citations=citations, token_budget=remaining)
-    citation_trimmed_count = citation_plan["trimmed_count"] + max(0, len(citations) - len(citation_plan["citations"]))
+    citation_trimmed_count = citation_plan["trimmed_count"] + max(
+        0, len(citations) - len(citation_plan["citations"])
+    )
     if (
         citation_trimmed_count
         and citation_plan["citations"]
-        and not any(str(item.get("snippet") or "").endswith("...") for item in citation_plan["citations"])
+        and not any(
+            str(item.get("snippet") or "").endswith("...") for item in citation_plan["citations"]
+        )
     ):
         citations_with_marker = [dict(item) for item in citation_plan["citations"]]
         longest_index, longest = max(
@@ -58,7 +66,9 @@ def build_context_reduction_plan(
         citation_plan = {
             **citation_plan,
             "citations": citations_with_marker,
-            "tokens": sum(estimate_tokens(item.get("snippet", "")) for item in citations_with_marker),
+            "tokens": sum(
+                estimate_tokens(item.get("snippet", "")) for item in citations_with_marker
+            ),
         }
     total_tokens = base_tokens + citation_plan["tokens"]
     raw_context_tokens = (
@@ -78,7 +88,10 @@ def build_context_reduction_plan(
         "kept_citation_count": len(citation_plan["citations"]),
         "dropped_citation_count": len(dropped_citations),
         "dropped_citations": dropped_citations[:12],
-        "kept_citation_titles": [str(item.get("source_title") or item.get("title") or "") for item in citation_plan["citations"]],
+        "kept_citation_titles": [
+            str(item.get("source_title") or item.get("title") or "")
+            for item in citation_plan["citations"]
+        ],
         "memory_items_kept": len(memory_plan["items"]),
         "memory_items_dropped": memory_plan["dropped_count"],
         "working_memory_trimmed": bool(working_memory_plan["trimmed"]),
@@ -129,7 +142,9 @@ def reduce_citations(*, prompt: str, citations: list[dict], token_budget: int) -
     for citation in selected:
         trimmed = dict(citation)
         snippet = str(citation.get("snippet") or "")
-        compressed = salient_excerpt(snippet, prompt=prompt, token_budget=max(24, per_citation_budget - 16))
+        compressed = salient_excerpt(
+            snippet, prompt=prompt, token_budget=max(24, per_citation_budget - 16)
+        )
         trimmed["snippet"] = compressed
         kept.append(trimmed)
         original_tokens = estimate_tokens(snippet)
@@ -140,12 +155,18 @@ def reduce_citations(*, prompt: str, citations: list[dict], token_budget: int) -
     budget_dropped = rank_citations(prompt, deduped)[max_citations:]
     dropped.extend(
         {
-            "title": str(citation.get("source_title") or citation.get("title") or "Untitled source"),
+            "title": str(
+                citation.get("source_title") or citation.get("title") or "Untitled source"
+            ),
             "reason": "budget_limit",
         }
         for citation in budget_dropped
     )
-    if budget_dropped and kept and not any(str(item.get("snippet") or "").endswith("...") for item in kept):
+    if (
+        budget_dropped
+        and kept
+        and not any(str(item.get("snippet") or "").endswith("...") for item in kept)
+    ):
         longest_index, longest = max(
             enumerate(kept),
             key=lambda item: estimate_tokens(str(item[1].get("snippet") or "")),
@@ -205,7 +226,9 @@ def reduce_working_memory(*, prompt: str, working_memory: dict, token_budget: in
     }
 
 
-def trim_recent_turns_to_budget(recent_turns: list[dict[str, str]], *, token_budget: int) -> list[dict[str, str]]:
+def trim_recent_turns_to_budget(
+    recent_turns: list[dict[str, str]], *, token_budget: int
+) -> list[dict[str, str]]:
     if not recent_turns:
         return []
     history_budget = min(max(int(token_budget * 0.25), 96), 384)
@@ -216,7 +239,9 @@ def trim_recent_turns_to_budget(recent_turns: list[dict[str, str]], *, token_bud
         role = str(turn.get("role") or "").strip().lower()
         if role not in {"user", "assistant"} or not content:
             continue
-        trimmed_content = salient_excerpt(content, prompt=content, token_budget=min(96, max(history_budget // 2, 32)))
+        trimmed_content = salient_excerpt(
+            content, prompt=content, token_budget=min(96, max(history_budget // 2, 32))
+        )
         turn_tokens = estimate_tokens(trimmed_content)
         if selected and used + turn_tokens > history_budget:
             break
@@ -235,12 +260,17 @@ def salient_excerpt(text: str, *, prompt: str, token_budget: int) -> str:
     cleaned = " ".join(str(text or "").split())
     if estimate_tokens(cleaned) <= token_budget:
         return cleaned
-    segments = [segment.strip() for segment in re.split(r"(?<=[.!?])\s+|\n+", cleaned) if segment.strip()]
+    segments = [
+        segment.strip() for segment in re.split(r"(?<=[.!?])\s+|\n+", cleaned) if segment.strip()
+    ]
     if not segments:
         return trim_text_to_token_budget(cleaned, token_budget)
     query_terms = _query_terms(prompt)
     scored = sorted(
-        ((segment, _segment_score(segment, query_terms), index) for index, segment in enumerate(segments)),
+        (
+            (segment, _segment_score(segment, query_terms), index)
+            for index, segment in enumerate(segments)
+        ),
         key=lambda item: (item[1], -item[2]),
         reverse=True,
     )
@@ -256,6 +286,9 @@ def salient_excerpt(text: str, *, prompt: str, token_budget: int) -> str:
             break
     if not selected:
         return trim_text_to_token_budget(cleaned, token_budget)
+    # DEAD EXPERIMENT (reader v4): re-sorting selected sentences into source
+    # order was part of an accuracy bundle that missed its promotion gate.
+    # joined = " ".join(segment for _index, segment in sorted(selected))
     joined = " ".join(selected)
     if estimate_tokens(joined) > token_budget:
         return trim_text_to_token_budget(joined, token_budget)
@@ -273,7 +306,9 @@ def dedupe_citations(citations: list[dict]) -> tuple[list[dict], list[dict]]:
         if key in seen:
             dropped.append(
                 {
-                    "title": str(citation.get("source_title") or citation.get("title") or "Untitled source"),
+                    "title": str(
+                        citation.get("source_title") or citation.get("title") or "Untitled source"
+                    ),
                     "reason": "duplicate_evidence",
                 }
             )
@@ -321,7 +356,9 @@ def _segment_score(segment: str, query_terms: set[str]) -> int:
 
 
 def _dedupe_key(citation: dict) -> str:
-    source_id = str(citation.get("source_id") or citation.get("chunk_id") or citation.get("page_id") or "").strip()
+    source_id = str(
+        citation.get("source_id") or citation.get("chunk_id") or citation.get("page_id") or ""
+    ).strip()
     snippet = re.sub(r"\s+", " ", str(citation.get("snippet") or "").strip().lower())
     if len(snippet) > 160:
         snippet = snippet[:160]
